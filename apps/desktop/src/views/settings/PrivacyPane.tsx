@@ -112,13 +112,14 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             4px to the left of everything it introduces. */}
         <p className="type-body px-1 text-pretty text-label-secondary">
           antiburn reads the session files your coding agents already keep on this machine and
-          keeps its index locally. The optional Ignored instructions check sends selected
-          instruction text, assistant text excerpts, Bash command input, file-edit and read-file
-          paths, search queries with scope filters, and other-tool inputs to TypeSafe when
-          enabled in Settings → Checks. Bash input can include inline scripts, heredocs, and
-          patches recorded inside the command. Dedicated edit-tool content and tool-result text
-          are excluded. Selected paths can leave this machine. Product analytics never includes
-          that content.{" "}
+          keeps its index locally. When you turn on model-based checks in Settings → Checks,
+          installed YAML checks can send selected public messages, tool data, response-cycle or
+          session facts, and current instruction/skill inventories to the provider selected
+          under Model-based checks: Jev, compatible Ollama, Cloudflare, or Custom. The check
+          definition selects the inputs, subject to source availability. These inputs and their
+          paths can contain private data. Skill inventory inputs contain descriptions, not full
+          skill bodies. Selected tool results can still contain file text. Product analytics
+          never includes that content.{" "}
           {analyticsSupported
             ? "The one thing antiburn reports to us is anonymised product analytics, which you can turn off below."
             : "This build sends no analytics at all."}{" "}
@@ -138,12 +139,12 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             antiburn may keep session content and derived analysis in its own local store when
             they are needed for visibility or analysis. That can include messages, tool
             activity, file content recorded in a transcript, identities, paths, counts,
-            durations, token totals, and cost estimates. Only the optional Ignored instructions
-            assessment sends selected instruction text, assistant text excerpts, Bash command
-            input, file-edit and read-file paths, search queries with scope filters, and
-            other-tool inputs to TypeSafe. Bash input can include inline scripts, heredocs, and
-            patches recorded inside the command. Dedicated edit-tool content and tool-result
-            text are excluded. Selected paths can leave this machine.
+            durations, token totals, and cost estimates. Optional model-based checks send
+            selected public messages, tool data, response-cycle or session facts, and current
+            instruction/skill inventories to your selected connection, subject to source
+            availability. These inputs and their paths can leave this machine. Skill inventory
+            inputs contain descriptions, not full bodies; selected tool results can still
+            contain file text.
           </Disclosure>
           <Disclosure label="You control how long history stays">
             antiburn keeps indexed session data for the period you select below. The default is
@@ -161,18 +162,19 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
             credentials your own tools already stored; and, in a released build with the switch
             below on, it sends the anonymised product analytics listed below. Handing a provider
             back a credential it issued you is not a disclosure — it already has it. Enabling
-            Ignored instructions in Settings → Checks sends selected instruction text, assistant
-            text excerpts, Bash command input, file-edit and read-file paths, search queries
-            with scope filters, and other-tool inputs to TypeSafe using your API key. Bash input
-            can include inline scripts, heredocs, and patches recorded inside the command.
-            Dedicated edit-tool content and tool-result text are excluded. Selected paths can
-            leave this machine. TypeSafe usage charges can apply. Pausing Smart burn checks
-            keeps the saved key but stops new checks; remove the key separately in Settings →
-            Checks. That pane shows bounded local token totals and estimated spend by model
-            price version, without session identifiers or request content. Session deletion
-            keeps these already-incurred totals; Clear Local Data removes them. The analytics
-            sent to us are listed field by field below, and they contain none of that content.
-            This build
+            model-based checks in Settings → Checks sends selected public messages, tool data,
+            response-cycle or session facts, and current instruction/skill inventories to your
+            selected Jev, compatible Ollama, Cloudflare, or Custom connection, subject to source
+            availability. A local or remote endpoint determines where the request goes. These
+            inputs and their paths can contain private data. Skill inventory inputs contain
+            descriptions, not full bodies; selected tool results can still contain file text.
+            Provider usage charges can apply. Turning off model-based checks keeps saved
+            connections and credentials but stops new checks; remove a credential separately in
+            Settings → Checks. That pane shows bounded local token totals and estimated spend by
+            model price version, without session identifiers or request content. Session
+            deletion keeps these already-incurred totals; Clear index below removes them. The
+            analytics sent to us are listed field by field below, and they contain none of that
+            content. This build
             {analyticsSupported
               ? " can send them."
               : " has no analytics endpoint, so it cannot send them at all."}

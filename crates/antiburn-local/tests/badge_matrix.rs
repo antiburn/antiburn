@@ -442,7 +442,7 @@ fn opencode_evidence(name: &str) -> SessionEvidence {
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
     };
     let metrics = SessionMetricsAccumulator::new(&input.agent, &input.session_id);
     let evidence = SessionEvidenceAccumulator::new(EvidenceSource {

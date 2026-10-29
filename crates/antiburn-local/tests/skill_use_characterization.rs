@@ -1,11 +1,7 @@
 use std::sync::Arc;
 
-use antiburn_local::analysis::jev_evidence::{
-    SessionContentEvidence, normalize_recorded_skill, prepare_session_content,
-    select_session_content,
-};
+use antiburn_local::analysis::jev_evidence::*;
 use antiburn_local::analysis::*;
-use antiburn_local::checks::skill_opportunities::*;
 use antiburn_local::model::AgentKind;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -14,6 +10,12 @@ const CLAUDE: &str = include_str!("fixtures/skill_use_characterization/claude.js
 const OPENCODE: &str = include_str!("fixtures/skill_use_characterization/opencode.jsonl");
 const PI: &str = include_str!("fixtures/skill_use_characterization/pi.jsonl");
 const CODEX: &str = include_str!("fixtures/skill_use_characterization/codex.jsonl");
+const SKILL_USE_SELECTION: JevInputSelection = JevInputSelection::from_fields(&[
+    JevInputField::UserMessage,
+    JevInputField::AssistantMessage,
+    JevInputField::OtherToolInput,
+    JevInputField::OtherToolOutput,
+]);
 
 fn store(input: &SessionInput) -> Arc<MemoryTurnRowStore> {
     let reader = reader_for(&input.agent);
@@ -59,7 +61,7 @@ fn prepared(
             SKILL_USE_SELECTION,
         )
         .unwrap();
-        prepare_session_content("session-digest", format, content, vec![])
+        prepare_session_content("session-digest", format, content)
     })
 }
 
@@ -74,49 +76,9 @@ fn selected(
     select_session_content(&prepared, SKILL_USE_SELECTION)
 }
 
-fn boundary(content: &SessionContentEvidence, agent: AgentKind) -> SkillUseBoundary {
-    SkillUseBoundary {
-        session_identity: content.session_identity_digest.clone(),
-        native_session_id: "root".into(),
-        publication_fence: content.publication_fence,
-        scope: SkillScope {
-            agent,
-            project_identity: Some("project-digest".into()),
-            environment_identity: "native-home-digest".into(),
-        },
-    }
-}
-
 fn parsed_records(text: &str) -> Vec<Value> {
     text.lines()
         .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
-}
-
-fn native_bindings<'a>(
-    content: &'a SessionContentEvidence,
-    records: &'a [Value],
-) -> Vec<ParsedSkillRecord<'a>> {
-    content
-        .actions
-        .iter()
-        .filter(|action| action.kind == "tool_result")
-        .filter_map(|action| {
-            let record = records.iter().find(|record| {
-                record
-                    .get("uuid")
-                    .or_else(|| record.get("messageID"))
-                    .or_else(|| record.get("id"))
-                    .and_then(Value::as_str)
-                    == action.reference.native_record_id.as_deref()
-            })?;
-            Some(ParsedSkillRecord {
-                session_identity: &content.session_identity_digest,
-                publication_fence: content.publication_fence,
-                reference: &action.reference,
-                record,
-            })
-        })
         .collect()
 }
 
@@ -159,193 +121,18 @@ fn opencode_content(
         agent: "opencode".into(),
         session_id: "root".into(),
         source: RawSource::Sqlite(path),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         fork_parent_session_id: None,
     };
     let store = store(&input);
     let content = selected(
         &store,
         "opencode",
-        SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeSqliteV1,
         "root",
         1,
     );
     (temporary, store, content)
-}
-
-#[test]
-fn claude_exact_request_survives_publication_without_claiming_launch_success() {
-    let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, CLAUDE);
-    let snapshot =
-        SkillUseSnapshot::from_published_content(&content, &boundary(&content, AgentKind::Claude))
-            .unwrap();
-    assert_eq!(snapshot.events().len(), 2, "{content:?}");
-    let request = &snapshot.events()[0];
-    let result = &snapshot.events()[1];
-    assert_eq!(
-        request.skill,
-        RecordedSkillIdentity::Name {
-            name: "review".into()
-        }
-    );
-    assert_eq!(request.lifecycle, SkillUseLifecycle::Requested);
-    assert_eq!(result.lifecycle, SkillUseLifecycle::Unknown, "{content:?}");
-    assert_eq!(
-        request.reference.native_record_id.as_deref(),
-        Some("claude-request")
-    );
-    assert_eq!(
-        result.reference.native_record_id.as_deref(),
-        Some("claude-result")
-    );
-    assert_eq!(result.request_reference.as_ref(), Some(&request.reference));
-    assert_eq!(request.tool_call_id.as_deref(), Some("skill-call"));
-    assert_eq!(request.timestamp_ms, Some(1767225601000));
-    assert_eq!(result.timestamp_ms, Some(1767225602000));
-    assert_eq!(request.turn_role, "assistant");
-    assert_eq!(result.authority, "tool");
-    assert!(request.reference.stable && result.reference.stable);
-    assert_eq!(snapshot.coverage().ordering, SkillUseOrdering::Monotonic);
-    assert!(!snapshot.proves_session_wide_absence());
-}
-
-#[test]
-fn opencode_selected_skill_requires_native_completed_metadata_and_full_document() {
-    let native = parsed_records(OPENCODE);
-    let (_temporary, _store, content) = opencode_content(&native[0]);
-    let snapshot = SkillUseSnapshot::from_published_content(
-        &content,
-        &boundary(&content, AgentKind::OpenCode),
-    )
-    .unwrap();
-    let proof = content.actions[1]
-        .metadata
-        .recorded_skill_result
-        .as_ref()
-        .expect("selected SQLite result retains its typed proof");
-    assert_eq!(proof.source_format, SourceFormat::OpenCodeSqliteV2);
-    assert_eq!(proof.session_id.as_deref(), Some("root"));
-    assert_eq!(proof.message_id.as_deref(), Some("skill-message"));
-    assert_eq!(proof.call_id.as_deref(), Some("skill-call"));
-    assert_eq!(proof.name.as_deref(), Some("review"));
-    assert_eq!(
-        proof.location.as_deref(),
-        Some("/synthetic/skills/review/SKILL.md")
-    );
-    assert!(proof.complete && !proof.truncated);
-    let serialized = serde_json::to_string(proof).unwrap();
-    assert!(!serialized.contains("skill_content"));
-    assert!(!serialized.contains("producer"));
-    assert!(!serialized.contains("\"input\""));
-    assert!(!serialized.contains("\"output\""));
-    assert_eq!(snapshot.events().len(), 2, "{content:?}");
-    assert_eq!(snapshot.events()[0].lifecycle, SkillUseLifecycle::Requested);
-    assert_eq!(
-        snapshot.events()[1].lifecycle,
-        SkillUseLifecycle::DocumentSelected,
-        "{content:?}"
-    );
-    assert_eq!(
-        snapshot.events()[0].reference.native_record_id.as_deref(),
-        Some("skill-message")
-    );
-    assert_eq!(snapshot.events()[0].timestamp_ms, Some(1767225601000));
-    assert_eq!(
-        snapshot.events()[1].request_reference.as_ref(),
-        Some(&snapshot.events()[0].reference)
-    );
-    assert_eq!(
-        snapshot.events()[1].producer,
-        SkillUseProducer::OpenCodeSkill77239205
-    );
-    assert!(
-        !serde_json::to_string(snapshot.events())
-            .unwrap()
-            .contains("/synthetic/")
-    );
-}
-
-#[test]
-fn skill_consumer_uses_normalized_facts_without_native_tool_names() {
-    let native = parsed_records(OPENCODE);
-    let (_temporary, store, mut content) = opencode_content(&native[0]);
-    for action in &mut content.actions {
-        action.tool_name = Some("normalized_skill_loader".into());
-    }
-    let usage = SkillUseSnapshot::from_published_content(
-        &content,
-        &boundary(&content, AgentKind::OpenCode),
-    )
-    .unwrap();
-    assert_eq!(usage.events().len(), 2);
-    assert_eq!(usage.events()[0].lifecycle, SkillUseLifecycle::Requested);
-    assert_eq!(
-        usage.events()[1].lifecycle,
-        SkillUseLifecycle::DocumentSelected
-    );
-    let plan = matching_plan(&store, &content, AgentKind::OpenCode);
-    assert_eq!(
-        plan.prepared.comparisons[0].used_current_skills[0].name,
-        "review"
-    );
-    assert!(plan.work_items.is_empty());
-    assert_eq!(plan.skipped_item_ids.len(), 1);
-    assert!(plan.shared_context.is_none());
-    assert!(plan.coverage.processing_limit_reached);
-}
-
-#[test]
-fn opencode_jsonl_does_not_receive_sqlite_skill_result_support() {
-    let (_, content) = jsonl_content("opencode", SourceFormat::OpenCodeJsonl, OPENCODE);
-    let snapshot = SkillUseSnapshot::from_published_content(
-        &content,
-        &boundary(&content, AgentKind::OpenCode),
-    )
-    .unwrap();
-    assert_eq!(snapshot.coverage().status, SkillUseStatus::Unsupported);
-    assert!(snapshot.events().is_empty());
-}
-
-#[test]
-fn pi_explicit_requests_preserve_identity_without_inventing_extension_success() {
-    let (_, content) = jsonl_content("pi", SourceFormat::PiV3Jsonl, PI);
-    let native = parsed_records(PI);
-    let snapshot = SkillUseSnapshot::from_selected_content(
-        &content,
-        &boundary(&content, AgentKind::Pi),
-        &native_bindings(&content, &native),
-    )
-    .unwrap();
-    assert_eq!(snapshot.events().len(), 2);
-    assert_eq!(snapshot.events()[0].lifecycle, SkillUseLifecycle::Requested);
-    assert_eq!(snapshot.events()[1].lifecycle, SkillUseLifecycle::Unknown);
-    assert_eq!(
-        snapshot.events()[0].reference.native_record_id.as_deref(),
-        Some("pi-request")
-    );
-    assert_eq!(snapshot.events()[0].timestamp_ms, Some(1767225601000));
-    assert_eq!(snapshot.coverage().status, SkillUseStatus::Partial);
-}
-
-#[test]
-fn codex_full_documents_are_selection_not_task_success_or_mentions() {
-    let records = codex_skill_records();
-    let (_, content) = jsonl_content("codex", SourceFormat::CodexRolloutJsonl, &jsonl(&records));
-    let snapshot = SkillUseSnapshot::from_selected_content(
-        &content,
-        &boundary(&content, AgentKind::Codex),
-        &[],
-    )
-    .unwrap();
-    assert_eq!(snapshot.events().len(), 1, "{content:?}");
-    let event = &snapshot.events()[0];
-    assert_eq!(event.lifecycle, SkillUseLifecycle::DocumentSelected);
-    assert_eq!(event.timestamp_ms, Some(1767225601000));
-    assert!(
-        matches!(&event.skill, RecordedSkillIdentity::Document { name, path_digest } if name == "review" && path_digest.len() == 64)
-    );
-    assert_eq!(event.tool_call_id, None);
-    assert!(!snapshot.proves_session_wide_absence());
 }
 
 fn jsonl(records: &[Value]) -> String {
@@ -355,572 +142,6 @@ fn jsonl(records: &[Value]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
-}
-
-fn claude_snapshot(records: &[Value], native: bool) -> SkillUseSnapshot {
-    let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(records));
-    let bindings = if native {
-        native_bindings(&content, records)
-    } else {
-        vec![]
-    };
-    SkillUseSnapshot::from_selected_content(
-        &content,
-        &boundary(&content, AgentKind::Claude),
-        &bindings,
-    )
-    .unwrap()
-}
-
-#[test]
-fn claude_text_or_missing_conflicting_and_batched_native_results_do_not_prove_launch() {
-    for case in 0..8 {
-        let mut records = parsed_records(CLAUDE);
-        match case {
-            0 => {
-                records[1].as_object_mut().unwrap().remove("toolUseResult");
-            }
-            1 => records[1]["toolUseResult"]["success"] = json!(false),
-            2 => records[1]["toolUseResult"]["commandName"] = json!("other"),
-            3 => records[1]["message"]["content"][0]["is_error"] = json!(true),
-            4 => records[1]["sourceToolAssistantUUID"] = json!("unrelated-record"),
-            5 => records[1]["sourceToolUseID"] = json!("unrelated-call"),
-            6 => records[1]["message"]["content"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"type":"tool_result","tool_use_id":"other-call","content":"ok"})),
-            _ => {
-                records[0]["message"]["content"][0]["input"] =
-                    json!({"command":"/review extra-args"})
-            }
-        }
-        let snapshot = claude_snapshot(&records, true);
-        assert!(
-            snapshot
-                .events()
-                .iter()
-                .all(|event| event.lifecycle != SkillUseLifecycle::Succeeded),
-            "case {case}"
-        );
-        assert_eq!(
-            snapshot.coverage().status,
-            SkillUseStatus::Partial,
-            "case {case}"
-        );
-    }
-    let snapshot = claude_snapshot(&parsed_records(CLAUDE), false);
-    assert_eq!(snapshot.events()[1].lifecycle, SkillUseLifecycle::Unknown);
-    assert!(
-        snapshot
-            .coverage()
-            .limitations
-            .contains(&SkillUseLimit::NativeMetadataUnavailable)
-    );
-}
-
-#[test]
-fn matched_explicit_native_failure_stays_failed() {
-    let mut records = parsed_records(CLAUDE);
-    records[0]["version"] = json!("2.1.278");
-    records[1]["version"] = json!("2.1.278");
-    records[1]["toolUseResult"]["success"] = json!(false);
-    records[1]["message"]["content"][0]["is_error"] = json!(true);
-    records[1]["message"]["content"][0]["content"] = json!("Skill permission denied.");
-    assert_eq!(
-        claude_snapshot(&records, false).events()[1].lifecycle,
-        SkillUseLifecycle::Failed
-    );
-    let (_, published) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
-    assert_eq!(
-        published.actions[1].metadata.state,
-        antiburn_local::analysis::jev_evidence::JevOperationState::Error
-    );
-    for case in 0..3 {
-        let mut content = published.clone();
-        match case {
-            0 => content.actions[1].metadata.bindings.clear(),
-            1 => content.actions[1].metadata.bindings[0].end -= 1,
-            _ => content.actions[1].truncated = true,
-        }
-        let snapshot = SkillUseSnapshot::from_published_content(
-            &content,
-            &boundary(&content, AgentKind::Claude),
-        )
-        .unwrap();
-        assert!(
-            snapshot
-                .events()
-                .iter()
-                .all(|event| event.lifecycle != SkillUseLifecycle::Failed)
-        );
-    }
-}
-
-#[test]
-fn duplicate_call_id_cannot_bind_a_result_to_one_request() {
-    let mut records = parsed_records(CLAUDE);
-    let duplicate = records[0]["message"]["content"][0].clone();
-    records[0]["message"]["content"]
-        .as_array_mut()
-        .unwrap()
-        .push(duplicate);
-    let snapshot = claude_snapshot(&records, true);
-    assert!(
-        snapshot
-            .events()
-            .iter()
-            .all(|event| event.lifecycle == SkillUseLifecycle::Requested)
-    );
-    assert!(
-        snapshot
-            .coverage()
-            .limitations
-            .contains(&SkillUseLimit::AmbiguousCallIdentity)
-    );
-}
-
-#[test]
-fn opencode_mutable_lifecycle_metadata_aliases_and_partial_outputs_stay_unknown() {
-    for case in 0..8 {
-        let mut records = parsed_records(OPENCODE);
-        match case {
-            0 => {
-                records[0]["state"]["metadata"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("name");
-            }
-            1 => records[0]["state"]["status"] = json!("running"),
-            2 => records[0]["state"]["metadata"]["truncated"] = json!(true),
-            3 => records[0]["state"]["time"]["compacted"] = json!(1767225602000i64),
-            4 => records[0]["metadata"] = json!({"providerExecuted":true}),
-            5 => records[0]["state"]["output"] = json!("Loaded review successfully."),
-            6 => records[0]["state"]["input"]["name"] = json!("alias-review"),
-            _ => records[0]["state"]["metadata"]["dir"] = json!("/synthetic/other"),
-        }
-        let (_temporary, store, content) = opencode_content(&records[0]);
-        store.with_connection(|connection| {
-            let accepted: i64 = connection.query_row(
-                "SELECT count(*) FROM turn_content WHERE json_extract(normalized_fields_json, '$.metadata.recorded_skill_result.status') = 'document_selected'",
-                [], |row| row.get(0)).unwrap();
-            assert_eq!(accepted, 0, "adapter rejects case {case} before checks");
-        });
-        let snapshot = SkillUseSnapshot::from_selected_content(
-            &content,
-            &boundary(&content, AgentKind::OpenCode),
-            &native_bindings(&content, &records),
-        )
-        .unwrap();
-        assert!(
-            snapshot.events().iter().all(|event| !matches!(
-                event.lifecycle,
-                SkillUseLifecycle::Succeeded | SkillUseLifecycle::DocumentSelected
-            )),
-            "case {case}"
-        );
-        assert_eq!(
-            snapshot.coverage().status,
-            SkillUseStatus::Partial,
-            "case {case}"
-        );
-    }
-}
-
-#[test]
-fn source_thread_roles_and_native_call_ids_constrain_result_joins() {
-    let (_, original) = jsonl_content("claude", SourceFormat::ClaudeJsonl, CLAUDE);
-    let records = parsed_records(CLAUDE);
-    for case in 0..7 {
-        let mut content = original.clone();
-        match case {
-            0 => content.actions[1].reference.source_key_digest = "different-source".into(),
-            1 => content.actions[1].reference.thread_digest = "different-thread".into(),
-            2 => content.actions[1].turn_scope = "delegated".into(),
-            3 => content.actions[1].authority = "user".into(),
-            4 => content.actions[1].tool_call_id = Some("different-call".into()),
-            5 => content.actions[0].turn_role = "user".into(),
-            _ => content.actions[1].turn_role = "user".into(),
-        }
-        let snapshot = SkillUseSnapshot::from_selected_content(
-            &content,
-            &boundary(&content, AgentKind::Claude),
-            &native_bindings(&content, &records),
-        )
-        .unwrap();
-        assert!(
-            snapshot
-                .events()
-                .iter()
-                .all(|event| event.lifecycle != SkillUseLifecycle::Succeeded),
-            "case {case}"
-        );
-    }
-}
-
-#[test]
-fn timestamps_and_native_positions_remain_distinct_when_time_is_missing_or_reversed() {
-    let mut records = parsed_records(CLAUDE);
-    records[0].as_object_mut().unwrap().remove("timestamp");
-    let missing = claude_snapshot(&records, true);
-    assert_eq!(missing.events()[0].timestamp_ms, None);
-    assert_eq!(missing.events()[0].reference.turn_index, 0);
-    assert_eq!(missing.coverage().ordering, SkillUseOrdering::Unknown);
-    assert!(
-        missing
-            .coverage()
-            .limitations
-            .contains(&SkillUseLimit::TimestampUnavailable)
-    );
-    let mut records = parsed_records(CLAUDE);
-    records[1]["timestamp"] = json!("2026-01-01T00:00:00Z");
-    let reversed = claude_snapshot(&records, true);
-    assert_eq!(reversed.coverage().ordering, SkillUseOrdering::OutOfOrder);
-    assert!(reversed.events()[0].reference.turn_index < reversed.events()[1].reference.turn_index);
-}
-
-#[test]
-fn publication_and_session_fences_bind_selected_and_supplemental_native_evidence() {
-    let (store, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, CLAUDE);
-    let records = parsed_records(CLAUDE);
-    let bound = boundary(&content, AgentKind::Claude);
-    let snapshot = SkillUseSnapshot::from_selected_content(
-        &content,
-        &bound,
-        &native_bindings(&content, &records),
-    )
-    .unwrap();
-    assert!(snapshot.matches_boundary(&bound));
-    let mut stale = bound.clone();
-    stale.publication_fence += 1;
-    assert!(!snapshot.matches_boundary(&stale));
-    assert_eq!(
-        SkillUseSnapshot::from_selected_content(&content, &stale, &[]),
-        Err(SkillInputError::WrongSessionOrScope)
-    );
-    let mut other_session = bound.clone();
-    other_session.session_identity = "different-session".into();
-    assert_eq!(
-        SkillUseSnapshot::from_selected_content(&content, &other_session, &[]),
-        Err(SkillInputError::WrongSessionOrScope)
-    );
-    let mut native = native_bindings(&content, &records);
-    native[0].publication_fence += 1;
-    assert_eq!(
-        SkillUseSnapshot::from_selected_content(&content, &bound, &native),
-        Err(SkillInputError::WrongSessionOrScope)
-    );
-    native[0].publication_fence = content.publication_fence;
-    native[0].session_identity = "other-session";
-    assert_eq!(
-        SkillUseSnapshot::from_selected_content(&content, &bound, &native),
-        Err(SkillInputError::WrongSessionOrScope)
-    );
-    assert!(
-        selected(
-            &store,
-            "claude",
-            SourceFormat::ClaudeJsonl,
-            "other-session",
-            1
-        )
-        .actions
-        .is_empty()
-    );
-    assert!(
-        selected(&store, "claude", SourceFormat::ClaudeJsonl, "root", 2)
-            .actions
-            .is_empty()
-    );
-}
-
-#[test]
-fn unknown_field_selection_source_and_part_caps_remain_explicit() {
-    let (_, original) = jsonl_content("claude", SourceFormat::ClaudeJsonl, CLAUDE);
-    let mut content = original.clone();
-    content.field_availability.clear();
-    let snapshot = SkillUseSnapshot::from_selected_content(
-        &content,
-        &boundary(&content, AgentKind::Claude),
-        &[],
-    )
-    .unwrap();
-    assert!(
-        snapshot
-            .coverage()
-            .limitations
-            .contains(&SkillUseLimit::RequiredFieldNotSelected)
-    );
-    let mut unsupported = original.clone();
-    unsupported.source_format = SourceFormat::OpenCodeJsonl;
-    let snapshot = SkillUseSnapshot::from_selected_content(
-        &unsupported,
-        &boundary(&unsupported, AgentKind::OpenCode),
-        &[],
-    )
-    .unwrap();
-    assert_eq!(snapshot.coverage().status, SkillUseStatus::Unsupported);
-    assert!(snapshot.events().is_empty());
-    content = original.clone();
-    content.actions = vec![original.actions[0].clone(); 289];
-    assert_eq!(
-        SkillUseSnapshot::from_selected_content(
-            &content,
-            &boundary(&content, AgentKind::Claude),
-            &[]
-        ),
-        Err(SkillInputError::LimitExceeded)
-    );
-    let mut records = parsed_records(CLAUDE);
-    records[1]["unused"] = json!("x".repeat(256 * 1024));
-    assert_eq!(
-        SkillUseSnapshot::from_selected_content(
-            &original,
-            &boundary(&original, AgentKind::Claude),
-            &native_bindings(&original, &records)
-        ),
-        Err(SkillInputError::LimitExceeded)
-    );
-}
-
-#[test]
-fn aggregates_stay_inferred_without_success_timing_or_absence_proof() {
-    let scope = SkillScope {
-        agent: AgentKind::Claude,
-        project_identity: None,
-        environment_identity: "native".into(),
-    };
-    let aggregate = SkillUseEvidence {
-        session_identity: "session".into(),
-        scope,
-        status: SkillUseStatus::Complete,
-        ordering: SkillUseOrdering::Monotonic,
-        events: vec![SkillUseEvent {
-            identity: "review".into(),
-            identity_kind: SkillUseIdentity::Exact,
-            lifecycle: SkillUseLifecycle::Succeeded,
-            source_identity: "session".into(),
-            source_field: "skill_uses".into(),
-            timestamp_ms: Some(100),
-            order: Some(1),
-        }],
-    };
-    let snapshot = SkillUseSnapshot::from_aggregates(aggregate).unwrap();
-    assert_eq!(snapshot.coverage().status, SkillUseStatus::Partial);
-    assert_eq!(
-        snapshot.evidence().events[0].identity_kind,
-        SkillUseIdentity::Inferred
-    );
-    assert_eq!(
-        snapshot.evidence().events[0].lifecycle,
-        SkillUseLifecycle::Requested
-    );
-    assert_eq!(snapshot.evidence().events[0].timestamp_ms, None);
-    assert_eq!(snapshot.evidence().events[0].order, None);
-    assert!(snapshot.events().is_empty());
-    assert!(!snapshot.proves_session_wide_absence());
-}
-
-#[test]
-fn current_inventory_binding_stays_inferred_and_candidates_keep_time_and_use_limits() {
-    let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, CLAUDE);
-    let bound = boundary(&content, AgentKind::Claude);
-    let usage = SkillUseSnapshot::from_selected_content(&content, &bound, &[]).unwrap();
-    assert_eq!(
-        usage.events()[0].skill,
-        RecordedSkillIdentity::Name {
-            name: "review".into()
-        }
-    );
-    assert_eq!(
-        usage.evidence().events[0].identity_kind,
-        SkillUseIdentity::Inferred
-    );
-    let definition = |identity: &str, name: &str, aliases: Vec<String>, created_at_ms| {
-        SkillDefinition {
-            identity: identity.into(),
-            revision: "semantic-revision".into(),
-            name: name.into(),
-            aliases,
-            description:
-                "1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`.".into(),
-            frontmatter: json!({"description":"1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`."}),
-            scope: bound.scope.clone(),
-            enabled: true,
-            created_at_ms,
-        }
-    };
-    let inventory = SkillOpportunitySnapshot::new(
-        bound.scope.clone(),
-        vec![
-            definition("used-file", "native-review", vec!["review".into()], None),
-            definition("unused-file", "error-review", vec![], Some(1767225601500)),
-            definition("unknown-birth", "test-review", vec![], None),
-        ],
-        true,
-    )
-    .unwrap();
-    let mut work = SkillWorkContext {
-        session_identity: bound.session_identity.clone(),
-        scope: bound.scope.clone(),
-        relevant_work_at_ms: Some(1767225601000),
-    };
-    let before_creation = inventory
-        .eligible_candidates_with_recorded_use(&work, &usage)
-        .unwrap();
-    assert_eq!(before_creation.len(), 3);
-    assert_eq!(before_creation[0].skill().identity, "used-file");
-    assert_eq!(before_creation[1].skill().identity, "unused-file");
-    assert_eq!(before_creation[2].skill().identity, "unknown-birth");
-    assert_eq!(
-        before_creation[1].reference_snapshot().fields["created_at_ms"],
-        1767225601500i64
-    );
-    assert_eq!(
-        before_creation[1].reference_snapshot().fields["relevant_work_at_ms"],
-        1767225601000i64
-    );
-    assert!(
-        before_creation[2]
-            .limitations()
-            .contains(&SkillOpportunityLimit::CreationTimeUnknown)
-    );
-    assert!(
-        before_creation[0]
-            .limitations()
-            .contains(&SkillOpportunityLimit::SelectedUseWindowOnly)
-    );
-    assert_eq!(
-        before_creation[0].reference_snapshot().fields["use_snapshot_revision"],
-        usage.revision()
-    );
-    for candidate in &before_creation {
-        assert!(
-            candidate
-                .limitations()
-                .contains(&SkillOpportunityLimit::CurrentInventoryOnly)
-        );
-        assert!(
-            candidate
-                .limitations()
-                .contains(&SkillOpportunityLimit::UseEvidenceIncomplete)
-        );
-        assert!(
-            candidate
-                .limitations()
-                .contains(&SkillOpportunityLimit::UseIdentityInferred)
-        );
-        assert_eq!(
-            candidate.reference_snapshot().fields["use_coverage"],
-            json!(usage.coverage())
-        );
-        assert_eq!(
-            candidate.reference_snapshot().fields["limitations"],
-            json!(candidate.limitations())
-        );
-    }
-    work.relevant_work_at_ms = Some(1767225602000);
-    assert_eq!(
-        inventory
-            .eligible_candidates_with_recorded_use(&work, &usage)
-            .unwrap()
-            .len(),
-        3
-    );
-    work.scope.project_identity = Some("other-project".into());
-    assert_eq!(
-        inventory.eligible_candidates_with_recorded_use(&work, &usage),
-        Err(SkillInputError::WrongSessionOrScope)
-    );
-}
-
-#[test]
-fn codex_empty_documents_and_quoted_or_wrong_role_shapes_are_not_use() {
-    for text in [
-        "<skill>\n<name>review</name>\n<path>/synthetic/SKILL.md</path>\n\n</skill>",
-        "Quoted: <skill>\n<name>review</name>\n<path>/synthetic/SKILL.md</path>\nFull body.\n</skill>",
-        "<skill>\n<name>review</name>\nListing only.\n</skill>",
-    ] {
-        let mut records = codex_skill_records();
-        records[1]["payload"]["content"][0]["text"] = json!(text);
-        let (_, content) =
-            jsonl_content("codex", SourceFormat::CodexRolloutJsonl, &jsonl(&records));
-        let snapshot = SkillUseSnapshot::from_selected_content(
-            &content,
-            &boundary(&content, AgentKind::Codex),
-            &[],
-        )
-        .unwrap();
-        assert!(snapshot.events().is_empty());
-    }
-    let mut records = codex_skill_records();
-    records[1]["payload"]["role"] = json!("assistant");
-    let (_, content) = jsonl_content("codex", SourceFormat::CodexRolloutJsonl, &jsonl(&records));
-    assert!(
-        SkillUseSnapshot::from_selected_content(
-            &content,
-            &boundary(&content, AgentKind::Codex),
-            &[]
-        )
-        .unwrap()
-        .events()
-        .is_empty()
-    );
-}
-
-#[test]
-fn native_envelopes_from_other_sessions_or_with_wrong_record_ids_cannot_supply_success() {
-    let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, CLAUDE);
-    for (field, value) in [("sessionId", "other-session"), ("uuid", "other-record")] {
-        let mut records = parsed_records(CLAUDE);
-        records[1][field] = json!(value);
-        let native = vec![ParsedSkillRecord {
-            session_identity: &content.session_identity_digest,
-            publication_fence: content.publication_fence,
-            reference: &content.actions[1].reference,
-            record: &records[1],
-        }];
-        let snapshot = SkillUseSnapshot::from_selected_content(
-            &content,
-            &boundary(&content, AgentKind::Claude),
-            &native,
-        )
-        .unwrap();
-        assert_eq!(snapshot.events()[1].lifecycle, SkillUseLifecycle::Unknown);
-    }
-}
-
-#[test]
-fn compatibility_name_fields_and_paths_are_inferred_without_a_producer_success_contract() {
-    for input in [
-        json!({"name":"review"}),
-        json!({"skill_name":"review"}),
-        json!({"skillName":"review"}),
-        json!({"command":"/review extra"}),
-        json!({"path":"/synthetic/skills/review/SKILL.md"}),
-    ] {
-        let mut records = parsed_records(CLAUDE);
-        records[0]["message"]["content"][0]["input"] = input;
-        let snapshot = claude_snapshot(&records, true);
-        assert_eq!(
-            snapshot.events()[0].skill,
-            RecordedSkillIdentity::InferredName {
-                name: "review".into()
-            }
-        );
-        assert_eq!(snapshot.events()[1].lifecycle, SkillUseLifecycle::Unknown);
-        assert!(
-            snapshot
-                .coverage()
-                .limitations
-                .contains(&SkillUseLimit::UnknownSkillIdentity)
-        );
-    }
-    let mut records = parsed_records(CLAUDE);
-    records[0]["message"]["content"][0]["input"] = json!({"skill":"review","name":"different"});
-    assert_eq!(
-        claude_snapshot(&records, true).events()[0].skill,
-        RecordedSkillIdentity::Unknown
-    );
 }
 
 fn codex_skill_records() -> Vec<Value> {
@@ -1097,202 +318,202 @@ fn shared_normalization_rejects_stale_request_text_and_normalized_fields() {
     }
 }
 
-fn matching_candidates(content: &SessionContentEvidence, agent: AgentKind) -> usize {
-    let bound = boundary(content, agent);
-    let usage = SkillUseSnapshot::from_published_content(content, &bound).unwrap();
-    let inventory = SkillOpportunitySnapshot::new(
-        bound.scope.clone(),
-        vec![SkillDefinition {
-            identity: "review-file".into(),
-            revision: "current-revision".into(),
-            name: "review".into(),
-            aliases: vec![],
-            description: "1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`.".into(),
-            frontmatter: json!({"description":"1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`."}),
-            scope: bound.scope.clone(),
-            enabled: true,
-            created_at_ms: None,
-        }],
-        true,
-    )
-    .unwrap();
-    inventory
-        .eligible_candidates_with_recorded_use(
-            &SkillWorkContext {
-                session_identity: bound.session_identity.clone(),
-                scope: bound.scope.clone(),
-                relevant_work_at_ms: Some(1767225601000),
-            },
-            &usage,
-        )
-        .unwrap()
-        .len()
-}
-
-fn matching_plan(
-    store: &MemoryTurnRowStore,
-    content: &SessionContentEvidence,
-    agent: AgentKind,
-) -> antiburn_local::analysis::jev::JevCheckPlan<PreparedSkillOpportunities> {
-    use antiburn_local::analysis::jev::JevCheck;
-    use antiburn_local::analysis::session_scope::{
-        SessionScopeBoundary, SessionScopeBranch, SessionScopeBuilder,
-    };
-
-    let agent_name = match agent {
-        AgentKind::OpenCode => "opencode",
-        AgentKind::Codex => "codex",
-        AgentKind::Pi => "pi",
-        _ => unreachable!(),
-    };
-    let mut page = store.with_connection(|connection| {
-        query_turn_content_offset_selected(
-            connection,
-            &TurnSessionKey {
-                environment_key: "native",
-                agent: agent_name,
-                session_id: "root",
-            },
-            &FenceScope::single(content.publication_fence),
-            None,
-            &Default::default(),
-            0,
-            SKILL_OPPORTUNITIES_INPUT_SELECTION,
-        )
-        .unwrap()
-    });
-    let source = page.parts.last().unwrap().clone();
-    let work_turn = source.turn_index + 1;
-    page.source_generation = Some(1);
-    page.parts.clear();
-    for (offset, kind, text) in [
-        (
-            0,
-            ContentKind::UserText,
-            "1. Run `cargo test worker_shutdown`.\n2. Inspect `src/worker/shutdown.rs`.",
-        ),
-        (
-            1,
-            ContentKind::ToolInput,
-            r#"{"command":"cargo test worker_shutdown\ngit diff -- src/worker/shutdown.rs"}"#,
-        ),
-        (
-            2,
-            ContentKind::ToolResult,
-            "FAILED: worker resource remains open",
-        ),
-    ] {
-        let mut part = source.clone();
-        part.turn_index = work_turn + offset;
-        part.part_index = 0;
-        part.uuid = Some(format!("advisory-work-{offset}"));
-        part.message_id = None;
-        part.role = if offset == 0 { "user" } else { "assistant" };
-        part.scope = "main".into();
-        part.context_only = false;
-        part.stable_event_identity = true;
-        part.part = ContentPart::new(kind, text);
-        if offset != 0 {
-            part.part = part
-                .part
-                .with_tool_identity(Some("Bash".into()), Some("work-call".into()));
-        }
-        page.parts.push(part);
-    }
-    let mut builder = SessionScopeBuilder::new(
-        content.source_format,
-        SessionScopeBoundary {
-            source_key: source.source_key,
-            thread_id: source.thread_id,
-            turn_index: work_turn + 2,
-            part_index: 0,
-            branch: SessionScopeBranch::ProvenLinear,
-        },
-        page.publication_fence,
-        1,
-        true,
-    )
-    .unwrap();
-    builder.push_page(page.clone(), false).unwrap();
-    let scope = builder.finish().unwrap();
-    let work = prepare_session_content(
-        &content.session_identity_digest,
-        content.source_format,
-        page,
-        vec![],
-    );
-    let mut content = content.clone();
-    content.actions.extend(work.actions);
-    let bound = boundary(&content, agent);
-    let usage = SkillUseSnapshot::from_published_content(
-        &select_session_content(&content, SKILL_USE_SELECTION),
-        &bound,
-    )
-    .unwrap();
-    let inventory = SkillOpportunitySnapshot::new(
-        bound.scope.clone(),
-        vec![
-            SkillDefinition {
-                identity: "review-file".into(),
-                revision: "used-revision".into(),
-                name: "review".into(),
-                aliases: vec![],
-                description: "Review resource ownership.".into(),
-                frontmatter: json!({"description":"Review resource ownership."}),
-                scope: bound.scope.clone(),
-                enabled: true,
-                created_at_ms: None,
-            },
-            SkillDefinition {
-                identity: "review-next-file".into(),
-                revision: "candidate-revision".into(),
-                name: "review-next".into(),
-                aliases: vec![],
-                description: "1. Run `cargo test worker_shutdown`.\n2. Run `git diff -- src/worker/shutdown.rs`.".into(),
-                frontmatter: json!({"description":"1. Run `cargo test worker_shutdown`.\n2. Run `git diff -- src/worker/shutdown.rs`."}),
-                scope: bound.scope,
-                enabled: true,
-                created_at_ms: None,
-            },
-        ],
-        true,
-    )
-    .unwrap();
-    let check = SkillOpportunitiesCheck::new(&content, &inventory, &usage, &scope).unwrap();
-    let plan = check.prepare(&check.session_context()).unwrap();
-    if plan
-        .prepared
-        .comparisons
+fn skill_facts(content: &SessionContentEvidence) -> Vec<&JevRecordedSkillResult> {
+    content
+        .actions
         .iter()
-        .any(|comparison| comparison.use_eligibility.equivalent_comparison_required)
-    {
-        assert_eq!(plan.work_items.len(), 0, "plan={plan:#?}");
-        assert_eq!(plan.skipped_item_ids.len(), 1);
-        assert!(plan.shared_context.is_none());
-        assert!(plan.coverage.processing_limit_reached);
-        let comparison = plan
-            .prepared
-            .comparisons
-            .iter()
-            .find(|comparison| comparison.use_eligibility.equivalent_comparison_required)
-            .unwrap();
-        assert_eq!(comparison.used_current_skills[0].identity, "review-file");
-        assert!(!comparison.use_citations.is_empty());
-    } else if plan.prepared.comparisons.is_empty() {
-        assert!(plan.work_items.is_empty());
-        assert!(plan.shared_context.is_none());
-        assert_eq!(plan.coverage.selected_items, 0);
-        assert!(
-            plan.coverage
-                .limitations
-                .contains(&"skill_use_context_partial".into())
-        );
-    }
-    plan
+        .filter_map(|action| {
+            let fact = action.metadata.recorded_skill_result.as_ref()?;
+            assert!(
+                fact.matches_action(action, content.source_format),
+                "{action:#?}"
+            );
+            Some(fact)
+        })
+        .collect()
 }
 
 #[test]
-fn persisted_selection_requires_equivalence_comparison_without_human_authority_or_success() {
+fn native_requests_keep_identity_order_and_unknown_result_status() {
+    for (agent, source, fixture, record) in [
+        (
+            "claude",
+            SourceFormat::ClaudeJsonl,
+            CLAUDE,
+            "claude-request",
+        ),
+        ("pi", SourceFormat::PiV3Jsonl, PI, "pi-request"),
+    ] {
+        let (_, content) = jsonl_content(agent, source, fixture);
+        let facts = skill_facts(&content);
+        assert_eq!(facts.len(), 2, "{content:#?}");
+        assert_eq!(facts[0].identity, JevRecordedSkillIdentityKind::Name);
+        assert_eq!(facts[0].name.as_deref(), Some("review"));
+        assert_eq!(facts[0].status, JevRecordedSkillStatus::Requested);
+        assert_eq!(facts[1].status, JevRecordedSkillStatus::Unknown);
+        assert_eq!(facts[0].call_id.as_deref(), Some("skill-call"));
+        assert_eq!(
+            content.actions[0].reference.native_record_id.as_deref(),
+            Some(record)
+        );
+        assert_eq!(content.actions[0].timestamp_ms, Some(1767225601000));
+        assert!(content.actions[0].reference.turn_index < content.actions[1].reference.turn_index);
+    }
+}
+
+#[test]
+fn opencode_completed_document_retains_native_bindings_without_task_success() {
+    let native = parsed_records(OPENCODE);
+    let (_temporary, _store, content) = opencode_content(&native[0]);
+    let facts = skill_facts(&content);
+    assert_eq!(facts.len(), 2, "{content:#?}");
+    assert_eq!(facts[0].status, JevRecordedSkillStatus::Requested);
+    assert_eq!(facts[1].status, JevRecordedSkillStatus::DocumentSelected);
+    assert_eq!(facts[1].identity, JevRecordedSkillIdentityKind::Document);
+    assert_eq!(facts[1].name.as_deref(), Some("review"));
+    assert_eq!(
+        facts[1].location.as_deref(),
+        Some("/synthetic/skills/review/SKILL.md")
+    );
+    assert_eq!(
+        facts[1].request_message_id.as_deref(),
+        Some("skill-message")
+    );
+    assert_eq!(
+        facts[1].request_part_index,
+        Some(content.actions[0].reference.part_index)
+    );
+    assert!(facts[1].complete && !facts[1].truncated);
+    assert_eq!(facts[1].ranges, content.actions[1].metadata.bindings);
+}
+
+#[test]
+fn opencode_jsonl_does_not_gain_sqlite_document_proof() {
+    let (_, content) = jsonl_content("opencode", SourceFormat::OpenCodeJsonl, OPENCODE);
+    assert!(skill_facts(&content).is_empty());
+}
+
+#[test]
+fn matched_native_failure_keeps_error_status_and_exact_result_range() {
+    for (version, entrypoint) in [
+        ("2.1.278", None),
+        ("2.1.278", Some("cli")),
+        ("2.1.309", Some("cli")),
+    ] {
+        let mut records = parsed_records(CLAUDE);
+        for record in &mut records {
+            record["version"] = json!(version);
+            if let Some(entrypoint) = entrypoint {
+                record["entrypoint"] = json!(entrypoint);
+            } else {
+                record.as_object_mut().unwrap().remove("entrypoint");
+            }
+        }
+        records[1]["toolUseResult"]["success"] = json!(false);
+        records[1]["message"]["content"][0]["is_error"] = json!(true);
+        records[1]["message"]["content"][0]["content"] = json!("Skill permission denied.");
+        let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
+        let facts = skill_facts(&content);
+        assert_eq!(
+            facts[1].status,
+            JevRecordedSkillStatus::Failed,
+            "version {version}, entrypoint {entrypoint:?}"
+        );
+        assert_eq!(facts[1].state, JevOperationState::Error);
+        let action = &content.actions[1];
+        assert_eq!(facts[1].ranges[0].pointer, "/message/content/0/content");
+        assert_eq!(facts[1].ranges[0].end, action.text.len());
+        for change in 0..4 {
+            let mut changed = action.clone();
+            match change {
+                0 => changed.metadata.bindings.clear(),
+                1 => changed.reference.native_record_id = Some("other-record".into()),
+                2 => changed.tool_call_id = Some("other-call".into()),
+                _ => changed.metadata.bindings[0].end -= 1,
+            }
+            assert!(!facts[1].matches_action(&changed, content.source_format));
+        }
+    }
+}
+
+#[test]
+fn opencode_partial_and_unbound_documents_do_not_gain_selection_status() {
+    for case in 0..8 {
+        let mut native = parsed_records(OPENCODE);
+        match case {
+            0 => {
+                native[0]["state"]["metadata"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("name");
+            }
+            1 => native[0]["state"]["status"] = json!("running"),
+            2 => native[0]["state"]["metadata"]["truncated"] = json!(true),
+            3 => native[0]["state"]["time"]["compacted"] = json!(1767225602000i64),
+            4 => native[0]["metadata"] = json!({"providerExecuted":true}),
+            5 => native[0]["state"]["output"] = json!("Loaded review successfully."),
+            6 => native[0]["state"]["input"]["name"] = json!("alias-review"),
+            _ => native[0]["state"]["metadata"]["dir"] = json!("/synthetic/other"),
+        }
+        let (_temporary, store, content) = opencode_content(&native[0]);
+        store.with_connection(|connection| {
+            let accepted: i64 = connection.query_row(
+                "SELECT count(*) FROM turn_content WHERE json_extract(normalized_fields_json, '$.metadata.recorded_skill_result.status') = 'document_selected'",
+                [], |row| row.get(0)).unwrap();
+            assert_eq!(accepted, 0, "adapter case {case}");
+        });
+        assert!(
+            skill_facts(&content)
+                .iter()
+                .all(|fact| fact.status != JevRecordedSkillStatus::DocumentSelected),
+            "case {case}"
+        );
+    }
+}
+
+#[test]
+fn timestamps_do_not_replace_native_positions() {
+    let mut records = parsed_records(CLAUDE);
+    records[0].as_object_mut().unwrap().remove("timestamp");
+    let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
+    assert_eq!(content.actions[0].timestamp_ms, None);
+    assert_eq!(content.actions[0].reference.turn_index, 0);
+    records = parsed_records(CLAUDE);
+    records[1]["timestamp"] = json!("2026-01-01T00:00:00Z");
+    let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
+    assert!(content.actions[0].timestamp_ms > content.actions[1].timestamp_ms);
+    assert!(content.actions[0].reference.turn_index < content.actions[1].reference.turn_index);
+}
+
+#[test]
+fn selected_skill_queries_keep_session_and_publication_fences() {
+    for agent in [AgentKind::Codex, AgentKind::Pi] {
+        let input = selected_skill_input(agent);
+        let store = store(&input);
+        let content = selected(&store, &input.agent, input.source_format, "root", 1);
+        assert_eq!(skill_facts(&content).len(), 1);
+        assert_eq!(content.publication_fence, 1);
+        assert!(
+            selected(
+                &store,
+                &input.agent,
+                input.source_format,
+                "other-session",
+                1
+            )
+            .actions
+            .is_empty()
+        );
+        assert!(
+            selected(&store, &input.agent, input.source_format, "root", 2)
+                .actions
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn selected_document_proof_keeps_requested_status_and_requires_selected_fields() {
     for agent in [AgentKind::Codex, AgentKind::Pi] {
         let input = selected_skill_input(agent);
         let store = store(&input);
@@ -1301,276 +522,92 @@ fn persisted_selection_requires_equivalence_comparison_without_human_authority_o
             .actions
             .iter_mut()
             .find(|action| action.metadata.recorded_skill_result.is_some())
-            .expect("parse, store, query, and selection retain typed skill proof");
+            .unwrap();
         assert_ne!(action.authority, "user");
-        action.authority = "unknown".into();
-        let snapshot =
-            SkillUseSnapshot::from_published_content(&content, &boundary(&content, agent)).unwrap();
-        assert_eq!(snapshot.events().len(), 1, "{content:?}");
-        assert_eq!(
-            snapshot.events()[0].lifecycle,
-            SkillUseLifecycle::DocumentSelected
-        );
-        let plan = matching_plan(&store, &content, agent);
-        let comparison = &plan.prepared.comparisons[0];
-        assert!(comparison.absence_assessable);
-        assert_eq!(
-            comparison.use_eligibility.absence,
-            SkillAbsenceEvidence::SelectedWindowNoMatchingUse
-        );
-        assert!(comparison.use_eligibility.equivalent_comparison_required);
-        assert_eq!(comparison.used_current_skills[0].identity, "review-file");
-        assert_eq!(
-            comparison.use_citations,
-            vec![snapshot.events()[0].reference.clone()]
-        );
-        assert!(plan.work_items.is_empty());
-        assert_eq!(plan.skipped_item_ids.len(), 1);
-        assert!(plan.shared_context.is_none());
-        assert!(plan.coverage.processing_limit_reached);
-    }
-}
-
-#[test]
-fn incomplete_or_mismatched_persisted_selection_keeps_typed_use_limits() {
-    for agent in [AgentKind::Codex, AgentKind::Pi] {
-        let input = selected_skill_input(agent);
-        let store = store(&input);
-        let original = selected(&store, &input.agent, input.source_format, "root", 1);
-        for case in 0..12 {
-            let mut content = original.clone();
-            if case == 0 {
-                content.complete = false;
-            } else {
-                let action = content
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.metadata.recorded_skill_result.is_some())
-                    .expect("published selected-skill proof");
-                match case {
-                    1 => action.truncated = true,
-                    2 => action.reference.stable = false,
-                    3 => action.metadata.bindings.clear(),
-                    4 => action.metadata.recorded_skill_result = None,
-                    _ => {
-                        let proof = action.metadata.recorded_skill_result.as_mut().unwrap();
-                        match case {
-                            5 => proof.complete = false,
-                            6 => proof.session_id = Some("other-session".into()),
-                            7 => proof.message_id = Some("other-message".into()),
-                            8 => proof.name = Some("other-skill".into()),
-                            9 => proof.text_digest = "wrong-content-digest".into(),
-                            10 => proof.source_format = SourceFormat::OpenCodeJsonl,
-                            _ => proof.ranges[0].end -= 1,
-                        }
-                    }
-                }
-            }
-            let usage =
-                SkillUseSnapshot::from_published_content(&content, &boundary(&content, agent))
-                    .unwrap();
-            if case == 8 {
-                assert_eq!(usage.events().len(), 1);
-                assert_eq!(
-                    usage.events()[0].lifecycle,
-                    SkillUseLifecycle::DocumentSelected
-                );
-                assert!(
-                    matches!(&usage.events()[0].skill, RecordedSkillIdentity::Document { name, .. } if name == "other-skill")
-                );
-            } else {
-                assert!(
-                    usage.events().iter().all(|event| !matches!(
-                        event.lifecycle,
-                        SkillUseLifecycle::DocumentSelected | SkillUseLifecycle::Succeeded
-                    )),
-                    "{agent:?} case {case}"
-                );
-            }
-            assert!(!usage.proves_session_wide_absence());
-            let plan = matching_plan(&store, &content, agent);
-            if plan.prepared.comparisons.is_empty() {
-                assert!(plan.work_items.is_empty(), "{agent:?} case {case}");
-                assert!(plan.shared_context.is_none(), "{agent:?} case {case}");
-                assert_eq!(plan.coverage.selected_items, 0, "{agent:?} case {case}");
-                assert!(
-                    plan.coverage
-                        .limitations
-                        .contains(&"skill_use_context_partial".into()),
-                    "{agent:?} case {case}"
-                );
-                continue;
-            }
-            if case == 8 {
-                assert!(plan.prepared.comparisons[0].used_current_skills.is_empty());
-                assert!(
-                    !plan.prepared.comparisons[0]
-                        .use_eligibility
-                        .equivalent_comparison_required
-                );
-                assert!(plan.prepared.comparisons[0].use_citations.is_empty());
-            }
-            if case == 0 {
-                assert!(!plan.prepared.comparisons[0].work_context_assessable);
-                assert!(
-                    plan.coverage
-                        .limitations
-                        .contains(&"selected_work_content_incomplete".into())
-                );
-                assert!(plan.work_items.is_empty());
-                assert_eq!(plan.skipped_item_ids.len(), 1);
-                assert!(plan.shared_context.is_none());
-                assert!(plan.coverage.processing_limit_reached);
-            }
-        }
-    }
-}
-
-#[test]
-fn selected_proof_preserves_requested_status_and_excludes_unselected_ranges() {
-    use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
-    use antiburn_local::analysis::jev_evidence::JevRecordedSkillStatus;
-    let input = selected_skill_input(AgentKind::Codex);
-    let store = store(&input);
-    let mut content = selected(&store, &input.agent, input.source_format, "root", 1);
-    let proof = content
-        .actions
-        .iter_mut()
-        .find_map(|action| action.metadata.recorded_skill_result.as_mut())
-        .unwrap();
-    proof.status = JevRecordedSkillStatus::Requested;
-    assert!(content.actions.iter().all(|action| {
+        assert!(action.metadata.human_text.is_none());
         action
             .metadata
-            .selected(JevInputSelection::from_fields(&[
-                JevInputField::OtherToolOutput,
-            ]))
             .recorded_skill_result
-            .is_none()
-    }));
-    let snapshot =
-        SkillUseSnapshot::from_published_content(&content, &boundary(&content, AgentKind::Codex))
-            .unwrap();
-    assert_eq!(snapshot.events()[0].lifecycle, SkillUseLifecycle::Requested);
-    let plan = matching_plan(&store, &content, AgentKind::Codex);
-    assert!(plan.work_items.is_empty());
-    assert_eq!(plan.skipped_item_ids.len(), 1);
-    assert!(plan.shared_context.is_none());
-    assert!(plan.coverage.processing_limit_reached);
-    assert!(
-        plan.prepared.comparisons[0]
-            .use_eligibility
-            .equivalent_comparison_required
-    );
-    assert_eq!(
-        plan.prepared.comparisons[0].used_current_skills[0].name,
-        "review"
-    );
-}
-
-#[test]
-fn codex_wrapper_without_selected_skill_producer_tag_is_not_recorded_use() {
-    let (_, content) = jsonl_content("codex", SourceFormat::CodexRolloutJsonl, CODEX);
-    assert!(
-        content
-            .actions
-            .iter()
-            .all(|action| action.metadata.selected_skill.is_none())
-    );
-    assert_eq!(matching_candidates(&content, AgentKind::Codex), 1);
-    let usage =
-        SkillUseSnapshot::from_published_content(&content, &boundary(&content, AgentKind::Codex))
-            .unwrap();
-    assert!(usage.events().is_empty());
-}
-
-#[test]
-fn opencode_codex_and_pi_publish_equivalent_document_selection() {
-    use antiburn_local::analysis::jev_evidence::JevRecordedSkillStatus;
-    let native = parsed_records(OPENCODE);
-    let (_temporary, opencode_store, opencode) = opencode_content(&native[0]);
-    let codex_input = selected_skill_input(AgentKind::Codex);
-    let codex_store = store(&codex_input);
-    let pi_input = selected_skill_input(AgentKind::Pi);
-    let pi_store = store(&pi_input);
-    let mut expected_fact = None;
-    let mut expected_event = None;
-    for (agent, store, content) in [
-        (AgentKind::OpenCode, opencode_store, opencode),
-        (
-            AgentKind::Codex,
-            Arc::clone(&codex_store),
-            selected(&codex_store, "codex", codex_input.source_format, "root", 1),
-        ),
-        (
-            AgentKind::Pi,
-            Arc::clone(&pi_store),
-            selected(&pi_store, "pi", pi_input.source_format, "root", 1),
-        ),
-    ] {
+            .as_mut()
+            .unwrap()
+            .status = JevRecordedSkillStatus::Requested;
+        assert_eq!(
+            skill_facts(&content)[0].status,
+            JevRecordedSkillStatus::Requested
+        );
+        let excluded = select_session_content(
+            &content,
+            JevInputSelection::from_fields(&[JevInputField::OtherToolOutput]),
+        );
         assert!(
-            content
+            excluded
                 .actions
                 .iter()
-                .all(|action| action.metadata.selected_skill.is_none())
+                .all(|action| action.metadata.recorded_skill_result.is_none())
         );
-        let fact = content
-            .actions
-            .iter()
-            .find_map(|action| {
-                action
-                    .metadata
-                    .recorded_skill_result
-                    .as_ref()
-                    .filter(|fact| fact.status == JevRecordedSkillStatus::DocumentSelected)
-            })
-            .expect("source adapter publishes generic document selection");
-        let normalized = (
-            fact.identity,
-            fact.name.clone(),
-            fact.location.clone(),
-            fact.state,
-            fact.status,
-            fact.complete,
-            fact.truncated,
-        );
-        if let Some(expected) = &expected_fact {
-            assert_eq!(&normalized, expected, "{agent:?}");
-        } else {
-            expected_fact = Some(normalized);
-        }
-        let snapshot =
-            SkillUseSnapshot::from_published_content(&content, &boundary(&content, agent)).unwrap();
-        let event = snapshot
-            .events()
-            .iter()
-            .find(|event| event.lifecycle == SkillUseLifecycle::DocumentSelected)
-            .unwrap();
-        let normalized = (event.skill.clone(), event.lifecycle);
-        if let Some(expected) = &expected_event {
-            assert_eq!(&normalized, expected, "{agent:?}");
-        } else {
-            expected_event = Some(normalized);
-        }
-        let plan = matching_plan(&store, &content, agent);
-        assert_eq!(
-            plan.prepared.comparisons[0].used_current_skills[0].name,
-            "review"
-        );
-        assert!(
-            plan.prepared.comparisons[0]
-                .use_eligibility
-                .equivalent_comparison_required
-        );
-        assert!(plan.work_items.is_empty());
-        assert_eq!(plan.skipped_item_ids.len(), 1);
-        assert!(plan.shared_context.is_none());
-        assert!(plan.coverage.processing_limit_reached);
+        assert!(content.actions.iter().all(|action| {
+            action
+                .metadata
+                .selected(JevInputSelection::NONE)
+                .recorded_skill_result
+                .is_none()
+        }));
     }
 }
 
 #[test]
-fn pi_quoted_empty_and_incomplete_wrappers_are_not_recorded_use() {
+fn compatibility_names_and_paths_remain_inferred_requests() {
+    for input in [
+        json!({"name":"review"}),
+        json!({"skill_name":"review"}),
+        json!({"skillName":"review"}),
+        json!({"command":"/review extra"}),
+        json!({"path":"/synthetic/skills/review/SKILL.md"}),
+    ] {
+        let mut records = parsed_records(CLAUDE);
+        records[0]["message"]["content"][0]["input"] = input;
+        let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
+        let facts = skill_facts(&content);
+        assert_eq!(
+            facts[0].identity,
+            JevRecordedSkillIdentityKind::InferredName
+        );
+        assert_eq!(facts[0].name.as_deref(), Some("review"));
+        assert_eq!(facts[0].status, JevRecordedSkillStatus::Requested);
+        assert_eq!(facts[1].status, JevRecordedSkillStatus::Unknown);
+    }
+    let mut records = parsed_records(CLAUDE);
+    records[0]["message"]["content"][0]["input"] = json!({"skill":"review","name":"different"});
+    let (_, content) = jsonl_content("claude", SourceFormat::ClaudeJsonl, &jsonl(&records));
+    assert_eq!(
+        skill_facts(&content)[0].identity,
+        JevRecordedSkillIdentityKind::Unknown
+    );
+}
+
+#[test]
+fn codex_missing_producer_tag_and_invalid_wrappers_do_not_prove_selection() {
+    let (_, content) = jsonl_content("codex", SourceFormat::CodexRolloutJsonl, CODEX);
+    assert!(skill_facts(&content).is_empty());
+    for text in [
+        "<skill>\n<name>review</name>\n<path>/synthetic/SKILL.md</path>\n\n</skill>",
+        "Quoted: <skill>\n<name>review</name>\n<path>/synthetic/SKILL.md</path>\nFull body.\n</skill>",
+        "<skill>\n<name>review</name>\nListing only.\n</skill>",
+    ] {
+        let mut records = codex_skill_records();
+        records[1]["payload"]["content"][0]["text"] = json!(text);
+        let (_, content) =
+            jsonl_content("codex", SourceFormat::CodexRolloutJsonl, &jsonl(&records));
+        assert!(skill_facts(&content).is_empty(), "{text}");
+    }
+    let mut records = codex_skill_records();
+    records[1]["payload"]["role"] = json!("assistant");
+    let (_, content) = jsonl_content("codex", SourceFormat::CodexRolloutJsonl, &jsonl(&records));
+    assert!(skill_facts(&content).is_empty());
+}
+
+#[test]
+fn pi_quoted_empty_and_incomplete_wrappers_do_not_prove_selection() {
     for text in [
         "Quoted: <skill name=\"review\" location=\"/synthetic/skills/review/SKILL.md\">\nReferences are relative to /synthetic/skills/review.\n\nReview resources.\n</skill>",
         "<skill name=\"review\" location=\"/synthetic/skills/review/SKILL.md\">\nReferences are relative to /synthetic/skills/review.\n\n\n</skill>",
@@ -1581,10 +618,6 @@ fn pi_quoted_empty_and_incomplete_wrappers_are_not_recorded_use() {
             json!({"type":"message","id":"pi-invalid","parentId":null,"timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":[{"type":"text","text":text}]}}),
         ];
         let (_, content) = jsonl_content("pi", SourceFormat::PiV3Jsonl, &jsonl(&records));
-        assert_eq!(matching_candidates(&content, AgentKind::Pi), 1, "{text}");
-        let usage =
-            SkillUseSnapshot::from_published_content(&content, &boundary(&content, AgentKind::Pi))
-                .unwrap();
-        assert!(usage.events().is_empty(), "{text}");
+        assert!(skill_facts(&content).is_empty(), "{text}");
     }
 }

@@ -1,0 +1,6 @@
+{"type":"session.created.1","data":{"sessionID":"facts","info":{"id":"facts"}}}
+{"type":"message.updated.1","data":{"sessionID":"facts","info":{"id":"user-1","sessionID":"facts","role":"user","model":{"providerID":"other-provider","modelID":"other-selection"}}}}
+{"type":"message.updated.1","data":{"sessionID":"facts","info":{"id":"assistant-1","sessionID":"facts","role":"assistant","parentID":"user-1","providerID":"anthropic","modelID":"claude-test","path":{"cwd":"/synthetic/project/src","root":"/synthetic/project"}}}}
+{"type":"message.part.updated.1","data":{"sessionID":"facts","part":{"id":"step-1","messageID":"assistant-1","sessionID":"facts","type":"step-start","snapshot":"synthetic-snapshot"}}}
+{"type":"message.part.updated.1","data":{"sessionID":"facts","part":{"id":"part-1","messageID":"assistant-1","sessionID":"facts","type":"tool","callID":"custom-read-1","tool":"read","state":{"status":"running","input":{"filePath":"api.rs"},"time":{"start":1000}}}}}
+{"type":"message.part.updated.1","data":{"sessionID":"facts","part":{"id":"part-1","messageID":"assistant-1","sessionID":"facts","type":"tool","callID":"custom-read-1","tool":"read","state":{"status":"completed","input":{"filePath":"api.rs"},"output":"synthetic remote file content","title":"","metadata":{"truncated":false},"time":{"start":1000,"end":1001}}}}}

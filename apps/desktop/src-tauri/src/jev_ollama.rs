@@ -3,21 +3,34 @@
 use std::time::Duration;
 
 use antiburn_local::analysis::jev::{
-    JevRequest, JevResponse, MAX_RESPONSE_BYTES,
-    capabilities::{CapabilityLimit, CapabilitySource, ModelCapabilities, TokenizerIdentity},
-    validate_jev_request_with_capabilities, validate_jev_response_with_capabilities,
+    JevError, JevRequest, JevResponse, JevUsage, JevUsageLocation, MAX_RESPONSE_BYTES,
+    capabilities::{
+        CapabilityLimit, CapabilitySource, ModelCapabilities,
+        SystemOneCategoricalOutputCapabilities, SystemOneOutputCapabilities, TokenizerIdentity,
+    },
+    decode_jev_json_with_usage, validate_jev_request_with_capabilities,
+    validate_jev_response_with_capabilities,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const MAX_REQUEST_BODY_BYTES: usize = crate::jev::config::OLLAMA_MAX_REQUEST_BODY_BYTES;
 pub const DEFAULT_LOCAL_CONCURRENCY: usize = 4;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+const IDENTITY_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_DISCOVERY_BODY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_INSTALLED_MODELS: usize = 1024;
 
 fn inference_slots() -> &'static tokio::sync::Semaphore {
     static SLOTS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     SLOTS.get_or_init(|| tokio::sync::Semaphore::new(DEFAULT_LOCAL_CONCURRENCY))
+}
+
+async fn acquire_inference_slot() -> Result<tokio::sync::SemaphorePermit<'static>, OllamaError> {
+    let acquire = inference_slots().acquire();
+    #[cfg(test)]
+    let acquire = test_hooks::observe_inference_slot_pending(acquire);
+    acquire.await.map_err(|_| OllamaError::ProviderUnavailable)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,7 +39,6 @@ pub enum OllamaError {
     OldVersion,
     MissingModel,
     UnsupportedRunner,
-    ColdLoad,
     ContextRejected,
     RequestBodyTooLarge,
     AuthenticationRejected,
@@ -43,8 +55,9 @@ impl std::fmt::Display for OllamaError {
             Self::InvalidBaseUrl => "Invalid Ollama base URL",
             Self::OldVersion => "Ollama must be version 0.35.0 or newer",
             Self::MissingModel => "The selected Ollama model is not installed",
-            Self::UnsupportedRunner => "The Ollama model does not support System One decisions",
-            Self::ColdLoad => "The Ollama model is not loaded; retry after it loads",
+            Self::UnsupportedRunner => {
+                "This Ollama model is not supported. Select an installed local System One model"
+            }
             Self::ContextRejected => "The Ollama model rejected the request context",
             Self::RequestBodyTooLarge => "Ollama text requests cannot exceed 64 KiB",
             Self::AuthenticationRejected => "Ollama rejected the configured authentication",
@@ -59,11 +72,20 @@ impl std::fmt::Display for OllamaError {
 
 impl std::error::Error for OllamaError {}
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OllamaClient {
     base_url: String,
     api_key: Option<std::sync::Arc<str>>,
     http: reqwest::Client,
+}
+
+impl std::fmt::Debug for OllamaClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OllamaClient")
+            .field("connection", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -71,6 +93,12 @@ pub struct DiscoveredModel {
     pub name: String,
     pub digest: Option<String>,
     pub capabilities: ModelCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstalledOllamaModel {
+    pub id: String,
+    pub label: String,
 }
 
 impl OllamaClient {
@@ -122,15 +150,177 @@ impl OllamaClient {
         format!("{}/v1/systemone", self.base_url)
     }
 
+    pub async fn list_installed_models(&self) -> Result<Vec<InstalledOllamaModel>, OllamaError> {
+        let tags: TagsResponse = self.get_json("/api/tags").await?;
+        if tags.models.len() > MAX_INSTALLED_MODELS {
+            return Err(OllamaError::ResponseTooLarge);
+        }
+        let mut names = std::collections::BTreeSet::new();
+        let mut models = Vec::new();
+        for tag in tags.models {
+            if remote_model(
+                &tag.name,
+                tag.remote_model.as_deref(),
+                tag.remote_host.as_deref(),
+            ) {
+                continue;
+            }
+            if !valid_model_digest(&tag.digest)
+                || !crate::jev::config::valid_model_name(&tag.name)
+                || !names.insert(tag.name.clone())
+            {
+                return Err(OllamaError::ResponseDecode);
+            }
+            models.push(InstalledOllamaModel {
+                id: tag.name.clone(),
+                label: tag.name,
+            });
+        }
+        Ok(models)
+    }
+
     pub async fn evaluate(
         &self,
         request: &JevRequest,
         capabilities: &ModelCapabilities,
     ) -> Result<JevResponse, OllamaError> {
-        let _permit = inference_slots()
-            .acquire()
+        let bytes = self.evaluate_bytes(request, capabilities).await?;
+        let decoded: JevResponse =
+            decode_jev_json_with_usage(&bytes, JevUsageLocation::Direct, |_| Ok(()))
+                .map_err(|_| OllamaError::ResponseDecode)?;
+        validate_jev_response_with_capabilities(&decoded, request, capabilities)
+            .map_err(|_| OllamaError::ResponseDecode)?;
+        Ok(decoded)
+    }
+
+    /// Records reported usage before decoding or validating typed answers.
+    pub async fn evaluate_with_usage(
+        &self,
+        request: &JevRequest,
+        capabilities: &ModelCapabilities,
+        record_usage: impl Fn(JevUsage) -> Result<(), JevError>,
+    ) -> Result<JevResponse, JevError> {
+        self.evaluate_with_usage_cancellable(request, capabilities, || false, || {}, record_usage)
             .await
-            .map_err(|_| OllamaError::ProviderUnavailable)?;
+    }
+
+    /// Checks cancellation before inference send.
+    /// Reports possible inference delivery after local admission and identity checks.
+    pub(crate) async fn evaluate_with_usage_cancellable(
+        &self,
+        request: &JevRequest,
+        capabilities: &ModelCapabilities,
+        is_cancelled: impl Fn() -> bool,
+        on_send: impl FnOnce(),
+        record_usage: impl Fn(JevUsage) -> Result<(), JevError>,
+    ) -> Result<JevResponse, JevError> {
+        if is_cancelled() {
+            return Err(JevError::Cancelled);
+        }
+        let _permit = acquire_inference_slot().await.map_err(jev_error)?;
+        if is_cancelled() {
+            return Err(JevError::Cancelled);
+        }
+        let builder = self
+            .evaluation_request(request, capabilities)
+            .map_err(jev_error)?;
+        if is_cancelled() {
+            return Err(JevError::Cancelled);
+        }
+        let identity = self
+            .verify_pre_send_identity(&request.model, capabilities)
+            .await;
+        if is_cancelled() {
+            return Err(JevError::Cancelled);
+        }
+        identity.map_err(jev_error)?;
+        on_send();
+        let bytes = Self::send_evaluation(builder, capabilities)
+            .await
+            .map_err(jev_error)?;
+        let decoded = decode_jev_json_with_usage(&bytes, JevUsageLocation::Direct, record_usage)?;
+        validate_jev_response_with_capabilities(&decoded, request, capabilities)?;
+        Ok(decoded)
+    }
+
+    async fn evaluate_bytes(
+        &self,
+        request: &JevRequest,
+        capabilities: &ModelCapabilities,
+    ) -> Result<Vec<u8>, OllamaError> {
+        let _permit = acquire_inference_slot().await?;
+        let builder = self.evaluation_request(request, capabilities)?;
+        self.verify_pre_send_identity(&request.model, capabilities)
+            .await?;
+        Self::send_evaluation(builder, capabilities).await
+    }
+
+    // This read rejects known tag changes. A tag can still change after the read.
+    async fn verify_pre_send_identity(
+        &self,
+        model: &str,
+        capabilities: &ModelCapabilities,
+    ) -> Result<(), OllamaError> {
+        let expected = capabilities
+            .model_revision
+            .as_deref()
+            .filter(|digest| valid_model_digest(digest))
+            .ok_or(OllamaError::UnsupportedRunner)?;
+        if capabilities.model != model || !crate::jev::config::valid_model_name(model) {
+            return Err(OllamaError::UnsupportedRunner);
+        }
+        let read_tags = async {
+            let mut request = self.http.get(format!("{}/api/tags", self.base_url));
+            if let Some(key) = &self.api_key {
+                request = request.bearer_auth(key.as_ref());
+            }
+            let response = request
+                .send()
+                .await
+                .map_err(|_| OllamaError::ProviderUnavailable)?;
+            if matches!(response.status().as_u16(), 401 | 403) {
+                return Err(OllamaError::AuthenticationRejected);
+            }
+            // A metadata failure cannot make inference delivery or usage uncertain.
+            decode_json::<TagsResponse>(response)
+                .await
+                .map_err(|_| OllamaError::ProviderUnavailable)
+        };
+        let tags = tokio::time::timeout(IDENTITY_CHECK_TIMEOUT, read_tags)
+            .await
+            .map_err(|_| OllamaError::ProviderUnavailable)??;
+        if tags.models.len() > MAX_INSTALLED_MODELS {
+            return Err(OllamaError::ProviderUnavailable);
+        }
+        let identity = canonical_model_name(model);
+        let mut matching = tags
+            .models
+            .iter()
+            .filter(|tag| canonical_model_name(&tag.name) == identity);
+        let tag = matching.next().ok_or(OllamaError::MissingModel)?;
+        if matching.next().is_some()
+            || !crate::jev::config::valid_model_name(&tag.name)
+            || !valid_model_digest(&tag.digest)
+        {
+            return Err(OllamaError::ProviderUnavailable);
+        }
+        if tag.digest != expected
+            || remote_model(
+                &tag.name,
+                tag.remote_model.as_deref(),
+                tag.remote_host.as_deref(),
+            )
+        {
+            return Err(OllamaError::UnsupportedRunner);
+        }
+        Ok(())
+    }
+
+    fn evaluation_request(
+        &self,
+        request: &JevRequest,
+        capabilities: &ModelCapabilities,
+    ) -> Result<reqwest::RequestBuilder, OllamaError> {
         validate_jev_request_with_capabilities(request, capabilities)
             .map_err(|_| OllamaError::InvalidRequest)?;
         let body = serde_json::to_vec(request).map_err(|_| OllamaError::InvalidRequest)?;
@@ -145,37 +335,61 @@ impl OllamaClient {
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key.as_ref());
         }
+        Ok(builder)
+    }
+
+    async fn send_evaluation(
+        builder: reqwest::RequestBuilder,
+        capabilities: &ModelCapabilities,
+    ) -> Result<Vec<u8>, OllamaError> {
         let response = builder.send().await.map_err(|error| {
-            if error.is_connect() {
+            if error.is_builder() {
+                OllamaError::InvalidRequest
+            } else if error.is_connect() {
                 OllamaError::ProviderUnavailable
             } else {
                 OllamaError::RequestOutcomeUnknown
             }
         })?;
         let status = response.status();
-        let bytes = read_bounded(response, MAX_RESPONSE_BYTES).await?;
+        let maximum = capabilities
+            .response_body_bytes
+            .value
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(MAX_RESPONSE_BYTES)
+            .min(MAX_RESPONSE_BYTES);
+        let bytes = read_bounded(response, maximum).await?;
         if !status.is_success() {
             return Err(classify_error(status.as_u16(), &bytes));
         }
-        let decoded: JevResponse =
-            serde_json::from_slice(&bytes).map_err(|_| OllamaError::ResponseDecode)?;
-        validate_jev_response_with_capabilities(&decoded, request, capabilities)
-            .map_err(|_| OllamaError::ResponseDecode)?;
-        Ok(decoded)
+        Ok(bytes)
     }
 
-    pub async fn discover_ready(&self, model: &str) -> Result<DiscoveredModel, OllamaError> {
-        let discovered = self.discover(model).await?;
-        if discovered.capabilities.total_input_tokens.value.is_some() {
+    /// Load a verified model once if its effective input limits remain unknown.
+    pub async fn discover_ready(
+        &self,
+        discovered: DiscoveredModel,
+    ) -> Result<DiscoveredModel, OllamaError> {
+        if (discovered.capabilities.usable_input_tokens().is_some()
+            && discovered.capabilities.usable_state_tokens().is_some())
+            || discovered.capabilities.output == SystemOneOutputCapabilities::default()
+        {
             return Ok(discovered);
         }
+        let _permit = acquire_inference_slot().await?;
+        self.verify_pre_send_identity(&discovered.name, &discovered.capabilities)
+            .await?;
         let _: serde_json::Value = self
             .post_json(
                 "/api/generate",
-                &serde_json::json!({"model": model, "prompt": "", "stream": false}),
+                &serde_json::json!({"model": discovered.name, "prompt": "", "stream": false}),
             )
             .await?;
-        self.discover(model).await
+        let ready = self.discover(&discovered.name).await?;
+        if ready.name != discovered.name || ready.digest != discovered.digest {
+            return Err(OllamaError::UnsupportedRunner);
+        }
+        Ok(ready)
     }
 
     pub async fn discover(&self, model: &str) -> Result<DiscoveredModel, OllamaError> {
@@ -192,9 +406,26 @@ impl OllamaClient {
         else {
             return Err(OllamaError::MissingModel);
         };
+        if remote_model(
+            &tag.name,
+            tag.remote_model.as_deref(),
+            tag.remote_host.as_deref(),
+        ) {
+            return Err(OllamaError::UnsupportedRunner);
+        }
+        if tag.digest.trim().is_empty() {
+            return Err(OllamaError::UnsupportedRunner);
+        }
         let show: ShowResponse = self
             .post_json("/api/show", &serde_json::json!({"model": model}))
             .await?;
+        if remote_model(
+            model,
+            show.remote_model.as_deref(),
+            show.remote_host.as_deref(),
+        ) {
+            return Err(OllamaError::UnsupportedRunner);
+        }
         if !show
             .capabilities
             .iter()
@@ -203,12 +434,22 @@ impl OllamaClient {
             return Err(OllamaError::UnsupportedRunner);
         }
         let ps: PsResponse = self.get_json("/api/ps").await?;
+        if ps.models.iter().any(|entry| {
+            canonical_model_name(&entry.name) == identity
+                && remote_model(
+                    &entry.name,
+                    entry.remote_model.as_deref(),
+                    entry.remote_host.as_deref(),
+                )
+        }) {
+            return Err(OllamaError::UnsupportedRunner);
+        }
         let loaded = ps.models.iter().find(|entry| {
             canonical_model_name(&entry.name) == identity
                 && entry
                     .digest
                     .as_ref()
-                    .is_none_or(|digest| digest == &tag.digest)
+                    .is_some_and(|digest| digest == &tag.digest)
         });
         let configured_context = show.parameters.as_deref().and_then(parse_num_ctx);
         let loaded_context = loaded.and_then(|entry| entry.context_length);
@@ -238,6 +479,7 @@ impl OllamaClient {
             CapabilitySource::ProviderMetadata
         };
         let mut capabilities = ModelCapabilities {
+            output: verified_output_support(&version.version, &show)?,
             total_input_tokens: cap.map_or_else(CapabilityLimit::unknown, |value| {
                 CapabilityLimit::known(value, source)
             }),
@@ -369,11 +611,12 @@ fn classify_error(status: u16, body: &[u8]) -> OllamaError {
         .unwrap_or_default();
     if status == 401 || status == 403 {
         OllamaError::AuthenticationRejected
-    } else if message.contains("not found") || message.contains("pull") {
+    } else if status == 404 && (message.contains("not found") || message.contains("pull")) {
         OllamaError::MissingModel
-    } else if message.contains("decision")
-        || message.contains("runner")
-        || message.contains("unsupported")
+    } else if status == 400
+        && (message.contains("decision")
+            || message.contains("runner")
+            || message.contains("unsupported"))
     {
         OllamaError::UnsupportedRunner
     } else if status == 400
@@ -386,14 +629,29 @@ fn classify_error(status: u16, body: &[u8]) -> OllamaError {
                 && message.contains("input is never truncated")))
     {
         OllamaError::ContextRejected
-    } else if message.contains("load") || message.contains("memory") {
-        OllamaError::ColdLoad
     } else if status == 413 {
         OllamaError::RequestBodyTooLarge
     } else if status == 400 || status == 422 {
         OllamaError::InvalidRequest
     } else {
-        OllamaError::ProviderUnavailable
+        OllamaError::RequestOutcomeUnknown
+    }
+}
+
+pub(crate) fn jev_error(error: OllamaError) -> JevError {
+    match error {
+        OllamaError::AuthenticationRejected => JevError::AuthenticationRejected,
+        OllamaError::RequestOutcomeUnknown => JevError::RequestOutcomeUnknown,
+        OllamaError::ResponseTooLarge => JevError::ResponseTooLarge,
+        OllamaError::ResponseDecode => JevError::ResponseDecode,
+        OllamaError::ContextRejected => JevError::ContextRejected,
+        OllamaError::InvalidBaseUrl
+        | OllamaError::InvalidRequest
+        | OllamaError::RequestBodyTooLarge => JevError::InvalidRequestSchema,
+        OllamaError::OldVersion | OllamaError::MissingModel | OllamaError::UnsupportedRunner => {
+            JevError::UnsupportedModel
+        }
+        OllamaError::ProviderUnavailable => JevError::ProviderUnavailable,
     }
 }
 
@@ -417,6 +675,18 @@ fn canonical_model_name(name: &str) -> String {
         ),
     };
     format!("{host}/{namespace}/{model}:{tag}")
+}
+
+fn valid_model_digest(digest: &str) -> bool {
+    !digest.trim().is_empty() && digest.len() <= 256 && !digest.chars().any(char::is_control)
+}
+
+fn remote_model(name: &str, remote_model: Option<&str>, remote_host: Option<&str>) -> bool {
+    remote_model.is_some_and(|value| !value.trim().is_empty())
+        || remote_host.is_some_and(|value| !value.trim().is_empty())
+        || name
+            .rsplit_once(':')
+            .is_some_and(|(_, tag)| tag == "cloud" || tag.ends_with("-cloud"))
 }
 
 fn version_at_least(version: &str, minimum: (u64, u64, u64)) -> bool {
@@ -445,6 +715,10 @@ struct TagsResponse {
 struct TagModel {
     name: String,
     digest: String,
+    #[serde(default)]
+    remote_model: Option<String>,
+    #[serde(default)]
+    remote_host: Option<String>,
 }
 #[derive(Deserialize)]
 struct PsResponse {
@@ -457,9 +731,17 @@ struct PsModel {
     digest: Option<String>,
     #[serde(default)]
     context_length: Option<u64>,
+    #[serde(default)]
+    remote_model: Option<String>,
+    #[serde(default)]
+    remote_host: Option<String>,
 }
 #[derive(Deserialize)]
 struct ShowResponse {
+    #[serde(default)]
+    remote_model: Option<String>,
+    #[serde(default)]
+    remote_host: Option<String>,
     #[serde(default)]
     capabilities: Vec<String>,
     #[serde(default)]
@@ -472,6 +754,65 @@ struct ShowResponse {
     system: Option<String>,
     #[serde(default)]
     modelfile: Option<String>,
+}
+
+fn verified_output_support(
+    version: &str,
+    show: &ShowResponse,
+) -> Result<SystemOneOutputCapabilities, OllamaError> {
+    if version.strip_prefix('v').unwrap_or(version) != "0.40.1" {
+        return Ok(SystemOneOutputCapabilities::default());
+    }
+    let info = show.model_info.as_ref();
+    let encoding = info.and_then(|info| {
+        info.get("decision.type").or_else(|| {
+            let architecture = info.get("general.architecture")?.as_str()?;
+            info.get(format!("{architecture}.decision.type"))
+        })
+    });
+    if encoding.is_some_and(|value| !value.is_string()) {
+        return Ok(SystemOneOutputCapabilities::default());
+    }
+    let encoding = encoding.and_then(serde_json::Value::as_str);
+    let renderer = show.modelfile.as_deref().and_then(|modelfile| {
+        modelfile.lines().find_map(|line| {
+            let mut fields = line.split_whitespace();
+            (fields.next()? == "RENDERER")
+                .then(|| fields.next())
+                .flatten()
+        })
+    });
+    let encoding = encoding
+        .filter(|encoding| !encoding.is_empty())
+        .or(renderer);
+    let maximum =
+        match encoding {
+            Some("tev1") => 24,
+            Some("clef") => 26,
+            Some("strands") => return Ok(SystemOneOutputCapabilities::default()),
+            Some(_) => return Err(OllamaError::UnsupportedRunner),
+            None if show.modelfile.as_deref().is_some_and(|modelfile| {
+                modelfile.lines().any(|line| line.starts_with("FROM "))
+            }) && info
+                .and_then(|info| info.get("general.architecture"))
+                .and_then(serde_json::Value::as_str)
+                .is_some() =>
+            {
+                26
+            }
+            None => return Ok(SystemOneOutputCapabilities::default()),
+        };
+    let categorical = SystemOneCategoricalOutputCapabilities {
+        probabilities: true,
+        confidence: true,
+        minimum_criteria: 2,
+        maximum_criteria: maximum,
+    };
+    Ok(SystemOneOutputCapabilities {
+        choice: Some(categorical),
+        score: Some(categorical),
+        noul: true,
+    })
 }
 
 // Pin the native Qwen3.5 template returned for the characterized Tev GGUF.
@@ -550,11 +891,358 @@ fn verified_chat_envelope(show: &ShowResponse) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[path = "jev_ollama/preflight_tests.rs"]
+mod preflight_tests;
+
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::future::{Future, poll_fn};
+    use std::sync::Arc;
+
+    tokio::task_local! {
+        static INFERENCE_SLOT_PENDING: Arc<dyn Fn() + Send + Sync>;
+    }
+
+    pub(crate) async fn hold_inference_slots() -> tokio::sync::SemaphorePermit<'static> {
+        super::inference_slots()
+            .acquire_many(super::DEFAULT_LOCAL_CONCURRENCY as u32)
+            .await
+            .unwrap()
+    }
+
+    pub(crate) async fn with_inference_slot_pending<T>(
+        on_pending: impl Fn() + Send + Sync + 'static,
+        run: impl Future<Output = T>,
+    ) -> T {
+        INFERENCE_SLOT_PENDING
+            .scope(Arc::new(on_pending), run)
+            .await
+    }
+
+    pub(super) async fn observe_inference_slot_pending<T>(acquire: impl Future<Output = T>) -> T {
+        let mut on_pending = INFERENCE_SLOT_PENDING.try_with(Arc::clone).ok();
+        tokio::pin!(acquire);
+        poll_fn(|cx| {
+            let result = acquire.as_mut().poll(cx);
+            if result.is_pending()
+                && let Some(on_pending) = on_pending.take()
+            {
+                on_pending();
+                // Test the permit-release race before the outer cancellation timer can poll.
+                return acquire.as_mut().poll(cx);
+            }
+            result
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use antiburn_local::analysis::jev::{JevQuestion, PINNED_MODEL};
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    fn transport_capabilities() -> ModelCapabilities {
+        ModelCapabilities {
+            model_revision: Some("synthetic-digest".into()),
+            ..ModelCapabilities::jev_default()
+        }
+    }
+
+    fn reply_to_identity_check(listener: &std::net::TcpListener, credential: Option<&str>) {
+        use std::io::{Read, Write};
+
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut received = Vec::new();
+        loop {
+            let mut buffer = [0; 4096];
+            let count = socket.read(&mut buffer).unwrap();
+            assert!(count > 0);
+            received.extend_from_slice(&buffer[..count]);
+            assert!(received.len() < 8192);
+            if received.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let headers = String::from_utf8(received).unwrap().to_ascii_lowercase();
+        assert!(headers.starts_with("get /api/tags http/1.1\r\n"));
+        match credential {
+            Some(credential) => {
+                assert!(headers.contains(&format!("authorization: bearer {credential}")))
+            }
+            None => assert!(!headers.contains("authorization:")),
+        }
+        let body =
+            json!({"models": [{"name": PINNED_MODEL, "digest": "synthetic-digest"}]}).to_string();
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn remote_model_classification_uses_metadata_and_explicit_cloud_tags() {
+        for name in ["clef:cloud", "library/clef:cloud", "model:120b-cloud"] {
+            assert!(remote_model(name, None, None));
+        }
+        assert!(remote_model("renamed:latest", Some("clef:cloud"), None));
+        assert!(remote_model(
+            "renamed:latest",
+            None,
+            Some("https://remote.example")
+        ));
+        for name in ["clef", "clef:latest", "clef:9b", "cloud-local:latest"] {
+            assert!(!remote_model(name, None, None));
+            assert!(!remote_model(name, Some(""), Some("")));
+        }
+        assert_eq!(
+            jev_error(OllamaError::UnsupportedRunner),
+            JevError::UnsupportedModel
+        );
+    }
+
+    #[tokio::test]
+    async fn installed_model_lookup_reads_only_tags_and_excludes_remote_models() {
+        let body = json!({"models": [
+            {"name": "selected:9b", "digest": "local-digest"},
+            {"name": "completion-model:latest", "digest": "other-local-digest"},
+            {"name": "clef:cloud", "digest": "remote-digest"},
+            {"name": "model:120b-cloud", "digest": "remote-digest"},
+            {"name": "renamed:latest", "digest": "remote-digest", "remote_model": "clef:cloud"},
+            {"name": "hosted:latest", "digest": "remote-digest", "remote_host": "https://remote.example"}
+        ]}).to_string();
+        for credential in [None, Some("synthetic-token")] {
+            let models = lookup_mock_models(200, body.clone(), None, credential, false)
+                .await
+                .unwrap();
+            assert_eq!(
+                models,
+                vec![
+                    InstalledOllamaModel {
+                        id: "selected:9b".into(),
+                        label: "selected:9b".into()
+                    },
+                    InstalledOllamaModel {
+                        id: "completion-model:latest".into(),
+                        label: "completion-model:latest".into()
+                    },
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn installed_model_lookup_distinguishes_empty_metadata_and_bounded_failures() {
+        for body in [
+            json!({"models": []}),
+            json!({"models": [{"name": "clef:cloud", "digest": "remote"}]}),
+        ] {
+            assert!(
+                lookup_mock_models(200, body.to_string(), None, None, false)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        for (body, expected) in [
+            ("not json".into(), OllamaError::ProviderUnavailable),
+            (json!({"models": {}}).to_string(), OllamaError::ProviderUnavailable),
+            (json!({"models": [{"name": "local:latest"}]}).to_string(), OllamaError::ProviderUnavailable),
+            (json!({"models": [{"name": "local:latest", "digest": ""}]}).to_string(), OllamaError::ResponseDecode),
+            (json!({"models": [{"name": "bad name", "digest": "digest"}]}).to_string(), OllamaError::ResponseDecode),
+            (json!({"models": [{"name": "local:latest", "digest": "digest\n"}]}).to_string(), OllamaError::ResponseDecode),
+            (json!({"models": [{"name": "local:latest", "digest": "digest"}, {"name": "local:latest", "digest": "other"}]}).to_string(), OllamaError::ResponseDecode),
+        ] {
+            assert_eq!(lookup_mock_models(200, body, None, None, false).await, Err(expected));
+        }
+        assert_eq!(
+            lookup_mock_models(401, "{}".into(), None, Some("synthetic-token"), false).await,
+            Err(OllamaError::AuthenticationRejected)
+        );
+        assert_eq!(
+            lookup_mock_models(
+                200,
+                String::new(),
+                Some(MAX_DISCOVERY_BODY_BYTES + 1),
+                None,
+                false
+            )
+            .await,
+            Err(OllamaError::ResponseTooLarge)
+        );
+        assert_eq!(
+            lookup_mock_models(200, String::new(), None, None, true).await,
+            Err(OllamaError::ProviderUnavailable)
+        );
+        for count in [MAX_INSTALLED_MODELS, MAX_INSTALLED_MODELS + 1] {
+            let body = json!({"models": (0..count).map(|index| json!({"name": format!("local:{index}"), "digest": "synthetic-digest"})).collect::<Vec<_>>()}).to_string();
+            let result = lookup_mock_models(200, body, None, None, false).await;
+            if count == MAX_INSTALLED_MODELS {
+                assert_eq!(result.unwrap().len(), count);
+            } else {
+                assert_eq!(result, Err(OllamaError::ResponseTooLarge));
+            }
+        }
+    }
+
+    async fn lookup_mock_models(
+        status: u16,
+        body: String,
+        content_length: Option<usize>,
+        credential: Option<&str>,
+        stall: bool,
+    ) -> Result<Vec<InstalledOllamaModel>, OllamaError> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let client = OllamaClient::with_timeouts(
+                &format!("http://{}/ollama", listener.local_addr().unwrap()),
+                credential.map(str::to_owned), Duration::from_secs(1),
+                if stall { Duration::from_millis(50) } else { Duration::from_secs(2) },
+            ).unwrap();
+            let credential = credential.map(str::to_owned);
+            let (done, completed) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                    assert!(request.len() <= 8192);
+                    if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") { break; }
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(request.starts_with("get /ollama/api/tags http/1.1\r\n"));
+                assert!(!request.contains("typesafe-danger-zone-long-context:"));
+                match credential {
+                    Some(secret) => assert!(request.contains(&format!("authorization: bearer {secret}"))),
+                    None => assert!(!request.contains("authorization:")),
+                }
+                if stall {
+                    completed.await.unwrap();
+                    return;
+                }
+                socket.write_all(format!("HTTP/1.1 {status} Mock\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", content_length.unwrap_or(body.len())).as_bytes()).await.unwrap();
+                tokio::select! {
+                    extra = listener.accept() => panic!("Model lookup sent another request: {extra:?}"),
+                    _ = completed => {}
+                }
+            });
+            let result = client.list_installed_models().await;
+            done.send(()).unwrap();
+            server.await.unwrap();
+            result
+        }).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn mixed_blocks_use_one_unchanged_send_and_strict_decode_with_or_without_usage() {
+        use antiburn_local::analysis::jev::JevAnswer;
+        use std::io::{Read, Write};
+
+        let caps = transport_capabilities();
+        let request = JevRequest {
+            model: caps.model.clone(),
+            state: json!("synthetic evidence"),
+            questions: BTreeMap::from([
+                (
+                    "choice".into(),
+                    JevQuestion::Choice {
+                        instructions: json!("Pick one"),
+                        criteria: BTreeMap::from([
+                            ("yes".into(), json!("Yes")),
+                            ("no".into(), json!("No")),
+                        ]),
+                    },
+                ),
+                (
+                    "score".into(),
+                    JevQuestion::Score {
+                        instructions: json!("Rate it"),
+                        criteria: vec![json!("low"), json!("high")],
+                    },
+                ),
+                (
+                    "noul".into(),
+                    JevQuestion::Noul {
+                        instructions: json!("Does it apply?"),
+                        criteria: None,
+                    },
+                ),
+            ]),
+        };
+        let answers = r#"{"choice":{"type":"choice","choice":"yes","probabilities":{"yes":0.1,"no":0.9},"confidence":0.8},"score":{"type":"score","score":0.3,"legend":{"0":"low","1":"high"},"probabilities":{"0":0.9,"1":0.1},"confidence":0.8},"noul":{"type":"noul","noul":0.2}}"#;
+        let valid = format!(
+            r#"{{"model":"{}","answers":{answers},"usage":{{"input_tokens":12,"output_tokens":1}}}}"#,
+            caps.model
+        );
+        for with_usage in [true, false] {
+            for (body, expected, known_usage) in [
+                (valid.clone(), Ok(()), true),
+                (valid.replace(r#""noul":{"type":"noul","noul":0.2}"#, r#""noul":{"type":"noul","noul":0.2},"noul":{"type":"noul","noul":0.9}"#), Err(JevError::ResponseDecode), true),
+                (valid.replace(r#""0":0.9"#, r#""0":0.9,"0":0.1"#), Err(JevError::ResponseDecode), true),
+                (valid.replace(r#""0":"low""#, r#""0":"low","0":"high""#), Err(JevError::ResponseDecode), true),
+                (valid.replace(r#""input_tokens":12"#, r#""input_tokens":12,"input_tokens":99"#), Err(JevError::ResponseDecode), false),
+                (valid.replace(r#""usage":{"input_tokens":12,"output_tokens":1}"#, r#""usage":{"input_tokens":12,"output_tokens":1},"usage":{"input_tokens":99,"output_tokens":9}"#), Err(JevError::ResponseDecode), false),
+                (valid.replace(r#""noul":0.2"#, r#""noul":0.2,"confidence":0.9"#), Err(JevError::ResponseDecode), true),
+                (valid.replace(r#""0":0.9"#, r#""00":0.9"#), Err(JevError::InvalidScoreDistribution), true),
+                (valid.replace(r#""0":"low","1":"high""#, r#""0":"high","1":"low""#), Err(JevError::InvalidScoreDistribution), true),
+                (valid.replace(r#""score":0.3"#, r#""score":1.1"#), Err(JevError::InvalidScoreDistribution), true),
+            ] {
+                let expected_request = serde_json::to_vec(&request).unwrap();
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let endpoint = format!("http://{}", listener.local_addr().unwrap());
+                let server = std::thread::spawn(move || {
+                    reply_to_identity_check(&listener, None);
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut received = Vec::new();
+                    loop {
+                        let mut chunk = [0; 4096];
+                        let count = socket.read(&mut chunk).unwrap();
+                        assert!(count > 0);
+                        received.extend_from_slice(&chunk[..count]);
+                        if let Some(end) = received.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                            && received.len() >= end + 4 + expected_request.len() {
+                            assert!(String::from_utf8_lossy(&received[..end]).starts_with("POST /v1/systemone HTTP/1.1"));
+                            assert_eq!(&received[end + 4..], expected_request);
+                            break;
+                        }
+                    }
+                    write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                });
+                let calls = std::cell::Cell::new(0);
+                let client = OllamaClient::new(&endpoint, None).unwrap();
+                if with_usage {
+                    let actual = client.evaluate_with_usage(&request, &caps, |usage| {
+                        calls.set(calls.get() + 1);
+                        assert_eq!(usage, JevUsage { input_tokens: 12, output_tokens: 1 });
+                        Ok(())
+                    }).await;
+                    assert_eq!(actual.as_ref().map(|_| ()).map_err(Clone::clone), expected);
+                    assert_eq!(calls.get(), usize::from(known_usage));
+                    if let Ok(response) = actual {
+                        assert_eq!(response.answers.len(), 3);
+                        assert!(matches!(&response.answers["choice"], JevAnswer::Choice { choice, .. } if choice == "yes"));
+                        assert!(matches!(response.answers["score"], JevAnswer::Score { score, .. } if score == 0.3));
+                    }
+                } else {
+                    assert_eq!(client.evaluate(&request, &caps).await.map(|_| ()), expected.map_err(|_| OllamaError::ResponseDecode));
+                }
+                server.join().unwrap();
+            }
+        }
+    }
 
     #[test]
     fn tev1_accounting_requires_the_pinned_server_encoding_and_chat_template() {
@@ -621,6 +1309,150 @@ mod tests {
         }
     }
 
+    #[test]
+    fn output_support_requires_a_pinned_runner_and_verified_encoding() {
+        for (encoding, maximum) in [("tev1", 24), ("clef", 26)] {
+            let show: ShowResponse = serde_json::from_value(json!({
+                "capabilities": ["decision"], "model_info": {"decision.type": encoding}
+            }))
+            .unwrap();
+            let output = verified_output_support("0.40.1", &show).unwrap();
+            assert!(output.noul);
+            for categorical in [output.choice.unwrap(), output.score.unwrap()] {
+                assert!(categorical.probabilities && categorical.confidence);
+                assert_eq!(
+                    (categorical.minimum_criteria, categorical.maximum_criteria),
+                    (2, maximum)
+                );
+            }
+            for version in ["0.35.0", "0.40.2", "0.40.1-custom"] {
+                assert_eq!(
+                    verified_output_support(version, &show).unwrap(),
+                    Default::default()
+                );
+            }
+        }
+        let show: ShowResponse = serde_json::from_value(json!({
+            "capabilities": ["decision"], "model_info": {"decision.type": "unknown"}
+        }))
+        .unwrap();
+        assert_eq!(
+            verified_output_support("0.40.1", &show),
+            Err(OllamaError::UnsupportedRunner)
+        );
+        let show: ShowResponse =
+            serde_json::from_value(json!({"capabilities": ["decision"]})).unwrap();
+        assert_eq!(
+            verified_output_support("0.40.1", &show).unwrap(),
+            Default::default()
+        );
+        for encoding in [json!(null), json!(42), json!({"name": "tev1"})] {
+            let show: ShowResponse = serde_json::from_value(json!({
+                "capabilities": ["decision"], "modelfile": "FROM synthetic\n",
+                "model_info": {"general.architecture": "qwen35", "decision.type": encoding}
+            }))
+            .unwrap();
+            assert_eq!(
+                verified_output_support("0.40.1", &show).unwrap(),
+                Default::default()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reported_usage_precedes_ollama_answer_decode_and_validation() {
+        use std::io::{Read, Write};
+
+        let caps = transport_capabilities();
+        let request = JevRequest {
+            model: caps.model.clone(),
+            state: json!("synthetic"),
+            questions: BTreeMap::from([(
+                "q".into(),
+                JevQuestion::Noul {
+                    instructions: json!("Is the evidence sufficient?"),
+                    criteria: None,
+                },
+            )]),
+        };
+        for (answer, callback_error, expected) in [
+            (
+                json!({"type": "noul", "noul": "invalid"}),
+                false,
+                JevError::ResponseDecode,
+            ),
+            (
+                json!({"type": "noul", "noul": 1.5}),
+                false,
+                JevError::InvalidNoulProbability,
+            ),
+            (
+                json!({"type": "noul", "noul": 0.2}),
+                true,
+                JevError::ProgressStorageFailure,
+            ),
+        ] {
+            let body = json!({"model": caps.model, "answers": {"q": answer},
+                "usage": {"input_tokens": 12, "output_tokens": 1}})
+            .to_string();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                reply_to_identity_check(&listener, None);
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut bytes = [0; 4096];
+                assert!(socket.read(&mut bytes).unwrap() > 0);
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            });
+            let recorded = std::cell::Cell::new(0);
+            let actual = OllamaClient::new(&endpoint, None)
+                .unwrap()
+                .evaluate_with_usage(&request, &caps, |usage| {
+                    recorded.set(recorded.get() + 1);
+                    assert_eq!(
+                        usage,
+                        JevUsage {
+                            input_tokens: 12,
+                            output_tokens: 1
+                        }
+                    );
+                    if callback_error {
+                        Err(JevError::ProgressStorageFailure)
+                    } else {
+                        Ok(())
+                    }
+                })
+                .await;
+            assert_eq!(actual, Err(expected));
+            assert_eq!(recorded.get(), 1);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn uncertain_server_errors_are_not_safe_retries_and_debug_is_redacted() {
+        for status in [307, 408, 500, 503] {
+            for body in [
+                br#"{"error":"out of memory"}"#.as_slice(),
+                br#"{"error":"runner failed after scoring"}"#,
+            ] {
+                assert_eq!(
+                    classify_error(status, body),
+                    OllamaError::RequestOutcomeUnknown
+                );
+            }
+        }
+        let client =
+            OllamaClient::new("http://private.example/local", Some("secret".into())).unwrap();
+        assert!(!format!("{client:?}").contains("secret"));
+        assert!(!format!("{client:?}").contains("private.example"));
+    }
+
     #[tokio::test]
     async fn tev1_discovery_uses_runtime_context_and_measured_reserve_without_model_name_rules() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -679,17 +1511,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tev1_compact_comparisons_have_packer_and_transport_fit_parity_at_small_contexts() {
-        use antiburn_local::analysis::jev::{
-            JevInputWindow, JevWorkItem, estimate_jev_rendered_question_tokens,
-            pack_work_items_with_capabilities,
-        };
+    async fn direct_requests_and_transport_have_fit_parity_at_small_contexts() {
+        use antiburn_local::analysis::jev::{JevError, estimate_jev_rendered_question_tokens};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let client =
             OllamaClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
         let server = tokio::spawn(async move {
             for _ in 0..24 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut headers = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let count = socket.read(&mut buffer).await.unwrap();
+                    assert!(count > 0);
+                    headers.extend_from_slice(&buffer[..count]);
+                    assert!(headers.len() < 8192);
+                    if headers.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                assert!(
+                    String::from_utf8_lossy(&headers).starts_with("GET /api/tags HTTP/1.1\r\n")
+                );
+                let body =
+                    json!({"models": [{"name": PINNED_MODEL, "digest": "synthetic-digest"}]})
+                        .to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = Vec::new();
                 let request: JevRequest = loop {
@@ -713,8 +1561,9 @@ mod tests {
                     }
                 };
                 assert_eq!(request.questions.len(), 1);
-                assert!(request.questions.contains_key("q0_0"));
-                let response = json!({"model": request.model, "answers": {"q0_0": {"type": "noul", "noul": 0.9}},
+                assert!(request.questions.contains_key("decision"));
+                assert!(request.state.get("work_items").is_none());
+                let response = json!({"model": request.model, "answers": {"decision": {"type": "noul", "noul": 0.9}},
                     "usage": {"input_tokens": 100, "output_tokens": 1}}).to_string();
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
             }
@@ -759,7 +1608,7 @@ mod tests {
             (2050, "generic"),
         ] {
             let verified = profile != "unknown";
-            let mut limits = ModelCapabilities::jev_default();
+            let mut limits = transport_capabilities();
             limits.total_input_tokens =
                 CapabilityLimit::known(context, CapabilitySource::RuntimeMetadata);
             limits.state_and_longest_question_tokens = limits.total_input_tokens.clone();
@@ -779,12 +1628,9 @@ mod tests {
                 limits.rendering_reserve_tokens = 1024;
             }
             for (id, instructions, fields) in &cases {
-                let work = JevWorkItem {
-                    id: (*id).into(),
-                    window: JevInputWindow {
-                        fields: fields.clone(),
-                        evidence: vec![],
-                    },
+                let request = JevRequest {
+                    model: limits.model.clone(),
+                    state: fields.clone(),
                     questions: BTreeMap::from([(
                         "decision".into(),
                         JevQuestion::Noul {
@@ -793,34 +1639,27 @@ mod tests {
                         },
                     )]),
                 };
-                let packed =
-                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &limits);
-                assert!(packed.skipped_item_ids.is_empty(), "{id} {context}");
-                let request = &packed.batches[0].request;
+                assert!(
+                    validate_jev_request_with_capabilities(&request, &limits).is_ok(),
+                    "{id} {context}"
+                );
                 let tokens = if verified {
-                    estimate_jev_rendered_question_tokens(request, &limits).unwrap()
+                    estimate_jev_rendered_question_tokens(&request, &limits).unwrap()
                 } else {
-                    limits.estimate_text_tokens(&serde_json::to_string(request).unwrap())
+                    limits.estimate_text_tokens(&serde_json::to_string(&request).unwrap())
                 };
                 let mut exact = limits.clone();
                 exact.runtime_context_tokens.value = Some(tokens + exact.rendering_reserve_tokens);
-                assert!(validate_jev_request_with_capabilities(request, &exact).is_ok());
-                assert_eq!(
-                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &exact)
-                        .batches
-                        .len(),
-                    1
-                );
-                client.evaluate(request, &exact).await.unwrap();
+                assert!(validate_jev_request_with_capabilities(&request, &exact).is_ok());
+                client.evaluate(&request, &exact).await.unwrap();
                 exact.runtime_context_tokens.value =
                     Some(tokens + exact.rendering_reserve_tokens - 1);
-                assert!(
-                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &exact)
-                        .batches
-                        .is_empty()
-                );
+                assert!(matches!(
+                    validate_jev_request_with_capabilities(&request, &exact),
+                    Err(JevError::RequestTokenLimitExceeded { .. })
+                ));
                 assert_eq!(
-                    client.evaluate(request, &exact).await,
+                    client.evaluate(&request, &exact).await,
                     Err(OllamaError::InvalidRequest)
                 );
             }
@@ -867,15 +1706,18 @@ mod tests {
             OllamaClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
         let server = tokio::spawn(async move {
             let metadata = [
-                ("/api/version", json!({"version": "0.35.0"})),
+                ("/api/version", json!({"version": "0.40.1"})),
                 (
                     "/api/tags",
                     json!({"models": [{"name": "tev1:0.8b", "digest": "digest"}]}),
                 ),
-                ("/api/show", json!({"capabilities": ["decision"]})),
+                (
+                    "/api/show",
+                    json!({"capabilities": ["decision"], "model_info": {"decision.type": "tev1"}}),
+                ),
             ];
             let routes = metadata.clone().into_iter()
-                .chain([("/api/ps", json!({"models": []})), ("/api/generate", json!({"done": true}))])
+                .chain([("/api/ps", json!({"models": []})), metadata[1].clone(), ("/api/generate", json!({"done": true}))])
                 .chain(metadata)
                 .chain([("/api/ps", json!({"models": [{"name": "tev1:0.8b", "digest": "digest", "context_length": 4096}]}))]);
             for (route, body) in routes {
@@ -892,17 +1734,89 @@ mod tests {
                 socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
             }
         });
-        let discovered =
-            tokio::time::timeout(Duration::from_secs(5), client.discover_ready("tev1:0.8b"))
-                .await
-                .unwrap()
-                .unwrap();
+        let discovered = tokio::time::timeout(Duration::from_secs(5), async {
+            let discovered = client.discover("tev1:0.8b").await?;
+            client.discover_ready(discovered).await
+        })
+        .await
+        .unwrap()
+        .unwrap();
         server.await.unwrap();
         assert_eq!(
             discovered.capabilities.runtime_context_tokens.value,
             Some(4096)
         );
         assert_eq!(discovered.capabilities.usable_input_tokens(), Some(3072));
+    }
+
+    #[tokio::test]
+    async fn ready_discovery_uses_inference_slots_and_releases_them_on_cancellation() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client =
+            OllamaClient::new(&format!("http://{}", listener.local_addr().unwrap()), None).unwrap();
+        let discovered = DiscoveredModel {
+            name: "selected:latest".into(),
+            digest: Some("pinned-digest".into()),
+            capabilities: ModelCapabilities {
+                model: "selected:latest".into(),
+                model_revision: Some("pinned-digest".into()),
+                total_input_tokens: CapabilityLimit::unknown(),
+                state_and_longest_question_tokens: CapabilityLimit::unknown(),
+                ..ModelCapabilities::jev_default()
+            },
+        };
+        let permits = test_hooks::hold_inference_slots().await;
+        let pending = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&pending);
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(20),
+                test_hooks::with_inference_slot_pending(
+                    move || {
+                        observed.fetch_add(1, Ordering::AcqRel);
+                    },
+                    client.discover_ready(discovered.clone()),
+                ),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(pending.load(Ordering::Acquire), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+        drop(permits);
+        let load = tokio::spawn(async move { client.discover_ready(discovered).await });
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut request = [0; 4096];
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), socket.read(&mut request))
+                .await
+                .unwrap()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(
+            inference_slots().available_permits(),
+            DEFAULT_LOCAL_CONCURRENCY - 1
+        );
+        load.abort();
+        assert!(load.await.unwrap_err().is_cancelled());
+        assert_eq!(
+            inference_slots().available_permits(),
+            DEFAULT_LOCAL_CONCURRENCY
+        );
     }
 
     #[tokio::test]
@@ -1119,11 +2033,12 @@ mod tests {
                 },
             )]),
         };
-        let caps = ModelCapabilities::jev_default();
+        let caps = transport_capabilities();
         let body = serde_json::to_vec(&json!({"model":PINNED_MODEL,"answers":{"q":{"type":"noul","noul":0.2}},"usage":{"input_tokens":4,"output_tokens":1}})).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
+            reply_to_identity_check(&listener, None);
             let (mut socket, _) = listener.accept().unwrap();
             let mut buf = [0; 4096];
             let n = socket.read(&mut buf).unwrap();
@@ -1157,6 +2072,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
+            reply_to_identity_check(&listener, None);
             let (mut socket, _) = listener.accept().unwrap();
             let mut buffer = [0; 4096];
             let _ = socket.read(&mut buffer).unwrap();
@@ -1181,9 +2097,7 @@ mod tests {
             )]),
         };
         assert_eq!(
-            client
-                .evaluate(&request, &ModelCapabilities::jev_default())
-                .await,
+            client.evaluate(&request, &transport_capabilities()).await,
             Err(OllamaError::RequestOutcomeUnknown)
         );
         server.join().unwrap();
@@ -1215,6 +2129,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
+            reply_to_identity_check(&listener, Some("local-token"));
             let (mut socket, _) = listener.accept().unwrap();
             let mut buffer = [0; 4096];
             let count = socket.read(&mut buffer).unwrap();
@@ -1234,7 +2149,7 @@ mod tests {
         });
         let client = OllamaClient::new(&url, Some("local-token".to_owned())).unwrap();
         client
-            .evaluate(&request, &ModelCapabilities::jev_default())
+            .evaluate(&request, &transport_capabilities())
             .await
             .unwrap();
         server.join().unwrap();
@@ -1260,6 +2175,7 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (started, request_started) = tokio::sync::oneshot::channel();
         let server = std::thread::spawn(move || {
+            reply_to_identity_check(&listener, None);
             let (mut socket, _) = listener.accept().unwrap();
             started.send(()).unwrap();
             let mut buffer = [0; 4096];
@@ -1278,11 +2194,8 @@ mod tests {
                 },
             )]),
         };
-        let task = tokio::spawn(async move {
-            client
-                .evaluate(&request, &ModelCapabilities::jev_default())
-                .await
-        });
+        let task =
+            tokio::spawn(async move { client.evaluate(&request, &transport_capabilities()).await });
         tokio::time::timeout(Duration::from_secs(1), request_started)
             .await
             .unwrap()

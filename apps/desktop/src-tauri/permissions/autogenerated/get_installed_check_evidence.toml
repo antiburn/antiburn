@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-installed-check-evidence"
+description = "Enables the get_installed_check_evidence command without any pre-configured scope."
+commands.allow = ["get_installed_check_evidence"]
+
+[[permission]]
+identifier = "deny-get-installed-check-evidence"
+description = "Denies the get_installed_check_evidence command without any pre-configured scope."
+commands.deny = ["get_installed_check_evidence"]

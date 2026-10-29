@@ -79,8 +79,7 @@ SELECT bucket, COUNT(*), SUM(awaiting_provider_support), SUM(evidence_pending),
  ORDER BY bucket";
 
 pub(super) const COHORT_SQL: &str = "
-SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd,
-       s.incarnation, s.source_generation, s.source_fingerprint
+SELECT e.evidence_json, s.agent, s.session_id, e.published_fence, a.initial_context_json, s.cwd
   FROM session s
   JOIN session_evidence e
     ON e.environment_key = s.environment_key

@@ -20,6 +20,12 @@ A little free desktop app to check your sessions for the most common causes of t
 
 antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Devin (Windsurf), Pi, and Oh My Pi. See [supported agents](https://antiburn.com/docs/agents/supported-agents/) for what antiburn reads from each one, and the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
 
+## Agent plugin
+
+The [antiburn plugin page](plugins/README.md) describes the unified Claude Code
+plugin, its local development build, and the current distribution status.
+The plugin works independently of the desktop app.
+
 ## Checks
 
 Each check has a docs page explaining what it measures and how to fix it. The [config guides](https://antiburn.com/guides/) cover the Claude Code, Codex, and Pi settings behind most of them.
@@ -34,16 +40,51 @@ Each check has a docs page explaining what it measures and how to fix it. The [c
 - [Unused MCP servers](https://antiburn.com/docs/findings/unused-mcp-servers/) - MCPs are usually situational, just turn them on when you need them.
 - [Unused skills](https://antiburn.com/docs/findings/unused-skills/) - most of us have skills installed that cost tokens every session, but that we never use any more.
 
-Optional [Smart Burn Checks](docs/smart-burn-checks.md) review Ignored Instructions,
-Scope Creep, Over-exploring, and Skill Opportunities through Jev, Ollama,
-Cloudflare, or Custom. Each initially targets 50% of eligible targets, then
-continues the remaining work. This percentage is a target fraction, not model
-confidence. One scheduler rotates across all four checks, with target limits of
-8/4/3/4 per turn, respectively, and at most two provider dispatch attempts per
-turn including retries. Finite attempt limits persist across turns and restarts.
-Compatible answers require the exact decision context. Private thinking stays
-excluded; missing evidence and failed requests cannot produce a clean result.
-Hosted requests can incur charges.
+### Write your own checks with YAML
+
+[Burn Checks](docs/burn-check/README.md) let you define what to check in `.yml`
+files. Put a file in your project's `.antiburn/checks/` folder or use
+`~/.antiburn/checks/` for checks across projects. antiburn discovers the files,
+but does not run them until a configured connection is selected and **Run checks**
+is on. Check results appear in Checks. The repository includes five examples for
+exploration, task scope, instructions, skill guidance, and fast-mode advice.
+
+The `v1-alpha` runtime supports public user and assistant messages, tool calls
+and results, and response-cycle endings that recorded evidence can prove. A
+check can also run when antiburn attaches to a session or observes 120 seconds
+without source activity. Available events depend on the agent's recorded
+evidence; the app does not invent missing events. A check can set status with
+local rules or ask a compatible model a bounded question. See the
+[supported subset](docs/burn-check/authoring.md#supported-subset) for exact events
+and limits.
+
+Open **Settings → Checks → Model-based checks**, choose **Add connection**, and
+configure a supported System One connection: Jev, an Ollama endpoint that supports
+System One, Cloudflare, or Custom. Ordinary chat endpoints are not supported.
+The first connection becomes selected without enabling checks. Select **Use**
+for another saved connection, then enable **Run checks**. An optional **Test
+connection** sends synthetic input. Model requests can incur provider charges.
+Selected public text, tool results, and referenced current files can contain
+private data and can leave your device. Private thinking stays excluded.
+
+Alpha is experimental and can introduce breaking changes. It does not support
+message actions, effective session skill inventories, `repo.branch`, or proof
+of which instructions were active in the past. Beta and stable scope are not
+set. YAML checks do not provide Auto Fix, verification watches, or savings
+estimates. Read the [specification](docs/burn-check/specification.md) and its
+implementation limits before writing a check.
+
+YAML checks replace four fixed model-based detectors. Their old findings do not
+become YAML results. See [upgrade notes](docs/burn-check/README.md#upgrade-from-fixed-model-based-checks)
+for the history and settings changes.
+
+To help your coding agent author checks, install the
+[Burn Check authoring skill](.agents/skills/antiburn-checks/SKILL.md) with
+the [Skills CLI](https://skills.sh/docs):
+
+```sh
+npx skills add antiburn/antiburn --skill antiburn-checks
+```
 
 ## Install
 

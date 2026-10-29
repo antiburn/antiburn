@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::UiReadStore;
+use std::collections::BTreeSet;
 
 /// Per-provider token and cost totals derived from the sessions already on this
 /// machine.

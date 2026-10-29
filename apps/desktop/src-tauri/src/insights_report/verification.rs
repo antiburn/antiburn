@@ -2,6 +2,7 @@ use super::findings::{
     CurrentFindingSession, assess_current_detector, current_finding_session, finding_observation_ms,
 };
 use super::*;
+use antiburn_local::model_catalog::ModelCatalog;
 
 /// One fresh session assessment used by the generic remediation verifier.
 pub(crate) struct CurrentDetectorAssessment {

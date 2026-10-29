@@ -16,6 +16,10 @@ const settingLabels: Record<AutoFixReviewPayload["setting"], string> = {
 }
 
 const sideEffectDescriptions: Record<AutoFixReviewPayload["sideEffect"], string> = {
+  activeSessionsKeepTheirModel:
+    "This changes the default for future sessions. Active sessions keep their selected model.",
+  explicitSkillUseRemainsAvailable:
+    "This hides the skill from the model's skill list. Explicit skill use remains available.",
   modelBehaviorMayChange:
     "Responses can change when future requests use the replacement model.",
   responsesMayUseLessReasoning: "Future responses can use less reasoning.",
@@ -77,7 +81,7 @@ export function BurnCheckReviewDialog({
         className="w-full max-w-md rounded-control border border-separator bg-surface-card p-5 text-label shadow-raised"
       >
         <h4 id={titleId} className="type-title-3 text-label">
-          Review change
+          Confirm change
         </h4>
         <p className="mt-2 type-body font-semibold text-label">{title}</p>
         <p className="mt-1 type-body text-label-secondary">

@@ -1,0 +1,13 @@
+{"timestamp":"2026-10-07T10:00:00Z","type":"session_meta","payload":{"id":"facts","cli_version":"0.160.1","source":"cli","thread_source":"user","history_mode":"legacy","model_provider":"openai"}}
+{"timestamp":"2026-10-07T10:00:01Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_id":"facts","thread_settings":{"model":"gpt-test","model_provider_id":"openai","service_tier":"default"}}}
+{"timestamp":"2026-10-07T10:00:02Z","type":"turn_context","payload":{"turn_id":"turn-1","model":"gpt-test","cwd":"/synthetic/project"}}
+{"timestamp":"2026-10-07T10:00:03Z","type":"response_item","payload":{"type":"function_call","call_id":"standard-1","name":"spawn_agent","arguments":"{\"message\":\"Review the source\"}"}}
+{"timestamp":"2026-10-07T10:00:04Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_id":"facts","thread_settings":{"model":"gpt-test","model_provider_id":"openai","service_tier":"priority"}}}
+{"timestamp":"2026-10-07T10:00:05Z","type":"turn_context","payload":{"turn_id":"turn-2","model":"gpt-test","cwd":"/synthetic/project"}}
+{"timestamp":"2026-10-07T10:00:06Z","type":"response_item","payload":{"type":"function_call","call_id":"fast-2","name":"spawn_agent","arguments":"{\"message\":\"Review the source\"}"}}
+{"timestamp":"2026-10-07T10:00:07Z","type":"event_msg","payload":{"type":"thread_settings_applied","thread_id":"facts","thread_settings":{"model":"gpt-test","model_provider_id":"openai","service_tier":"default"}}}
+{"timestamp":"2026-10-07T10:00:08Z","type":"turn_context","payload":{"turn_id":"turn-3","model":"gpt-test","cwd":"/synthetic/project"}}
+{"timestamp":"2026-10-07T10:00:09Z","type":"response_item","payload":{"type":"function_call","call_id":"standard-3","name":"spawn_agent","arguments":"{\"message\":\"Review the source\"}"}}
+{"timestamp":"2026-10-07T10:00:10Z","type":"response_item","payload":{"type":"function_call_output","call_id":"standard-1","status":"completed","output":"first result"}}
+{"timestamp":"2026-10-07T10:00:11Z","type":"response_item","payload":{"type":"function_call_output","call_id":"fast-2","status":"completed","output":"second result"}}
+{"timestamp":"2026-10-07T10:00:12Z","type":"response_item","payload":{"type":"function_call_output","call_id":"standard-3","status":"completed","output":"third result"}}

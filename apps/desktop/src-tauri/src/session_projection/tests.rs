@@ -165,19 +165,24 @@ fn updated_rows_coalesce_by_session_and_merge_facets() {
     let plan = projector.pending.take();
     assert!(!plan.index_refresh);
     assert_eq!(plan.rows.len(), 2);
-    // Full identity order: "other" before "row".
-    assert_eq!(plan.rows[0].0, key("other"));
+    // Recent activity sorts first; a coalesced row keeps its original ticket.
+    assert_eq!(plan.rows[0].0, key("row"));
     assert_eq!(
         plan.rows[1],
         (
-            key("row"),
+            key("other"),
             PendingRow {
-                facets: facets(true, true),
-                at: 100,
-                seq: 2,
+                facets: facets(false, true),
+                at: 95,
+                seq: 3,
+                ticket: 2,
             }
         )
     );
+    assert_eq!(plan.rows[0].1.ticket, 1);
+    assert_eq!(plan.rows[0].1.facets, facets(true, true));
+    assert_eq!(plan.rows[0].1.seq, 2);
+    assert_eq!(plan.rows[0].1.at, 100);
     assert_eq!(plan.seq, 3);
 }
 
@@ -330,6 +335,7 @@ fn idle_relays_the_transition_and_queues_a_metadata_row() {
                 },
                 at: 200,
                 seq: 4,
+                ticket: 1,
             }
         )]
     );
@@ -513,6 +519,7 @@ fn an_update_during_a_load_retires_the_loading_row_and_merges_its_facets() {
             facets: facets(true, true),
             at: 120,
             seq: 3,
+            ticket: 1,
         },
         "the retired facets merge into the later projection"
     );
@@ -562,6 +569,7 @@ fn an_idle_during_a_load_retires_the_loading_row_too() {
             },
             at: 300,
             seq: 2,
+            ticket: 1,
         }
     );
     assert!(updated_ids(&projector.complete(loaded(&["a"]))).is_empty());
@@ -718,6 +726,7 @@ fn a_failed_load_gives_its_rows_back_once_then_becomes_one_refetch() {
             facets: facets(true, true),
             at: 110,
             seq: 3,
+            ticket: 2,
         },
         "the given-back facets merge with the newer change"
     );
@@ -725,7 +734,7 @@ fn a_failed_load_gives_its_rows_back_once_then_becomes_one_refetch() {
 
     // The retry loads the same keys; a second failure is one refetch, not
     // an unbounded loop.
-    assert_eq!(open(&mut projector), vec![key("a"), key("b")]);
+    assert_eq!(open(&mut projector), vec![key("b"), key("a")]);
     assert!(projector.in_flight.as_ref().unwrap().retried);
     let emissions = projector.complete(Err(anyhow::anyhow!("scripted load failure")));
     assert_eq!(
@@ -1237,6 +1246,66 @@ async fn a_deadline_that_passes_during_a_load_starts_the_next_batch_when_it_ends
     harness.loader.spin_until_completed(2);
     settle().await;
     assert_eq!(updated_ids(&harness.recorder.take()), vec!["b", "c"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn projection_owner_services_recent_rows_and_advances_the_oldest_ticket() {
+    let harness = start(
+        GatedLoader::with_rows(&[
+            "first", "old", "recent-a", "recent-b", "recent-c", "recent-d",
+        ]),
+        16,
+    );
+    harness.loader.hold();
+    harness.send(updated(1, "first", facets(true, false), 100));
+    settle().await;
+    tokio::time::advance(FLUSH_DELAY).await;
+    wait_until(|| harness.loader.requests().len() == 1).await;
+
+    // The first load remains the sole owner while this pending queue grows.
+    harness.send(updated(2, "old", facets(true, false), 10));
+    harness.send(updated(3, "recent-a", facets(true, false), 20));
+    harness.send(updated(4, "recent-b", facets(true, false), 30));
+    harness.send(updated(5, "recent-c", facets(true, false), 40));
+    harness.send(updated(6, "recent-d", facets(true, false), 50));
+    settle().await;
+    tokio::time::advance(FLUSH_DELAY).await;
+    settle().await;
+
+    harness.loader.allow(1);
+    harness.loader.spin_until_completed(1);
+    settle().await;
+    wait_until(|| harness.loader.requests().len() == 2).await;
+    assert_eq!(
+        harness.loader.requests()[1],
+        vec![
+            key("recent-d"),
+            key("recent-c"),
+            key("old"),
+            key("recent-b"),
+            key("recent-a"),
+        ],
+        "three recent rows run before the oldest outstanding ticket"
+    );
+    harness.loader.release();
+    harness.loader.spin_until_completed(2);
+    settle().await;
+    let emissions = harness.recorder.take();
+    assert_eq!(
+        updated_ids(&emissions),
+        vec![
+            "first", "old", "recent-a", "recent-b", "recent-c", "recent-d"
+        ]
+    );
+    let rows = emissions
+        .iter()
+        .filter_map(|emission| match emission {
+            Emission::Updated(row) => Some((row.session.session_id.as_str(), row.seq)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(rows.contains(&("old", 2)));
+    assert!(rows.contains(&("recent-d", 6)));
 }
 
 #[tokio::test(start_paused = true)]

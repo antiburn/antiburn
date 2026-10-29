@@ -530,6 +530,15 @@ fn assert_scope_resume_parity(records: &str) {
             resume: Default::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
+        native_evidence_json: Vec::new(),
+        native_evidence_complete: true,
+        native_admission_failure_json: None,
     };
     let mut resumed_sink = ScopeSink::default();
     for line in records.lines() {

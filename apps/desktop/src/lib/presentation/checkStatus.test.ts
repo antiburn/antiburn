@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest"
 import type { ChecksReportPayload } from "../insightsIpc"
 import {
   aggregateBurnCheckPresentation,
-  checkHasProvisionalResult,
   emptyBurnCheckPresentation,
   sessionBurnCheckPresentation,
 } from "./checkStatus"
@@ -42,10 +41,9 @@ function category(
   }
 }
 
-describe("provisional category results", () => {
-  it("does not turn activity into clean evidence or an assessed pass", () => {
-    const check = { ...category(0, 0, 3), checking: true }
-    expect(checkHasProvisionalResult(check)).toBe(true)
+describe("incomplete category results", () => {
+  it("does not turn pending evidence into an assessed pass", () => {
+    const check = category(0, 0, 3)
     expect(aggregateBurnCheckPresentation(report([check], false))).toMatchObject({
       counts: { failed: 0, passed: 0, unassessed: 1 },
       lifecycle: "processing",
@@ -53,12 +51,14 @@ describe("provisional category results", () => {
     })
     expect(check.clean).toBe(0)
     expect(check.lifecycle).toBeNull()
-    expect(checkHasProvisionalResult({ ...check, checking: false })).toBe(false)
-    expect(checkHasProvisionalResult({ ...check, finding: 1 })).toBe(false)
-    expect(checkHasProvisionalResult({ ...check, lifecycle: "awaitingVerification" })).toBe(
-      false,
-    )
-    expect(checkHasProvisionalResult({ ...check, lifecycle: "failing" })).toBe(false)
+  })
+
+  it("keeps confirmed passes visible while additional sessions are checking", () => {
+    const check = category(0, 3)
+    expect(aggregateBurnCheckPresentation(report([check], false))).toMatchObject({
+      counts: { failed: 0, passed: 1, unassessed: 0 },
+      evidenceComplete: false,
+    })
   })
 })
 
@@ -108,14 +108,14 @@ describe("sessionBurnCheckPresentation", () => {
   it("never describes an incomplete result as all passed", () => {
     const value = sessionBurnCheckPresentation(
       [
-        { status: "clean", title: "Instructions followed" },
-        { status: "checking", title: "Checking instructions" },
+        { status: "clean", title: "Session depth is within limits" },
+        { status: "notAssessed", title: "Model reasoning not assessed" },
       ],
       "ready",
     )
 
     expect(value.accessibleDescription).toBe(
-      "1 session burn check. 1 passed. Checking instructions. Evidence incomplete.",
+      "1 session burn check. 1 passed. Model reasoning not assessed. Evidence incomplete.",
     )
   })
 
@@ -131,6 +131,10 @@ describe("sessionBurnCheckPresentation", () => {
     const value = sessionBurnCheckPresentation([], lifecycle)
     expect(value.headline).toBe(expected)
     expect(value.compactPhrase).toEqual({ outcome: "status", text: expected })
+    if (lifecycle === "failed") {
+      expect(value.state).toBe("unavailable")
+      expect(value.indicator.kind).toBe("neutral")
+    }
   })
 
   it("preserves results and discloses stale, growing, and failed refreshes", () => {

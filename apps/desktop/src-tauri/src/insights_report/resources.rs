@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use antiburn_local::analysis::{
-    EvidenceValue, InitialContextBreakdown, SessionEvidence, SourceOrigin, ToolClass,
+    EvidenceValue, InitialContextBreakdown, SessionEvidence, SourceFormat, SourceOrigin, ToolClass,
 };
 use antiburn_local::insights::{
     DetectorId, DetectorSelection, EfficiencyReport, SessionTokenBurnEvidence,
@@ -44,9 +44,28 @@ pub(crate) enum ResourceAssessmentScope {
     Project(PathBuf),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum ResourceSourceKey {
+    Shared,
+    OpenCodeV1,
+    OpenCodeV2,
+    OpenCodeV2Export,
+}
+
+impl ResourceSourceKey {
+    fn name_key(self, name: &str) -> String {
+        if self == Self::OpenCodeV2 {
+            name.to_owned()
+        } else {
+            normalize_name(name)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ResourceTargetKey {
     agent: AgentKind,
+    source_key: ResourceSourceKey,
     kind: ResourceKind,
     normalized_name: String,
     scope: ResourceAssessmentScope,
@@ -63,6 +82,7 @@ pub(crate) struct ResourceSupportingSession {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnusedResourceTarget {
     pub agent: AgentKind,
+    pub source_format: SourceFormat,
     pub kind: ResourceKind,
     pub canonical_name: String,
     pub scope: ResourceAssessmentScope,
@@ -119,6 +139,7 @@ impl ResourceAssessment {
 #[derive(Debug, Clone)]
 struct CandidateState {
     resource: AdvisoryResource,
+    source_format: SourceFormat,
     scope: ResourceAssessmentScope,
     observations: u64,
     supporting_sessions: Vec<ResourceSupportingSession>,
@@ -133,6 +154,7 @@ enum CandidateMatch {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ResourceTurnKey {
     agent: AgentKind,
+    source_key: ResourceSourceKey,
     project_root: Option<PathBuf>,
     session_index: usize,
     context_tokens: u128,
@@ -154,6 +176,7 @@ enum ObservedIdentityKind {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ObservedUseKey {
     agent: AgentKind,
+    source_key: ResourceSourceKey,
     kind: ResourceKind,
     name: String,
     scope: ObservedScope,
@@ -164,6 +187,7 @@ struct ObservedUseKey {
 struct SessionContext<'a> {
     environment_key: &'a str,
     agent: AgentKind,
+    source_format: SourceFormat,
     session_id: &'a str,
     project_root: Option<&'a Path>,
     observed_at_ms: i64,
@@ -173,7 +197,8 @@ struct SessionContext<'a> {
 pub(crate) struct ResourceAssessmentBuilder {
     candidates: BTreeMap<ResourceTargetKey, CandidateState>,
     uses: BTreeMap<ObservedUseKey, Vec<ResourceSupportingSession>>,
-    session_samples: BTreeMap<(AgentKind, Option<PathBuf>), Vec<ResourceSupportingSession>>,
+    session_samples:
+        BTreeMap<(AgentKind, ResourceSourceKey, Option<PathBuf>), Vec<ResourceSupportingSession>>,
     limited: BTreeSet<(AgentKind, ResourceKind)>,
     scanned: BTreeSet<(AgentKind, ResourceKind)>,
     cohort_agents: BTreeSet<AgentKind>,
@@ -200,10 +225,21 @@ impl ResourceAssessmentBuilder {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn observe_inventory(
         &mut self,
         inventory: ResourceInventory,
         project_root: Option<&Path>,
+    ) {
+        let source_format = default_source_format(inventory.agent);
+        self.observe_inventory_for_source(inventory, project_root, source_format);
+    }
+
+    pub(crate) fn observe_inventory_for_source(
+        &mut self,
+        inventory: ResourceInventory,
+        project_root: Option<&Path>,
+        source_format: SourceFormat,
     ) {
         for kind in resource_kinds() {
             self.scanned.insert((inventory.agent, kind));
@@ -229,7 +265,7 @@ impl ResourceAssessmentBuilder {
                     continue;
                 }
             };
-            self.add_candidate(resource, scope, None);
+            self.add_candidate(resource, source_format, scope, None);
         }
     }
 
@@ -253,19 +289,26 @@ impl ResourceAssessmentBuilder {
         let context = SessionContext {
             environment_key,
             agent,
+            source_format: evidence.capabilities.source_format,
             session_id,
             project_root,
             observed_at_ms,
         };
         let sample = session_sample(&context);
         merge_samples(
-            self.session_samples.entry((agent, None)).or_default(),
+            self.session_samples
+                .entry((agent, source_key(context.source_format), None))
+                .or_default(),
             [sample.clone()],
         );
         if let Some(project_root) = project_root {
             merge_samples(
                 self.session_samples
-                    .entry((agent, Some(project_root.to_owned())))
+                    .entry((
+                        agent,
+                        source_key(context.source_format),
+                        Some(project_root.to_owned()),
+                    ))
                     .or_default(),
                 [sample],
             );
@@ -278,14 +321,22 @@ impl ResourceAssessmentBuilder {
                 }
                 (ResourceAssessmentScope::Project(_), None) => false,
             };
-            if key.agent != agent || !matching_scope {
+            if key.agent != agent
+                || key.source_key != source_key(context.source_format)
+                || !matching_scope
+            {
                 continue;
             }
             merge_samples(&mut state.supporting_sessions, [session_sample(&context)]);
         }
 
         self.observe_tool_uses(&context, evidence);
-        self.observe_context_sources(&context, evidence);
+        if context.source_format == SourceFormat::OpenCodeSqliteV2 {
+            self.mark_scan_failed(agent);
+            self.observe_context_source_uses(&context, evidence);
+        } else if context.source_format != SourceFormat::OpenCodeV2SessionExport {
+            self.observe_context_sources(&context, evidence);
+        }
         if let Some(initial_context) = initial_context {
             self.observe_initial_context(&context, initial_context);
         }
@@ -311,6 +362,7 @@ impl ResourceAssessmentBuilder {
         let context = SessionContext {
             environment_key,
             agent,
+            source_format: evidence.capabilities.source_format,
             session_id,
             project_root,
             observed_at_ms,
@@ -322,6 +374,7 @@ impl ResourceAssessmentBuilder {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn observe_turn(
         &mut self,
         agent: AgentKind,
@@ -329,8 +382,26 @@ impl ResourceAssessmentBuilder {
         session_index: usize,
         context_tokens: u128,
     ) {
+        self.observe_turn_for_source(
+            agent,
+            default_source_format(agent),
+            project_root,
+            session_index,
+            context_tokens,
+        );
+    }
+
+    pub(crate) fn observe_turn_for_source(
+        &mut self,
+        agent: AgentKind,
+        source_format: SourceFormat,
+        project_root: Option<&Path>,
+        session_index: usize,
+        context_tokens: u128,
+    ) {
         let key = ResourceTurnKey {
             agent,
+            source_key: source_key(source_format),
             project_root: project_root.map(Path::to_owned),
             session_index,
             context_tokens,
@@ -345,6 +416,7 @@ impl ResourceAssessmentBuilder {
             .or_insert(1);
     }
 
+    #[cfg(test)]
     pub(crate) fn observe_resource_estimates(
         &mut self,
         agent: AgentKind,
@@ -352,6 +424,29 @@ impl ResourceAssessmentBuilder {
         session_index: usize,
         evidence: &SessionTokenBurnEvidence,
     ) {
+        self.observe_resource_estimates_for_source(
+            agent,
+            default_source_format(agent),
+            project_root,
+            session_index,
+            evidence,
+        );
+    }
+
+    pub(crate) fn observe_resource_estimates_for_source(
+        &mut self,
+        agent: AgentKind,
+        source_format: SourceFormat,
+        project_root: Option<&Path>,
+        session_index: usize,
+        evidence: &SessionTokenBurnEvidence,
+    ) {
+        if matches!(
+            source_format,
+            SourceFormat::OpenCodeSqliteV2 | SourceFormat::OpenCodeV2SessionExport
+        ) {
+            return;
+        }
         for (kind, sources) in [
             (ResourceKind::McpServer, evidence.mcp_sources.as_ref()),
             (
@@ -371,6 +466,7 @@ impl ResourceAssessmentBuilder {
                 };
                 let key = ObservedUseKey {
                     agent,
+                    source_key: source_key(source_format),
                     kind,
                     name: source.name.clone(),
                     scope,
@@ -495,6 +591,7 @@ impl ResourceAssessmentBuilder {
                 }
                 assessment.targets.push(UnusedResourceTarget {
                     agent: key.agent,
+                    source_format: state.source_format,
                     kind,
                     canonical_name: state.resource.canonical_name.clone(),
                     scope: state.scope.clone(),
@@ -579,6 +676,7 @@ impl ResourceAssessmentBuilder {
     fn add_candidate(
         &mut self,
         resource: AdvisoryResource,
+        source_format: SourceFormat,
         scope: ResourceAssessmentScope,
         sample: Option<ResourceSupportingSession>,
     ) {
@@ -592,8 +690,9 @@ impl ResourceAssessmentBuilder {
         }
         let key = ResourceTargetKey {
             agent: resource.agent,
+            source_key: source_key(source_format),
             kind: resource.kind,
-            normalized_name: normalize_name(&resource.canonical_name),
+            normalized_name: source_key(source_format).name_key(&resource.canonical_name),
             scope: scope.clone(),
         };
         if !self.candidates.contains_key(&key)
@@ -620,15 +719,21 @@ impl ResourceAssessmentBuilder {
             .entry(key)
             .or_insert_with(|| CandidateState {
                 resource: resource.clone(),
+                source_format: canonical_source_format(resource.agent, source_format),
                 scope,
                 observations: 0,
                 supporting_sessions: Vec::new(),
             });
         let scope_samples = match &state.scope {
-            ResourceAssessmentScope::Global => self.session_samples.get(&(resource.agent, None)),
-            ResourceAssessmentScope::Project(root) => self
-                .session_samples
-                .get(&(resource.agent, Some(root.clone()))),
+            ResourceAssessmentScope::Global => {
+                self.session_samples
+                    .get(&(resource.agent, source_key(source_format), None))
+            }
+            ResourceAssessmentScope::Project(root) => self.session_samples.get(&(
+                resource.agent,
+                source_key(source_format),
+                Some(root.clone()),
+            )),
         };
         if let Some(samples) = scope_samples {
             merge_samples(&mut state.supporting_sessions, samples.iter().cloned());
@@ -756,6 +861,7 @@ impl ResourceAssessmentBuilder {
                         provenance: vec![crate::agent_config::ResourceProvenance::IndexedSession],
                         definition_tokens: None,
                     },
+                    context.source_format,
                     assessment_scope(&scope),
                     Some(sample),
                 );
@@ -798,6 +904,7 @@ impl ResourceAssessmentBuilder {
                     provenance: vec![crate::agent_config::ResourceProvenance::IndexedSession],
                     definition_tokens: Some(u64::from(definition.tokens)),
                 },
+                context.source_format,
                 ResourceAssessmentScope::Global,
                 Some(session_sample(context)),
             );
@@ -830,7 +937,13 @@ impl ResourceAssessmentBuilder {
                 if !source.invoked {
                     continue;
                 }
-                let Some(scope) = source_scope(&source.origin, context.project_root) else {
+                let Some(scope) =
+                    source_scope(&source.origin, context.project_root).or_else(|| {
+                        (context.source_format == SourceFormat::OpenCodeSqliteV2).then(|| {
+                            ObservedScope::Context(context.project_root.map(Path::to_owned))
+                        })
+                    })
+                else {
                     continue;
                 };
                 self.add_use(
@@ -936,6 +1049,7 @@ impl ResourceAssessmentBuilder {
         }
         let key = ObservedUseKey {
             agent: context.agent,
+            source_key: source_key(context.source_format),
             kind,
             name: name.to_owned(),
             scope,
@@ -956,6 +1070,7 @@ impl ResourceAssessmentBuilder {
             .keys()
             .filter(|candidate| {
                 candidate.agent == observed.agent
+                    && candidate.source_key == observed.source_key
                     && candidate.kind == observed.kind
                     && identity_matches(candidate, observed)
             })
@@ -999,6 +1114,12 @@ impl ResourceAssessmentBuilder {
         key: &ResourceTargetKey,
         state: &CandidateState,
     ) -> Option<BTreeMap<usize, u128>> {
+        if matches!(
+            state.source_format,
+            SourceFormat::OpenCodeSqliteV2 | SourceFormat::OpenCodeV2SessionExport
+        ) {
+            return None;
+        }
         if key.kind == ResourceKind::McpServer
             || (key.kind == ResourceKind::BuiltInTool
                 && matches!(key.agent, AgentKind::Claude | AgentKind::Codex))
@@ -1017,6 +1138,7 @@ impl ResourceAssessmentBuilder {
             BTreeMap::<usize, u128>::new(),
             |mut totals, (turn, count)| {
                 if turn.agent != key.agent
+                    || turn.source_key != key.source_key
                     || turn.context_tokens < u128::from(definition_tokens)
                     || !self.turn_applies(key, turn)
                 {
@@ -1057,6 +1179,7 @@ impl ResourceAssessmentBuilder {
             ResourceAssessmentScope::Global => !turn.project_root.as_ref().is_some_and(|root| {
                 self.candidates.keys().any(|candidate| {
                     candidate.agent == key.agent
+                        && candidate.source_key == key.source_key
                         && candidate.kind == key.kind
                         && candidate.normalized_name == key.normalized_name
                         && candidate.scope == ResourceAssessmentScope::Project(root.clone())
@@ -1089,7 +1212,7 @@ fn pinned_built_in_tokens(agent: AgentKind, name: &str) -> Option<u64> {
 
 fn identity_matches(candidate: &ResourceTargetKey, observed: &ObservedUseKey) -> bool {
     if observed.identity_kind == ObservedIdentityKind::ExactResource {
-        return candidate.normalized_name == normalize_name(&observed.name);
+        return candidate.normalized_name == candidate.source_key.name_key(&observed.name);
     }
     match candidate.kind {
         ResourceKind::BuiltInTool => {
@@ -1109,19 +1232,30 @@ fn identity_matches(candidate: &ResourceTargetKey, observed: &ObservedUseKey) ->
                         .rsplit_once(':')
                         .is_some_and(|(_, suffix)| suffix == observed))
         }
-        ResourceKind::McpServer => {
-            mcp_tool_matches(candidate.agent, &candidate.normalized_name, &observed.name)
-        }
+        ResourceKind::McpServer => mcp_tool_matches(
+            candidate.agent,
+            candidate.source_key,
+            &candidate.normalized_name,
+            &observed.name,
+        ),
     }
 }
 
-fn mcp_tool_matches(agent: AgentKind, server: &str, tool: &str) -> bool {
+fn mcp_tool_matches(agent: AgentKind, source: ResourceSourceKey, server: &str, tool: &str) -> bool {
     let tool = normalize_name(tool);
     match agent {
         AgentKind::Claude | AgentKind::Codex => tool
             .strip_prefix("mcp__")
             .and_then(|value| value.split_once("__"))
             .is_some_and(|(observed, _)| observed == server),
+        AgentKind::OpenCode if source == ResourceSourceKey::OpenCodeV2 => {
+            let namespace = normalize_name(&opencode_namespace(server));
+            tool.strip_prefix(&namespace).is_some_and(|suffix| {
+                suffix
+                    .strip_prefix('.')
+                    .is_some_and(|name| !name.is_empty())
+            })
+        }
         AgentKind::OpenCode => tool.starts_with(&format!("{server}_")),
         AgentKind::Pi => {
             let server = server
@@ -1143,6 +1277,59 @@ fn mcp_tool_matches(agent: AgentKind, server: &str, tool: &str) -> bool {
                 })
         }
         _ => false,
+    }
+}
+
+fn opencode_namespace(server: &str) -> String {
+    server
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub(super) fn source_key(source_format: SourceFormat) -> ResourceSourceKey {
+    match source_format {
+        SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1 => {
+            ResourceSourceKey::OpenCodeV1
+        }
+        SourceFormat::OpenCodeSqliteV2 => ResourceSourceKey::OpenCodeV2,
+        SourceFormat::OpenCodeV2SessionExport => ResourceSourceKey::OpenCodeV2Export,
+        _ => ResourceSourceKey::Shared,
+    }
+}
+
+pub(super) fn canonical_source_format(
+    agent: AgentKind,
+    source_format: SourceFormat,
+) -> SourceFormat {
+    match source_key(source_format) {
+        ResourceSourceKey::OpenCodeV1 => SourceFormat::OpenCodeJsonl,
+        ResourceSourceKey::OpenCodeV2 => SourceFormat::OpenCodeSqliteV2,
+        ResourceSourceKey::OpenCodeV2Export => SourceFormat::OpenCodeV2SessionExport,
+        ResourceSourceKey::Shared => default_source_format(agent),
+    }
+}
+
+fn default_source_format(agent: AgentKind) -> SourceFormat {
+    match agent {
+        AgentKind::Claude => SourceFormat::ClaudeJsonl,
+        AgentKind::Codex => SourceFormat::CodexRolloutJsonl,
+        AgentKind::Cursor => SourceFormat::CursorCliAgentJsonl,
+        AgentKind::Copilot => SourceFormat::CopilotIdeChatJson,
+        AgentKind::Cline => SourceFormat::ClineSessionJson,
+        AgentKind::OpenCode => SourceFormat::OpenCodeJsonl,
+        AgentKind::Kiro => SourceFormat::KiroSessionJson,
+        AgentKind::AmpCode => SourceFormat::AmpThreadJson,
+        AgentKind::Antigravity => SourceFormat::AntigravityBrainJsonl,
+        AgentKind::Windsurf => SourceFormat::DevinLocalSqlite,
+        AgentKind::Pi => SourceFormat::PiV3Jsonl,
+        AgentKind::Omp => SourceFormat::OmpV3Jsonl,
     }
 }
 

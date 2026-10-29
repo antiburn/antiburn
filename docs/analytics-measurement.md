@@ -1,7 +1,7 @@
 # Product analytics measurement contract
 
-Current Smart Check runtime audit: 2026-10-07. The historical foundation audit
-below was made on 2026-09-08 at `3ce2b1da`. This is a source audit, not an analysis of
+Current model-based check event contract: 2026-10-27. The historical foundation
+audit below was made on 2026-09-08 at `3ce2b1da`. This is a source audit, not an analysis of
 production event volumes. The collector, warehouse, release secrets, and live
 dashboards were not inspected. The findings below preserve the state at that
 revision. [analytics.md](analytics.md) is the catalog of implemented events.
@@ -57,6 +57,18 @@ details, DPI, content, and work identifiers. Reports segment at the first app
 version that includes this event.
 
 ## Coverage at the audited revision
+
+### OpenCode V2 source review (2026-10-20)
+
+V1 and V2 retain one `opencode` agent category. Existing session-open,
+session-filter, and visible-surface events cover use of their shared product
+surfaces. They do not distinguish source versions or measure live V2 connection
+success. Source binding, authentication, continuity, and schema diagnostics stay
+local. This is an intentional measurement gap: the event contract has no reviewed
+V2 connection event, and arbitrary YAML check IDs must not enter native check
+events. No session IDs, native IDs, source paths, endpoint URLs, registration
+credentials, or event payloads enter analytics. A future connection metric needs
+its own closed states, deduplication rule, and event review before instrumentation.
 
 The closed catalog had nine events. Envelope fields provided event IDs, rotating
 installation IDs, application analytics session IDs, capture and send times,
@@ -399,7 +411,7 @@ boundary; no historical event can be reclassified.
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Does deliberate Burn Checks use reach usable results? Improve discovery or report reliability.                                                                                           | Distinct reporting installations with `burn_checks` `ready`, `empty`, `error`, or `loading_timeout`, divided by installations with a user-origin `burn_checks` `surface_viewed`, on app versions from 2026-09-10 onward. | The main-window section is both selected and natively visible. `surface_viewed` uses `label=burn_checks`, `detail=user`. `surface_state_observed` uses `label=burn_checks`, the four existing state values, and `origin=user`. Ready requires a finding or clean result; an all-unassessed report is empty.                                                                                                                                                                     | Hidden sections, stale results, remounts, and refreshes do not create exposures. Each state occurs once per exposure. Maximum: one view and four state events per exposure.                                                                                                                                                                                                 |
 | Do readers proceed from Auto Fix review to confirmation, and what result follows? Improve review copy or operation reliability.                                                          | Confirmations divided by `burn_check_auto_fix_reviewed` with `detail=ready`; each typed completion outcome divided by confirmations. Allow in-flight and late-delivery time before finalizing.                           | A Fix request completes with review `detail`: `ready`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`. Apply selection emits `burn_check_auto_fix_confirmed`. Completion `detail`: `applied_awaiting_verification`, `applied_verification_unavailable`, `recovery_needed`, `stale`, `expired`, `conflict`, `unavailable`, or `failed`.                                                                                                                              | Busy controls suppress duplicate concurrent requests. Each explicit retry is a new attempt. Maximum: one review event per Fix request, one confirmation and one completion per Apply request. No automatic retry emits another event.                                                                                                                                       |
-| Does prompt preparation reach a usable clipboard result? Improve prompt preparation or clipboard handling.                                                                               | Successful `burn_check_prompt_copied` divided by `burn_check_prompt_prepared` with `detail=ready`. Report preparation failures separately.                                                                               | A Copy fix prompt request emits preparation `detail`: `ready`, `stale`, `expired`, `unavailable`, or `failed`. A successful clipboard write emits `burn_check_prompt_copied` with no properties.                                                                                                                                                                                                                                                                                | A clipboard failure emits no copy event. Clipboard retry reuses the prepared prompt and emits no second preparation event. Busy and copied controls suppress duplicate calls. Maximum: one preparation and one successful copy for one rendered action. A non-named check submits selected current targets once.                                                            |
+| Does prompt preparation reach a usable clipboard result? Improve prompt preparation or clipboard handling.                                                                               | Successful `burn_check_prompt_copied` divided by `burn_check_prompt_prepared` with `detail=ready`. Report preparation failures separately.                                                                               | Each accepted explicit Copy fix prompt click prepares fresh text and emits one terminal preparation `detail`: `ready`, `stale`, `expired`, `unavailable`, or `failed`. Native clipboard write success emits `burn_check_prompt_copied` without properties. Neither event carries a check label.                                                                                                                                                                                 | Busy controls suppress concurrent requests. An internal stale-data retry remains one click and emits no extra preparation. Clipboard failure emits no copy event. Each later click prepares fresh text, even after failure or success. Maximum: one preparation and one successful copy per accepted explicit click.                                                        |
 | Do later Passed transitions and recurrences become visible, and did their independent watch start passively or from an action? Improve verification coverage without claiming causation. | Distinct reporting installations with each `(detail, origin)` tuple among deliberate Burn Checks exposures. Use exposed installations as the denominator. Never use background transitions as visits.                    | `burn_check_outcome_observed`: `detail=verified` originates only from a backend active win for a visibly Passing, unsnoozed detector. The backend win is an exact current fixed cycle with a fixed result and verified boundary. `detail=recurred` records a visible regression from a deliberately expanded, unsnoozed target and does not require that detector to remain Passed. `origin=passive` or `action` describes how that watch started and does not claim causation. | Background evaluation, hidden sections, snoozed checks, unloaded target rows, and refresh callbacks emit nothing. Deduplicate the coarse `(detail, origin)` tuple per exposure, without sending target or remediation-cycle identifiers. Multiple active cycles with the same tuple collapse to one event. Maximum: four events per exposure, independent of finding count. |
 
 These events use only the existing `detail` and `origin` wire fields. They never
@@ -407,6 +419,10 @@ include prompts, resource or model strings from work, paths, finding, action,
 watch, reference, or sample IDs, exact token or cost values, private errors, or
 evidence revisions. Product reports must segment at the 2026-09-10 app-version
 boundary and show reporting installation counts.
+
+Segment prompt counts at the first shipping app version with fresh preparation
+per click. Earlier versions use different retry and repeat rules. Copy events
+measure native clipboard success, not prompt use, verification, or savings.
 
 The target-based M/B/K flow needs no new event or property. Existing surface,
 Auto Fix, prompt, and outcome events measure the same user actions without
@@ -570,127 +586,219 @@ maintainer. Review this diagnostic by 2027-01-31.
 
 ## Event review contract
 
-### Four Smart Checks: closed extensions and runtime acceptance
+### Model-based check enablement and provider operations
 
-The schema supports four checks: `ignored_instructions`, `scope_creep`,
-`over_exploring`, and `skill_opportunities`. It reuses existing event names and
-wire properties. Provider setup/test commands, all four check workers, and visible
-Checks finding/evidence/prompt handlers now emit the classified tuples below.
-Payload tests alone do not establish runtime behavior; producer paths and limits
-are listed in [the public runtime catalog](analytics.md#four-check-runtime-coverage).
+The native `ModelCheckLifecycle` contract keeps the existing
+`antiburn.ignored_instruction_lifecycle` wire name for master enablement and
+decision-provider operations. `DecisionProvider` accepts only `jev`,
+`cloudflare`, `ollama`, and `custom`. It does not carry endpoint, model, account,
+or credential identity. The renderer `Interaction` union does not accept this
+native lifecycle event. See the [public catalog](analytics.md#model-based-check-enablement-and-provider-operations).
 
-| Product question and decision                                                                                           | Metric and denominator                                                                                                                                                                                              | Extended event contract and owner                                                                                                                                                                                                               |
-| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Can readers configure and test each provider route? Improve setup guidance.                                             | Distinct reporting installations with saved/switched/removed configuration outcomes and explicit test outcomes by route. Test success fraction uses settled explicit tests, not saves or provider requests.         | Native Settings commands use `ignored_instruction_lifecycle`; `label`: `jev`, `cloudflare`, `ollama`, or `custom`; `detail`: `provider_saved`, `provider_switched`, `credential_removed`, `test_succeeded`, or `test_failed`.                   |
-| Do assessments reach eligible findings, scoped clean results, or abstention? Improve evidence and provider reliability. | Outcome distributions by fixed check among published terminal assessments. Show reporting installation counts. Keep historical results separate from automatic execution.                                           | Check-owned fenced publication uses `ignored_instruction_lifecycle`; `label`: the fixed check; `detail`: `execution_finding`, `execution_clean`, `execution_abstained`, `execution_failed`, or the corresponding four `backfill_` values.       |
-| Do readers inspect each check's findings and evidence? Improve explanation and discoverability.                         | Distinct reporting installations with each check's finding/evidence tuple divided by installations with a deliberate Burn Checks exposure on supporting versions. This is reader reach, not a unique-finding count. | Visible detail and current evidence handlers use `ignored_instruction_observed`; `label`: the fixed check; `detail`: `finding_visible`, `evidence_available`, `evidence_unavailable`, or `evidence_failed`. Debug builds suppress these events. |
-| Do each check's prompt actions reach preparation and clipboard success? Improve prompt reliability.                     | Successful `burn_check_prompt_copied` relative to `burn_check_prompt_prepared` with `detail=ready`, by fixed check. Report preparation failures separately; allow late delivery.                                    | Existing prompt handlers add optional `label` with the fixed check to their existing preparation/copy events. Preparation keeps its five existing outcomes; copy has no `detail`.                                                               |
+| Product question and decision                                                                      | Metric and denominator                                                                                                                                                                                              | Completed boundary and owner                                                                                                                                                       |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Do readers deliberately enable or pause model-based checks? Improve control placement.             | Reporting installations with saved master transitions, split by enabled/disabled. This measures transitions, not all current enabled installations.                                                                 | Native settings persistence emits `label=enablement`, `detail=enabled` or `disabled` after a changed value is saved.                                                               |
+| Can readers save, select, remove, and test decision connections? Improve setup reliability.        | Reporting installations with each provider outcome. Test success fraction is successful settled explicit tests divided by all settled explicit tests, by provider. Saves are not tests or selections.               | Native `jev/settings.rs` commands emit a provider label and `provider_saved`, `provider_switched`, `connection_removed`, `credential_removed`, `test_succeeded`, or `test_failed`. |
+| Do generic fix-prompt actions reach preparation and clipboard success? Improve action reliability. | Successful `burn_check_prompt_copied` relative to `burn_check_prompt_prepared` with `detail=ready`. Report other preparation outcomes separately and allow late delivery. No per-check classification is available. | Existing deliberate prompt handlers emit preparation once per accepted explicit click and clipboard success at most once for that click. Neither event carries a check label.      |
 
-The fixed check vocabulary is exactly `ignored_instructions`, `scope_creep`,
-`over_exploring`, and `skill_opportunities`. Map detector IDs to these values
-locally; never serialize an arbitrary detector ID or report DTO. Native
-`SmartCheckLifecycle` is not an accepted renderer `Interaction`.
+Emit saved transitions only after durable success and an actual change. Failed
+saves, no-ops, startup restoration, migration, and Settings refresh emit no saved
+transition. Read-only limit refresh emits no provider lifecycle event. Emit one
+outcome per explicit settled test, including validation or
+credential failure after the command starts. Internal transport retries are not
+extra tests. Cancellation or process exit can leave an outcome unobserved.
+No analytics-only request is allowed. The provider controls under **Model-based checks** select Jev, Ollama,
+Cloudflare, or Custom, subject to each route's verified capabilities. Selecting
+an unsaved draft and refreshing its limits are not saved transitions. Both
+Custom response modes share the existing `custom` category. These events do not
+measure capability admission or prove that a YAML assessment ran.
 
-Emit setup only after durable success and an actual transition. Failed saves,
-no-op switches, startup restoration, migration, and Settings refresh emit no
-setup success. Emit one test outcome per explicit settled test, including
-validation or credential failures after the authorized command begins. Internal
-transport retries do not create more tests. Cancellation or process exit can
-leave an attempt unobserved. No analytics-only provider request is allowed.
+`provider_saved` records a durable connection create or edit. Editing an inactive
+connection does not select it. `provider_switched` records an explicit saved
+connection selection. Creating the first connection selects it without a separate
+switch event or an enablement event. `connection_removed` records a durable
+profile removal, not key revocation. Removing the selected connection also saves
+master disablement and clears selection; emit its changed enablement outcome at
+that durable boundary. Removing an inactive connection does not emit disablement.
+Canceled confirmations, stale revisions, missing profiles, failed removals, and
+readback requests emit no removal success. Shared credentials can remain after
+profile removal. Only explicit credential removal uses `credential_removed`.
+The event carries no connection ID, revision, profile count, or selected state.
+Removal totals measure completed operations, not a removal success rate: canceled
+and failed removals have no setup outcome. Segment releases with separate Save
+and Use controls from earlier releases where Save and use also changed selection.
+Do not infer connection selections from `provider_saved` in the current contract.
 
-Emit one assessment outcome only after a current terminal publication commits.
-Use the same eligible findings and clean gate as the visible report. A finding
-wins over a remaining sample gap; without a finding, report clean only when the
-check proves its sampled-clean eligibility. A published incomplete, unsupported,
-or inconclusive assessment is abstention. Published provider failures are failed;
-failed storage writes, stale, canceled, superseded, and checkpoint-only work
-emit no terminal result. Pre-assessment candidate rejection is outside this
-denominator; it must not become an event on every scheduling pass.
-Replace the old coarse II terminal event at that boundary rather than emit both.
-Cached/reused answers can complete an assessment without a new provider request.
-These counts cannot measure provider calls, distinct evaluated sessions, model
-accuracy, or population finding prevalence. Clean is check-scoped; Ignored
-Instructions covers sampled comparisons. Smart Check prompt actions do not prove
-session repair, verification, or savings.
+The four native-check labels, finding/evidence observations, assessment outcomes,
+and history-window/run events are retired from the runtime contract. They are
+not aliases for YAML definitions. Generic prompt events carry no `label`;
+preparation retains `ready`, `stale`, `expired`, `unavailable`, and `failed`, while
+copy has no event-specific properties. Each accepted explicit click prepares
+fresh text and reports one terminal preparation result, including a click after
+clipboard failure or copy success. Internal stale-data retries emit no extra
+event. Native clipboard write success emits one copy event for that click. A
+copy does not prove execution, repair, or savings.
 
-Finding visibility requires deliberate selection and visible failing detail.
-Repeated selection and report refresh must not create a new finding exposure.
-Evidence outcomes require the current request to settle while selected; stale
-responses and hidden details emit nothing. Use one evidence outcome per explicit
-request. Prompt classification extends each existing preparation/copy emission;
-clipboard retry reuses preparation and reports only its first success. Do not
-add a second check-specific prompt event. Migrate the legacy II prompt tuple to
-the classified generic action when the owning handler changes.
+Exclude provider setup/tests and saved enablement from engagement, visits, and
+retention. They measure operations, not assessed sessions, model accuracy, or
+finding prevalence. Show distinct reporting installation counts. Segment at the
+first release that removes the native four-check contract; historical tuples
+cannot be reclassified. Missing delivery and opted-out installations remain
+unobserved. Only closed `label`/`detail` values are sent, without work content,
+paths, URLs, model names, keys, private errors, or work identifiers.
 
-Global enablement remains `label=enablement` and `detail=enabled`/`disabled`
-after a saved transition. History-window and explicit backfill-request events
-keep their existing contract. Individual saved choices use
-`antiburn.check_enablement_saved`; the group control does not replace them.
+Enabled-feature tests must cover the exact remaining serialized tuples, reject
+retired forms and extra fields, and exercise saved transitions, failed saves,
+no-op suppression, test validation/credential failures, and generic prompt retries
+at their owning boundaries. Payload acceptance alone does not prove emission.
 
-Only `label` and `detail` are populated by these extensions. No content, prompt,
-instruction, approval, path, URL, model, account, key, credential reference,
-response, exact count/cost/token value, private error, or work identifier is
-accepted. Existing consent, endpoint, environment, queue, and retry gates apply.
-Exclude provider operations and background/historical outcomes from engagement,
-activation, visits, and retention. Segment every new tuple at its first shipping
-runtime app version; legacy unlabeled prompts and coarse completion events cannot
-be reclassified. Missing delivery and opted-out installations remain unobserved.
+### YAML input fitting and definition opens (implemented 2026-10-16)
 
-Enabled-feature tests enumerate provider setup/test outcomes, four-check
-assessment/abstention tuples, visible finding/evidence tuples, and prompt outcomes.
-They compare exact serialized properties and reject unknown values and private
-extra fields. Runtime acceptance must separately prove saved transitions,
-test failures, fenced publication, clean versus abstention, hidden/stale reader
-responses, prompt retries, and no-op suppression at the owning sites.
+The existing Burn Checks surface view/state events measure workspace reach and
+visible usable results. Generic prompt-preparation and decision-provider
+lifecycle events describe different actions. They cannot establish whether an
+authored YAML input fits a local request budget or whether opening its definition
+works. The two native completion events below fill those gaps without classifying
+arbitrary authored checks. There is no new diagnostic-exposure event: reading a
+report or refreshing it does not prove that a diagnostic was visible.
+
+| Product question and decision                                                                                                                              | Numerator and denominator                                                                                                                                                                                                                                                                                                                                                                  | Owner and completed-outcome boundary                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Does input fitting let eligible candidates reach a ready request, and which local failures block it? Improve fitting guidance and preparation reliability. | Ready fraction: `unchanged` plus `shortened` events divided by all `burn_check_input_prepared` events. Shortened share: `shortened` divided by ready events. Report each failure category over the same all-outcome denominator and show distinct reporting installations.                                                                                                                 | The shared engine calls `DecisionEvaluator::preparation_recorded` only after a new preparation write returns current. The installed desktop evaluator maps the record to one closed outcome and records `antiburn.burn_check_input_prepared`. |
+| Can readers open a check definition to address a diagnostic? Improve file-action discovery and native-open guidance.                                       | Accepted-open fraction: `succeeded` divided by all `burn_check_definition_opened` completions. Report each failure category separately. For action reach, use distinct reporting installations with a completion divided by deliberate Burn Checks viewers on supporting versions. A completion from a popover or an earlier exposure can fall outside that view cohort; keep it separate. | `installed_checks/opener.rs` owns `antiburn.burn_check_definition_opened` after the explicit command settles, including reference, access, and worker failures before native open.                                                            |
+
+Both events serialize only `{ "detail": "<closed outcome>" }` in addition to
+the standard envelope and architecture. `label`, `bucket`, `origin`, and every
+other optional property are absent. The native outcome types accept no authored
+name, arbitrary diagnostic code, source reference, path, input, token value,
+omission count, YAML value, provider response, or private error. The renderer
+interaction union rejects both event kinds.
+
+Preparation outcomes are `unchanged`, `shortened`, `input_too_large`,
+`invalid_fit`, `input_unavailable`, `resource_limit`, `invalid_input`, and
+`invalid_request`. Ready records use `shortened` when any decision's omission
+report is nonempty. The event describes the complete prepared set once per
+candidate, not once per decision or question. Typed `NoFit` becomes
+`input_too_large`; typed `PreparationResourceLimit`
+becomes `resource_limit`. Neither is a provider context rejection. Invalid fitting,
+input-expression, and deterministic request failures stay distinct. Required-input,
+provider-preparation, and incompatible-profile unavailability map to
+`input_unavailable`. A known false condition is skipped and emits nothing.
+Recovery profile checks do not create new preparation records or events.
+
+Decision-free local execution is outside this request-fit denominator. Its typed
+local preparation maps to no input-prepared event, and the local engine path does
+not call the model preparation observer. Existing visible workspace events can
+show local result reach but cannot separate local starts or failures from model
+assessments. Keep that measurement limit explicit; do not count local work as
+unchanged provider input or create analytics-only provider work.
+
+The maximum preparation volume is one event per newly committed non-skipped
+candidate, independent of its decision count, question count, target count, or
+reduction turns. This is background
+reliability measurement even while the window is hidden. It never refreshes the
+analytics session timeout or enters engagement, activation, visits, retention, or
+time-spent counts. Discovery, polls, coalesced candidates that never prepare,
+failed preparation writes, stale claims, saved-request retries, recovery, and
+report refreshes add no event. A later dispatch-intent or local-settlement write
+failure preserves the preparation and does not emit again on reuse. Later
+cancellation can follow a valid committed preparation. A crash between preparation
+commit and event capture is an accepted miss; opt-in does not backfill saved work.
+There is no new hourly cap, persistent deduplication table, or analytics-only work.
+The existing 500-row queue can drop earlier events during candidate bursts; this
+can bias outcome distributions. Delivery retries deduplicate by `messageId`.
+
+Definition-open outcomes are `succeeded`, `missing`, `unavailable`, and
+`open_failed`. Missing covers an unknown/stale reference or a removed file.
+Unavailable covers rejected local-file/path/access checks or unavailable folder
+settings. Open failed covers the native opener and blocking-worker failures.
+One settled command emits exactly one completion. The UI prevents duplicate
+in-flight presses, and each explicit retry is a new attempt; there is no internal
+retry event. Remounts, discovery, automatic restoration, and report refreshes do
+not open files. Hiding the window does not cancel an already started request.
+Process exit before settlement can leave it unobserved. These deliberate actions
+refresh the session timeout but do not establish a deliberate core view by
+themselves. OS acceptance does not prove editor visibility, file editing, repair,
+or a subsequent successful assessment.
+
+Rates use observed completed outcomes, not all candidates, distinct checks,
+provider calls, true model-context failures, accuracy, or people. Reports use
+capture time, deduplicate delivery by `messageId`, allow late arrivals, and segment
+by app version and OS starting with the first release that ships these producers.
+Older prompt-preparation and fixed-check events cannot be reclassified. Unconfigured,
+environment-disabled, opted-out, crashed-before-capture, and undelivered cases
+remain unobserved. There are no stable work identifiers to join preparation and
+open events or attribute a later result to an open action.
+
+Validation covers exact serialized properties for every outcome, typed failure
+mapping with content-rich synthetic records, native-only IPC rejection, catalog
+agreement, and user/background session classification. Real engine/SQLite tests
+exercise failed preparation writes, later settlement/intent write failure,
+recovery without duplicate observation, stale claims, and missing input before
+the preparer runs. Native-open tests exercise issued-file resolution, missing and
+unissued files, rejected cache/access states, opener success/failure, and one
+completion per request. Shared capture-gate tests cover disabled consent,
+unreadable consent, environment opt-out, and missing configuration. Queue cleanup
+includes both new event kinds. The Tauri `AppHandle` adapters are reviewed at
+their call sites; tests inject the OS opener and event sink without launching an
+application or making provider requests. The public catalog in
+[analytics.md](analytics.md#yaml-input-fitting-and-definition-opens) names the same
+boundaries, vocabularies, and limits.
+
+### Check folder opens (implemented 2026-10-27)
+
+Product question: can readers open a discovered check folder from Settings?
+Use the result to improve folder-action discovery and native-open errors.
+
+Measure `succeeded` divided by all `burn_check_directory_opened` completions,
+with `missing`, `unavailable`, and `open_failed` reported separately. Show
+distinct reporting installations and segment at the first supporting app version
+and OS. The denominator is observed settled explicit requests, not all Settings
+views, folders, files, or people. A completion does not prove a file edit, a
+successful check, or visible Finder content.
+
+The native installed-check directory command records one outcome after the
+request finishes, including validation failures before the native opener runs.
+Validation covers the issued reference, current repository membership, grants,
+canonical directory binding, and remote-cache exclusion. The event serializes only
+`{ "detail": "<closed outcome>" }` with the standard envelope. It contains no
+path, reference, name, count, input, model, cost, or private error. Renderer
+interaction input rejects it. It does not reuse the definition-open event.
+
+Maximum volume is one completion per settled explicit request. The UI suppresses
+same-folder concurrent presses; each later explicit retry is another request.
+Reads, passive discovery, search, dialog opening, and disclosure expansion do not
+emit it. There is no analytics-only filesystem or provider work. A hidden window
+can finish a started open. A crash before completion, opt-out, absent endpoint,
+and delivery loss remain unobserved. Existing capture, queue, and retry gates
+apply. Delivery deduplicates by `messageId`; use capture time and allow late
+arrivals. Do not join this event to check outcomes with invented identifiers.
+
+The action refreshes the analytics session timeout but does not establish a
+deliberate core view by itself. Native tests inject a folder opener and event
+sink. Cover all fixed outcomes, one completion, exact property serialization,
+native-only IPC, user-oriented classification, and consent/queue gates without
+opening a file manager or making provider requests. See the
+[public catalog](analytics.md#check-folder-opens).
 
 ### Legacy Ignored Instructions tuples
 
-Earlier releases used the stage and coarse lifecycle tuples below. The current
-sites use the four-check classifications above. Legacy values stay accepted by
-the closed schema and IPC, but acceptance does not mean a current producer emits
-them. Keep legacy reports separate at the first classified-runtime app version.
+This section is historical measurement context only. The runtime no longer
+accepts or emits these observation, assessment, or history tuples.
 
-The product question is whether enabled checks reach useful findings and whether
-readers inspect evidence and copy a fix prompt. Report distinct reporting
-installations with a deliberately visible Ignored Instructions finding, evidence
-outcome, and prompt outcome. Use reporting installations on supporting app
-versions with a deliberate Burn Checks exposure as the visible-use denominator.
-Do not count background assessments, queued work, or historical assessment
-outcomes as visits or automatic adoption. Debug builds suppress reader events
-for this check. Saved enablement transitions, explicit backfill requests, and
-terminal assessment outcomes measure activation and published attempts, not
-unique sessions or provider calls.
+Earlier `ignored_instruction_observed` events used `finding`, `evidence`, or
+`prompt` stage labels with visible/available/copied or failure outcomes. Later
+releases classified finding/evidence observations by one of four native checks
+and added a check label to generic prompt events. These events measured deliberate
+reader actions, not unique findings or model accuracy. Background assessments
+and history outcomes never established visits or automatic adoption.
 
-`ignored_instruction_observed` is owned by the visible Checks detail and
-evidence/prompt handlers. `label` is `finding`, `evidence`, or `prompt`;
-`detail` is `visible` for a finding, `available`/`unavailable`/`failed` for
-evidence, or `copied`/`unavailable`/`failed` for prompt action. The finding
-event needs deliberate selection and a visible failing detail. Evidence events
-need a current target request to settle while its action remains selected;
-stale responses do not count. Prompt events follow an explicit attempt, not
-automatic preparation. Repeated reader attempts may report again; they are not
-unique findings. No text, prompt, path, finding, session, key, or request ID
-is sent through analytics. TypeSafe receives selected instruction text,
-assistant text excerpts, Bash command input, edit/read paths, search queries with
-scope, and other-tool input through a separate channel. Current Ignored
-Instructions also selects user text and Bash output for exactly validated bounded
-context. Edit content, read/search output, other results, typed question/plan
-fields, and thinking remain excluded. See [Smart Burn Checks](smart-burn-checks.md).
-Segment reports at the
-first app version shipping these events.
-
-`ignored_instruction_lifecycle` is emitted when Settings enables or pauses Smart
-Burn Checks, saves or removes the key, changes the history window, or requests a
-historical run, and when an assessment publishes a terminal result. Labels are `enablement`,
-`history_window`, `backfill`, and `execution`. Details are respectively
-`enabled`/`disabled`, `future`/`7_days`/`30_days`, `requested`, and
-`completed`/`failed`. Intermediate ranges do not emit this event. Cached and
-retried work can finish an assessment without another provider call. These are
-assessment-level terminal outcomes, not whole-backfill completion events. A
-dispatched assessment has up to three total attempts, not three retries;
-previous attempts may have been charged. If dispatch outcome remains unresolved,
-Antiburn blocks further dispatch for that work. No provider response, input
-digest, session ID, key, selected text, or error text is sent.
+Earlier `ignored_instruction_lifecycle` events also carried `history_window`,
+`backfill`, and `execution` labels or check-specific `execution_`/`backfill_`
+terminal outcomes. They measured published attempts, not provider requests or
+whole-session correctness. Current master enablement and provider tuples retain
+the same wire name but not these retired meanings. Keep each historical app-version
+boundary. Never map older check labels or unlabeled prompts to authored YAML IDs.
 
 ### Per-check enablement
 
@@ -706,9 +814,8 @@ The persistence command owns the event. It emits once only after one check's
 stored preference changes successfully and any required transition work
 completes. `label` is `sessions_over_depth`, `model_overthinking`,
 `overpowered_subagents`, `unused_mcp_servers`, `unused_built_in_tools`,
-`unused_skills`, `old_model_usage`, `overuse_of_fast_mode`, `cache_churn`,
-`ignored_instructions`, `scope_creep`, `over_exploring`, or
-`skill_opportunities`; `detail` is `enabled` or `disabled`. A closed Rust enum
+`unused_skills`, `old_model_usage`, `overuse_of_fast_mode`, or `cache_churn`;
+`detail` is `enabled` or `disabled`. A closed Rust enum
 maps every supported detector to this allowlist. No-op requests, failed or
 canceled saves, automatic migration and restoration, remounts, refreshes, and
 provider or master-gate changes emit nothing. Maximum volume is one event per
@@ -716,8 +823,8 @@ successful persisted transition. No finding, session, project, path, key,
 provider state, source evidence, or work content is sent.
 
 Segment reporting at the first app version that ships this event. Do not merge
-it with `ignored_instruction_lifecycle`: that older event retains its Smart
-Checks group, provider setup, history, and execution meanings.
+it with `ignored_instruction_lifecycle`: that event measures master enablement
+and provider operations, not individual deterministic-check preferences.
 
 Every added or changed event must document:
 
@@ -931,7 +1038,7 @@ them, so a funnel across versions must keep the two event families apart.
 
 Question: where does a new install's first run lose readers — never starting,
 or dropping between Agents, Read, Check, and the result — and which result
-(empty, checks disabled, clean, fixes found) do readers who finish actually land on? Metric:
+(empty, checks disabled, not assessed, clean, fixes found) do readers who finish actually land on? Metric:
 reporting installations reaching each `antiburn.first_run_step_reached` label,
 as a funnel with `started` at the base, divided by reporting installations
 overall in the same app-version cohort. This decides whether the steps block's
@@ -963,12 +1070,21 @@ that must report its own funnel.
 
 Properties: `label` is `started`, `found`, `read`, `checked`, or `result` —
 the step. `bucket` is the discovery pass's session count, bucketed, present
-only with `found`. `detail` is `empty`, `checks_disabled`, `clean`, or
-`fixes_found`, present only with `result`, derived the same way the Overview's
-own headline is: `empty` when the window has no sessions, `checks_disabled`
-when sessions exist but no checks are enabled, `clean` when enabled checks find
-no issue, and `fixes_found` otherwise. Reports must not include
-`checks_disabled` in the Clean numerator. `antiburn.first_run_action` currently reports
+only with `found`. `detail` is `empty`, `checks_disabled`, `not_assessed`, `clean`,
+or `fixes_found`, present only with `result`. `empty` means the window has no
+sessions. `checks_disabled` means sessions exist but no checks are enabled.
+A confirmed finding produces `fixes_found`, even with passes or other non-results.
+Otherwise, `clean` requires at least one confirmed passing check with a positive
+clean count. A passing lifecycle alone is insufficient. Waiting, errors, and
+assessments without a status write alone produce `not_assessed`.
+A mixed report with a confirmed pass and waiting, errored, or unassessed checks
+can report `clean` when it has no findings. This means the assessed subset has
+no findings; it does not establish complete check or session coverage.
+Exclude `checks_disabled` and `not_assessed` from the Clean numerator. Keep all
+result categories in the result-step denominator to expose missing assessment
+reach. This reuses the result event and adds no event or wire property. It keeps
+the one-result-per-first-run bound; later refreshes do not revise the event.
+`antiburn.first_run_action` currently reports
 four closed labels — `folder_access_requested`, `folder_access_granted`,
 `live_usage_started`, and `live_usage_skipped` — only after the corresponding
 action fires. The final completion card has one Get Started button. A successful
@@ -992,6 +1108,9 @@ cannot be joined against the retired step-viewed event's four-step vocabulary,
 which had no `found`/`checked` distinction and no result step at all.
 Segment `checks_disabled` from the first app version that adds per-check
 enablement; earlier versions cannot produce that detail.
+Segment `not_assessed` and the confirmed-pass requirement at their first shipping
+app version. Earlier `clean` results can include all-unassessed reports and cannot
+be reclassified from the coarse event alone.
 
 Tests: `event.rs` proves each step's facts are scoped to that step alone
 (`first_run_step_reached_carries_only_the_facts_its_own_step_defines`), the

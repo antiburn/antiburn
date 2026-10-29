@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { ChecksCategoryPayload, ChecksReportPayload } from "../insightsIpc"
+import { installedCheckFixture } from "../../views/main-window/burn-checks/tests/installedCheckFixture"
 import {
   checksHeroPresentation,
   checksPresentation,
@@ -34,42 +35,28 @@ function report(categories: ChecksCategoryPayload[]): ChecksReportPayload {
 }
 
 describe("Checks presentation", () => {
-  it("does not count a zero-candidate smart check as a passed result", () => {
-    const check = category({
-      id: "skillOpportunities",
-      reviewState: "noMatchingWork",
-      lifecycle: "passing",
-      checking: true,
-      finding: 0,
-      clean: 0,
-      reviewCoverage: { reviewed: 0, total: 0, uncertain: 0, pending: 0, continuing: false },
-    })
-    const presentation = checksPresentation(report([check]))
-    expect(presentation.wins).toEqual([])
-    expect(presentation.activeUnavailable).toEqual([check])
-    expect(presentation.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
-    expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
-  })
-  it("keeps provisional checks outside durable pass counts and excludes snoozed checks", () => {
-    const check = category({ finding: 0, clean: 0, checking: true })
+  it("keeps unassessed checks outside pass counts and excludes snoozed checks", () => {
+    const check = category({ finding: 0, clean: 0 })
     const source = report([check])
     const before = structuredClone(source)
     const presented = checksPresentation(source)
-    expect(presented.wins).toEqual([check])
-    expect(presented.activeUnavailable).toEqual([])
+    expect(presented.wins).toEqual([])
+    expect(presented.activeUnavailable).toEqual([check])
     expect(presented.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
     expect(checksHeroPresentation(presented).summary).toBeNull()
     expect(checksPresentation(source, false, new Set([check.id])).wins).toEqual([])
     expect(source).toEqual(before)
   })
-  it("counts confirmed passes without counting checking rows as passed results", () => {
+  it("counts confirmed passes without counting unassessed rows", () => {
     const presentation = checksPresentation(
       report([
-        category({ id: "ignoredInstructions", finding: 0, clean: 0, checking: true }),
+        category({ id: "modelOverthinking", finding: 0, clean: 0 }),
         category({ id: "oldModelUsage", finding: 0, clean: 2 }),
       ]),
     )
-    expect(presentation.wins).toHaveLength(2)
+    expect(presentation.wins).toHaveLength(1)
+    expect(presentation.activeUnavailable).toHaveLength(1)
+    expect(checksHeroPresentation(presentation).result).toBe("No issues in available results")
     expect(checksHeroPresentation(presentation).summary).toBe("1 check passed")
     expect(presentation.burnChecks.counts).toEqual({ failed: 0, passed: 1, unassessed: 1 })
   })
@@ -109,16 +96,16 @@ describe("Checks presentation", () => {
     )
 
     expect(checksHeroPresentation(presentation)).toEqual({
-      result: "No issues found",
+      result: "No issues in available results",
       summary: "2 checks passed",
       state: "passed",
       tone: "text-label",
     })
   })
 
-  it("keeps an in-progress instruction check in the passed group until a finding exists", () => {
+  it("keeps a passing category separate from complete clean results", () => {
     const ongoing = category({
-      id: "ignoredInstructions",
+      id: "modelOverthinking",
       finding: 0,
       clean: 0,
       unavailable: 7,
@@ -126,7 +113,7 @@ describe("Checks presentation", () => {
     })
     const presentation = checksPresentation(report([ongoing]))
 
-    expect(presentation.wins.map((check) => check.id)).toEqual(["ignoredInstructions"])
+    expect(presentation.wins.map((check) => check.id)).toEqual(["modelOverthinking"])
     expect(presentation.failures).toEqual([])
     expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
   })
@@ -250,6 +237,28 @@ describe("Checks presentation", () => {
     expect(checksHeroPresentation(checksPresentation(report([]))).result).toBe(
       "No checks enabled",
     )
+    expect(checksPresentation(report([])).burnChecks).toMatchObject({
+      headline: "No checks enabled",
+      accessibleDescription: "No Burn Checks enabled.",
+    })
+  })
+
+  it("names snoozed checks without suggesting a connection problem", () => {
+    const check = category()
+    const presentation = checksPresentation(report([check]), false, new Set([check.id]))
+
+    expect(presentation.noActiveChecks).toBe(true)
+    expect(presentation.noEnabledChecks).toBe(false)
+    expect(presentation.burnChecks).toMatchObject({
+      headline: "All checks are snoozed",
+      accessibleDescription: "All checks are snoozed.",
+    })
+    expect(checksHeroPresentation(presentation)).toEqual({
+      result: "All checks are snoozed",
+      summary: null,
+      state: "pending",
+      tone: "text-label",
+    })
   })
 
   it("keeps the running presentation while evidence is unsettled", () => {
@@ -288,4 +297,111 @@ describe("Checks presentation", () => {
     expect(tokenBurnTone(500)).toBe("text-system-red-text")
     expect(tokenBurnTone(1_500)).toBe("text-system-red-text")
   })
+})
+
+describe("Installed check availability", () => {
+  it.each([
+    { availability: "paused", checkingCount: 0 },
+    { availability: "paused", checkingCount: 2 },
+    { availability: "unsupported", checkingCount: 0 },
+    { availability: "unsupported", checkingCount: 2 },
+    { availability: "invalid", checkingCount: 0 },
+    { availability: "invalid", checkingCount: 2 },
+  ] as const)(
+    "keeps $availability checks without accepted results unassessed with $checkingCount queued",
+    ({ availability, checkingCount }) => {
+      const presentation = checksPresentation({
+        ...report([]),
+        installedChecks: [
+          {
+            ...installedCheckFixture,
+            availability: { status: availability },
+            finding: 0,
+            clean: 0,
+            hasStarted: true,
+            checkingCount,
+            targets: [],
+          },
+        ],
+      })
+
+      expect(presentation.wins).toEqual([])
+      expect(presentation.failures).toEqual([])
+      expect(presentation.activeAssessed).toEqual([])
+      expect(presentation.activeUnavailable).toEqual([
+        expect.objectContaining({
+          id: installedCheckFixture.effectiveId,
+          lifecycle: null,
+          checking: false,
+        }),
+      ])
+      expect(presentation.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
+      expect(checksHeroPresentation(presentation).result).toBe("No checks assessed")
+    },
+  )
+
+  it.each(["paused", "unsupported"] as const)(
+    "retains accepted failures and clean results while %s without checking",
+    (availability) => {
+      for (const finding of [0, 1]) {
+        const presentation = checksPresentation({
+          ...report([]),
+          installedChecks: [
+            {
+              ...installedCheckFixture,
+              availability: { status: availability },
+              finding,
+              clean: 2,
+              checkingCount: 2,
+              targets: finding > 0 ? installedCheckFixture.targets : [],
+            },
+          ],
+        })
+        const failed = finding > 0
+        const checks = failed ? presentation.failures : presentation.wins
+
+        expect(checks).toEqual([
+          expect.objectContaining({
+            id: installedCheckFixture.effectiveId,
+            lifecycle: failed ? "failing" : "passing",
+            checking: false,
+          }),
+        ])
+        expect(presentation.activeUnavailable).toEqual([])
+        expect(presentation.burnChecks.counts).toEqual({
+          failed: failed ? 1 : 0,
+          passed: failed ? 0 : 1,
+          unassessed: 0,
+        })
+      }
+    },
+  )
+
+  it.each([
+    { hasStarted: true, checkingCount: 0 },
+    { hasStarted: false, checkingCount: 2 },
+  ])(
+    "keeps available checks unassessed for $hasStarted started and $checkingCount queued",
+    ({ hasStarted, checkingCount }) => {
+      const presentation = checksPresentation({
+        ...report([]),
+        installedChecks: [
+          {
+            ...installedCheckFixture,
+            finding: 0,
+            clean: 0,
+            hasStarted,
+            checkingCount,
+            targets: [],
+          },
+        ],
+      })
+
+      expect(presentation.activeUnavailable).toEqual([
+        expect.objectContaining({ lifecycle: null, checking: checkingCount > 0 }),
+      ])
+      expect(presentation.wins).toEqual([])
+      expect(presentation.burnChecks.counts).toEqual({ failed: 0, passed: 0, unassessed: 1 })
+    },
+  )
 })

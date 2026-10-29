@@ -1,5 +1,6 @@
 include!("src/app_commands.rs");
 
+use std::env;
 use std::fs;
 
 macro_rules! command_names {
@@ -63,6 +64,17 @@ fn validate_command_permissions() {
     );
 }
 
+fn configure_windows_common_controls() {
+    let is_windows_msvc = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if is_windows_msvc {
+        // Tauri manifests the app binary, but Cargo test binaries also need Common-Controls v6.
+        println!(
+            "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        );
+    }
+}
+
 fn main() {
     // `analytics::config` reads these with `option_env!`, which is
     // resolved at compile time. Cargo does not track an environment variable
@@ -78,6 +90,7 @@ fn main() {
     println!("cargo:rerun-if-changed=capabilities");
     println!("cargo:rerun-if-changed=permissions");
     validate_command_permissions();
+    configure_windows_common_controls();
     let attributes = tauri_build::Attributes::new()
         .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS));
     tauri_build::try_build(attributes).expect("failed to build the Tauri application");

@@ -1,13 +1,9 @@
 import { Check, Clipboard, Wrench } from "lucide-react"
-import { useCallback, useRef, useState } from "react"
-import { flushSync } from "react-dom"
+import { useState } from "react"
 
 import { pluralize } from "../../../lib/presentation/text"
 import { cn } from "../../../lib/cn"
-import { noteInteraction, smartCheckForDetector } from "../../../lib/ipc"
-import { writeClipboardText } from "../../../lib/clipboard"
 import {
-  copyPromptFixBurnCheckTargets,
   copyPromptFixBurnCheck,
   type BurnCheckDetectorId,
   type BurnCheckTargetPayload,
@@ -17,6 +13,7 @@ import { BurnCheckTargetActions } from "./BurnCheckTargetActions"
 import { RemindLaterAction } from "./RemindLaterAction"
 import { FailedSessions, watchStatus } from "./BurnCheckTargetPresentation"
 import { BurnCheckTargetChooserDialog } from "./BurnCheckTargetChooserDialog"
+import { useBurnCheckPromptCopy } from "./useBurnCheckPromptCopy"
 
 export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   sessionsOverDepth: "Some sessions carried context after it stopped helping.",
@@ -25,151 +22,29 @@ export const CHECK_SENTENCES: Record<BurnCheckDetectorId, string> = {
   unusedMcpServers: "Some connected tool servers loaded tools that were not used.",
   unusedBuiltInTools: "Some built-in tools were loaded but not used.",
   unusedSkills: "Some skills were loaded but not used.",
-  skillOpportunities: "This work matches a skill that may help with similar tasks.",
-  overExploring: "Some files or sections read were not needed for the task.",
-  scopeCreep: "Some proposed or attempted work went beyond the agreed task.",
   oldModelUsage: "Some sessions used an older model when a newer one was available.",
   overuseOfFastMode: "Some work paid for speed it did not need.",
   cacheChurn: "Some sessions kept paying to reload the same context.",
-  ignoredInstructions: "Selected actions conflict with current or recorded instruction text.",
 }
-
-function isUnusedResourceDetector(detector: BurnCheckDetectorId) {
-  return (
-    detector === "unusedMcpServers" ||
-    detector === "unusedBuiltInTools" ||
-    detector === "unusedSkills"
-  )
-}
-
-const CLICK_AGAIN_STATUS = "The list was refreshed. Click again to copy."
-const REPEAT_COPY_FEEDBACK_MS = 120
 
 export function CheckPromptAction({
   detector,
-  targets,
   refresh,
+  active = true,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
   refresh: () => void
+  active?: boolean
 }) {
-  const promptTargets = isUnusedResourceDetector(detector)
-    ? targets
-    : targets.filter((target) => target.promptFix.status === "available")
-  const currentKey = promptTargets.length
-    ? promptTargets.map((target) => target.actionId).join(":")
-    : `fallback:${detector}`
-  const [attempt, setAttempt] = useState(currentKey)
-  const [busy, setBusy] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [prompt, setPrompt] = useState<string | null>(null)
-  const [status, setStatus] = useState<string | null>(null)
-  if (attempt !== currentKey) {
-    // The target ids changed under us (a refresh listed the check again).
-    // Drop the attempt state. The "click again" message stays because it
-    // asked for this reload; any other status is about the old list.
-    setAttempt(currentKey)
-    setBusy(false)
-    setCopied(false)
-    setPrompt(null)
-    if (status !== CLICK_AGAIN_STATUS) setStatus(null)
-  }
-  const key = useRef("")
-  const copyReported = useRef(false)
-  const check = smartCheckForDetector(detector)
-  const copiedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const scheduleCopiedReset = (startedKey: string) => {
-    if (copiedTimeout.current) clearTimeout(copiedTimeout.current)
-    copiedTimeout.current = setTimeout(() => {
-      copiedTimeout.current = null
-      if (key.current !== startedKey) return
-      setCopied(false)
-    }, 3_000)
-  }
-  const bindKey = useCallback(
-    (node: HTMLDivElement | null) => {
-      if (node) key.current = currentKey
-      else {
-        key.current = ""
-        if (copiedTimeout.current) clearTimeout(copiedTimeout.current)
-      }
-    },
-    [currentKey],
-  )
-  const copy = async () => {
-    if (busy) return
-    const startedKey = currentKey
-    const repeatCopy = copied
-    flushSync(() => {
-      setBusy(true)
-      setCopied(false)
-    })
-    setStatus(null)
-    let nextPrompt = prompt
-    try {
-      if (nextPrompt === null) {
-        copyReported.current = false
-        const outcome =
-          promptTargets.length > 0
-            ? await copyPromptFixBurnCheckTargets(
-                promptTargets.map((target) => target.actionId),
-              )
-            : await copyPromptFixBurnCheck(detector)
-        noteInteraction({
-          kind: "burnCheckPromptPrepared",
-          ...(check ? { check } : {}),
-          outcome:
-            outcome?.outcome === "promptReady"
-              ? "ready"
-              : outcome?.outcome === "unavailable"
-                ? "unavailable"
-                : "failed",
-        })
-        if (key.current !== startedKey) return
-        if (outcome?.outcome !== "promptReady") {
-          setBusy(false)
-          setStatus(CLICK_AGAIN_STATUS)
-          refresh()
-          return
-        }
-        nextPrompt = outcome.prompt
-      }
-      await writeClipboardText(nextPrompt)
-      if (repeatCopy) {
-        await new Promise<void>((resolve) =>
-          window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS),
-        )
-      }
-      if (key.current !== startedKey) return
-      if (!copyReported.current) {
-        noteInteraction({ kind: "burnCheckPromptCopied", ...(check ? { check } : {}) })
-        copyReported.current = true
-      }
-      setPrompt(nextPrompt)
-      setCopied(true)
-      setBusy(false)
-      scheduleCopiedReset(startedKey)
-    } catch {
-      const preparationFailed = nextPrompt === null
-      if (preparationFailed)
-        noteInteraction({
-          kind: "burnCheckPromptPrepared",
-          outcome: "failed",
-          ...(check ? { check } : {}),
-        })
-      if (key.current !== startedKey) return
-      setPrompt(nextPrompt)
-      setBusy(false)
-      setStatus(
-        preparationFailed
-          ? "The fix prompt could not be prepared. Try again."
-          : "The fix prompt could not be copied. Try again.",
-      )
-    }
-  }
+  const { busy, copied, status, bindRoot, copy } = useBurnCheckPromptCopy({
+    subject: detector,
+    active,
+    prepare: () => copyPromptFixBurnCheck(detector),
+    refresh,
+  })
   return (
-    <div ref={bindKey}>
+    <div ref={bindRoot}>
       <button
         type="button"
         disabled={busy}
@@ -237,17 +112,26 @@ export function CheckDetailActions({
   targets,
   refresh,
   reportRow = false,
+  active = true,
+  showFindingActions = true,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
   refresh: () => void
   reportRow?: boolean
+  active?: boolean
+  showFindingActions?: boolean
 }) {
   return (
     <div className="flex flex-wrap items-start gap-2">
-      {reportRow && <RemindLaterAction detector={detector} />}
-      <FixAction targets={targets} refresh={refresh} />
-      <CheckPromptAction detector={detector} targets={targets} refresh={refresh} />
+      {reportRow && showFindingActions && <RemindLaterAction detector={detector} />}
+      {showFindingActions && <FixAction targets={targets} refresh={refresh} />}
+      <CheckPromptAction
+        detector={detector}
+        targets={targets}
+        refresh={refresh}
+        active={active}
+      />
     </div>
   )
 }
@@ -260,6 +144,7 @@ export function BurnCheckDetail({
   refresh,
   contained = false,
   reportRow = false,
+  active = true,
 }: {
   detector: BurnCheckDetectorId
   targets: BurnCheckTargetPayload[]
@@ -268,6 +153,7 @@ export function BurnCheckDetail({
   refresh: () => void
   contained?: boolean
   reportRow?: boolean
+  active?: boolean
 }) {
   const statuses = Array.from(
     new Set(targets.map(watchStatus).filter((status): status is string => status !== null)),
@@ -285,7 +171,12 @@ export function BurnCheckDetail({
             {CHECK_SENTENCES[detector]}
           </p>
           <div className="mt-2">
-            <CheckDetailActions detector={detector} targets={targets} refresh={refresh} />
+            <CheckDetailActions
+              detector={detector}
+              targets={targets}
+              refresh={refresh}
+              active={active}
+            />
           </div>
         </div>
       )}

@@ -71,6 +71,19 @@ pub(super) fn finding_causes(
                     worker_model: worker_model.clone(),
                     worker_ordinal: child.ordinal,
                     parent_call_id: child.parent_call_id.clone(),
+                    config_binding: child
+                        .config_binding
+                        .as_ref()
+                        .filter(|binding| {
+                            child.observed_child_models.len() == 1
+                                && binding.model_id == *worker_model
+                                && child.parent_call_id.is_some()
+                                && matches!(
+                                    child.child_model,
+                                    crate::analysis::EvidenceValue::Complete(())
+                                )
+                        })
+                        .cloned(),
                 });
             }
         }
@@ -121,6 +134,7 @@ mod tests {
             child_model: EvidenceValue::Unsupported,
             confidence: RelationConfidence::Observed,
             provenance: RelationProvenance::TaskToolUse,
+            config_binding: None,
         });
         evidence
     }

@@ -1,6 +1,7 @@
 import { AGENT_SLUGS, agentSessionFilterLabel } from "./presentation/agents"
 import { CHECK_DEFINITIONS, isCheckAvailable } from "./presentation/checkDefinitions"
-import type { BurnCheckDetectorId } from "./insightsIpc"
+import type { BurnCheckDetectorId, InstalledCheckId } from "./insightsIpc"
+import type { CheckAvailability } from "./checkAvailability"
 import { detectPlatform, type Platform } from "./platform"
 import { MAIN_VIEWS, type MainViewId } from "./navigation/mainViews"
 
@@ -21,6 +22,7 @@ export type AppSearchTarget =
   | { kind: "view"; section: "activity"; filters?: SessionFilters }
   | SettingsSearchTarget
   | { kind: "check"; check: BurnCheckDetectorId }
+  | { kind: "installedCheck"; check: InstalledCheckId }
 
 export function resolveSettingsSearchTarget(target: SettingsSearchTarget): {
   pane: SettingsPane
@@ -97,15 +99,27 @@ export function searchApp(
   query: string,
   platform: Platform = detectPlatform(),
   checksAvailable = true,
+  installedChecks: CheckAvailability["installedChecks"] = [],
 ): AppSearchResult[] {
   const normalized = query.trim().toLocaleLowerCase().slice(0, 200)
   const words = normalized.split(/\s+/).filter(Boolean)
-  return APP_SEARCH_CATALOG.filter(
-    (result) =>
-      (!result.platform || result.platform === platform) &&
-      (result.target.kind !== "check" ||
-        isCheckAvailable(result.target.check, checksAvailable)),
-  )
+  const catalog = [
+    ...APP_SEARCH_CATALOG,
+    ...installedChecks.map((check) => ({
+      id: `installed-check:${check.effectiveId}`,
+      label: check.name,
+      detail: "Checks",
+      aliases: [check.effectiveId, ...check.aliases],
+      target: { kind: "installedCheck" as const, check: check.effectiveId },
+    })),
+  ]
+  return catalog
+    .filter(
+      (result) =>
+        (!("platform" in result) || !result.platform || result.platform === platform) &&
+        (result.target.kind !== "check" ||
+          isCheckAvailable(result.target.check, checksAvailable)),
+    )
     .map((result) => {
       if (result.target.kind !== "setting" || !result.target.control) return result
       const label = settingsControlLabel(result.target.control, platform)
@@ -135,8 +149,9 @@ export function groupAppResults(
   query: string,
   platform?: Platform,
   checksAvailable = true,
+  installedChecks: CheckAvailability["installedChecks"] = [],
 ): AppSearchGroup[] {
-  const results = searchApp(query, platform, checksAvailable)
+  const results = searchApp(query, platform, checksAvailable, installedChecks)
   const best = query.trim() ? results[0] : undefined
   const remaining = results.filter((result) => result !== best)
   const groups: AppSearchGroup[] = best ? [{ label: "Best match", results: [best] }] : []
@@ -145,7 +160,13 @@ export function groupAppResults(
     ["setting", "Settings"],
     ["check", "Checks"],
   ] as const) {
-    const matches = remaining.filter((result) => result.target.kind === kind).slice(0, 5)
+    const matches = remaining
+      .filter(
+        (result) =>
+          result.target.kind === kind ||
+          (kind === "check" && result.target.kind === "installedCheck"),
+      )
+      .slice(0, 5)
     if (matches.length) groups.push({ label, results: matches })
   }
   return groups

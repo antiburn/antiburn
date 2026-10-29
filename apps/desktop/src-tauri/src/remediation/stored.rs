@@ -155,7 +155,7 @@ fn legacy_source_format(value: &str) -> Option<SourceFormat> {
         "ClaudeJsonl" => SourceFormat::ClaudeJsonl,
         "CodexRolloutJsonl" => SourceFormat::CodexRolloutJsonl,
         "OpenCodeJsonl" => SourceFormat::OpenCodeJsonl,
-        "OpenCodeSqliteV2" => SourceFormat::OpenCodeSqliteV2,
+        "OpenCodeSqliteV2" => SourceFormat::OpenCodeSqliteV1,
         "PiV3Jsonl" => SourceFormat::PiV3Jsonl,
         "OmpV3Jsonl" => SourceFormat::OmpV3Jsonl,
         "CursorJsonl" => SourceFormat::CursorJsonl,
@@ -205,6 +205,27 @@ mod tests {
                 .unwrap()
                 .source_format,
             StoredSourceFormat::from(SourceFormat::ClaudeJsonl)
+        );
+        assert_eq!(
+            parse_watch_definition(&definition("OpenCodeSqliteV2"))
+                .unwrap()
+                .source_format
+                .value(),
+            SourceFormat::OpenCodeSqliteV1
+        );
+        assert_eq!(
+            parse_watch_definition(&definition("open_code_sqlite_v2"))
+                .unwrap()
+                .source_format
+                .value(),
+            SourceFormat::OpenCodeSqliteV1
+        );
+        assert_eq!(
+            parse_watch_definition(&definition("open_code_v2_sqlite"))
+                .unwrap()
+                .source_format
+                .value(),
+            SourceFormat::OpenCodeSqliteV2
         );
         let stable = parse_watch_definition(&definition("claude_jsonl")).unwrap();
         assert_eq!(stable.source_format.value(), SourceFormat::ClaudeJsonl);

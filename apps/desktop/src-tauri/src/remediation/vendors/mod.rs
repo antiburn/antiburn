@@ -25,10 +25,33 @@ pub(super) enum ActionSupport {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ModelWatchEvidence {
+    ObservedUsage,
+    ConfigAttribution,
+}
+
 pub(super) trait VendorRemediationPolicy: Sync {
     fn agent(&self) -> AgentKind;
 
     fn action_support(&self, action: RemediationAction, source: SourceFormat) -> ActionSupport;
+
+    fn model_watch_evidence(&self, _source: SourceFormat) -> ModelWatchEvidence {
+        ModelWatchEvidence::ObservedUsage
+    }
+
+    fn resource_names_case_sensitive(&self, _source: SourceFormat) -> bool {
+        false
+    }
+
+    fn subagent_config_value(
+        &self,
+        _worker_model: &str,
+        model: &str,
+        _binding: Option<&antiburn_local::analysis::SubagentConfigBinding>,
+    ) -> Option<String> {
+        Some(model.to_owned())
+    }
 
     fn runtime_override_present(&self) -> bool {
         false
@@ -143,12 +166,15 @@ mod tests {
     use super::*;
     use antiburn_local::analysis::TurnCounts;
 
-    const SOURCE_FORMATS: [SourceFormat; 31] = [
+    const SOURCE_FORMATS: [SourceFormat; 35] = [
         SourceFormat::ClaudeJsonl,
         SourceFormat::CodexRolloutJsonl,
         SourceFormat::OpenCodeJsonl,
+        SourceFormat::OpenCodeSqliteV1,
         SourceFormat::OpenCodeSqliteV2,
+        SourceFormat::OpenCodeV2SessionExport,
         SourceFormat::PiV3Jsonl,
+        SourceFormat::OmpV3Jsonl,
         SourceFormat::CursorJsonl,
         SourceFormat::CursorCliAgentJsonl,
         SourceFormat::CursorCliStoreDb,
@@ -174,6 +200,7 @@ mod tests {
         SourceFormat::WindsurfWorkspaceJson,
         SourceFormat::WindsurfMirrorJson,
         SourceFormat::WindsurfCascadeProtobuf,
+        SourceFormat::DevinLocalSqlite,
         SourceFormat::Uncharacterized,
     ];
 
@@ -208,7 +235,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(supported.len(), 42);
+        assert_eq!(supported.len(), 49);
     }
 
     #[test]

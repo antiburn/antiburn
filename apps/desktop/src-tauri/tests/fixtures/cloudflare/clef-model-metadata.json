@@ -1,6 +1,6 @@
 {
   "source": "https://developers.cloudflare.com/workers-ai/models/clef/ and https://developers.cloudflare.com/workers-ai/models/clef-flash/",
-  "captured": "2026-10-05",
+  "captured": "2026-10-27",
   "models": {
     "clef": {
       "model_id": "@cf/cloudflare/clef",
@@ -10,10 +10,26 @@
     },
     "clef-flash": {
       "model_id": "@cf/cloudflare/clef-flash",
-      "context_window_tokens": 65536,
+      "context_window_tokens": 24576,
       "maximum_questions": 64,
       "maximum_state_tokens": null
     }
   },
-  "limits_note": "Cloudflare documents that long state is truncated, but does not publish a separate state limit or tokenizer. The API schema does not report runtime context metadata."
+  "limits_note": "Cloudflare documents that long state is truncated, but does not publish a separate state limit or tokenizer. The API schema does not report runtime context metadata.",
+  "output_contract": {
+    "checked": "2026-10-23",
+    "sources": [
+      "https://developers.cloudflare.com/workers-ai/models/clef/schema-input.json",
+      "https://developers.cloudflare.com/workers-ai/models/clef/schema-output.json",
+      "https://developers.cloudflare.com/workers-ai/models/clef-flash/schema-input.json",
+      "https://developers.cloudflare.com/workers-ai/models/clef-flash/schema-output.json"
+    ],
+    "question_types": ["choice", "score", "noul"],
+    "choice_required_output": ["type", "choice", "probabilities", "confidence"],
+    "score_required_output": ["type", "score", "legend", "probabilities", "confidence"],
+    "documented_choice_criteria": [2, 255],
+    "documented_score_criteria": [2, 10],
+    "local_choice_criteria": [2, 26],
+    "local_score_criteria": [2, 10]
+  }
 }

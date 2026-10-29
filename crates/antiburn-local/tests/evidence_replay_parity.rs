@@ -29,8 +29,9 @@ use antiburn_local::analysis::{
     COVERAGE_SCHEMA_REVISION, CompositeSink, EVIDENCE_SCHEMA_REVISION, EvidenceSource, FenceScope,
     MemoryTurnRowStore, NormalizedEvent, NormalizedRecord, RawSource, Role, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionSummary,
-    SourceCapabilities, SourceKind, TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey,
-    VisitOutcome, evidence_from_facts, query_coverage_record, query_turn_facts, reader_for,
+    SourceCapabilities, SourceFormat, SourceKind, TurnRowSink, TurnRowStore, TurnScope,
+    TurnSessionKey, VisitOutcome, evidence_from_facts, query_coverage_record, query_turn_facts,
+    reader_for,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -685,7 +686,7 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: SourceFormat::OpenCodeSqliteV1,
     }
 }
 

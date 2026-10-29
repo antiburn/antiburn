@@ -475,6 +475,37 @@ mod tests {
     }
 
     #[test]
+    fn queued_hosts_advance_while_new_hosts_continue_to_arrive() {
+        let mut state = Scheduler::new(300).state.into_inner().unwrap();
+        for host in ["older-a", "older-b"] {
+            state.queued.insert(host.into());
+            state.pending.push_back(Job {
+                host_id: host.into(),
+                origin: ScanOrigin::Automatic,
+            });
+        }
+        let enabled = (0..8)
+            .map(|arrival| format!("arrival-{arrival}"))
+            .chain(["older-a".into(), "older-b".into()])
+            .collect::<HashSet<_>>();
+
+        let mut served = Vec::new();
+        for arrival in 0..8 {
+            let host = format!("arrival-{arrival}");
+            state.queued.insert(host.clone());
+            state.pending.push_back(Job {
+                host_id: host,
+                origin: ScanOrigin::Automatic,
+            });
+            served.push(next_job(&mut state, &enabled).unwrap().host_id);
+        }
+
+        assert_eq!(&served[..2], &["older-a", "older-b"]);
+        assert_eq!(served.len(), 8);
+        assert_eq!(state.pending.len(), 2);
+    }
+
+    #[test]
     fn disabling_cancels_pending_jobs_and_fences_active_commits() {
         let scheduler = Scheduler::new(300);
         let mut state = scheduler.state.lock().unwrap();
@@ -599,5 +630,25 @@ mod tests {
         assert_eq!(state.generations.get("new-host"), Some(&1));
         assert!(!state.queued.contains("new-host"));
         assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn transfer_lifecycle_write_rejects_the_active_scan_generation() {
+        let scheduler = Scheduler::new(300);
+        let mut state = scheduler.state.lock().unwrap();
+        state.active = Some(Progress {
+            host_id: "host".into(),
+            completed: 1,
+            total: 2,
+        });
+        assert!(commit_allowed(&state, "host", 0));
+
+        begin_lifecycle_write(&mut state, &["host".into()], false);
+
+        assert!(!commit_allowed(&state, "host", 0));
+        assert!(!commit_allowed(&state, "host", 1));
+        assert!(state.active.is_some());
+        state.lifecycle_write = false;
+        assert!(commit_allowed(&state, "host", 1));
     }
 }

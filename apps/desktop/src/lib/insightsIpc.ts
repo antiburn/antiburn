@@ -32,31 +32,6 @@ export interface ChecksCategoryPayload {
   clean: number
   /** Sessions without enough evidence for a finding or clean result. */
   unavailable: number
-  /** True when this check assesses selected evidence. */
-  sampled?: boolean
-  /** True only while this category has queued or running work. */
-  checking?: boolean
-  /** Sessions with queued, running, or resumable continuation work. */
-  checkingCount?: number
-  /** True when the assessment uses incomplete context. */
-  partialContext?: boolean
-  reviewState?: "noMatchingWork" | "stopped"
-  reviewCoverage?: {
-    skipped?: number | null
-    contextBlocked?: number | null
-    /** Terminal review targets, including uncertain answers. */
-    reviewed: number
-    /** Null when any applicable session has a missing or capped target inventory. */
-    total: number | null
-    /** Reviewed targets with an uncertain answer; a subset of reviewed. */
-    uncertain: number | null
-    /** Targets without a terminal answer; does not promise another review. */
-    pending: number | null
-    /** Reviewed targets that wait for task completion, not for a review answer. */
-    pendingCompletion?: number | null
-    /** True only when work can continue and the check is queued or running. */
-    continuing: boolean
-  }
   /** Estimated avoidable tokens divided by total used tokens, in basis points from 0 to 10000. */
   estimatedTokenBurnBasisPoints: number | null
 }
@@ -65,7 +40,6 @@ export type ChecksCategoryLifecycle = "failing" | "awaitingVerification" | "pass
 
 /** The bounded subset of the local report needed by All checks. */
 export interface ChecksReportPayload {
-  smartChecksAvailable?: boolean
   /** False while this report snapshot still has queued or running evidence work. */
   evidenceSettled: boolean
   /** Sessions the report window's denominator counts, regardless of evidence
@@ -82,25 +56,99 @@ export interface ChecksReportPayload {
   /** Aggregate burn indexed by the active detector bit mask in canonical detector order. */
   estimatedTokenBurnBasisPointsByDetectorMask?: Array<number | null>
   categories: ChecksCategoryPayload[]
+  /** Installed checks use their own identity and status projection. */
+  installedChecks?: InstalledCheckReportPayload[]
+}
+
+export type InstalledCheckAvailability =
+  | { status: "available" }
+  | { status: "paused"; reason?: string | null }
+  | { status: "invalid"; reason?: string | null }
+  | { status: "unsupported"; reason?: string | null }
+
+export type InstalledCheckId = `installed:${string}`
+export type CheckId = BurnCheckDetectorId | InstalledCheckId
+
+export function isInstalledCheckId(id: CheckId): id is InstalledCheckId {
+  return id.startsWith("installed:")
+}
+
+export interface InstalledCheckDiagnosticSourcePayload {
+  reference: string
+  path: string
+  line: number | null
+  column: number | null
+}
+
+export interface InstalledCheckDiagnosticPayload {
+  code: string
+  severity: "error" | "info"
+  title: string
+  message: string
+  source: InstalledCheckDiagnosticSourcePayload | null
+  details: Array<{ label: string; value: string }>
+  affectedSessionCount: number
+}
+
+export type InstalledCheckEvent =
+  | "toolResult"
+  | "userMessage"
+  | "assistantMessage"
+  | "toolCall"
+  | "message"
+  | "turnEnd"
+  | "sessionStart"
+  | "sessionIdle"
+  | "sessionEvent"
+
+/** Current native-window facts for one logical installed definition. */
+export interface InstalledCheckReportPayload {
+  effectiveId: InstalledCheckId
+  name: string
+  aliases: string[]
+  description: string | null
+  availability: InstalledCheckAvailability
+  diagnostic: string | null
+  diagnostics: InstalledCheckDiagnosticPayload[]
+  explanation: string | null
+  finding: number
+  clean: number
+  unavailable: number
+  reviewFailed: number
+  reviewedWithoutStatus: number
+  hasStarted: boolean
+  checkingCount: number
+  waitingForDataCount: number
+  waitingForResultsCount: number
+  waitingForEvents: { event: InstalledCheckEvent; count: number; catchingUp: boolean } | null
+  agents: string[]
+  targets: InstalledCheckTargetPayload[]
+  targetsTruncated: boolean
+}
+
+export interface InstalledCheckTargetPayload {
+  id: string
+  title: string
+  agent: string
+  projectName: string | null
+  sourcePath: string | null
+  observation: string | null
+  evidenceAvailable: boolean
+  samples: BurnCheckSamplePayload[]
 }
 
 export type BurnCheckDetectorId =
-  | "scopeCreep"
-  | "overExploring"
   | "sessionsOverDepth"
   | "modelOverthinking"
   | "overpoweredSubagents"
   | "unusedMcpServers"
   | "unusedBuiltInTools"
   | "unusedSkills"
-  | "skillOpportunities"
   | "oldModelUsage"
   | "overuseOfFastMode"
   | "cacheChurn"
-  | "ignoredInstructions"
-  | "skillOpportunities"
 
-export type BurnCheckEstimateMethod =
+type BurnCheckEstimateMethod =
   | "repeatedContextAboveDepthCap"
   | "assumedOutputReduction"
   | "workerModelPriceDifference"
@@ -121,16 +169,18 @@ export interface BurnCheckEstimatedValuePayload {
     | "improvements"
 }
 
-export type VerificationCoverageLimit =
+type VerificationCoverageLimit =
   | "freshEvidenceFromSameSourceAndTarget"
   | "exactPositiveControlRequired"
   | "currentEvidenceCannotProveFix"
 
-export type BurnCheckSourceFormat =
+type BurnCheckSourceFormat =
   | "claudeJsonl"
   | "codexRolloutJsonl"
   | "openCodeJsonl"
+  | "openCodeSqliteV1"
   | "openCodeSqliteV2"
+  | "openCodeV2SessionExport"
   | "piV3Jsonl"
   | "cursorJsonl"
   | "cursorCliAgentJsonl"
@@ -156,10 +206,7 @@ export type BurnCheckSourceFormat =
   | "devinLocalSqlite"
   | "uncharacterized"
 
-export interface BurnCheckFindingPayload {
-  overExploringReason?:
-    "unrelated_files" | "excessive_file_breadth" | "excessive_within_file_reading"
-  decisionProof?: IgnoredInstructionDecisionProofPayload
+interface BurnCheckFindingPayload {
   detector: BurnCheckDetectorId
   agent: string
   sourceFormat: BurnCheckSourceFormat
@@ -168,7 +215,7 @@ export interface BurnCheckFindingPayload {
   omitted: number
 }
 
-export interface BurnCheckDisplayFactsPayload {
+interface BurnCheckDisplayFactsPayload {
   resourceKind:
     | "session"
     | "reasoning"
@@ -180,7 +227,6 @@ export interface BurnCheckDisplayFactsPayload {
     | "speed"
     | "cache"
   resourceIdentity: string | null
-  instructionTitle?: string | null
   currentValue: string | null
   replacementValue: string | null
   scopeKind: "global" | "project" | "session" | "worker"
@@ -197,16 +243,16 @@ export interface BurnCheckDisplayFactsPayload {
   verificationLimit: VerificationCoverageLimit
 }
 
-export type AutoFixUnavailableReason =
+type AutoFixUnavailableReason =
   "unsupportedOrUnprovenTarget" | "activeWatch" | "safetyCheckFailed" | "targetNotFound"
 
-export type AutoFixAvailabilityPayload =
+type AutoFixAvailabilityPayload =
   { status: "available" } | { status: "unavailable"; reason: AutoFixUnavailableReason }
 
-export type PromptFixAvailabilityPayload =
+type PromptFixAvailabilityPayload =
   { status: "available" } | { status: "unavailable"; reason: PromptFixUnavailableReason }
 
-export type BurnCheckWatchLifecycle =
+type BurnCheckWatchLifecycle =
   | "reserved"
   | "writing"
   | "recoveryNeeded"
@@ -215,7 +261,7 @@ export type BurnCheckWatchLifecycle =
   | "fixed"
   | "recurred"
 
-export type BurnCheckVerificationReason =
+type BurnCheckVerificationReason =
   | "missingPostBoundaryEvidence"
   | "writeOutcomeUnknown"
   | "verificationUnavailable"
@@ -223,7 +269,7 @@ export type BurnCheckVerificationReason =
   | "homeUnavailable"
   | "physicalTargetChanged"
 
-export type BurnCheckVerificationPayload =
+type BurnCheckVerificationPayload =
   | { status: "reserved" }
   | {
       status: "watching"
@@ -241,10 +287,10 @@ export type BurnCheckVerificationPayload =
     }
   | { status: "verificationUnavailable" }
 
-export type BurnCheckSavingsUnknownReason =
+type BurnCheckSavingsUnknownReason =
   "missingRates" | "missingEvidence" | "missingRevision" | "arithmeticOverflow"
 
-export type BurnCheckSavingsPayload =
+type BurnCheckSavingsPayload =
   | { status: "pending"; methodRevision?: number }
   | { status: "unavailable" }
   | {
@@ -262,7 +308,7 @@ export type BurnCheckSavingsPayload =
       recurrenceMs: number | null
     }
 
-export interface BurnCheckWatchPayload {
+interface BurnCheckWatchPayload {
   watchId: string
   origin: "passive" | "action"
   lifecycle: BurnCheckWatchLifecycle
@@ -303,43 +349,19 @@ export interface BurnCheckEvidenceItemPayload {
   limitation: string | null
 }
 
-export interface IgnoredInstructionDecisionDecisionCoveragePayload {
-  source_complete: boolean
-  selected_history_complete: boolean
-  read_request_inventory_complete: boolean
-  results_excluded: boolean
-  user_authority_excluded: boolean
-  limitations: string[]
-}
-
-export interface IgnoredInstructionDecisionCitationPayload {
-  claim: "rule_requirement" | "anchored_action" | "prerequisite_contrast" | "observed_context"
-  source_ids: string[]
-}
-
-export interface IgnoredInstructionDecisionProofPayload {
-  contrast: string
-  prerequisite: "not_required" | "earlier_request_absent" | "selected_history_conflict"
-  citations: IgnoredInstructionDecisionCitationPayload[]
-  coverage: IgnoredInstructionDecisionDecisionCoveragePayload
-  contextRevision: string
-}
-
 export interface BurnCheckTargetEvidencePayload {
   status: "available" | "unavailable"
   items: BurnCheckEvidenceItemPayload[]
   comparison?: BurnCheckEvidenceComparisonPayload
-  decisionProof?: IgnoredInstructionDecisionProofPayload
   occurrences?: {
     findingId: string
     status: "available" | "unavailable"
     items: BurnCheckEvidenceItemPayload[]
     comparison?: BurnCheckEvidenceComparisonPayload
-    decisionProof?: IgnoredInstructionDecisionProofPayload
   }[]
 }
 
-export interface BurnCheckEvidenceComparisonPayload {
+interface BurnCheckEvidenceComparisonPayload {
   sourceRanges?: {
     reference: string
     startByte: number
@@ -363,7 +385,7 @@ export interface BurnCheckEvidenceComparisonPayload {
   }[]
 }
 
-export interface BurnCheckReadExtentPayload {
+interface BurnCheckReadExtentPayload {
   unit: "lines" | "bytes" | "unknown"
   offset: number | null
   limit: number | null
@@ -395,29 +417,6 @@ export interface BurnCheckTargetListPayload {
   truncated: boolean
 }
 
-export type BurnCheckRemediationOutcome = "failed" | "passed"
-
-/** Bounded retained remediation attempts by exact target and remediation cycle. */
-export interface BurnCheckRemediationAttemptPayload {
-  detector: BurnCheckDetectorId
-  findingId: string
-  watchId: string
-  remediationCycleId: string
-  display: BurnCheckDisplayFactsPayload
-  origin: "passive" | "action"
-  lifecycle: BurnCheckWatchLifecycle
-  outcome: BurnCheckRemediationOutcome
-  verification: BurnCheckVerificationPayload
-  savings: BurnCheckSavingsPayload
-  effectiveBoundaryMs: number | null
-  verifiedBoundaryMs: number | null
-  recurredBoundaryMs: number | null
-}
-
-export interface BurnCheckRemediationProgressPayload {
-  attempts: BurnCheckRemediationAttemptPayload[]
-}
-
 export interface AutoFixReviewPayload {
   preparedOperationId: string
   expiresAtEpoch: number
@@ -438,6 +437,8 @@ export interface AutoFixReviewPayload {
   proposedValue: string
   behaviorOverrideWarning: boolean
   effect:
+    | "futureModelDefault"
+    | "skillAdvertising"
     | "modelSelection"
     | "reasoningEffort"
     | "sessionCompaction"
@@ -447,6 +448,8 @@ export interface AutoFixReviewPayload {
     | "skillAvailability"
     | "serviceTierSelection"
   sideEffect:
+    | "activeSessionsKeepTheirModel"
+    | "explicitSkillUseRemainsAvailable"
     | "modelBehaviorMayChange"
     | "responsesMayUseLessReasoning"
     | "earlierSessionSummarization"
@@ -473,7 +476,7 @@ export type ApplyPreparedBurnCheckOperationOutcome =
   | { outcome: "conflict" }
   | { outcome: "unavailable"; reason: AutoFixUnavailableReason }
 
-export type PromptFixUnavailableReason =
+type PromptFixUnavailableReason =
   | "targetNotFound"
   | "promptSizeLimit"
   | "essentialIdentityUnavailable"
@@ -514,16 +517,12 @@ export interface AggregateWinsPayload {
 }
 
 export type SessionHygieneBadgeId =
-  | "scopeCreep"
-  | "skillOpportunities"
-  | "overExploring"
   | "sessionOverdepth"
   | "modelOverthinking"
   | "overpoweredSubagents"
   | "obsoleteModel"
   | "fastModeOveruse"
   | "excessCacheRehydration"
-  | "ignoredInstructions"
 
 export type SessionHygieneFindingEvidence =
   | {
@@ -564,9 +563,8 @@ export type SessionHygieneFindingEvidence =
 
 export interface SessionHygieneBadgePayload {
   id: SessionHygieneBadgeId
-  status: "finding" | "clean" | "checking" | "couldntCheck" | "notAssessed" | "noCandidates"
+  status: "finding" | "clean" | "notAssessed"
   notAssessedReason: InsightsNotAssessedReason | null
-  checkReason?: string
   /** Which vendor billing mechanism backs an `excessCacheRehydration`
    *  verdict. Absent for every other badge and for old evidence with no
    *  `repeated_context` marker. */
@@ -585,7 +583,7 @@ export interface UnusedResource {
 }
 
 /** Priced idle context for one session, grouped by resource kind. */
-export interface SessionUnusedResources {
+interface SessionUnusedResources {
   mcpServers: UnusedResource[]
   builtInTools: UnusedResource[]
   skills: UnusedResource[]
@@ -603,6 +601,16 @@ export async function getChecksReport(consumerId: string): Promise<ChecksReportP
   return invoke<ChecksReportPayload>("get_checks_report", { consumerId })
 }
 
+export function getInstalledCheckEvidence(
+  targetId: string,
+): Promise<BurnCheckTargetEvidencePayload> {
+  return invoke<BurnCheckTargetEvidencePayload>("get_installed_check_evidence", { targetId })
+}
+
+export function openInstalledCheckDefinition(sourceReference: string): Promise<void> {
+  return invoke<void>("open_installed_check_definition", { sourceReference })
+}
+
 /** Lists current exact targets for one detector in the native thirty-day context. */
 export async function listBurnCheckTargets(
   detector: BurnCheckDetectorId,
@@ -611,20 +619,6 @@ export async function listBurnCheckTargets(
   return invoke<BurnCheckTargetListPayload>("list_burn_check_targets", {
     detector,
   })
-}
-
-/** Loads private evidence for one current target after native revalidation. */
-export async function getBurnCheckTargetEvidence(
-  actionId: string,
-): Promise<BurnCheckTargetEvidencePayload | null> {
-  if (!hasShell()) return null
-  return invoke<BurnCheckTargetEvidencePayload>("get_burn_check_target_evidence", { actionId })
-}
-
-/** Reads the bounded remediation progress retained for each detector. */
-export async function getBurnCheckRemediationProgress(): Promise<BurnCheckRemediationProgressPayload | null> {
-  if (!hasShell()) return null
-  return invoke<BurnCheckRemediationProgressPayload>("get_burn_check_remediation_progress")
 }
 
 /** Prepares one exact automatic change for semantic review. */
@@ -647,17 +641,19 @@ export async function applyPreparedBurnCheckOperation(
   })
 }
 
-/** Returns a bounded prompt and starts or reuses its verification watch. */
+/** Builds a current prompt for one stable target identity. */
 export async function copyPromptFixBurnCheckTarget(
-  actionId: string,
+  detector: BurnCheckDetectorId,
+  findingId: string,
 ): Promise<CopyPromptFixBurnCheckTargetOutcome | null> {
   if (!hasShell()) return null
   return invoke<CopyPromptFixBurnCheckTargetOutcome>("copy_prompt_fix_burn_check_target", {
-    actionId,
+    detector,
+    findingId,
   })
 }
 
-/** Returns a generic bounded prompt only for a failed check with no exact target. */
+/** Builds a current bounded prompt for one check. */
 export async function copyPromptFixBurnCheck(
   detector: BurnCheckDetectorId,
 ): Promise<CopyPromptFixBurnCheckOutcome | null> {
@@ -667,11 +663,13 @@ export async function copyPromptFixBurnCheck(
 
 /** Prepares one bounded prompt for all selected exact targets in a check. */
 export async function copyPromptFixBurnCheckTargets(
-  actionIds: string[],
+  detector: BurnCheckDetectorId,
+  findingIds: string[],
 ): Promise<CopyPromptFixBurnCheckOutcome | null> {
   if (!hasShell()) return null
   return invoke<CopyPromptFixBurnCheckOutcome>("copy_prompt_fix_burn_check_targets", {
-    actionIds,
+    detector,
+    findingIds,
   })
 }
 

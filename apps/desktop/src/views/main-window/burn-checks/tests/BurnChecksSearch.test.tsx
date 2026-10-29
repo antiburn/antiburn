@@ -6,6 +6,7 @@ import type * as InsightsIpcModule from "../../../../lib/insightsIpc"
 import type * as IpcModule from "../../../../lib/ipc"
 import { BurnChecksView } from "../../BurnChecksView"
 import { searchApp } from "../../../../lib/appSearch"
+import { installedCheckFixture } from "./installedCheckFixture"
 
 import {
   report,
@@ -25,7 +26,6 @@ const commands = vi.hoisted(() => ({
   writeClipboardText: vi.fn(),
   openSample: vi.fn(),
   noteInteraction: vi.fn(),
-  evidence: vi.fn(),
 }))
 
 vi.mock("../../../../lib/insightsIpc", async (importOriginal) => ({
@@ -36,7 +36,6 @@ vi.mock("../../../../lib/insightsIpc", async (importOriginal) => ({
   copyPromptFixBurnCheck: commands.copyFallback,
   copyPromptFixBurnCheckTargets: commands.copyBatch,
   openBurnCheckSample: commands.openSample,
-  getBurnCheckTargetEvidence: commands.evidence,
 }))
 
 vi.mock("../../../../lib/ipc", async (importOriginal) => ({
@@ -63,111 +62,6 @@ afterEach(() => {
 // one test can take five times its local run time. 15 s is the bound, not a
 // target.
 describe("BurnChecksView search", { timeout: 15_000 }, () => {
-  it.each([
-    "ignoredInstructions",
-    "scopeCreep",
-    "overExploring",
-    "skillOpportunities",
-  ] as const)(
-    "explains sampling on hover and keyboard focus only for sampled %s",
-    async (id) => {
-      const check = {
-        ...report.categories[0]!,
-        id,
-        sampled: true,
-      }
-      const first = setup(null, false, aggregate, { ...report, categories: [check] })
-      const info = await screen.findByLabelText("This check has been sampled")
-      expect(info).toBeVisible()
-      expect(info.tagName).toBe("SPAN")
-      fireEvent.click(info)
-      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
-      fireEvent.pointerMove(info, { pointerType: "mouse" })
-      expect(
-        await screen.findByText(/This check reviews a sample of matching items/),
-      ).toBeVisible()
-      expect(screen.getByText(/The full number of matching items is not known/)).toBeVisible()
-      expect(screen.getByText(/The check aims to review half of matching items/)).toBeVisible()
-      fireEvent.pointerLeave(info)
-      fireEvent.focus(info)
-      expect(await screen.findByText(/does not mean every item is clear/)).toBeVisible()
-      first.view.unmount()
-
-      const second = setup(null, false, aggregate, {
-        ...report,
-        categories: [{ ...check, sampled: false }],
-      })
-      await screen.findByRole("heading", { level: 2 })
-      expect(screen.queryByLabelText("This check has been sampled")).not.toBeInTheDocument()
-      second.view.unmount()
-
-      setup(null, false, aggregate, {
-        ...report,
-        categories: [{ ...report.categories[0]!, id }],
-      })
-      await screen.findByRole("heading", { level: 2 })
-      expect(screen.queryByLabelText("This check has been sampled")).not.toBeInTheDocument()
-    },
-  )
-
-  it("opens ignored instruction evidence through the report and keeps the ordinary prompt action", async () => {
-    commands.evidence.mockResolvedValue({
-      status: "available",
-      items: [
-        {
-          label: "instruction",
-          sourceLabel: "AGENTS.md · Testing",
-          reference: "rule",
-          observedAtMs: null,
-          startLine: 24,
-          endLine: 27,
-          excerpt: "Run tests before release.",
-          explanation: "",
-          limitation: null,
-        },
-        {
-          label: "observedAction",
-          sourceLabel: "Session action",
-          reference: "action",
-          observedAtMs: 1000,
-          startLine: null,
-          endLine: null,
-          excerpt: "Released without tests",
-          explanation: "",
-          limitation: null,
-        },
-      ],
-    })
-    const check = {
-      ...report.categories[0]!,
-      id: "ignoredInstructions" as const,
-      finding: 1,
-      clean: 0,
-      estimatedTokenBurnBasisPoints: null,
-    }
-    setup(
-      {
-        ...target,
-        finding: { ...target.finding, detector: "ignoredInstructions" },
-        autoFix: { status: "unavailable", reason: "unsupportedOrUnprovenTarget" },
-        evidenceAvailable: true,
-      },
-      false,
-      aggregate,
-      { ...report, categories: [check] },
-    )
-    const row = await screen.findByRole("button", { name: /Ignored instructions, 1 failed/ })
-    fireEvent.click(row)
-    expect(
-      screen.getByText("Selected actions conflict with current or recorded instruction text."),
-    ).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /Copy fix prompt/ })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Show instruction and action" }))
-    expect(await screen.findByText("Run tests before release.")).toBeInTheDocument()
-    expect(screen.getByText("Released without tests")).toBeInTheDocument()
-    expect(commands.evidence).toHaveBeenCalledWith("action-fresh")
-  })
-
   it("selects and refocuses a searched check without remounting the report", async () => {
     HTMLElement.prototype.scrollIntoView = vi.fn()
     const { session, view } = setup()
@@ -264,7 +158,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       "aria-expanded",
       "true",
     )
-    expect(screen.getByText("This check has not reviewed any sessions yet.")).toBeVisible()
+    expect(screen.getByText("This check has no result in the current report.")).toBeVisible()
     expect(screen.getByRole("button", { name: /Excess cache rehydration/ })).toHaveFocus()
     view.rerender(
       <BurnChecksView
@@ -281,7 +175,7 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
       "aria-pressed",
       "true",
     )
-    expect(screen.getByText("This check has not reviewed any sessions yet.")).toBeVisible()
+    expect(screen.getByText("This check has no result in the current report.")).toBeVisible()
   })
 
   it("allows ordinary selection after searching for an absent check", async () => {
@@ -295,10 +189,10 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     view.rerender(
       <BurnChecksView active session={session} focusedCheck="cacheChurn" focusRevision={1} />,
     )
-    expect(screen.getByText("This check has not reviewed any sessions yet.")).toBeVisible()
+    expect(screen.getByText("This check has no result in the current report.")).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: /Old model usage/ }))
     expect(
-      screen.queryByText("This check has not reviewed any sessions yet."),
+      screen.queryByText("This check has no result in the current report."),
     ).not.toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "Old model usage" })).toBeVisible()
   })
@@ -327,7 +221,40 @@ describe("BurnChecksView search", { timeout: 15_000 }, () => {
     expect(row).toHaveAttribute("aria-pressed", "true")
     expect(row).toHaveFocus()
     expect(
-      screen.queryByText("This check has not reviewed any sessions yet."),
+      screen.queryByText("This check has no result in the current report."),
     ).not.toBeInTheDocument()
+  })
+
+  it("settles an unknown installed search when its row arrives, then closes it on removal", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const { adapter, session, view } = setup(target, false, aggregate, report)
+    await screen.findByRole("button", { name: /Old model usage/ })
+    view.rerender(
+      <BurnChecksView
+        active
+        session={session}
+        focusedCheck={installedCheckFixture.effectiveId}
+        focusRevision={1}
+      />,
+    )
+    expect(screen.getByRole("heading", { name: "failed-retry-loop" })).toBeVisible()
+    expect(screen.getByText("This check has no result in the current report.")).toBeVisible()
+    vi.mocked(adapter.getReport).mockResolvedValueOnce({
+      ...report,
+      installedChecks: [installedCheckFixture],
+    })
+    await act(async () => session.refresh())
+    const row = screen.getByRole("button", { name: /Failed retry loop, / })
+    expect(row).toHaveAttribute("aria-pressed", "true")
+    expect(row).toHaveFocus()
+
+    vi.mocked(adapter.getReport).mockResolvedValueOnce(report)
+    await act(async () => session.refresh())
+    expect(screen.queryByRole("heading", { name: "failed-retry-loop" })).not.toBeInTheDocument()
+    expect(
+      screen.queryByText("This check has no result in the current report."),
+    ).not.toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Old model usage" })).toBeVisible()
+    expect(screen.getByRole("button", { name: /Old model usage, / })).toHaveFocus()
   })
 })

@@ -10,8 +10,7 @@ import { detectPlatform } from "../../../lib/platform"
 import { agentDisplayName } from "../../../lib/presentation/agents"
 import { relativeTime } from "../../../lib/presentation/relativeTime"
 import type { AgentMemoriesReport } from "../../../lib/memoriesIpc"
-import type { MemoriesSnapshot } from "./MemoriesSession"
-import type { MemoriesSession } from "./MemoriesSession"
+import type { MemoriesSession, MemoriesSnapshot } from "./MemoriesSession"
 import { MemoryProjectGroup } from "./MemoryProjectGroup"
 
 const USED_WINDOW_MS = 7 * 24 * 3_600_000

@@ -22,7 +22,7 @@ serde_json = "1"
 tauri = { version = "2", features = ["macos-private-api"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tokio = { version = "1", features = ["macros", "sync", "time"] }
+tokio = { version = "1.53.3", features = ["macros", "sync", "time"] }
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", rev = "a3122e894383aa068ec5365a42994e3ac94ba1b6" }
 tracing = "0.1"
 # The island reads the notch from `NSScreen`. `tauri-nspanel` re-exports

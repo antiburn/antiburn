@@ -17,7 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = ["macos-private-api"] }
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1.53.3", features = ["sync", "time"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

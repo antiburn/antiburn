@@ -103,6 +103,7 @@ const OUTPUT_KEYS = [
   "run_desktop",
   "run_frontend",
   "run_ci_scripts",
+  "run_validator",
   "run_installers",
   "run_licenses",
   "run_advisories",
@@ -161,6 +162,7 @@ test("fails closed for workflow and unknown paths", () => {
   for (const file of [
     ".github/workflows/ci.yml",
     "unclassified.config",
+    ".antiburn/checks/new-check.yml",
     "crates/unknown-crate/src/lib.rs",
     "apps/desktop/src-tauri/crates/new-crate/src/lib.rs",
     "apps/desktop/src-tauri/vendor/foo/src/lib.rs",
@@ -355,7 +357,13 @@ test("chooses platforms per stage", () => {
 });
 
 test("selects transitive dependents of a changed workspace", () => {
-  assert.deepEqual(withDependents(["engine"]), ["engine", "remote", "shell"]);
+  assert.deepEqual(withDependents(["engine"]), [
+    "engine",
+    "remote",
+    "shell",
+    "checks-store",
+    "cli",
+  ]);
   assert.deepEqual(withDependents(["remote"]), ["remote", "shell"]);
   assert.deepEqual(withDependents(["hud"]), ["shell", "hud"]);
   assert.deepEqual(withDependents(["tray-icon"]), ["shell", "tray-icon"]);
@@ -364,7 +372,11 @@ test("selects transitive dependents of a changed workspace", () => {
 
 test("routes Rust paths to their workspaces", () => {
   const cases = [
-    ["crates/antiburn-local/src/lib.rs", "engine,remote", "shell"],
+    [
+      "crates/antiburn-local/src/lib.rs",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
     ["crates/antiburn-remote/src/main.rs", "remote", "shell"],
     ["apps/desktop/src-tauri/src/lib.rs", "", "shell"],
     ["apps/desktop/src-tauri/tauri.conf.json", "", "shell"],
@@ -402,8 +414,16 @@ test("routes Rust paths to their workspaces", () => {
 
 test("routes a lockfile change to its workspace and the license checks", () => {
   for (const [file, engine, desktop] of [
-    ["crates/antiburn-local/Cargo.lock", "engine,remote", "shell"],
-    ["crates/antiburn-local/deny.toml", "engine,remote", "shell"],
+    [
+      "crates/antiburn-local/Cargo.lock",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
+    [
+      "crates/antiburn-local/deny.toml",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
     ["crates/antiburn-remote/Cargo.toml", "remote", "shell"],
     ["apps/desktop/src-tauri/Cargo.lock", "", "shell"],
     ["apps/desktop/src-tauri/about.toml", "", "shell"],
@@ -520,6 +540,30 @@ test("routes other scripts to the CI script tests only", () => {
   assert.equal(outputs.run_licenses, "false");
 });
 
+test("routes Burn Check documentation changes to the validator", () => {
+  for (const file of [
+    "docs/burn-check/README.md",
+    "docs/burn-check/tests/new-case.yml",
+    "docs/burn-check/scripts/validate-checks.mjs",
+    "docs/burn-check/package-lock.json",
+  ]) {
+    const outputs = plan("ready", [file]);
+    assert.equal(outputs.run_validator, "true", file);
+    assert.deepEqual(selectedJobs(outputs), ["run_validator"], file);
+  }
+
+  const unrelatedDocs = plan("ready", ["docs/session-coverage.md"]);
+  assert.equal(unrelatedDocs.run_validator, "false");
+});
+
+test("validates canonical repository checks as well as their Rust readers", () => {
+  const outputs = plan("ready", [".antiburn/checks/fast-mode-value.yml"]);
+  assert.equal(outputs.engine_workspaces, "checks,checks-store,cli");
+  assert.equal(desktopWorkspaces(outputs), "shell");
+  assert.equal(outputs.run_validator, "true");
+  assert.equal(outputs.run_frontend, "false");
+});
+
 test("selects every job for workflow changes", () => {
   const outputs = plan("ready", [".github/workflows/ci.yml"]);
   assert.equal(outputs.engine_workspaces, ALL_WORKSPACES.engine);
@@ -527,6 +571,7 @@ test("selects every job for workflow changes", () => {
   for (const key of [
     "run_frontend",
     "run_ci_scripts",
+    "run_validator",
     "run_installers",
     "run_licenses",
     "run_remote_build",
@@ -773,7 +818,7 @@ test("routes engine fixtures that other workspaces embed to those workspaces", (
   const outputs = plan("ready", [
     "crates/antiburn-local/tests/fixtures/codex_characterization/task_complete_errors.jsonl",
   ]);
-  assert.equal(outputs.engine_workspaces, "engine,remote");
+  assert.equal(outputs.engine_workspaces, "engine,remote,checks-store,cli");
   assert.equal(desktopWorkspaces(outputs), "shell");
 });
 
@@ -816,7 +861,7 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
   }).trim();
   const sources = execFileSync(
     "git",
-    ["ls-files", "--", "crates/*.rs", "apps/desktop/src-tauri/*.rs"],
+    ["ls-files", "--", "crates/**/*.rs", "apps/desktop/src-tauri/**/*.rs"],
     { cwd: root, encoding: "utf8" },
   )
     .split("\n")
@@ -888,15 +933,46 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
 
 test("runs the readers of files read outside the workspaces", () => {
   for (const [file, engine, desktop] of [
-    ["docs/support.md", "engine,remote", "shell"],
-    ["docs/session-coverage.md", "engine,remote", "shell"],
-    ["docs/check-coverage.md", "engine,remote", "shell"],
+    ["docs/support.md", "engine,remote,checks-store,cli", "shell"],
+    ["docs/session-coverage.md", "engine,remote,checks-store,cli", "shell"],
+    ["docs/check-coverage.md", "engine,remote,checks-store,cli", "shell"],
     ["docs/privacy-policy.md", "", "shell"],
+    [
+      "plugins/antiburn-live/hooks/catalog.ts",
+      "engine,remote,checks-store,cli",
+      "shell",
+    ],
     ["apps/desktop/src/views/settings/PrivacyPane.tsx", "", "shell"],
   ]) {
     const outputs = plan("ready", [file]);
     assert.equal(outputs.engine_workspaces, engine, file);
     assert.equal(desktopWorkspaces(outputs), desktop, file);
+    assert.equal(outputs.run_validator, "false", file);
+  }
+});
+
+test("runs desktop readers and the validator for canonical V2 definitions", () => {
+  for (const file of [
+    ".antiburn/checks/fast-mode-value.yml",
+    ".antiburn/checks/over-exploring.yml",
+    ".antiburn/checks/scope-creep.yml",
+  ]) {
+    const outputs = plan("ready", [file]);
+    assert.equal(outputs.engine_workspaces, "checks,checks-store,cli", file);
+    assert.equal(desktopWorkspaces(outputs), "shell", file);
+    assert.equal(outputs.run_validator, "true", file);
+  }
+});
+
+test("runs new inventory definition readers and schema validation", () => {
+  for (const file of [
+    ".antiburn/checks/ignored-instructions.yml",
+    ".antiburn/checks/skill-opportunities.yml",
+  ]) {
+    const outputs = plan("ready", [file]);
+    assert.equal(outputs.engine_workspaces, "checks,checks-store,cli", file);
+    assert.equal(desktopWorkspaces(outputs), "shell", file);
+    assert.equal(outputs.run_validator, "true", file);
   }
 });
 
@@ -993,4 +1069,18 @@ test("checks advisories after draft when a pull request changes a Cargo.lock", (
   ]) {
     assert.equal(plan("ready", [file]).run_advisories, "false", file);
   }
+});
+
+test("routes the session check reader and CLI to their dependent workspaces", () => {
+  assert.deepEqual(withDependents(["checks-store"]), [
+    "shell",
+    "checks-store",
+    "cli",
+  ]);
+  const reader = plan("ready", ["crates/antiburn-checks-store/src/lib.rs"]);
+  assert.equal(reader.engine_workspaces, "checks-store,cli");
+  assert.equal(desktopWorkspaces(reader), "shell");
+  const cli = plan("ready", ["apps/cli/src/delivery.rs"]);
+  assert.equal(cli.engine_workspaces, "cli");
+  assert.equal(desktopWorkspaces(cli), "");
 });

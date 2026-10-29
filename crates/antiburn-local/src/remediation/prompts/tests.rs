@@ -25,6 +25,7 @@ fn causes() -> Vec<FindingCause> {
             worker_model: "model-b".to_owned(),
             worker_ordinal: 1,
             parent_call_id: Some("call-a".to_owned()),
+            config_binding: None,
         },
         FindingCause::UnusedMcpServer {
             server: "server-a".to_owned(),
@@ -43,14 +44,6 @@ fn causes() -> Vec<FindingCause> {
             tokens: None,
             cost_usd: None,
             pricing_revision: None,
-        },
-        FindingCause::SkillOpportunity {
-            evidence: None,
-            skill_name: "review".to_owned(),
-            skill_description: "Review code changes".to_owned(),
-            cited_work_context: "The work included a code review".to_owned(),
-            work_provenance: "Selected session window".to_owned(),
-            selected_window_limit: "Only this selected work window was assessed".to_owned(),
         },
         FindingCause::OldModelUsage {
             provider: Some("provider-a".to_owned()),
@@ -71,185 +64,7 @@ fn causes() -> Vec<FindingCause> {
             paid_tokens: 200,
             threshold_basis_points: 20_000,
         },
-        FindingCause::IgnoredInstructionConflict(Box::new(
-            crate::remediation::IgnoredInstructionConflictEvidence {
-                decision: None,
-                assessment_revision: "revision".to_owned(),
-                assessment_finding_id: "finding".to_owned(),
-                instruction_id: "instruction".to_owned(),
-                instruction_digest: "digest".to_owned(),
-                instruction_excerpt: "Use the reviewed workflow.".to_owned(),
-                instruction_excerpt_truncated: false,
-                rule_id: "rule".to_owned(),
-                rule_heading: "Workflow".to_owned(),
-                start_line: 12,
-                end_line: 14,
-                source: "project:AGENTS.md".to_owned(),
-                provenance:
-                    crate::checks::ignored_instructions::InstructionProvenance::RecordedInjection,
-                instruction_scope: crate::checks::ignored_instructions::InstructionScope::Project,
-                action_id: "action".to_owned(),
-                action_digest: "action-digest".to_owned(),
-                action_excerpt: "git push --force".to_owned(),
-                action_excerpt_truncated: false,
-                action_timestamp_ms: Some(1),
-                nearby_context_ids: Vec::new(),
-                counterevidence_ids: Vec::new(),
-                certainty: crate::checks::ignored_instructions::FindingCertainty::Possible,
-                limitations: Box::new(Vec::new()),
-            },
-        )),
-        FindingCause::ScopeCreep(Box::new(crate::checks::scope_creep::ScopeCreepFinding {
-            explanation_basis: None,
-            id: "scope-finding".into(),
-            group_id: "work-group".into(),
-            work: Vec::new(),
-            task_scope: Vec::new(),
-            observation_kind: crate::checks::scope_creep::WorkObservationKind::Attempt,
-            decision_probability: 0.9,
-            scope_digest: "scope".into(),
-            model: "model".into(),
-            model_revision: None,
-            revisions: crate::checks::scope_creep::REVISIONS,
-            source_generation: 1,
-            publication_fence: 1,
-        })),
-        FindingCause::OverExploring(Box::new(crate::checks::over_exploring::Decision {
-            episode_id: crate::checks::sampling::StableId::new("episode", &[b"synthetic"]),
-            work_item_id: "work".into(),
-            reason: crate::checks::over_exploring::Reason::ExcessiveFileBreadth,
-            reads: vec![crate::checks::over_exploring::ReadBinding {
-                request_id: "read".into(),
-                result_id: Some("result".into()),
-                output_digest: Some("digest".into()),
-            }],
-            task_evidence: Vec::new(),
-            source_evidence: Vec::new(),
-            semantic_revision: "revision".into(),
-            model: "model".into(),
-            revisions: crate::analysis::jev::JevCheck::revisions(
-                &crate::checks::over_exploring::OverExploringCheck,
-            ),
-            outcome: crate::checks::over_exploring::SemanticOutcome::LikelyExcess,
-            probability: 0.9,
-            explanation: None,
-        })),
     ]
-}
-
-#[test]
-fn over_exploring_constructor_validates_choice_probability_and_optional_result_pair() {
-    use crate::analysis::jev::{JevEvidenceReference, JevEvidenceRole};
-    use crate::checks::over_exploring::SemanticOutcome;
-    let evidence = crate::checks::test_support::claude_evidence("read-session");
-    let FindingCause::OverExploring(mut decision) = causes()
-        .into_iter()
-        .find(|cause| matches!(cause, FindingCause::OverExploring(_)))
-        .unwrap()
-    else {
-        unreachable!()
-    };
-    let reference = JevEvidenceReference {
-        source_id: "read".into(),
-        part_id: "events[0].ranges[0].text".into(),
-        content_kind: "tool_input".into(),
-        role: JevEvidenceRole::Candidate,
-    };
-    decision.task_evidence = vec![reference.clone()];
-    decision.source_evidence = vec![reference];
-    decision.reads[0].result_id = None;
-    decision.reads[0].output_digest = None;
-    decision.probability = 0.95;
-    let finding = Finding::over_exploring(&evidence, &decision).unwrap();
-    let prompt = remediation_prompt(&finding).unwrap();
-    assert!(
-        prompt
-            .as_str()
-            .contains("A request alone does not prove returned content")
-    );
-    assert!(prompt.as_str().contains("representative text ranges"));
-    for probability in [0.949, f64::NAN, f64::INFINITY, 1.001] {
-        decision.probability = probability;
-        assert!(Finding::over_exploring(&evidence, &decision).is_none());
-    }
-    decision.probability = 0.95;
-    for outcome in [
-        SemanticOutcome::JustifiedOrMinor,
-        SemanticOutcome::Uncertain,
-    ] {
-        decision.outcome = outcome;
-        assert!(Finding::over_exploring(&evidence, &decision).is_none());
-    }
-    decision.outcome = SemanticOutcome::LikelyExcess;
-    decision.reads[0].result_id = Some("result".into());
-    assert!(Finding::over_exploring(&evidence, &decision).is_none());
-    decision.reads[0].output_digest = Some("digest".into());
-    assert!(Finding::over_exploring(&evidence, &decision).is_some());
-    decision.reads[0].result_id = None;
-    assert!(Finding::over_exploring(&evidence, &decision).is_none());
-}
-
-#[test]
-fn scope_constructor_bounds_probability_and_prompt_distinguishes_proposals() {
-    use crate::analysis::jev_evidence::ContentEventReference;
-    use crate::checks::scope_creep::{WorkBinding, WorkObservationKind};
-    let mut evidence = crate::checks::test_support::claude_evidence("scope-session");
-    evidence.capabilities.source_format = crate::analysis::SourceFormat::ClaudeJsonl;
-    let FindingCause::ScopeCreep(mut scope) = causes()
-        .into_iter()
-        .find(|cause| matches!(cause, FindingCause::ScopeCreep(_)))
-        .unwrap()
-    else {
-        unreachable!()
-    };
-    scope.work.push(WorkBinding {
-        reference: ContentEventReference {
-            id: "work".into(),
-            source_key_digest: "source".into(),
-            thread_digest: "thread".into(),
-            turn_index: 1,
-            native_record_id: Some("native".into()),
-            part_index: 0,
-            stable: true,
-        },
-        digest: "work-digest".into(),
-    });
-    for probability in [0.95, 1.0] {
-        scope.decision_probability = probability;
-        assert!(
-            Finding::scope_creep(&evidence, &scope).is_some(),
-            "empty retained scope is valid"
-        );
-    }
-    for probability in [
-        f64::NAN,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        -0.1,
-        0.949,
-        1.001,
-    ] {
-        scope.decision_probability = probability;
-        assert!(Finding::scope_creep(&evidence, &scope).is_none());
-    }
-    scope.decision_probability = 0.95;
-    for (kind, verb) in [
-        (WorkObservationKind::Attempt, "Attempts"),
-        (WorkObservationKind::Proposal, "Proposes"),
-    ] {
-        scope.observation_kind = kind;
-        let finding = Finding::scope_creep(&evidence, &scope).unwrap();
-        assert!(finding.display().unwrap().observation.starts_with(verb));
-        let prompt = remediation_prompt(&finding).unwrap();
-        assert!(
-            prompt
-                .as_str()
-                .contains("does not prove completed execution")
-        );
-        assert!(!prompt.as_str().contains("Performs"));
-    }
-    scope.revisions.questions -= 1;
-    assert!(Finding::scope_creep(&evidence, &scope).is_none());
 }
 
 #[test]
@@ -270,15 +85,6 @@ fn all_templates_are_bounded_and_deterministic() {
         ["Agent:", "Resource:"].as_slice(),
         [
             "Agent:",
-            "Resource:",
-            "Skill description:",
-            "Cited work:",
-            "Work source:",
-            "Selected-window limit:",
-        ]
-        .as_slice(),
-        [
-            "Agent:",
             "Provider:",
             "API:",
             "Current model:",
@@ -287,9 +93,6 @@ fn all_templates_are_bounded_and_deterministic() {
         .as_slice(),
         ["Agent:", "Provider:", "API:", "Worker model:"].as_slice(),
         ["Agent:", "Current model:"].as_slice(),
-        ["Agent:", "Instruction location:"].as_slice(),
-        ["Agent:", "Cited work:", "Selected-window limit:"].as_slice(),
-        ["Agent:", "Cited work:", "Selected-window limit:"].as_slice(),
     ];
     for (cause, roles) in causes().into_iter().zip(expected_roles) {
         let first = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
@@ -310,7 +113,8 @@ fn every_detector_has_an_actionable_bounded_fallback_prompt() {
     for detector in DetectorId::ALL {
         let prompt = fallback_remediation_prompt(detector).unwrap();
         assert!(prompt.as_str().len() <= MAX_PROMPT_BYTES);
-        assert!(prompt.as_str().contains("Failed check\n"));
+        assert!(prompt.as_str().contains("Check to inspect\n"));
+        assert!(!prompt.as_str().contains("Failed check\n"));
         assert!(prompt.as_str().contains("Goal\n"));
         assert!(prompt.as_str().contains("What to inspect\n"));
         assert!(prompt.as_str().contains("Before you apply a change\n"));
@@ -402,6 +206,86 @@ fn advisory_core_tools_are_not_remediation_targets() {
 }
 
 #[test]
+fn native_v2_recommendations_have_source_specific_limits_and_do_not_admit_export() {
+    for mut cause in causes() {
+        let detector = cause.detector();
+        let supported = matches!(
+            detector,
+            DetectorId::SessionsOverDepth
+                | DetectorId::OverpoweredSubagents
+                | DetectorId::UnusedMcpServers
+                | DetectorId::UnusedBuiltInTools
+                | DetectorId::UnusedSkills
+                | DetectorId::OldModelUsage
+                | DetectorId::CacheChurn
+        );
+        assert_eq!(
+            recommendation_support("opencode", SourceFormat::OpenCodeSqliteV2, detector).is_ok(),
+            supported,
+            "{detector:?}"
+        );
+        assert_eq!(
+            recommendation_support("opencode", SourceFormat::OpenCodeV2SessionExport, detector),
+            Err(RemediationUnavailableReason::UnsupportedSourceFormat)
+        );
+        if supported {
+            if let FindingCause::UnusedBuiltInTool { tool, .. } = &mut cause {
+                *tool = "websearch".into();
+            }
+            let prompt =
+                build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, &cause).unwrap();
+            assert!(prompt.as_str().contains("Native V2"));
+            assert!(!prompt.as_str().contains("not CoreV2 session_message"));
+            assert!(prompt.as_str().len() <= MAX_PROMPT_BYTES);
+        }
+    }
+}
+
+#[test]
+fn native_v2_core_tools_remain_protected() {
+    for tool in ["read", "edit", "bash", "subagent"] {
+        let finding = Finding::advisory_resource(
+            AgentKind::OpenCode,
+            SourceFormat::OpenCodeSqliteV2,
+            FindingCause::UnusedBuiltInTool {
+                tool: tool.into(),
+                tokens: BuiltInToolTokens::Definition(10),
+                cost_usd: None,
+                pricing_revision: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            remediation_prompt(&finding),
+            Err(RemediationUnavailableReason::ProtectedBuiltInTool)
+        );
+    }
+}
+
+#[test]
+fn native_optional_tool_without_measured_tokens_does_not_claim_zero_cost() {
+    let cause = FindingCause::UnusedBuiltInTool {
+        tool: "webfetch".into(),
+        tokens: BuiltInToolTokens::Unavailable,
+        cost_usd: None,
+        pricing_revision: None,
+    };
+    let prompt = build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, &cause).unwrap();
+    assert!(prompt.as_str().contains("token cost is unavailable"));
+    assert!(!prompt.as_str().contains("0 context tokens"));
+    let finding =
+        Finding::advisory_resource(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, cause)
+            .unwrap();
+    assert!(
+        finding
+            .display()
+            .unwrap()
+            .observation
+            .contains("token cost is unavailable")
+    );
+}
+
+#[test]
 fn finding_prompts_have_clear_human_readable_sections() {
     for cause in causes() {
         let prompt = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
@@ -414,35 +298,17 @@ fn finding_prompts_have_clear_human_readable_sections() {
         ] {
             assert!(prompt.as_str().contains(heading), "missing {heading}");
         }
-        if !matches!(
-            cause,
-            FindingCause::IgnoredInstructionConflict(_)
-                | FindingCause::SkillOpportunity { .. }
-                | FindingCause::OverExploring(_)
-                | FindingCause::ScopeCreep(_)
-        ) {
-            assert!(
-                prompt
-                    .as_str()
-                    .contains("Show the proposed edit before you apply it.")
-            );
-        }
+        assert!(
+            prompt
+                .as_str()
+                .contains("Show the proposed edit before you apply it.")
+        );
         assert!(!prompt.as_str().contains("&#x20;"));
-        if matches!(
-            cause,
-            FindingCause::SkillOpportunity { .. }
-                | FindingCause::OverExploring(_)
-                | FindingCause::ScopeCreep(_)
-        ) {
-            assert!(!prompt.as_str().contains("Show the proposed edit"));
-            assert!(!prompt.as_str().contains("If the evidence cannot verify"));
-        } else {
-            assert!(
-                prompt
-                    .as_str()
-                    .ends_with("If the evidence cannot verify the change, say why.")
-            );
-        }
+        assert!(
+            prompt
+                .as_str()
+                .ends_with("If the evidence cannot verify the change, say why.")
+        );
     }
 }
 
@@ -508,6 +374,7 @@ fn every_essential_prompt_identity_rejects_private_values() {
             worker_model: private.to_owned(),
             worker_ordinal: 1,
             parent_call_id: None,
+            config_binding: None,
         },
         FindingCause::UnusedMcpServer {
             server: private.to_owned(),
@@ -558,52 +425,6 @@ fn prompt_constructor_rejects_size_overflow() {
 }
 
 #[test]
-fn ignored_instruction_prompt_uses_instruction_specific_guidance() {
-    let cause = FindingCause::IgnoredInstructionConflict(Box::new(
-        crate::remediation::IgnoredInstructionConflictEvidence {
-            decision: None,
-            assessment_revision: "revision".into(),
-            assessment_finding_id: "finding".into(),
-            instruction_id: "instruction".into(),
-            instruction_digest: "digest".into(),
-            instruction_excerpt: "Use the reviewed workflow.".into(),
-            instruction_excerpt_truncated: false,
-            rule_id: "rule".into(),
-            rule_heading: "Workflow".into(),
-            start_line: 12,
-            end_line: 14,
-            source: "project:AGENTS.md".into(),
-            provenance:
-                crate::checks::ignored_instructions::InstructionProvenance::RecordedInjection,
-            instruction_scope: crate::checks::ignored_instructions::InstructionScope::Project,
-            action_id: "action".into(),
-            action_digest: "action-digest".into(),
-            action_excerpt: "git push --force".into(),
-            action_excerpt_truncated: false,
-            action_timestamp_ms: Some(1000),
-            nearby_context_ids: vec!["approval".into()],
-            counterevidence_ids: Vec::new(),
-            certainty: crate::checks::ignored_instructions::FindingCertainty::Possible,
-            limitations: Box::new(Vec::new()),
-        },
-    ));
-
-    let prompt = build_prompt(AgentKind::Claude, SourceFormat::ClaudeJsonl, &cause).unwrap();
-    assert!(
-        prompt
-            .as_str()
-            .contains("Follow the cited instruction and correct the affected work.")
-    );
-    assert!(!prompt.as_str().contains("Possible conflict"));
-    assert!(
-        !prompt
-            .as_str()
-            .contains("Check the effective configuration for the agent")
-    );
-    assert!(!prompt.as_str().contains("weaken required behavior"));
-}
-
-#[test]
 fn prompt_uses_no_more_than_eight_identities() {
     let cause = FindingCause::SessionsOverDepth {
         maximum_tokens: 500_000,
@@ -639,17 +460,13 @@ fn prompt_support_matrix_matches_agent_capabilities() {
         ),
         (
             "opencode",
-            &[SourceFormat::OpenCodeJsonl, SourceFormat::OpenCodeSqliteV2][..],
-            [
-                true, false, true, true, true, true, true, false, true, false, false, false, false,
-            ],
+            &[SourceFormat::OpenCodeJsonl, SourceFormat::OpenCodeSqliteV1][..],
+            [true, false, true, true, true, true, true, false, true],
         ),
         (
             "pi",
             &[SourceFormat::PiV3Jsonl][..],
-            [
-                true, true, true, true, true, true, true, false, true, false, false, false, false,
-            ],
+            [true, true, true, true, true, true, true, false, true],
         ),
         (
             "antigravity",
@@ -659,10 +476,7 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                 SourceFormat::AntigravityCascadeJson,
                 SourceFormat::AntigravitySqlite,
             ][..],
-            [
-                true, false, false, false, false, false, true, false, false, false, false, false,
-                false,
-            ],
+            [true, false, false, false, false, false, true, false, false],
         ),
         (
             "cursor",
@@ -673,10 +487,7 @@ fn prompt_support_matrix_matches_agent_capabilities() {
                 SourceFormat::CursorChatStoreDb,
                 SourceFormat::CursorIdeComposer,
             ][..],
-            [
-                false, false, false, false, false, false, true, false, false, false, false, false,
-                false,
-            ],
+            [false, false, false, false, false, false, true, false, false],
         ),
     ];
     let causes = causes();
@@ -684,32 +495,7 @@ fn prompt_support_matrix_matches_agent_capabilities() {
         for source in sources {
             for (index, detector) in DetectorId::ALL.into_iter().enumerate() {
                 let support = recommendation_support(agent, *source, detector);
-                let expected_supported = if detector == DetectorId::IgnoredInstructions {
-                    matches!(
-                        (agent, source),
-                        ("claude", SourceFormat::ClaudeJsonl)
-                            | ("codex", SourceFormat::CodexRolloutJsonl)
-                            | ("opencode", SourceFormat::OpenCodeSqliteV2)
-                            | ("pi", SourceFormat::PiV3Jsonl)
-                            | ("cursor", SourceFormat::CursorCliAgentJsonl)
-                            | ("antigravity", SourceFormat::AntigravityBrainJsonl)
-                    )
-                } else if matches!(
-                    detector,
-                    DetectorId::SkillOpportunities
-                        | DetectorId::OverExploring
-                        | DetectorId::ScopeCreep
-                ) {
-                    matches!(
-                        (agent, source),
-                        ("claude", SourceFormat::ClaudeJsonl)
-                            | ("codex", SourceFormat::CodexRolloutJsonl)
-                            | ("opencode", SourceFormat::OpenCodeSqliteV2)
-                            | ("pi", SourceFormat::PiV3Jsonl)
-                    )
-                } else {
-                    expected[index]
-                };
+                let expected_supported = expected[index];
                 assert_eq!(
                     support.is_ok(),
                     expected_supported,
@@ -763,31 +549,6 @@ fn recognized_second_tier_agents_reach_capability_checks() {
 }
 
 #[test]
-fn smart_check_prompts_reject_mismatched_agents_and_legacy_opencode() {
-    for detector in [
-        DetectorId::SkillOpportunities,
-        DetectorId::OverExploring,
-        DetectorId::ScopeCreep,
-    ] {
-        for (agent, source) in [
-            ("codex", SourceFormat::ClaudeJsonl),
-            ("claude", SourceFormat::PiV3Jsonl),
-            ("pi", SourceFormat::CodexRolloutJsonl),
-            ("opencode", SourceFormat::ClaudeJsonl),
-        ] {
-            assert_eq!(
-                recommendation_support(agent, source, detector),
-                Err(RemediationUnavailableReason::UnsupportedSourceFormat)
-            );
-        }
-        assert_eq!(
-            recommendation_support("opencode", SourceFormat::OpenCodeJsonl, detector),
-            Err(RemediationUnavailableReason::CheckUnsupportedForAgent)
-        );
-    }
-}
-
-#[test]
 fn advisory_resource_prompt_does_not_claim_session_injection() {
     let finding = Finding::advisory_resource(
         AgentKind::Pi,
@@ -808,32 +569,6 @@ fn advisory_resource_prompt_does_not_claim_session_injection() {
             .contains("current or indexed resource inventory")
     );
     assert!(!prompt.as_str().contains("fully injected skill document"));
-}
-
-#[test]
-fn skill_opportunity_prompt_only_advises_future_instructions() {
-    let cause = FindingCause::SkillOpportunity {
-        evidence: None,
-        skill_name: "review".into(),
-        skill_description: "Review code changes".into(),
-        cited_work_context: "The selected task included code review".into(),
-        work_provenance: "Session transcript".into(),
-        selected_window_limit: "Only the selected session window was assessed".into(),
-    };
-
-    let prompt = build_prompt(AgentKind::OpenCode, SourceFormat::OpenCodeSqliteV2, &cause).unwrap();
-    for fact in [
-        "Resource: \"review\"",
-        "Skill description: \"Review code changes\"",
-        "Cited work: \"The selected task included code review\"",
-        "Work source: \"Session transcript\"",
-        "Selected-window limit: \"Only the selected session window was assessed\"",
-        "future instruction",
-    ] {
-        assert!(prompt.as_str().contains(fact), "missing {fact}");
-    }
-    assert!(!prompt.as_str().contains("Show the proposed edit"));
-    assert!(!prompt.as_str().contains("How to verify\nRequire"));
 }
 
 #[test]

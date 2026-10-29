@@ -11,18 +11,16 @@ use super::model::{
 use super::*;
 
 mod activity_tests;
-mod burn_check_tests;
 mod claim_fence_tests;
 mod coverage_tests;
 mod evidence_tests;
-#[path = "tests/history_tests.rs"]
-mod history_tests;
 mod reader_tests;
 mod reconcile_tests;
 mod remediation_tests;
 mod remote_count_tests;
 mod resume_tests;
 mod revision_tests;
+mod session_write_tests;
 mod settings_tests;
 mod turn_row_tests;
 
@@ -47,22 +45,6 @@ fn session(session_id: &str, updated_at: i64) -> SessionRecord {
         fork_parent_session_id: None,
         source_fingerprint: None,
     }
-}
-
-fn add_session_content(store: &Store, record: &SessionRecord) {
-    let mut row = turn_row(0);
-    row.source_key = record.key.session_id.clone();
-    row.thread_id = row.source_key.clone();
-    row.content = vec![antiburn_local::analysis::ContentPart::new(
-        antiburn_local::analysis::ContentKind::AssistantText,
-        "synthetic session action",
-    )];
-    let key = antiburn_local::analysis::TurnSessionKey {
-        environment_key: &record.key.environment_key,
-        agent: &record.key.agent,
-        session_id: &record.key.session_id,
-    };
-    insert_turn_rows(&store.lock(), &key, 1, &[row]).unwrap();
 }
 
 fn seed_historical_sessions(store: &Store, count: usize) {
@@ -769,6 +751,14 @@ fn the_session_table_shape_is_stable() {
             "source_generation",
             "started_at_epoch",
             "incarnation",
+            "admission_revision",
+            "strict_fingerprint_pending",
+            "fingerprint_source_path",
+            "fingerprint_checked_at_epoch",
+            "fingerprint_next_attempt_at_epoch",
+            "fingerprint_retry_count",
+            "fingerprint_in_flight",
+            "source_format",
         ]
     );
 }
@@ -818,6 +808,7 @@ fn session_evidence_table_shape_is_stable() {
             "effective_config_precedence_hash",
             "effective_config_resource_name",
             "effective_config_value_json",
+            "service_ticket",
         ]
     );
 }
@@ -1024,6 +1015,367 @@ fn clearing_an_already_empty_index_is_a_no_op() {
     let store = store();
     assert_eq!(store.clear_local_session_data().unwrap().0, 0);
     assert_eq!(store.clear_local_session_data().unwrap().0, 0);
+}
+
+#[test]
+fn a_key_delete_conservatively_rejects_in_flight_discovery() {
+    let store = store();
+    let deleted = session("delete-race", 1_000);
+    let kept = session("keep-race", 1_000);
+    let deleted_guard = store
+        .begin_session_write(&deleted.key, &deleted.source_label)
+        .unwrap();
+    let kept_guard = store
+        .begin_session_write(&kept.key, &kept.source_label)
+        .unwrap();
+
+    store.delete_session(&deleted.key).unwrap();
+
+    assert_eq!(
+        store
+            .upsert_session_if_current(&deleted_guard, &deleted, &crate::agents::evidence_cohort(),)
+            .unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::GlobalFenceChanged)
+    );
+    assert_eq!(
+        store
+            .upsert_session_if_current(&kept_guard, &kept, &crate::agents::evidence_cohort())
+            .unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::GlobalFenceChanged)
+    );
+    assert_eq!(store.session_count().unwrap(), 0);
+}
+
+#[test]
+fn a_global_clear_rejects_every_in_flight_session_write() {
+    let store = store();
+    let first = session("clear-race-first", 1_000);
+    let second = session("clear-race-second", 1_000);
+    let first_guard = store
+        .begin_session_write(&first.key, &first.source_label)
+        .unwrap();
+    let second_guard = store
+        .begin_session_write(&second.key, &second.source_label)
+        .unwrap();
+
+    store.clear_local_session_data().unwrap();
+
+    for (guard, record) in [(&first_guard, &first), (&second_guard, &second)] {
+        assert_eq!(
+            store
+                .upsert_session_if_current(guard, record, &crate::agents::evidence_cohort())
+                .unwrap(),
+            SessionCommitOutcome::Rejected(SessionCommitRejection::GlobalFenceChanged)
+        );
+    }
+    assert_eq!(store.session_count().unwrap(), 0);
+}
+
+#[test]
+fn a_newer_source_attempt_supersedes_an_older_attempt() {
+    let store = store();
+    let mut record = session("attempt-race", 1_000);
+    let old = store
+        .begin_session_write(&record.key, &record.source_label)
+        .unwrap();
+    let current = store
+        .begin_session_write(&record.key, &record.source_label)
+        .unwrap();
+
+    assert_eq!(
+        store
+            .upsert_session_if_current(&old, &record, &crate::agents::evidence_cohort())
+            .unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::Superseded)
+    );
+    record.source_label.push_str("/replaced");
+    assert_eq!(
+        store
+            .upsert_session_if_current(&current, &record, &crate::agents::evidence_cohort())
+            .unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::SourceChanged)
+    );
+}
+
+#[test]
+fn a_newer_rejection_after_acceptance_removes_the_session() {
+    let store = store();
+    let accepted = session("accept-then-reject", 1_000);
+    let accepted_guard = store
+        .begin_session_write(&accepted.key, &accepted.source_label)
+        .unwrap();
+    assert!(matches!(
+        store
+            .upsert_session_if_current(
+                &accepted_guard,
+                &accepted,
+                &crate::agents::evidence_cohort()
+            )
+            .unwrap(),
+        SessionCommitOutcome::Upserted(_)
+    ));
+
+    let rejected_guard = store
+        .begin_session_write(&accepted.key, &accepted.source_label)
+        .unwrap();
+    assert!(matches!(
+        store.delete_session_if_current(&rejected_guard).unwrap(),
+        SessionCommitOutcome::Deleted(Some(_))
+    ));
+    assert!(store.session(&accepted.key).unwrap().is_none());
+    assert_eq!(
+        store
+            .upsert_session_if_current(
+                &accepted_guard,
+                &accepted,
+                &crate::agents::evidence_cohort()
+            )
+            .unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::Deleted)
+    );
+}
+
+#[test]
+fn a_newer_acceptance_after_rejection_creates_the_session() {
+    let store = store();
+    let accepted = session("reject-then-accept", 1_000);
+    let rejected_guard = store
+        .begin_session_write(&accepted.key, &accepted.source_label)
+        .unwrap();
+    assert_eq!(
+        store.delete_session_if_current(&rejected_guard).unwrap(),
+        SessionCommitOutcome::Deleted(None)
+    );
+
+    let accepted_guard = store
+        .begin_session_write(&accepted.key, &accepted.source_label)
+        .unwrap();
+    assert!(matches!(
+        store
+            .upsert_session_if_current(
+                &accepted_guard,
+                &accepted,
+                &crate::agents::evidence_cohort()
+            )
+            .unwrap(),
+        SessionCommitOutcome::Upserted(_)
+    ));
+    assert_eq!(store.session(&accepted.key).unwrap(), Some(accepted));
+}
+
+#[test]
+fn a_failed_newer_commit_keeps_the_prior_row_and_can_retry_its_attempt() {
+    let store = store();
+    let mut record = session("commit-retry", 1_000);
+    let first_guard = store
+        .begin_session_write(&record.key, &record.source_label)
+        .unwrap();
+    store
+        .upsert_session_if_current(&first_guard, &record, &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let retry_guard = store
+        .begin_session_write(&record.key, &record.source_label)
+        .unwrap();
+    record.title = Some("new title".into());
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TRIGGER reject_session_update BEFORE UPDATE ON session
+             BEGIN SELECT RAISE(ABORT, 'scripted commit failure'); END;",
+        )
+        .unwrap();
+    assert!(
+        store
+            .upsert_session_if_current(&retry_guard, &record, &crate::agents::evidence_cohort())
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .session(&record.key)
+            .unwrap()
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("Wire the popover")
+    );
+
+    store
+        .lock()
+        .execute_batch("DROP TRIGGER reject_session_update;")
+        .unwrap();
+    assert!(matches!(
+        store
+            .upsert_session_if_current(&retry_guard, &record, &crate::agents::evidence_cohort())
+            .unwrap(),
+        SessionCommitOutcome::Upserted(_)
+    ));
+    assert_eq!(
+        store
+            .session(&record.key)
+            .unwrap()
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("new title")
+    );
+}
+
+#[test]
+fn a_guard_rejects_a_result_when_the_stored_source_binding_changed() {
+    let store = store();
+    let original = session("source-binding-race", 1_000);
+    store
+        .upsert_sessions(std::slice::from_ref(&original), &[])
+        .unwrap();
+    let guard = store
+        .begin_session_write(&original.key, &original.source_label)
+        .unwrap();
+    let mut replacement = original.clone();
+    replacement.source_label.push_str(".rotated");
+    store.upsert_sessions(&[replacement], &[]).unwrap();
+
+    assert_eq!(
+        store
+            .upsert_session_if_current(&guard, &original, &crate::agents::evidence_cohort())
+            .unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::SourceChanged)
+    );
+    assert_eq!(
+        store.delete_session_if_current(&guard).unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::SourceChanged)
+    );
+    assert!(store.session(&original.key).unwrap().is_some());
+}
+
+#[test]
+fn a_guard_rejects_a_result_when_the_stored_incarnation_changed() {
+    let store = store();
+    let original = session("incarnation-race", 1_000);
+    store
+        .upsert_sessions(std::slice::from_ref(&original), &[])
+        .unwrap();
+    let guard = store
+        .begin_session_write(&original.key, &original.source_label)
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session SET incarnation = incarnation + 1
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            rusqlite::params![
+                original.key.environment_key,
+                original.key.agent,
+                original.key.session_id
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        store
+            .upsert_session_if_current(&guard, &original, &crate::agents::evidence_cohort())
+            .unwrap(),
+        SessionCommitOutcome::Rejected(SessionCommitRejection::SourceChanged)
+    );
+    assert!(store.session(&original.key).unwrap().is_some());
+}
+
+#[test]
+fn a_stale_indexed_title_cannot_recreate_or_modify_a_deleted_session() {
+    let store = store();
+    let original = session("title-refresh-delete-race", 1_000);
+    store
+        .upsert_sessions(std::slice::from_ref(&original), &[])
+        .unwrap();
+    let guard = store
+        .native_session_title_refresh_guards("claude-code")
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("captured session title row");
+    assert_eq!(guard.key, original.key);
+
+    store.delete_session(&original.key).unwrap();
+    assert!(
+        !store
+            .update_session_title_if_current(&guard, Some("stale title"), Some("userRename"))
+            .unwrap()
+    );
+    assert!(store.session(&original.key).unwrap().is_none());
+
+    let mut replacement = original.clone();
+    replacement.source_label.push_str(".replacement");
+    replacement.title = Some("replacement title".into());
+    replacement.title_source = Some("explicit".into());
+    store
+        .upsert_sessions(std::slice::from_ref(&replacement), &[])
+        .unwrap();
+
+    assert!(
+        !store
+            .update_session_title_if_current(&guard, Some("stale title"), Some("userRename"))
+            .unwrap()
+    );
+    assert_eq!(store.session(&original.key).unwrap(), Some(replacement));
+}
+
+#[test]
+fn repository_refresh_publishes_only_against_the_policy_generation_it_read() {
+    let store = store();
+    store
+        .replace_repositories(&[RepositoryRecord {
+            key: "widgets".into(),
+            repo_name: "widgets".into(),
+            full_name: "avery/widgets".into(),
+            status: "accessible".into(),
+            repo_root: Some("/home/avery/code/widgets".into()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 1,
+            wsl_distro: None,
+            enabled: true,
+        }])
+        .unwrap();
+    let policy = store.repository_policy_snapshot().unwrap();
+    store.set_repository_enabled("widgets", false).unwrap();
+
+    assert_eq!(
+        store
+            .publish_repository_refresh(
+                policy.generation,
+                &[],
+                &[crate::dto::DeferredPermissionDir {
+                    dir: "Documents".into(),
+                    path_count: 1,
+                }],
+            )
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Superseded
+    );
+    let current = store.repository_policy_snapshot().unwrap();
+    assert!(current.ignored_paths.contains("/home/avery/code/widgets"));
+    assert!(current.deferred_dirs.is_empty());
+}
+
+#[test]
+fn a_folder_grant_invalidates_an_in_flight_repository_refresh() {
+    let store = store();
+    let policy = store.repository_policy_snapshot().unwrap();
+    store.grant_dir("Documents").unwrap();
+
+    assert_eq!(
+        store
+            .publish_repository_refresh(policy.generation, &[], &[])
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Superseded
+    );
+    assert!(
+        store
+            .repository_policy_snapshot()
+            .unwrap()
+            .granted_dirs
+            .contains("Documents")
+    );
 }
 
 #[test]
@@ -2075,190 +2427,6 @@ fn deleting_a_session_takes_its_derived_records_with_it() {
 }
 
 #[test]
-fn selected_history_keeps_candidates_pending_until_evidence_is_ready() {
-    let store = store();
-    let now = 1_000_000;
-    let start = now - 7 * 24 * 60 * 60;
-    store
-        .upsert_sessions(
-            &[
-                session("boundary", start),
-                session("recent", now - 1),
-                session("old", start - 1),
-            ],
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
-    add_session_content(&store, &session("boundary", start));
-    add_session_content(&store, &session("recent", now - 1));
-    store
-        .capture_burn_check_boundaries(&["ignored_instructions"], now - 10)
-        .unwrap();
-    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 2);
-    assert_eq!(
-        store
-            .historical_burn_check_status(now, 180)
-            .unwrap()
-            .waiting_for_data,
-        2
-    );
-    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 0);
-    assert_eq!(
-        store
-            .historical_burn_check_status(now, 180)
-            .unwrap()
-            .waiting_for_data,
-        2
-    );
-    assert_eq!(
-        store
-            .burn_check_assessment(
-                &SessionKey::new("native", "claude-code", "old"),
-                "ignored_instructions"
-            )
-            .unwrap()
-            .unwrap()
-            .status,
-        "idle"
-    );
-}
-
-#[test]
-fn selected_history_reaches_candidates_after_the_first_worker_page() {
-    let store = store();
-    let now = 1_000_000;
-    let records = (0..33)
-        .map(|index| session(&format!("recent-{index:02}"), now - 200))
-        .collect::<Vec<_>>();
-    store
-        .upsert_sessions(&records, &crate::agents::evidence_cohort())
-        .unwrap();
-    for record in &records {
-        add_session_content(&store, record);
-    }
-    {
-        let connection = store.lock();
-        connection
-            .execute(
-                "UPDATE session_evidence SET status = 'ready',
-                 analyzed_generation = (SELECT s.source_generation FROM session s
-                    WHERE s.environment_key = session_evidence.environment_key
-                      AND s.agent = session_evidence.agent
-                      AND s.session_id = session_evidence.session_id),
-                  parser_revision = ?1, analyzer_revision = ?2,
-                  evidence_schema_revision = ?3,
-                  published_fence = 1",
-                rusqlite::params![
-                    antiburn_local::analysis::PARSER_REVISION,
-                    antiburn_local::analysis::ANALYZER_REVISION,
-                    antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION
-                ],
-            )
-            .unwrap();
-    }
-    store
-        .capture_burn_check_boundaries(&["ignored_instructions"], now - 300)
-        .unwrap();
-    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 33);
-    let first = store
-        .burn_check_candidates("ignored_instructions", now, 180, 16)
-        .unwrap();
-    assert_eq!(first.len(), 16);
-    for candidate in &first {
-        store
-            .lock()
-            .execute(
-                "UPDATE burn_check_assessment SET status = 'superseded'
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                AND check_id = 'ignored_instructions' AND boundary_generation = -2
-                AND status = 'idle'",
-                rusqlite::params![
-                    candidate.session.key.environment_key,
-                    candidate.session.key.agent,
-                    candidate.session.key.session_id
-                ],
-            )
-            .unwrap();
-    }
-    let second = store
-        .burn_check_candidates("ignored_instructions", now, 180, 16)
-        .unwrap();
-    assert_eq!(second.len(), 16);
-    assert!(second.iter().all(|candidate| {
-        !first
-            .iter()
-            .any(|earlier| earlier.session.key == candidate.session.key)
-    }));
-    let selected = &second[0];
-    {
-        let connection = store.lock();
-        connection
-            .execute(
-                "UPDATE burn_check_assessment SET status = 'completed',
-                 boundary_activity_cursor = ?1, updated_at_epoch = ?2, evaluator_revision = ?6
-              WHERE environment_key = ?3 AND agent = ?4 AND session_id = ?5",
-                rusqlite::params![
-                    selected.activity_cursor,
-                    now,
-                    selected.session.key.environment_key,
-                    selected.session.key.agent,
-                    selected.session.key.session_id,
-                    antiburn_local::analysis::ignored_instructions::evaluator_revision()
-                ],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "UPDATE session SET updated_at_epoch = ?1, activity_cursor = 'later-activity'
-              WHERE environment_key = ?2 AND agent = ?3 AND session_id = ?4",
-                rusqlite::params![
-                    now + 10,
-                    selected.session.key.environment_key,
-                    selected.session.key.agent,
-                    selected.session.key.session_id
-                ],
-            )
-            .unwrap();
-    }
-    let later = store
-        .burn_check_candidates("ignored_instructions", now + 200, 180, 33)
-        .unwrap();
-    assert!(
-        later
-            .iter()
-            .any(|candidate| candidate.session.key == selected.session.key
-                && candidate.boundary_at_epoch == now)
-    );
-}
-
-#[test]
-fn selected_history_queues_every_page_without_repeating_the_first() {
-    let store = store();
-    let now = 1_000_000;
-    let records = (0..513)
-        .map(|index| session(&format!("recent-{index:03}"), now - 200))
-        .collect::<Vec<_>>();
-    store
-        .upsert_sessions(&records, &crate::agents::evidence_cohort())
-        .unwrap();
-    for record in &records {
-        add_session_content(&store, record);
-    }
-    store
-        .capture_burn_check_boundaries(&["ignored_instructions"], now)
-        .unwrap();
-    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 513);
-    assert_eq!(
-        store
-            .historical_burn_check_status(now, 180)
-            .unwrap()
-            .waiting_for_data,
-        513
-    );
-    assert_eq!(store.enqueue_burn_checks(now, 7).unwrap(), 0);
-}
-
-#[test]
 fn scan_roots_dedup_and_ignore_a_trailing_separator() {
     let store = store();
     store.add_scan_root("/home/avery/work/").unwrap();
@@ -2781,6 +2949,7 @@ fn evidence_backlog_counts_split_pending_from_processing_within_one_environment(
 
 fn turn_row(turn_index: u64) -> TurnRow {
     TurnRow {
+        accounting: None,
         source_key: "s1".into(),
         thread_id: "s1".into(),
         turn_index,

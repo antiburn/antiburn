@@ -120,6 +120,7 @@ impl AgentExplorer for AntigravityExplorer {
                     agent: AgentKind::Antigravity,
                     db_path,
                     session_id,
+                    source_format: None,
                 },
                 updated_at: Some(mtime_epoch),
             });
@@ -168,6 +169,7 @@ impl AgentExplorer for AntigravityExplorer {
                     agent: AgentKind::Antigravity,
                     db_path,
                     session_id: session_id.to_owned(),
+                    source_format: None,
                 });
             }
         }

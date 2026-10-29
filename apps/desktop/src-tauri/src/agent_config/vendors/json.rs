@@ -26,15 +26,97 @@ pub(super) fn edit_top_level_string(
 ) -> Result<Vec<u8>, ConfigUnavailableReason> {
     let sanitized = strip_comments(bytes)?;
     parse_json(&sanitized)?;
-    let range =
-        top_level_string_range(&sanitized, key)?.ok_or(ConfigUnavailableReason::MissingTarget)?;
-    let encoded =
-        serde_json::to_vec(proposed).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
-    let mut output = Vec::with_capacity(bytes.len() + encoded.len());
-    output.extend_from_slice(&bytes[..range.start]);
-    output.extend_from_slice(&encoded);
-    output.extend_from_slice(&bytes[range.end..]);
-    Ok(output)
+    let range = object_member(&sanitized, skip_space(&sanitized, 0), key)?
+        .ok_or(ConfigUnavailableReason::MissingTarget)?;
+    if sanitized.get(range.start) != Some(&b'"') {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    edit_path_value(bytes, &[key.into()], &Value::String(proposed.into()), false)
+}
+
+#[cfg(not(windows))]
+pub(in crate::agent_config) fn edit_path_value(
+    bytes: &[u8],
+    path: &[String],
+    proposed: &Value,
+    insert_leaf: bool,
+) -> Result<Vec<u8>, ConfigUnavailableReason> {
+    let sanitized = strip_comments(bytes)?;
+    parse_json(&sanitized)?;
+    if path.is_empty() || path.len() > 16 {
+        return Err(ConfigUnavailableReason::InvalidTarget);
+    }
+    let mut object_start = skip_space(&sanitized, 0);
+    for (index, key) in path.iter().enumerate() {
+        let found = object_member(&sanitized, object_start, key)?;
+        if index + 1 < path.len() {
+            object_start = found.ok_or(ConfigUnavailableReason::MissingTarget)?.start;
+            continue;
+        }
+        let encoded =
+            serde_json::to_vec(proposed).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+        let (range, replacement) = if let Some(range) = found {
+            (range, encoded)
+        } else if insert_leaf {
+            let mut replacement =
+                serde_json::to_vec(key).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+            replacement.push(b':');
+            replacement.extend(encoded);
+            if sanitized.get(skip_space(&sanitized, object_start + 1)) != Some(&b'}') {
+                replacement.push(b',');
+            }
+            (object_start + 1..object_start + 1, replacement)
+        } else {
+            return Err(ConfigUnavailableReason::MissingTarget);
+        };
+        let mut output = Vec::with_capacity(bytes.len() + replacement.len());
+        output.extend_from_slice(&bytes[..range.start]);
+        output.extend(replacement);
+        output.extend_from_slice(&bytes[range.end..]);
+        parse(&output)?;
+        return Ok(output);
+    }
+    Err(ConfigUnavailableReason::InvalidTarget)
+}
+
+#[cfg(not(windows))]
+fn object_member(
+    bytes: &[u8],
+    start: usize,
+    wanted: &str,
+) -> Result<Option<Range<usize>>, ConfigUnavailableReason> {
+    if bytes.get(start) != Some(&b'{') {
+        return Err(ConfigUnavailableReason::MalformedConfig);
+    }
+    let mut index = start + 1;
+    loop {
+        index = skip_space(bytes, index);
+        if bytes.get(index) == Some(&b'}') {
+            return Ok(None);
+        }
+        let (key_range, next) = string_range(bytes, index)?;
+        let key: String = serde_json::from_slice(&bytes[key_range])
+            .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
+        index = skip_space(bytes, next);
+        if bytes.get(index) != Some(&b':') {
+            return Err(ConfigUnavailableReason::MalformedConfig);
+        }
+        let value_start = skip_space(bytes, index + 1);
+        index = value_end(bytes, value_start)?;
+        if key == wanted {
+            let mut end = index;
+            while end > value_start && bytes[end - 1].is_ascii_whitespace() {
+                end -= 1;
+            }
+            return Ok(Some(value_start..end));
+        }
+        index = skip_space(bytes, index);
+        match bytes.get(index) {
+            Some(b',') => index += 1,
+            Some(b'}') => return Ok(None),
+            _ => return Err(ConfigUnavailableReason::MalformedConfig),
+        }
+    }
 }
 
 fn strip_comments(bytes: &[u8]) -> Result<Vec<u8>, ConfigUnavailableReason> {
@@ -119,46 +201,6 @@ fn strip_comments(bytes: &[u8]) -> Result<Vec<u8>, ConfigUnavailableReason> {
     Ok(output)
 }
 
-#[cfg(not(windows))]
-fn top_level_string_range(
-    bytes: &[u8],
-    wanted: &str,
-) -> Result<Option<Range<usize>>, ConfigUnavailableReason> {
-    let mut index = skip_space(bytes, 0);
-    if bytes.get(index) != Some(&b'{') {
-        return Err(ConfigUnavailableReason::MalformedConfig);
-    }
-    index += 1;
-    loop {
-        index = skip_space(bytes, index);
-        if bytes.get(index) == Some(&b'}') {
-            return Ok(None);
-        }
-        let (key_range, next) = string_range(bytes, index)?;
-        let key: String = serde_json::from_slice(&bytes[key_range.clone()])
-            .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
-        index = skip_space(bytes, next);
-        if bytes.get(index) != Some(&b':') {
-            return Err(ConfigUnavailableReason::MalformedConfig);
-        }
-        index = skip_space(bytes, index + 1);
-        let value_start = index;
-        index = value_end(bytes, index)?;
-        if key == wanted {
-            if bytes.get(value_start) != Some(&b'"') {
-                return Err(ConfigUnavailableReason::MalformedConfig);
-            }
-            return Ok(Some(value_start..index));
-        }
-        index = skip_space(bytes, index);
-        match bytes.get(index) {
-            Some(b',') => index += 1,
-            Some(b'}') => return Ok(None),
-            _ => return Err(ConfigUnavailableReason::MalformedConfig),
-        }
-    }
-}
-
 fn skip_space(bytes: &[u8], mut index: usize) -> usize {
     while bytes.get(index).is_some_and(u8::is_ascii_whitespace) {
         index += 1;
@@ -239,6 +281,44 @@ fn parse_json(bytes: &[u8]) -> Result<Value, ConfigUnavailableReason> {
         .end()
         .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
     Ok(value)
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_level_and_nested_edits_share_the_jsonc_member_scanner() {
+        let bytes = br#"{
+            // Keep this comment and escaped text.
+            "other": {"model":"nested", "values":[1,2,{"x":"a\\\"b"}]},
+            "model": "old" /* keep this comment */,
+        }"#;
+        let top = edit_top_level_string(bytes, "model", "new").unwrap();
+        let nested = edit_path_value(
+            bytes,
+            &["model".into()],
+            &Value::String("new".into()),
+            false,
+        )
+        .unwrap();
+        assert_eq!(top, nested);
+        assert!(
+            String::from_utf8(top.clone())
+                .unwrap()
+                .contains("/* keep this comment */")
+        );
+        assert_eq!(parse(&top).unwrap()["other"]["model"], "nested");
+        assert_eq!(parse(&top).unwrap()["model"], "new");
+        assert_eq!(
+            edit_top_level_string(br#"{"model":false}"#, "model", "new"),
+            Err(ConfigUnavailableReason::MalformedConfig)
+        );
+        assert_eq!(
+            edit_top_level_string(br#"{"model":"one","model":"two"}"#, "model", "new"),
+            Err(ConfigUnavailableReason::DuplicateDefinition)
+        );
+    }
 }
 
 struct UniqueJson(Value);

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-installed-check-directories"
+description = "Enables the list_installed_check_directories command without any pre-configured scope."
+commands.allow = ["list_installed_check_directories"]
+
+[[permission]]
+identifier = "deny-list-installed-check-directories"
+description = "Denies the list_installed_check_directories command without any pre-configured scope."
+commands.deny = ["list_installed_check_directories"]

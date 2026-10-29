@@ -41,6 +41,7 @@ pub fn merge_subagent_events(
     subagents: Vec<NormalizedSession>,
 ) -> NormalizedSession {
     let NormalizedSession {
+        mut accounting,
         agent,
         session_id,
         events: parent_events,
@@ -54,11 +55,15 @@ pub fn merge_subagent_events(
     let mut combined: Vec<(i64, NormalizedEvent)> = Vec::with_capacity(capacity);
     push_stream(parent_events, EventSource::Parent, &mut combined);
     for subagent in subagents {
+        accounting = accounting
+            .zip(subagent.accounting)
+            .map(|(parent, child)| parent.checked_merge(child));
         push_stream(subagent.events, EventSource::Subagent, &mut combined);
     }
     combined.sort_by_key(|(sort_key, _)| *sort_key);
 
     NormalizedSession {
+        accounting,
         agent,
         session_id,
         events: combined.into_iter().map(|(_, event)| event).collect(),
@@ -95,6 +100,7 @@ mod tests {
 
     fn session(id: &str, events: Vec<NormalizedEvent>) -> NormalizedSession {
         NormalizedSession {
+            accounting: None,
             agent: "claude".into(),
             session_id: id.into(),
             events,

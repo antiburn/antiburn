@@ -1,8 +1,5 @@
 # Burn Check Remediation
 
-Implementation status: complete as of 2026-09-10. Real-machine validation is a
-release check.
-
 This guide describes the current implementation. See
 [`check-coverage.md`](check-coverage.md) for evidence limits and
 [`session-coverage.md`](session-coverage.md) for source parsing.
@@ -37,17 +34,20 @@ The flow is check to finding to target to action:
 3. The desktop reads current findings and groups equal canonical targets.
 4. The desktop returns safe display facts for every visible target.
 5. The target reports prompt and Auto Fix availability separately.
-6. A target prompt action starts or reuses a durable action attempt. A check-level prompt gives all selected targets one prompt-group ID while each target keeps an independent attempt. A check-level Copy fallback can describe selectable current targets without claiming an exact edit.
+6. Each explicit Copy action prepares fresh text from current targets. It can reuse or enroll independent durable action attempts without changing existing attempts. A check-level fallback can describe selectable current targets without claiming an exact edit.
 7. An Auto Fix action prepares one edit, waits for confirmation, and then starts or joins an attempt.
 8. Later winning evidence dirties matching attempts.
 9. The evidence worker verifies each dirty attempt and stores one contribution when proof exists.
 
-The check-level Copy action re-runs the target query. It returns no prompt when
-the query has no selectable target. When exact target text is unsuitable, it can
-return a generic inspection prompt for the selected current targets. Each
-selected target still gets a durable action attempt, and the returned prompt has
-one opaque attempt reference. The fallback does not create an Auto Fix operation
-or claim an exact edit.
+The check-level Copy action re-runs the target query in the backend for each
+click. It returns no prompt when a complete query has no selectable target. Target and
+batch Copy use stable finding IDs, not expiring action IDs, to resolve current
+targets. If current evidence cannot establish a selected identity, Copy returns
+inspection-only text without old target facts or a new attempt. Existing
+remediation state never blocks prompt generation. When exact target text is
+unsuitable, Copy can return a generic inspection prompt. Prompt text remains
+available when watch capacity prevents enrollment. The fallback does not create
+an Auto Fix operation or claim an exact edit.
 
 Target listing does not require prompt support. A finding stays visible when no
 safe action exists. The UI explains the unavailable action.
@@ -58,9 +58,9 @@ Four IDs have different jobs and lifetimes.
 
 | ID                    | Lifetime                         | Use                                                                                                       |
 | --------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Finding ID            | Durable for the canonical target | Reconcile one visible target and key saved display facts.                                                 |
+| Finding ID            | Durable for the canonical target | Resolve target-level Copy, reconcile one visible target, and key saved display facts.                     |
 | Attempt ID            | Durable across restart           | Track one passive or action-started verification lifecycle. It forms the `ABR-<opaque>` prompt reference. |
-| Action ID             | Ten minutes, in memory           | Authorize prompt preparation or Auto Fix review for current evidence.                                     |
+| Action ID             | Ten minutes, in memory           | Authorize current evidence lookup and Auto Fix review.                                                    |
 | Prepared-operation ID | Ten minutes, in memory           | Authorize one reviewed apply operation.                                                                   |
 
 The IDs are distinct. An action ID is not a stable UI key. A prepared-operation
@@ -82,27 +82,47 @@ same global control. Prepare and apply revalidate every grouped project context
 against that same scope, physical target, selector, and expected value. A stale
 or diverged context blocks the edit instead of being dropped or retargeted.
 
-For D only, the editor can enable an existing automatic-compaction control or
-lower an existing numeric compaction limit to the finding depth cap. It does not
+For D only, supported editors can enable an existing automatic-compaction control
+or lower an existing numeric compaction limit to the finding depth cap. OpenCode
+V2 only enables an existing disabled automatic-compaction control. It does not
+change numeric limits. No editor can
 create a compaction control, change an enabled in-range control, or infer that
 ordinary session growth or fixed instructions have a configurable cause.
 
-| Agent       | Project resolution                                                                                                                                     | Global resolution                                                                                                    |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| Claude Code | `.claude/settings.local.json`, then `.claude/settings.json`; the selected file must contain the setting                                                | `~/.claude/settings.json`                                                                                            |
-| Codex       | `<root>/.codex/config.toml`; the setting must exist; the global config must mark the exact root as trusted                                             | `~/.codex/config.toml`                                                                                               |
-| OpenCode    | Merge `opencode.json` then `opencode.jsonc` from the trusted root through the actual cwd; then merge `.opencode` directories from cwd back to the root | Merge `config.json`, `opencode.json`, and `opencode.jsonc` under the effective config root; then merge `~/.opencode` |
-| Pi          | `<cwd>/.pi/settings.json` when it contains both `defaultProvider` and `defaultModel`; reasoning can use the project model map or default level         | The effective Pi agent directory `settings.json`                                                                     |
-| Cursor      | `<root>/.cursor/cli.json`                                                                                                                              | `~/.cursor/cli-config.json`                                                                                          |
-| Antigravity | No project model target is registered                                                                                                                  | `~/.gemini/antigravity-cli/settings.json`                                                                            |
+| Agent       | Project resolution                                                                                                                                                            | Global resolution                                                                                                      |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `.claude/settings.local.json`, then `.claude/settings.json`; the selected file must contain the setting                                                                       | `~/.claude/settings.json`                                                                                              |
+| Codex       | `<root>/.codex/config.toml`; the setting must exist; the global config must mark the exact root as trusted                                                                    | `~/.codex/config.toml`                                                                                                 |
+| OpenCode V2 | Resolve the running consumer's ordered config entries. Direct configs merge from the filesystem root to the actual cwd, then `.opencode` configs merge in the same direction. | Resolve the consumer's global, system, explicit, inline, managed, and policy inputs before choosing one writable file. |
+| Pi          | `<cwd>/.pi/settings.json` when it contains both `defaultProvider` and `defaultModel`; reasoning can use the project model map or default level                                | The effective Pi agent directory `settings.json`                                                                       |
+| Cursor      | `<root>/.cursor/cli.json`                                                                                                                                                     | `~/.cursor/cli-config.json`                                                                                            |
+| Antigravity | No project model target is registered                                                                                                                                         | `~/.gemini/antigravity-cli/settings.json`                                                                              |
 
 For Claude built-in tools, a project settings file is an exact project target
 only when its `permissions.allow` array contains the bare canonical tool name.
-An inherited tool uses the global settings target. OpenCode uses the last
-matching model value in its reviewed merge order. Pi
+An inherited tool uses the global settings target. OpenCode uses the winning
+physical key from its reviewed merge order. Pi
 rejects a split provider and model route. Codex rejects an active profile and a
 nested cwd. Claude reasoning prefers a per-model `modelSettings` value, then a
 top-level `effortLevel`.
+
+OpenCode edits require fresh proof of the running config consumer. A historical
+V1 or V2 session alone does not prove which program now reads a shared config
+file. Missing or ambiguous proof blocks the edit, including edits from saved V1
+findings. A file outside the trusted write boundary can affect precedence but
+cannot become an edit target. Inline, dynamic, managed, or policy-controlled
+values do not authorize a substitute edit in another layer.
+
+The V2 resolver preserves accepted V1-shaped settings. It does not convert a file
+just to edit it. Native controls include `agents`, `mcp.servers`, ordered
+`permissions`, and `compaction`. A model edit changes future defaults; it does not
+switch an active session's selected model. A subagent model edit needs the exact
+configured agent identity as well as its observed model and provider route.
+
+An MCP edit disables the complete winning entry so it does not replace a lower
+entry with an incomplete override. A skill edit hides its model advertising but
+keeps explicit skill use available. It does not deny invocation or remove the
+skill. Native Windows and WSL config edits remain unavailable.
 
 The trusted root and actual cwd are separate facts. The trusted root comes from
 the enabled, accessible repository inventory. It sets the file safety boundary.
@@ -133,11 +153,16 @@ enroll and do not consume the active attempt bound.
 
 Passive and action attempts are independent for the same target. A later user
 action does not replace the passive attempt or move its boundary. Each attempt
-keeps its own origin and lifecycle. A check-level prompt groups its action
-attempts only so a retry can return the same stored prompt and reference; the
-targets still verify or remain unavailable independently. This design measures
-passive discovery and deliberate use without claiming that the action caused the
-result.
+keeps its own origin and lifecycle. Prompt enrollment reuses an existing exact
+action attempt in any active state without changing it. Copy does not rearm
+attempts, delete history, or change snapshots, verification boundaries, or savings.
+Targets verify or remain unavailable independently. This design measures passive
+discovery and deliberate use without claiming that the action caused the result.
+
+Missing eligible action attempts enroll in `waitingForPromptUse` only when the
+whole missing batch fits the capacity bound. If it does not fit, none enroll;
+existing attempts remain available and Copy still returns valid text. Copy never
+prunes history to make room.
 
 An action watch with unavailable verification does not block a later Auto Fix.
 The store upgrades that watch through the same crash-safe reservation path. A
@@ -150,44 +175,61 @@ gets a new durable ID and prompt reference.
 
 Prompt support is independent from Auto Fix support. The UI offers `Copy fix
 prompt` when the engine recommendation gate accepts at least one selectable
-current target. The check-level action can use the bounded generic text for
-those targets. It returns no prompt when no target can be selected. Copy remains
-available when Auto Fix lacks an attributed setting, supported editor, safe
-platform, or trusted target.
+current target. The check-level action can use bounded generic text for those
+targets. A complete query with no selectable target returns no prompt. An empty truncated
+query or a missing selected identity can also return inspection-only text. None
+of these fallbacks establishes a current finding. A matched target that fails
+the source, agent, check, protected-tool, or essential-identity gate remains
+unavailable. Copy remains available when Auto Fix lacks an attributed setting,
+supported editor, safe platform, or trusted target.
 
 An exact-target prompt includes the finding, safe facts, source limits,
-requested result, and required evidence. A check-level fallback names the failed
-check and practical objective. It asks the coding agent to inspect
+requested result, and required evidence. A check-level fallback names the check
+to inspect and its practical objective. It asks the coding agent to inspect
 representative session evidence and the effective project and user
 configuration before it proposes a change. It does not claim an exact model,
 setting, scope, config file, or replacement that current target evidence cannot
 prove. The agent can list labeled hypotheses and the evidence needed to confirm
 them. It must not present a hypothesis as a fact or apply an unproved edit.
+Fallbacks retain the same source, agent, check, and protected-tool limits. They
+cannot supply exact advice that current evidence does not support.
 
-Both prompt operations can add up to three absolute paths resolved from the
-local session index. The prompt quotes and labels them as representative session
-evidence, not configuration edit targets. Non-file, relative, unresolved, duplicate,
+Each exact-target section can add up to three absolute paths from its own
+sessions in the local index. Shared resource prompts and inspection fallbacks
+can add up to three paths in total. The prompt quotes and labels paths as
+representative session evidence, not configuration edit targets. Non-file,
+relative, unresolved, duplicate,
 or oversized path candidates are omitted. Paths appear only in prompt text
 returned after the explicit copy action. They do not enter target or sample
 payloads, rendered details, analytics, logs, snapshots, finding IDs, action IDs,
 or watches.
 
-Every prompt contains at most 64 KiB. Exact-target facts contain at most eight
-sanitized identities. Prompts exclude session IDs, transcript content, config
-content, credentials, and unrelated history. A private or truncated essential
-identity makes an exact-target prompt unavailable. The main window writes prompts
-through the native Tauri clipboard manager. It has write-text permission only.
-Clipboard success is separate from prompt preparation. A failed native write can
-retry the same prepared text without a second backend operation. The UI reports
-prompt preparation and clipboard write failures separately.
+Every prompt contains at most 64 KiB, including all reference markers.
+Exact-target facts contain at most eight sanitized identities. Prompts exclude
+session IDs, transcript content, config content, credentials, and unrelated
+history. Private or truncated essential identities cannot support exact advice.
+Missing selected identities, incomplete queries, and oversized aggregate text
+can receive neutral inspection text. A matched ineligible target cannot use
+fallback to bypass its prompt gate.
+Prompt preparation does not persist `promptText` and ignores legacy stored text.
+Copy needs no new database migration or manual reset.
 
-Each returned prompt contains one opaque `Remediation reference: ABR-<id>`
-marker. Every selected target has a durable attempt. The attempt stays in the
-Failed checks group until a
-later captured user message contains that exact marker. The winning publication
-that captures the marker starts verification at its publication time. The
-marker-bearing session cannot verify the change. A copied prompt that never
-appears in captured user content does not start verification.
+The main window writes prompts through the native Tauri clipboard manager. It
+has write-text permission only. Each explicit click prepares fresh text,
+including a retry after a failed native write or a successful copy. The UI shows
+`Copied` only after native write success and reports prompt preparation and
+clipboard write failures separately. It does not show prompt-ready or
+unconfirmed-watch status lines. An activated or applied watch with unavailable
+verification keeps that limit visible after refresh.
+
+The prompt contains one opaque `Remediation reference: ABR-<id>` marker for each
+selected `waitingForPromptUse` attempt returned by enrollment, up to 100. It needs
+no new reference for a target whose attempt is in another state or did not
+enroll. Each waiting attempt stays in the Failed checks group until a later
+captured user message contains its exact marker. Existing prompt-group markers
+remain valid for activation. The winning publication that captures a marker
+starts verification at its publication time. The marker-bearing session cannot
+verify the change. Copy alone does not start verification or claim savings.
 
 ## Auto Fix Safety
 
@@ -269,24 +311,26 @@ agents. Source coverage can still block a finding for one session.
 | --------------------------------------------------------------------------------------------------------- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Claude Code, `ClaudeJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Codex, `CodexRolloutJsonl`                                                                                | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV2`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
+| OpenCode, `OpenCodeJsonl` or `OpenCodeSqliteV1`                                                           | Yes | No  | Yes | Yes | Yes | Yes | Yes | No  | Yes |
+| OpenCode, `OpenCodeSqliteV2`                                                                              | Yes | No  | Yes | No  | No  | No  | Yes | No  | Yes |
 | Pi, `PiV3Jsonl`                                                                                           | Yes | Yes | Yes | Yes | No  | Yes | Yes | No  | No  |
 | Antigravity, `AntigravityJson`, `AntigravityBrainJsonl`, `AntigravityCascadeJson`, or `AntigravitySqlite` | Yes | No  | No  | No  | No  | No  | Yes | No  | No  |
 | Cursor, characterized Cursor JSONL and store sources                                                      | No  | No  | No  | No  | No  | No  | Yes | No  | No  |
 
 `AntigravityWorkspaceChatJson` is uncharacterized and has no prompt support.
-Other source formats have no remediation prompt support. Cursor prompt support
-is limited to characterized O findings and remains source-gated.
+Other source formats have no remediation prompt support. V2 findings are partial
+and cannot prove a clean result. Cursor prompt support is limited to characterized
+O findings and remains source-gated.
 
 ### Auto Fix
 
-| Agent       | Model       | Reasoning            | Exact source                                       |
-| ----------- | ----------- | -------------------- | -------------------------------------------------- |
-| Claude Code | Auto Fix    | Auto Fix to `medium` | `ClaudeJsonl`                                      |
-| Codex       | Auto Fix    | Auto Fix to `medium` | `CodexRolloutJsonl`                                |
-| OpenCode    | Auto Fix    | Unavailable          | `OpenCodeJsonl`, `OpenCodeSqliteV2`                |
-| Pi          | Auto Fix    | Auto Fix to `medium` | `PiV3Jsonl`                                        |
-| Antigravity | Unavailable | Unavailable          | No accepted source binds one safe physical control |
+| Agent       | Model       | Reasoning            | Exact source                                            |
+| ----------- | ----------- | -------------------- | ------------------------------------------------------- |
+| Claude Code | Auto Fix    | Auto Fix to `medium` | `ClaudeJsonl`                                           |
+| Codex       | Auto Fix    | Auto Fix to `medium` | `CodexRolloutJsonl`                                     |
+| OpenCode    | Auto Fix    | Unavailable          | `OpenCodeJsonl`, `OpenCodeSqliteV1`, `OpenCodeSqliteV2` |
+| Pi          | Auto Fix    | Auto Fix to `medium` | `PiV3Jsonl`                                             |
+| Antigravity | Unavailable | Unavailable          | No accepted source binds one safe physical control      |
 
 Model Auto Fix applies only to a reviewed obsolete model and its reviewed
 replacement. Reasoning Auto Fix applies only to a reviewed above-cap level when
@@ -300,6 +344,10 @@ OpenCode when its production policy and exact binding both resolve. Claude appen
 findings; inventory-only or unresolved targets remain prompt-only. Antigravity
 remains unavailable until public source and precedence evidence identify one
 winning persisted field. Cursor never edits its private store or invokes its CLI.
+For `OpenCodeSqliteV2`, Auto Fix supports O model edits and S worker edits only
+when an exact current-consumer target resolves. V2 has no M, B, or K finding
+support. O verification stays unavailable because saved evidence does not prove
+the provider API route.
 B can disable one exact optional specialized Claude Code built-in tool from a standard
 settings file. A project target requires the exact bare tool name in
 `permissions.allow`; inherited tools use the global target. It can add a missing
@@ -313,8 +361,10 @@ tools never become B targets.
 Codex B Auto Fix is unavailable because its documented app-tool controls do not
 identify one built-in tool. OpenCode skill targets can receive Auto Fix when
 indexed provenance and one exact standard skill winner resolve to the V2
-permission control. Other skill, worker, depth, speed, and cache edits remain
-prompt-only or unavailable.
+permission control for V1 sources. V2 has no K finding support. Its supported
+Auto Fix paths are O model edits and S worker edits, each only when an exact
+current-consumer target resolves. Other skill, depth, speed, and cache edits
+remain prompt-only or unavailable.
 
 The B detector and prompt policy has a stricter scope than vendor controls:
 Claude Code `WebSearch`, `WebFetch`, `Workflow`, `ReportFindings`, and `ScheduleWakeup`, Codex `web_search`, and OpenCode
@@ -322,10 +372,12 @@ Claude Code `WebSearch`, `WebFetch`, `Workflow`, `ReportFindings`, and `Schedule
 may permit configuration of other tools, but antiburn never suggests disabling
 shell, file, search, task, agent, or subagent tools.
 
-A whole-check resource prompt lists every selected target. Target selection is
-limited to 100 and each resource label is limited to 256 bytes before JSON
-escaping. The 64 KiB prompt limit covers this maximum list and the fixed prompt
-text without omitting a selected resource.
+An exact whole-check resource prompt lists every selected target. Target
+selection is limited to 100 and each resource label is limited to 256 bytes
+before JSON escaping. The 64 KiB prompt limit includes the target list, fixed
+text, and every required reference marker. If aggregate exact text exceeds that
+bound, Copy returns a bounded inspection prompt instead of incomplete exact
+advice.
 
 Claude fast-mode Auto Fix writes `fastMode: false` to the one winning control.
 It does not remove the key, because removal could expose an inherited global
@@ -364,7 +416,8 @@ physical model target.
 T requires a complete later assessment with an explicit lower level on the same
 route and model. F requires an explicit standard tier on the same route, model,
 and delegated scope. O requires actual replacement use on the same attributed
-physical target, scope, provider, and API.
+physical target, scope, provider, and API. OpenCode V2 lacks evidence for the API
+route, so its O verification remains unavailable.
 
 ## Verification And Recurrence
 
@@ -375,9 +428,10 @@ reserved -> writing -> recoveryNeeded -> watching -> fixed -> recurred
 waitingForPromptUse -> watching
 ```
 
-Every exact prompt action enters `waitingForPromptUse` and stays in the Failing
-group after the copy. It enters `watching` only after its exact marker is
-captured in user content. A supported verifier then appears as Awaiting until it
+Each newly enrolled prompt attempt enters `waitingForPromptUse` and stays in the
+Failing group after the copy. Repeated Copy leaves an existing attempt unchanged.
+A waiting attempt enters `watching` only after its exact marker is captured in
+user content. A supported verifier then appears as Awaiting until it
 passes or recurs. An activated prompt with unsupported verification, including
 M/B/K, also appears as Awaiting, but its typed verification and savings remain
 `verificationUnavailable` and `unavailable`; it cannot become Passed. Auto Fix

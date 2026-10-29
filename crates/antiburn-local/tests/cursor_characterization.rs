@@ -203,7 +203,11 @@ impl RecordSink for CursorRecordingSink {
         match record {
             NormalizedRecord::MetricsEvent(event) => self.events.push(*event),
             NormalizedRecord::TurnContent(content) => self.contents.push(*content),
-            NormalizedRecord::Observation(_) | NormalizedRecord::Unusable(_) => {}
+            NormalizedRecord::Observation(_)
+            | NormalizedRecord::ToolResult(_)
+            | NormalizedRecord::PublicMessage(_)
+            | NormalizedRecord::ResponseCycle(_)
+            | NormalizedRecord::Unusable(_) => {}
         }
     }
 

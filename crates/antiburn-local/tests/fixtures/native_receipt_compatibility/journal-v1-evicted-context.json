@@ -1,0 +1,3046 @@
+{
+  "completed": [
+    {
+      "arguments": {
+        "command": "run-call-0"
+      },
+      "call_id": "call-0",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 5
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 0"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 5
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-0",
+      "revision": 6,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-1"
+      },
+      "call_id": "call-1",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 7
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 1"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 7
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-1",
+      "revision": 8,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-2"
+      },
+      "call_id": "call-2",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 9
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 2"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 9
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-2",
+      "revision": 10,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-3"
+      },
+      "call_id": "call-3",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 11
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 3"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 11
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-3",
+      "revision": 12,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-4"
+      },
+      "call_id": "call-4",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 13
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 4"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 13
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-4",
+      "revision": 14,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-5"
+      },
+      "call_id": "call-5",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 15
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 5"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 15
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-5",
+      "revision": 16,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-6"
+      },
+      "call_id": "call-6",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 17
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 6"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 17
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-6",
+      "revision": 18,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-7"
+      },
+      "call_id": "call-7",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 19
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 7"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 19
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-7",
+      "revision": 20,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-8"
+      },
+      "call_id": "call-8",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 21
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 8"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 21
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-8",
+      "revision": 22,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-9"
+      },
+      "call_id": "call-9",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 23
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 9"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 23
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-9",
+      "revision": 24,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-10"
+      },
+      "call_id": "call-10",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 25
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 10"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 25
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-10",
+      "revision": 26,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-11"
+      },
+      "call_id": "call-11",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 27
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 11"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 27
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-11",
+      "revision": 28,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-12"
+      },
+      "call_id": "call-12",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 29
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 12"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 29
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-12",
+      "revision": 30,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-13"
+      },
+      "call_id": "call-13",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 31
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 13"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 31
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-13",
+      "revision": 32,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-14"
+      },
+      "call_id": "call-14",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 33
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 14"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 33
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-14",
+      "revision": 34,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-15"
+      },
+      "call_id": "call-15",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 35
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 15"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 35
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-15",
+      "revision": 36,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-16"
+      },
+      "call_id": "call-16",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 37
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 16"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 37
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-16",
+      "revision": 38,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    }
+  ],
+  "continuation_events": [
+    {
+      "data": {
+        "part": {
+          "callID": "call-0",
+          "id": "part-0",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "synthetic corrected evicted result",
+            "input": {
+              "command": "run-call-0"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-39",
+      "seq": 39,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-16",
+          "id": "part-16",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "synthetic corrected retained result",
+            "input": {
+              "command": "run-call-16"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-40",
+      "seq": 40,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 17",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-41",
+      "seq": 41,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-17",
+          "id": "part-17",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-17"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-42",
+      "seq": 42,
+      "type": "message.part.updated.1"
+    }
+  ],
+  "continued": [
+    {
+      "arguments": {
+        "command": "run-call-0"
+      },
+      "call_id": "call-0",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "synthetic corrected evicted result",
+      "context": {
+        "complete_through_event": false,
+        "main_session": false,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 5
+          }
+        },
+        "user_messages": []
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 39
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-0",
+      "revision": 40,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-16"
+      },
+      "call_id": "call-16",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "synthetic corrected retained result",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 37
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 16"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 40
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-16",
+      "revision": 41,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    },
+    {
+      "arguments": {
+        "command": "run-call-17"
+      },
+      "call_id": "call-17",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 42
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "synthetic request 17"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 42
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-17",
+      "revision": 43,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    }
+  ],
+  "cursor": {
+    "live": {
+      "baseline": 0,
+      "boundary": [
+        84,
+        203,
+        231,
+        65,
+        8,
+        11,
+        40,
+        237,
+        107,
+        62,
+        31,
+        158,
+        135,
+        141,
+        130,
+        12,
+        87,
+        70,
+        140,
+        235,
+        254,
+        157,
+        222,
+        105,
+        109,
+        181,
+        188,
+        218,
+        155,
+        11,
+        238,
+        196
+      ],
+      "contexts": [
+        [
+          1,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 7
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 1"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          2,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 9
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 2"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          3,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 11
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 3"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          4,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 13
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 4"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          5,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 15
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 5"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          6,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 17
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 6"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          7,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 19
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 7"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          8,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 21
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 8"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          9,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 23
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 9"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          10,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 25
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 10"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          11,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 27
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 11"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          12,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 29
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 12"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          13,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 31
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 13"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          14,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 33
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 14"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          15,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 35
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 15"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ],
+        [
+          16,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 37
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "synthetic request 16"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ]
+      ],
+      "evidence_gap": false,
+      "history_safe": true,
+      "next_context": 17,
+      "origin": [
+        211,
+        11,
+        118,
+        7,
+        79,
+        215,
+        66,
+        84,
+        223,
+        201,
+        11,
+        85,
+        71,
+        137,
+        171,
+        136,
+        222,
+        94,
+        61,
+        225,
+        154,
+        208,
+        197,
+        169,
+        63,
+        96,
+        189,
+        47,
+        76,
+        174,
+        134,
+        169
+      ],
+      "parts": {
+        "part-0": {
+          "context": 0,
+          "last_sequence": 5,
+          "state": {
+            "context": null,
+            "first_terminal": 5,
+            "identity": [
+              "assistant",
+              "call-0",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-1": {
+          "context": 1,
+          "last_sequence": 7,
+          "state": {
+            "context": null,
+            "first_terminal": 7,
+            "identity": [
+              "assistant",
+              "call-1",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-10": {
+          "context": 10,
+          "last_sequence": 25,
+          "state": {
+            "context": null,
+            "first_terminal": 25,
+            "identity": [
+              "assistant",
+              "call-10",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-11": {
+          "context": 11,
+          "last_sequence": 27,
+          "state": {
+            "context": null,
+            "first_terminal": 27,
+            "identity": [
+              "assistant",
+              "call-11",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-12": {
+          "context": 12,
+          "last_sequence": 29,
+          "state": {
+            "context": null,
+            "first_terminal": 29,
+            "identity": [
+              "assistant",
+              "call-12",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-13": {
+          "context": 13,
+          "last_sequence": 31,
+          "state": {
+            "context": null,
+            "first_terminal": 31,
+            "identity": [
+              "assistant",
+              "call-13",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-14": {
+          "context": 14,
+          "last_sequence": 33,
+          "state": {
+            "context": null,
+            "first_terminal": 33,
+            "identity": [
+              "assistant",
+              "call-14",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-15": {
+          "context": 15,
+          "last_sequence": 35,
+          "state": {
+            "context": null,
+            "first_terminal": 35,
+            "identity": [
+              "assistant",
+              "call-15",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-16": {
+          "context": 16,
+          "last_sequence": 37,
+          "state": {
+            "context": null,
+            "first_terminal": 37,
+            "identity": [
+              "assistant",
+              "call-16",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-17": {
+          "context": null,
+          "last_sequence": 38,
+          "state": {
+            "context": null,
+            "first_terminal": null,
+            "identity": [
+              "assistant",
+              "call-17",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-2": {
+          "context": 2,
+          "last_sequence": 9,
+          "state": {
+            "context": null,
+            "first_terminal": 9,
+            "identity": [
+              "assistant",
+              "call-2",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-3": {
+          "context": 3,
+          "last_sequence": 11,
+          "state": {
+            "context": null,
+            "first_terminal": 11,
+            "identity": [
+              "assistant",
+              "call-3",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-4": {
+          "context": 4,
+          "last_sequence": 13,
+          "state": {
+            "context": null,
+            "first_terminal": 13,
+            "identity": [
+              "assistant",
+              "call-4",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-5": {
+          "context": 5,
+          "last_sequence": 15,
+          "state": {
+            "context": null,
+            "first_terminal": 15,
+            "identity": [
+              "assistant",
+              "call-5",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-6": {
+          "context": 6,
+          "last_sequence": 17,
+          "state": {
+            "context": null,
+            "first_terminal": 17,
+            "identity": [
+              "assistant",
+              "call-6",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-7": {
+          "context": 7,
+          "last_sequence": 19,
+          "state": {
+            "context": null,
+            "first_terminal": 19,
+            "identity": [
+              "assistant",
+              "call-7",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-8": {
+          "context": 8,
+          "last_sequence": 21,
+          "state": {
+            "context": null,
+            "first_terminal": 21,
+            "identity": [
+              "assistant",
+              "call-8",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-9": {
+          "context": 9,
+          "last_sequence": 23,
+          "state": {
+            "context": null,
+            "first_terminal": 23,
+            "identity": [
+              "assistant",
+              "call-9",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        }
+      },
+      "requests": {
+        "bytes": 175,
+        "incomplete": true,
+        "messages": {
+          "assistant": [
+            3,
+            {
+              "id": "assistant",
+              "parentID": "request",
+              "role": "assistant"
+            }
+          ],
+          "request": [
+            1,
+            {
+              "id": "request",
+              "role": "user"
+            }
+          ]
+        },
+        "parts": {
+          "request-text": [
+            2,
+            {
+              "id": "request-text",
+              "messageID": "request",
+              "text": "synthetic request 16",
+              "type": "text"
+            }
+          ]
+        },
+        "removed_messages": [],
+        "root": true,
+        "unsafe_identity": false
+      },
+      "revision": 2
+    },
+    "owner_id": null,
+    "parser_revision": 64,
+    "prefix_hash": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "session_id": "root",
+    "through_sequence": 38
+  },
+  "events": [
+    {
+      "data": {
+        "info": {
+          "id": "root"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-0",
+      "seq": 0,
+      "type": "session.created.1"
+    },
+    {
+      "data": {
+        "info": {
+          "id": "request",
+          "role": "user"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-1",
+      "seq": 1,
+      "type": "message.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "xxxxxxxxxxxxxxxx",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-2",
+      "seq": 2,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "info": {
+          "id": "assistant",
+          "parentID": "request",
+          "role": "assistant"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-3",
+      "seq": 3,
+      "type": "message.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 0",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-4",
+      "seq": 4,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-0",
+          "id": "part-0",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-0"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-5",
+      "seq": 5,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 1",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-6",
+      "seq": 6,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-1",
+          "id": "part-1",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-1"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-7",
+      "seq": 7,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 2",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-8",
+      "seq": 8,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-2",
+          "id": "part-2",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-2"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-9",
+      "seq": 9,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 3",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-10",
+      "seq": 10,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-3",
+          "id": "part-3",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-3"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-11",
+      "seq": 11,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 4",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-12",
+      "seq": 12,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-4",
+          "id": "part-4",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-4"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-13",
+      "seq": 13,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 5",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-14",
+      "seq": 14,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-5",
+          "id": "part-5",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-5"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-15",
+      "seq": 15,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 6",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-16",
+      "seq": 16,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-6",
+          "id": "part-6",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-6"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-17",
+      "seq": 17,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 7",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-18",
+      "seq": 18,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-7",
+          "id": "part-7",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-7"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-19",
+      "seq": 19,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 8",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-20",
+      "seq": 20,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-8",
+          "id": "part-8",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-8"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-21",
+      "seq": 21,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 9",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-22",
+      "seq": 22,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-9",
+          "id": "part-9",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-9"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-23",
+      "seq": 23,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 10",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-24",
+      "seq": 24,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-10",
+          "id": "part-10",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-10"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-25",
+      "seq": 25,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 11",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-26",
+      "seq": 26,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-11",
+          "id": "part-11",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-11"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-27",
+      "seq": 27,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 12",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-28",
+      "seq": 28,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-12",
+          "id": "part-12",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-12"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-29",
+      "seq": 29,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 13",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-30",
+      "seq": 30,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-13",
+          "id": "part-13",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-13"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-31",
+      "seq": 31,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 14",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-32",
+      "seq": 32,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-14",
+          "id": "part-14",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-14"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-33",
+      "seq": 33,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 15",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-34",
+      "seq": 34,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-15",
+          "id": "part-15",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-15"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-35",
+      "seq": 35,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "synthetic request 16",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-36",
+      "seq": 36,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-16",
+          "id": "part-16",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-16"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-37",
+      "seq": 37,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-17",
+          "id": "part-17",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-17"
+            },
+            "status": "running"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-38",
+      "seq": 38,
+      "type": "message.part.updated.1"
+    }
+  ],
+  "parser_revision": 64
+}

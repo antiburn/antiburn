@@ -370,7 +370,8 @@ describe("Checks", () => {
     expect(screen.getByText("16% estimated token burn")).toBeInTheDocument()
     expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
     expect(screen.getByText(/1 check failed/)).toBeInTheDocument()
-    expect(screen.getByText("7/11 sessions failed")).toBeInTheDocument()
+    expect(screen.getByText("7 failed")).toBeInTheDocument()
+    expect(screen.getByText("4 passed")).toBeInTheDocument()
     expect(screen.queryByText(/More evidence is needed/)).not.toBeInTheDocument()
     expect(screen.getByText("Passed checks")).toHaveClass("text-label-tertiary")
     expect(
@@ -393,30 +394,6 @@ describe("Checks", () => {
     expect(screen.getAllByText("Passed")).toHaveLength(4)
     expect(screen.queryByText("0% estimated burn")).not.toBeInTheDocument()
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
-  })
-
-  it("shows in-progress checks with the shared result style and spinner", () => {
-    render(
-      <ChecksPeek
-        presentation={{
-          ...presentation,
-          failures: [],
-          wins: [
-            category("scopeCreep", {
-              clean: 0,
-              estimatedTokenBurnBasisPoints: null,
-              lifecycle: null,
-              checking: true,
-            }),
-          ],
-        }}
-      />,
-    )
-    const row = screen.getByText("Scope creep").closest<HTMLElement>(".grid")!
-    expect(within(row).getByText("No issues found yet")).toHaveClass("text-system-green")
-    expect(within(row).getByText("Checking")).toBeVisible()
-    expect(row.querySelector(".lucide-loader-circle")).toBeInTheDocument()
-    expect(within(row).queryByText("0% estimated burn")).not.toBeInTheDocument()
   })
 
   it("shows the queued check count below the hero", () => {
@@ -529,7 +506,7 @@ describe("Checks", () => {
     )
     expect(screen.getByText("7% estimated token burn")).toBeInTheDocument()
     expect(screen.getByText("5% estimated burn")).toBeInTheDocument()
-    expect(screen.getByText("1/1 session failed")).toBeInTheDocument()
+    expect(screen.getByText("1 failed")).toBeInTheDocument()
     expect(container.querySelectorAll(".text-roll")).toHaveLength(2)
 
     rerender(
@@ -570,8 +547,8 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("No issues found")).toBeInTheDocument()
-    expect(screen.getByText("No issues found")).toHaveClass("text-label")
+    expect(screen.getByText("No issues in available results")).toBeInTheDocument()
+    expect(screen.getByText("No issues in available results")).toHaveClass("text-label")
     const passingIcon = container.querySelector(".lucide-circle-check")
     expect(passingIcon).toBeInTheDocument()
     expect(passingIcon).toHaveAttribute("width", "24")
@@ -599,7 +576,7 @@ describe("Checks", () => {
         }}
       />,
     )
-    expect(screen.getByText("No issues found")).toBeInTheDocument()
+    expect(screen.getByText("No issues in available results")).toBeInTheDocument()
     expect(screen.queryByText("More evidence is needed")).not.toBeInTheDocument()
     expect(screen.getAllByText("Passed")).toHaveLength(1)
     expect(screen.queryByText("Passed where assessed")).not.toBeInTheDocument()

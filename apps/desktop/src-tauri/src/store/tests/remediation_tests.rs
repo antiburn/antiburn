@@ -74,6 +74,50 @@ fn prompt_remediation(id: &str, scope: &str, token: &str, prompt: &str) -> Remed
     value
 }
 
+fn prompt_enrollment(
+    id: &str,
+    target: &str,
+) -> (Remediation, Vec<RemediationEvidenceGuard>, String) {
+    (
+        remediation(id, target, RemediationState::WaitingForPromptUse, 20),
+        Vec::new(),
+        r#"{"version":1,"title":"Current finding"}"#.into(),
+    )
+}
+
+fn enroll_prompt_batch(
+    store: &Store,
+    inputs: &[(Remediation, Vec<RemediationEvidenceGuard>, String)],
+) -> Vec<Option<RemediationRecord>> {
+    let revision = store.check_preferences_revision().unwrap();
+    store
+        .enroll_prompt_remediations_for_enabled_check(
+            inputs,
+            antiburn_local::insights::DetectorId::UnusedBuiltInTools,
+            revision,
+            |records| Ok(records.to_vec()),
+        )
+        .unwrap()
+        .unwrap()
+}
+
+fn fill_prompt_capacity(store: &Store, count: usize) {
+    store
+        .lock()
+        .execute(
+            "WITH RECURSIVE fill(n) AS (
+                VALUES(0) UNION ALL SELECT n + 1 FROM fill WHERE n + 1 < ?1)
+             INSERT INTO remediation (
+                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                state, definition_json, result_json, created_at_epoch, updated_at_epoch, origin)
+             SELECT 'capacity-' || n, 'capacity-target-' || n,
+                'native', 'claude-code', 'project', 'scope',
+                'watching', ?2, ?2, 10, 10, 'action' FROM fill",
+            params![count, JSON_V1],
+        )
+        .unwrap();
+}
+
 fn mark_fixed(store: &Store, remediation_id: &str) {
     store
         .lock()
@@ -138,7 +182,7 @@ fn v43_adds_remediation_and_model_attribution() {
     connection.pragma_update(None, "user_version", 42).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v43").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 75);
+    assert_eq!(store.schema_version().unwrap(), 92);
     let connection = store.lock();
     let columns: i64 = connection
         .query_row(
@@ -197,7 +241,7 @@ fn v44_adds_nullable_snapshots_and_strict_contributions_without_backfill() {
 
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v44").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 75);
+    assert_eq!(store.schema_version().unwrap(), 92);
     assert!(store.remediation_display_snapshot("old").unwrap().is_none());
     let connection = store.lock();
     let strict: i64 = connection
@@ -219,7 +263,7 @@ fn v46_adds_reasoning_attribution_without_rewriting_model_columns() {
     connection.pragma_update(None, "user_version", 45).unwrap();
     let store =
         Store::from_connection(connection, Path::new("/tmp/remediation-v46").into()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 75);
+    assert_eq!(store.schema_version().unwrap(), 92);
     let columns: i64 = store
         .lock()
         .query_row(
@@ -1233,7 +1277,552 @@ fn an_active_cycle_wins_when_recurrence_and_creation_share_the_same_second() {
 }
 
 #[test]
-fn concurrent_prompt_creation_returns_the_one_stored_token_and_text() {
+fn prompt_enrollment_preserves_existing_attempts_in_every_state() {
+    let store = store();
+    for state in [
+        RemediationState::Reserved,
+        RemediationState::Writing,
+        RemediationState::RecoveryNeeded,
+        RemediationState::WaitingForPromptUse,
+        RemediationState::Watching,
+        RemediationState::Fixed,
+        RemediationState::Recurred,
+    ] {
+        let id = format!("existing-{}", state.as_str());
+        let has_boundary = matches!(
+            state,
+            RemediationState::Watching | RemediationState::Fixed | RemediationState::Recurred
+        );
+        let verified_at_epoch =
+            matches!(state, RemediationState::Fixed | RemediationState::Recurred).then_some(20_i64);
+        let recurred_at_epoch = (state == RemediationState::Recurred).then_some(30_i64);
+        store
+            .lock()
+            .execute(
+                "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, dirty_revision, evaluated_revision, definition_json, result_json,
+                    created_at_epoch, updated_at_epoch, effective_boundary_ms, verified_at_epoch,
+                    recurred_at_epoch, verified_boundary_ms, recurred_boundary_ms,
+                    action_joined_at_ms, origin, prompt_group_id, display_snapshot_json)
+                 VALUES (?1, ?2, 'native', 'claude-code', 'project', 'scope', ?2, 7, 6, ?3,
+                    '{\"version\":1,\"promptText\":\"legacy prompt\"}', 10, 30, ?4, ?5, ?6,
+                    ?7, ?8, ?9, 'action', 'legacy-group',
+                    '{\"version\":1,\"title\":\"Current finding\"}')",
+                params![
+                    id,
+                    state.as_str(),
+                    JSON_V1,
+                    has_boundary.then_some(10_001_i64),
+                    verified_at_epoch,
+                    recurred_at_epoch,
+                    verified_at_epoch.map(|_| 20_002_i64),
+                    recurred_at_epoch.map(|_| 30_003_i64),
+                    has_boundary.then_some(10_004_i64),
+                ],
+            )
+            .unwrap();
+        let before = store.remediation(&id).unwrap().unwrap();
+        let snapshot_before = store.remediation_display_snapshot(&id).unwrap();
+        let new_id = format!("new-{}", state.as_str());
+        let mut input = prompt_enrollment(&new_id, state.as_str());
+        input.0.created_at_epoch = 40;
+        input.2 = r#"{"version":1,"title":"Fresh title"}"#.into();
+        let selected = enroll_prompt_batch(&store, std::slice::from_ref(&input));
+        if state == RemediationState::Recurred {
+            let created = selected[0].as_ref().unwrap();
+            assert_eq!(created.remediation_id, new_id);
+            assert_eq!(created.state, RemediationState::WaitingForPromptUse);
+            assert_eq!(created.prompt_group_id, None);
+            assert_eq!(created.effective_boundary_ms, None);
+            assert_eq!(created.result_json, JSON_V1);
+            assert_eq!(
+                store
+                    .remediation_display_snapshot(&new_id)
+                    .unwrap()
+                    .unwrap()
+                    .display_snapshot_json,
+                input.2
+            );
+        } else {
+            assert_eq!(selected, vec![Some(before.clone())]);
+            assert!(store.remediation(&new_id).unwrap().is_none());
+        }
+        assert_eq!(store.remediation(&id).unwrap(), Some(before));
+        assert_eq!(
+            store.remediation_display_snapshot(&id).unwrap(),
+            snapshot_before
+        );
+    }
+}
+
+#[test]
+fn prompt_enrollment_keeps_selected_fixed_history_at_capacity_in_both_orders() {
+    for new_first in [false, true] {
+        let store = store();
+        let mut saved = contribution("fixed-owner", "fixed", 20_002);
+        saved.origin = "action".into();
+        saved.display_snapshot_json = r#"{"version":1,"findingId":"fixed-finding"}"#.into();
+        let mut initial = prompt_enrollment("fixed", "fixed-target");
+        initial.0.created_at_epoch = 10;
+        initial.2 = saved.display_snapshot_json.clone();
+        enroll_prompt_batch(&store, &[initial]);
+        store
+            .lock()
+            .execute_batch(
+                "UPDATE remediation SET state = 'watching', updated_at_epoch = 11,
+                    effective_boundary_ms = 10001 WHERE remediation_id = 'fixed';
+                 UPDATE remediation SET state = 'fixed', verified_at_epoch = 21,
+                    updated_at_epoch = 21, verified_boundary_ms = 20002,
+                    result_json = '{\"version\":1,\"verification\":{\"status\":\"fixed\"}}'
+                  WHERE remediation_id = 'fixed'",
+            )
+            .unwrap();
+        store.upsert_remediation_contribution(&saved).unwrap();
+        let before = store.remediation("fixed").unwrap().unwrap();
+        let snapshot_before = store.remediation_display_snapshot("fixed").unwrap();
+        let contributions_before = store.remediation_contributions(1_000).unwrap();
+        let passed_before = store.passed_remediation_contributions(1_000).unwrap();
+        assert_eq!(passed_before.len(), 1);
+        fill_prompt_capacity(&store, 999);
+
+        assert_eq!(
+            enroll_prompt_batch(&store, &[prompt_enrollment("new-only", "new-only-target")]),
+            vec![None]
+        );
+        let mut inputs = vec![
+            prompt_enrollment("reuse", "fixed-target"),
+            prompt_enrollment("new", "new-target"),
+        ];
+        if new_first {
+            inputs.reverse();
+        }
+        let selected = enroll_prompt_batch(&store, &inputs);
+        let existing_index = usize::from(new_first);
+        assert_eq!(selected[existing_index], Some(before.clone()));
+        assert_eq!(selected[1 - existing_index], None);
+        assert_eq!(store.remediation("fixed").unwrap(), Some(before));
+        assert_eq!(
+            store.remediation_display_snapshot("fixed").unwrap(),
+            snapshot_before
+        );
+        assert_eq!(
+            store.remediation_contributions(1_000).unwrap(),
+            contributions_before
+        );
+        assert_eq!(
+            store.passed_remediation_contributions(1_000).unwrap(),
+            passed_before
+        );
+        for id in ["new-only", "new", "reuse"] {
+            assert!(store.remediation(id).unwrap().is_none());
+        }
+    }
+}
+
+#[test]
+fn prompt_enrollment_admits_all_missing_attempts_or_none() {
+    let store = store();
+    fill_prompt_capacity(&store, 999);
+    let inputs = [
+        prompt_enrollment("first", "first-target"),
+        prompt_enrollment("second", "second-target"),
+    ];
+    assert_eq!(enroll_prompt_batch(&store, &inputs), vec![None, None]);
+    for id in ["first", "second"] {
+        assert!(store.remediation(id).unwrap().is_none());
+        assert!(store.remediation_display_snapshot(id).unwrap().is_none());
+    }
+    store
+        .lock()
+        .execute(
+            "DELETE FROM remediation WHERE remediation_id = 'capacity-0'",
+            [],
+        )
+        .unwrap();
+    let selected = enroll_prompt_batch(&store, &inputs);
+    for ((input, _, snapshot), record) in inputs.iter().zip(selected) {
+        assert_eq!(record.unwrap().remediation_id, input.remediation_id);
+        assert_eq!(
+            store
+                .remediation_display_snapshot(&input.remediation_id)
+                .unwrap()
+                .unwrap()
+                .display_snapshot_json,
+            *snapshot
+        );
+    }
+}
+
+#[test]
+fn prompt_enrollment_counts_repeated_targets_once() {
+    let store = store();
+    fill_prompt_capacity(&store, 999);
+    let selected = enroll_prompt_batch(
+        &store,
+        &[
+            prompt_enrollment("first", "repeated-target"),
+            prompt_enrollment("second", "repeated-target"),
+        ],
+    );
+    assert_eq!(selected[0], selected[1]);
+    assert_eq!(selected[0].as_ref().unwrap().remediation_id, "first");
+    assert!(store.remediation("second").unwrap().is_none());
+}
+
+#[test]
+fn prompt_enrollment_finish_error_rolls_back_rows_and_snapshots() {
+    let store = store();
+    let revision = store.check_preferences_revision().unwrap();
+    let inputs = [
+        prompt_enrollment("first", "first-target"),
+        prompt_enrollment("second", "second-target"),
+    ];
+    let result = store.enroll_prompt_remediations_for_enabled_check(
+        &inputs,
+        antiburn_local::insights::DetectorId::UnusedBuiltInTools,
+        revision,
+        |records| -> anyhow::Result<()> {
+            assert_eq!(records[0].as_ref().unwrap().remediation_id, "first");
+            assert_eq!(records[1].as_ref().unwrap().remediation_id, "second");
+            anyhow::bail!("the final prompt exceeds its size bound")
+        },
+    );
+    assert!(result.is_err());
+    for id in ["first", "second"] {
+        assert!(store.remediation(id).unwrap().is_none());
+        assert!(store.remediation_display_snapshot(id).unwrap().is_none());
+    }
+}
+
+#[test]
+fn concurrent_prompt_enrollment_finishes_with_the_actual_attempt_ids() {
+    let store = Arc::new(store());
+    let revision = store.check_preferences_revision().unwrap();
+    let barrier = Arc::new(Barrier::new(2));
+    let threads = ["first", "second"]
+        .into_iter()
+        .map(|id| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let input = prompt_enrollment(id, "shared-target");
+                barrier.wait();
+                store
+                    .enroll_prompt_remediations_for_enabled_check(
+                        &[input],
+                        antiburn_local::insights::DetectorId::UnusedBuiltInTools,
+                        revision,
+                        |records| {
+                            let record = records[0].as_ref().unwrap();
+                            Ok((
+                                record.clone(),
+                                format!(
+                                    "{id}: Remediation reference: ABR-{}",
+                                    record.remediation_id
+                                ),
+                            ))
+                        },
+                    )
+                    .unwrap()
+                    .unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results[0].0, results[1].0);
+    assert_ne!(results[0].1, results[1].1);
+    for (record, prompt) in &results {
+        assert!(prompt.ends_with(&format!("ABR-{}", record.remediation_id)));
+        assert_eq!(record.prompt_group_id, None);
+        assert_eq!(record.result_json, JSON_V1);
+    }
+}
+
+#[test]
+fn prompt_enrollment_does_not_store_fresh_64_kib_outputs() {
+    let store = store();
+    let revision = store.check_preferences_revision().unwrap();
+    let mut prompts = Vec::new();
+    for id in ["first", "second"] {
+        let prompt = store
+            .enroll_prompt_remediations_for_enabled_check(
+                &[prompt_enrollment(id, "target")],
+                antiburn_local::insights::DetectorId::UnusedBuiltInTools,
+                revision,
+                |records| {
+                    let suffix = format!(
+                        "{id}: Remediation reference: ABR-{}",
+                        records[0].as_ref().unwrap().remediation_id
+                    );
+                    Ok(format!("{}{suffix}", "x".repeat(65_536 - suffix.len())))
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(prompt.len(), 65_536);
+        prompts.push(prompt);
+    }
+    assert_ne!(prompts[0], prompts[1]);
+    let record = store.remediation("first").unwrap().unwrap();
+    assert_eq!(record.result_json, JSON_V1);
+    assert_eq!(record.prompt_group_id, None);
+    assert!(store.remediation("second").unwrap().is_none());
+}
+
+#[test]
+fn prompt_enrollment_preserves_legacy_null_origin_rules() {
+    let store = store();
+    for state in [
+        RemediationState::Reserved,
+        RemediationState::Writing,
+        RemediationState::RecoveryNeeded,
+        RemediationState::WaitingForPromptUse,
+        RemediationState::Watching,
+        RemediationState::Fixed,
+        RemediationState::Recurred,
+    ] {
+        let legacy_id = format!("legacy-{}", state.as_str());
+        store
+            .lock()
+            .execute(
+                "INSERT INTO remediation (
+                    remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
+                    state, definition_json, result_json, created_at_epoch, updated_at_epoch,
+                    effective_boundary_ms, verified_at_epoch, recurred_at_epoch)
+                 VALUES (?1, ?2, 'native', 'claude-code', 'project', 'scope', ?2, ?3, ?3,
+                    10, 30, ?4, ?5, ?6)",
+                params![
+                    legacy_id,
+                    state.as_str(),
+                    JSON_V1,
+                    matches!(
+                        state,
+                        RemediationState::Watching
+                            | RemediationState::Fixed
+                            | RemediationState::Recurred
+                    )
+                    .then_some(10_001_i64),
+                    matches!(state, RemediationState::Fixed | RemediationState::Recurred)
+                        .then_some(20_i64),
+                    (state == RemediationState::Recurred).then_some(30_i64),
+                ],
+            )
+            .unwrap();
+        let before = store.remediation(&legacy_id).unwrap().unwrap();
+        let new_id = format!("new-{}", state.as_str());
+        let mut input = prompt_enrollment(&new_id, state.as_str());
+        input.0.created_at_epoch = 40;
+        let selected = enroll_prompt_batch(&store, &[input]);
+        if matches!(
+            state,
+            RemediationState::Reserved
+                | RemediationState::Writing
+                | RemediationState::RecoveryNeeded
+                | RemediationState::WaitingForPromptUse
+        ) {
+            assert_eq!(selected, vec![Some(before.clone())]);
+            assert!(store.remediation(&new_id).unwrap().is_none());
+        } else {
+            assert_eq!(selected[0].as_ref().unwrap().remediation_id, new_id);
+        }
+        assert_eq!(store.remediation(&legacy_id).unwrap(), Some(before));
+        assert!(
+            store
+                .remediation_display_snapshot(&legacy_id)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn prompt_enrollment_uses_the_complete_target_identity() {
+    let store = store();
+    let initial = prompt_enrollment("initial", "target");
+    enroll_prompt_batch(&store, std::slice::from_ref(&initial));
+    for field in ["environment", "agent", "scope-kind", "scope-key", "target"] {
+        let mut input = initial.clone();
+        input.0.remediation_id = field.into();
+        match field {
+            "environment" => input.0.environment_key = "wsl:Ubuntu".into(),
+            "agent" => input.0.agent = "codex".into(),
+            "scope-kind" => input.0.scope_kind = "session".into(),
+            "scope-key" => input.0.scope_key = "other-scope".into(),
+            "target" => input.0.target_key = "other-target".into(),
+            _ => unreachable!(),
+        }
+        let selected = enroll_prompt_batch(&store, &[input]);
+        assert_eq!(selected[0].as_ref().unwrap().remediation_id, field);
+    }
+}
+
+#[test]
+fn prompt_enrollment_rejects_stale_evidence_before_reuse_or_admission() {
+    let store = store();
+    let guard = seed_evidence(&store, "baseline", 100);
+    enroll_prompt_batch(&store, &[prompt_enrollment("existing", "existing-target")]);
+    let before = store.remediation("existing").unwrap();
+    let revision = store.check_preferences_revision().unwrap();
+    for field in 0..10 {
+        let mut stale = guard.clone();
+        match field {
+            0 => stale.environment_key = "other".into(),
+            1 => stale.agent = "codex".into(),
+            2 => stale.session_id = "other".into(),
+            3 => stale.source_generation += 1,
+            4 => stale.published_fence += 1,
+            5 => stale.source_fingerprint = None,
+            6 => stale.processed_fingerprint = None,
+            7 => stale.parser_revision += 1,
+            8 => stale.analyzer_revision += 1,
+            9 => stale.evidence_schema_revision += 1,
+            _ => unreachable!(),
+        }
+        let mut existing = prompt_enrollment("reuse", "existing-target");
+        existing.1 = vec![guard.clone(), stale];
+        let mut new = prompt_enrollment("new", "new-target");
+        new.1 = vec![guard.clone()];
+        let result = store
+            .enroll_prompt_remediations_for_enabled_check(
+                &[existing, new],
+                antiburn_local::insights::DetectorId::UnusedBuiltInTools,
+                revision,
+                |_| -> anyhow::Result<()> { panic!("a stale guard must skip finish") },
+            )
+            .unwrap();
+        assert!(result.is_none(), "stale evidence field {field}");
+    }
+    assert_eq!(store.remediation("existing").unwrap(), before);
+    assert!(store.remediation("new").unwrap().is_none());
+    let mut valid = prompt_enrollment("new", "new-target");
+    valid.1 = vec![guard];
+    for (status, generation) in [("pending", 1), ("failed", 1), ("ready", 2)] {
+        store
+            .lock()
+            .execute(
+                "UPDATE session_evidence SET status = ?1, analyzed_generation = ?2
+                  WHERE session_id = 'baseline'",
+                params![status, generation],
+            )
+            .unwrap();
+        assert!(
+            store
+                .enroll_prompt_remediations_for_enabled_check(
+                    std::slice::from_ref(&valid),
+                    antiburn_local::insights::DetectorId::UnusedBuiltInTools,
+                    revision,
+                    |_| -> anyhow::Result<()> { panic!("stale evidence must skip finish") },
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET status = 'ready', analyzed_generation = 1
+              WHERE session_id = 'baseline'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        enroll_prompt_batch(&store, &[valid])[0]
+            .as_ref()
+            .unwrap()
+            .remediation_id,
+        "new"
+    );
+}
+
+#[test]
+fn prompt_enrollment_rejects_stale_or_disabled_check_policy() {
+    let store = store();
+    let detector = antiburn_local::insights::DetectorId::UnusedBuiltInTools;
+    let revision = store.check_preferences_revision().unwrap();
+    let inputs = [prompt_enrollment("new", "target")];
+    assert!(
+        store
+            .enroll_prompt_remediations_for_enabled_check(
+                &inputs,
+                detector,
+                revision + 1,
+                |_| -> anyhow::Result<()> { panic!("stale policy must skip finish") },
+            )
+            .unwrap()
+            .is_none()
+    );
+    store.set_check_enabled(detector, false).unwrap();
+    let disabled_revision = store.check_preferences_revision().unwrap();
+    assert!(
+        store
+            .enroll_prompt_remediations_for_enabled_check(
+                &inputs,
+                detector,
+                disabled_revision,
+                |_| -> anyhow::Result<()> { panic!("a disabled check must skip finish") },
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert!(store.remediation("new").unwrap().is_none());
+    store.set_check_enabled(detector, true).unwrap();
+    let enabled_revision = store.check_preferences_revision().unwrap();
+    assert_eq!(
+        store
+            .enroll_prompt_remediations_for_enabled_check(
+                &inputs,
+                detector,
+                enabled_revision,
+                |records| Ok(records[0].as_ref().unwrap().remediation_id.clone()),
+            )
+            .unwrap(),
+        Some("new".into())
+    );
+}
+
+#[test]
+fn prompt_enrollment_validates_waiting_action_inputs_and_bounded_safe_documents() {
+    let store = store();
+    let revision = store.check_preferences_revision().unwrap();
+    for invalid_field in 0..12 {
+        let mut input = prompt_enrollment("new", "target");
+        let oversized = format!(r#"{{"version":1,"title":"{}"}}"#, "x".repeat(32_768));
+        match invalid_field {
+            0 => input.0.origin = "passive".into(),
+            1 => input.0.state = RemediationState::Watching,
+            2 => input.0.prompt_group_id = Some("new-group".into()),
+            3 => input.0.result_json = r#"{"version":1,"promptText":"new prompt"}"#.into(),
+            4 => input.0.definition_json = oversized,
+            5 => input.0.result_json = oversized,
+            6 => input.2 = oversized,
+            7 => input.2 = r#"{"version":1,"path":"/private/work"}"#.into(),
+            8 => input.0.definition_json = r#"{"version":2}"#.into(),
+            9 => input.0.result_json = "invalid JSON".into(),
+            10 => input.2 = r#"{"version":2}"#.into(),
+            11 => input.2 = "invalid JSON".into(),
+            _ => unreachable!(),
+        }
+        assert!(
+            store
+                .enroll_prompt_remediations_for_enabled_check(
+                    &[input],
+                    antiburn_local::insights::DetectorId::UnusedBuiltInTools,
+                    revision,
+                    |_| -> anyhow::Result<()> { panic!("invalid input must skip finish") },
+                )
+                .is_err(),
+            "invalid field {invalid_field}"
+        );
+    }
+    assert!(store.remediation("new").unwrap().is_none());
+}
+
+#[test]
+fn legacy_prompt_creation_reuses_the_one_stored_token_and_text() {
     let store = Arc::new(store());
     let barrier = Arc::new(Barrier::new(2));
     let threads = [
@@ -1272,7 +1861,7 @@ fn concurrent_prompt_creation_returns_the_one_stored_token_and_text() {
 }
 
 #[test]
-fn prompt_retry_rejects_an_active_auto_fix_cycle() {
+fn shared_watch_creation_rejects_a_prompt_retry_during_auto_fix() {
     let store = store();
     let guard = seed_evidence(&store, "baseline", 100);
     store

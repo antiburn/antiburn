@@ -28,21 +28,42 @@
 //! commit or together with the rows a read returns. An [`Incarnation`] is
 //! the persisted creation identity of one session row.
 
-mod burn_check;
 mod check_preferences;
 pub(crate) use check_preferences::{check_preferences_snapshot_in, enabled_checks_in};
 pub(crate) mod codex_rollout_checkpoint;
 mod evidence_queue;
 pub(crate) mod memories;
+pub(crate) mod native_tool_results;
+pub use native_tool_results::{ToolResultBatch, ToolResultPublishOptions};
+pub(crate) mod burn_checks;
 pub mod model;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
 mod remediation;
+mod retired_checks_migration;
 pub(crate) mod revision_sql;
 mod schema;
 mod selected_content;
+pub(crate) mod selected_source;
+pub(crate) use selected_source::native_opencode_sqlite_format;
+mod session_persistence;
+mod session_write;
+pub(crate) use session_write::SessionTitleRefreshGuard;
+use session_write::SessionWriteState;
+pub use session_write::{SessionCommitRejection, SessionWriteGuard};
+
+/// Result of a guarded session write at the Store boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionCommitOutcome {
+    Upserted(SessionUpsertResult),
+    Deleted(Option<(Incarnation, Revision)>),
+    Rejected(SessionCommitRejection),
+}
+mod source_fingerprint;
+pub(crate) use source_fingerprint::PendingSourceFingerprint;
 mod settings;
-pub(crate) use selected_content::{SELECTED_CONTENT_PROGRESS_REVISION, SelectedContentProgress};
+mod usage_accounting;
+pub use usage_accounting::BurnCheckUsageSummary;
 
 #[cfg(test)]
 mod privacy_tests;
@@ -56,7 +77,7 @@ mod tests;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::Duration;
 
@@ -75,13 +96,11 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, named_params, params, params_from_iter};
 
 use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
+pub(crate) use session_persistence::apply_session_retention_in;
+use session_persistence::*;
+pub use session_persistence::{FencedTurnRowStore, HygieneSummaryRow, iso_from_epoch, now_rfc3339};
 use settings::read_settings;
 
-pub use burn_check::{
-    BurnCheckAssessment, BurnCheckCandidate, BurnCheckFailure, BurnCheckHistoryStatus,
-    BurnCheckInput, BurnCheckRequestAdmission, BurnCheckReservation, BurnCheckSampleOrigin,
-    BurnCheckSampledPair, BurnCheckUsageSummary, CachedAssessmentResponse,
-};
 pub use model::{
     ActiveCursor, AnalysisRecord, AppSettings, DisabledAgents, DiskSpaceDisplay, EvidenceClaim,
     EvidenceCompletion, EvidenceFailure, EvidenceRow, EvidenceStatus, HiddenMeters, Incarnation,
@@ -104,11 +123,19 @@ pub struct EvidenceBacklogCounts {
     pub processing: u64,
 }
 
+/// Replay inputs from one publication, read under one connection lock.
+pub(crate) struct PublishedReplay {
+    pub rows: Vec<TurnRow>,
+    pub record: AnalysisRecord,
+    pub relations: Vec<RelationRecord>,
+}
+
 /// Internal-scalar key holding the protected directories the last pass declined
 /// to read.
 pub const DEFERRED_PERMISSION_DIRS_KEY: &str = "internal:deferredPermissionDirs";
 const PROVIDER_ACCOUNT_SECRET_KEY: &str = "internal:providerAccountHmacSecretV1";
 const BURN_CHECK_SNOOZES_KEY: &str = "internal:burnCheckSnoozesV1";
+const REPOSITORY_POLICY_GENERATION_KEY: &str = "internal:repositoryPolicyGenerationV1";
 
 fn encode_secret(secret: &[u8; 32]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -185,6 +212,26 @@ fn session_keys_for_activity_keys_sql(key_count: usize) -> String {
 /// The session identity and incarnation behind each activity key one
 /// watcher burst resolved.
 pub type ActivityIdentities = HashMap<SessionActivityKey, (SessionKey, Incarnation)>;
+
+/// Session identities and the writer revision returned by one upsert batch.
+pub type SessionUpsertResult = (Vec<(SessionKey, Incarnation)>, Revision);
+
+/// Persisted policy inputs used by scans and repository refreshes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositoryPolicySnapshot {
+    pub generation: u64,
+    pub ignored_paths: HashSet<String>,
+    pub granted_dirs: HashSet<String>,
+    pub deferred_dirs: Vec<DeferredPermissionDir>,
+}
+
+/// A repository refresh either publishes as one policy snapshot or loses to a
+/// newer policy change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositoryPolicyPublishOutcome {
+    Published,
+    Superseded,
+}
 
 /// Maximum session keys one [`Store::session_presence_for_keys`] call
 /// answers. Three values per key keep the one statement below SQLite's
@@ -271,9 +318,13 @@ pub fn open_read_only(data_dir: &Path, busy_timeout: Duration) -> Result<Connect
 #[derive(Clone)]
 pub struct Store {
     connection: Arc<Mutex<Connection>>,
+    destructive_write_epoch: Arc<AtomicU64>,
+    session_write_state: Arc<Mutex<SessionWriteState>>,
     settings_snapshot: Arc<RwLock<AppSettings>>,
     limit_factor_learn: Arc<Mutex<()>>,
-    remediation_turn: Arc<AtomicBool>,
+    insights_work_turn: Arc<AtomicUsize>,
+    #[cfg(test)]
+    burn_check_test_hooks: burn_checks::test_hooks::Hooks,
     /// The directory the engine's own state files (scan roots, ignored paths)
     /// live in. The engine never chooses this; the shell does.
     state_dir: PathBuf,
@@ -419,6 +470,82 @@ fn sessions_owning_turn_uuids_sql(uuid_count: usize) -> String {
     )
 }
 
+fn remove_native_tool_results_from_other_formats_in(
+    transaction: &rusqlite::Transaction<'_>,
+    session: &SessionKey,
+    source_format: &str,
+    source_generation: i64,
+    claim_fence: i64,
+) -> Result<()> {
+    let mut statement = transaction.prepare(
+        "SELECT source_format, native_identity, native_position_json, native_revision,
+                payload_json
+           FROM native_tool_result_current
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+            AND source_format <> ?4 AND is_removed = 0",
+    )?;
+    let stale_results = statement
+        .query_map(
+            params![
+                session.environment_key,
+                session.agent,
+                session.session_id,
+                source_format
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+
+    for (old_format, identity, position, revision, payload) in stale_results {
+        transaction.execute(
+            "INSERT INTO native_tool_result_publication (
+                 outcome, environment_key, agent, session_id, source_format,
+                 native_identity, native_position_json, native_revision, payload_json,
+                 complete, source_generation, claim_fence)
+             VALUES ('removal', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10)",
+            params![
+                session.environment_key,
+                session.agent,
+                session.session_id,
+                old_format,
+                identity,
+                position,
+                revision,
+                payload,
+                source_generation,
+                claim_fence
+            ],
+        )?;
+        let publication_sequence = transaction.last_insert_rowid();
+        transaction.execute(
+            "UPDATE native_tool_result_current SET is_removed = 1,
+                    publication_sequence = ?6, source_generation = ?7, claim_fence = ?8
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND source_format = ?4 AND native_identity = ?5 AND is_removed = 0",
+            params![
+                session.environment_key,
+                session.agent,
+                session.session_id,
+                old_format,
+                identity,
+                publication_sequence,
+                source_generation,
+                claim_fence
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
     /// Open (creating if absent) and migrate the database under `data_dir`.
     pub fn open(data_dir: &Path) -> Result<Store> {
@@ -448,9 +575,13 @@ impl Store {
         let connection = open_read_only(&self.state_dir, busy_timeout)?;
         Ok(Store {
             connection: Arc::new(Mutex::new(connection)),
+            destructive_write_epoch: Arc::clone(&self.destructive_write_epoch),
+            session_write_state: Arc::clone(&self.session_write_state),
             settings_snapshot: Arc::clone(&self.settings_snapshot),
             limit_factor_learn: Arc::clone(&self.limit_factor_learn),
-            remediation_turn: Arc::clone(&self.remediation_turn),
+            insights_work_turn: Arc::clone(&self.insights_work_turn),
+            #[cfg(test)]
+            burn_check_test_hooks: Arc::clone(&self.burn_check_test_hooks),
             state_dir: self.state_dir.clone(),
         })
     }
@@ -464,12 +595,35 @@ impl Store {
         connection.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
             connection: Arc::new(Mutex::new(connection)),
+            destructive_write_epoch: Arc::new(AtomicU64::new(0)),
+            session_write_state: Arc::new(Mutex::new(SessionWriteState::default())),
             settings_snapshot: Arc::new(RwLock::new(AppSettings::default())),
             limit_factor_learn: Arc::new(Mutex::new(())),
-            remediation_turn: Arc::new(AtomicBool::new(true)),
+            insights_work_turn: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            burn_check_test_hooks: Arc::new(Mutex::new(None)),
             state_dir,
         };
         store.migrate()?;
+        store.lock().execute(
+            "WITH legacy AS (
+                SELECT rowid, session_id, CASE WHEN json_valid(substr(admission_revision, ?1))
+                    THEN json_extract(substr(admission_revision, ?1), '$[0]') END AS physical
+                  FROM session WHERE fingerprint_source_path IS NULL
+                    AND environment_key = 'native' AND agent = 'opencode'
+                    AND admission_revision LIKE 'opencode-admission-v1:%'
+             ) UPDATE session SET fingerprint_source_path = (
+                 SELECT substr(physical, 12, length(physical) - 12 - length(legacy.session_id))
+                   FROM legacy WHERE legacy.rowid = session.rowid)
+               WHERE rowid IN (SELECT rowid FROM legacy WHERE substr(physical, 1, 11) = 'providerDb:'
+                 AND substr(physical, -length(session_id) - 1) = ':' || session_id)",
+            ["opencode-admission-v1:".len() + 1],
+        )?;
+        store.lock().execute(
+            "UPDATE session SET fingerprint_in_flight = 0, fingerprint_next_attempt_at_epoch = NULL
+              WHERE fingerprint_in_flight = 1",
+            [],
+        )?;
         store.check_preferences_snapshot()?;
         store.update_settings_snapshot(&store.settings()?);
         Ok(store)
@@ -480,8 +634,8 @@ impl Store {
         &self.state_dir
     }
 
-    pub(crate) fn take_remediation_work_turn(&self) -> bool {
-        self.remediation_turn.fetch_xor(true, Ordering::Relaxed)
+    pub(crate) fn take_insights_work_turn(&self) -> usize {
+        self.insights_work_turn.fetch_add(1, Ordering::Relaxed) % 3
     }
 
     /// Apply every migration the database has not seen yet.
@@ -491,6 +645,7 @@ impl Store {
     fn migrate(&self) -> Result<()> {
         let mut guard = self.lock();
         let mut current: i64 = guard.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let is_new_database = current == 0;
         // PR builds used v49 for incarnation before main assigned v49 to remediation.
         if current == 49
             && guard.query_row(
@@ -559,12 +714,24 @@ impl Store {
             tx.commit()?;
             current = 56;
         }
+        current = schema::repair_branch_version(&mut guard, current)?;
         for (index, sql) in schema::MIGRATIONS.iter().enumerate() {
             let version = index as i64 + 1;
             if version <= current {
                 continue;
             }
             let tx = guard.transaction()?;
+            if version == retired_checks_migration::VERSION {
+                retired_checks_migration::prepare(
+                    &tx,
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                )
+                .with_context(|| format!("migration {version} preparation failed"))?;
+            }
+            if version == 85 {
+                schema::prepare_source_metadata(&tx)
+                    .with_context(|| format!("migration {version} preparation failed"))?;
+            }
             // The SQLite error is in the source chain either way, but a caller
             // that formats with `{}` rather than `{:#}` prints this line alone
             // — and tauri's setup hook is such a caller. A bare "migration 4
@@ -574,9 +741,24 @@ impl Store {
             // actionable rather than a trip to this file to guess.
             tx.execute_batch(sql)
                 .map_err(|error| anyhow::anyhow!("migration {version} failed: {error}"))?;
+            if is_new_database && version == 1 {
+                tx.execute(
+                    "INSERT INTO setting (key, value) VALUES (?1, 'true')",
+                    [retired_checks_migration::FRESH_INITIALIZATION_KEY],
+                )?;
+            }
             // `pragma_update` cannot be parameterized, and `version` is derived
             // from the compiled-in migration list, never from input.
             tx.pragma_update(None, "user_version", version)?;
+            tx.commit()?;
+        }
+        // Early V80 builds stored the admission revision without retry state.
+        if !guard.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'fingerprint_source_path')",
+            [], |row| row.get::<_, bool>(0),
+        )? {
+            let tx = guard.transaction()?;
+            tx.execute_batch(schema::FINGERPRINT_WORK)?;
             tx.commit()?;
         }
         Ok(())
@@ -722,6 +904,98 @@ impl Store {
         Ok(())
     }
 
+    /// Read both reader ledgers. Native consumers keep the native-only method above.
+    pub fn check_snoozes(&self) -> Result<Vec<crate::dto::CheckSnoozePayload>> {
+        use crate::dto::{CheckSnoozeId, CheckSnoozePayload};
+        let mut records = self
+            .burn_check_snoozes()?
+            .into_iter()
+            .map(|record| CheckSnoozePayload {
+                detector: CheckSnoozeId::Native(record.detector),
+                scope: record.scope,
+                until: record.until,
+            })
+            .collect::<Vec<_>>();
+        let connection = self.lock();
+        let stored: Option<String> = connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = 'internal:installedCheckSnoozesV1'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(stored) = stored {
+            let installed: Vec<CheckSnoozePayload> =
+                serde_json::from_str(&stored).context("invalid installed check snooze ledger")?;
+            anyhow::ensure!(
+                installed
+                    .iter()
+                    .all(|record| matches!(record.detector, CheckSnoozeId::Installed(_))),
+                "native identity in installed snooze ledger"
+            );
+            records.extend(installed);
+        }
+        Ok(records)
+    }
+
+    /// Replace one reader suppression without changing check execution preferences.
+    pub fn set_check_snooze(&self, snooze: &crate::dto::CheckSnoozePayload) -> Result<()> {
+        use crate::dto::CheckSnoozeId;
+        match &snooze.detector {
+            CheckSnoozeId::Native(detector) => {
+                let mut records = self.burn_check_snoozes()?;
+                records.retain(|record| record.detector != *detector);
+                records.push(BurnCheckSnoozePayload {
+                    detector: *detector,
+                    scope: snooze.scope,
+                    until: snooze.until,
+                });
+                self.save_burn_check_snoozes(&serde_json::to_string(&records)?)
+            }
+            CheckSnoozeId::Installed(_) => {
+                let mut records = self
+                    .check_snoozes()?
+                    .into_iter()
+                    .filter(|record| {
+                        matches!(record.detector, CheckSnoozeId::Installed(_))
+                            && record.detector != snooze.detector
+                    })
+                    .collect::<Vec<_>>();
+                records.push(snooze.clone());
+                self.set_internal_value_checked(
+                    "internal:installedCheckSnoozesV1",
+                    &serde_json::to_string(&records)?,
+                )
+            }
+        }
+    }
+
+    /// Clear one suppression in its original ledger.
+    pub fn clear_check_snooze(&self, detector: &crate::dto::CheckSnoozeId) -> Result<()> {
+        use crate::dto::CheckSnoozeId;
+        match detector {
+            CheckSnoozeId::Native(detector) => {
+                let mut records = self.burn_check_snoozes()?;
+                records.retain(|record| record.detector != *detector);
+                self.save_burn_check_snoozes(&serde_json::to_string(&records)?)
+            }
+            CheckSnoozeId::Installed(_) => {
+                let records = self
+                    .check_snoozes()?
+                    .into_iter()
+                    .filter(|record| {
+                        matches!(record.detector, CheckSnoozeId::Installed(_))
+                            && &record.detector != detector
+                    })
+                    .collect::<Vec<_>>();
+                self.set_internal_value_checked(
+                    "internal:installedCheckSnoozesV1",
+                    &serde_json::to_string(&records)?,
+                )
+            }
+        }
+    }
+
     /// Return the durable random secret used for provider account keys.
     pub fn provider_account_secret(&self) -> Result<[u8; 32]> {
         let connection = self.lock();
@@ -755,7 +1029,33 @@ impl Store {
         let settings = read_settings(&tx)?;
         let removed =
             apply_session_retention_in(&tx, settings.session_data_retention_days, now_epoch)?;
+        let surviving_keys = if removed > 0 {
+            let mut statement =
+                tx.prepare("SELECT environment_key, agent, session_id FROM session")?;
+            statement
+                .query_map([], |row| {
+                    Ok(SessionKey::new(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<HashSet<_>>>()?
+        } else {
+            HashSet::new()
+        };
         tx.commit()?;
+        if removed > 0 {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+            let mut state = self
+                .session_write_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.key_fences.clear();
+            state
+                .physical_sources
+                .retain(|key, _| surviving_keys.contains(key));
+        }
         Ok((removed, revision_of(&connection)))
     }
 
@@ -813,22 +1113,76 @@ impl Store {
     /// Record that the user granted access to a protected directory.
     /// Idempotent; re-granting refreshes when the decision was made.
     pub fn grant_dir(&self, dir_name: &str) -> Result<()> {
-        self.lock().execute(
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let changed = tx.execute(
             "INSERT INTO consent_grant (dir_name, granted_at) VALUES (?1, ?2)
-             ON CONFLICT(dir_name) DO UPDATE SET granted_at = excluded.granted_at",
+             ON CONFLICT(dir_name) DO UPDATE SET granted_at = excluded.granted_at
+                 WHERE consent_grant.granted_at <> excluded.granted_at",
             params![dir_name, now_rfc3339()],
         )?;
+        if changed > 0 {
+            bump_repository_policy_generation_in(&tx)?;
+        }
+        tx.commit()?;
+        if changed > 0 {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
         Ok(())
     }
 
     /// Drop a recorded grant, after a read under it came back denied.
     /// Idempotent.
     pub fn revoke_dir_grant(&self, dir_name: &str) -> Result<()> {
-        self.lock().execute(
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let changed = tx.execute(
             "DELETE FROM consent_grant WHERE dir_name = ?1",
             params![dir_name],
         )?;
+        if changed > 0 {
+            bump_repository_policy_generation_in(&tx)?;
+        }
+        tx.commit()?;
+        if changed > 0 {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
         Ok(())
+    }
+
+    /// Snapshot the persisted repository and folder policy with its generation.
+    pub fn repository_policy_snapshot(&self) -> Result<RepositoryPolicySnapshot> {
+        let connection = self.lock();
+        let generation = read_repository_policy_generation(&connection)?;
+        let mut ignored_statement = connection.prepare(
+            "SELECT COALESCE(repo_root, suspected_path) FROM repository WHERE enabled = 0",
+        )?;
+        let ignored_paths = ignored_statement
+            .query_map([], |row| row.get::<_, Option<String>>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .map(|path| antiburn_local::paths::ignored_paths::normalize(&path))
+            .collect();
+        let mut grant_statement = connection.prepare("SELECT dir_name FROM consent_grant")?;
+        let granted_dirs = grant_statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        let deferred_dirs = connection
+            .query_row(
+                "SELECT value FROM setting WHERE key = ?1",
+                params![DEFERRED_PERMISSION_DIRS_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| serde_json::from_str(&value).ok())
+            .unwrap_or_default();
+        Ok(RepositoryPolicySnapshot {
+            generation,
+            ignored_paths,
+            granted_dirs,
+            deferred_dirs,
+        })
     }
 
     /* Anonymised application events. */
@@ -1012,7 +1366,16 @@ impl Store {
     /// An internal scalar rather than a table: it is derived state, replaced
     /// whole on every pass, and only ever read back as one list.
     pub fn set_deferred_permission_dirs(&self, dirs: &[DeferredPermissionDir]) -> Result<()> {
-        self.set_internal_value(DEFERRED_PERMISSION_DIRS_KEY, &serde_json::to_string(dirs)?);
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        tx.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![DEFERRED_PERMISSION_DIRS_KEY, serde_json::to_string(dirs)?],
+        )?;
+        bump_repository_policy_generation_in(&tx)?;
+        tx.commit()?;
+        self.destructive_write_epoch.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -1038,37 +1401,9 @@ impl Store {
         &self,
         records: &[SessionRecord],
         evidence_agents: &[&str],
-    ) -> Result<(Vec<(SessionKey, Incarnation)>, Revision)> {
+    ) -> Result<SessionUpsertResult> {
         let mut connection = self.lock();
-        let tx = connection.transaction()?;
-        let mut incarnations = Vec::with_capacity(records.len());
-        for record in records {
-            let source_returned = tx.query_row(
-                "SELECT EXISTS (
-                     SELECT 1 FROM session_evidence
-                      WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                        AND status = 'failed' AND last_error = 'source-missing'
-                 )",
-                params![
-                    record.key.environment_key,
-                    record.key.agent,
-                    record.key.session_id
-                ],
-                |row| row.get::<_, i64>(0),
-            )? != 0;
-            let upserted = upsert_session_in(&tx, record)?;
-            let generation_increased = upserted
-                .previous_generation
-                .is_none_or(|previous| upserted.source_generation > previous);
-            let evidence_marked_pending = evidence_agents.contains(&record.key.agent.as_str())
-                && (generation_increased || upserted.activity_cursor_changed || source_returned);
-            if evidence_marked_pending {
-                mark_evidence_pending_in(&tx, &record.key)?;
-            }
-            incarnations.push((record.key.clone(), upserted.incarnation));
-        }
-        tx.commit()?;
-        Ok((incarnations, revision_of(&connection)))
+        upsert_sessions_locked(&mut connection, records, evidence_agents)
     }
 
     /// Sessions whose activity falls at or after `since_epoch`, newest first.
@@ -1782,10 +2117,11 @@ impl Store {
         tx.execute("DELETE FROM session_relation", [])?;
         tx.execute("DELETE FROM remediation_contribution", [])?;
         tx.execute("DELETE FROM remediation", [])?;
-        burn_check::clear_local_burn_check_state(
-            &tx,
-            time::OffsetDateTime::now_utc().unix_timestamp(),
+        tx.execute(
+            "DELETE FROM setting WHERE key = ?1",
+            [usage_accounting::USAGE_LEDGER_KEY],
         )?;
+        tx.execute("DELETE FROM burn_check_decision_usage", [])?;
         tx.execute("DELETE FROM session_analysis", [])?;
         tx.execute("DELETE FROM session_evidence", [])?;
         tx.execute("DELETE FROM turn_content", [])?;
@@ -1800,7 +2136,11 @@ impl Store {
         tx.execute("DELETE FROM provider_limit_factor_point", [])?;
         tx.execute("DELETE FROM provider_usage_observation", [])?;
         tx.execute("DELETE FROM provider_usage_period", [])?;
+        tx.execute("DELETE FROM opencode_v2_capture", [])?;
+        tx.execute("DELETE FROM opencode_v2_selection", [])?;
         let sessions = tx.execute("DELETE FROM session", [])?;
+        native_tool_results::clear_local_data_in(&tx)?;
+        Store::clear_burn_check_session_data_in(&tx)?;
         tx.execute("DELETE FROM provider_account_seen", [])?;
         tx.execute(
             "DELETE FROM setting
@@ -1810,11 +2150,19 @@ impl Store {
         tx.execute("DELETE FROM scan_state", [])?;
         tx.execute("UPDATE repository SET session_count = 0", [])?;
         tx.commit()?;
+        self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        let mut state = self
+            .session_write_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.key_fences.clear();
+        state.physical_sources.clear();
         crate::provider_accounts::clear_cache();
         Ok((sessions, revision_of(&connection)))
     }
 
-    /// Delete every antiburn-owned record for one session.
+    /// Delete local content and analysis for one session. Keep native V2 selection
+    /// history so retained V1 migration copies stay hidden.
     ///
     /// Local records only. The provider's transcript is never touched — see
     /// [`crate::commands::delete_session_data`].
@@ -1826,6 +2174,8 @@ impl Store {
         let tx = connection.transaction()?;
         let removed = delete_session_in(&tx, key)?;
         tx.commit()?;
+        self.bump_session_key_fence(key);
+        self.destructive_write_epoch.fetch_add(1, Ordering::Release);
         Ok(removed.map(|incarnation| (incarnation, revision_of(&connection))))
     }
 
@@ -1864,12 +2214,15 @@ impl Store {
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         let mut removed = 0;
-        for key in keys {
-            if delete_session_in(&tx, &key)?.is_some() {
+        for key in &keys {
+            if delete_session_in(&tx, key)?.is_some() {
                 removed += 1;
             }
         }
         tx.commit()?;
+        for key in &keys {
+            self.bump_session_key_fence(key);
+        }
         Ok((removed, revision_of(&connection)))
     }
 
@@ -1912,13 +2265,63 @@ impl Store {
         sources: &[SourcePublishOutcome],
         source_fingerprint: Option<&str>,
     ) -> Result<bool> {
-        let source_sets = publication::SourceSets::new(sources)?;
+        self.publish_projections_with_native_tool_results(
+            record,
+            started_at_epoch,
+            completion,
+            relations,
+            sources,
+            ToolResultPublishOptions {
+                source_fingerprint,
+                batch: None,
+            },
+        )
+    }
+
+    /// Publishes projections and an optional native-result snapshot in the
+    /// same claim-fenced transaction.
+    ///
+    /// Native observations commit only after the evidence claim update wins.
+    /// `None` leaves native-result state untouched for existing callers.
+    pub fn publish_projections_with_native_tool_results(
+        &self,
+        record: &AnalysisRecord,
+        started_at_epoch: Option<i64>,
+        completion: &EvidenceCompletion,
+        relations: &[RelationRecord],
+        sources: &[SourcePublishOutcome],
+        options: ToolResultPublishOptions<'_>,
+    ) -> Result<bool> {
         let config_attribution = crate::remediation::publication_config_attribution(
             self,
             &record.key,
             completion.status,
             &completion.evidence_json,
         )?;
+        self.publish_projections_with_config_attribution(
+            record,
+            started_at_epoch,
+            completion,
+            relations,
+            sources,
+            options,
+            &config_attribution,
+        )
+    }
+
+    /// Publishes projections with configuration attribution prepared before the write.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn publish_projections_with_config_attribution(
+        &self,
+        record: &AnalysisRecord,
+        started_at_epoch: Option<i64>,
+        completion: &EvidenceCompletion,
+        relations: &[RelationRecord],
+        sources: &[SourcePublishOutcome],
+        options: ToolResultPublishOptions<'_>,
+        config_attribution: &crate::remediation::PublicationConfigAttribution,
+    ) -> Result<bool> {
+        let source_sets = publication::SourceSets::new(sources)?;
         let remediation_secret = (completion.status == PublishedEvidence::Ready)
             .then(|| self.provider_account_secret())
             .transpose()?;
@@ -2028,7 +2431,7 @@ impl Store {
                 record.key.session_id,
                 completion.status.as_str(),
                 record.analyzed_generation,
-                source_fingerprint,
+                options.source_fingerprint,
                 record.parser_revision,
                 record.analyzer_revision,
                 completion.evidence_schema_revision,
@@ -2066,27 +2469,43 @@ impl Store {
                     &record.precedence_hash
                 }),
                 config_attribution_values_json(&config_attribution.records),
-                source_fingerprint,
+                options.source_fingerprint,
             ],
         )?;
         if updated == 0 {
-            // This pass lost the claim race (a newer claim, or a newer
-            // source generation, already moved past it). Dropping the
-            // transaction without a commit rolls back the session_analysis
-            // upsert above, exactly as before this pass wrote turn rows: a
-            // lost race must not publish anything this pass computed. Its
-            // rows were never published either, so they are cleaned up here
-            // under their own fence, in a separate statement, rather than
-            // left to accumulate. No `source_resume` row was ever written
-            // for this pass — those writes happen only below, after a win
-            // is confirmed.
+            // Roll back this pass's projections. A repeated completion can
+            // already own the published fence, so preserve published rows.
             drop(transaction);
-            delete_turn_rows_for_fence(
-                &connection,
-                &turn_session_key(&record.key),
+            let cleanup = connection.transaction()?;
+            evidence_queue::discard_evidence_claim_rows_in(
+                &cleanup,
+                &record.key,
                 completion.claim_fence,
             )?;
+            cleanup.commit()?;
             return Ok(false);
+        }
+        // Stored V2 snapshots cannot prove live event continuity or corrections.
+        if let Some(batch) = options.batch.filter(|batch| {
+            batch.source_format != antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+        }) {
+            let source_format = serde_json::to_string(&batch.source_format)?;
+            if batch.complete {
+                remove_native_tool_results_from_other_formats_in(
+                    &transaction,
+                    &record.key,
+                    &source_format,
+                    record.analyzed_generation,
+                    completion.claim_fence,
+                )?;
+            }
+            native_tool_results::reconcile_batch_in(
+                &transaction,
+                &record.key,
+                record.analyzed_generation,
+                completion.claim_fence,
+                batch,
+            )?;
         }
         if completion.status == PublishedEvidence::Ready {
             let publication_epoch = time::OffsetDateTime::now_utc();
@@ -2171,6 +2590,17 @@ impl Store {
             )?;
         }
         transaction.commit()?;
+        if options.batch.is_some_and(|batch| {
+            batch.source_format == antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+        }) {
+            ::tracing::debug!(
+                event = "stored_metrics_committed",
+                publication_origin = "stored_metrics",
+                live_evidence_ownership = "excluded",
+                metrics_claim_fence = completion.claim_fence,
+                metrics_source_generation = record.analyzed_generation,
+            );
+        }
         Ok(true)
     }
 
@@ -2284,24 +2714,24 @@ impl Store {
     /// — see the `v30` migration comment in `store::schema`.
     pub fn published_turn_rows(&self, key: &SessionKey) -> Result<Option<Vec<TurnRow>>> {
         let connection = self.lock();
-        let Some(evidence) = connection
-            .query_row(
-                EVIDENCE_BY_KEY_SQL,
-                params![key.environment_key, key.agent, key.session_id],
-                evidence_from_row,
-            )
-            .optional()?
-        else {
+        published_turn_rows_in(&connection, key)
+    }
+
+    /// Reads rows, analysis, and relations without mixing concurrent publications.
+    pub(crate) fn published_replay(&self, key: &SessionKey) -> Result<Option<PublishedReplay>> {
+        let connection = self.lock();
+        let Some(rows) = published_turn_rows_in(&connection, key)? else {
             return Ok(None);
         };
-        let Some(published_fence) = evidence.published_fence else {
+        let Some(record) = analysis_in(&connection, key)? else {
             return Ok(None);
         };
-        Ok(Some(query_turn_rows(
-            &connection,
-            &turn_session_key(key),
-            &FenceScope::single(published_fence),
-        )?))
+        let relations = relations_in(&connection, key)?;
+        Ok(Some(PublishedReplay {
+            rows,
+            record,
+            relations,
+        }))
     }
 
     /// Reads bounded private content from a publication that matches the
@@ -2567,42 +2997,7 @@ impl Store {
     /// One session's cached analysis, when it has been computed.
     pub fn analysis(&self, key: &SessionKey) -> Result<Option<AnalysisRecord>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, agent, session_id, model_breakdown_json,
-                    pricing_breakdown_json,
-                    inclusive_models_json, initial_context_json, source_summaries_json,
-                    provider_hints_json,
-                    source_fingerprint, pricing_generation, analyzed_generation,
-                    parser_revision, analyzer_revision, metrics_schema_revision
-               FROM session_analysis
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        )?;
-        Ok(statement
-            .query_row(
-                params![key.environment_key, key.agent, key.session_id],
-                |row| {
-                    Ok(AnalysisRecord {
-                        key: SessionKey::new(
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ),
-                        model_breakdown_json: row.get(3)?,
-                        pricing_breakdown_json: row.get(4)?,
-                        inclusive_models_json: row.get(5)?,
-                        initial_context_json: row.get(6)?,
-                        source_summaries_json: row.get(7)?,
-                        provider_hints_json: row.get(8)?,
-                        source_fingerprint: row.get(9)?,
-                        pricing_generation: row.get(10)?,
-                        analyzed_generation: row.get(11)?,
-                        parser_revision: row.get(12)?,
-                        analyzer_revision: row.get(13)?,
-                        metrics_schema_revision: row.get(14)?,
-                    })
-                },
-            )
-            .optional()?)
+        analysis_in(&connection, key)
     }
 
     /// Agent, activity timestamp, token breakdown, and provider hints for every
@@ -2771,33 +3166,7 @@ impl Store {
     /// Every relation recorded for a session.
     pub fn relations(&self, key: &SessionKey) -> Result<Vec<RelationRecord>> {
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT kind, related_id, label FROM session_relation
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-              ORDER BY kind, related_id",
-        )?;
-        let rows = statement.query_map(
-            params![key.environment_key, key.agent, key.session_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                ))
-            },
-        )?;
-        let mut relations = Vec::new();
-        for row in rows {
-            let (kind, related_id, label) = row?;
-            if let Some(kind) = RelationKind::parse(&kind) {
-                relations.push(RelationRecord {
-                    kind,
-                    related_id,
-                    label,
-                });
-            }
-        }
-        Ok(relations)
+        relations_in(&connection, key)
     }
 
     /// The session id this session recorded as its own fork parent, when
@@ -3000,6 +3369,63 @@ impl Store {
      * Repositories
      * ----------------------------------------------------------------- */
 
+    /// Remove excluded sessions in one transaction. A failed purge can be retried.
+    pub fn purge_ignored_sessions(&self) -> Result<usize> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let ignored = ignored_repository_paths_in(&tx)?;
+        let keys = {
+            let mut statement = tx.prepare(
+                "SELECT environment_key, agent, session_id, cwd FROM session WHERE cwd IS NOT NULL",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((
+                    SessionKey::new(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ),
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
+            let mut keys = Vec::new();
+            for row in rows {
+                let (key, cwd) = row?;
+                if key.remote_host_id().is_none()
+                    && antiburn_local::paths::ignored_paths::set_contains(&ignored, &cwd)
+                {
+                    keys.push(key);
+                }
+            }
+            keys
+        };
+        for key in &keys {
+            delete_session_in(&tx, key)?;
+        }
+        tx.commit()?;
+        for key in &keys {
+            self.bump_session_key_fence(key);
+        }
+        if !ignored.is_empty() {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
+        Ok(keys.len())
+    }
+
+    /// Update counts without replacing repository paths or include choices.
+    pub fn update_repository_session_counts(&self, counts: &[(String, u32)]) -> Result<()> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        for (key, count) in counts {
+            tx.execute(
+                "UPDATE repository SET session_count = ?2 WHERE key = ?1",
+                params![key, count],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Refresh the located repositories, preserving each one's include choice.
     ///
     /// A repository the user turned off stays off across rescans: the incoming
@@ -3007,45 +3433,52 @@ impl Store {
     pub fn replace_repositories(&self, records: &[RepositoryRecord]) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        let seen_at = now_rfc3339();
-        for record in records {
-            tx.execute(
-                "INSERT INTO repository (
-                     key, repo_name, full_name, status, repo_root, suspected_path,
-                     worktree_count, session_count, wsl_distro, enabled, last_seen_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                 ON CONFLICT(key) DO UPDATE SET
-                     repo_name = excluded.repo_name,
-                     full_name = excluded.full_name,
-                     status = excluded.status,
-                     repo_root = excluded.repo_root,
-                     suspected_path = excluded.suspected_path,
-                     worktree_count = excluded.worktree_count,
-                     session_count = excluded.session_count,
-                     wsl_distro = excluded.wsl_distro,
-                     last_seen_at = excluded.last_seen_at",
-                params![
-                    record.key,
-                    record.repo_name,
-                    record.full_name,
-                    record.status,
-                    record.repo_root,
-                    record.suspected_path,
-                    record.worktree_count,
-                    record.session_count,
-                    record.wsl_distro,
-                    record.enabled,
-                    seen_at,
-                ],
-            )?;
-        }
-        // Anything the scan no longer sees is gone from this machine.
-        tx.execute(
-            "DELETE FROM repository WHERE last_seen_at <> ?1",
-            params![seen_at],
-        )?;
+        let generation = read_repository_policy_generation(&tx)?;
+        replace_repositories_in(&tx, records)?;
+        let policy_changed = read_repository_policy_generation(&tx)? != generation;
         tx.commit()?;
+        if policy_changed {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
         Ok(())
+    }
+
+    /// Publish repository and deferred-folder results only if the policy used
+    /// to build them is still current. Both result sets share one commit.
+    pub fn publish_repository_refresh(
+        &self,
+        expected_generation: u64,
+        records: &[RepositoryRecord],
+        deferred: &[DeferredPermissionDir],
+    ) -> Result<RepositoryPolicyPublishOutcome> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        if read_repository_policy_generation(&tx)? != expected_generation {
+            return Ok(RepositoryPolicyPublishOutcome::Superseded);
+        }
+        replace_repositories_in(&tx, records)?;
+        let deferred_json = serde_json::to_string(deferred)?;
+        let previous_deferred: Option<String> = tx
+            .query_row(
+                "SELECT value FROM setting WHERE key = ?1",
+                params![DEFERRED_PERMISSION_DIRS_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if previous_deferred.as_deref() != Some(&deferred_json) {
+            bump_repository_policy_generation_in(&tx)?;
+        }
+        tx.execute(
+            "INSERT INTO setting (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![DEFERRED_PERMISSION_DIRS_KEY, deferred_json],
+        )?;
+        let policy_changed = read_repository_policy_generation(&tx)? != expected_generation;
+        tx.commit()?;
+        if policy_changed {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
+        Ok(RepositoryPolicyPublishOutcome::Published)
     }
 
     /// Every known repository, by owner-qualified name.
@@ -3075,12 +3508,196 @@ impl Store {
 
     /// Include or ignore one repository.
     pub fn set_repository_enabled(&self, key: &str, enabled: bool) -> Result<bool> {
-        let changed = self.lock().execute(
-            "UPDATE repository SET enabled = ?2 WHERE key = ?1",
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repository WHERE key = ?1)",
+            params![key],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            tx.commit()?;
+            return Ok(false);
+        }
+        let changed = tx.execute(
+            "UPDATE repository SET enabled = ?2 WHERE key = ?1 AND enabled <> ?2",
             params![key, enabled],
         )?;
-        Ok(changed > 0)
+        if changed > 0 {
+            bump_repository_policy_generation_in(&tx)?;
+        }
+        tx.commit()?;
+        if changed > 0 {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
+        Ok(true)
     }
+}
+
+fn published_turn_rows_in(
+    connection: &Connection,
+    key: &SessionKey,
+) -> Result<Option<Vec<TurnRow>>> {
+    let Some(published_fence) = read_published_fence(connection, key)? else {
+        return Ok(None);
+    };
+    Ok(Some(query_turn_rows(
+        connection,
+        &turn_session_key(key),
+        &FenceScope::single(published_fence),
+    )?))
+}
+
+fn analysis_in(connection: &Connection, key: &SessionKey) -> Result<Option<AnalysisRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT environment_key, agent, session_id, model_breakdown_json,
+                pricing_breakdown_json,
+                inclusive_models_json, initial_context_json, source_summaries_json,
+                provider_hints_json,
+                source_fingerprint, pricing_generation, analyzed_generation,
+                parser_revision, analyzer_revision, metrics_schema_revision
+           FROM session_analysis
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+    )?;
+    Ok(statement
+        .query_row(
+            params![key.environment_key, key.agent, key.session_id],
+            |row| {
+                Ok(AnalysisRecord {
+                    key: SessionKey::new(
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ),
+                    model_breakdown_json: row.get(3)?,
+                    pricing_breakdown_json: row.get(4)?,
+                    inclusive_models_json: row.get(5)?,
+                    initial_context_json: row.get(6)?,
+                    source_summaries_json: row.get(7)?,
+                    provider_hints_json: row.get(8)?,
+                    source_fingerprint: row.get(9)?,
+                    pricing_generation: row.get(10)?,
+                    analyzed_generation: row.get(11)?,
+                    parser_revision: row.get(12)?,
+                    analyzer_revision: row.get(13)?,
+                    metrics_schema_revision: row.get(14)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+fn relations_in(connection: &Connection, key: &SessionKey) -> Result<Vec<RelationRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT kind, related_id, label FROM session_relation
+          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+          ORDER BY kind, related_id",
+    )?;
+    let rows = statement.query_map(
+        params![key.environment_key, key.agent, key.session_id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
+    )?;
+    let mut relations = Vec::new();
+    for row in rows {
+        let (kind, related_id, label) = row?;
+        if let Some(kind) = RelationKind::parse(&kind) {
+            relations.push(RelationRecord {
+                kind,
+                related_id,
+                label,
+            });
+        }
+    }
+    Ok(relations)
+}
+
+fn read_repository_policy_generation(connection: &Connection) -> Result<u64> {
+    let value = connection
+        .query_row(
+            "SELECT value FROM setting WHERE key = ?1",
+            params![REPOSITORY_POLICY_GENERATION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    Ok(value)
+}
+
+fn bump_repository_policy_generation_in(connection: &Connection) -> Result<()> {
+    let generation = read_repository_policy_generation(connection)?.wrapping_add(1);
+    connection.execute(
+        "INSERT INTO setting (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![REPOSITORY_POLICY_GENERATION_KEY, generation.to_string()],
+    )?;
+    Ok(())
+}
+
+fn replace_repositories_in(
+    transaction: &rusqlite::Transaction<'_>,
+    records: &[RepositoryRecord],
+) -> Result<()> {
+    let previous_policy = ignored_repository_paths_in(transaction)?;
+    let seen_at = now_rfc3339();
+    for record in records {
+        transaction.execute(
+            "INSERT INTO repository (
+                 key, repo_name, full_name, status, repo_root, suspected_path,
+                 worktree_count, session_count, wsl_distro, enabled, last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(key) DO UPDATE SET
+                 repo_name = excluded.repo_name,
+                 full_name = excluded.full_name,
+                 status = excluded.status,
+                 repo_root = excluded.repo_root,
+                 suspected_path = excluded.suspected_path,
+                 worktree_count = excluded.worktree_count,
+                 session_count = excluded.session_count,
+                 wsl_distro = excluded.wsl_distro,
+                 last_seen_at = excluded.last_seen_at",
+            params![
+                record.key,
+                record.repo_name,
+                record.full_name,
+                record.status,
+                record.repo_root,
+                record.suspected_path,
+                record.worktree_count,
+                record.session_count,
+                record.wsl_distro,
+                record.enabled,
+                seen_at,
+            ],
+        )?;
+    }
+    transaction.execute(
+        "DELETE FROM repository WHERE last_seen_at <> ?1",
+        params![seen_at],
+    )?;
+    if previous_policy != ignored_repository_paths_in(transaction)? {
+        bump_repository_policy_generation_in(transaction)?;
+    }
+    Ok(())
+}
+
+fn ignored_repository_paths_in(connection: &Connection) -> Result<HashSet<String>> {
+    let mut statement = connection
+        .prepare("SELECT COALESCE(repo_root, suspected_path) FROM repository WHERE enabled = 0")?;
+    let paths = statement
+        .query_map([], |row| row.get::<_, Option<String>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(paths
+        .into_iter()
+        .flatten()
+        .map(|path| antiburn_local::paths::ignored_paths::normalize(&path))
+        .collect())
 }
 
 fn config_attribution_json(
@@ -3123,655 +3740,5 @@ fn config_setting_name(setting: crate::agent_config::ConfigSetting) -> &'static 
         crate::agent_config::ConfigSetting::BuiltInTool => "builtInTool",
         crate::agent_config::ConfigSetting::Skill => "skill",
         crate::agent_config::ConfigSetting::FastMode => "fastMode",
-    }
-}
-
-/// Read every preference through one already-held connection or transaction.
-/// One session's analysis state, as [`Store::hygiene_summary_rows`] reads it.
-#[derive(Debug, Clone)]
-pub struct HygieneSummaryRow {
-    /// True when analysis reached a terminal state for the current source.
-    pub settled: bool,
-    /// Current ready evidence JSON, when the session has one.
-    pub evidence_json: Option<String>,
-}
-
-/// The current UTC time as a fixed-width RFC 3339 stamp, so plain string
-/// comparison of two values stays chronological.
-pub fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
-/// An epoch stamp as the RFC 3339 string the views parse.
-///
-/// Lives beside [`now_rfc3339`] because the two answer the same question in the
-/// same spelling; every payload that carries a time uses one of them, so the
-/// webview never has to guess a format.
-pub fn iso_from_epoch(epoch: Option<i64>) -> String {
-    let epoch = epoch.unwrap_or(0);
-    time::OffsetDateTime::from_unix_timestamp(epoch)
-        .ok()
-        .and_then(|at| {
-            at.format(&time::format_description::well_known::Rfc3339)
-                .ok()
-        })
-        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
-}
-
-/// Insert a `forkParent` relation naming `parent` as `key`'s fork parent.
-///
-/// The table's primary key covers `related_id`, so this only guards a
-/// repeat call naming the same `parent` — it does not stop a second call
-/// from giving `key` a second, different parent. A caller that must keep
-/// one parent per session checks for an existing one first.
-///
-/// Returns whether this call inserted the row, using `changes()` rather
-/// than the `execute` row count so a caller can log only a real insert.
-fn insert_fork_parent_in(connection: &Connection, key: &SessionKey, parent: &str) -> Result<bool> {
-    connection.execute(
-        "INSERT INTO session_relation
-             (environment_key, agent, session_id, kind, related_id, label)
-         VALUES (?1, ?2, ?3, 'forkParent', ?4, NULL)
-         ON CONFLICT DO NOTHING",
-        params![key.environment_key, key.agent, key.session_id, parent],
-    )?;
-    Ok(connection.changes() > 0)
-}
-
-/// Read the writer revision while the caller holds the Store mutex.
-fn revision_of(connection: &Connection) -> Revision {
-    Revision(connection.total_changes())
-}
-
-/// Allocate an incarnation inside the write transaction. Rollback also restores the
-/// counter.
-fn allocate_incarnation_in(connection: &Connection) -> Result<Incarnation> {
-    let value = connection.query_row(
-        "UPDATE session_incarnation_seq SET value = value + 1 WHERE id = 1 RETURNING value",
-        [],
-        |row| row.get::<_, u64>(0),
-    )?;
-    Ok(Incarnation(value))
-}
-
-/// What one [`upsert_session_in`] call found and wrote.
-struct UpsertedSession {
-    previous_generation: Option<i64>,
-    source_generation: i64,
-    activity_cursor_changed: bool,
-    /// The row's incarnation after the write: the existing one on an update,
-    /// a newly allocated one on an insert.
-    incarnation: Incarnation,
-}
-
-fn upsert_session_in(connection: &Connection, record: &SessionRecord) -> Result<UpsertedSession> {
-    let previous_state = connection
-        .query_row(
-            "SELECT source_generation, activity_cursor, incarnation FROM session
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    Incarnation(row.get::<_, u64>(2)?),
-                ))
-            },
-        )
-        .optional()?;
-    let previous_generation = previous_state
-        .as_ref()
-        .map(|(generation, _, _)| *generation);
-    let activity_cursor_changed = previous_state
-        .as_ref()
-        .is_some_and(|(_, cursor, _)| cursor != &record.activity_cursor);
-    // Conflict updates preserve the incarnation. Only new rows advance the counter.
-    let incarnation = match previous_state {
-        Some((_, _, incarnation)) => incarnation,
-        None => allocate_incarnation_in(connection)?,
-    };
-    let now = now_rfc3339();
-    connection.execute(
-        "INSERT INTO session (
-             environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-             title, title_source, cwd, surface, updated_at_epoch,
-             activity_cursor, activity_source, subagent_count,
-             first_seen_at, last_seen_at, source_fingerprint, source_generation,
-             incarnation)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                 CASE WHEN ?7 IS NOT NULL THEN ?8 ELSE NULL END,
-                 ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?16,
-                 CASE WHEN ?16 IS NOT NULL THEN 1 ELSE 0 END,
-                 ?17)
-         ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
-             source_kind = excluded.source_kind,
-             source_label = excluded.source_label,
-             wsl_distro = excluded.wsl_distro,
-             title = COALESCE(excluded.title, session.title),
-             title_source = CASE
-                 WHEN excluded.title IS NOT NULL THEN excluded.title_source
-                 WHEN session.title IS NOT NULL THEN session.title_source
-                 ELSE NULL
-             END,
-             cwd = COALESCE(excluded.cwd, session.cwd),
-             surface = excluded.surface,
-             updated_at_epoch = CASE
-                 WHEN session.activity_source = 'event'
-                      AND excluded.activity_source <> 'event'
-                     THEN session.updated_at_epoch
-                 WHEN excluded.activity_source = 'event'
-                      AND session.activity_source = 'event'
-                     THEN MAX(COALESCE(excluded.updated_at_epoch, 0),
-                              COALESCE(session.updated_at_epoch, 0))
-                 WHEN excluded.activity_source = 'event'
-                     THEN excluded.updated_at_epoch
-                 ELSE MAX(COALESCE(excluded.updated_at_epoch, 0),
-                          COALESCE(session.updated_at_epoch, 0))
-             END,
-             activity_cursor = excluded.activity_cursor,
-             activity_source = CASE
-                 WHEN excluded.activity_source = 'event'
-                     THEN 'event'
-                 WHEN session.activity_source = 'event'
-                     THEN 'event'
-                 ELSE excluded.activity_source
-             END,
-             subagent_count = excluded.subagent_count,
-             source_fingerprint = COALESCE(excluded.source_fingerprint, session.source_fingerprint),
-             source_generation = CASE
-                 WHEN excluded.source_fingerprint IS NULL THEN session.source_generation
-                 WHEN session.source_fingerprint = excluded.source_fingerprint
-                     THEN session.source_generation
-                 ELSE session.source_generation + 1
-             END,
-             last_seen_at = excluded.last_seen_at",
-        params![
-            record.key.environment_key,
-            record.key.agent,
-            record.key.session_id,
-            record.source_kind,
-            record.source_label,
-            record.wsl_distro,
-            record.title,
-            record.title_source,
-            record.cwd,
-            record.surface,
-            record.updated_at_epoch,
-            record.activity_cursor,
-            record.activity_source,
-            record.subagent_count,
-            now,
-            record.source_fingerprint,
-            incarnation.0,
-        ],
-    )?;
-
-    // A fork parent is written only when the caller actually observed one.
-    //
-    // Absence is not evidence. Some adapters resolve lineage only when a
-    // session opens. A later scan must not erase that relation.
-    if let Some(parent) = &record.fork_parent_session_id {
-        insert_fork_parent_in(connection, &record.key, parent)?;
-    }
-    // Read the row back inside the same transaction: the values are exact
-    // and the incarnation is the one the row holds, whichever branch ran.
-    let (source_generation, incarnation) = connection.query_row(
-        "SELECT source_generation, incarnation FROM session
-          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        params![
-            record.key.environment_key,
-            record.key.agent,
-            record.key.session_id
-        ],
-        |row| Ok((row.get::<_, i64>(0)?, Incarnation(row.get::<_, u64>(1)?))),
-    )?;
-    Ok(UpsertedSession {
-        previous_generation,
-        source_generation,
-        activity_cursor_changed,
-        incarnation,
-    })
-}
-
-fn replace_relations_in(
-    connection: &Connection,
-    key: &SessionKey,
-    kind: RelationKind,
-    relations: &[RelationRecord],
-) -> Result<()> {
-    connection.execute(
-        "DELETE FROM session_relation
-          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND kind = ?4",
-        params![
-            key.environment_key,
-            key.agent,
-            key.session_id,
-            kind.as_str()
-        ],
-    )?;
-    for relation in relations {
-        connection.execute(
-            "INSERT INTO session_relation
-                 (environment_key, agent, session_id, kind, related_id, label)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT DO UPDATE SET label = excluded.label",
-            params![
-                key.environment_key,
-                key.agent,
-                key.session_id,
-                relation.kind.as_str(),
-                relation.related_id,
-                relation.label,
-            ],
-        )?;
-    }
-    Ok(())
-}
-
-fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result<()> {
-    connection.execute(
-        "INSERT INTO session_evidence (environment_key, agent, session_id)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
-             status = 'pending', last_error = NULL,
-             next_attempt_at_epoch = NULL, retry_count = 0",
-        params![key.environment_key, key.agent, key.session_id],
-    )?;
-    Ok(())
-}
-
-/// Delete one session and its owned rows. Returns the deleted row's
-/// incarnation, or `None` when there was no row.
-fn delete_session_in(connection: &Connection, key: &SessionKey) -> Result<Option<Incarnation>> {
-    let parameters = params![key.environment_key, key.agent, key.session_id];
-    connection.execute(
-        "DELETE FROM session_relation
-          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        parameters,
-    )?;
-    connection.execute(
-        "DELETE FROM session_analysis
-          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        parameters,
-    )?;
-    // The v11 `ON DELETE CASCADE` also covers this row, but the cascade rides
-    // on the per-connection `foreign_keys` pragma; deleting explicitly keeps
-    // session deletion pragma-independent.
-    connection.execute(
-        "DELETE FROM session_evidence
-          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        parameters,
-    )?;
-    // Same reasoning as `session_evidence` above: the v15 and v28 cascades
-    // from `session` cover `turn`, `turn_content`, and `session_coverage`,
-    // but this stays explicit and pragma-independent. `turn_content` has no
-    // direct session key, so it is deleted through `turn`'s rowid.
-    delete_turn_rows_in(connection, key)?;
-    // Same reasoning again: the v30 cascade from `session` covers
-    // `source_resume`, but this stays explicit and pragma-independent.
-    connection.execute(
-        "DELETE FROM source_resume
-          WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-        parameters,
-    )?;
-    let removed = connection
-        .query_row(
-            "DELETE FROM session
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-          RETURNING incarnation",
-            parameters,
-            |row| row.get::<_, u64>(0),
-        )
-        .optional()?;
-    if removed.is_some() {
-        burn_check::forget_session_usage_in(connection, key)?;
-    }
-    Ok(removed.map(Incarnation))
-}
-
-pub(crate) fn apply_session_retention_in(
-    connection: &Connection,
-    retention_days: i32,
-    now_epoch: i64,
-) -> Result<usize> {
-    if retention_days == RETAIN_SESSION_DATA_FOREVER {
-        Store::apply_provider_usage_retention_in(connection, retention_days, now_epoch)?;
-        return Ok(0);
-    }
-
-    let cutoff = now_epoch.saturating_sub(i64::from(retention_days).saturating_mul(86_400));
-    let mut statement = connection.prepare(
-        "SELECT environment_key, agent, session_id
-           FROM session
-          WHERE COALESCE(
-                    updated_at_epoch,
-                    CAST(strftime('%s', last_seen_at) AS INTEGER)
-                ) < ?1",
-    )?;
-    let keys = statement
-        .query_map([cutoff], |row| {
-            Ok(SessionKey::new(
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    drop(statement);
-
-    let mut removed = 0;
-    for key in keys {
-        if delete_session_in(connection, &key)?.is_some() {
-            removed += 1;
-        }
-    }
-    Store::apply_provider_usage_retention_in(connection, retention_days, now_epoch)?;
-    Ok(removed)
-}
-
-fn turn_session_key(key: &SessionKey) -> TurnSessionKey<'_> {
-    TurnSessionKey {
-        environment_key: &key.environment_key,
-        agent: &key.agent,
-        session_id: &key.session_id,
-    }
-}
-
-/// This session's current `published_fence`, or `None` when it has never
-/// published. Shared by `Store::publish_projections` (deciding the fence
-/// this pass's winning rows join) and `FencedTurnRowStore` (widening a
-/// mid-pass read for a source that resumed — see [`FenceScope`]).
-fn read_published_fence(
-    connection: &Connection,
-    key: &SessionKey,
-) -> rusqlite::Result<Option<i64>> {
-    connection
-        .query_row(
-            "SELECT published_fence FROM session_evidence
-              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
-            params![key.environment_key, key.agent, key.session_id],
-            |row| row.get::<_, Option<i64>>(0),
-        )
-        .optional()
-        .map(Option::flatten)
-}
-
-fn delete_turn_rows_in(connection: &Connection, key: &SessionKey) -> Result<usize> {
-    Ok(delete_turn_rows(connection, &turn_session_key(key))?)
-}
-
-fn evidence_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EvidenceRow> {
-    let status: EvidenceStatus = row
-        .get::<_, String>(3)?
-        .parse()
-        .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    Ok(EvidenceRow {
-        key: SessionKey::new(
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ),
-        status,
-        analyzed_generation: row.get(4)?,
-        processed_fingerprint: row.get(5)?,
-        parser_revision: row.get(6)?,
-        analyzer_revision: row.get(7)?,
-        evidence_schema_revision: row.get(8)?,
-        evidence_json: row.get(9)?,
-        retry_count: row.get(10)?,
-        claim_fence: row.get(11)?,
-        claimed_at_epoch: row.get(12)?,
-        lease_expires_at_epoch: row.get(13)?,
-        next_attempt_at_epoch: row.get(14)?,
-        analyzed_at_epoch: row.get(15)?,
-        last_error: row.get(16)?,
-        published_fence: row.get(17)?,
-    })
-}
-
-/// Every full-record session reader uses this column list and join. One copy
-/// keeps schema changes aligned with [`session_from_row`].
-const SESSION_SELECT_SQL: &str =
-    "SELECT environment_key, agent, session_id, source_kind, source_label, wsl_distro,
-                    title, title_source, cwd, surface, updated_at_epoch,
-                    activity_cursor, activity_source, subagent_count,
-                    (SELECT related_id FROM session_relation r
-                       WHERE r.environment_key = s.environment_key
-                         AND r.agent = s.agent
-                         AND r.session_id = s.session_id
-                         AND r.kind = 'forkParent'
-                       LIMIT 1),
-                    s.source_fingerprint
-               FROM session s";
-
-fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
-    Ok(SessionRecord {
-        key: SessionKey::new(
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ),
-        source_kind: row.get(3)?,
-        source_label: row.get(4)?,
-        wsl_distro: row.get(5)?,
-        title: row.get(6)?,
-        title_source: row.get(7)?,
-        cwd: row.get(8)?,
-        surface: row.get(9)?,
-        updated_at_epoch: row.get(10)?,
-        activity_cursor: row.get(11)?,
-        activity_source: row.get(12)?,
-        subagent_count: row.get(13)?,
-        fork_parent_session_id: row.get(14)?,
-        source_fingerprint: row.get(15)?,
-    })
-}
-
-/// Writes and reads turn rows for one claimed evidence pass.
-///
-/// Holds an owned [`Store`] handle (cheap: it shares the app's one
-/// connection, see [`Store`]'s doc comment) plus the session key and claim
-/// fence the durable worker already knows for this pass. `Store` cannot
-/// implement [`TurnRowStore`] directly — reading and writing rows needs the
-/// session key and fence, and `Store` itself does not carry either.
-#[derive(Clone)]
-pub struct FencedTurnRowStore {
-    store: Store,
-    key: SessionKey,
-    claim_fence: i64,
-    /// Source keys the worker has told this pass genuinely resumed (see
-    /// [`TurnRowStore::note_resumed_source`]). A mid-pass fact query widens
-    /// its fence scope to include these sources' already-published rows,
-    /// since only their new rows have moved to `claim_fence` so far.
-    resumed_sources: Arc<Mutex<Vec<String>>>,
-}
-
-impl FencedTurnRowStore {
-    pub fn new(store: Store, key: SessionKey, claim_fence: i64) -> Self {
-        Self {
-            store,
-            key,
-            claim_fence,
-            resumed_sources: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    /// The source keys the worker has told this pass genuinely resumed so
-    /// far, cloned out of the mutex for a single query call.
-    fn resumed_sources(&self) -> Vec<String> {
-        self.resumed_sources
-            .lock()
-            .expect("resumed_sources mutex poisoned")
-            .clone()
-    }
-
-    /// Builds the fence scope for a mid-pass fact query against `resumed`:
-    /// the claim fence alone when nothing has resumed this pass, or a union
-    /// with the session's published fence over the resumed source keys
-    /// otherwise. `resumed` must be a slice this call's caller keeps alive
-    /// for as long as the returned scope is in use.
-    fn fact_query_scope<'a>(
-        &self,
-        connection: &Connection,
-        resumed: &'a [String],
-    ) -> Result<FenceScope<'a>, TurnRowError> {
-        if resumed.is_empty() {
-            return Ok(FenceScope::single(self.claim_fence));
-        }
-        let published_fence =
-            read_published_fence(connection, &self.key)?.unwrap_or(self.claim_fence);
-        Ok(FenceScope {
-            claim_fence: self.claim_fence,
-            published: Some(PublishedScope {
-                fence: published_fence,
-                source_keys: resumed,
-            }),
-        })
-    }
-}
-
-impl TurnRowStore for FencedTurnRowStore {
-    fn write_turn_rows(&self, rows: &[TurnRow]) -> Result<(), TurnRowError> {
-        // One transaction per batch: one fsync for the batch instead of
-        // one for each row, and the lock is held only for the batch.
-        let mut connection = self.store.lock();
-        let transaction = connection.transaction()?;
-        insert_turn_rows(
-            &transaction,
-            &turn_session_key(&self.key),
-            self.claim_fence,
-            rows,
-        )?;
-        transaction.commit()?;
-        Ok(())
-    }
-
-    fn query_turn_facts(&self) -> Result<TurnFacts, TurnRowError> {
-        let connection = self.store.lock();
-        let resumed = self.resumed_sources();
-        let scope = self.fact_query_scope(&connection, &resumed)?;
-        Ok(query_turn_facts(
-            &connection,
-            &turn_session_key(&self.key),
-            &scope,
-        )?)
-    }
-
-    fn query_model_breakdown(
-        &self,
-    ) -> Result<
-        std::collections::BTreeMap<String, antiburn_local::pricing::ModelTokens>,
-        TurnRowError,
-    > {
-        let connection = self.store.lock();
-        let resumed = self.resumed_sources();
-        let scope = self.fact_query_scope(&connection, &resumed)?;
-        Ok(query_model_breakdown(
-            &connection,
-            &turn_session_key(&self.key),
-            &scope,
-        )?)
-    }
-
-    fn query_model_runs(&self) -> Result<Vec<ModelRun>, TurnRowError> {
-        let connection = self.store.lock();
-        let resumed = self.resumed_sources();
-        let scope = self.fact_query_scope(&connection, &resumed)?;
-        Ok(query_model_runs(
-            &connection,
-            &turn_session_key(&self.key),
-            &scope,
-        )?)
-    }
-
-    fn query_pricing_breakdown(
-        &self,
-    ) -> Result<
-        std::collections::BTreeMap<String, antiburn_local::pricing::ModelTokens>,
-        TurnRowError,
-    > {
-        let connection = self.store.lock();
-        let resumed = self.resumed_sources();
-        let scope = self.fact_query_scope(&connection, &resumed)?;
-        Ok(query_pricing_breakdown(
-            &connection,
-            &turn_session_key(&self.key),
-            &scope,
-        )?)
-    }
-
-    fn write_coverage_record(&self, record: &SessionCoverageRecord) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
-        insert_coverage_record(
-            &connection,
-            &turn_session_key(&self.key),
-            self.claim_fence,
-            record,
-        )?;
-        Ok(())
-    }
-
-    // R3: the coverage record is rebuilt complete every pass, resumed or
-    // full, so it never needs the published-fence widening — the claim
-    // fence alone always has this pass's whole record.
-    fn query_coverage_record(&self) -> Result<Option<SessionCoverageRecord>, TurnRowError> {
-        let connection = self.store.lock();
-        Ok(query_coverage_record(
-            &connection,
-            &turn_session_key(&self.key),
-            &FenceScope::single(self.claim_fence),
-        )?)
-    }
-
-    /// Not scoped to `self.claim_fence` — `source_resume` carries no fence
-    /// column, unlike every other row this store reads or writes.
-    fn read_resume(&self, source_key: &str) -> Result<Option<StoredResume>, TurnRowError> {
-        let connection = self.store.lock();
-        Ok(query_source_resume(
-            &connection,
-            &turn_session_key(&self.key),
-            source_key,
-        )?)
-    }
-
-    fn write_resume(&self, source_key: &str, resume: StoredResume) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
-        insert_source_resume(
-            &connection,
-            &turn_session_key(&self.key),
-            source_key,
-            &resume,
-        )?;
-        Ok(())
-    }
-
-    fn drop_resume(&self, source_key: &str) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
-        delete_source_resume(&connection, &turn_session_key(&self.key), source_key)?;
-        Ok(())
-    }
-
-    fn delete_rows_for_source(&self, source_key: &str) -> Result<(), TurnRowError> {
-        let connection = self.store.lock();
-        delete_source_rows_at_fence(
-            &connection,
-            &turn_session_key(&self.key),
-            source_key,
-            self.claim_fence,
-        )?;
-        Ok(())
-    }
-
-    fn note_resumed_source(&self, source_key: &str) {
-        self.resumed_sources
-            .lock()
-            .expect("resumed_sources mutex poisoned")
-            .push(source_key.to_string());
     }
 }

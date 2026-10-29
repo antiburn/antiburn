@@ -118,6 +118,7 @@ impl AgentExplorer for WindsurfExplorer {
                 agent: AgentKind::Windsurf,
                 db_path: path,
                 session_id: session_id.to_owned(),
+                source_format: None,
             })
         } else {
             // A Devin miss must still allow legacy Windsurf file lookup.
@@ -266,6 +267,7 @@ fn discover_devin_sessions(path: &Path, now: i64, since_secs: i64) -> Vec<Sessio
                     agent: AgentKind::Windsurf,
                     db_path: path.clone(),
                     session_id: id,
+                    source_format: None,
                 },
                 updated_at: Some(timestamp),
                 environment: Default::default(),

@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
 use antiburn_local::analysis::jev::{
-    JevError, JevInputWindow, JevQuestion, JevWorkItem,
+    JevError, JevQuestion, JevRequest,
     capabilities::{CapabilityLimit, CapabilitySource, ModelCapabilities},
-    estimate_jev_rendered_question_tokens, pack_work_items_with_capabilities,
-    validate_jev_request_with_capabilities,
+    estimate_jev_rendered_question_tokens, validate_jev_request_with_capabilities,
 };
 use serde_json::json;
 
@@ -61,13 +60,10 @@ fn compact_provider_requests_fit_small_contexts_with_verified_and_unknown_render
             }
             assert!(limits.uses_compact_requests());
             for (id, question, reference, operation) in cases {
-                let mut work = JevWorkItem {
-                    id: id.into(),
-                    window: JevInputWindow {
-                        fields: json!({"reference": reference, "operation": operation,
+                let mut request = JevRequest {
+                    model: limits.model.clone(),
+                    state: json!({"reference": reference, "operation": operation,
                             "excerpt": "const TITLE: &str = \"漢字🚀\";\n// <tag> \\u2028\n"}),
-                        evidence: vec![],
-                    },
                     questions: BTreeMap::from([(
                         "decision".into(),
                         JevQuestion::Choice {
@@ -85,47 +81,27 @@ fn compact_provider_requests_fit_small_contexts_with_verified_and_unknown_render
                         },
                     )]),
                 };
-                let packed =
-                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &limits);
                 assert!(
-                    packed.skipped_item_ids.is_empty(),
+                    validate_jev_request_with_capabilities(&request, &limits).is_ok(),
                     "{context} {verified} {id}"
                 );
-                let request = &packed.batches[0].request;
-                assert_eq!(request.questions.keys().next().unwrap(), "q0_0");
-                assert!(validate_jev_request_with_capabilities(request, &limits).is_ok());
                 let tokens = if verified {
-                    estimate_jev_rendered_question_tokens(request, &limits).unwrap()
+                    estimate_jev_rendered_question_tokens(&request, &limits).unwrap()
                 } else {
-                    limits.estimate_text_tokens(&serde_json::to_string(request).unwrap())
+                    limits.estimate_text_tokens(&serde_json::to_string(&request).unwrap())
                 };
                 let mut boundary = limits.clone();
                 boundary.runtime_context_tokens.value =
                     Some(tokens + boundary.rendering_reserve_tokens);
-                assert!(validate_jev_request_with_capabilities(request, &boundary).is_ok());
-                assert_eq!(
-                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &boundary)
-                        .batches
-                        .len(),
-                    1
-                );
+                assert!(validate_jev_request_with_capabilities(&request, &boundary).is_ok());
                 boundary.runtime_context_tokens.value =
                     Some(tokens + boundary.rendering_reserve_tokens - 1);
                 assert!(matches!(
-                    validate_jev_request_with_capabilities(request, &boundary),
+                    validate_jev_request_with_capabilities(&request, &boundary),
                     Err(JevError::RequestTokenLimitExceeded { .. })
                 ));
-                assert!(
-                    pack_work_items_with_capabilities(std::slice::from_ref(&work), &boundary)
-                        .batches
-                        .is_empty()
-                );
-                work.window.fields["operation"] = json!("\"\\\n漢字🚀".repeat(4096));
-                assert!(
-                    pack_work_items_with_capabilities(&[work], &limits)
-                        .batches
-                        .is_empty()
-                );
+                request.state["operation"] = json!("\"\\\n漢字🚀".repeat(4096));
+                assert!(validate_jev_request_with_capabilities(&request, &limits).is_err());
             }
         }
     }

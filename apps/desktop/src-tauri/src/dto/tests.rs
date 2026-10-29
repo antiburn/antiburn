@@ -1,6 +1,24 @@
 use super::*;
 
 #[test]
+fn opencode_sqlite_dto_names_distinguish_v1_from_true_v2() {
+    assert_eq!(
+        serde_json::to_value(BurnCheckSourceFormat::from(
+            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
+        ))
+        .unwrap(),
+        "openCodeSqliteV1"
+    );
+    assert_eq!(
+        serde_json::to_value(BurnCheckSourceFormat::from(
+            antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+        ))
+        .unwrap(),
+        "openCodeSqliteV2"
+    );
+}
+
+#[test]
 fn called_tools_rank_by_calls_and_stay_bounded() {
     use antiburn_local::analysis::{ToolClass, ToolUse};
 
@@ -103,98 +121,6 @@ fn called_tools_mark_skill_uses_apart_from_tool_calls() {
     assert_eq!(
         serde_json::to_value(&called[2]).expect("payload serializes"),
         serde_json::json!({"name": "research", "kind": "skill", "calls": 1})
-    );
-}
-
-#[test]
-fn check_progress_serializes_optional_notices_and_unknown_total() {
-    let mut category = ChecksCategoryPayload {
-        review_state: None,
-        id: BurnCheckDetectorId::ScopeCreep,
-        sampled: true,
-        checking: Some(true),
-        checking_count: Some(2),
-        partial_context: Some(true),
-        review_coverage: Some(ChecksReviewCoveragePayload {
-            skipped: Some(2),
-            context_blocked: Some(1),
-            reviewed: 5,
-            total: None,
-            uncertain: Some(2),
-            pending: Some(3),
-            pending_completion: None,
-            continuing: true,
-        }),
-        lifecycle: None,
-        finding: 0,
-        agents: Vec::new(),
-        clean: 0,
-        unavailable: 1,
-        estimated_token_burn_basis_points: None,
-    };
-    let value = serde_json::to_value(&category).unwrap();
-    assert_eq!(value["checking"], true);
-    assert_eq!(value["checkingCount"], 2);
-    assert_eq!(value["partialContext"], true);
-    assert_eq!(
-        value["reviewCoverage"],
-        serde_json::json!({
-            "reviewed": 5, "total": null, "uncertain": 2, "pending": 3, "pendingCompletion": null, "continuing": true,
-            "skipped": 2, "contextBlocked": 1,
-        })
-    );
-    assert_eq!(value["lifecycle"], serde_json::Value::Null);
-    assert_eq!(value["clean"], 0);
-    category.update_review_state();
-    assert_eq!(category.review_state, None);
-    let coverage = category.review_coverage.as_mut().unwrap();
-    coverage.continuing = false;
-    coverage.skipped = Some(3);
-    category.update_review_state();
-    assert_eq!(
-        category.review_state,
-        Some(ChecksReviewStatePayload::Stopped)
-    );
-    assert_eq!(category.checking, Some(false));
-    assert_eq!(category.checking_count, Some(0));
-    assert_eq!(
-        serde_json::to_value(&category).unwrap()["reviewState"],
-        "stopped"
-    );
-    let coverage = category.review_coverage.as_mut().unwrap();
-    coverage.total = Some(0);
-    coverage.reviewed = 0;
-    coverage.pending = Some(0);
-    coverage.skipped = Some(0);
-    coverage.context_blocked = Some(0);
-    category.update_review_state();
-    assert_eq!(
-        category.review_state,
-        Some(ChecksReviewStatePayload::NoMatchingWork)
-    );
-    category.review_coverage.as_mut().unwrap().context_blocked = None;
-    category.update_review_state();
-    assert_eq!(category.review_state, None);
-}
-
-#[test]
-fn review_coverage_serializes_terminal_uncertainty_and_known_total() {
-    let coverage = ChecksReviewCoveragePayload {
-        skipped: Some(1),
-        context_blocked: Some(1),
-        reviewed: 2,
-        total: Some(3),
-        uncertain: Some(1),
-        pending: Some(1),
-        pending_completion: Some(0),
-        continuing: false,
-    };
-    assert_eq!(
-        serde_json::to_value(coverage).unwrap(),
-        serde_json::json!({
-            "reviewed": 2, "total": 3, "uncertain": 1, "pending": 1, "pendingCompletion": 0, "continuing": false,
-            "skipped": 1, "contextBlocked": 1,
-        })
     );
 }
 
@@ -536,8 +462,8 @@ mod insights {
                 "estimatedTokenBurnBasisPoints",
                 "estimatedTokenBurnBasisPointsByDetectorMask",
                 "evidenceSettled",
+                "installedChecks",
                 "pendingEvidence",
-                "smartChecksAvailable",
                 "windowSessions"
             ]
         );
@@ -556,14 +482,12 @@ mod insights {
                 "finding",
                 "id",
                 "lifecycle",
-                "sampled",
                 "unavailable",
             ]
         );
         assert_eq!(value["categories"][0]["finding"], 2);
         assert_eq!(value["categories"][0]["clean"], 1);
         assert_eq!(value["categories"][0]["unavailable"], 1);
-        assert_eq!(value["categories"][0]["sampled"], false);
 
         let value =
             serde_json::to_value(ChecksReportPayload::from_report(&report, false, 4, 0)).unwrap();
@@ -573,19 +497,40 @@ mod insights {
     }
 
     #[test]
-    fn sampled_notice_serializes_only_for_the_ignored_instructions_category() {
-        let mut payload = ChecksReportPayload::from_report(&report(), true, 0, 0);
-        payload.categories[DetectorId::IgnoredInstructions.index()].sampled = true;
-
+    fn native_categories_keep_the_nine_deterministic_ids_in_order() {
+        let payload = ChecksReportPayload::from_report(&report(), true, 0, 0);
         let value = serde_json::to_value(payload).unwrap();
         let categories = value["categories"].as_array().unwrap();
-        assert_eq!(categories.len(), DetectorId::COUNT);
+        assert_eq!(
+            categories
+                .iter()
+                .map(|category| category["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "sessionsOverDepth",
+                "modelOverthinking",
+                "overpoweredSubagents",
+                "unusedMcpServers",
+                "unusedBuiltInTools",
+                "unusedSkills",
+                "oldModelUsage",
+                "overuseOfFastMode",
+                "cacheChurn",
+            ]
+        );
         for (index, category) in categories.iter().enumerate() {
-            assert_eq!(
-                category["sampled"],
-                index == DetectorId::IgnoredInstructions.index()
-            );
+            let id: BurnCheckDetectorId = serde_json::from_value(category["id"].clone()).unwrap();
+            let detector: DetectorId = id.into();
+            assert_eq!(detector.index(), index);
+            assert_eq!(BurnCheckDetectorId::from(detector), id);
         }
+        assert_eq!(
+            value["estimatedTokenBurnBasisPointsByDetectorMask"]
+                .as_array()
+                .unwrap()
+                .len(),
+            512
+        );
     }
 
     #[test]
@@ -641,7 +586,6 @@ mod insights {
         let display = BurnCheckDisplayFactsPayload {
             resource_kind: BurnCheckResourceKind::Model,
             resource_identity: Some("old-model".into()),
-            instruction_title: None,
             current_value: Some("old-model".into()),
             replacement_value: Some("new-model".into()),
             scope_kind: BurnCheckScopeKind::Project,
@@ -673,7 +617,6 @@ mod insights {
                 "estimatedOpportunity",
                 "estimatedTokenBurnBasisPoints",
                 "firstObservedAtMs",
-                "instructionTitle",
                 "lastObservedAtMs",
                 "observationCount",
                 "quantity",
@@ -748,6 +691,8 @@ mod insights {
             AutoFixSetting::FastMode,
         ];
         let effects = [
+            AutoFixEffect::FutureModelDefault,
+            AutoFixEffect::SkillAdvertising,
             AutoFixEffect::ModelSelection,
             AutoFixEffect::ReasoningEffort,
             AutoFixEffect::SessionCompaction,
@@ -758,6 +703,8 @@ mod insights {
             AutoFixEffect::ServiceTierSelection,
         ];
         let side_effects = [
+            AutoFixSideEffect::ActiveSessionsKeepTheirModel,
+            AutoFixSideEffect::ExplicitSkillUseRemainsAvailable,
             AutoFixSideEffect::ModelBehaviorMayChange,
             AutoFixSideEffect::ResponsesMayUseLessReasoning,
             AutoFixSideEffect::EarlierSessionSummarization,
@@ -767,8 +714,36 @@ mod insights {
             AutoFixSideEffect::SkillWillNotBeAvailable,
             AutoFixSideEffect::ResponsesMayTakeLonger,
         ];
-        assert_eq!(settings.len(), effects.len());
-        assert_eq!(settings.len(), side_effects.len());
+        assert_eq!(
+            serde_json::to_value(effects).unwrap(),
+            serde_json::json!([
+                "futureModelDefault",
+                "skillAdvertising",
+                "modelSelection",
+                "reasoningEffort",
+                "sessionCompaction",
+                "workerModelSelection",
+                "mcpAvailability",
+                "toolAvailability",
+                "skillAvailability",
+                "serviceTierSelection"
+            ])
+        );
+        assert_eq!(
+            serde_json::to_value(side_effects).unwrap(),
+            serde_json::json!([
+                "activeSessionsKeepTheirModel",
+                "explicitSkillUseRemainsAvailable",
+                "modelBehaviorMayChange",
+                "responsesMayUseLessReasoning",
+                "earlierSessionSummarization",
+                "workerBehaviorMayChange",
+                "serverWillNotBeAvailable",
+                "toolWillNotBeAvailable",
+                "skillWillNotBeAvailable",
+                "responsesMayTakeLonger"
+            ])
+        );
         for value in settings {
             assert!(serde_json::to_value(value).unwrap().is_string());
         }
@@ -926,6 +901,7 @@ mod insights {
             child_model: EvidenceValue::Unsupported,
             confidence: RelationConfidence::Observed,
             provenance: RelationProvenance::TaskToolUse,
+            config_binding: None,
         });
 
         let EvidenceValue::Complete(cache) = &mut evidence.cache else {
@@ -1141,6 +1117,7 @@ fn subagent_member_serializes_with_camel_case_cost_tokens_and_model_runs() {
             cache_creation_tokens: 0,
         }),
         model_runs: vec![ModelRun {
+            native_variant: None,
             model: "claude-3-5-haiku-20241022".to_string(),
             thinking_mode: None,
         }],

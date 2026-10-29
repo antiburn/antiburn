@@ -24,6 +24,7 @@ const MAX_CALL_BYTES: usize = 8 * 1024 * 1024;
 pub(super) struct PiNativeState {
     active: bool,
     invalid: bool,
+    publication_order_invalid: bool,
     last_id: Option<String>,
     session_id: Option<String>,
     calls: HashMap<String, NativeCall>,
@@ -53,10 +54,28 @@ impl PiNativeState {
 
     pub(super) fn invalidate(&mut self) {
         self.invalid = true;
+        self.publication_order_invalid = true;
     }
 
     pub(super) fn incomplete(&self) -> bool {
         self.active && self.invalid
+    }
+
+    pub(super) fn publication_order_incomplete(&self) -> bool {
+        self.active && self.publication_order_invalid
+    }
+
+    pub(super) fn mark_content_incomplete(&mut self) {
+        self.invalid = true;
+    }
+
+    pub(super) fn known_parent_mismatch(&self, value: &Value) -> bool {
+        self.active
+            && self.last_id.as_ref().is_some_and(|last| {
+                value
+                    .get("parentId")
+                    .is_some_and(|parent| parent.as_str() != Some(last))
+            })
     }
 
     pub(super) fn observe_entry(&mut self, value: &Value, sink: &mut dyn RecordSink) {
@@ -70,15 +89,13 @@ impl PiNativeState {
             _ => false,
         };
         let kind = value["type"].as_str();
-        let supported = matches!(
-            kind,
-            Some("model_change" | "thinking_level_change" | "message" | "session_info" | "label")
-        );
-        if id.is_none()
-            || !parent_matches
-            || id == self.last_id.as_deref()
-            || !supported
+        let supported = supports_publication_entry(value);
+        let invalid_order =
+            id.is_none() || !parent_matches || id == self.last_id.as_deref() || !supported;
+        self.publication_order_invalid |= invalid_order;
+        if invalid_order
             || !complete(value)
+            || matches!(kind, Some("compaction" | "custom_message"))
             || (value["message"]["role"] == "user" && !text_only_user(value))
             || value["message"]["content"]
                 .as_array()
@@ -263,6 +280,92 @@ impl PiNativeState {
     }
 }
 
+pub(super) fn supports_publication_entry(value: &Value) -> bool {
+    match value["type"].as_str() {
+        Some("model_change" | "thinking_level_change" | "message") => true,
+        Some("session_info" | "label") => super::is_inert_shape(value),
+        Some("custom" | "custom_message") => {
+            complete(value)
+                && value.get("timestamp").and_then(super::parse_ts).is_some()
+                && identity(value, "customType").is_some()
+                && super::is_inert_shape(value)
+                && reviewed_entry_fields(
+                    value,
+                    if value["type"] == "custom" {
+                        &["customType", "data"]
+                    } else {
+                        &["customType", "content", "details", "display"]
+                    },
+                )
+                && (value["type"] == "custom"
+                    || value["display"].is_boolean()
+                        && (value["content"].is_string()
+                            || value["content"].as_array().is_some_and(|blocks| {
+                                blocks.iter().all(|block| {
+                                    block["type"] == "text" && block["text"].is_string()
+                                })
+                            })))
+        }
+        Some("compaction") => {
+            // Compaction changes model context, but it keeps the journal's parent chain.
+            let mut shape = value.clone();
+            let Some(fields) = shape.as_object_mut() else {
+                return false;
+            };
+            fields.remove("tokensBefore");
+            fields.remove("usage");
+            complete(value)
+                && value.get("timestamp").and_then(super::parse_ts).is_some()
+                && value["summary"].is_string()
+                && identity(value, "firstKeptEntryId").is_some()
+                && value["tokensBefore"].as_u64().is_some()
+                && value.get("fromHook").is_none_or(Value::is_boolean)
+                && value.get("usage").is_none_or(reviewed_compaction_usage)
+                && reviewed_entry_fields(
+                    value,
+                    &[
+                        "summary",
+                        "firstKeptEntryId",
+                        "tokensBefore",
+                        "details",
+                        "usage",
+                        "fromHook",
+                    ],
+                )
+                && super::is_inert_shape(&shape)
+        }
+        _ => false,
+    }
+}
+
+fn reviewed_entry_fields(value: &Value, allowed: &[&str]) -> bool {
+    value.as_object().is_some_and(|fields| {
+        fields.keys().all(|key| {
+            matches!(key.as_str(), "type" | "id" | "parentId" | "timestamp")
+                || allowed.contains(&key.as_str())
+        })
+    })
+}
+
+fn reviewed_compaction_usage(value: &Value) -> bool {
+    value.as_object().is_some_and(|fields| {
+        fields.iter().all(|(key, value)| match key.as_str() {
+            "input" | "output" | "cacheRead" | "cacheWrite" | "totalTokens" => {
+                value.as_u64().is_some()
+            }
+            "cost" => value.as_object().is_some_and(|cost| {
+                cost.iter().all(|(key, value)| {
+                    matches!(
+                        key.as_str(),
+                        "input" | "output" | "cacheRead" | "cacheWrite" | "total"
+                    ) && value.as_f64().is_some_and(|value| value >= 0.0)
+                })
+            }),
+            _ => false,
+        })
+    })
+}
+
 fn identity<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
     value[key]
         .as_str()
@@ -270,9 +373,7 @@ fn identity<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn complete(value: &Value) -> bool {
-    ![value, &value["message"]].iter().any(|value| {
-        value["truncated"] == true || value["incomplete"] == true || value["complete"] == false
-    })
+    super::native_record_complete(value)
 }
 
 fn text_only_user(value: &Value) -> bool {

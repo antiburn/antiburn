@@ -1,66 +1,46 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
-
-import { defaultConnection, type Connection } from "../../../../lib/smartCheckProviders"
-import { searchApp, resolveSettingsSearchTarget } from "../../../../lib/appSearch"
-import { SettingsTargetFocus } from "../../../settings/SettingsTargetFocus"
-import { StepSettings } from "./StepSettings"
-import { ChecksStepSettings } from "./ChecksStepSettings"
+import { defaultConnection } from "../../../../lib/smartCheckProviders"
 import type {
   CheckAvailability,
   CheckAvailabilityEvent,
 } from "../../../../lib/checkAvailability"
+import type { CheckDirectory } from "../../../../lib/checkDirectories"
+import { SettingsTargetFocus } from "../../../settings/SettingsTargetFocus"
+import { deferred } from "../../burn-checks/tests/burnChecksTestSupport"
+import type { ChecksStepSettings as ChecksStepSettingsComponent } from "./ChecksStepSettings"
 
 const getAvailability = vi.hoisted(() => vi.fn())
+const getDirectories = vi.hoisted(() => vi.fn())
+const openDirectory = vi.hoisted(() => vi.fn())
 const providerInvoke = vi.hoisted(() => vi.fn())
-const remove = vi.hoisted(() => vi.fn())
-const setHistory = vi.hoisted(() => vi.fn())
-const runBackfill = vi.hoisted(() => vi.fn())
 const setChecksEnabled = vi.hoisted(() => vi.fn())
 const setCheckEnabled = vi.hoisted(() => vi.fn())
+const subscribeAvailability = vi.hoisted(() => vi.fn())
+const platform = vi.hoisted(() => vi.fn())
 const availabilityEvent = vi.hoisted(() => ({
   callback: null as ((event: CheckAvailabilityEvent) => void) | null,
 }))
-const listen = vi.hoisted(() =>
-  vi.fn(async (callback: (event: CheckAvailabilityEvent) => void) => {
-    availabilityEvent.callback = callback
-    return () => undefined
-  }),
-)
 const emptyAvailability = vi.hoisted(() => ({
   revision: 1,
-  checks: [
-    { id: "sessionsOverDepth" as const, enabled: true },
-    { id: "modelOverthinking" as const, enabled: true },
-    { id: "overpoweredSubagents" as const, enabled: true },
-    { id: "unusedMcpServers" as const, enabled: true },
-    { id: "unusedBuiltInTools" as const, enabled: true },
-    { id: "unusedSkills" as const, enabled: true },
-    { id: "oldModelUsage" as const, enabled: true },
-    { id: "overuseOfFastMode" as const, enabled: true },
-    { id: "cacheChurn" as const, enabled: true },
-    { id: "ignoredInstructions" as const, enabled: false },
-    { id: "skillOpportunities" as const, enabled: false },
-    { id: "overExploring" as const, enabled: false },
-    { id: "scopeCreep" as const, enabled: false },
-  ],
+  yamlEnabled: false,
+  installedChecks: [],
+  checks: (
+    [
+      "sessionsOverDepth",
+      "modelOverthinking",
+      "overpoweredSubagents",
+      "unusedMcpServers",
+      "unusedBuiltInTools",
+      "unusedSkills",
+      "oldModelUsage",
+      "overuseOfFastMode",
+      "cacheChurn",
+    ] as const
+  ).map((id) => ({ id, enabled: true })),
   configured: false,
   savedKey: false,
   error: null,
-  historyDays: 0 as const,
-  backfill: {
-    total: 0,
-    waitingForData: 0,
-    waitingForIdle: 0,
-    ready: 0,
-    queued: 0,
-    running: 0,
-    completed: 0,
-    skipped: 0,
-    failed: 0,
-    reviewed: 0,
-    eligibleItems: 0,
-  },
   usage: {
     inputTokens: 0,
     outputTokens: 0,
@@ -71,571 +51,564 @@ const emptyAvailability = vi.hoisted(() => ({
     lastUsedAtEpoch: null,
   },
 }))
-
 vi.mock("../../../../lib/checkAvailability", () => ({
   getCheckAvailability: getAvailability,
-  removeTypeSafeApiKey: remove,
-  setCheckHistoryDays: setHistory,
+  removeTypeSafeApiKey: vi.fn(),
   setSmartBurnChecksEnabled: setChecksEnabled,
   setCheckEnabled,
-  runCheckBackfill: runBackfill,
-  onCheckAvailabilityChanged: listen,
+  onCheckAvailabilityChanged: subscribeAvailability,
   emptyCheckAvailability: emptyAvailability,
 }))
+vi.mock("../../../../lib/checkDirectories", () => ({
+  getCheckDirectories: getDirectories,
+  openCheckDirectory: openDirectory,
+}))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: providerInvoke }))
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => undefined) }))
-
-beforeEach(() => {
-  providerInvoke.mockReset()
-  remove.mockClear()
-  providerInvoke.mockImplementation(async (command: string) =>
-    command === "get_system_one_settings" || command === "save_system_one_connection"
-      ? {
-          activeId: "jev",
-          profiles: {
-            jev: {
-              ...defaultConnection("jev"),
-              credential:
-                command === "save_system_one_connection"
-                  ? { kind: "connection", id: "jev" }
-                  : { kind: "legacy_type_safe" },
-            },
-          },
-        }
-      : null,
-  )
-  emptyAvailability.revision += 10
-  availabilityEvent.callback = null
-  setCheckEnabled.mockClear()
-  listen.mockClear()
-  getAvailability.mockResolvedValue(emptyAvailability)
-  remove.mockResolvedValue(emptyAvailability)
-  setHistory.mockImplementation(async (days: 0 | 7 | 30) => ({
-    ...emptyAvailability,
-    historyDays: days,
-  }))
-  runBackfill.mockResolvedValue({ queued: 4, availability: emptyAvailability })
-  setCheckEnabled.mockImplementation(async (detector: string, enabled: boolean) => ({
-    ...emptyAvailability,
-    revision: emptyAvailability.revision + 1,
-    checks: emptyAvailability.checks.map((check) =>
-      check.id === detector ? { ...check, enabled } : check,
-    ),
-  }))
-})
-
-it("shows every local and Smart check as an independent preference", () => {
-  render(<ChecksStepSettings />)
-  expect(screen.getByRole("heading", { name: "Local Checks" })).toBeInTheDocument()
-  expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
-  expect(screen.getAllByRole("switch")).toHaveLength(14)
-  expect(screen.getByRole("switch", { name: "Session overdepth" })).toBeChecked()
-  expect(screen.getByRole("switch", { name: "Ignored instructions" })).not.toBeChecked()
-  expect(
-    screen.getAllByText(/Enable Smart Burn Checks with an active provider connection below/),
-  ).toHaveLength(4)
-})
-
-it("saves one check without changing its siblings", async () => {
-  render(<ChecksStepSettings />)
-  fireEvent.click(screen.getByRole("switch", { name: "Unused skills" }))
-  await waitFor(() => expect(setCheckEnabled).toHaveBeenCalledWith("unusedSkills", false))
-  expect(screen.getByRole("switch", { name: "Unused skills" })).not.toBeChecked()
-  expect(screen.getByRole("switch", { name: "Unused MCP servers" })).toBeChecked()
-})
-
-it.each([
-  ["ignoredInstructions", "Ignored instructions"],
-  ["skillOpportunities", "Enable skill opportunities"],
-  ["overExploring", "Enable over-exploring"],
-  ["scopeCreep", "Enable scope creep"],
-] as const)("saves %s independently of provider enablement", async (id, label) => {
-  render(<ChecksStepSettings />)
-  await waitFor(() => expect(screen.getByRole("switch", { name: label })).not.toBeChecked())
-  fireEvent.click(screen.getByRole("switch", { name: label }))
-  await waitFor(() => expect(setCheckEnabled).toHaveBeenCalledWith(id, true))
-  expect(screen.getByRole("switch", { name: label })).toBeChecked()
-  expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).not.toBeChecked()
-  expect(screen.getByRole("switch", { name: "Unused skills" })).toBeChecked()
-})
-
-it.each(["macos", "windows", "linux"] as const)(
-  "reveals provider limits from the Checks step search destination on %s",
-  async (platform) => {
-    const result = searchApp("Model limits", platform)[0]!
-    if (result.target.kind !== "setting") throw new Error("Missing step destination")
-    const request = resolveSettingsSearchTarget(result.target)
-    const { container } = render(
-      <StepSettings step="checks" control={request.control} targetRevision={1} />,
-    )
-    await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
-    if (!(container instanceof HTMLDivElement))
-      throw new Error("Missing step settings container")
-    HTMLElement.prototype.scrollIntoView = vi.fn()
-    new SettingsTargetFocus().attach(container, request.pane, request.control, 1)()
-    expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    )
-    expect(
-      container
-        .querySelector('[data-settings-control="smartCheckLimits"]')
-        ?.contains(document.activeElement),
-    ).toBe(true)
-    expect(
-      providerInvoke.mock.calls.every(([command]) => command === "get_system_one_settings"),
-    ).toBe(true)
-    expect(setCheckEnabled).not.toHaveBeenCalled()
+vi.mock("../../../../lib/platform", () => ({ detectPlatform: platform }))
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn().mockResolvedValue(true) }))
+let ChecksStepSettings: typeof ChecksStepSettingsComponent
+const directories: CheckDirectory[] = [
+  {
+    reference: "global-ref",
+    scope: "global",
+    label: "This device",
+    path: "/Users/fixture/.antiburn/checks",
+    state: "ready",
+    fileCount: 2,
+    message: null,
   },
-)
+  {
+    reference: "project-ref",
+    scope: "project",
+    label: "Project",
+    path: "/Users/fixture/long project path/.antiburn/checks",
+    state: "ready",
+    fileCount: 0,
+    message: null,
+  },
+  {
+    reference: null,
+    scope: "project",
+    label: "Missing project",
+    path: "/Users/fixture/missing/.antiburn/checks",
+    state: "missing",
+    fileCount: null,
+    message: null,
+  },
+  {
+    reference: null,
+    scope: "project",
+    label: "Paused project",
+    path: "/Users/fixture/paused/.antiburn/checks",
+    state: "paused",
+    fileCount: null,
+    message: null,
+  },
+]
 
-it("keeps the saved value and reports a failed check preference change", async () => {
-  setCheckEnabled.mockRejectedValueOnce(new Error("store"))
-  render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Unused skills" })
-  await waitFor(() => expect(toggle).toBeChecked())
-  fireEvent.click(toggle)
-  expect(await screen.findByRole("alert")).toHaveTextContent("Could not disable Unused skills.")
-  expect(toggle).toBeChecked()
-})
-
-it("saves a password draft and clears the key after native storage succeeds", async () => {
-  render(<ChecksStepSettings />)
-  const input = screen.getByLabelText("TypeSafe API key") as HTMLInputElement
-  expect(input).toHaveAttribute("type", "password")
-  await waitFor(() => expect(input).toBeEnabled())
-  fireEvent.change(input, { target: { value: "synthetic-key" } })
-  fireEvent.click(screen.getByRole("button", { name: "Save and use connection" }))
-  await waitFor(() =>
-    expect(providerInvoke).toHaveBeenCalledWith(
-      "save_system_one_connection",
-      expect.objectContaining({
-        draft: expect.objectContaining({ credential: "synthetic-key" }),
-      }),
-    ),
-  )
-  await waitFor(() => expect(input.value).toBe(""))
-  expect(screen.getByRole("button", { name: "Remove credential" })).toBeInTheDocument()
-  fireEvent.click(screen.getByRole("button", { name: "Remove credential" }))
-  await waitFor(() =>
-    expect(providerInvoke).toHaveBeenCalledWith("remove_system_one_credential", {
-      connectionId: "jev",
-    }),
-  )
-  expect(screen.queryByText(/Smart Burn Checks off/)).not.toBeInTheDocument()
-})
-
-it("restores a saved key without a Settings action", async () => {
-  getAvailability.mockResolvedValue({ ...emptyAvailability, savedKey: true, configured: true })
-  render(<ChecksStepSettings />)
-  const toggle = await screen.findByRole("switch", { name: "Enable smart burn checks" })
-  expect(toggle).toHaveAttribute("aria-checked", "true")
-  expect(screen.queryByText(/Smart Burn Checks on/)).not.toBeInTheDocument()
-  expect(
-    providerInvoke.mock.calls.some(([command]) => command === "save_system_one_connection"),
-  ).toBe(false)
-  await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
-  expect(screen.getByLabelText("TypeSafe API key")).toHaveAttribute(
-    "placeholder",
-    "Saved credential; enter a replacement",
-  )
-})
-
-it("pauses checks without removing the saved key", async () => {
-  getAvailability.mockResolvedValue({ ...emptyAvailability, savedKey: true, configured: true })
-  setChecksEnabled.mockResolvedValue({
-    ...emptyAvailability,
-    savedKey: true,
-    configured: false,
-  })
-  render(<ChecksStepSettings />)
-  const toggle = await screen.findByRole("switch", { name: "Enable smart burn checks" })
-  fireEvent.click(toggle)
-  await waitFor(() => expect(setChecksEnabled).toHaveBeenCalledWith(false))
-  expect(toggle).toHaveAttribute("aria-checked", "false")
-  expect(screen.queryByText("Paused. Your key is saved.")).not.toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Remove credential" })).toBeInTheDocument()
-})
-
-it("renders keyless Ollama as paused after the backend enablement change", async () => {
-  const connection = { ...defaultConnection("ollama"), model: "saved-model" }
-  providerInvoke.mockResolvedValue({ activeId: "ollama", profiles: { ollama: connection } })
-  getAvailability.mockResolvedValue({ ...emptyAvailability, configured: true })
-  let finish: ((value: CheckAvailability) => void) | undefined
-  setChecksEnabled.mockImplementationOnce(
-    () =>
-      new Promise<CheckAvailability>((resolve) => {
-        finish = resolve
-      }),
-  )
-  render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
-  await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
-  await waitFor(() =>
-    expect(screen.getByLabelText("Smart check provider")).toHaveValue("ollama"),
-  )
-  expect(screen.getByLabelText("Provider model")).toHaveValue("saved-model")
-  expect(screen.queryByRole("button", { name: "Remove credential" })).not.toBeInTheDocument()
-  fireEvent.click(toggle)
-  expect(toggle).toBeDisabled()
-  await act(async () => finish?.(emptyAvailability))
-  expect(toggle).toHaveAttribute("aria-checked", "false")
-  expect(toggle).toBeEnabled()
-  expect(setChecksEnabled).toHaveBeenCalledWith(false)
-  expect(screen.getByLabelText("Provider credential (optional)")).toHaveValue("")
-})
-
-it("renders an active credential removal and the backend pause event together", async () => {
-  let connection: Connection = {
-    ...defaultConnection("jev"),
-    credential: { kind: "connection", id: "jev" },
+beforeEach(async () => {
+  vi.resetModules()
+  ;({ ChecksStepSettings } = await import("./ChecksStepSettings"))
+  HTMLElement.prototype.scrollIntoView = vi.fn()
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
   }
-  providerInvoke.mockImplementation(async (command: string) => {
-    if (command === "remove_system_one_credential") {
-      connection = { ...connection, credential: null, revision: connection.revision + 1 }
-      availabilityEvent.callback?.({ status: "updated", snapshot: emptyAvailability })
-      return null
-    }
-    return { activeId: "jev", profiles: { jev: connection } }
+  HTMLDialogElement.prototype.close = function () {
+    this.open = false
+  }
+  availabilityEvent.callback = null
+  platform.mockReset().mockReturnValue("macos")
+  subscribeAvailability.mockReset().mockImplementation(async (callback) => {
+    availabilityEvent.callback = callback
+    return () => undefined
   })
-  getAvailability.mockResolvedValue({ ...emptyAvailability, configured: true })
+  getAvailability.mockReset().mockResolvedValue(emptyAvailability)
+  getDirectories.mockReset().mockResolvedValue(directories)
+  openDirectory.mockReset().mockResolvedValue(undefined)
+  setChecksEnabled.mockReset().mockImplementation(async (enabled: boolean) => ({
+    ...emptyAvailability,
+    yamlEnabled: enabled,
+  }))
+  setCheckEnabled.mockReset().mockImplementation(async (id: string, enabled: boolean) => ({
+    ...emptyAvailability,
+    checks: emptyAvailability.checks.map((check) =>
+      check.id === id ? { ...check, enabled } : check,
+    ),
+  }))
+  providerInvoke.mockReset().mockImplementation(async (command, args) => {
+    if (command === "get_system_one_settings")
+      return {
+        activeId: "jev",
+        profiles: { jev: defaultConnection("jev") },
+        pendingOperation: null,
+        displayNumbers: { jev: 1 },
+      }
+    if (command === "save_system_one_connection")
+      return {
+        pendingOperation: null,
+        displayNumbers: { jev: 1 },
+        activeId: "jev",
+        profiles: {
+          jev: { ...args.draft.connection, credential: { kind: "connection", id: "jev" } },
+        },
+      }
+    throw new Error(`Unexpected command: ${command}`)
+  })
+})
+
+it("keeps one configuration card and useful file access while checks are off", async () => {
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
-  await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
-  fireEvent.click(await screen.findByRole("button", { name: "Remove credential" }))
-  await screen.findByText("Credential removed.")
-  expect(toggle).toHaveAttribute("aria-checked", "false")
-  expect(screen.queryByRole("button", { name: "Remove credential" })).not.toBeInTheDocument()
-  expect(screen.getByLabelText("Smart check provider")).toHaveValue("jev")
-  expect(screen.getByLabelText("Provider model")).toHaveValue("jev-1.13.0")
+  const modelSection = screen
+    .getByRole("heading", { name: "Model-based checks" })
+    .closest("section")!
+  expect(within(modelSection).getAllByRole("heading")).toHaveLength(2)
+  expect(screen.getAllByRole("switch")).toHaveLength(10)
+  expect(screen.getByRole("switch", { name: "Run checks" })).not.toBeChecked()
+  expect(
+    screen.getByText(
+      "Each check file defines which session data the check sends to your provider.",
+    ),
+  ).toBeVisible()
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "More actions for Jev" })).toBeEnabled(),
+  )
+  expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument()
+  expect(screen.queryByLabelText("Jev API key")).not.toBeInTheDocument()
+  expect(modelSection.querySelectorAll(".rounded-popover")).toHaveLength(1)
+  const card = screen.getByRole("switch", { name: "Run checks" }).closest(".rounded-popover")!
+  expect(
+    within(card as HTMLElement).getByRole("button", { name: "Check files" }),
+  ).toHaveAttribute("aria-expanded", "false")
+  expect(
+    within(card as HTMLElement).getByRole("button", { name: "Model usage" }),
+  ).toHaveAttribute("aria-expanded", "false")
+  fireEvent.click(screen.getByRole("button", { name: "Check files" }))
+  await screen.findByText("2 check files")
+  expect(getDirectories).toHaveBeenCalledOnce()
+  expect(screen.queryByText(/Checks discovered/)).not.toBeInTheDocument()
+  expect(setChecksEnabled).not.toHaveBeenCalled()
+})
+
+it("opens only the issued folder reference, suppresses concurrent presses, and keeps inline failures", async () => {
+  const first = deferred<void>()
+  openDirectory.mockReturnValueOnce(first.promise)
+  getDirectories.mockResolvedValueOnce([
+    directories[0],
+    { ...directories[1]!, fileCount: 1 },
+    ...directories.slice(2),
+  ])
+  render(<ChecksStepSettings />)
+  fireEvent.click(screen.getByRole("button", { name: "Check files" }))
+  const open = await screen.findByRole("button", { name: /^Open in .*This device/ })
+  fireEvent.click(open)
+  fireEvent.click(open)
+  expect(openDirectory).toHaveBeenCalledExactlyOnceWith("global-ref")
+  expect(open).toBeDisabled()
+  const project = screen.getByRole("button", { name: /^Open in .*Project \(/ })
+  expect(project).toBeEnabled()
+  fireEvent.click(project)
+  await waitFor(() => expect(project).toBeEnabled())
+  expect(openDirectory).toHaveBeenCalledWith("project-ref")
+  await act(async () => first.reject(new Error("private path error")))
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not open a check folder")
+  expect(screen.getByText(/^Could not open this check folder\./)).toBeVisible()
+  expect(screen.queryByText(/private path/)).not.toBeInTheDocument()
+  expect(screen.getByText("1 check file")).toBeVisible()
+  expect(screen.queryByText("Folder not created")).not.toBeInTheDocument()
+  expect(screen.queryByText(/unknown/i)).not.toBeInTheDocument()
+  expect(screen.getAllByRole("button", { name: /^Open in / })).toHaveLength(2)
+})
+
+it("keeps initial folder loading visible and omits unavailable folder rows", async () => {
+  const read = deferred<CheckDirectory[]>()
+  getDirectories.mockReturnValueOnce(read.promise)
+  render(<ChecksStepSettings />)
+  fireEvent.click(screen.getByRole("button", { name: "Check files" }))
+  expect(screen.getByText("Loading check folders…")).toBeVisible()
+  expect(screen.queryByText(/0 check files/)).not.toBeInTheDocument()
+  await act(async () =>
+    read.resolve([
+      {
+        ...directories[0]!,
+        reference: null,
+        state: "unavailable",
+        fileCount: null,
+        message: "Folder access is unavailable.",
+      },
+    ]),
+  )
+  expect(screen.getByText("No check files found.")).toBeVisible()
+  expect(screen.queryByText(/unavailable|unknown/i)).not.toBeInTheDocument()
+  expect(screen.queryByText(directories[0]!.path)).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /^Open in / })).not.toBeInTheDocument()
+})
+
+it("loads fresh folders on each visit and opens only the new issued reference", async () => {
+  openDirectory.mockRejectedValueOnce(new Error("old reference is unavailable"))
+  const firstVisit = render(<ChecksStepSettings />)
+  fireEvent.click(screen.getByRole("button", { name: "Check files" }))
+  const open = await screen.findByRole("button", { name: /^Open in .*This device/ })
+  expect(screen.queryByRole("button", { name: /refresh folders/i })).not.toBeInTheDocument()
+  fireEvent.click(open)
+  await screen.findByText(
+    "Could not open this check folder. Reopen Settings → Checks to try again.",
+  )
+  firstVisit.unmount()
+  const freshRead = deferred<CheckDirectory[]>()
+  getDirectories.mockReturnValueOnce(freshRead.promise)
+  const secondVisit = render(<ChecksStepSettings control="checkDirectories" />)
+  expect(screen.getByText("Loading check folders…")).toBeVisible()
+  expect(screen.queryByText("2 check files")).not.toBeInTheDocument()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  await act(async () => freshRead.reject(new Error("private read failure")))
+  expect(screen.queryByText("2 check files")).not.toBeInTheDocument()
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Could not load check folders. Reopen Settings → Checks to try again.",
+  )
+  expect(
+    screen.queryByRole("button", { name: /refresh|retry loading check folders/i }),
+  ).not.toBeInTheDocument()
+  secondVisit.unmount()
+  getDirectories.mockResolvedValueOnce([
+    { ...directories[0]!, reference: "new-global-ref", fileCount: 3 },
+    ...directories.slice(1),
+  ])
+  render(<ChecksStepSettings control="checkDirectories" />)
+  await screen.findByText("3 check files")
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: /^Open in .*This device/ }))
+  await waitFor(() => expect(openDirectory).toHaveBeenCalledWith("new-global-ref"))
+  expect(openDirectory.mock.calls).toEqual([["global-ref"], ["new-global-ref"]])
+  expect(getDirectories).toHaveBeenCalledTimes(3)
+  expect(providerInvoke.mock.calls.map(([command]) => command)).toEqual([
+    "get_system_one_settings",
+    "get_system_one_settings",
+    "get_system_one_settings",
+  ])
+  expect(setChecksEnabled).not.toHaveBeenCalled()
 })
 
 it.each([
-  "Smart Burn Checks connection update is incomplete. Retry it in Settings → Checks.",
-  "Connection credential removal is incomplete. Retry it in Settings → Checks.",
-])("shows a safe enablement retry error: %s", async (message) => {
-  getAvailability.mockResolvedValue(emptyAvailability)
-  setChecksEnabled.mockRejectedValueOnce(message)
+  ["macos", "Finder"],
+  ["windows", "File Explorer"],
+  ["linux", "file manager"],
+  ["unknown", "file manager"],
+])("uses the %s folder-open label", async (value, label) => {
+  platform.mockReturnValue(value)
   render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
-  await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"))
-  fireEvent.click(toggle)
-  expect(await screen.findByRole("alert")).toHaveTextContent(message)
-  expect(toggle).toHaveAttribute("aria-checked", "false")
+  fireEvent.click(screen.getByRole("button", { name: "Check files" }))
+  expect(
+    await screen.findByRole("button", {
+      name: `Open in ${label}: This device (${directories[0]!.path})`,
+    }),
+  ).toBeEnabled()
 })
 
-it("removes a migrated Jev credential through the existing secure-storage command", async () => {
-  getAvailability.mockResolvedValue({ ...emptyAvailability, savedKey: true, configured: true })
-  render(<ChecksStepSettings />)
-  fireEvent.click(await screen.findByRole("button", { name: "Remove credential" }))
-  await waitFor(() => expect(remove).toHaveBeenCalledOnce())
-})
-
-it("requires a replacement after TypeSafe rejects the saved key", async () => {
-  getAvailability.mockResolvedValue({
-    ...emptyAvailability,
-    savedKey: true,
-    error: "TypeSafe rejected this API key. Replace it in Settings → Checks.",
-  })
-  render(<ChecksStepSettings />)
-  await screen.findByText("TypeSafe rejected this API key. Replace it in Settings → Checks.")
-  await waitFor(() => expect(screen.getByLabelText("TypeSafe API key")).toBeEnabled())
-  fireEvent.change(screen.getByLabelText("TypeSafe API key"), {
-    target: { value: "replacement-key" },
-  })
-  fireEvent.click(screen.getByRole("button", { name: "Save and use connection" }))
-  await waitFor(() =>
-    expect(providerInvoke).toHaveBeenCalledWith(
-      "save_system_one_connection",
-      expect.objectContaining({
-        draft: expect.objectContaining({ credential: "replacement-key" }),
-      }),
-    ),
+it("keeps folder failures visible while closed and reloads only after reopening Checks", async () => {
+  getDirectories.mockRejectedValueOnce(new Error("private read error"))
+  const firstVisit = render(<ChecksStepSettings />)
+  await screen.findByText(
+    "Could not load check folders. Reopen Settings → Checks to try again.",
   )
-})
-
-it("shows bounded local usage and unknown outcomes separately", async () => {
-  getAvailability.mockResolvedValue({
-    ...emptyAvailability,
-    usage: {
-      inputTokens: 1200,
-      outputTokens: 18,
-      confirmedCalls: 3,
-      cacheHits: 2,
-      unknownOutcomes: 1,
-      estimatedUsd: "$0.0000504",
-      lastUsedAtEpoch: 1_000,
-    },
-  })
-  render(<ChecksStepSettings />)
-  expect(screen.getByRole("button", { name: "Model usage" })).toHaveAttribute(
+  expect(screen.getByRole("button", { name: "Check files" })).toHaveAttribute(
     "aria-expanded",
     "false",
   )
-  expect(screen.queryByText(/1,200 input tokens/)).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
-  await screen.findByText("1,200 input tokens · 18 output tokens · 3 confirmed requests")
-  expect(screen.getByText("$0.0000504 estimated cost. This is not a bill.")).toBeVisible()
-  expect(screen.getByText("2 cached results reused.")).toBeVisible()
-  expect(screen.getByText(/1 request outcomes are unknown/)).toBeInTheDocument()
-  expect(
-    screen.getByText(/across all connections, not just the connection shown above/),
-  ).toBeVisible()
-  const limitsRow = screen
-    .getByRole("button", { name: "Model limits" })
-    .closest("[data-settings-control]")
-  expect(
-    limitsRow?.nextElementSibling?.contains(
-      screen.getByRole("button", { name: "Model usage" }),
-    ),
-  ).toBe(true)
+  fireEvent.click(screen.getByRole("button", { name: "Check files" }))
+  expect(getDirectories).toHaveBeenCalledOnce()
+  expect(screen.queryByRole("button", { name: /refresh|retry/i })).not.toBeInTheDocument()
+  firstVisit.unmount()
+  render(<ChecksStepSettings control="checkDirectories" />)
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+  expect(getDirectories).toHaveBeenCalledTimes(2)
+  expect(providerInvoke.mock.calls.map(([command]) => command)).toEqual([
+    "get_system_one_settings",
+    "get_system_one_settings",
+  ])
+  expect(setChecksEnabled).not.toHaveBeenCalled()
 })
 
-it("keeps unknown request outcomes separate from confirmed usage and unavailable costs", async () => {
-  getAvailability.mockResolvedValue({
-    ...emptyAvailability,
-    usage: { ...emptyAvailability.usage, estimatedUsd: null, unknownOutcomes: 2 },
+it("saves a credential without enabling checks", async () => {
+  render(<ChecksStepSettings />)
+  const actions = await screen.findByRole("button", { name: "More actions for Jev" })
+  await waitFor(() => expect(actions).toBeEnabled())
+  fireEvent.keyDown(actions, { key: "ArrowDown" })
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Edit" }))
+  fireEvent.change(await screen.findByLabelText("Jev API key"), {
+    target: { value: "synthetic-key" },
+  })
+  fireEvent.click(screen.getByRole("button", { name: "Save" }))
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  expect(screen.getByRole("switch", { name: "Run checks" })).not.toBeChecked()
+  expect(setChecksEnabled).not.toHaveBeenCalled()
+})
+
+it("allows enabling after the first Add even when availability.configured stays false", async () => {
+  providerInvoke.mockImplementation(async (command, args) => {
+    if (command === "get_system_one_settings")
+      return { activeId: null, profiles: {}, pendingOperation: null, displayNumbers: {} }
+    if (command === "save_system_one_connection")
+      return {
+        pendingOperation: null,
+        displayNumbers: { [args.draft.connection_id]: 1 },
+        activeId: args.draft.connection_id,
+        profiles: {
+          [args.draft.connection_id]: {
+            ...args.draft.connection,
+            credential: { kind: "connection", id: "synthetic-key" },
+          },
+        },
+      }
+    throw new Error(`Unexpected command: ${command}`)
   })
   render(<ChecksStepSettings />)
-  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
-  expect(await screen.findByText("Cost estimate unavailable.")).toBeVisible()
-  expect(screen.getByText("No confirmed model requests yet.")).toBeVisible()
-  expect(screen.getByText(/2 request outcomes are unknown/)).toBeVisible()
-  expect(screen.queryByText(/null estimated/)).not.toBeInTheDocument()
-})
-
-it("retains the previous status on refresh failure and clears the error after recovery", async () => {
-  const previous = { ...emptyAvailability, savedKey: true, configured: true }
-  getAvailability.mockResolvedValueOnce(previous)
-  const first = render(<ChecksStepSettings />)
-  await waitFor(() =>
-    expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).toBeChecked(),
+  const add = screen.getByRole("button", { name: "Add connection" })
+  await waitFor(() => expect(add).toBeEnabled())
+  const run = screen.getByRole("switch", { name: "Run checks" })
+  expect(run).toBeDisabled()
+  fireEvent.click(add)
+  fireEvent.change(screen.getByLabelText("Jev API key"), { target: { value: "synthetic-key" } })
+  fireEvent.click(
+    within(screen.getByRole("dialog")).getByRole("button", { name: "Add connection" }),
   )
-  first.unmount()
-
-  getAvailability.mockRejectedValueOnce(new Error("database"))
-  const second = render(<ChecksStepSettings />)
-  expect(await screen.findByRole("alert")).toHaveTextContent("Could not refresh check status")
-  expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).toHaveAttribute(
-    "aria-checked",
-    "true",
-  )
-  second.unmount()
-
-  getAvailability.mockResolvedValueOnce(previous)
-  render(<ChecksStepSettings />)
-  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
-})
-
-it("shows an availability-event failure without clearing the last known usage", async () => {
-  const availability: CheckAvailability = {
-    ...emptyAvailability,
-    configured: true,
-    savedKey: true,
-    usage: { ...emptyAvailability.usage, inputTokens: 123, confirmedCalls: 1 },
-  }
-  getAvailability.mockResolvedValue(availability)
-  render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Enable smart burn checks" })
-  await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"))
-  await waitFor(() => expect(availabilityEvent.callback).not.toBeNull())
-
-  act(() => availabilityEvent.callback?.({ status: "failed" }))
-
-  expect(screen.getByRole("alert")).toHaveTextContent("Could not refresh check status")
-  expect(toggle).toHaveAttribute("aria-checked", "true")
-
-  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
-  expect(screen.getByText(/123 input tokens/)).toBeVisible()
-
-  act(() => availabilityEvent.callback?.({ status: "updated", snapshot: emptyAvailability }))
-
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-  expect(screen.getByRole("switch", { name: "Enable smart burn checks" })).toHaveAttribute(
-    "aria-checked",
-    "false",
-  )
-})
-
-it("does not let an older availability event undo a saved preference", async () => {
-  const latest = {
-    ...emptyAvailability,
-    revision: emptyAvailability.revision + 2,
-    checks: emptyAvailability.checks.map((check) =>
-      check.id === "unusedSkills" ? { ...check, enabled: false } : check,
-    ),
-  }
-  getAvailability.mockResolvedValue(latest)
-  render(<ChecksStepSettings />)
-  const toggle = screen.getByRole("switch", { name: "Unused skills" })
-  await waitFor(() => expect(toggle).not.toBeChecked())
-
-  act(() =>
-    availabilityEvent.callback?.({
-      status: "updated",
-      snapshot: { ...emptyAvailability, revision: latest.revision - 1 },
-    }),
-  )
-
-  expect(toggle).not.toBeChecked()
-})
-
-it("explains the selected and excluded fields and gives the API key a full-width field", () => {
-  render(<ChecksStepSettings />)
-  expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  expect(run).not.toBeChecked()
+  expect(run).toBeEnabled()
+  expect(setChecksEnabled).not.toHaveBeenCalled()
+  fireEvent.click(run)
+  await waitFor(() => expect(run).toBeChecked())
   expect(
-    screen.getByText(
-      /Checks selected actions for direct conflicts with current instruction rules/,
-    ),
-  ).toBeInTheDocument()
-  expect(
-    screen.getByText(
-      /Checks send selected session content and skill descriptions to the provider in use/,
-    ),
-  ).toBeInTheDocument()
-  expect(screen.getByText(/excluding private thinking/)).toBeInTheDocument()
-  expect(
-    screen.getByText(/Data stays local only when inference runs on this device/),
-  ).toBeInTheDocument()
-  expect(screen.getByLabelText("TypeSafe API key")).toHaveClass("w-full")
+    screen.queryByText("Add and select a connection before running checks."),
+  ).not.toBeInTheDocument()
+  expect(setChecksEnabled).toHaveBeenCalledExactlyOnceWith(true)
 })
 
-it("shows when selected sessions are waiting for current evidence", async () => {
-  getAvailability.mockResolvedValue({
-    ...emptyAvailability,
-    historyDays: 30,
-    backfill: {
-      total: 18,
-      waitingForData: 5,
-      ready: 13,
-      waitingForIdle: 0,
-      queued: 0,
-      running: 0,
-      completed: 0,
-      skipped: 0,
-      failed: 0,
+it("allows pausing enabled checks during pending recovery but blocks enabling again", async () => {
+  getAvailability.mockResolvedValueOnce({ ...emptyAvailability, yamlEnabled: true })
+  providerInvoke.mockResolvedValueOnce({
+    activeId: "jev",
+    profiles: { jev: defaultConnection("jev") },
+    displayNumbers: { jev: 1 },
+    pendingOperation: {
+      id: "pending-operation",
+      kind: "save",
+      connectionId: "jev",
+      requestId: "another-window",
     },
   })
   render(<ChecksStepSettings />)
-  await screen.findByText("13 waiting to be checked · 5 waiting for session analysis")
+  const run = screen.getByRole("switch", { name: "Run checks" })
+  await waitFor(() => expect(run).toBeChecked())
+  expect(
+    screen.queryByText("Add and select a connection before running checks."),
+  ).not.toBeInTheDocument()
+  expect(run).toBeEnabled()
+  fireEvent.click(run)
+  await waitFor(() => expect(run).not.toBeChecked())
+  expect(run).toBeDisabled()
+  expect(setChecksEnabled).toHaveBeenCalledExactlyOnceWith(false)
 })
 
-it.each(["ignoredInstructions", "skillOpportunities", "overExploring", "scopeCreep"] as const)(
-  "runs history with only %s selected after the user asks",
-  async (detector) => {
-    setHistory.mockResolvedValue({
+it("uses one empty usage sentence instead of zero counters", async () => {
+  render(<ChecksStepSettings />)
+  await screen.findByText("No model requests recorded on this device.")
+  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
+  expect(screen.queryByText("Input tokens")).not.toBeInTheDocument()
+  expect(screen.queryByText(/Clear index/)).not.toBeInTheDocument()
+})
+
+it.each(["$0.00000017", null])(
+  "keeps known usage with %s cost and omits unknown fields",
+  async (cost) => {
+    getAvailability.mockResolvedValueOnce({
       ...emptyAvailability,
-      configured: true,
-      historyDays: 30,
-      checks: emptyAvailability.checks.map((check) =>
-        check.id === detector ? { ...check, enabled: true } : check,
-      ),
-    })
-    runBackfill.mockResolvedValue({
-      queued: 4,
-      availability: {
-        ...emptyAvailability,
-        configured: true,
-        historyDays: 30,
-        checks: emptyAvailability.checks.map((check) =>
-          check.id === detector ? { ...check, enabled: true } : check,
-        ),
-        backfill: { ...emptyAvailability.backfill, total: 4, queued: 4 },
+      usage: {
+        ...emptyAvailability.usage,
+        confirmedCalls: 2,
+        inputTokens: 1200,
+        unknownOutcomes: 1,
+        estimatedUsd: cost,
       },
     })
     render(<ChecksStepSettings />)
-
-    await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "Future only" })).toHaveAttribute(
-        "aria-checked",
-        "true",
-      ),
+    await screen.findByText(/2 requests with recorded usage/)
+    expect(screen.getByText(/2 requests with recorded usage/).textContent).toBe(
+      `2 requests with recorded usage${cost === null ? "" : ` · ${cost} estimated`}`,
     )
-    expect(screen.getByRole("button", { name: "Check past sessions" })).toBeDisabled()
-    fireEvent.click(screen.getByRole("radio", { name: "30 days" }))
-    await waitFor(() => expect(setHistory).toHaveBeenCalledWith(30))
-    fireEvent.click(screen.getByRole("button", { name: "Check past sessions" }))
-    await waitFor(() => expect(runBackfill).toHaveBeenCalledOnce())
-    expect(screen.getByText(/0 of 4 session checks finished/)).toBeInTheDocument()
-    expect(screen.queryByText(/added .* to the queue/i)).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Check past sessions" })).toBeDisabled()
-    expect(screen.queryByText(/running,.*waiting/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/unknown|cost estimate unavailable/i)).not.toBeInTheDocument()
+    expect(screen.queryByText("Input tokens")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
+    expect(screen.getByText("Input tokens").nextElementSibling).toHaveTextContent("1,200")
+    expect(screen.queryByText(/unknown|not included in the estimate/i)).not.toBeInTheDocument()
   },
 )
 
-it("keeps the checking denominator stable while sessions change status", async () => {
-  getAvailability.mockResolvedValue({
+it("omits unknown-only usage and keeps known unpriced usage without a cost status", async () => {
+  getAvailability.mockResolvedValueOnce({
     ...emptyAvailability,
-    configured: true,
-    historyDays: 30,
-    backfill: {
-      ...emptyAvailability.backfill,
-      total: 14,
-      waitingForData: 4,
-      running: 1,
-      failed: 2,
-    },
+    usage: { ...emptyAvailability.usage, unknownOutcomes: 2, estimatedUsd: null },
   })
   render(<ChecksStepSettings />)
-  await screen.findByText(/0 of 14 session checks finished/)
-})
-
-it("confirms when every session in the history run finished", async () => {
-  getAvailability.mockResolvedValue({
-    ...emptyAvailability,
-    historyDays: 7,
-    backfill: { ...emptyAvailability.backfill, total: 10, completed: 10 },
-  })
-  render(<ChecksStepSettings />)
-  expect(await screen.findByText("Finished 10 check jobs")).toBeVisible()
-
+  await waitFor(() => expect(getAvailability).toHaveBeenCalledOnce())
+  expect(screen.queryByRole("button", { name: "Model usage" })).not.toBeInTheDocument()
+  expect(
+    screen.queryByText("No model requests recorded on this device."),
+  ).not.toBeInTheDocument()
   act(() =>
     availabilityEvent.callback?.({
       status: "updated",
       snapshot: {
         ...emptyAvailability,
-        historyDays: 7,
-        backfill: { ...emptyAvailability.backfill, total: 11, completed: 10, ready: 1 },
+        usage: { ...emptyAvailability.usage, confirmedCalls: 1, estimatedUsd: null },
       },
     }),
   )
-  expect(screen.queryByText("Finished 10 check jobs")).not.toBeInTheDocument()
-  expect(screen.getByText("1 waiting to be checked · 10 check jobs complete")).toBeVisible()
+  expect(screen.getByText("1 request with recorded usage")).toBeVisible()
+  expect(screen.queryByText(/unknown|cost estimate unavailable/i)).not.toBeInTheDocument()
 })
 
-it("keeps setup, history, and the API key in separate plain-language groups", async () => {
-  render(<ChecksStepSettings />)
-  expect(screen.getByRole("heading", { name: "Smart Burn Checks" })).toBeInTheDocument()
-  expect(screen.getByRole("heading", { name: "Past sessions" })).toBeInTheDocument()
-  expect(screen.getByRole("heading", { name: "Decision model" })).toBeInTheDocument()
-  expect(screen.getByText("Ignored instructions")).toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
-    "aria-expanded",
-    "false",
+it.each(["checkDirectories", "checkModelUsage"] as const)(
+  "search reveals and focuses %s without invoking an action",
+  async (control) => {
+    const { container, rerender } = render(
+      <ChecksStepSettings control={control} targetRevision={1} />,
+    )
+    await screen.findByText("No model requests recorded on this device.")
+    const focus = new SettingsTargetFocus()
+    const stop = focus.attach(
+      container.firstElementChild as HTMLDivElement,
+      "checks",
+      control,
+      1,
+    )
+    const button = await screen.findByRole("button", {
+      name: control === "checkDirectories" ? "Check files" : "Model usage",
+    })
+    expect(button).toHaveAttribute("aria-expanded", "true")
+    expect(button).toHaveFocus()
+    fireEvent.click(button)
+    expect(button).toHaveAttribute("aria-expanded", "false")
+    rerender(<ChecksStepSettings control={control} targetRevision={2} />)
+    expect(button).toHaveAttribute("aria-expanded", "true")
+    await waitFor(() => expect(providerInvoke).toHaveBeenCalledOnce())
+    expect(openDirectory).not.toHaveBeenCalled()
+    expect(setChecksEnabled).not.toHaveBeenCalled()
+    stop()
+  },
+)
+
+it.each(["unknown-only", "failed", "loading"])(
+  "search focuses the model-based group when usage is %s without invoking a control",
+  async (scenario) => {
+    if (scenario === "unknown-only")
+      getAvailability.mockResolvedValueOnce({
+        ...emptyAvailability,
+        usage: { ...emptyAvailability.usage, unknownOutcomes: 2, estimatedUsd: null },
+      })
+    else if (scenario === "failed")
+      getAvailability.mockRejectedValueOnce(new Error("read failed"))
+    else getAvailability.mockReturnValueOnce(deferred<CheckAvailability>().promise)
+    const { container } = render(
+      <ChecksStepSettings control="checkModelUsage" targetRevision={1} />,
+    )
+    await waitFor(() => expect(providerInvoke).toHaveBeenCalledOnce())
+    if (scenario === "failed") await screen.findByRole("alert")
+    const focus = new SettingsTargetFocus()
+    const stop = focus.attach(
+      container.firstElementChild as HTMLDivElement,
+      "checks",
+      "checkModelUsage",
+      1,
+    )
+    const group = screen
+      .getByRole("heading", { name: "Model-based checks" })
+      .closest("section")!
+    expect(group).toHaveFocus()
+    expect(screen.queryByRole("button", { name: "Model usage" })).not.toBeInTheDocument()
+    expect(
+      screen.queryByText(/unknown usage|cost estimate unavailable/i),
+    ).not.toBeInTheDocument()
+    expect(setChecksEnabled).not.toHaveBeenCalled()
+    expect(openDirectory).not.toHaveBeenCalled()
+    expect(providerInvoke.mock.calls.map(([command]) => command)).toEqual([
+      "get_system_one_settings",
+    ])
+    stop()
+  },
+)
+
+it("keeps each concurrent toggle pending until its own request settles and retains its error", async () => {
+  const skills = deferred<typeof emptyAvailability>()
+  const servers = deferred<typeof emptyAvailability>()
+  setCheckEnabled.mockImplementation((id: string) =>
+    id === "unusedSkills" ? skills.promise : servers.promise,
   )
-  expect(screen.getByLabelText("Smart check provider")).toBeVisible()
-  expect(await screen.findByLabelText("Provider model")).toBeVisible()
-  expect(screen.getByLabelText("TypeSafe API key")).toBeVisible()
-  expect(
-    screen.getByText("Run smart burn checks using the decision model below."),
-  ).toBeVisible()
+  render(<ChecksStepSettings />)
+  act(() => availabilityEvent.callback?.({ status: "updated", snapshot: emptyAvailability }))
+  const skillSwitch = screen.getByRole("switch", { name: "Unused skills" })
+  const serverSwitch = screen.getByRole("switch", { name: "Unused MCP servers" })
+  fireEvent.click(skillSwitch)
+  fireEvent.click(serverSwitch)
+  expect(skillSwitch).toBeDisabled()
+  expect(serverSwitch).toBeDisabled()
+  await act(async () => skills.reject(new Error("write failed")))
+  expect(skillSwitch).toBeEnabled()
+  expect(serverSwitch).toBeDisabled()
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not disable Unused skills")
+  await act(async () => servers.resolve(emptyAvailability))
+  expect(serverSwitch).toBeEnabled()
+  expect(screen.getByRole("switch", { name: "Model overthinking" })).toBeChecked()
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not disable Unused skills")
 })
 
-it("requires a nonblank credential before saving an unsaved Jev connection", async () => {
-  providerInvoke.mockResolvedValue({
-    activeId: "jev",
-    profiles: { jev: defaultConnection("jev") },
+it("omits stale usage while retaining the separate availability error and retry", async () => {
+  getAvailability.mockResolvedValueOnce({
+    ...emptyAvailability,
+    usage: { ...emptyAvailability.usage, confirmedCalls: 2, inputTokens: 1200 },
   })
   render(<ChecksStepSettings />)
-  const input = screen.getByLabelText("TypeSafe API key")
-  await waitFor(() => expect(input).toBeEnabled())
-  const saveConnection = screen.getByRole("button", { name: "Save and use connection" })
-  expect(saveConnection).toBeDisabled()
-  fireEvent.change(input, { target: { value: "   " } })
-  expect(saveConnection).toBeDisabled()
-  fireEvent.change(input, { target: { value: "synthetic-key" } })
-  expect(saveConnection).toBeEnabled()
+  await screen.findByText(/2 requests with recorded usage/)
+  fireEvent.click(screen.getByRole("button", { name: "Model usage" }))
+  act(() => availabilityEvent.callback?.({ status: "failed" }))
+  expect(screen.queryByRole("button", { name: "Model usage" })).not.toBeInTheDocument()
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not refresh check status")
+  expect(screen.queryByText("Input tokens")).not.toBeInTheDocument()
   expect(
-    providerInvoke.mock.calls.every(([command]) => command === "get_system_one_settings"),
-  ).toBe(true)
+    screen.queryByText(/2 requests with recorded usage|unknown|out of date.*usage/i),
+  ).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Retry loading check status" }))
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+  expect(screen.getByText("No model requests recorded on this device.")).toBeVisible()
+})
+
+it("retries a failed availability subscription and does not hide failure after a toggle", async () => {
+  subscribeAvailability.mockRejectedValueOnce(new Error("subscription unavailable"))
+  render(<ChecksStepSettings />)
+  await screen.findByText("Could not load check status. Try again.")
+  fireEvent.click(screen.getByRole("switch", { name: "Run checks" }))
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Run checks" })).toBeChecked())
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not refresh check status")
+  fireEvent.click(screen.getByRole("button", { name: "Retry loading check status" }))
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+  expect(subscribeAvailability).toHaveBeenCalledTimes(2)
+})
+
+it("ignores stale initial reads and events after unsubscribe", async () => {
+  const read = deferred<CheckAvailability>()
+  getAvailability.mockReturnValueOnce(read.promise)
+  const { unmount } = render(<ChecksStepSettings />)
+  await waitFor(() => expect(availabilityEvent.callback).not.toBeNull())
+  const current = { ...emptyAvailability, revision: 2, yamlEnabled: true }
+  act(() => availabilityEvent.callback?.({ status: "updated", snapshot: current }))
+  await act(async () => read.resolve(emptyAvailability))
+  expect(screen.getByRole("switch", { name: "Run checks" })).toBeChecked()
+  const oldCallback = availabilityEvent.callback
+  unmount()
+  oldCallback?.({
+    status: "updated",
+    snapshot: { ...current, revision: 3, yamlEnabled: false },
+  })
+  getAvailability.mockReturnValueOnce(new Promise(() => undefined))
+  render(<ChecksStepSettings />)
+  expect(screen.getByRole("switch", { name: "Run checks" })).toBeChecked()
 })

@@ -1,8 +1,9 @@
 //! Normalize human text and exact command-result bindings before check preparation.
 
 use super::{ContentAction, ContentEventReference, JevNativeFieldRange, JevOperationState};
+use crate::analysis::interface::UserTextOrigin;
 use crate::analysis::{SourceFormat, jev::JevInputField};
-use crate::checks::ignored_instructions::sha256_hex;
+use crate::digest::sha256_hex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ impl JevHumanText {
         matches!(action.kind.as_str(), "user" | "user_text")
             && action.authority == "user"
             && action.turn_role == "user"
+            && action.metadata.user_text_origin != Some(UserTextOrigin::AcceptedUserSlot)
             && self.source == action.reference
             && self.turn_scope == action.turn_scope
             && !action.truncated
@@ -104,6 +106,7 @@ fn normalize_human_text(
     if !matches!(action.kind.as_str(), "user" | "user_text")
         || action.authority != "user"
         || action.turn_role != "user"
+        || action.metadata.user_text_origin == Some(UserTextOrigin::AcceptedUserSlot)
         || proof.source_format != source_format
         || proof.session_id.is_empty()
         || proof.message_id.is_empty()

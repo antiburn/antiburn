@@ -224,19 +224,19 @@ describe("BurnChecksView savings", { timeout: 15_000 }, () => {
     fireEvent.focus(within(savings).getByRole("button", { name: "About confirmed savings" }))
     expect(
       await screen.findByText(
-        "Savings observed across sessions that passed after remediation. This is still an estimate and may not match provider billing exactly.",
+        "Savings observed in sessions that passed after the fix. This is still an estimate and may not match provider billing exactly.",
       ),
     ).toBeVisible()
   })
 
-  it("describes estimated savings as a pre-remediation opportunity", async () => {
+  it("describes potential savings using evidence recorded before the fix", async () => {
     renderSavings(aggregate.wins)
 
     const savings = screen.getByRole("region", { name: "Savings" })
     fireEvent.focus(within(savings).getByRole("button", { name: "About estimated savings" }))
     expect(
       await screen.findByText(
-        "Pre-remediation opportunity estimated from evidence observed before the fix. Actual results can vary.",
+        "Potential savings estimated from evidence recorded before the fix. Actual results can vary.",
       ),
     ).toBeVisible()
     expect(screen.queryByText(/your recent usage/i)).not.toBeInTheDocument()

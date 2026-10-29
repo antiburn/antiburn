@@ -193,14 +193,24 @@ export function isPureEngineReleaseChange(files, readAtRef) {
  * Rust sources and compares the result with this map.
  */
 export const CROSS_WORKSPACE_INPUTS = {
+  ".agents/skills/antiburn-checks/SKILL.md": ["checks"],
+  ".antiburn/checks/fast-mode-value.yml": ["checks", "shell"],
+  ".antiburn/checks/ignored-instructions.yml": ["checks", "shell"],
+  ".antiburn/checks/over-exploring.yml": ["checks", "shell"],
+  ".antiburn/checks/scope-creep.yml": ["checks", "shell"],
+  ".antiburn/checks/skill-opportunities.yml": ["checks"],
   "apps/desktop/interface-scale.json": ["shell"],
+  "apps/desktop/src/views/main-window/burn-checks/tests/fixtures/installed-check-report.json":
+    ["shell"],
   "apps/desktop/src/views/SettingsView.tsx": ["shell"],
   "apps/desktop/src/views/settings/PrivacyPane.tsx": ["shell"],
   "docs/analytics.md": ["shell"],
+  "docs/burn-check/tests/expression-parity.json": ["checks"],
   "docs/check-coverage.md": ["engine", "shell"],
   "docs/privacy-policy.md": ["shell"],
   "docs/session-coverage.md": ["engine"],
   "docs/support.md": ["engine", "shell"],
+  "plugins/antiburn-live/hooks/catalog.ts": ["engine"],
 };
 
 /**
@@ -347,6 +357,7 @@ export function routeChanges(files) {
     ci_scripts: false,
     installers: false,
     licenses: false,
+    validator: false,
     lockfile: false,
     full: false,
   };
@@ -354,6 +365,11 @@ export function routeChanges(files) {
 
   for (const file of files) {
     for (const id of crossWorkspaceReaders(file)) direct.add(id);
+    if (
+      file.startsWith("docs/burn-check/") ||
+      /^\.antiburn\/checks\/[^/]+\.ya?ml$/.test(file)
+    )
+      route.validator = true;
     if (isDocumentationPath(file)) continue;
     const name = file.slice(file.lastIndexOf("/") + 1);
 
@@ -377,6 +393,15 @@ export function routeChanges(files) {
     ) {
       route.ci_scripts = true;
       route.licenses = true;
+    } else if (
+      file === "scripts/run-opencode-wsl-acceptance.ps1" ||
+      file === "scripts/opencode-wsl-acceptance.test.mjs" ||
+      file.startsWith(
+        "crates/antiburn-local/tests/fixtures/opencode_wsl_acceptance/",
+      )
+    ) {
+      direct.add("engine");
+      route.ci_scripts = true;
     } else if (file.startsWith("scripts/")) {
       route.ci_scripts = true;
     } else {
@@ -386,6 +411,9 @@ export function routeChanges(files) {
       if (workspace === null && file.startsWith("apps/desktop/")) {
         route.frontend = true;
         if (file === "apps/desktop/package.json") route.licenses = true;
+        continue;
+      }
+      if (workspace === null && crossWorkspaceReaders(file).length > 0) {
         continue;
       }
       if (workspace === null || isUnregisteredCrate(file, workspace)) {
@@ -406,6 +434,7 @@ export function routeChanges(files) {
     route.ci_scripts = true;
     route.installers = true;
     route.licenses = true;
+    route.validator = true;
   } else {
     route.workspaces = withDependents([...direct]);
   }
@@ -499,6 +528,7 @@ export function planOutputs({ stage, changes, release = {} }) {
     run_desktop: bool(desktopIds.length > 0),
     run_frontend: bool(route.frontend),
     run_ci_scripts: bool(route.ci_scripts),
+    run_validator: bool(route.validator),
     run_installers: bool(route.installers && !draft),
     run_licenses: bool(route.licenses && !draft),
     // Advisories change without a code change, so a pull request checks them

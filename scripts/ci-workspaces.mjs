@@ -13,6 +13,12 @@
 //   WebKit, ALSA, and others) before it checks the workspace.
 export const WORKSPACES = [
   {
+    id: "checks",
+    directory: "crates/antiburn-checks",
+    group: "engine",
+    dependsOn: [],
+  },
+  {
     id: "engine",
     directory: "crates/antiburn-local",
     group: "engine",
@@ -31,6 +37,8 @@ export const WORKSPACES = [
     directory: "apps/desktop/src-tauri",
     group: "desktop",
     dependsOn: [
+      "checks",
+      "checks-store",
       "engine",
       "remote",
       "nudge",
@@ -92,6 +100,18 @@ export const WORKSPACES = [
     dependsOn: [],
     doctests: true,
     linuxSystemDeps: true,
+  },
+  {
+    id: "checks-store",
+    directory: "crates/antiburn-checks-store",
+    group: "engine",
+    dependsOn: ["checks", "engine"],
+  },
+  {
+    id: "cli",
+    directory: "apps/cli",
+    group: "engine",
+    dependsOn: ["engine", "checks-store"],
   },
 ];
 

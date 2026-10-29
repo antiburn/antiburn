@@ -100,6 +100,65 @@ fn a_matching_bad_model_recurs_only_after_the_fix_was_verified() {
 }
 
 #[test]
+fn native_old_model_use_requires_a_later_exact_route_and_unambiguous_replacement() {
+    assert!(verification_evidence_supported(
+        DetectorId::OldModelUsage,
+        SourceFormat::OpenCodeSqliteV2
+    ));
+    let target = OldModelVerificationTarget {
+        scope: "physical-default".into(),
+        provider: Some("openai".into()),
+        api: Some("responses".into()),
+        old_model: "gpt-5.5".into(),
+        replacement: "gpt-5.6-sol".into(),
+    };
+    let mut observations = vec![
+        model_observation(
+            100,
+            "physical-default",
+            "openai",
+            "responses",
+            "gpt-5.6-sol",
+        ),
+        model_observation(101, "other-default", "openai", "responses", "gpt-5.6-sol"),
+        model_observation(
+            101,
+            "physical-default",
+            "custom",
+            "responses",
+            "gpt-5.6-sol",
+        ),
+        model_observation(101, "physical-default", "openai", "chat", "gpt-5.6-sol"),
+    ];
+    assert_eq!(
+        verify_old_model(&target, VerificationStage::Watching, 100, &observations).outcome,
+        VerificationOutcome::Unknown(VerificationUnknownReason::MissingPostBoundaryEvidence)
+    );
+    observations.push(model_observation(
+        102,
+        "physical-default",
+        "openai",
+        "responses",
+        "gpt-5.6-sol",
+    ));
+    assert_eq!(
+        verify_old_model(&target, VerificationStage::Watching, 100, &observations).outcome,
+        VerificationOutcome::Fixed
+    );
+    observations.push(model_observation(
+        102,
+        "physical-default",
+        "openai",
+        "responses",
+        "gpt-5.5",
+    ));
+    assert_eq!(
+        verify_old_model(&target, VerificationStage::Watching, 100, &observations).outcome,
+        VerificationOutcome::StillUnresolved
+    );
+}
+
+#[test]
 fn latest_exact_observation_determines_the_watching_result() {
     let resolved = [
         model_observation(
@@ -462,7 +521,8 @@ fn historical_resource_subsets_cannot_verify_absence_or_recurrence() {
 #[test]
 fn verification_matrix_matches_the_documented_positive_proof_cells() {
     use SourceFormat::{
-        ClaudeJsonl, CodexRolloutJsonl, OpenCodeJsonl, OpenCodeSqliteV2, PiV3Jsonl,
+        ClaudeJsonl, CodexRolloutJsonl, OpenCodeJsonl, OpenCodeSqliteV1, OpenCodeSqliteV2,
+        OpenCodeV2SessionExport, PiV3Jsonl,
     };
 
     let supported = [
@@ -472,6 +532,7 @@ fn verification_matrix_matches_the_documented_positive_proof_cells() {
         (DetectorId::OldModelUsage, ClaudeJsonl),
         (DetectorId::OldModelUsage, CodexRolloutJsonl),
         (DetectorId::OldModelUsage, OpenCodeJsonl),
+        (DetectorId::OldModelUsage, OpenCodeSqliteV1),
         (DetectorId::OldModelUsage, OpenCodeSqliteV2),
         (DetectorId::OldModelUsage, PiV3Jsonl),
         (DetectorId::OveruseOfFastMode, ClaudeJsonl),
@@ -481,7 +542,9 @@ fn verification_matrix_matches_the_documented_positive_proof_cells() {
         ClaudeJsonl,
         CodexRolloutJsonl,
         OpenCodeJsonl,
+        OpenCodeSqliteV1,
         OpenCodeSqliteV2,
+        OpenCodeV2SessionExport,
         PiV3Jsonl,
         SourceFormat::CursorJsonl,
         SourceFormat::AntigravityJson,

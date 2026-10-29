@@ -754,7 +754,11 @@ async fn interactive_fork_job_logs(
         logs.push(SessionLog {
             environment: Default::default(),
             agent_type: AgentKind::Claude,
-            source: SessionSource::Inline { label, content },
+            source: SessionSource::Inline {
+                label,
+                content,
+                source_format: None,
+            },
             updated_at: Some(updated_at),
         });
     }
@@ -814,6 +818,7 @@ async fn desktop_manifest_session_log(
         source: SessionSource::Inline {
             label,
             content: manifest.to_string(),
+            source_format: None,
         },
         updated_at: Some(manifest_mtime_epoch),
     })
@@ -1090,7 +1095,7 @@ mod tests {
         let logs = discover_recent_in(home.path(), now, since_secs).await;
         assert_eq!(logs.len(), 1);
         match &logs[0].source {
-            SessionSource::Inline { label, content } => {
+            SessionSource::Inline { label, content, .. } => {
                 assert!(label.starts_with("claude-desktop:"));
                 assert!(content.contains("\"sessionId\":\"cli-session\""));
             }

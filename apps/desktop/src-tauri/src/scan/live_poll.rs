@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager};
 use crate::store::Store;
 
 use super::ScanController;
-use super::watch::{MAX_BURST_PATHS, WatchBurst};
+use super::watch::WatchBurst;
 
 /// Poll cadence while the last poll found at least one active native file
 /// session.
@@ -54,9 +54,7 @@ pub fn spawn_live_poll(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
 
 /// Run one poll and return how long to sleep before the next one.
 fn poll_once(app: &AppHandle, seen: &mut HashMap<PathBuf, FileStamp>) -> Duration {
-    // Checked on every wake, not once at spawn, so resuming discovery takes
-    // effect at the next poll instead of needing the app restarted — the
-    // same reasoning as the scheduler's own check in `spawn_scheduler`.
+    // Check each wake so discovery can resume without an app restart.
     if !super::scheduled_scanning_allowed(app) {
         return LIVE_POLL_IDLE;
     }
@@ -84,12 +82,10 @@ fn poll_once(app: &AppHandle, seen: &mut HashMap<PathBuf, FileStamp>) -> Duratio
 /// Compare `active`'s current stat against what `seen` last recorded, and
 /// return the paths whose size or modification time changed.
 ///
-/// A path seen for the first time is recorded but not returned: the watcher
-/// or the last full pass already ingested it, so reporting it again here
-/// would only start a redundant refresh. A path missing from `active` is
-/// dropped from `seen`, so a later return of that path is a first sighting
-/// again. A stat error drops the path from `seen` silently; the next full
-/// tick reconciles the removal.
+/// Queue first sightings too. A file can change after discovery and before
+/// this poll first records its metadata. Without a refresh, a missed watcher
+/// event can leave that change unseen until the next full pass.
+/// A path outside `active` or with a stat error loses its saved stamp.
 fn changed_paths(seen: &mut HashMap<PathBuf, FileStamp>, active: &[PathBuf]) -> Vec<PathBuf> {
     let active_set: std::collections::HashSet<&PathBuf> = active.iter().collect();
     seen.retain(|path, _| active_set.contains(path));
@@ -101,9 +97,8 @@ fn changed_paths(seen: &mut HashMap<PathBuf, FileStamp>, active: &[PathBuf]) -> 
             continue;
         };
         match seen.insert(path.clone(), stamp) {
-            None => {}
             Some(previous) if previous == stamp => {}
-            Some(_) => changed.push(path.clone()),
+            _ => changed.push(path.clone()),
         }
     }
     changed
@@ -115,19 +110,15 @@ fn stat(path: &Path) -> Option<FileStamp> {
     Some((metadata.len(), modified))
 }
 
-/// Build a burst from one poll's changed paths, bounded the same way the
-/// watcher bounds its own bursts: past [`MAX_BURST_PATHS`], keep the first
-/// paths and mark the burst overflowed instead of growing it further.
-fn build_burst(mut changed: Vec<PathBuf>) -> WatchBurst {
-    let overflowed = changed.len() > MAX_BURST_PATHS;
-    if overflowed {
-        changed.truncate(MAX_BURST_PATHS);
-    }
-    WatchBurst {
+/// Apply the watcher's path count and byte limits to one poll's changes.
+fn build_burst(changed: Vec<PathBuf>) -> WatchBurst {
+    let mut burst = WatchBurst::default();
+    burst.merge(WatchBurst {
         events: changed.len(),
         paths: changed,
-        overflowed,
-    }
+        overflowed: false,
+    });
+    burst
 }
 
 #[cfg(test)]
@@ -138,18 +129,22 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::scan::watch::{MAX_BURST_PATH_BYTES, MAX_BURST_PATHS};
 
     #[test]
-    fn a_first_sighting_is_recorded_without_being_pushed() {
+    fn an_append_before_the_first_poll_is_pushed_without_another_write() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("session.jsonl");
         fs::write(&path, b"first record\n").unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"record after discovery\n").unwrap();
         let mut seen = HashMap::new();
 
         let changed = changed_paths(&mut seen, std::slice::from_ref(&path));
 
-        assert!(changed.is_empty());
+        assert_eq!(changed, vec![path.clone()]);
         assert!(seen.contains_key(&path));
+        assert!(changed_paths(&mut seen, &[path]).is_empty());
     }
 
     #[test]
@@ -182,9 +177,11 @@ mod tests {
         changed_paths(&mut seen, &[]);
         assert!(seen.is_empty());
 
-        // Its return is a first sighting again, not a change.
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"record while inactive\n").unwrap();
+
         let changed = changed_paths(&mut seen, std::slice::from_ref(&path));
-        assert!(changed.is_empty());
+        assert_eq!(changed, vec![path.clone()]);
         assert!(seen.contains_key(&path));
     }
 
@@ -201,6 +198,12 @@ mod tests {
 
         assert!(changed.is_empty());
         assert!(!seen.contains_key(&path));
+
+        fs::write(&path, b"restored record\n").unwrap();
+        assert_eq!(
+            changed_paths(&mut seen, std::slice::from_ref(&path)),
+            vec![path]
+        );
     }
 
     #[test]
@@ -212,7 +215,18 @@ mod tests {
         let burst = build_burst(changed);
 
         assert_eq!(burst.paths.len(), MAX_BURST_PATHS);
-        assert_eq!(burst.events, MAX_BURST_PATHS);
+        assert_eq!(burst.events, MAX_BURST_PATHS + 5);
+        assert!(burst.overflowed);
+    }
+
+    #[test]
+    fn build_burst_preserves_byte_limits_and_overflow_wakes() {
+        let oversized = PathBuf::from(format!("/{}", "x".repeat(MAX_BURST_PATH_BYTES)));
+
+        let burst = build_burst(vec![oversized]);
+
+        assert!(burst.paths.is_empty());
+        assert_eq!(burst.events, 1);
         assert!(burst.overflowed);
     }
 }

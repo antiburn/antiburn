@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionHygienePayload } from "../insightsIpc"
-import { sessionBurnCheckPresentation } from "./checkStatus"
 import {
   INITIAL_SESSION_HYGIENE,
   notAssessedReasonLabel,
@@ -28,108 +27,6 @@ const PAYLOAD: SessionHygienePayload = {
 }
 
 describe("sessionHygieneChecks", () => {
-  it.each([
-    "ignoredInstructions",
-    "scopeCreep",
-    "overExploring",
-    "skillOpportunities",
-  ] as const)("presents terminal %s noCandidates as neutral empty work", (id) => {
-    const checks = sessionHygieneChecks({
-      ...PAYLOAD,
-      badges: [{ id, status: "noCandidates", notAssessedReason: null }],
-    })
-    const check = checks.find((check) => check.id === id)!
-    expect(check.title).toContain("No matching work")
-    expect(check.ink).toBe("label-tertiary")
-    expect(sessionHygieneDocumentation(check).guidance).toEqual([])
-    expect(sessionBurnCheckPresentation([check], "ready").counts).toEqual({
-      failed: 0,
-      passed: 0,
-      unassessed: 1,
-    })
-  })
-  it.each(["skillOpportunities", "overExploring", "scopeCreep"] as const)(
-    "uses only published %s badges",
-    (id) => {
-      expect(INITIAL_SESSION_HYGIENE.badges.some((badge) => badge.id === id)).toBe(false)
-      expect(sessionHygieneChecks(PAYLOAD).some((check) => check.id === id)).toBe(false)
-      for (const status of [
-        "finding",
-        "clean",
-        "checking",
-        "couldntCheck",
-        "notAssessed",
-      ] as const) {
-        const checks = sessionHygieneChecks({
-          ...PAYLOAD,
-          badges: [...PAYLOAD.badges, { id, status, notAssessedReason: null }],
-        })
-        expect(checks.find((check) => check.id === id)?.status).toBe(status)
-        expect(checks.find((check) => check.id === id)?.title).not.toContain("instructions")
-      }
-    },
-  )
-  it("explains oversized task context without reporting a pass or failure", () => {
-    const check = sessionHygieneChecks({
-      ...PAYLOAD,
-      badges: [
-        {
-          id: "scopeCreep",
-          status: "couldntCheck",
-          notAssessedReason: null,
-          checkReason: "scope_context_too_large",
-        },
-      ],
-    }).find((check) => check.id === "scopeCreep")!
-    expect(check.name).toBe("Scope creep")
-    expect(check.title).toBe("Scope creep · Task context exceeds the model limit.")
-    expect(check.status).toBe("couldntCheck")
-    expect(sessionHygieneDocumentation(check).guidance).toEqual([
-      "Keep future work within the agreed task. Ask for approval before adding work.",
-    ])
-  })
-
-  it.each([
-    ["unrelated_files", "A selected read sample suggests a purpose separate from the task."],
-    ["excessive_file_breadth", "The work read more files than it needed."],
-    [
-      "excessive_within_file_reading",
-      "Later reads returned identical recorded output with no observed intervening work.",
-    ],
-    ["unknown_reason", null],
-  ] as const)("bounds Over-exploring detail for %s", (checkReason, detail) => {
-    const checks = sessionHygieneChecks({
-      ...PAYLOAD,
-      badges: [
-        { id: "overExploring", status: "finding", notAssessedReason: null, checkReason },
-      ],
-    })
-    const check = checks.find((check) => check.id === "overExploring")!
-    expect(sessionHygieneDocumentation(check).findingDetails).toEqual(detail ? [detail] : [])
-  })
-
-  it("includes a published ignored-instruction failure in session and popover counts only when present", () => {
-    const ordinary = sessionHygieneChecks(PAYLOAD)
-    expect(ordinary.some((check) => check.id === "ignoredInstructions")).toBe(false)
-    const checks = sessionHygieneChecks({
-      ...PAYLOAD,
-      badges: [
-        ...PAYLOAD.badges,
-        { id: "ignoredInstructions", status: "finding", notAssessedReason: null },
-      ],
-    })
-    const ignored = checks.find((check) => check.id === "ignoredInstructions")!
-    expect(ignored.title).toBe("Instruction conflict found")
-    expect(sessionHygieneDocumentation(ignored).guidance).toEqual([
-      "Review the current rule and its exceptions before similar future work.",
-    ])
-    expect(sessionBurnCheckPresentation(checks, "ready").counts).toEqual({
-      failed: 2,
-      passed: 4,
-      unassessed: 1,
-    })
-  })
-
   it("maps every engine identifier to reader copy in a stable order", () => {
     expect(sessionHygieneChecks(PAYLOAD).map(({ id, title }) => ({ id, title }))).toEqual([
       { id: "sessionOverdepth", title: "Session went too deep" },

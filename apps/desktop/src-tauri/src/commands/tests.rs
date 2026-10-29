@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use antiburn_local::analysis::price_breakdown;
@@ -247,8 +247,6 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
         });
     }
     let target = BurnCheckTarget {
-        over_exploring_reason: None,
-        decision_proof: None,
         finding_id: "finding".into(),
         action_id: "action".into(),
         finding: FindingDisplay {
@@ -256,8 +254,6 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
             agent: AgentKind::Claude,
             source_format: SourceFormat::ClaudeJsonl,
             observation: "Long session".into(),
-            certainty: None,
-            instruction_provenance: None,
             facts: DisplayFacts {
                 labels: Vec::new(),
                 omitted: 0,
@@ -307,7 +303,6 @@ fn burn_check_payload_keeps_check_samples_diverse_and_target_samples_independent
             truncated: false,
         },
         1000,
-        false,
     )
     .unwrap();
     assert_eq!(payload.samples.len(), 6);
@@ -419,6 +414,12 @@ fn expected_prompt_failures_map_to_closed_outcomes() {
         }
     ));
     assert!(matches!(
+        prompt_fix_outcome(Err(ControllerError::CheckPromptUnavailable)).unwrap(),
+        CopyPromptFixBurnCheckTargetOutcome::Unavailable {
+            reason: PromptFixUnavailableReason::TargetNotFound
+        }
+    ));
+    assert!(matches!(
         prompt_fix_outcome(Err(ControllerError::PromptUnavailable(
             antiburn_local::remediation::RemediationUnavailableReason::PromptSizeLimit
         )))
@@ -437,6 +438,7 @@ fn expected_prompt_failures_map_to_closed_outcomes() {
         }
     ));
     assert!(prompt_fix_outcome(Err(ControllerError::PersistenceFailed)).is_err());
+    assert!(prompt_fix_outcome(Err(ControllerError::Internal)).is_err());
 }
 
 #[test]
@@ -790,23 +792,31 @@ fn stored_called_tools_reads_only_the_tools_field() {
 const SYNTHETIC_GENERATION: Option<i64> = Some(1);
 
 #[test]
-fn checks_report_policy_excludes_smart_checks_while_the_master_is_paused() {
+fn checks_report_selection_keeps_only_enabled_deterministic_checks() {
     use antiburn_local::insights::DetectorId;
 
-    let enabled = BTreeSet::from([
-        DetectorId::SessionsOverDepth,
-        DetectorId::IgnoredInstructions,
-    ]);
-    let paused = checks_report_selection(enabled.clone(), false);
-    let running = checks_report_selection(enabled, true);
+    let enabled = BTreeSet::from([DetectorId::SessionsOverDepth, DetectorId::UnusedSkills]);
+    let selection = DetectorSelection::from_enabled(enabled);
 
-    assert!(paused.contains(DetectorId::SessionsOverDepth));
-    assert!(!paused.contains(DetectorId::IgnoredInstructions));
-    assert!(running.contains(DetectorId::IgnoredInstructions));
-    assert_ne!(
-        checks_report_policy_revision(7, false),
-        checks_report_policy_revision(7, true),
-    );
+    assert!(selection.contains(DetectorId::SessionsOverDepth));
+    assert!(selection.contains(DetectorId::UnusedSkills));
+    assert!(!selection.contains(DetectorId::OldModelUsage));
+    assert_eq!(selection.iter().count(), 2);
+}
+
+#[test]
+fn checks_report_rejects_a_yaml_pause_after_its_policy_snapshot() {
+    let store = Store::open_in_memory(Path::new("/workspace/report-policy")).unwrap();
+    let key = "internal:yamlBurnChecksDiscoveryEnabledV1";
+    store.set_internal_value_checked(key, "true").unwrap();
+    let revision = store.check_preferences_revision().unwrap();
+    let yaml_enabled = crate::jev::settings::yaml_discovery_enabled(&store);
+    assert!(ensure_checks_report_policy(&store, revision, yaml_enabled).is_ok());
+
+    store.set_internal_value_checked(key, "false").unwrap();
+    assert_eq!(store.check_preferences_revision().unwrap(), revision);
+    assert!(ensure_checks_report_policy(&store, revision, yaml_enabled).is_err());
+    assert!(ensure_checks_report_policy(&store, revision, false).is_ok());
 }
 
 #[test]
@@ -845,6 +855,36 @@ fn session_hygiene_preserves_queue_states_without_a_false_clean_result() {
             .all(|badge| matches!(badge.status, crate::dto::SessionHygieneStatus::NotAssessed)),
         "a pending row with no prior evidence has nothing to serve"
     );
+}
+
+#[test]
+fn session_hygiene_shows_a_failed_attempt_instead_of_running_during_retry_backoff() {
+    for error in [
+        "source-unreadable:adapter-failed",
+        "worker-pass-panicked",
+        "worker-publication-failed",
+    ] {
+        let mut row = evidence_row(crate::store::EvidenceStatus::Pending, None);
+        row.last_error = Some(error.into());
+        row.next_attempt_at_epoch = Some(200);
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+        assert_eq!(payload.evidence_state, "failed", "{error}");
+    }
+
+    for error in ["source-changed", "worker-claim-lost"] {
+        let mut row = evidence_row(crate::store::EvidenceStatus::Pending, None);
+        row.last_error = Some(error.into());
+        let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+        assert_eq!(payload.evidence_state, "pending", "{error}");
+    }
+
+    let mut row = evidence_row(
+        crate::store::EvidenceStatus::Pending,
+        Some(synthetic_evidence()),
+    );
+    row.last_error = Some("source-unreadable:adapter-failed".into());
+    let payload = session_hygiene_payload(Some(row), SYNTHETIC_GENERATION);
+    assert_eq!(payload.evidence_state, "stale");
 }
 
 #[test]

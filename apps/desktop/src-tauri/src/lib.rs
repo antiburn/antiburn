@@ -55,6 +55,7 @@ mod agents;
 mod analysis;
 mod analytics;
 mod app_presence;
+pub mod check_store;
 mod commands;
 mod consent;
 mod diagnostics_export;
@@ -66,12 +67,13 @@ mod global_click;
 mod hud;
 mod hud_commands;
 mod hud_token_map;
-mod ignored_instructions_worker;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+mod installed_checks;
 mod interface_scale;
 mod jev;
+pub mod published_evidence_reader;
 pub use jev::client::evaluate_custom as evaluate_custom_system_one;
 pub use jev::config as jev_config;
 pub mod jev_cloudflare;
@@ -82,7 +84,7 @@ mod main_window;
 mod memory_probe;
 mod notifications;
 mod nudges;
-mod over_exploring_worker;
+mod opencode_live;
 mod popover;
 mod popover_peek;
 mod provider_accounts;
@@ -91,21 +93,23 @@ pub mod remediation;
 mod remote_cache;
 mod remote_sessions;
 mod remote_sync;
+#[cfg(test)]
+#[path = "../eval/replay/mod.rs"]
+mod replay;
 mod repositories;
 mod retention;
 mod runtime_pricing;
 mod runtime_pricing_config;
 mod scan;
-mod scope_creep_worker;
 mod session_lifecycle;
 mod session_projection;
-pub mod session_scope;
 mod settings;
-mod skill_opportunities_worker;
-pub mod smart_check_inputs;
 mod startup_registration;
 mod storage_health;
 mod store;
+#[cfg(test)]
+#[path = "store/burn_checks/trace_capture_tests.rs"]
+mod trace_capture;
 // This bridge keeps the CH-007 evidence readers reachable. The insights
 // commands consume the backlog reader, but `Store::evidence` still has no
 // production caller outside tests, so the re-export stays until CH-013's
@@ -254,24 +258,13 @@ pub fn run() {
         // engine's state helpers as an explicit argument.
         let data_dir = app.path().app_data_dir()?;
         app.manage(store::Store::open(&data_dir)?);
-        // Disclose requests abandoned by an earlier process before Settings
-        // reads usage or the worker can dispatch another request.
-        let (newly_recovered, unresolved_identities) = app
-            .state::<store::Store>()
-            .recover_abandoned_burn_check_usage(time::OffsetDateTime::now_utc().unix_timestamp())?;
-        if newly_recovered > 0 || unresolved_identities > 0 {
-            ::tracing::warn!(
-                event = "burn_check_usage_recovered",
-                newly_recovered,
-                unresolved_identities
-            );
-        }
         app.manage(remediation::RemediationController::new(data_dir.clone()));
         let main_window_state = main_window::MainWindowState::load(&app.state::<store::Store>());
         app.manage(main_window_state);
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(jev::worker::WorkerHandle::default());
+        app.manage(installed_checks::InstalledChecks::default());
         app.manage(insights_ipc::InsightsController::default());
         jev::settings::restore_at_launch(app.handle());
         let evidence_reconcile_started = std::time::Instant::now();
@@ -439,7 +432,7 @@ pub fn run() {
             schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
-            schedulers.push(jev::worker::spawn(app.handle()));
+            installed_checks::start(app.handle());
             schedulers.push(updates::spawn_scheduler(app.handle()));
             schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
             schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
@@ -495,6 +488,7 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
+            installed_checks::shutdown(app);
             #[cfg(target_os = "macos")]
             if let Some(manager) = app.try_state::<popover_peek::PopoverPeekManager>() {
                 manager.shutdown();
@@ -929,6 +923,30 @@ mod tests {
             capability.contains("\"settings\""),
             "missing settings window"
         );
+        for command in [
+            "get_system_one_settings",
+            "test_system_one_connection",
+            "save_system_one_connection",
+            "remove_system_one_connection",
+            "retry_system_one_connection_operation",
+            "switch_system_one_connection",
+            "refresh_system_one_limits",
+            "remove_system_one_credential",
+        ] {
+            assert!(include_str!("app_commands.rs").contains(command));
+            assert!(
+                capability.contains(&format!("allow-{}", command.replace('_', "-"))),
+                "missing permission for {command}"
+            );
+        }
+        for command in [
+            "run_check_backfill",
+            "set_check_history_days",
+            "get_burn_check_target_evidence",
+        ] {
+            assert!(!include_str!("app_commands.rs").contains(command));
+            assert!(!capability.contains(&format!("allow-{}", command.replace('_', "-"))));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1022,6 +1040,9 @@ mod tests {
                     evidence: None,
                     outcome: PassOutcome::SourceMissing,
                     source_outcomes: Vec::new(),
+                    tool_result_observations: Vec::new(),
+                    tool_result_observations_complete: false,
+                    native_tool_result_source_format: None,
                 }
             }) as PassFuture
         };

@@ -60,6 +60,7 @@ impl From<PartialReason> for CoverageReason {
             PartialReason::Cancelled => Self::Cancelled,
             PartialReason::ReadFailed => Self::ReadFailed,
             PartialReason::UnrecognizedRecordType => Self::UnrecognizedRecordType,
+            PartialReason::CapacityExceeded => Self::CapExceeded,
             PartialReason::AttributionIncomplete => Self::AttributionIncomplete,
         }
     }
@@ -243,7 +244,16 @@ pub enum RelationConfidence {
     Observed,
 }
 
+/// One exact configured agent and the route its child used.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentConfigBinding {
+    pub agent_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubagentChild {
     pub ordinal: u32,
@@ -257,6 +267,30 @@ pub struct SubagentChild {
     pub child_model: EvidenceValue<()>,
     pub confidence: RelationConfidence,
     pub provenance: RelationProvenance,
+    #[serde(default)]
+    pub config_binding: Option<SubagentConfigBinding>,
+}
+
+impl Serialize for SubagentChild {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+
+        // Binary snapshots keep the optional slot. JSON keeps other agents unchanged.
+        let include_binding = !serializer.is_human_readable() || self.config_binding.is_some();
+        let mut state =
+            serializer.serialize_struct("SubagentChild", 7 + usize::from(include_binding))?;
+        state.serialize_field("ordinal", &self.ordinal)?;
+        state.serialize_field("parentModel", &self.parent_model)?;
+        state.serialize_field("parentCallId", &self.parent_call_id)?;
+        state.serialize_field("observedChildModels", &self.observed_child_models)?;
+        state.serialize_field("childModel", &self.child_model)?;
+        state.serialize_field("confidence", &self.confidence)?;
+        state.serialize_field("provenance", &self.provenance)?;
+        if include_binding {
+            state.serialize_field("configBinding", &self.config_binding)?;
+        }
+        state.end()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -357,7 +391,10 @@ pub enum SourceFormat {
     ClaudeJsonl,
     CodexRolloutJsonl,
     OpenCodeJsonl,
-    OpenCodeSqliteV2,
+    /// OpenCode's V1 `session` / `message` / `part` SQLite contract.
+    /// The serialized name stays `open_code_sqlite_v2` for saved-state compatibility.
+    #[serde(rename = "open_code_sqlite_v2")]
+    OpenCodeSqliteV1,
     PiV3Jsonl,
     OmpV3Jsonl,
     CursorJsonl,
@@ -388,6 +425,12 @@ pub enum SourceFormat {
     DevinLocalSqlite,
     #[default]
     Uncharacterized,
+    /// OpenCode's V2 `session_v2` / `session_message` SQLite contract.
+    #[serde(rename = "open_code_v2_sqlite")]
+    OpenCodeSqliteV2,
+    /// Bounded OpenCode V2 `SessionTransfer.Data` exported from an already-running service.
+    #[serde(rename = "open_code_v2_session_export")]
+    OpenCodeV2SessionExport,
 }
 
 /// Paid context beyond positive growth across compatible main-thread requests.
@@ -744,6 +787,16 @@ impl SourceCapabilities {
             provider_incidents: false,
             harness_version: false,
             repeated_context_accounting: None,
+        }
+    }
+
+    /// The pinned V2 snapshot validates native sequence order per session.
+    /// Selected skill documents prove use, not a complete historical inventory.
+    /// Variants do not prove effort or speed. Code Mode does not save request schemas.
+    pub fn opencode_v2() -> Self {
+        Self {
+            source_format: SourceFormat::OpenCodeSqliteV2,
+            ..Self::opencode()
         }
     }
 
@@ -1285,9 +1338,51 @@ pub struct SessionEvidence {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::analysis::SourceFormat;
     use serde_json::json;
 
-    use super::*;
+    #[test]
+    fn opencode_sqlite_source_names_preserve_v1_storage_and_binary_identity() {
+        assert_eq!(
+            serde_json::to_value(SourceFormat::OpenCodeSqliteV1).unwrap(),
+            json!("open_code_sqlite_v2")
+        );
+        assert_eq!(
+            serde_json::from_value::<SourceFormat>(json!("open_code_sqlite_v2")).unwrap(),
+            SourceFormat::OpenCodeSqliteV1
+        );
+        assert_eq!(
+            serde_json::to_value(SourceFormat::OpenCodeSqliteV2).unwrap(),
+            json!("open_code_v2_sqlite")
+        );
+        assert_eq!(
+            serde_json::from_value::<SourceFormat>(json!("open_code_v2_sqlite")).unwrap(),
+            SourceFormat::OpenCodeSqliteV2
+        );
+        assert_eq!(
+            serde_json::to_value(SourceFormat::OpenCodeV2SessionExport).unwrap(),
+            json!("open_code_v2_session_export")
+        );
+
+        assert_eq!(
+            postcard::to_allocvec(&SourceFormat::OpenCodeSqliteV1).unwrap(),
+            [3]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&SourceFormat::Uncharacterized).unwrap(),
+            [32]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&SourceFormat::OpenCodeSqliteV2).unwrap(),
+            [33]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&SourceFormat::OpenCodeV2SessionExport).unwrap(),
+            [34]
+        );
+    }
+
     use crate::analysis::SessionEvidenceAccumulator;
     use crate::analysis::evidence_query::TurnFacts;
     use crate::analysis::{EVIDENCE_SCHEMA_REVISION, PARSER_REVISION};

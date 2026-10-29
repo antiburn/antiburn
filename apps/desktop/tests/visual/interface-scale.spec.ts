@@ -1,4 +1,5 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test"
+import { SETTINGS_PANES } from "../../src/lib/settingsPanes"
 
 const scales = [90, 100, 110, 125, 150, 175, 200] as const
 const surfaces = [
@@ -36,6 +37,7 @@ function fixtureUrl(
     theme: options.theme ?? "light",
     state: options.state ?? "populated",
   })
+  if (surface === "main") params.set("onboarding", "complete")
   if (options.fault) params.set("fault", options.fault)
   if (options.platform) params.set("platform", options.platform)
   return `/tests/visual/?${params}`
@@ -492,15 +494,7 @@ test.describe("issue 507 targeted journeys", () => {
       page,
     }, testInfo) => {
       await openFixture(page, "settings", { scale: 200, theme })
-      for (const pane of [
-        "General",
-        "Privacy",
-        "Notifications",
-        "Usage",
-        "Sources",
-        "Appearance",
-        "About",
-      ]) {
+      for (const { label: pane } of SETTINGS_PANES) {
         await selectNavigationItem(page, "settings", pane)
         await expect(page.getByRole("tabpanel", { name: pane })).toBeVisible()
         await expectNoHorizontalOverflow(page)
@@ -600,17 +594,16 @@ test.describe("interface-scale matrix", () => {
                 await expectControlsReachable(page)
                 await capture(page, `overview-${layout.name}-${scale}-${theme}`, testInfo)
                 if (scale === 200 && layout.name === "constrained") {
-                  const chart = page.getByRole("group", {
-                    name: "Allowance for the past 30 days",
+                  const recentSessions = page.getByRole("region", {
+                    name: "Recent sessions",
                   })
-                  const lastDay = chart.locator('button[data-day-index="29"]')
-                  await lastDay.focus()
-                  await expect(lastDay).toBeFocused()
-                  await expect(lastDay).toBeInViewport()
-                  await lastDay.press("ArrowLeft")
-                  const previousDay = chart.locator('button[data-day-index="28"]')
-                  await expect(previousDay).toBeFocused()
-                  await expect(previousDay).toBeInViewport()
+                  const allSessions = recentSessions.getByRole("button", {
+                    name: "All sessions",
+                    exact: true,
+                  })
+                  await allSessions.focus()
+                  await expect(allSessions).toBeFocused()
+                  await expect(allSessions).toBeInViewport()
                   await expect
                     .poll(() =>
                       page
@@ -618,7 +611,7 @@ test.describe("interface-scale matrix", () => {
                         .evaluate((node) => node.scrollTop),
                     )
                     .toBeGreaterThan(0)
-                  await capture(page, `overview-chart-scrolled-200-${theme}`, testInfo)
+                  await capture(page, `overview-sessions-scrolled-200-${theme}`, testInfo)
                   const providers = page.getByRole("region", {
                     name: "Provider limits card",
                   })

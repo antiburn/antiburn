@@ -43,6 +43,7 @@ jobs:
       run_desktop: ${{ steps.changes.outputs.run_desktop }}
       run_frontend: ${{ steps.changes.outputs.run_frontend }}
       run_ci_scripts: ${{ steps.changes.outputs.run_ci_scripts }}
+      run_validator: ${{ steps.changes.outputs.run_validator }}
       run_installers: ${{ steps.changes.outputs.run_installers }}
       run_licenses: ${{ steps.changes.outputs.run_licenses }}
       run_advisories: ${{ steps.changes.outputs.run_advisories }}
@@ -142,7 +143,30 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test the CI control plane
-        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/dependabot-notice-workflows.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs scripts/update-homebrew-cask.test.mjs scripts/windows-signing-workflow.test.mjs scripts/prepare-app-version.test.mjs scripts/manual-release-workflow.test.mjs scripts/ci-rust.test.mjs scripts/check-agent-hooks.test.mjs
+        run: node --test scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/dependabot-notice-workflows.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs scripts/update-homebrew-cask.test.mjs scripts/windows-signing-workflow.test.mjs scripts/prepare-app-version.test.mjs scripts/manual-release-workflow.test.mjs scripts/ci-rust.test.mjs scripts/check-agent-hooks.test.mjs scripts/opencode-wsl-acceptance.test.mjs
+
+  burn-check-validator:
+    name: Burn Check validator
+    needs: classify
+    if: needs.classify.outputs.run_validator == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install validator dependencies
+        run: npm ci --prefix docs/burn-check
+
+      - name: Test validator
+        run: npm test --prefix docs/burn-check
+
+      - name: Validate Burn Check examples
+        run: npm run validate --prefix docs/burn-check
 
   repository:
     name: repository checks
@@ -253,8 +277,11 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
-            crates/antiburn-local -> ../../target/ci
+            crates/antiburn-checks -> ../../target/ci
+            crates/antiburn-local
             crates/antiburn-remote
+            crates/antiburn-checks-store
+            apps/cli
           shared-key: ci-engine-${{ matrix.name }}
           cache-bin: false
           # Pull requests run only the x64 and macOS platforms, so only those
@@ -277,6 +304,12 @@ jobs:
           args=(--workspaces "$WORKSPACES")
           if [[ "$RUN_FMT" == "true" ]]; then args+=(--fmt); fi
           node scripts/ci-rust.mjs "${args[@]}"
+
+      - name: Test the real Windows-to-WSL stored-session bridge
+        if: matrix.name == 'windows' && contains(format(',{0},', needs.classify.outputs.engine_workspaces), ',engine,')
+        timeout-minutes: 15
+        shell: pwsh
+        run: ./scripts/run-opencode-wsl-acceptance.ps1
 
   desktop-backend:
     name: desktop app (backend, ${{ matrix.part.name }}, ${{ matrix.platform.name }})
@@ -620,6 +653,7 @@ jobs:
     needs:
       - classify
       - ci-scripts
+      - burn-check-validator
       - repository
       - engine
       - desktop-backend
@@ -635,6 +669,8 @@ jobs:
       REPOSITORY_RESULT: ${{ needs.repository.result }}
       CI_SCRIPTS_RESULT: ${{ needs.ci-scripts.result }}
       CI_SCRIPTS_SELECTED: ${{ needs.classify.outputs.run_ci_scripts }}
+      VALIDATOR_RESULT: ${{ needs.burn-check-validator.result }}
+      VALIDATOR_SELECTED: ${{ needs.classify.outputs.run_validator }}
       ENGINE_RESULT: ${{ needs.engine.result }}
       ENGINE_SELECTED: ${{ needs.classify.outputs.run_engine }}
       BACKEND_RESULT: ${{ needs.desktop-backend.result }}
@@ -683,6 +719,7 @@ jobs:
           require_success classify "$CLASSIFY_RESULT"
           require_success repository "$REPOSITORY_RESULT"
           require_if_selected ci-scripts "$CI_SCRIPTS_SELECTED" "$CI_SCRIPTS_RESULT"
+          require_if_selected burn-check-validator "$VALIDATOR_SELECTED" "$VALIDATOR_RESULT"
           require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
           require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
           require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"

@@ -64,12 +64,10 @@ fn discover_configuration() -> EvalConfiguration {
         );
         connection.model_revision = discovered.digest;
         discovered.capabilities
-    } else if preset.cloudflare() {
-        jev_cloudflare::cloudflare_capabilities(&connection.model)
     } else {
-        let mut capabilities = ModelCapabilities::jev_default();
-        capabilities.model.clone_from(&connection.model);
-        capabilities
+        connection
+            .capabilities()
+            .expect("Production selected-connection limits must resolve")
     };
     EvalConfiguration {
         preset,
@@ -151,21 +149,19 @@ impl EvalClient {
         })
     }
 
-    pub(crate) async fn evaluate(
-        &self,
-        request: &JevRequest,
-        blocking: bool,
-    ) -> Result<JevResponse, JevError> {
+    pub(crate) async fn evaluate(&self, request: &JevRequest) -> Result<JevResponse, JevError> {
         let capabilities = &self.configuration.capabilities;
         match &self.transport {
-            Transport::Jev(client) if blocking => {
-                let client = client.clone();
-                let request = request.clone();
-                tokio::task::spawn_blocking(move || client.evaluate(&request))
+            Transport::Jev(client) => {
+                client
+                    .evaluate_at_with_capabilities_and_usage(
+                        request,
+                        &config::system_one_endpoint(),
+                        capabilities,
+                        |_| Ok(()),
+                    )
                     .await
-                    .expect("Blocking production transport must not panic")
             }
-            Transport::Jev(client) => client.evaluate_async(request).await,
             Transport::Ollama(client) => client
                 .evaluate(request, capabilities)
                 .await

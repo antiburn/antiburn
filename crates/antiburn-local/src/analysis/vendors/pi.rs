@@ -29,7 +29,10 @@ use crate::analysis::initial_context::OmpContextAccumulator;
 use crate::analysis::interface::{
     ContentPart, ContextWindowSource, EvidenceObservation, NormalizedRecord, ProviderHint,
     RawSource, RecordSink, ResumedVisit, SessionCollector, SessionInput, SessionReader,
-    SessionSummary, TurnContent, VisitOutcome, bounded_provider_hint_value, push_provider_hint,
+    SessionSummary, ToolResultChange, ToolResultCompleteness, ToolResultObservation,
+    ToolResultPosition, ToolResultStatus, TurnContent, UserMessage, UserMessageChange,
+    UserMessageCompleteness, UserMessageOrigin, UserMessagePart, UserMessagePosition,
+    UserMessageScope, VisitOutcome, bounded_provider_hint_value, push_provider_hint,
 };
 use crate::analysis::model::{NormalizedEvent, NormalizedSession, Role, ToolCall};
 use crate::analysis::records::{
@@ -39,6 +42,7 @@ use crate::analysis::resume::{AdapterResume, StreamSnapshot};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 use crate::analysis::threads::ThreadResolver;
 
+pub(crate) mod live;
 mod native;
 mod scope;
 
@@ -129,7 +133,7 @@ impl PiSessionReader {
     ) -> anyhow::Result<VisitOutcome> {
         let label = dialect.label;
         (|| -> anyhow::Result<VisitOutcome> {
-            let state = match &input.source {
+            let mut state = match &input.source {
                 RawSource::File(path) => self.visit_reader_dialect(
                     BufReader::new(File::open(path)?),
                     &|| false,
@@ -164,6 +168,7 @@ impl PiSessionReader {
                     anyhow::bail!("Copilot bundle is not a {label} source")
                 }
             };
+            state.emit_native_tool_results(sink);
             sink.finish(state.finish());
             Ok(VisitOutcome::Unvalidated)
         })()
@@ -194,7 +199,7 @@ impl PiSessionReader {
                 AppendOnlyGuarantee::Evidenced => claim.boundary,
                 AppendOnlyGuarantee::Absent => u64::MAX,
             };
-            let state = self.visit_reader_dialect(
+            let mut state = self.visit_reader_dialect(
                 BufReader::new(pinned.reader(limit)),
                 cancel,
                 sink,
@@ -216,6 +221,10 @@ impl PiSessionReader {
             if matches!(outcome, VisitOutcome::SourceChanged(_)) {
                 return Ok(outcome);
             }
+            if matches!(outcome, VisitOutcome::AcceptedPrefix { .. }) {
+                state.native_tool_results_incomplete = true;
+            }
+            state.emit_native_tool_results(sink);
             sink.finish(state.finish());
             Ok(outcome)
         })()
@@ -275,7 +284,7 @@ impl PiSessionReader {
             let initial_state: PiStreamState = postcard::from_bytes(&resume.adapter.0)
                 .with_context(|| format!("decoding {label} adapter snapshot"))?;
             let initial_state = initial_state.with_native_contract(input, dialect);
-            let state = self.visit_reader_dialect(
+            let mut state = self.visit_reader_dialect(
                 BufReader::new(pinned.reader_from(resume.resume.offset, u64::MAX)),
                 cancel,
                 sink,
@@ -292,6 +301,7 @@ impl PiSessionReader {
                     resume: None,
                 });
             }
+            state.emit_native_tool_results(sink);
             let adapter = postcard::to_allocvec(&state)
                 .with_context(|| format!("encoding {label} adapter snapshot"))?;
             let new_resume = pinned.resume_point()?;
@@ -324,22 +334,34 @@ impl PiSessionReader {
         state.skill_uri_reads = dialect.skill_uri_reads;
         let mut reader = BoundedJsonlReader::new(reader);
         state.scope_enabled = dialect.label == "Pi";
+        let record_base = state.record_offset;
 
         while let Some(record) = reader.next_record(cancel) {
             match record {
-                FramedRecord::Skipped(skip) => match skip {
-                    RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
-                        sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
-                        state.reject_admission();
+                FramedRecord::Skipped(skip) => {
+                    let index = match &skip {
+                        RecordSkip::Oversized { index, .. }
+                        | RecordSkip::IncompleteTail { index, .. }
+                        | RecordSkip::ReadFailed { index, .. }
+                        | RecordSkip::Cancelled { index } => *index,
+                    };
+                    state.record_offset = record_base.saturating_add(index).saturating_add(1);
+                    match skip {
+                        RecordSkip::Oversized { .. } | RecordSkip::IncompleteTail { .. } => {
+                            sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
+                            state.reject_admission();
+                        }
+                        RecordSkip::ReadFailed { index, kind } => {
+                            anyhow::bail!("{label} record {index} read failed: {kind:?}");
+                        }
+                        RecordSkip::Cancelled { index } => {
+                            anyhow::bail!("{label} record {index} read was cancelled");
+                        }
                     }
-                    RecordSkip::ReadFailed { index, kind } => {
-                        anyhow::bail!("{label} record {index} read failed: {kind:?}");
-                    }
-                    RecordSkip::Cancelled { index } => {
-                        anyhow::bail!("{label} record {index} read was cancelled");
-                    }
-                },
-                FramedRecord::Complete { bytes, .. } => {
+                }
+                FramedRecord::Complete { index, bytes } => {
+                    let record_index = record_base.saturating_add(index);
+                    state.record_offset = record_index.saturating_add(1);
                     let record = std::str::from_utf8(bytes)
                         .with_context(|| format!("{label} transcript record is not valid UTF-8"))?;
                     let Ok(value) = serde_json::from_str::<Value>(record) else {
@@ -370,6 +392,7 @@ impl PiSessionReader {
                     state.observe_admitted(
                         value,
                         class == DialectRow::Housekeeping,
+                        record_index,
                         sink,
                         cancel,
                     )?;
@@ -445,6 +468,9 @@ struct PiPolicy {
 const MAX_SUBAGENT_CALLS: usize = 1024;
 const MAX_WORKER_MESSAGES: usize = 4096;
 const MAX_LEGACY_ENTRIES: usize = 50_000;
+const MAX_NATIVE_TOOL_CALLS: usize = 4096;
+const MAX_NATIVE_TOOL_BYTES: usize = 8 * 1024 * 1024;
+const MAX_NATIVE_TOOL_RESULTS: usize = 4096;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PiSubagentCall {
@@ -452,6 +478,28 @@ struct PiSubagentCall {
     parent_model: Option<String>,
     ts_ms: Option<i64>,
     resolved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PiToolCall {
+    record_id: String,
+    name: String,
+    arguments: Option<String>,
+    facts: crate::analysis::NativeToolFacts,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PiPendingToolResult {
+    record_id: Option<String>,
+    parent_id: Option<String>,
+    call_id: Option<String>,
+    tool_name: Option<String>,
+    content: Option<String>,
+    status: ToolResultStatus,
+    finality: bool,
+    native_record_complete: bool,
+    item_index: u32,
+    record_index: u64,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
@@ -490,6 +538,11 @@ pub(crate) struct PiStreamState {
     branched_tree: bool,
     policy_by_id: HashMap<String, PiPolicy>,
     subagent_calls: HashMap<String, PiSubagentCall>,
+    native_tool_calls: HashMap<String, PiToolCall>,
+    native_tool_results: Vec<PiPendingToolResult>,
+    native_session_id: Option<String>,
+    native_tool_results_incomplete: bool,
+    native_tool_bytes: usize,
     subagent_incomplete: bool,
     /// The startup context from an OMP `session_init` row. Only the OMP
     /// dialect admits that row, so this stays empty for Pi.
@@ -497,6 +550,9 @@ pub(crate) struct PiStreamState {
     /// Set from the dialect on each visit, so the snapshot does not keep it.
     #[serde(skip)]
     skill_uri_reads: bool,
+    native_tool_results_enabled: bool,
+    publication_root: bool,
+    record_offset: u64,
 }
 
 #[derive(Default, Debug, Clone, Copy, Serialize, Deserialize)]
@@ -507,14 +563,28 @@ pub(crate) enum PiAdmission {
     Rejected,
 }
 
+fn recorded_model_suffix_fast_mode(model: Option<&str>) -> Option<bool> {
+    let model =
+        model.filter(|model| model.len() <= 4096 && !model.chars().any(char::is_control))?;
+    let (prefix, token) = model.rsplit_once(['-', '_', ' '])?;
+    let separator = model.as_bytes()[prefix.len()];
+    (!prefix.is_empty()
+        && !(separator == b' ' && prefix.ends_with(' '))
+        && (token.eq_ignore_ascii_case("fast") || token.eq_ignore_ascii_case("ultrafast")))
+    .then_some(true)
+}
+
 impl PiStreamState {
     fn with_native_contract(mut self, input: &SessionInput, dialect: PiDialect) -> Self {
+        self.publication_root = input.fork_parent_session_id.is_none();
         // Legacy metric inputs do not establish retained user history.
         self.native.enable(
             dialect.label == "Pi"
                 && input.source_format == crate::analysis::SourceFormat::PiV3Jsonl
                 && matches!(self.session_version, 0 | 3),
         );
+        self.native_tool_results_enabled = dialect.label == "Pi"
+            && input.source_format == crate::analysis::SourceFormat::PiV3Jsonl;
         self
     }
 
@@ -535,12 +605,15 @@ impl PiStreamState {
         &mut self,
         value: Value,
         housekeeping: bool,
+        record_index: u64,
         sink: &mut dyn RecordSink,
         cancel: &dyn Fn() -> bool,
     ) -> anyhow::Result<()> {
         self.admission_checked = true;
         match self.admission {
-            PiAdmission::Accepted => self.observe_cancellable(value, housekeeping, sink, cancel)?,
+            PiAdmission::Accepted => {
+                self.observe_cancellable(value, housekeeping, record_index, sink, cancel)?
+            }
             PiAdmission::Rejected => {}
             PiAdmission::AwaitingHeader => {
                 let Some(reason) = pi_header_rejection(&value) else {
@@ -558,7 +631,7 @@ impl PiStreamState {
 
     #[cfg(test)]
     fn observe(&mut self, value: Value, housekeeping: bool, sink: &mut dyn RecordSink) {
-        self.observe_cancellable(value, housekeeping, sink, &|| false)
+        self.observe_cancellable(value, housekeeping, 0, sink, &|| false)
             .expect("test record observation completes");
     }
 
@@ -566,11 +639,33 @@ impl PiStreamState {
         &mut self,
         value: Value,
         housekeeping: bool,
+        record_index: u64,
         sink: &mut dyn RecordSink,
         cancel: &dyn Fn() -> bool,
     ) -> anyhow::Result<()> {
         let mut value = value;
         self.migrate_entry(&mut value);
+        let duplicate_id = thread_identity_field(&value, "id")
+            .as_deref()
+            .is_some_and(|id| self.threads.contains(id));
+        if self.native_tool_results_enabled
+            && let Some(session_id) = &self.native_session_id
+            && (duplicate_id || self.native.known_parent_mismatch(&value))
+        {
+            sink.native_admission_failure(crate::analysis::NativeAdmissionFailure {
+                source_format: crate::analysis::SourceFormat::PiV3Jsonl,
+                session_id: session_id.clone(),
+                position: ToolResultPosition::Jsonl {
+                    record_index,
+                    item_index: u32::MAX,
+                },
+                reason: if duplicate_id {
+                    ToolResultCompleteness::UnsafeIdentity
+                } else {
+                    ToolResultCompleteness::UnsafeOrder
+                },
+            });
+        }
         if self.scope_enabled {
             self.native.observe_entry(&value, sink);
         }
@@ -604,7 +699,46 @@ impl PiStreamState {
             self.current_provider = policy.provider;
             self.current_thinking_mode = policy.thinking_mode;
         }
-        self.observe_row(&value, thread_id, housekeeping, sink, cancel)?;
+        self.observe_row(&value, thread_id, housekeeping, record_index, sink, cancel)?;
+        if self.native_tool_results_enabled
+            && self.publication_root
+            && !self.native.publication_order_incomplete()
+        {
+            if value["type"] == "model_change" {
+                let mut selection = crate::analysis::NativeRequestAttribution::observed(
+                    value["provider"].as_str(),
+                    value["modelId"].as_str(),
+                );
+                selection.fast_mode = recorded_model_suffix_fast_mode(value["modelId"].as_str());
+                if let Some(session_id) = &self.native_session_id {
+                    sink.session_selection(crate::analysis::NativeSessionSelectionObservation {
+                        source_format: crate::analysis::SourceFormat::PiV3Jsonl,
+                        session_id: session_id.clone(),
+                        position: ToolResultPosition::Jsonl {
+                            record_index,
+                            item_index: 0,
+                        },
+                        selection,
+                    });
+                }
+            }
+            if value["type"] == "message"
+                && matches!(
+                    value["message"]["role"].as_str(),
+                    Some("user" | "assistant" | "toolResult")
+                )
+                && let Some(session_id) = &self.native_session_id
+            {
+                crate::analysis::public_events::emit_activity(
+                    sink,
+                    crate::analysis::SourceFormat::PiV3Jsonl,
+                    session_id,
+                    record_index,
+                    value["id"].as_str().unwrap_or("message"),
+                    value.get("timestamp").and_then(parse_ts),
+                );
+            }
+        }
         // Use the thread resolver's bound and keep each identity's first policy.
         if !self.threads.capped()
             && let Some(id) = id
@@ -669,6 +803,7 @@ impl PiStreamState {
         value: &Value,
         thread_id: Option<String>,
         housekeeping: bool,
+        record_index: u64,
         sink: &mut dyn RecordSink,
         cancel: &dyn Fn() -> bool,
     ) -> anyhow::Result<()> {
@@ -744,7 +879,9 @@ impl PiStreamState {
             Some("session") => {
                 sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             }
-            Some("message") => self.observe_message(value, thread_id, scope_parts, sink),
+            Some("message") => {
+                self.observe_message(value, thread_id, record_index, scope_parts, sink)
+            }
             Some("model_change") => self.observe_model_change(value, sink, false),
             Some("thinking_level_change") => self.observe_thinking_level_change(value, sink, false),
             Some("usage") => self.observe_usage(value, thread_id, sink),
@@ -767,6 +904,8 @@ impl PiStreamState {
     }
 
     fn observe_session_header(&mut self, value: &Value) {
+        self.native_session_id = thread_identity_field(value, "id");
+        self.native_tool_results_enabled &= self.session_version == 3;
         if self.scope_enabled {
             self.native.start(value, self.session_version);
         }
@@ -792,6 +931,7 @@ impl PiStreamState {
         &mut self,
         value: &Value,
         thread_id: Option<String>,
+        record_index: u64,
         scope_parts: Vec<ContentPart>,
         sink: &mut dyn RecordSink,
     ) {
@@ -820,11 +960,18 @@ impl PiStreamState {
             return;
         }
 
+        if role == "assistant" {
+            self.observe_native_tool_calls(value);
+            self.emit_public_messages(value, record_index, sink);
+        }
+
         let Some(timestamp) = value.get("timestamp").and_then(parse_ts) else {
+            self.native_tool_results_incomplete = true;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         };
         let Some(mut event) = parse_record(value, RecordShape::Pi) else {
+            self.native_tool_results_incomplete = true;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             return;
         };
@@ -930,8 +1077,14 @@ impl PiStreamState {
         if self.scope_enabled {
             self.native.bind_message(value, &mut content_parts);
         }
+        if role == "user" {
+            self.emit_user_message(value, record_index, &content_parts, sink);
+        }
         content_parts.extend(scope_parts);
         self.emit_event(event, content_parts, sink);
+        if role == "toolResult" {
+            self.observe_native_tool_result(value, record_index);
+        }
         if role == "toolResult"
             && value.pointer("/message/toolName").and_then(Value::as_str) == Some("subagent")
         {
@@ -949,6 +1102,404 @@ impl PiStreamState {
             sink.record(NormalizedRecord::Unusable(
                 PartialReason::UnrecognizedRecordType,
             ));
+        }
+    }
+
+    fn emit_user_message(
+        &self,
+        value: &Value,
+        record_index: u64,
+        parts: &[ContentPart],
+        sink: &mut dyn RecordSink,
+    ) {
+        if !self.native_tool_results_enabled
+            || !self.publication_root
+            || self.fork_header_present
+            || self.native.publication_order_incomplete()
+            || self.branched_tree
+        {
+            return;
+        }
+        let (Some(session_id), Some(message_id)) = (
+            self.native_session_id.as_ref(),
+            thread_identity_field(value, "id"),
+        ) else {
+            sink.tool_result_gap();
+            return;
+        };
+        let message = UserMessage {
+            source_format: crate::analysis::SourceFormat::PiV3Jsonl,
+            session_id: session_id.clone(),
+            message_id,
+            position: UserMessagePosition::Jsonl { record_index },
+            origin: UserMessageOrigin::PiUserContent,
+            scope: UserMessageScope::MainSession,
+            change: UserMessageChange::Present,
+            completeness: if parts
+                .iter()
+                .all(|part| part.kind == crate::analysis::ContentKind::UserText && !part.truncated)
+            {
+                UserMessageCompleteness::Complete
+            } else {
+                UserMessageCompleteness::Incomplete
+            },
+            parts: parts
+                .iter()
+                .filter(|part| part.kind == crate::analysis::ContentKind::UserText)
+                .enumerate()
+                .map(|(index, part)| UserMessagePart {
+                    item_index: u32::try_from(index).unwrap_or(u32::MAX),
+                    native_part_id: None,
+                    text: part.text.clone(),
+                })
+                .collect(),
+            proof_revision: 1,
+        };
+        sink.user_message(message);
+    }
+
+    fn observe_native_tool_calls(&mut self, value: &Value) {
+        if !self.native_tool_results_enabled || self.native.publication_order_incomplete() {
+            return;
+        }
+        let Some(record_id) = thread_identity_field(value, "id") else {
+            return;
+        };
+        let Some(blocks) = value.pointer("/message/content").and_then(Value::as_array) else {
+            return;
+        };
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("toolCall") {
+                continue;
+            }
+            let (Some(call_id), Some(name)) = (
+                block.get("id").and_then(Value::as_str),
+                block.get("name").and_then(Value::as_str),
+            ) else {
+                self.native.invalidate();
+                continue;
+            };
+            if call_id.is_empty() || name.is_empty() || self.native_tool_calls.contains_key(call_id)
+            {
+                self.native.invalidate();
+                continue;
+            }
+            let arguments = block.get("arguments").map(Value::to_string);
+            let model = value["message"]["model"].as_str();
+            let mut requester = crate::analysis::NativeRequestAttribution::observed(
+                value["message"]["provider"].as_str(),
+                model,
+            );
+            requester.fast_mode = recorded_model_suffix_fast_mode(model);
+            let facts = crate::analysis::NativeToolFacts::for_call(
+                crate::analysis::SourceFormat::PiV3Jsonl,
+                name,
+                block.get("arguments"),
+                None,
+                requester,
+            );
+            let bytes = record_id.len()
+                + call_id.len()
+                + name.len()
+                + arguments.as_ref().map_or(0, String::len)
+                + facts.retained_bytes();
+            if self.native_tool_calls.len() >= MAX_NATIVE_TOOL_CALLS
+                || bytes > MAX_NATIVE_TOOL_BYTES.saturating_sub(self.native_tool_bytes)
+            {
+                self.native_tool_results_incomplete = true;
+                self.native.mark_content_incomplete();
+                continue;
+            }
+            self.native_tool_bytes += bytes;
+            self.native_tool_calls.insert(
+                call_id.to_owned(),
+                PiToolCall {
+                    record_id: record_id.clone(),
+                    name: name.to_owned(),
+                    arguments,
+                    facts,
+                },
+            );
+        }
+    }
+
+    fn emit_public_messages(&self, value: &Value, record_index: u64, sink: &mut dyn RecordSink) {
+        use crate::analysis::{
+            NativeEventContext, NativeToolInput, PublicMessageObservation, PublicMessagePayload,
+            UserMessagePart,
+        };
+        if !self.native_tool_results_enabled
+            || !self.publication_root
+            || self.native.publication_order_incomplete()
+            || !native_record_complete(value)
+        {
+            return;
+        }
+        let (Some(id), Some(session)) = (value["id"].as_str(), self.native_session_id.as_ref())
+        else {
+            return;
+        };
+        let Some(blocks) = value["message"]["content"].as_array() else {
+            return;
+        };
+        let public = |item_index: u32, call_id: Option<String>, payload| {
+            let position = ToolResultPosition::Jsonl {
+                record_index,
+                item_index,
+            };
+            PublicMessageObservation {
+                source_format: crate::analysis::SourceFormat::PiV3Jsonl,
+                session_id: session.clone(),
+                record_id: id.to_owned(),
+                part_id: call_id.clone(),
+                call_id,
+                position,
+                revision: record_index.saturating_add(1),
+                change: ToolResultChange::Update,
+                eligible: true,
+                completeness: ToolResultCompleteness::Complete,
+                context: Some(NativeEventContext::pending(position, true)),
+                payload,
+            }
+        };
+        for (index, block) in blocks.iter().enumerate() {
+            if block["type"] != "toolCall" || !native_record_complete(block) {
+                continue;
+            }
+            let Some(call_id) = block["id"].as_str() else {
+                continue;
+            };
+            let Some(call) = self
+                .native_tool_calls
+                .get(call_id)
+                .filter(|call| call.record_id == id)
+            else {
+                continue;
+            };
+            if let Some(input) = block.get("arguments").filter(|input| input.is_object()) {
+                sink.record(NormalizedRecord::PublicMessage(Box::new(public(
+                    index as u32,
+                    Some(call_id.to_owned()),
+                    PublicMessagePayload::ToolCall {
+                        tool_name: call.name.clone(),
+                        input: Some(NativeToolInput::Json(input.clone())),
+                        facts: Some(call.facts.clone()),
+                        provider_executed: None,
+                    },
+                ))));
+            }
+        }
+        if !matches!(
+            value["message"]["stopReason"].as_str(),
+            Some("stop" | "toolUse")
+        ) {
+            return;
+        }
+        let parts: Option<Vec<_>> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| block["type"] == "text")
+            .map(|(index, block)| {
+                if !native_record_complete(block) {
+                    return None;
+                }
+                Some(UserMessagePart {
+                    item_index: index as u32,
+                    native_part_id: None,
+                    text: block["text"].as_str()?.to_owned(),
+                })
+            })
+            .collect();
+        if let Some(parts) = parts.filter(|parts| {
+            !parts.is_empty()
+                && parts.iter().map(|part| part.text.len()).sum::<usize>()
+                    <= crate::analysis::MAX_CONTENT_PART_BYTES
+        }) {
+            let mut generator = crate::analysis::NativeRequestAttribution::observed(
+                value["message"]["provider"].as_str(),
+                value["message"]["model"].as_str(),
+            );
+            generator.fast_mode =
+                recorded_model_suffix_fast_mode(value["message"]["model"].as_str());
+            sink.record(NormalizedRecord::PublicMessage(Box::new(public(
+                blocks.len() as u32,
+                None,
+                PublicMessagePayload::AssistantText { parts, generator },
+            ))));
+        }
+    }
+
+    fn observe_native_tool_result(&mut self, value: &Value, record_index: u64) {
+        if !self.native_tool_results_enabled {
+            return;
+        }
+        if self.native_session_id.is_none() {
+            self.native_tool_results_incomplete = true;
+            return;
+        }
+        let message = &value["message"];
+        let content_blocks = message.get("content").and_then(Value::as_array);
+        let content = content_blocks.and_then(|blocks| {
+            (blocks.len() == 1 && blocks[0].get("type").and_then(Value::as_str) == Some("text"))
+                .then(|| blocks[0].get("text").and_then(Value::as_str))
+                .flatten()
+                .map(str::to_owned)
+        });
+        let item_index = content_blocks
+            .and_then(|blocks| {
+                blocks
+                    .iter()
+                    .position(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+                    .and_then(|index| u32::try_from(index).ok())
+            })
+            .unwrap_or(0);
+        let is_error = message.get("isError").and_then(Value::as_bool);
+        let pending = PiPendingToolResult {
+            record_id: thread_identity_field(value, "id"),
+            parent_id: value["parentId"].as_str().map(str::to_owned),
+            call_id: message
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            tool_name: message
+                .get("toolName")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            content,
+            status: match is_error {
+                Some(false) => ToolResultStatus::Success,
+                Some(true) => ToolResultStatus::Error,
+                None => ToolResultStatus::Unknown,
+            },
+            finality: is_error.is_some(),
+            native_record_complete: native_record_complete(value),
+            item_index,
+            record_index,
+        };
+        let bytes = serde_json::to_vec(&pending).map_or(MAX_NATIVE_TOOL_BYTES, |bytes| bytes.len());
+        if self.native_tool_results.len() >= MAX_NATIVE_TOOL_RESULTS
+            || bytes > MAX_NATIVE_TOOL_BYTES.saturating_sub(self.native_tool_bytes)
+        {
+            self.native_tool_results_incomplete = true;
+            return;
+        }
+        self.native_tool_bytes += bytes;
+        self.native_tool_results.push(pending);
+    }
+
+    fn native_tool_result(&self, pending: PiPendingToolResult) -> ToolResultObservation {
+        let session_id = self
+            .native_session_id
+            .as_ref()
+            .expect("native result requires its session identity");
+        let call = pending
+            .call_id
+            .as_deref()
+            .and_then(|id| self.native_tool_calls.get(id))
+            .filter(|call| {
+                pending.tool_name.as_deref() == Some(call.name.as_str())
+                    && pending.parent_id.as_deref() == Some(call.record_id.as_str())
+            });
+        let arguments = call
+            .and_then(|call| call.arguments.as_deref())
+            .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+            .filter(Value::is_object);
+        let complete = call.is_some()
+            && arguments.is_some()
+            && pending.record_id.is_some()
+            && pending.content.is_some()
+            && pending.finality
+            && pending.native_record_complete;
+        let identity_safe =
+            pending.record_id.is_some() && pending.call_id.is_some() && call.is_some();
+        ToolResultObservation {
+            facts: call.map(|call| call.facts.clone()),
+            outcome: None,
+            provider_executed: None,
+            context: Some(crate::analysis::ToolResultContext::pending(
+                ToolResultPosition::Jsonl {
+                    record_index: pending.record_index,
+                    item_index: pending.item_index,
+                },
+                self.publication_root
+                    && !self.fork_header_present
+                    && !self.native.publication_order_incomplete()
+                    && !self.branched_tree,
+            )),
+            source_format: crate::analysis::SourceFormat::PiV3Jsonl,
+            session_id: session_id.clone(),
+            record_id: pending.record_id.clone(),
+            call_id: pending.call_id.clone(),
+            result_id: pending.record_id,
+            position: ToolResultPosition::Jsonl {
+                record_index: pending.record_index,
+                item_index: pending.item_index,
+            },
+            revision: 1,
+            change: ToolResultChange::Update,
+            tool_name: call.map(|call| call.name.clone()).or(pending.tool_name),
+            tool_category: call.map(|call| {
+                crate::analysis::records::tool_call_from_input(&call.name, arguments.as_ref())
+                    .category
+            }),
+            arguments,
+            content: pending.content,
+            status: pending.status,
+            finality: pending.finality,
+            completeness: if !identity_safe {
+                ToolResultCompleteness::UnsafeIdentity
+            } else if complete {
+                ToolResultCompleteness::Complete
+            } else {
+                ToolResultCompleteness::Incomplete
+            },
+        }
+    }
+
+    fn emit_native_tool_results(&mut self, sink: &mut dyn RecordSink) {
+        self.emit_native_tool_results_with_admission(sink, true);
+    }
+
+    fn emit_native_tool_results_with_admission(
+        &mut self,
+        sink: &mut dyn RecordSink,
+        report_legacy_admission: bool,
+    ) {
+        let pending_results = std::mem::take(&mut self.native_tool_results);
+        let stream_complete = self.native_tool_results_enabled
+            && !self.native.publication_order_incomplete()
+            && !self.branched_tree
+            && !self.fork_attribution_incomplete
+            && !self.legacy_migration_incomplete
+            && !self.native_tool_results_incomplete;
+        if !report_legacy_admission && !stream_complete {
+            sink.tool_result_gap();
+        } else if self.native.publication_order_incomplete()
+            || self.branched_tree
+            || self.legacy_migration_incomplete
+        {
+            sink.tool_result_admission_gap(crate::analysis::ToolResultAdmission::UnsafeOrder);
+        } else if self.fork_header_present || !self.publication_root {
+            sink.tool_result_admission_gap(crate::analysis::ToolResultAdmission::UnsafeOwnership);
+        } else if !stream_complete {
+            sink.tool_result_gap();
+        }
+        for pending in pending_results {
+            self.native_tool_bytes = self
+                .native_tool_bytes
+                .saturating_sub(serde_json::to_vec(&pending).map_or(0, |bytes| bytes.len()));
+            let mut result = self.native_tool_result(pending);
+            if self.native.publication_order_incomplete()
+                || self.branched_tree
+                || self.legacy_migration_incomplete
+            {
+                result.completeness = ToolResultCompleteness::UnsafeOrder;
+            } else if self.fork_header_present || !self.publication_root {
+                result.completeness = ToolResultCompleteness::UnsafeOwnership;
+            } else if !stream_complete && result.completeness == ToolResultCompleteness::Complete {
+                result.completeness = ToolResultCompleteness::Incomplete;
+            }
+            sink.record(NormalizedRecord::ToolResult(Box::new(result)));
         }
     }
 
@@ -996,6 +1547,7 @@ impl PiStreamState {
                     parent_call_id: Some(format!("{id}:0")),
                     child_model: None,
                     provenance: crate::analysis::interface::RelationProvenance::TaskToolUse,
+                    config_binding: None,
                 },
             )));
         }
@@ -1046,6 +1598,7 @@ impl PiStreamState {
                         parent_call_id: Some(format!("{id}:{worker_index}")),
                         child_model: None,
                         provenance: crate::analysis::interface::RelationProvenance::TaskToolUse,
+                        config_binding: None,
                     },
                 )));
             }
@@ -1385,10 +1938,14 @@ impl PiStreamState {
         if self.native.incomplete() {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
+        if self.native_tool_results_incomplete {
+            coverage_gaps.push(PartialReason::AttributionIncomplete);
+        }
         coverage_gaps.sort_unstable();
         coverage_gaps.dedup();
         let (initial_context, skill_descriptions) = self.startup_context.finish();
         SessionSummary {
+            accounting: None,
             cache_write_tokens_available: self.cache_write_tokens_available.unwrap_or(true),
             context_window: None,
             context_window_source: ContextWindowSource::Inferred,
@@ -1542,6 +2099,12 @@ fn unrecognized(discriminator: &str, sink: &mut dyn RecordSink) {
     ));
 }
 
+fn native_record_complete(value: &Value) -> bool {
+    ![value, &value["message"]].iter().any(|value| {
+        value["truncated"] == true || value["incomplete"] == true || value["complete"] == false
+    })
+}
+
 fn is_inert_shape(value: &Value) -> bool {
     let allowed_role = (value.get("type").and_then(Value::as_str) == Some("message"))
         .then(|| {
@@ -1671,6 +2234,79 @@ mod tests {
     use crate::discovery::{FingerprintInputs, SourceStat};
     use tempfile::TempDir;
 
+    #[test]
+    fn resumed_snapshot_excludes_emitted_native_results() {
+        #[derive(Default)]
+        struct Results(usize);
+        impl RecordSink for Results {
+            fn record(&mut self, record: NormalizedRecord) {
+                if matches!(record, NormalizedRecord::ToolResult(_)) {
+                    self.0 += 1;
+                }
+            }
+            fn finish(&mut self, _: SessionSummary) {}
+        }
+        let directory = TempDir::new().unwrap();
+        let path = write_source(
+            &directory,
+            include_bytes!("../../../tests/fixtures/pi_characterization/core_linear_v3.jsonl"),
+        );
+        let mut input = file_input(&path);
+        input.session_id = "synthetic".into();
+        input.source_format = crate::analysis::SourceFormat::PiV3Jsonl;
+        let claim = claim_for_path(&path);
+        let mut first = Results::default();
+        let visit = PiSessionReader
+            .visit_claimed_resumed(&input, &claim, &fresh_snapshot(), &|| false, &mut first)
+            .unwrap();
+        assert_eq!(first.0, 1);
+        let resume = visit.resume.unwrap();
+        let state: PiStreamState = postcard::from_bytes(&resume.adapter.0).unwrap();
+        assert!(state.native_tool_results.is_empty());
+        let mut second = Results::default();
+        PiSessionReader
+            .visit_claimed_resumed(
+                &input,
+                &claim,
+                &snapshot_from(resume),
+                &|| false,
+                &mut second,
+            )
+            .unwrap();
+        assert_eq!(second.0, 0);
+    }
+
+    #[test]
+    fn native_result_snapshot_keeps_typed_payload_instead_of_raw_record_json() {
+        let mut state = PiStreamState {
+            native_tool_results_enabled: true,
+            native_session_id: Some("session".to_owned()),
+            ..PiStreamState::default()
+        };
+        state.native_tool_calls.insert(
+            "call-id".to_owned(),
+            PiToolCall {
+                record_id: "call-record".to_owned(),
+                name: "bash".to_owned(),
+                arguments: Some("{}".to_owned()),
+                facts: Default::default(),
+            },
+        );
+        let result = json!({
+            "id":"result-record", "parentId":"call-record",
+            "message":{"toolCallId":"call-id", "toolName":"bash",
+                "content":[{"type":"text", "text":"done"}], "isError":false}
+        });
+        state.observe_native_tool_result(&result, 3);
+
+        assert_eq!(state.native_tool_results.len(), 1);
+        assert_eq!(
+            state.native_tool_results[0].content.as_deref(),
+            Some("done")
+        );
+        assert_eq!(state.native_tool_results[0].record_index, 3);
+    }
+
     const FIRST_RECORD: &str = concat!(
         r#"{"type":"session","version":3,"timestamp":"2026-01-01T00:00:00Z"}"#,
         "\n",
@@ -1728,6 +2364,15 @@ mod tests {
                 resume: EvidenceResumeState::default(),
             },
             next_turn_index: 0,
+            tool_result_observations_json: Vec::new(),
+            native_tool_result_conflicts: Vec::new(),
+            tool_result_observations_complete: true,
+            user_messages_json: Vec::new(),
+            user_message_conflicts: Vec::new(),
+            user_messages_complete: true,
+            native_evidence_json: Vec::new(),
+            native_evidence_complete: true,
+            native_admission_failure_json: None,
         }
     }
 

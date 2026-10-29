@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"facts","timestamp":"2026-10-07T10:00:00Z","cwd":"/synthetic/project"}
+{"type":"model_change","id":"selection","parentId":null,"timestamp":"2026-10-07T10:00:01Z","provider":"example-provider","modelId":"example-fast"}
+{"type":"message","id":"user-1","parentId":"selection","timestamp":"2026-10-07T10:00:02Z","message":{"role":"user","content":[{"type":"text","text":"Review the source."}]}}
+{"type":"message","id":"assistant-1","parentId":"user-1","timestamp":"2026-10-07T10:00:03Z","message":{"role":"assistant","provider":"example-provider","model":"example-fast","stopReason":"toolUse","content":[{"type":"thinking","thinking":"PRIVATE REASONING"},{"type":"text","text":"I will review it."},{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"sample.rs"}},{"type":"text","text":"The source is available."}]}}
+{"type":"message","id":"result-1","parentId":"assistant-1","timestamp":"2026-10-07T10:00:04Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"pub fn sample() {}"}],"isError":false}}
+{"type":"message","id":"assistant-2","parentId":"result-1","timestamp":"2026-10-07T10:00:05Z","message":{"role":"assistant","provider":"example-provider","model":"example-fast","stopReason":"stop","content":[{"type":"text","text":"The review is complete."}]}}

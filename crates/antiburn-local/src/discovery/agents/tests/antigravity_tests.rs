@@ -793,6 +793,7 @@ async fn test_native_database_replaces_matching_brain_transcript() {
             agent: AgentKind::Antigravity,
             db_path: path,
             session_id: id,
+            ..
         } if path == &db_path && id == session_id
     ));
     assert_eq!(logs[0].surface_label(home.path()), "ide_desktop");
@@ -1016,6 +1017,7 @@ fn test_database_surface_distinguishes_cli_from_ide() {
                 .join("conversations")
                 .join("session.db"),
             session_id: "session".to_owned(),
+            source_format: None,
         },
         updated_at: None,
     };

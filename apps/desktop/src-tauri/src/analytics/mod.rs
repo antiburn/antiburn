@@ -110,12 +110,10 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::BurnCheckAutoFixCompleted { outcome } => {
             let _ = outcome;
         }
-        event::Interaction::BurnCheckPromptPrepared { outcome, check } => {
-            let _ = (outcome, check);
+        event::Interaction::BurnCheckPromptPrepared { outcome } => {
+            let _ = outcome;
         }
-        event::Interaction::BurnCheckPromptCopied { check } => {
-            let _ = check;
-        }
+        event::Interaction::BurnCheckPromptCopied {} => {}
         event::Interaction::BurnCheckOutcomeObserved { outcome, origin } => {
             let _ = (outcome, origin);
         }
@@ -134,12 +132,6 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::AppSearchOpened {} => {}
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
-        }
-        event::Interaction::IgnoredInstructionObserved { stage, outcome } => {
-            let _ = (stage, outcome);
-        }
-        event::Interaction::SmartCheckObserved { check, observation } => {
-            let _ = (check, observation);
         }
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
@@ -161,7 +153,7 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
     }
 }
 
-pub fn record_smart_check_lifecycle(app: &tauri::AppHandle, lifecycle: event::SmartCheckLifecycle) {
+pub fn record_model_check_lifecycle(app: &tauri::AppHandle, lifecycle: event::ModelCheckLifecycle) {
     #[cfg(feature = "analytics")]
     {
         let (name, facts) = lifecycle.resolve();
@@ -171,24 +163,50 @@ pub fn record_smart_check_lifecycle(app: &tauri::AppHandle, lifecycle: event::Sm
     {
         let _ = app;
         match lifecycle {
-            event::SmartCheckLifecycle::Enablement { enabled } => {
+            event::ModelCheckLifecycle::Enablement { enabled } => {
                 let _ = enabled;
             }
-            event::SmartCheckLifecycle::ProviderSetup { provider, outcome } => {
+            event::ModelCheckLifecycle::ProviderSetup { provider, outcome } => {
                 let _ = (provider, outcome);
             }
-            event::SmartCheckLifecycle::ProviderTest { provider, outcome } => {
+            event::ModelCheckLifecycle::ProviderTest { provider, outcome } => {
                 let _ = (provider, outcome);
-            }
-            event::SmartCheckLifecycle::Assessment {
-                check,
-                outcome,
-                historical,
-            } => {
-                let _ = (check, outcome, historical);
             }
         }
     }
+}
+
+pub(crate) fn record_burn_check_input_prepared(
+    app: &tauri::AppHandle,
+    outcome: event::BurnCheckPreparationOutcome,
+) {
+    record(
+        app,
+        event::EventName::BurnCheckInputPrepared,
+        outcome.facts(),
+    );
+}
+
+pub(crate) fn record_burn_check_definition_opened(
+    app: &tauri::AppHandle,
+    outcome: event::BurnCheckDefinitionOpenOutcome,
+) {
+    record(
+        app,
+        event::EventName::BurnCheckDefinitionOpened,
+        outcome.facts(),
+    );
+}
+
+pub(crate) fn record_burn_check_directory_opened(
+    app: &tauri::AppHandle,
+    outcome: event::BurnCheckDirectoryOpenOutcome,
+) {
+    record(
+        app,
+        event::EventName::BurnCheckDirectoryOpened,
+        outcome.facts(),
+    );
 }
 
 #[cfg(not(feature = "analytics"))]
@@ -491,12 +509,19 @@ mod enabled {
     /// Read fresh, and default to *not* acting: an unreadable preference is not
     /// permission, the same rule every notifier in this app follows. The
     pub fn allowed(app: &tauri::AppHandle) -> bool {
-        if !available() || environment_disabled() {
-            return false;
-        }
-        app.try_state::<Store>()
-            .and_then(|store| store.settings().ok())
-            .is_some_and(|settings| settings.analytics_enabled)
+        capture_allowed(available(), environment_disabled(), || {
+            app.try_state::<Store>()
+                .and_then(|store| store.settings().ok())
+                .map(|settings| settings.analytics_enabled)
+        })
+    }
+
+    fn capture_allowed(
+        configured: bool,
+        environment_disabled: bool,
+        consent: impl FnOnce() -> Option<bool>,
+    ) -> bool {
+        configured && !environment_disabled && consent() == Some(true)
     }
 
     /// Record one event, if the reader has allowed it.
@@ -1144,13 +1169,6 @@ mod enabled {
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
-        #[cfg(debug_assertions)]
-        if matches!(
-            interaction,
-            Interaction::IgnoredInstructionObserved { .. } | Interaction::SmartCheckObserved { .. }
-        ) {
-            return;
-        }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
             record_live_usage_state(app, provider, state);
             return;
@@ -2310,6 +2328,55 @@ mod enabled {
         }
 
         #[test]
+        fn native_check_events_share_fail_closed_capture_and_opt_out_rules() {
+            for (name, facts) in [
+                (
+                    EventName::BurnCheckInputPrepared,
+                    event::BurnCheckPreparationOutcome::Shortened.facts(),
+                ),
+                (
+                    EventName::BurnCheckDefinitionOpened,
+                    event::BurnCheckDefinitionOpenOutcome::Succeeded.facts(),
+                ),
+                (
+                    EventName::BurnCheckDirectoryOpened,
+                    event::BurnCheckDirectoryOpenOutcome::Succeeded.facts(),
+                ),
+                event::ModelCheckLifecycle::Enablement { enabled: true }.resolve(),
+                event::ModelCheckLifecycle::ProviderSetup {
+                    provider: event::DecisionProvider::Jev,
+                    outcome: event::ProviderSetupOutcome::Saved,
+                }
+                .resolve(),
+                event::ModelCheckLifecycle::ProviderSetup {
+                    provider: event::DecisionProvider::Jev,
+                    outcome: event::ProviderSetupOutcome::ConnectionRemoved,
+                }
+                .resolve(),
+                event::ModelCheckLifecycle::ProviderTest {
+                    provider: event::DecisionProvider::Jev,
+                    outcome: event::ProviderTestOutcome::Failed,
+                }
+                .resolve(),
+            ] {
+                assert_eq!(
+                    name.is_user_oriented(&facts),
+                    name != EventName::BurnCheckInputPrepared
+                );
+                assert!(!capture_allowed(false, false, || panic!(
+                    "Unconfigured builds must not read consent"
+                )));
+                assert!(!capture_allowed(true, true, || panic!(
+                    "Environment opt-out must stop capture"
+                )));
+                for consent in [None, Some(false)] {
+                    assert!(!capture_allowed(true, false, || consent));
+                }
+                assert!(capture_allowed(true, false, || Some(true)));
+            }
+        }
+
+        #[test]
         fn automatic_live_usage_observations_are_not_reportable() {
             let automatic = Interaction::LiveUsageStateObserved {
                 provider: LiveUsageProvider::Anthropic,
@@ -2932,6 +2999,15 @@ mod enabled {
                 .set_analytics_identity("11111111-1111-4111-8111-111111111111")
                 .unwrap();
             store.queue_analytics_event("app_launched", "{}").unwrap();
+            store
+                .queue_analytics_event(EventName::BurnCheckInputPrepared.as_str(), "{}")
+                .unwrap();
+            store
+                .queue_analytics_event(EventName::BurnCheckDefinitionOpened.as_str(), "{}")
+                .unwrap();
+            store
+                .queue_analytics_event(EventName::BurnCheckDirectoryOpened.as_str(), "{}")
+                .unwrap();
 
             clear_local_state(&store);
 

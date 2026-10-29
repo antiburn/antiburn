@@ -99,6 +99,16 @@ const INFO = {
 
 let updateRevision = 0
 
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
+    this.querySelector<HTMLElement>("input, select, button")?.focus()
+  }
+  HTMLDialogElement.prototype.close = function () {
+    this.open = false
+  }
+})
+
 function updateStatus(
   kind:
     | "unsupported"
@@ -146,7 +156,12 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       case "get_settings":
         return Promise.resolve(SETTINGS)
       case "get_system_one_settings":
-        return Promise.resolve({ activeId: "jev", profiles: { jev: defaultConnection("jev") } })
+        return Promise.resolve({
+          activeId: "jev",
+          profiles: { jev: defaultConnection("jev") },
+          pendingOperation: null,
+          displayNumbers: { jev: 1 },
+        })
       case "set_settings":
         // The store answers with what it actually stored, and that is what the
         // panes must then render.
@@ -731,9 +746,7 @@ describe("SettingsView", () => {
       await screen.findByText(/may keep session content and derived analysis/i),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(
-        /optional Ignored Instructions assessment sends selected instruction text/i,
-      ),
+      screen.getByText(/optional Model-based Checks send selected public messages/i),
     ).toBeInTheDocument()
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
@@ -1100,18 +1113,17 @@ describe("SettingsView", () => {
           )
           expect(matches, control).toHaveLength(1)
           const match = matches[0]!
-          const visibleLabel = row.querySelector(
-            ":scope > p, :scope > div > h2, :scope > div > button[aria-expanded] > span",
-          )?.textContent
+          const visibleLabel =
+            row.querySelector(":scope > button[aria-expanded]")?.getAttribute("aria-label") ??
+            row.querySelector(
+              ":scope > label, :scope > p, :scope > span, :scope > div > h2, :scope > div > h3, :scope > div > button[aria-expanded] > span",
+            )?.textContent
           expect(match.label, control).toBe(visibleLabel)
           expect(searchApp(visibleLabel!, os).some(({ id }) => id === match.id)).toBe(true)
         }
       }
       const controls = catalog.filter(
         ({ target }) => target.kind === "setting" && target.control,
-      )
-      expect([...seen].sort()).toEqual(
-        controls.map(({ target }) => (target.kind === "setting" ? target.control! : "")).sort(),
       )
       for (const { target } of controls) {
         if (target.kind !== "setting") throw new Error("Unexpected target")
@@ -1121,15 +1133,49 @@ describe("SettingsView", () => {
           const row = container.querySelector(`[data-settings-control="${control}"]`)
           expect(row, control).not.toBeNull()
           expect(row!.contains(document.activeElement), control).toBe(true)
-          if (control === "smartCheckLimits") {
-            expect(screen.getByRole("button", { name: "Model limits" })).toHaveAttribute(
-              "aria-expanded",
-              "true",
-            )
-          }
         })
+        const row = container.querySelector<HTMLElement>(
+          `[data-settings-control="${control}"]`,
+        )!
+        const visibleLabel =
+          row.querySelector(":scope > button[aria-expanded]")?.getAttribute("aria-label") ??
+          row.querySelector(
+            ":scope > label, :scope > p, :scope > span, :scope > div > h2, :scope > div > h3, :scope > div > button[aria-expanded] > span",
+          )?.textContent
+        const match = catalog.find(
+          ({ target }) => target.kind === "setting" && target.control === control,
+        )!
+        if (row.hasAttribute("data-settings-focus-self")) {
+          expect(control).toBe("checkModelUsage")
+          expect(match.label).toBe("Model usage")
+          expect(visibleLabel).toBe("Model-based checks")
+          expect(row).toHaveFocus()
+          expect(
+            within(row).queryByRole("button", { name: "Model usage" }),
+          ).not.toBeInTheDocument()
+        } else expect(match.label, control).toBe(visibleLabel)
+        seen.add(control!)
+        const dialog = screen.queryByRole("dialog")
+        if (dialog) {
+          fireEvent.click(within(dialog).getByRole("button", { name: /^Cancel$/ }))
+          await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+        }
       }
+      expect([...seen].sort()).toEqual(
+        controls.map(({ target }) => (target.kind === "setting" ? target.control! : "")).sort(),
+      )
       expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+      for (const command of [
+        "save_system_one_connection",
+        "switch_system_one_connection",
+        "test_system_one_connection",
+        "refresh_system_one_limits",
+        "remove_system_one_credential",
+        "remove_system_one_connection",
+        "retry_system_one_connection_operation",
+        "list_ollama_models",
+      ])
+        expect(invoke).not.toHaveBeenCalledWith(command, expect.anything())
       platform.other = "windows"
     },
   )

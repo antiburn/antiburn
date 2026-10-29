@@ -130,3 +130,43 @@ test("release builds test the remote helper; main CI leaves it to the engine job
   assert.notEqual(workflow.jobs["remote-helper"].with?.test, false);
   assert.equal(ci.jobs["remote-helper"].with.test, false);
 });
+
+test("CI validates Burn Check definitions when their docs change", () => {
+  const ci = readWorkflow("ci.yml");
+  const classify = ci.jobs.classify.outputs;
+  assert.equal(
+    classify.run_validator,
+    "${{ steps.changes.outputs.run_validator }}",
+  );
+
+  const job = ci.jobs["burn-check-validator"];
+  assert.equal(job.needs, "classify");
+  assert.equal(
+    job.if,
+    "needs.classify.outputs.run_validator == 'true'",
+  );
+  assert.ok(
+    job.steps.some((step) => step.run === "npm ci --prefix docs/burn-check"),
+  );
+  assert.ok(
+    job.steps.some((step) => step.run === "npm test --prefix docs/burn-check"),
+  );
+  assert.ok(
+    job.steps.some(
+      (step) =>
+        step.run === "npm run validate --prefix docs/burn-check",
+    ),
+  );
+
+  const gate = ci.jobs["ci-required"];
+  assert.ok(gate.needs.includes("burn-check-validator"));
+  assert.equal(
+    gate.env.VALIDATOR_RESULT,
+    "${{ needs.burn-check-validator.result }}",
+  );
+  assert.equal(
+    gate.env.VALIDATOR_SELECTED,
+    "${{ needs.classify.outputs.run_validator }}",
+  );
+  assert.match(gate.steps[0].run, /require_if_selected burn-check-validator/);
+});

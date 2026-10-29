@@ -1,444 +1,586 @@
-import { useState, useSyncExternalStore } from "react"
-import { Card } from "../../components/ui/Card"
-import { Disclosure } from "../../components/ui/Disclosure"
+import { Check } from "lucide-react"
+import { useCallback, useId, useState, useSyncExternalStore } from "react"
+
 import { PushButton } from "../../components/ui/PushButton"
-import { SectionGroup } from "../../components/ui/SectionGroup"
 import {
-  SMART_CHECK_PROVIDERS,
+  connectionLabel,
   contextLimitError,
-  type CapabilitySource,
+  defaultConnection,
+  SMART_CHECK_PROVIDERS,
   type Connection,
-  type ModelCapabilities,
+  type SmartCheckProvider,
 } from "../../lib/smartCheckProviders"
-import { ProviderSettingsSession } from "./ProviderSettingsSession"
-import type { CheckAvailability } from "../../lib/checkAvailability"
-import { SettingsDisclosure, SettingsRow } from "./SettingsSearchRows"
+import { type SettingsControlId } from "../../lib/settingsSearchTargets"
+import {
+  ACTIVE_CONNECTION_UNCONFIRMED,
+  providerFieldTarget,
+  pendingOperationMessage,
+  ProviderSettingsSession,
+} from "./ProviderSettingsSession"
+import { ConnectionDialog, isConnectionFocusTarget } from "./ConnectionDialog"
+import { ConnectionActions } from "./ConnectionActions"
+import { OllamaModelPicker } from "./OllamaModelPicker"
+import { SettingsField } from "./SettingsSearchRows"
 
 const inputClass =
-  "mt-2 min-h-[var(--control-height-regular)] w-full rounded-control border border-separator bg-input-fill px-3 type-body text-label"
-const sourceLabels: Record<CapabilitySource, string> = {
-  provider_metadata: "Provider metadata",
-  runtime_metadata: "Loaded model metadata",
-  documented_default: "Documented default",
-  manual: "Manual limit",
-  unknown: "Unknown",
-}
+  "min-h-[var(--control-height-regular)] w-full min-w-0 rounded-control border border-separator bg-input-fill px-2 py-1 type-body text-label"
 
-function CapabilityDetails({ capabilities }: { capabilities: ModelCapabilities }) {
-  const limits = [
-    ["Total input tokens", capabilities.total_input_tokens],
-    ["State plus longest question tokens", capabilities.state_and_longest_question_tokens],
-    ["Loaded context tokens", capabilities.runtime_context_tokens],
-    ["Request body bytes", capabilities.request_body_bytes],
-    ["Questions per request", capabilities.questions_per_request],
-  ] as const
-  return (
-    <div className="mt-3 space-y-1 type-footnote text-label-secondary">
-      {limits.map(([label, limit]) => (
-        <p key={label}>
-          {label}: {limit.value?.toLocaleString() ?? "Unknown"} · {sourceLabels[limit.source]}
-        </p>
-      ))}
-      <p>Rendering reserve: {capabilities.rendering_reserve_tokens.toLocaleString()} tokens</p>
-      <p>
-        Token counting:{" "}
-        {capabilities.tokenizer?.kind === "exact" ? "Exact tokenizer" : "Conservative estimate"}
-      </p>
-      {capabilities.model_revision && <p>Model revision: {capabilities.model_revision}</p>}
-    </div>
-  )
+function shouldRestoreConnectionFocus(opener: Element | null) {
+  const focused = document.activeElement
+  return focused === opener || !isConnectionFocusTarget(focused)
 }
 
 export function CheckProviderSettings({
   control,
-  targetRevision = 0,
+  targetRevision,
   legacyKeySaved = false,
-  usage,
+  onSelectionChange,
+  onPendingChange,
 }: {
   control?: string | null | undefined
   targetRevision?: number | undefined
   legacyKeySaved?: boolean
-  usage?: CheckAvailability["usage"]
+  onSelectionChange?: ((selected: boolean) => void) | undefined
+  onPendingChange?: ((pending: boolean) => void) | undefined
 }) {
-  const [session] = useState(() => new ProviderSettingsSession())
+  const [session] = useState(
+    () => new ProviderSettingsSession(onSelectionChange, onPendingChange),
+  )
+  const addId = useId()
+  const retryId = useId()
   const state = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
     session.getSnapshot,
   )
-  const [disclosure, setDisclosure] = useState({ open: false, dismissedRevision: -1 })
-  const searchOpen =
-    control === "smartCheckLimits" && disclosure.dismissedRevision !== targetRevision
-  const open = disclosure.open || searchOpen
-  const current = state.drafts[state.selectedId]
-  const connection = current?.draft.connection
-  const provider = connection?.provider ?? "jev"
-  const savedConnection = state.saved?.profiles[state.selectedId]
-  const hasSavedCredential =
-    savedConnection?.credential?.kind === "legacy_type_safe"
-      ? legacyKeySaved
-      : Boolean(savedConnection?.credential)
-  const credential = current?.draft.credential ?? ""
-  const metadata = SMART_CHECK_PROVIDERS[provider]
-  function edit(update: Partial<Connection>) {
-    if (connection)
-      session.edit(
-        { ...connection, ...update, revision: connection.revision + 1, modelRevision: null },
-        current.draft.credential,
-      )
-  }
-  function limits(
-    field: "totalInputTokens" | "stateAndLongestQuestionTokens" | "runtimeContextTokens",
-    text: string,
-  ) {
-    edit({
-      contextOverride: {
-        totalInputTokens: null,
-        stateAndLongestQuestionTokens: null,
-        runtimeContextTokens: null,
-        ...connection?.contextOverride,
-        [field]: text === "" ? null : Number(text),
-      },
+  const unavailable = state.loading || !state.saved || state.busy
+  const pending = Boolean(state.saved?.pendingOperation)
+  const requested = providerFieldTarget(control)
+  const recoveryControl =
+    requested?.control ?? (control === "decisionProvider" ? control : undefined)
+  const profiles = Object.entries(state.saved?.profiles ?? {})
+  const selected = state.saved?.activeId
+  const editing = state.saved?.profiles[state.selectedId]
+  const title =
+    state.editor === "add"
+      ? "Add connection"
+      : `Edit ${editing && state.saved ? connectionLabel(state.selectedId, editing, state.saved) : "saved"} connection`
+
+  const getFallbackFocus = useCallback(() => {
+    const retry = document.getElementById(retryId)
+    return isConnectionFocusTarget(retry) ? retry : document.getElementById(addId)
+  }, [retryId, addId])
+
+  async function remove(id: string, opener: HTMLButtonElement) {
+    const removed = await session.removeConnection(id)
+    requestAnimationFrame(() => {
+      if (session.getSnapshot().editor || !shouldRestoreConnectionFocus(opener)) return
+      const target = removed
+        ? document.getElementById(addId)
+        : session.getSnapshot().saved?.pendingOperation
+          ? getFallbackFocus()
+          : isConnectionFocusTarget(opener)
+            ? opener
+            : getFallbackFocus()
+      if (isConnectionFocusTarget(target)) target.focus()
     })
   }
-  const limitError = connection ? contextLimitError(connection) : null
-  const requiredMissing =
-    !connection ||
-    !connection.model.trim() ||
-    (connection.endpoint.kind !== "provider_default" && !connection.endpoint.value.trim())
-  const disabled = state.busy || Boolean(limitError) || requiredMissing
-  const needsCredential =
-    (provider === "jev" || provider === "cloudflare") &&
-    !credential.trim() &&
-    !hasSavedCredential
+  async function retry() {
+    const opener = document.activeElement
+    const completed = await session.retryPendingOperation()
+    requestAnimationFrame(() => {
+      if (!shouldRestoreConnectionFocus(opener)) return
+      const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")
+      const target =
+        !completed && isConnectionFocusTarget(opener)
+          ? opener
+          : dialog
+            ? dialog.querySelector<HTMLElement>(
+                "input:not(:disabled), select:not(:disabled), button:not(:disabled)",
+              )
+            : getFallbackFocus()
+      if (isConnectionFocusTarget(target)) target.focus()
+    })
+  }
+  async function selectSavedConnection(id: string) {
+    const opener = document.activeElement
+    await session.useConnection(id)
+    requestAnimationFrame(() => {
+      const current = session.getSnapshot()
+      if (current.editor || !shouldRestoreConnectionFocus(opener)) return
+      const target = current.saved?.pendingOperation
+        ? getFallbackFocus()
+        : current.activeConfirmed && current.saved?.activeId === id
+          ? document.getElementById(`${addId}-${id}-actions`)
+          : isConnectionFocusTarget(opener)
+            ? opener
+            : getFallbackFocus()
+      if (isConnectionFocusTarget(target)) target.focus()
+    })
+  }
 
   return (
-    <SectionGroup title="Decision model">
-      <Card>
-        <SettingsRow
-          searchId="smartCheckProvider"
-          description="Choose a connection, then save and use it for smart burn checks. Testing does not activate it."
-        >
-          <div className="space-y-3">
-            <select
-              aria-label="Smart check provider"
-              className={inputClass}
-              value={provider}
-              disabled={state.busy || !state.saved}
-              onChange={(event) => {
-                const value = event.target.value
-                if (
-                  value === "jev" ||
-                  value === "ollama" ||
-                  value === "cloudflare" ||
-                  value === "custom"
-                )
-                  session.selectProvider(value)
-              }}
-            >
-              {Object.entries(SMART_CHECK_PROVIDERS).map(([id, entry]) => (
-                <option key={id} value={id}>
-                  {entry.label}
-                </option>
-              ))}
-            </select>
-            {state.saved && Object.keys(state.saved.profiles).length > 1 && (
-              <label className="block type-body text-label">
-                Saved connections
-                <select
-                  aria-label="Saved connections"
-                  className={inputClass}
-                  value={savedConnection ? state.selectedId : ""}
-                  disabled={state.busy}
-                  onChange={(event) => session.select(event.target.value)}
-                >
-                  <option value="" disabled>
-                    Unsaved connection
-                  </option>
-                  {Object.entries(state.saved.profiles).map(([id, profile]) => (
-                    <option key={id} value={id}>
-                      {SMART_CHECK_PROVIDERS[profile.provider].label} · {profile.model} · {id}
-                      {id === state.saved?.activeId ? " · In use" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {connection && provider !== "jev" && (
-              <>
-                <label className="block type-body text-label">
-                  {metadata.endpointLabel}
-                  <input
-                    aria-label={metadata.endpointLabel ?? undefined}
-                    className={inputClass}
-                    disabled={state.busy}
-                    value={
-                      connection.endpoint.kind === "provider_default"
-                        ? ""
-                        : connection.endpoint.value
-                    }
-                    onChange={(event) =>
-                      connection.endpoint.kind !== "provider_default" &&
-                      edit({
-                        endpoint: { ...connection.endpoint, value: event.target.value },
-                      })
-                    }
-                  />
-                </label>
-                <p className="type-footnote text-label-secondary">
-                  {provider === "ollama"
-                    ? "Adds /v1/systemone to this URL."
-                    : provider === "custom"
-                      ? "System One endpoint; uses this exact URL."
-                      : "Your Workers AI account ID."}
-                </p>
-                <label className="block type-body text-label">
-                  Model
-                  {provider === "cloudflare" ? (
-                    <select
-                      aria-label="Provider model"
-                      className={inputClass}
-                      value={connection.model}
-                      disabled={state.busy}
-                      onChange={(event) => edit({ model: event.target.value })}
-                    >
-                      <option value="clef">clef</option>
-                      <option value="clef-flash">clef-flash</option>
-                    </select>
-                  ) : (
-                    <input
-                      aria-label="Provider model"
-                      className={inputClass}
-                      value={connection.model}
-                      disabled={state.busy}
-                      onChange={(event) => edit({ model: event.target.value })}
-                    />
+    <div
+      aria-busy={state.loading || state.busy}
+      ref={() => session.revealTarget(control, targetRevision)}
+      onClickCapture={(event) => {
+        if (state.editor || !(event.target instanceof Element)) return
+        const button = event.target.closest<HTMLButtonElement>("button")
+        if (button?.getAttribute("aria-haspopup") !== "menu") button?.focus()
+      }}
+    >
+      <div data-settings-control="decisionConnection" tabIndex={-1} className="px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="type-body font-medium! text-label">Connections</h3>
+          <PushButton
+            id={addId}
+            disabled={unavailable || pending}
+            onClick={() => session.add()}
+          >
+            Add connection
+          </PushButton>
+        </div>
+        {state.loading && (
+          <p role="status" className="mt-2 type-footnote text-label-secondary">
+            Loading connections…
+          </p>
+        )}
+        {state.saved && profiles.length === 0 && !state.loading && (
+          <p className="mt-2 type-callout text-label-secondary">
+            Add a connection to set up model-based checks.
+          </p>
+        )}
+        {state.saved && state.activeConfirmed && selected === null && profiles.length > 0 && (
+          <p className="mt-2 type-footnote text-label-secondary">
+            Choose Use on a connection before running checks.
+          </p>
+        )}
+        <ul className="mt-3 grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 divide-y divide-separator">
+          {profiles.map(([id, profile]) => {
+            const label = connectionLabel(id, profile, state.saved!)
+            const active = state.activeConfirmed && selected === id
+            const missing =
+              (profile.provider === "jev" || profile.provider === "cloudflare") &&
+              (!profile.credential ||
+                (profile.credential.kind === "legacy_type_safe" &&
+                  (!legacyKeySaved || state.legacyKeyForgotten)))
+            return (
+              <li
+                key={id}
+                aria-label={label}
+                aria-describedby={active ? `${addId}-${id}-selected` : undefined}
+                className="col-span-full grid min-w-0 grid-cols-subgrid items-center py-3"
+              >
+                <div className="min-w-0">
+                  <p className="wrap-anywhere type-body text-label">{label}</p>
+                  {missing && (
+                    <p className="mt-1 type-footnote text-label-secondary">
+                      Add a credential to use this connection.
+                    </p>
                   )}
-                </label>
-                {provider === "custom" && (
-                  <label className="block type-body text-label">
-                    Response mode
-                    <select
-                      aria-label="Response mode"
-                      className={inputClass}
-                      value={connection.responseMode}
-                      disabled={state.busy}
-                      onChange={(event) =>
-                        edit({
-                          responseMode:
-                            event.target.value === "direct" ? "direct" : "cloudflare_envelope",
-                        })
-                      }
+                </div>
+                <div className="flex min-w-16 items-center justify-center">
+                  {active ? (
+                    <span
+                      id={`${addId}-${id}-selected`}
+                      className="flex items-center gap-1 type-footnote text-label-secondary"
                     >
-                      <option value="direct">Direct System One</option>
-                      <option value="cloudflare_envelope">Cloudflare envelope</option>
-                    </select>
-                  </label>
-                )}
-              </>
+                      <Check size={12} aria-hidden="true" />
+                      Selected
+                    </span>
+                  ) : (
+                    <PushButton
+                      disabled={unavailable || pending}
+                      ariaLabel={`Use ${label}`}
+                      onClick={() => void selectSavedConnection(id)}
+                    >
+                      Use
+                    </PushButton>
+                  )}
+                </div>
+                <ConnectionActions
+                  id={`${addId}-${id}-actions`}
+                  label={label}
+                  disabled={unavailable}
+                  pending={pending}
+                  onEdit={() => session.openEdit(id)}
+                  onRemove={(opener) => void remove(id, opener)}
+                />
+              </li>
+            )
+          })}
+        </ul>
+        {!state.editor && (
+          <PendingOperationNotice
+            session={session}
+            retryId={retryId}
+            onRetry={() => void retry()}
+          />
+        )}
+        {!state.loading && !state.saved && (
+          <div
+            className="mt-2 space-y-2"
+            data-settings-control={recoveryControl}
+            data-settings-target-pending
+            tabIndex={-1}
+          >
+            {state.error && (
+              <p role="alert" className="type-footnote text-system-red-text">
+                {state.error}
+              </p>
             )}
-            {connection && provider === "jev" && (
-              <label className="block type-body text-label">
-                Model
-                <input
-                  aria-label="Provider model"
+            <PushButton onClick={() => void session.refresh()}>
+              Retry loading connections
+            </PushButton>
+          </div>
+        )}
+        {state.saved && !state.activeConfirmed && !state.editor && (
+          <div className="mt-2 space-y-2">
+            <p role="status" className="type-footnote text-label-secondary">
+              {ACTIVE_CONNECTION_UNCONFIRMED}
+            </p>
+            <PushButton disabled={unavailable} onClick={() => void session.refresh()}>
+              Retry loading connections
+            </PushButton>
+          </div>
+        )}
+        {state.saved && state.error && state.errorLocation === "connections" && (
+          <p role="alert" className="mt-2 wrap-anywhere type-footnote text-system-red-text">
+            {state.error}
+          </p>
+        )}
+      </div>
+      {state.editor && (
+        <ConnectionDialog
+          title={title}
+          onCancel={() => void session.closeEditor()}
+          getFallbackFocus={getFallbackFocus}
+        >
+          <ConnectionForm
+            key={state.selectedId}
+            session={session}
+            control={control}
+            legacyKeySaved={legacyKeySaved && !state.legacyKeyForgotten}
+            retryId={retryId}
+            onRetry={() => void retry()}
+          />
+        </ConnectionDialog>
+      )}
+    </div>
+  )
+}
+
+function PendingOperationNotice({
+  session,
+  retryId,
+  onRetry,
+}: {
+  session: ProviderSettingsSession
+  retryId: string
+  onRetry: () => void
+}) {
+  const state = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+    session.getSnapshot,
+  )
+  const operation = state.saved?.pendingOperation
+  if (!operation) return null
+  return (
+    <div className="mt-3 space-y-2">
+      <p role="status" className="type-footnote text-label-secondary">
+        {pendingOperationMessage(operation, Boolean(state.editor))}
+      </p>
+      <PushButton id={retryId} disabled={state.busy || state.loading} onClick={onRetry}>
+        {state.action === "retry" ? "Retrying…" : "Retry connection change"}
+      </PushButton>
+    </div>
+  )
+}
+
+function ConnectionForm({
+  session,
+  control,
+  legacyKeySaved,
+  retryId,
+  onRetry,
+}: {
+  session: ProviderSettingsSession
+  control?: string | null | undefined
+  legacyKeySaved: boolean
+  retryId: string
+  onRetry: () => void
+}) {
+  const state = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+    session.getSnapshot,
+  )
+  const current = state.drafts[state.selectedId]
+  const connection = current?.draft.connection ?? defaultConnection("jev")
+  const saved = state.saved?.profiles[state.selectedId]
+  const savedCredential =
+    connection.credential?.kind === "legacy_type_safe"
+      ? legacyKeySaved
+      : Boolean(saved?.credential)
+  const credential = current?.draft.credential ?? ""
+  const [replacing, setReplacing] = useState(false)
+  const helpId = useId()
+  const needsCredential = connection.provider === "jev" || connection.provider === "cloudflare"
+  const setupError = contextLimitError(connection)
+  const unavailable = state.busy || state.loading
+  const disabled =
+    unavailable ||
+    Boolean(state.saved?.pendingOperation) ||
+    !connection.model.trim() ||
+    (connection.endpoint.kind !== "provider_default" && !connection.endpoint.value.trim()) ||
+    (needsCredential && !credential.trim() && !savedCredential) ||
+    Boolean(setupError)
+
+  function edit(update: Partial<Connection>) {
+    session.edit({ ...connection, ...update }, credential || null)
+  }
+  function textField(
+    searchId: SettingsControlId,
+    value: string,
+    onChange: (value: string) => void,
+    secret = false,
+  ) {
+    const showInput =
+      !secret || !savedCredential || replacing || control === searchId || Boolean(value)
+    return (
+      <SettingsField key={searchId} searchId={searchId}>
+        {(id) => (
+          <>
+            {showInput ? (
+              <input
+                id={id}
+                autoFocus={secret && replacing}
+                aria-describedby={secret && savedCredential ? helpId : undefined}
+                type={secret ? "password" : "text"}
+                autoComplete="off"
+                spellCheck={false}
+                className={inputClass}
+                value={value}
+                disabled={unavailable}
+                onChange={(event) => onChange(event.target.value)}
+              />
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 type-callout text-label-secondary">
+                <span>Saved</span>
+                <PushButton disabled={unavailable} onClick={() => setReplacing(true)}>
+                  Change
+                </PushButton>
+              </div>
+            )}
+            {secret && savedCredential && showInput && (
+              <p id={helpId} className="type-footnote text-label-secondary">
+                Leave empty to keep the saved credential.
+              </p>
+            )}
+            {secret &&
+              saved?.credential &&
+              (saved.credential.kind !== "legacy_type_safe" || !state.legacyKeyForgotten) && (
+                <div className="type-footnote text-label-secondary">
+                  <button
+                    type="button"
+                    className="text-label-secondary underline disabled:opacity-50"
+                    disabled={unavailable || Boolean(state.saved?.pendingOperation)}
+                    onClick={() => void session.run("remove")}
+                  >
+                    {saved.credential.kind === "legacy_type_safe"
+                      ? "Forget shared TypeSafe key"
+                      : "Forget saved credential"}
+                  </button>
+                </div>
+              )}
+            {secret &&
+              connection.provider === "jev" &&
+              state.editor === "add" &&
+              legacyKeySaved && (
+                <div className="space-y-2 type-footnote text-label-secondary">
+                  <p>A shared TypeSafe key is saved on this device.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <PushButton
+                      disabled={
+                        unavailable || connection.credential?.kind === "legacy_type_safe"
+                      }
+                      onClick={() => session.useLegacyKey()}
+                    >
+                      {connection.credential?.kind === "legacy_type_safe"
+                        ? "Saved key selected"
+                        : "Use saved key"}
+                    </PushButton>
+                    <button
+                      type="button"
+                      className="underline disabled:opacity-50"
+                      disabled={unavailable || Boolean(state.saved?.pendingOperation)}
+                      onClick={() => void session.forgetLegacyKey()}
+                    >
+                      Forget shared TypeSafe key
+                    </button>
+                  </div>
+                </div>
+              )}
+          </>
+        )}
+      </SettingsField>
+    )
+  }
+  const endpoint = (id: SettingsControlId) =>
+    textField(
+      id,
+      connection.endpoint.kind === "provider_default" ? "" : connection.endpoint.value,
+      (value) => {
+        if (connection.endpoint.kind !== "provider_default")
+          edit({ endpoint: { ...connection.endpoint, value } })
+      },
+    )
+  const key = (id: SettingsControlId) =>
+    textField(id, credential, (value) => session.edit(connection, value || null), true)
+
+  return (
+    <div aria-busy={unavailable} className="space-y-5 px-4 pt-2 pb-4">
+      <div className="space-y-4">
+        {state.editor === "add" && (
+          <SettingsField searchId="decisionProvider">
+            {(id) => (
+              <select
+                id={id}
+                autoFocus
+                className={inputClass}
+                value={connection.provider}
+                disabled={unavailable}
+                onChange={(event) =>
+                  void session.changeAddProvider(event.target.value as SmartCheckProvider)
+                }
+              >
+                {Object.entries(SMART_CHECK_PROVIDERS).map(([id, provider]) => (
+                  <option key={id} value={id}>
+                    {provider.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </SettingsField>
+        )}
+        {connection.provider === "jev" && key("typeSafeApiKey")}
+        {connection.provider === "ollama" && (
+          <>
+            {endpoint("ollamaUrl")}
+            <OllamaModelPicker session={session} onChange={(model) => edit({ model })} />
+            {key("ollamaApiKey")}
+          </>
+        )}
+        {connection.provider === "cloudflare" && (
+          <>
+            {endpoint("cloudflareAccountId")}
+            <SettingsField searchId="cloudflareModel">
+              {(id) => (
+                <select
+                  id={id}
                   className={inputClass}
                   value={connection.model}
-                  readOnly
-                  disabled={state.busy}
-                />
-              </label>
-            )}
+                  disabled={unavailable}
+                  onChange={(event) => edit({ model: event.target.value })}
+                >
+                  <option value="clef">Clef</option>
+                  <option value="clef-flash">Clef Flash</option>
+                </select>
+              )}
+            </SettingsField>
+            {key("cloudflareApiToken")}
+          </>
+        )}
+        {connection.provider === "custom" && (
+          <>
+            {endpoint("customUrl")}
+            {textField("customModel", connection.model, (model) => edit({ model }))}
+            <SettingsField searchId="customResponseMode">
+              {(id) => (
+                <>
+                  <select
+                    id={id}
+                    className={inputClass}
+                    value={connection.responseMode}
+                    disabled={unavailable}
+                    onChange={(event) =>
+                      edit({ responseMode: event.target.value as Connection["responseMode"] })
+                    }
+                  >
+                    <option value="direct">Direct System One</option>
+                    <option value="cloudflare_envelope">Cloudflare envelope</option>
+                  </select>
+                  <p className="type-footnote text-label-secondary">
+                    Requires a supported System One endpoint. Chat APIs are not supported.
+                  </p>
+                </>
+              )}
+            </SettingsField>
+            {key("customApiKey")}
+          </>
+        )}
+      </div>
+      <div className="space-y-2">
+        <PendingOperationNotice session={session} retryId={retryId} onRetry={onRetry} />
+        {current?.tested && (
+          <p role="status" className="type-footnote text-system-green">
+            Connection test passed.
+          </p>
+        )}
+        {state.status && state.status !== ACTIVE_CONNECTION_UNCONFIRMED && (
+          <p role="status" className="type-footnote text-label-secondary">
+            {state.status}
+          </p>
+        )}
+        {state.error && state.errorLocation === "editor" && (
+          <p role="alert" className="wrap-anywhere type-footnote text-system-red-text">
+            {state.error}
+          </p>
+        )}
+        {!state.activeConfirmed && (
+          <div className="space-y-2">
+            <p role="status" className="type-footnote text-label-secondary">
+              {ACTIVE_CONNECTION_UNCONFIRMED}
+            </p>
+            <PushButton
+              disabled={state.busy || state.loading}
+              onClick={() => void session.refresh()}
+            >
+              Retry loading connections
+            </PushButton>
           </div>
-        </SettingsRow>
-        <SettingsRow
-          searchId="typeSafeApiKey"
-          label={
-            provider === "jev"
-              ? "API key"
-              : provider === "cloudflare"
-                ? "API token"
-                : "Credential (optional)"
-          }
-          description={
-            hasSavedCredential
-              ? "Leave empty to use the saved credential, or enter a replacement."
-              : undefined
-          }
-        >
-          <input
-            aria-label={
-              provider === "jev"
-                ? "TypeSafe API key"
-                : provider === "cloudflare"
-                  ? "Cloudflare API token"
-                  : "Provider credential (optional)"
-            }
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            value={credential}
-            disabled={state.busy || !connection}
-            placeholder={
-              hasSavedCredential ? "Saved credential; enter a replacement" : undefined
-            }
-            onChange={(event) =>
-              connection && session.edit(connection, event.target.value || null)
-            }
-            className={inputClass}
-          />
-          <div className="mt-3 flex flex-wrap gap-2">
-            <PushButton disabled={disabled} onClick={() => void session.run("test")}>
-              Test connection
+        )}
+        {setupError && (
+          <p className="wrap-anywhere type-footnote text-label-secondary">{setupError}</p>
+        )}
+      </div>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <PushButton disabled={disabled} onClick={() => void session.run("test")}>
+            {state.action === "test" ? "Testing…" : "Test connection"}
+          </PushButton>
+          <div className="ml-auto flex flex-wrap justify-end gap-2">
+            <PushButton disabled={unavailable} onClick={() => void session.closeEditor()}>
+              Cancel
             </PushButton>
             <PushButton
               variant="primary"
-              disabled={disabled || needsCredential}
+              disabled={disabled}
               onClick={() => void session.run("save")}
             >
-              Save and use connection
+              {state.action === "save"
+                ? "Saving…"
+                : state.editor === "add"
+                  ? "Add connection"
+                  : "Save"}
             </PushButton>
-            {savedConnection && state.saved?.activeId !== state.selectedId && (
-              <PushButton
-                disabled={state.busy || Boolean(contextLimitError(savedConnection))}
-                onClick={() => void session.run("switch")}
-              >
-                Use saved connection
-              </PushButton>
-            )}
-            {hasSavedCredential && (
-              <PushButton disabled={state.busy} onClick={() => void session.run("remove")}>
-                Remove credential
-              </PushButton>
-            )}
           </div>
-          <p className="mt-2 type-footnote text-label-secondary">
-            Tests use synthetic input. Provider charges may apply.
-          </p>
-          {limitError && (
-            <p
-              role="alert"
-              id="provider-context-error"
-              className="mt-2 type-footnote text-system-red-text"
-            >
-              {limitError}
-            </p>
-          )}
-          {current?.tested && (
-            <p role="status" className="mt-2 type-footnote text-system-green">
-              Connection test passed.
-            </p>
-          )}
-          {state.busy && (
-            <p role="status" className="mt-2 type-footnote text-label-secondary">
-              Working…
-            </p>
-          )}
-          {state.status && (
-            <p role="status" className="mt-2 type-footnote text-label-secondary">
-              {state.status}
-            </p>
-          )}
-          {state.error && (
-            <p role="alert" className="mt-2 type-footnote text-system-red-text">
-              {state.error}
-            </p>
-          )}
-        </SettingsRow>
-        <SettingsDisclosure
-          searchId="smartCheckLimits"
-          open={open}
-          onOpenChange={(open) => setDisclosure({ open, dismissedRevision: targetRevision })}
-        >
-          <div>
-            <p className="mt-2 type-footnote text-label-secondary">
-              Refresh to read available model limits. Each value shows its source; unknown
-              values are not discovered limits.
-            </p>
-            <p className="mt-2 type-footnote text-label-secondary">
-              {provider === "jev"
-                ? "Jev uses documented model limits. Manual overrides are not available."
-                : provider === "custom"
-                  ? "Enter manual total input tokens or loaded context tokens. Each supplied limit must exceed the 4,096-token rendering reserve. State plus longest question alone does not bound total input."
-                  : provider === "ollama"
-                    ? "Smart Checks load an idle model to read its context size. If limits stay unknown, enter a manual total input or loaded context limit and test the connection before enabling checks. Saving alone does not confirm usable limits."
-                    : "Leave manual limits empty to use discovered values or documented defaults. Manual values can lower known bounds or supply missing token limits."}
-            </p>
-            <PushButton
-              className="mt-2"
-              disabled={disabled}
-              onClick={() => void session.run("refresh")}
-            >
-              Refresh model limits
-            </PushButton>
-            {connection && provider !== "jev" && (
-              <div className="mt-3 space-y-2">
-                {(
-                  [
-                    ["totalInputTokens", "Manual total input tokens"],
-                    [
-                      "stateAndLongestQuestionTokens",
-                      "Manual state plus longest question tokens",
-                    ],
-                    ["runtimeContextTokens", "Manual loaded context tokens"],
-                  ] as const
-                ).map(([field, label]) => (
-                  <label key={field} className="block type-body text-label">
-                    {label}
-                    <input
-                      aria-label={label}
-                      aria-invalid={Boolean(limitError)}
-                      aria-describedby={limitError ? "provider-context-error" : undefined}
-                      type="number"
-                      min={1}
-                      max={65536}
-                      step={1}
-                      disabled={state.busy}
-                      value={connection.contextOverride?.[field] ?? ""}
-                      onChange={(event) => limits(field, event.target.value)}
-                      className={inputClass}
-                    />
-                  </label>
-                ))}
-              </div>
-            )}
-            {current?.capabilities && <CapabilityDetails capabilities={current.capabilities} />}
-          </div>
-        </SettingsDisclosure>
-        {usage && (
-          <div className="px-3">
-            <Disclosure label="Model usage">
-              <p className="type-footnote text-label-secondary">
-                Recorded smart burn check totals on this device across all connections, not just
-                the connection shown above. Clear Local Data resets these totals.
-              </p>
-              <p className="mt-2 type-footnote text-label-secondary">
-                {usage.confirmedCalls > 0 || usage.inputTokens > 0 || usage.outputTokens > 0
-                  ? `${usage.inputTokens.toLocaleString()} input tokens · ${usage.outputTokens.toLocaleString()} output tokens · ${usage.confirmedCalls.toLocaleString()} confirmed requests`
-                  : "No confirmed model requests yet."}
-              </p>
-              <p className="mt-1 type-footnote text-label-secondary">
-                {usage.estimatedUsd === null
-                  ? "Cost estimate unavailable."
-                  : `${usage.estimatedUsd} estimated cost. This is not a bill.`}
-              </p>
-              <p className="mt-1 type-footnote text-label-secondary">
-                {usage.cacheHits.toLocaleString()} cached results reused.
-              </p>
-              {usage.unknownOutcomes > 0 && (
-                <p className="mt-1 type-footnote text-label-secondary">
-                  {usage.unknownOutcomes.toLocaleString()} request outcomes are unknown and are
-                  not included in the estimate.
-                </p>
-              )}
-            </Disclosure>
-          </div>
-        )}
-      </Card>
-      <p className="mt-3 type-footnote text-label-secondary">
-        Checks send selected session content and skill descriptions to the provider in use,
-        excluding private thinking. Data stays local only when inference runs on this device.
-      </p>
-    </SectionGroup>
+        </div>
+        <p className="type-footnote text-label-secondary">
+          Tests use sample data. Provider charges may apply.
+        </p>
+      </div>
+    </div>
   )
 }

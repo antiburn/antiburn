@@ -65,8 +65,8 @@ afterEach(() => {
 // one test can take five times its local run time. 15 s is the bound, not a
 // target.
 describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
-  it("keeps the click-again message after a stale id refreshes the list", async () => {
-    commands.copyBatch.mockResolvedValueOnce({ outcome: "unavailable" })
+  it("shows a genuine preparation error and prepares again after a handle refresh", async () => {
+    commands.copyFallback.mockResolvedValueOnce({ outcome: "unavailable" })
     const refresh = vi.fn()
     const { rerender } = render(
       <CheckPromptAction detector="unusedSkills" targets={[target]} refresh={refresh} />,
@@ -74,12 +74,11 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The list was refreshed. Click again to copy.",
+      "A fix prompt is not available for this finding.",
     )
-    expect(refresh).toHaveBeenCalledOnce()
+    expect(refresh).not.toHaveBeenCalled()
     expect(commands.writeClipboardText).not.toHaveBeenCalled()
 
-    // The refresh lists the check again with new ids. The message must survive that.
     rerender(
       <CheckPromptAction
         detector="unusedSkills"
@@ -88,20 +87,20 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       />,
     )
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "The list was refreshed. Click again to copy.",
+      "A fix prompt is not available for this finding.",
     )
     const copy = screen.getByRole("button", { name: "Copy fix prompt" })
     expect(copy).toBeEnabled()
 
     fireEvent.click(copy)
     expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
-    expect(commands.copyBatch).toHaveBeenLastCalledWith(["action-new"])
-    expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
+    expect(commands.copyFallback).toHaveBeenLastCalledWith("unusedSkills")
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Inspect representative evidence.")
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 
-  it("clears an error message when the list refreshes with new ids", async () => {
-    commands.copyBatch.mockRejectedValueOnce(new Error("prepare failed"))
+  it("clears an error message when the copy subject changes", async () => {
+    commands.copyFallback.mockRejectedValueOnce(new Error("prepare failed"))
     const { rerender } = render(
       <CheckPromptAction detector="unusedSkills" targets={[target]} refresh={vi.fn()} />,
     )
@@ -111,10 +110,9 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       "The fix prompt could not be prepared. Try again.",
     )
 
-    // The error was about the old list. A relist with new ids drops it.
     rerender(
       <CheckPromptAction
-        detector="unusedSkills"
+        detector="oldModelUsage"
         targets={[{ ...target, actionId: "action-new" }]}
         refresh={vi.fn()}
       />,
@@ -126,7 +124,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
   it("keeps an open review when the expiring action handle rotates", async () => {
     const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
 
     // The finding is unchanged (same findingId, no watch), so the action
     // handle rotation carries the open review forward.
@@ -174,7 +172,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       })
     })
 
-    expect(screen.getByRole("dialog", { name: "Review change" })).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Confirm change" })).toBeVisible()
   })
 
   it("ignores a deferred prepare from an attempt that recurred", async () => {
@@ -222,9 +220,9 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     ).toHaveLength(1)
   })
 
-  it("ignores a deferred prompt from an attempt that recurred", async () => {
+  it("keeps a single deferred whole-check copy through handle and watch refreshes", async () => {
     const pending = deferred<CopyPromptFixBurnCheckOutcome | null>()
-    commands.copyBatch.mockReturnValueOnce(pending.promise)
+    commands.copyFallback.mockReturnValueOnce(pending.promise)
     const { rerender } = render(
       <CheckPromptAction detector="unusedMcpServers" targets={[target]} refresh={vi.fn()} />,
     )
@@ -237,16 +235,18 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
         refresh={vi.fn()}
       />,
     )
-    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Preparing…" })).toBeDisabled()
+    fireEvent.click(screen.getByRole("button", { name: "Preparing…" }))
     await act(async () => {
       pending.resolve({
         outcome: "promptReady",
-        prompt: "Stale backend prompt",
+        prompt: "Current backend prompt",
       })
     })
 
-    expect(commands.writeClipboardText).not.toHaveBeenCalled()
-    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    expect(commands.copyFallback).toHaveBeenCalledOnce()
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Current backend prompt")
+    expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled()
     expect(commands.noteInteraction).toHaveBeenCalledWith({
       kind: "burnCheckPromptPrepared",
       outcome: "ready",
@@ -263,7 +263,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     commands.apply.mockReturnValueOnce(pending.promise)
     const { rerender } = render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
     rerender(
@@ -294,7 +294,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     ).toHaveLength(1)
   })
 
-  it("resets copied state when the same watch records a recurrence", async () => {
+  it("keeps Copied feedback through recurrence and prepares again on the next click", async () => {
     const { rerender } = render(
       <CheckPromptAction detector="unusedMcpServers" targets={[target]} refresh={vi.fn()} />,
     )
@@ -309,7 +309,9 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       />,
     )
 
-    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    fireEvent.click(screen.getByRole("button", { name: "Copied" }))
+    await screen.findByRole("button", { name: "Copied" })
+    expect(commands.copyFallback).toHaveBeenCalledTimes(2)
   })
 
   it("copies a fallback prompt for an empty failed check without showing Auto Fix", async () => {
@@ -353,7 +355,18 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     expect(copied.querySelector(".lucide-check")).toHaveClass("text-token-in")
   })
 
-  it("repeats a target prompt copy while its success state is visible", async () => {
+  it("prepares a fresh target prompt on each click while Copied is visible", async () => {
+    commands.copy
+      .mockResolvedValueOnce({
+        outcome: "promptReady",
+        prompt: "First target prompt",
+        watch: null,
+      })
+      .mockResolvedValueOnce({
+        outcome: "promptReady",
+        prompt: "Latest target prompt",
+        watch: null,
+      })
     render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
@@ -361,10 +374,23 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     expect(copied).toBeEnabled()
 
     fireEvent.click(copied)
-    expect(await screen.findByRole("button", { name: "Copying…" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Copying…" })).toBeDisabled()
     expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
     expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
-    expect(commands.copy).toHaveBeenCalledOnce()
+    expect(commands.copy).toHaveBeenCalledTimes(2)
+    expect(commands.copy).toHaveBeenLastCalledWith("oldModelUsage", "finding-stable")
+    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(1, "First target prompt")
+    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(2, "Latest target prompt")
+    expect(
+      commands.noteInteraction.mock.calls.filter(
+        ([event]) => event.kind === "burnCheckPromptPrepared",
+      ),
+    ).toHaveLength(2)
+    expect(
+      commands.noteInteraction.mock.calls.filter(
+        ([event]) => event.kind === "burnCheckPromptCopied",
+      ),
+    ).toHaveLength(2)
   })
 
   it("uses a fallback prompt when exact targets are unavailable", async () => {
@@ -413,7 +439,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     )
   })
 
-  it("ignores a fallback prompt that completes after an exact target appears", async () => {
+  it("ignores a prompt that completes after its control unmounts", async () => {
     const pending = deferred<{ outcome: "promptReady"; prompt: string } | null>()
     commands.copyFallback.mockReturnValueOnce(pending.promise)
     const view = render(
@@ -488,7 +514,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
 
     fireEvent.click(prompt)
-    await waitFor(() => expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"]))
+    await waitFor(() => expect(commands.copyFallback).toHaveBeenCalledWith("unusedMcpServers"))
   })
 
   it.each([
@@ -500,7 +526,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       commands.apply.mockResolvedValueOnce(outcome)
       render(<BurnCheckTargetActions target={target} refresh={vi.fn()} />)
       fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-      const dialog = await screen.findByRole("dialog", { name: "Review change" })
+      const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
       fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
       await waitFor(() =>
@@ -508,7 +534,7 @@ describe("BurnChecksView action handles", { timeout: 15_000 }, () => {
       )
       expect(within(dialog).getByRole("alert")).toHaveTextContent(
         name === "conflict"
-          ? "The setting changed during this review. Close it and check the current setting."
+          ? "The setting changed during this check. Close it and check the current setting."
           : "The current setting changed, so this edit was not made.",
       )
       expect(within(dialog).getByRole("button", { name: "Apply change" })).toBeDisabled()

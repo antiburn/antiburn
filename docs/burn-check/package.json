@@ -1,0 +1,13 @@
+{
+  "name": "antiburn-burn-check-docs-validator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test scripts/validate-checks.test.mjs",
+    "validate": "node scripts/validate-checks.mjs"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "yaml": "2.9.1"
+  }
+}

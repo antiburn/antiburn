@@ -1,0 +1,20 @@
+[workspace]
+
+[package]
+name = "antiburn-checks"
+version = "0.1.0"
+edition = "2024"
+description = "Burn Check definition compiler and runtime for Antiburn."
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+publish = false
+
+[lib]
+name = "antiburn_checks"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+saphyr-parser = "=0.2.1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.11"

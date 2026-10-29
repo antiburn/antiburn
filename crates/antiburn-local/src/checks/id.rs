@@ -10,14 +10,10 @@ pub enum DetectorId {
     OldModelUsage,
     OveruseOfFastMode,
     CacheChurn,
-    IgnoredInstructions,
-    SkillOpportunities,
-    OverExploring,
-    ScopeCreep,
 }
 
 impl DetectorId {
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 9;
 
     pub const ALL: [Self; Self::COUNT] = [
         Self::SessionsOverDepth,
@@ -29,10 +25,6 @@ impl DetectorId {
         Self::OldModelUsage,
         Self::OveruseOfFastMode,
         Self::CacheChurn,
-        Self::IgnoredInstructions,
-        Self::SkillOpportunities,
-        Self::OverExploring,
-        Self::ScopeCreep,
     ];
 
     pub const fn index(self) -> usize {
@@ -51,10 +43,6 @@ impl DetectorId {
             Self::OldModelUsage => "old_model_usage",
             Self::OveruseOfFastMode => "overuse_of_fast_mode",
             Self::CacheChurn => "cache_churn",
-            Self::IgnoredInstructions => "ignored_instructions",
-            Self::SkillOpportunities => "skill_opportunities",
-            Self::OverExploring => "over_exploring",
-            Self::ScopeCreep => "scope_creep",
         }
     }
 
@@ -70,10 +58,6 @@ impl DetectorId {
             "old_model_usage" => Some(Self::OldModelUsage),
             "overuse_of_fast_mode" => Some(Self::OveruseOfFastMode),
             "cache_churn" => Some(Self::CacheChurn),
-            "ignored_instructions" => Some(Self::IgnoredInstructions),
-            "skill_opportunities" => Some(Self::SkillOpportunities),
-            "over_exploring" => Some(Self::OverExploring),
-            "scope_creep" => Some(Self::ScopeCreep),
             _ => None,
         }
     }
@@ -142,6 +126,14 @@ mod tests {
             assert_eq!(DetectorId::from_key(detector.key()), Some(detector));
         }
         assert_eq!(DetectorId::from_key("unknown_detector"), None);
+        for key in [
+            "ignored_instructions",
+            "skill_opportunities",
+            "over_exploring",
+            "scope_creep",
+        ] {
+            assert_eq!(DetectorId::from_key(key), None);
+        }
     }
 
     #[test]
@@ -158,18 +150,30 @@ mod tests {
                 DetectorId::OldModelUsage,
                 DetectorId::OveruseOfFastMode,
                 DetectorId::CacheChurn,
-                DetectorId::IgnoredInstructions,
-                DetectorId::SkillOpportunities,
-                DetectorId::OverExploring,
-                DetectorId::ScopeCreep,
             ]
         );
         let mask = DetectorId::ALL
             .into_iter()
             .fold(0u16, |mask, detector| mask | (1 << detector.index()));
-        assert_eq!(mask, 0b1_1111_1111_1111);
-        for detector in DetectorId::ALL {
-            assert_eq!(1u16 << detector.index(), mask & (1u16 << detector.index()));
+        assert_eq!(mask, 0x01ff);
+        for (index, (detector, key)) in DetectorId::ALL
+            .into_iter()
+            .zip([
+                "sessions_over_depth",
+                "model_overthinking",
+                "overpowered_subagents",
+                "unused_mcp_servers",
+                "unused_built_in_tools",
+                "unused_skills",
+                "old_model_usage",
+                "overuse_of_fast_mode",
+                "cache_churn",
+            ])
+            .enumerate()
+        {
+            assert_eq!(detector.index(), index);
+            assert_eq!(detector.key(), key);
+            assert_eq!(1u16 << detector.index(), 1u16 << index);
         }
     }
 
@@ -184,7 +188,7 @@ mod tests {
         ]);
         assert!(selection.contains(DetectorId::SessionsOverDepth));
         assert!(selection.contains(DetectorId::UnusedSkills));
-        assert!(!selection.contains(DetectorId::IgnoredInstructions));
+        assert!(!selection.contains(DetectorId::CacheChurn));
         assert_eq!(selection.iter().count(), 2);
     }
 }

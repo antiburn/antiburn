@@ -24,6 +24,43 @@ import {
 
 afterEach(cleanup)
 
+it("shows native accounting in the existing cost tab without mapping variants to effort", () => {
+  const tokens = {
+    inputTokens: 10,
+    visibleOutputTokens: 3,
+    reasoningTokens: 2,
+    cacheReadTokens: 7,
+    cacheWriteTokens: 5,
+  }
+  render(
+    <SessionDetailPresentation
+      {...presentationProps({
+        summary: summary({
+          sessions: [
+            metrics({
+              accounting: {
+                aggregateTokens: tokens,
+                retainedTokens: tokens,
+                aggregateCalculatedCost: { usd: 0, provenance: "producerCalculated" },
+                retainedCalculatedCost: { usd: 0, provenance: "producerCalculated" },
+              },
+            }),
+          ],
+        }),
+        modelRuns: [{ model: "native-model", nativeVariant: "native-high" }],
+      })}
+    />,
+  )
+  fireEvent.click(screen.getByRole("tab", { name: "Cost" }))
+  const detail = screen.getByRole("region", { name: "Native accounting" })
+  expect(
+    screen.getByText("A catalog cost estimate is unavailable for this session."),
+  ).toBeInTheDocument()
+  expect(within(detail).getByText("native-model#native-high")).toBeInTheDocument()
+  expect(within(detail).getAllByText(/Visible output 3 · Reasoning 2/)).toHaveLength(2)
+  expect(within(detail).getByText(/not billed amounts/)).toBeInTheDocument()
+})
+
 // jsdom never measures a real layout size, so recharts' `ResponsiveContainer`
 // renders no children for either analysis chart here (see ContextTokensChart
 // and CostBurnupChart's own test files for their real rendered content). This

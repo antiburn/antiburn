@@ -1,6 +1,6 @@
 //! Native results retain observed output and completion status, not test-pass or approval claims.
 
-use crate::checks::ignored_instructions::sha256_hex;
+use crate::digest::sha256_hex;
 use serde_json::Value;
 
 use crate::analysis::interface::{ContentKind, ContentPart};
@@ -12,6 +12,10 @@ use crate::analysis::jev_evidence::{
 
 const READ_CONTRACT: &str = "claude-code/2.1.278:retained-cli-text-read";
 
+pub(super) fn supports_result(record: &Value) -> bool {
+    record["version"] == "2.1.278" || super::retained_root::is_characterized_cli(record)
+}
+
 pub(super) fn capture_result(
     record: &Value,
     block: &Value,
@@ -21,7 +25,7 @@ pub(super) fn capture_result(
     order: u32,
     parts: &mut [ContentPart],
 ) {
-    if record["version"] != "2.1.278" || !matches!(name, "Read" | "Bash" | "Skill") {
+    if !supports_result(record) || !matches!(name, "Read" | "Bash" | "Skill") {
         return;
     }
     let id = block["tool_use_id"].as_str();
@@ -100,20 +104,41 @@ pub(super) fn capture_result(
         recorded_file_version: None,
         extent_contract: Some(READ_CONTRACT.into()),
     };
-    if result.status != JevReadStatus::Failed
-        && block.get("is_error").is_none_or(|value| value == false)
-        && !interrupted
-        && !injected
-        && !clipped
-        && let Some(payload) = structured.filter(|payload| payload["type"] == "text")
-        && let Some(extent) = observed_extent(input, payload, text)
-    {
+    if !clipped && let Some(extent) = completed_text_read(record, block, input, structured) {
         result.status = JevReadStatus::Success;
         part.metadata.state = JevOperationState::Completed;
         result.kind = JevReadResultKind::File;
         result.returned_extent = Some(extent);
     }
     part.metadata.read_result = Some(result);
+}
+
+pub(super) fn completed_text_read(
+    record: &Value,
+    block: &Value,
+    input: &Value,
+    structured: Option<&Value>,
+) -> Option<JevReadExtent> {
+    let output = block["content"].as_str()?;
+    let payload = structured.filter(|payload| payload["type"] == "text")?;
+    if record["version"] != "2.1.278"
+        || record["entrypoint"] != "cli"
+        || !block.get("is_error").is_none_or(|value| value == false)
+        || record["interruptedByShutdown"] == true
+        || ["isMeta", "isSynthetic", "isCompactSummary"]
+            .iter()
+            .any(|key| record.get(key).is_some_and(|value| value != false))
+        || payload["interrupted"] == true
+        || payload.get("backgroundTaskId").is_some()
+        || payload["truncated"] == true
+        || payload.get("persistedOutputPath").is_some()
+        || output.contains("PARTIAL view")
+        || output.contains("<persisted-output>")
+        || output.contains("[truncated]")
+    {
+        return None;
+    }
+    observed_extent(input, payload, output)
 }
 
 fn observed_extent(input: &Value, payload: &Value, output: &str) -> Option<JevReadExtent> {

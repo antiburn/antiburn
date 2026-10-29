@@ -12,9 +12,9 @@ import { CHECK_LABELS } from "../../../lib/presentation/checkReport"
 import { DisclosureChevron } from "./BurnCheckTargetPresentation"
 
 const ESTIMATED_SAVINGS_TOOLTIP =
-  "Pre-remediation opportunity estimated from evidence observed before the fix. Actual results can vary."
+  "Potential savings estimated from evidence recorded before the fix. Actual results can vary."
 const CONFIRMED_SAVINGS_TOOLTIP =
-  "Savings observed across sessions that passed after remediation. This is still an estimate and may not match provider billing exactly."
+  "Savings observed in sessions that passed after the fix. This is still an estimate and may not match provider billing exactly."
 
 type SavingsGroup = {
   detector: BurnCheckDetectorId

@@ -1,0 +1,18 @@
+{
+  "name": "antiburn-plugin-core",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "assemble": "node ../../scripts/assemble-antiburn-core-plugin.mjs",
+    "verify": "node ../../scripts/assemble-antiburn-core-plugin.mjs --verify",
+    "lint": "node check.mjs lint",
+    "format:check": "node check.mjs format",
+    "typecheck": "node check.mjs typecheck"
+  }
+}

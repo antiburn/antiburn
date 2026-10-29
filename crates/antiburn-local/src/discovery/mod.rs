@@ -230,6 +230,24 @@ pub enum DirectSessionSource {
 pub trait AgentExplorer: Send + Sync {
     async fn discover_recent(&self, now: i64, since_secs: i64) -> Vec<SessionLog>;
 
+    /// Discover recent sessions and send them in bounded, activity-ordered batches.
+    ///
+    /// `since_secs` is a lookback duration, not an absolute cutoff. The default
+    /// adapter collects and retains the whole result before its first delivery.
+    /// It bounds batch size, not source reads, retained bytes, or time to first
+    /// delivery. Explorers can override it to deliver earlier.
+    async fn discover_recent_batches(
+        &self,
+        agent: AgentKind,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        let mut logs = self.discover_recent(now, since_secs).await;
+        send_discovery_batches(agent, &mut logs, batch_size, true, &sender).await;
+    }
+
     /// Optional O(1)-ish point lookup for agents with a durable per-session
     /// index. The default fallback scans the agent's whole store via
     /// [`Self::discover_recent`].
@@ -461,6 +479,51 @@ pub trait AgentExplorer: Send + Sync {
     async fn subagent_meta(&self, _path: &Path) -> Option<SubagentMeta> {
         None
     }
+}
+
+/// One bounded delivery from an agent explorer or the WSL reader.
+#[derive(Debug)]
+pub struct DiscoveryBatch {
+    pub agent: AgentKind,
+    pub candidates: Vec<SessionLog>,
+    /// True when this native agent explorer has finished. WSL deliveries use
+    /// false. Channel closure marks completion of the whole request, including WSL.
+    pub complete: bool,
+}
+
+async fn send_discovery_batches(
+    agent: AgentKind,
+    logs: &mut Vec<SessionLog>,
+    batch_size: usize,
+    complete: bool,
+    sender: &tokio::sync::mpsc::Sender<DiscoveryBatch>,
+) -> bool {
+    sort_session_logs_by_activity(logs);
+    let batch_size = batch_size.max(1);
+    let count = logs.len().div_ceil(batch_size).max(1);
+    let mut logs = std::mem::take(logs).into_iter();
+    for index in 0..count {
+        if sender
+            .send(DiscoveryBatch {
+                agent,
+                candidates: logs.by_ref().take(batch_size).collect(),
+                complete: complete && index + 1 == count,
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn sort_session_logs_by_activity(logs: &mut [SessionLog]) {
+    logs.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.source_label().cmp(&b.source_label()))
+    });
 }
 
 /// Lowercase + forward-slash a path / label string for prefix or substring
@@ -807,11 +870,15 @@ pub enum SessionSource {
     Inline {
         label: String,
         content: String,
+        source_format: Option<crate::analysis::SourceFormat>,
     },
     ProviderDb {
         agent: AgentKind,
         db_path: PathBuf,
         session_id: String,
+        /// A discovered source contract when the database schema is known.
+        /// `None` keeps existing non-OpenCode database sources unchanged.
+        source_format: Option<crate::analysis::SourceFormat>,
     },
 }
 
@@ -849,9 +916,33 @@ impl SessionLog {
         self.environment.clone()
     }
 
-    /// Environment-aware identity for discovery dedupe and incremental cursors.
+    /// Environment-aware logical identity used to deduplicate discovered sessions.
     pub fn dedupe_key(&self) -> String {
+        if let SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            session_id,
+            ..
+        } = &self.source
+        {
+            return format!("{}|opencode:{session_id}", self.environment().key());
+        }
         format!("{}|{}", self.environment().key(), self.source_label())
+    }
+
+    fn source_preference(&self) -> u8 {
+        match &self.source {
+            SessionSource::ProviderDb {
+                agent: AgentKind::OpenCode,
+                source_format: Some(crate::analysis::SourceFormat::OpenCodeSqliteV2),
+                ..
+            } => 3,
+            SessionSource::ProviderDb {
+                agent: AgentKind::OpenCode,
+                source_format: Some(crate::analysis::SourceFormat::OpenCodeSqliteV1),
+                ..
+            } => 1,
+            _ => 0,
+        }
     }
 
     /// Persisted cursor key. Native sessions retain the pre-WSL label format
@@ -869,8 +960,17 @@ impl SessionLog {
             SessionSource::File(path) => path.to_string_lossy().to_string(),
             SessionSource::Inline { label, .. } => label.clone(),
             SessionSource::ProviderDb {
-                agent, session_id, ..
-            } => format!("{agent}:{session_id}"),
+                agent,
+                session_id,
+                source_format,
+                ..
+            } => {
+                if *source_format == Some(crate::analysis::SourceFormat::OpenCodeSqliteV2) {
+                    format!("{agent}:{session_id}:open_code_v2_sqlite")
+                } else {
+                    format!("{agent}:{session_id}")
+                }
+            }
         }
     }
 
@@ -920,17 +1020,24 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
         SessionSource::Inline { content, .. } => Some(content.clone()),
         SessionSource::ProviderDb {
             agent: AgentKind::OpenCode,
+            source_format: Some(crate::analysis::SourceFormat::OpenCodeSqliteV1),
             db_path,
             session_id,
+            ..
         } => {
             #[cfg(any(test, feature = "test-instrumentation"))]
             record_tracked_provider_db_render(db_path);
             agents::opencode::render_db_session(db_path.clone(), session_id.clone()).await
         }
         SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            ..
+        } => None,
+        SessionSource::ProviderDb {
             agent: AgentKind::Antigravity,
             db_path,
             session_id,
+            ..
         } => {
             let transcript = agents::antigravity::sibling_brain_transcript(db_path, session_id)?;
             tokio::fs::read_to_string(transcript).await.ok()
@@ -939,6 +1046,7 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
             agent,
             db_path,
             session_id,
+            ..
         } => {
             tracing::error!(
                 agent = %agent,
@@ -961,6 +1069,7 @@ pub async fn session_source_preview(source: &SessionSource) -> Option<String> {
             agent: AgentKind::Antigravity,
             db_path,
             session_id,
+            ..
         } => agents::antigravity::sibling_brain_transcript(db_path, session_id)?,
         _ => return session_source_content(source).await,
     };
@@ -1000,6 +1109,7 @@ pub async fn session_source_tail(source: &SessionSource) -> Option<String> {
             agent: AgentKind::Antigravity,
             db_path,
             session_id,
+            ..
         } => agents::antigravity::sibling_brain_transcript(db_path, session_id)?,
         _ => return session_source_content(source).await,
     };
@@ -1087,6 +1197,35 @@ async fn session_source_read(
                 content,
             })
         }
+        SessionSource::Inline {
+            source_format: Some(crate::analysis::SourceFormat::OpenCodeV2SessionExport),
+            content,
+            ..
+        } => {
+            let mut metadata = scanner::parse_session_metadata_str(content);
+            let export: serde_json::Value = serde_json::from_str(content).ok()?;
+            let info = export.get("info")?;
+            metadata.session_id = info.get("id")?.as_str().map(str::to_owned);
+            metadata.cwd = info
+                .pointer("/location/directory")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            metadata.title = info
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            metadata.title_source = metadata
+                .title
+                .as_ref()
+                .map(|_| scanner::TitleSource::Explicit);
+            metadata.agent_type = agent_type;
+            Some(SourceRead {
+                metadata,
+                stat: None,
+                head_hash: None,
+                content: None,
+            })
+        }
         SessionSource::Inline { content, .. } => {
             let mut metadata = scanner::parse_session_metadata_str(content);
             metadata.agent_type = agent_type;
@@ -1104,11 +1243,21 @@ async fn session_source_read(
         }
         SessionSource::ProviderDb {
             agent: AgentKind::OpenCode,
+            source_format:
+                Some(
+                    source_format @ (crate::analysis::SourceFormat::OpenCodeSqliteV1
+                    | crate::analysis::SourceFormat::OpenCodeSqliteV2),
+                ),
             db_path,
             session_id,
+            ..
         } => {
-            let metadata =
-                agents::opencode::db_session_metadata(db_path.clone(), session_id.clone()).await?;
+            let metadata = agents::opencode::db_session_metadata(
+                db_path.clone(),
+                session_id.clone(),
+                *source_format,
+            )
+            .await?;
             let content = if matches!(agent_type, Some(AgentKind::Claude | AgentKind::Codex)) {
                 session_source_content(source).await
             } else {
@@ -1122,9 +1271,14 @@ async fn session_source_read(
             })
         }
         SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            ..
+        } => None,
+        SessionSource::ProviderDb {
             agent: AgentKind::Antigravity,
             db_path,
             session_id,
+            ..
         } => {
             let metadata =
                 agents::antigravity::db_session_metadata(db_path.clone(), session_id.clone())
@@ -1140,6 +1294,7 @@ async fn session_source_read(
             agent,
             db_path,
             session_id,
+            ..
         } => {
             tracing::error!(
                 agent = %agent,
@@ -1584,8 +1739,20 @@ fn collect_discovered_sessions(per_agent_logs: Vec<Vec<SessionLog>>) -> Vec<Sess
 }
 
 fn dedupe_environment_sessions(logs: &mut Vec<SessionLog>) {
-    let mut seen = std::collections::HashSet::new();
-    logs.retain(|log| seen.insert(log.dedupe_key()));
+    let mut indexes: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut selected: Vec<SessionLog> = Vec::with_capacity(logs.len());
+    for log in logs.drain(..) {
+        let key = log.dedupe_key();
+        if let Some(index) = indexes.get(&key).copied() {
+            if log.source_preference() > selected[index].source_preference() {
+                selected[index] = log;
+            }
+        } else {
+            indexes.insert(key, selected.len());
+            selected.push(log);
+        }
+    }
+    *logs = selected;
 }
 
 impl Explorers {
@@ -1694,6 +1861,117 @@ impl Explorers {
         logs.extend(self.discover_wsl_file_sessions(now, since_secs).await);
         dedupe_environment_sessions(&mut logs);
         logs
+    }
+
+    /// Discover native and WSL sessions concurrently through a bounded channel.
+    ///
+    /// A receiver should use a bounded capacity and process batches as they
+    /// arrive. Native explorers deliver independently. One additional task reads
+    /// WSL distributions in sequence and delivers each distribution before reading
+    /// the next. WSL and default native readers retain whole results before
+    /// delivery; batching does not bound their source reads or retained bytes.
+    /// Activity order applies within each source result, not across sources.
+    /// OpenCode delivers database roots separately, then its legacy result.
+    /// WSL OpenCode still collects all selected CLI exports before delivery;
+    /// the export limits bound each output, not aggregate retained bytes.
+    /// Dropping the receiver cancels async readers; started blocking reads can
+    /// finish. There are at most `AgentKind::ALL.len() + 1` reader tasks.
+    pub async fn discover_recent_batches(
+        &self,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        self.discover_recent_batches_with_wsl(
+            now,
+            since_secs,
+            batch_size,
+            sender,
+            crate::platform::environment::discover_wsl_environments(),
+        )
+        .await;
+    }
+
+    async fn discover_recent_batches_with_wsl(
+        &self,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+        environments: impl std::future::Future<Output = Vec<WslEnvironmentInfo>> + Send,
+    ) {
+        let native = self.discover_recent_batches_for_agents(
+            AgentKind::ALL,
+            now,
+            since_secs,
+            batch_size,
+            sender.clone(),
+        );
+        let explorers = *self;
+        let wsl_sender = sender.clone();
+        let wsl = async move {
+            let sender = wsl_sender;
+            for info in environments.await {
+                let mut logs = explorers
+                    .discover_wsl_file_sessions_in(&info, now, since_secs)
+                    .await;
+                dedupe_environment_sessions(&mut logs);
+                let mut per_agent = std::collections::HashMap::<AgentKind, Vec<SessionLog>>::new();
+                for log in logs {
+                    per_agent.entry(log.agent_type).or_default().push(log);
+                }
+                for agent in AgentKind::ALL {
+                    let Some(mut candidates) = per_agent.remove(agent) else {
+                        continue;
+                    };
+                    if !send_discovery_batches(*agent, &mut candidates, batch_size, false, &sender)
+                        .await
+                    {
+                        return;
+                    }
+                }
+            }
+        };
+        tokio::select! {
+            _ = sender.closed() => {},
+            _ = async { tokio::join!(native, wsl); } => {},
+        }
+    }
+
+    /// Discover only the selected native agents. An empty selection does no work;
+    /// repeated agents run once. This route never enumerates WSL or other agents.
+    /// Each agent delivers independently with at most one task per selected agent.
+    /// Whole-result limits and receiver cancellation match `discover_recent_batches`.
+    pub async fn discover_recent_batches_for_agents(
+        &self,
+        agents: &[AgentKind],
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        let mut tasks = tokio::task::JoinSet::new();
+        for agent in AgentKind::ALL.iter().filter(|agent| agents.contains(agent)) {
+            let explorer = self.get(agent);
+            let agent = *agent;
+            let sender = sender.clone();
+            tasks.spawn(async move {
+                explorer
+                    .discover_recent_batches(agent, now, since_secs, batch_size, sender)
+                    .await;
+            });
+        }
+        loop {
+            tokio::select! {
+                _ = sender.closed() => break,
+                result = tasks.join_next() => match result {
+                    None => break,
+                    Some(Ok(())) => {},
+                    Some(Err(error)) => tracing::warn!(%error, "agent batch discovery task failed"),
+                },
+            }
+        }
     }
 
     /// Locate a single session's transcript source by `(agent, session_id)`,
@@ -1943,6 +2221,7 @@ fn subagent_parent_transcript(source: &SessionSource) -> Option<PathBuf> {
             agent: AgentKind::Antigravity,
             db_path,
             session_id,
+            ..
         } => agents::antigravity::sibling_brain_transcript(db_path, session_id),
         _ => None,
     }

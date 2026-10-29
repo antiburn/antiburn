@@ -15,6 +15,9 @@ const writePath = new URL(
 );
 const generation = parse(readFileSync(generationPath, "utf8"));
 const write = parse(readFileSync(writePath, "utf8"));
+const dependabot = parse(
+  readFileSync(new URL("../.github/dependabot.yml", import.meta.url), "utf8"),
+);
 
 function flatten(value) {
   if (typeof value === "string") return [value];
@@ -67,6 +70,13 @@ test("notice generation runs only for same-repository Dependabot pull requests",
   assert.match(job.if, /head\.repo\.full_name == github\.repository/);
   assert.match(job.if, /startsWith\(.*'dependabot\/'\)/);
   assert.equal(job.permissions, undefined);
+});
+
+test("Dependabot checks the Burn Check validator Cargo workspace", () => {
+  const cargo = dependabot.updates.find(
+    (update) => update["package-ecosystem"] === "cargo",
+  );
+  assert.ok(cargo.directories.includes("/crates/antiburn-checks"));
 });
 
 test("generation installs without lifecycle scripts and uploads only changed notices", () => {

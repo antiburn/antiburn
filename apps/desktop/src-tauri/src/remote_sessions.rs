@@ -765,6 +765,27 @@ where
     Ok(())
 }
 
+fn fair_session_indices(count: usize) -> Vec<usize> {
+    let mut order = Vec::with_capacity(count);
+    let mut recent = 0;
+    let mut oldest = count;
+
+    while recent < oldest {
+        for _ in 0..3 {
+            if recent == oldest {
+                break;
+            }
+            order.push(recent);
+            recent += 1;
+        }
+        if recent < oldest {
+            oldest -= 1;
+            order.push(oldest);
+        }
+    }
+    order
+}
+
 fn scan_error<T>(result: &anyhow::Result<T>, summary: &ScanSummary) -> Option<RemoteHostError> {
     match result {
         Err(error) => Some(safe_scan_error(error)),
@@ -820,11 +841,12 @@ pub(crate) async fn perform_scan(
         snapshot.validate()?;
         let root = directory(app).map_err(anyhow::Error::msg)?;
         let store = app.state::<crate::store::Store>();
+        let session_order = fair_session_indices(snapshot.sessions.len());
         sync_snapshot(
-            snapshot.sessions.len(),
+            session_order.len(),
             &mut summary,
             |index| {
-                let session = &snapshot.sessions[index];
+                let session = &snapshot.sessions[session_order[index]];
                 let root = &root;
                 let store = &store;
                 let alias = &record.ssh_alias;
@@ -909,6 +931,22 @@ pub(crate) async fn perform_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_selection_serves_recent_and_oldest_within_the_returned_set() {
+        for count in 0..=antiburn_remote::MAX_SESSIONS {
+            let order = fair_session_indices(count);
+            let unique = order.iter().copied().collect::<HashSet<_>>();
+            assert_eq!(order.len(), count);
+            assert_eq!(unique.len(), count);
+            assert!(order.iter().all(|index| *index < count));
+        }
+        assert_eq!(fair_session_indices(8), vec![0, 1, 2, 7, 3, 4, 5, 6]);
+
+        let order = fair_session_indices(antiburn_remote::MAX_SESSIONS);
+        assert_eq!(&order[..4], &[0, 1, 2, 199]);
+        assert_eq!(order.len(), antiburn_remote::MAX_SESSIONS);
+    }
 
     #[tokio::test]
     async fn rejected_sessions_do_not_starve_later_imports() {

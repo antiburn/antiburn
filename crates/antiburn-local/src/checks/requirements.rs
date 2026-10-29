@@ -222,20 +222,6 @@ pub fn requirements(detector: DetectorId) -> DetectorRequirements {
                 Fact::TimeRange,
             ],
         },
-        DetectorId::IgnoredInstructions | DetectorId::OverExploring | DetectorId::ScopeCreep => {
-            DetectorRequirements {
-                finding: &[],
-                clean: &[],
-            }
-        }
-        DetectorId::SkillOpportunities => DetectorRequirements {
-            finding: &[Fact::SkillInventory, Fact::ToolInvocations],
-            clean: &[
-                Fact::SkillInventory,
-                Fact::ToolInvocations,
-                Fact::Eligibility,
-            ],
-        },
     }
 }
 
@@ -264,10 +250,16 @@ fn source_supports_finding(detector: DetectorId, format: crate::analysis::Source
                 | DetectorId::OveruseOfFastMode
                 | DetectorId::CacheChurn,
         ) | (
-            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1,
             DetectorId::SessionsOverDepth
                 | DetectorId::OverpoweredSubagents
                 | DetectorId::UnusedSkills
+                | DetectorId::OldModelUsage
+                | DetectorId::CacheChurn,
+        ) | (
+            SourceFormat::OpenCodeSqliteV2,
+            DetectorId::SessionsOverDepth
+                | DetectorId::OverpoweredSubagents
                 | DetectorId::OldModelUsage
                 | DetectorId::CacheChurn,
         ) | (
@@ -321,10 +313,7 @@ fn source_supports_finding(detector: DetectorId, format: crate::analysis::Source
 pub fn clean_facts_complete(detector: DetectorId, evidence: &SessionEvidence) -> bool {
     !matches!(
         detector,
-        DetectorId::UnusedSkills
-            | DetectorId::UnusedMcpServers
-            | DetectorId::UnusedBuiltInTools
-            | DetectorId::SkillOpportunities
+        DetectorId::UnusedSkills | DetectorId::UnusedMcpServers | DetectorId::UnusedBuiltInTools
     ) && evidence.coverage == EvidenceCoverage::Complete
         && source_supports_clean(detector, evidence.capabilities.source_format)
         && requirements(detector)
@@ -341,7 +330,7 @@ fn source_supports_clean(detector: DetectorId, format: crate::analysis::SourceFo
             SourceFormat::ClaudeJsonl
                 | SourceFormat::CodexRolloutJsonl
                 | SourceFormat::OpenCodeJsonl
-                | SourceFormat::OpenCodeSqliteV2
+                | SourceFormat::OpenCodeSqliteV1
                 | SourceFormat::PiV3Jsonl,
             _,
         ) | (

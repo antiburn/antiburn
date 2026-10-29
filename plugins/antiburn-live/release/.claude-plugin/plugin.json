@@ -1,0 +1,33 @@
+{
+  "name": "antiburn",
+  "displayName": "antiburn",
+  "version": "0.2.5",
+  "description": "● ● ● ○ │ ○ ○ · Stop hitting your limits! Pace your Claude Code usage for five-hour and weekly limits across sessions. See usage and reset times at a glance, above your prompt in both desktop and terminal.",
+  "author": {
+    "name": "Antiburn"
+  },
+  "license": "MIT",
+  "homepage": "https://antiburn.com/plugin",
+  "repository": "https://github.com/antiburn/antiburn",
+  "icon": "./assets/icon.png",
+  "privacyPolicyUrl": "https://github.com/antiburn/antiburn/blob/main/plugins/antiburn/PRIVACY.md",
+  "keywords": [
+    "usage",
+    "usage-tracking",
+    "usage-monitor",
+    "rate-limits",
+    "usage-limits",
+    "limits",
+    "quota",
+    "five-hour-limits",
+    "weekly-limits",
+    "reset-times",
+    "usage-pacing",
+    "pace",
+    "glance",
+    "usage-meter",
+    "above-prompt",
+    "terminal",
+    "desktop"
+  ]
+}

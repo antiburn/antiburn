@@ -1,0 +1,323 @@
+{
+  "completed": [
+    {
+      "arguments": {
+        "command": "synthetic test"
+      },
+      "call_id": "call-0",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "ok",
+      "context": {
+        "complete_through_event": true,
+        "main_session": true,
+        "result_position": {
+          "FileBytes": {
+            "item_index": 0,
+            "record_end": 542,
+            "record_start": 321
+          }
+        },
+        "user_messages": []
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "FileBytes": {
+          "item_index": 0,
+          "record_end": 542,
+          "record_start": 321
+        }
+      },
+      "provider_executed": null,
+      "record_id": "result-0",
+      "result_id": "result-0",
+      "revision": 1,
+      "session_id": "synthetic",
+      "source_format": "pi_v3_jsonl",
+      "status": "Success",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    }
+  ],
+  "cursor": {
+    "adapter": {
+      "Pi": {
+        "last": "request-1",
+        "parser": {
+          "admission": "AwaitingHeader",
+          "admission_checked": false,
+          "branch_parents": [],
+          "branched_tree": false,
+          "cache_write_tokens_available": null,
+          "current_model": null,
+          "current_provider": null,
+          "current_thinking_mode": null,
+          "fork_attribution_incomplete": false,
+          "fork_header_present": false,
+          "fork_start_ms": null,
+          "legacy_entry_ids": [],
+          "legacy_migration_incomplete": false,
+          "model": null,
+          "native": {
+            "active": true,
+            "call_bytes": 0,
+            "calls": {},
+            "invalid": false,
+            "last_id": null,
+            "publication_order_invalid": false,
+            "session_id": null
+          },
+          "native_session_id": "synthetic",
+          "native_tool_bytes": 47,
+          "native_tool_calls": {
+            "call-1": {
+              "arguments": "{\"command\":\"synthetic test\"}",
+              "name": "bash",
+              "record_id": "request-1"
+            }
+          },
+          "native_tool_results": [],
+          "native_tool_results_enabled": true,
+          "native_tool_results_incomplete": false,
+          "policy_by_id": {},
+          "provider_hints": [],
+          "publication_root": true,
+          "record_offset": 0,
+          "scope": {
+            "bytes": 0,
+            "incomplete": false,
+            "rows": {}
+          },
+          "scope_enabled": false,
+          "session_version": 0,
+          "started_at_ms": null,
+          "startup_context": {
+            "observed": false,
+            "skill_descriptions": {},
+            "source_rows": []
+          },
+          "subagent_calls": {},
+          "subagent_incomplete": false,
+          "threads": {
+            "capped": false,
+            "current": null,
+            "thread_by_uuid": {}
+          }
+        },
+        "records": {
+          "fixture_sparse_u64_array": {
+            "len": 131072,
+            "nonzero": [
+              [
+                2711,
+                1
+              ],
+              [
+                4747,
+                16
+              ],
+              [
+                6238,
+                64
+              ],
+              [
+                16877,
+                64
+              ],
+              [
+                19940,
+                4
+              ],
+              [
+                30516,
+                32
+              ],
+              [
+                40385,
+                8
+              ],
+              [
+                47596,
+                32
+              ],
+              [
+                52813,
+                16
+              ],
+              [
+                56867,
+                2
+              ],
+              [
+                58244,
+                64
+              ],
+              [
+                58562,
+                2
+              ],
+              [
+                63583,
+                16
+              ],
+              [
+                78764,
+                2
+              ],
+              [
+                78979,
+                8
+              ],
+              [
+                86602,
+                8
+              ],
+              [
+                91495,
+                1
+              ],
+              [
+                91667,
+                4
+              ],
+              [
+                98366,
+                64
+              ],
+              [
+                108206,
+                1
+              ],
+              [
+                110134,
+                32
+              ],
+              [
+                123672,
+                2
+              ],
+              [
+                124905,
+                64
+              ],
+              [
+                125759,
+                16
+              ]
+            ]
+          }
+        },
+        "retired_calls": {
+          "fixture_sparse_u64_array": {
+            "len": 131072,
+            "nonzero": [
+              [
+                11838,
+                16
+              ],
+              [
+                18881,
+                1
+              ],
+              [
+                21758,
+                32
+              ],
+              [
+                28459,
+                32
+              ],
+              [
+                53304,
+                8
+              ],
+              [
+                63206,
+                32
+              ],
+              [
+                78088,
+                2
+              ],
+              [
+                82132,
+                2
+              ],
+              [
+                103820,
+                4
+              ],
+              [
+                108213,
+                2
+              ],
+              [
+                112082,
+                4
+              ],
+              [
+                119754,
+                4
+              ],
+              [
+                121142,
+                128
+              ],
+              [
+                126165,
+                2
+              ],
+              [
+                126508,
+                16
+              ],
+              [
+                129564,
+                16
+              ]
+            ]
+          }
+        },
+        "root": true,
+        "suffix_only": false
+      }
+    },
+    "agent": "pi",
+    "anchor": {
+      "boundary": 877,
+      "head": {
+        "offset": 102,
+        "tail_hash": 4620865338498388972,
+        "tail_len": 102
+      },
+      "identity": "16777234:306699076",
+      "tail": {
+        "offset": 877,
+        "tail_hash": 436257824245452441,
+        "tail_len": 877
+      }
+    },
+    "baseline_offset": 102,
+    "framer": "bnsiaWQiOiJyZXN1bHQtMSIsIm1lc3NhZ2UiOnsiY29udGVudCI6W3sidGV4dCI6Im9rIiwidHlwZSI6InRleHQifV0sImlzRXJyb3IiOmZhbHNlLCJyb2xlIjoidG9vbFJlc3VsdCIsInRvb2xDAAD/BQ==",
+    "history_complete": true,
+    "next_record_index": 4,
+    "pending_results": null,
+    "request_bytes": 0,
+    "request_ids": {
+      "fixture_sparse_u64_array": {
+        "len": 131072,
+        "nonzero": []
+      }
+    },
+    "requests": [],
+    "revision": 1,
+    "session_id": "synthetic",
+    "source_format": "pi_v3_jsonl",
+    "start_offset": 0
+  },
+  "cursor_sha256": "348de777aaea9eed99fb35e80ea85667a14e8cfc84e8bf9dd1c614b12f64957f",
+  "parser_revision": 64,
+  "source_prefix": "{\"type\":\"session\",\"version\":3,\"id\":\"synthetic\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"cwd\":\"/synthetic\"}\n{\"id\":\"request-0\",\"message\":{\"content\":[{\"arguments\":{\"command\":\"synthetic test\"},\"id\":\"call-0\",\"name\":\"bash\",\"type\":\"toolCall\"}],\"role\":\"assistant\"},\"parentId\":null,\"timestamp\":\"2026-01-01T00:00:04Z\",\"type\":\"message\"}\n{\"id\":\"result-0\",\"message\":{\"content\":[{\"text\":\"ok\",\"type\":\"text\"}],\"isError\":false,\"role\":\"toolResult\",\"toolCallId\":\"call-0\",\"toolName\":\"bash\"},\"parentId\":\"request-0\",\"timestamp\":\"2026-01-01T00:00:05Z\",\"type\":\"message\"}\n{\"id\":\"request-1\",\"message\":{\"content\":[{\"arguments\":{\"command\":\"synthetic test\"},\"id\":\"call-1\",\"name\":\"bash\",\"type\":\"toolCall\"}],\"role\":\"assistant\"},\"parentId\":\"result-0\",\"timestamp\":\"2026-01-01T00:00:04Z\",\"type\":\"message\"}\n{\"id\":\"result-1\",\"message\":{\"content\":[{\"text\":\"ok\",\"type\":\"text\"}],\"isError\":false,\"role\":\"toolResult\",\"toolC",
+  "source_suffix": "allId\":\"call-1\",\"toolName\":\"bash\"},\"parentId\":\"request-1\",\"timestamp\":\"2026-01-01T00:00:05Z\",\"type\":\"message\"}\n"
+}

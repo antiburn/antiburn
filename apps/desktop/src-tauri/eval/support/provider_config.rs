@@ -1,11 +1,8 @@
-//! Shared preset connections and credentials for evaluation and benchmarks.
+//! Provider protocol preset connections and environment credentials.
 
 use super::{config, jev_cloudflare};
 use antiburn_local::analysis::jev::JevError;
-use config::{
-    ContextLimitOverride, SystemOneConnection, SystemOneEndpoint, SystemOneProvider,
-    SystemOneResponseMode,
-};
+use config::{SystemOneConnection, SystemOneEndpoint, SystemOneProvider, SystemOneResponseMode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -55,7 +52,8 @@ impl ProviderPreset {
 
     pub(crate) fn model(self) -> &'static str {
         match self {
-            Self::Jev | Self::CustomJevDirect => antiburn_local::analysis::jev::PINNED_MODEL,
+            Self::Jev => antiburn_local::analysis::jev::NATIVE_MODEL_ALIAS,
+            Self::CustomJevDirect => "jev-1.14.0",
             Self::OllamaNimble | Self::CustomOllamaNimbleDirect => "nimble:latest",
             Self::OllamaClefFlash | Self::CustomOllamaClefFlashDirect => "clef-flash:latest",
             Self::OllamaTevSmall => "tev1:0.8b",
@@ -91,10 +89,6 @@ impl ProviderPreset {
             }
             _ => {
                 connection.provider = SystemOneProvider::Custom;
-                connection.context_override = Some(ContextLimitOverride {
-                    total_input_tokens: Some(if self.local() { 8192 } else { 65_536 }),
-                    ..ContextLimitOverride::default()
-                });
                 let endpoint = if self.local() {
                     format!("{LOCAL_BASE}/v1/systemone")
                 } else if self.cloudflare() {

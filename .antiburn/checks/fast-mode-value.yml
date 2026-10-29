@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=../../docs/burn-check/schemas/burn-check.schema.json
+# Advice covers selected recorded fast-mode work, not actual served speed or savings.
+# The label probability gate judges advice, not the strength of mode proof.
+name: Fast mode value
+description: Suggest a standard-mode trial for explicitly non-urgent fast-mode work.
+on:
+  tool_result:
+    fast_mode: true
+  window:
+    size: 5
+    min: 3
+  cooldown: 120s
+decisions:
+  review:
+    input:
+      requests: ${{ session.requests }}
+      request_history_complete: ${{ session.requests_complete }}
+      source_coverage: ${{ session.source_coverage }}
+      activity: ${{ window.messages }}
+    fit:
+      "activity[*].tool.result.content": truncate
+    output:
+      value:
+        type: choice
+        question: >-
+          Does this selected fast-mode work support a standard-mode trial for
+          similar work? Choose try_standard_mode only when the recorded request
+          affirmatively permits slower work, for example by saying it is not
+          urgent, and the selected results show relevant completed work. An
+          absent deadline or missing urgency statement is not affirmative evidence.
+          Choose no_clear_trial_signal when an explicit latency need or other
+          recorded requirement argues against a trial. Choose uncertain when
+          task evidence is missing, conflicting, or insufficient. Read requests,
+          activity, and source-quality limits together. A partial history, capture
+          gap, or fitted omission can hide a relevant requirement; do not infer
+          what omitted text contains. Judge only the selected work. Recorded
+          fast-mode evidence can be a recorded requested tier, a model-name hint,
+          or a selected catalog mode. Read each result's source and quality fields
+          for the hint's origin and limits. These hints do not prove the endpoint
+          or tier actually served. Do not reject requested-preference or name hints
+          just because they are weaker than reported speed. Current settings alone do not establish past
+          mode. Missing mode remains unknown, and the selected window does not
+          represent excluded standard-mode work. Do not infer model occupancy, tool-only time,
+          billed waste, counterfactual duration, speedup, or savings. The advice
+          is to test standard mode on similar work, not to change an unobserved
+          current setting or promise that a standard route is available.
+        criteria:
+          try_standard_mode: The request explicitly permits slower non-urgent work, relevant work completed, and no retained requirement argues against a trial.
+          no_clear_trial_signal: A recorded latency need or another requirement argues against a standard-mode trial.
+          uncertain: The recorded task, requirements, result, or retained context does not establish a useful trial recommendation.
+actions:
+  - type: status
+    if: decisions.review.outputs.value == 'try_standard_mode' && decisions.review.details.value.probabilities.try_standard_mode >= 0.95
+    input:
+      result: failure
+      message: Consider testing standard mode on similar non-urgent work. Review the recorded request and fast-mode evidence first; this does not promise savings or route availability.
+  - type: status
+    if: "!(decisions.review.outputs.value == 'try_standard_mode' && decisions.review.details.value.probabilities.try_standard_mode >= 0.95)"
+    input:
+      result: success

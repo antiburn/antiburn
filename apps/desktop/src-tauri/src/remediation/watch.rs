@@ -23,7 +23,7 @@ pub(crate) fn evaluate_dirty_remediation(
     let Some(detector) = DetectorId::from_key(&definition.detector) else {
         return Ok(false);
     };
-    if !store.check_enabled(detector)? || !smart_check_master_available(store, detector) {
+    if !store.check_enabled(detector)? {
         // This records the dirty revision and preserves the retained result.
         // It prevents the disabled watch from repeatedly taking the work queue.
         return store.mark_remediation_evaluated(

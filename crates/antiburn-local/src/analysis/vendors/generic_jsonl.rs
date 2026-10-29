@@ -35,6 +35,7 @@ impl SessionReader for GenericJsonlSessionReader {
         let content = read_source(&input.source)
             .with_context(|| format!("reading session {}", input.session_id))?;
         Ok(NormalizedSession {
+            accounting: None,
             agent: input.agent.clone(),
             session_id: input.session_id.clone(),
             events: parse_jsonl(&content),

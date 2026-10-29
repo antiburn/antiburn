@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,15 +6,13 @@ use std::time::Duration;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, EVIDENCE_SCHEMA_REVISION, InitialContextBreakdown, METRICS_SCHEMA_REVISION,
-    PARSER_REVISION, SessionEvidence,
+    PARSER_REVISION, SessionEvidence, SourceFormat,
 };
 use antiburn_local::insights::{
-    CoverageBucket, CoverageCounts, DetectorFindings, DetectorId, DetectorSelection,
-    DetectorStatus, EfficiencyReport, EfficiencyReportAccumulator, NotAssessedReason,
-    ReportCatalogs, ReportContext, ReportWindow, SessionExample,
+    CoverageBucket, CoverageCounts, DetectorId, DetectorSelection, EfficiencyReport,
+    EfficiencyReportAccumulator, ReportCatalogs, ReportContext, ReportWindow,
 };
 use antiburn_local::model::AgentKind;
-use antiburn_local::model_catalog::ModelCatalog;
 use antiburn_local::pricing::ModelTokens;
 use antiburn_local::remediation::{Finding, FindingAssessment, ModelVerificationObservation};
 use anyhow::{Context, Result, ensure};
@@ -26,13 +24,10 @@ use crate::store::{RemediationRecord, open_read_only};
 use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 
 mod findings;
-mod ignored_instructions;
-mod over_exploring;
-mod progress;
+#[path = "installed_checks_report.rs"]
+pub(crate) mod installed_checks;
 mod queries;
 mod resources;
-mod scope_creep;
-mod skill_opportunities;
 mod token_burn;
 mod verification;
 
@@ -40,13 +35,6 @@ mod verification;
 use antiburn_local::analysis::SourceOrigin;
 #[cfg(test)]
 use antiburn_local::insights::TokenBurnSourceEvidence;
-use ignored_instructions::{
-    IgnoredInstructionReportCounts, IgnoredInstructionSessionIdentity,
-    apply_ignored_instruction_counts, ignored_instruction_result_for,
-};
-pub(crate) use ignored_instructions::{
-    ignored_instruction_findings_for_evidence, ignored_result_has_scoped_no_issues,
-};
 use queries::*;
 #[cfg(test)]
 use token_burn::avoidable_overdepth_tokens;
@@ -64,7 +52,7 @@ pub(crate) use resources::{ResourceAssessment, ResourceAssessmentScope, UnusedRe
 pub(crate) use findings::reduce_report_blocking_with_home;
 #[cfg(test)]
 pub use findings::{ReportCancelled, reduce_report};
-pub(crate) use findings::{ensure_not_cancelled, publication_findings_in, smart_session_statuses};
+pub(crate) use findings::{ensure_not_cancelled, publication_findings_in};
 #[cfg(test)]
 use findings::{
     fair_bounded_selection, list_current_findings_on_snapshot,
@@ -85,8 +73,6 @@ const CURRENT_FINDING_LIMIT: usize = 512;
 const MAX_RESOURCE_REPOSITORIES: usize = 256;
 const MAX_RESOURCE_INVENTORY_CONTEXTS: usize = 256;
 
-pub(crate) use ignored_instructions::ignored_instruction_session_statuses;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportRequest {
     pub environment_key: String,
@@ -104,8 +90,6 @@ pub struct ReducedReport {
     pub deferred_evidence: u64,
     pub(crate) resources: ResourceAssessment,
     pub enabled_detectors: DetectorSelection,
-    pub(crate) check_progress: std::collections::BTreeMap<String, progress::CheckReportProgress>,
-    pub(crate) sampled_instructions: bool,
 }
 
 /// Selects one detector's current findings in a bounded report window.
@@ -249,19 +233,8 @@ fn reduce_with_selection_on_snapshot(
         resource_builder.mark_window_incomplete();
     }
     let repository_roots = trusted_repository_roots(&transaction, &mut resource_builder)?;
-    let mut inventory_contexts = BTreeSet::new();
-    let mut ignored_finding_sessions = 0_u64;
-    let mut ignored_eligible = 0_u64;
-    let mut ignored_assessed = 0_u64;
-    let mut ignored_clean = 0_u64;
-    let mut ignored_clean_agents = BTreeSet::new();
-    let mut ignored_finding_agents = BTreeSet::new();
-    let mut ignored_unavailable = 0_u64;
-    let mut ignored_not_applicable = 0_u64;
-    let mut ignored_examples = Vec::new();
-    let mut skill_counts = IgnoredInstructionReportCounts::default();
-    let mut over_counts = IgnoredInstructionReportCounts::default();
-    let mut scope_counts = IgnoredInstructionReportCounts::default();
+    let mut inventory_contexts = BTreeMap::new();
+    let mut inventory_sources = BTreeMap::new();
     let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
     let cohort_sql = COHORT_SQL;
     {
@@ -286,132 +259,6 @@ fn reduce_with_selection_on_snapshot(
             let published_fence: i64 = row.get(3)?;
             let initial_context_json: Option<String> = row.get(4)?;
             let cwd: Option<String> = row.get(5)?;
-            let incarnation: u64 = row.get(6)?;
-            let source_generation: i64 = row.get(7)?;
-            let source_fingerprint: Option<String> = row.get(8)?;
-            if request.environment_key == "native"
-                && antiburn_local::analysis::smart_check_source_supported(
-                    &agent,
-                    evidence.capabilities.source_format,
-                )
-            {
-                let identity = || IgnoredInstructionSessionIdentity {
-                    environment_key: &request.environment_key,
-                    agent: &agent,
-                    session_id: &session_id,
-                    incarnation,
-                    source_generation,
-                    source_fingerprint: source_fingerprint.as_deref(),
-                    published_fence,
-                };
-                for (detector, counts) in [
-                    (DetectorId::OverExploring, &mut over_counts),
-                    (DetectorId::SkillOpportunities, &mut skill_counts),
-                    (DetectorId::ScopeCreep, &mut scope_counts),
-                ] {
-                    if !enabled_detectors.contains(detector) {
-                        continue;
-                    }
-                    let findings = match detector {
-                        DetectorId::OverExploring => {
-                            over_exploring::over_exploring_findings_for_session(
-                                &transaction,
-                                &evidence,
-                                identity(),
-                            )?
-                        }
-                        DetectorId::SkillOpportunities => {
-                            skill_opportunities::skill_opportunity_findings_for_session(
-                                &transaction,
-                                &evidence,
-                                identity(),
-                                cwd.as_ref().map(PathBuf::from),
-                            )?
-                        }
-                        DetectorId::ScopeCreep => scope_creep::scope_creep_findings_for_session(
-                            &transaction,
-                            &evidence,
-                            identity(),
-                        )?,
-                        _ => unreachable!("only persisted smart checks enter this loop"),
-                    };
-                    counts.eligible += 1;
-                    match findings {
-                        Some(findings) => {
-                            counts.assessed += 1;
-                            if findings.is_empty() {
-                                counts.clean += 1;
-                                counts.clean_agents.insert(agent.clone());
-                            } else {
-                                counts.finding_sessions += 1;
-                                counts.finding_agents.insert(agent.clone());
-                                if counts.examples.len()
-                                    < antiburn_local::insights::MAX_EXAMPLES_PER_DETECTOR
-                                {
-                                    counts.examples.push(SessionExample {
-                                        agent: agent.clone(),
-                                        session_id: session_id.clone(),
-                                    });
-                                }
-                            }
-                        }
-                        None => counts.unavailable += 1,
-                    }
-                }
-            } else {
-                over_counts.not_applicable += 1;
-                skill_counts.not_applicable += 1;
-                scope_counts.not_applicable += 1;
-            }
-            if enabled_detectors.contains(DetectorId::IgnoredInstructions)
-                && antiburn_local::analysis::ignored_instructions::source_supported(
-                    evidence.capabilities.source_format,
-                )
-            {
-                ignored_eligible += 1;
-                let result = ignored_instruction_result_for(
-                    &transaction,
-                    &evidence,
-                    IgnoredInstructionSessionIdentity {
-                        environment_key: &request.environment_key,
-                        agent: &agent,
-                        session_id: &session_id,
-                        incarnation,
-                        source_generation,
-                        source_fingerprint: source_fingerprint.as_deref(),
-                        published_fence,
-                    },
-                )?;
-                let findings = result.as_ref().and_then(|result| {
-                    ignored_instruction_findings_for_evidence(&evidence, result)
-                        .map(|findings| (result, findings))
-                });
-                match findings {
-                    Some((_, session_findings)) if !session_findings.is_empty() => {
-                        ignored_assessed += 1;
-                        ignored_finding_sessions += 1;
-                        ignored_finding_agents.insert(agent.clone());
-                        if ignored_examples.len()
-                            < antiburn_local::insights::MAX_EXAMPLES_PER_DETECTOR
-                        {
-                            ignored_examples.push(SessionExample {
-                                agent: agent.clone(),
-                                session_id: session_id.clone(),
-                            });
-                        }
-                    }
-                    Some((result, session_findings))
-                        if ignored_result_has_scoped_no_issues(result, &session_findings) =>
-                    {
-                        ignored_assessed += 1;
-                        ignored_clean += 1;
-                        ignored_clean_agents.insert(agent.clone());
-                    }
-                    _ => ignored_unavailable += 1,
-                }
-            } else if enabled_detectors.contains(DetectorId::IgnoredInstructions) {
-                ignored_not_applicable += 1;
-            }
             let agent_kind = crate::agents::kind_from_slug(&agent);
             let project_root = cwd
                 .as_deref()
@@ -429,8 +276,9 @@ fn reduce_with_selection_on_snapshot(
                 if let Some(agent_kind) = agent_kind
                     .filter(|agent| resources::resource_assessment_agents().contains(agent))
                 {
-                    resource_builder.observe_turn(
+                    resource_builder.observe_turn_for_source(
                         agent_kind,
+                        evidence.capabilities.source_format,
                         project_root,
                         resource_session_index,
                         context_tokens,
@@ -470,18 +318,25 @@ fn reduce_with_selection_on_snapshot(
                     &evidence,
                     initial_context.as_ref(),
                 );
-                resource_builder.observe_resource_estimates(
+                resource_builder.observe_resource_estimates_for_source(
                     agent_kind,
+                    evidence.capabilities.source_format,
                     project_root,
                     resource_session_index,
                     &token_evidence,
                 );
+                let source_format = resources::canonical_source_format(
+                    agent_kind,
+                    evidence.capabilities.source_format,
+                );
+                let source_key = resources::source_key(source_format);
+                inventory_sources.insert((agent_kind, source_key), source_format);
                 if let (Some(cwd), Some(root)) = (cwd.as_deref(), project_root) {
-                    let context = (agent_kind, PathBuf::from(cwd), root.to_owned());
-                    if inventory_contexts.contains(&context)
+                    let context = (agent_kind, source_key, PathBuf::from(cwd), root.to_owned());
+                    if inventory_contexts.contains_key(&context)
                         || inventory_contexts.len() < MAX_RESOURCE_INVENTORY_CONTEXTS
                     {
-                        inventory_contexts.insert(context);
+                        inventory_contexts.insert(context, source_format);
                     } else {
                         resource_builder.mark_scan_failed(agent_kind);
                     }
@@ -541,7 +396,7 @@ fn reduce_with_selection_on_snapshot(
     }
 
     ensure_not_cancelled(cancel)?;
-    let mut report = accumulator.finish(ReportContext {
+    let report = accumulator.finish(ReportContext {
         environment_key: request.environment_key.clone(),
         window: request.window,
         computed_at_epoch: request.computed_at_epoch,
@@ -550,48 +405,22 @@ fn reduce_with_selection_on_snapshot(
         evidence_schema_revision: EVIDENCE_SCHEMA_REVISION,
         coverage,
     });
-    for (detector, counts) in [
-        (DetectorId::ScopeCreep, scope_counts),
-        (DetectorId::OverExploring, over_counts),
-        (DetectorId::SkillOpportunities, skill_counts),
-    ] {
-        if enabled_detectors.contains(detector) {
-            ignored_instructions::apply_persisted_check_counts(&mut report, detector, counts);
-        }
-    }
-    if enabled_detectors.contains(DetectorId::IgnoredInstructions) {
-        apply_ignored_instruction_counts(
-            &mut report,
-            IgnoredInstructionReportCounts {
-                eligible: ignored_eligible,
-                assessed: ignored_assessed,
-                clean: ignored_clean,
-                clean_agents: ignored_clean_agents,
-                finding_agents: ignored_finding_agents,
-                unavailable: ignored_unavailable,
-                not_applicable: ignored_not_applicable,
-                finding_sessions: ignored_finding_sessions,
-                examples: ignored_examples,
-            },
-        );
-    }
     turn_probe();
     ensure_not_cancelled(cancel)?;
     ensure!(
         report.context.coverage.actively_growing <= report.context.coverage.ready,
         "actively growing coverage exceeds ready coverage"
     );
-    let check_progress = progress::check_report_progress_in(&transaction, &request, resource_home)?;
-    let sampled_instructions =
-        ignored_instructions::has_published_sampled_instruction_assessment_in(
-            &transaction,
-            &request,
-        )?;
     ensure_not_cancelled(cancel)?;
     drop(transaction);
     drop(connection);
     if let Some(home) = resource_home {
-        scan_resource_inventories(&mut resource_builder, home, inventory_contexts);
+        scan_resource_inventories(
+            &mut resource_builder,
+            home,
+            inventory_sources,
+            inventory_contexts,
+        );
     } else {
         for agent in resources::resource_assessment_agents() {
             resource_builder.mark_scan_failed(agent);
@@ -616,8 +445,6 @@ fn reduce_with_selection_on_snapshot(
         deferred_evidence,
         resources,
         enabled_detectors,
-        check_progress,
-        sampled_instructions,
     })
 }
 
@@ -663,30 +490,60 @@ fn trusted_repository_for_cwd<'a>(cwd: &Path, roots: &'a [PathBuf]) -> Option<&'
 fn scan_resource_inventories(
     builder: &mut resources::ResourceAssessmentBuilder,
     home: &Path,
-    contexts: BTreeSet<(AgentKind, PathBuf, PathBuf)>,
+    sources: BTreeMap<(AgentKind, resources::ResourceSourceKey), SourceFormat>,
+    contexts: BTreeMap<(AgentKind, resources::ResourceSourceKey, PathBuf, PathBuf), SourceFormat>,
 ) {
-    for agent in resources::resource_assessment_agents() {
+    let mut authorities =
+        crate::agent_config::opencode_config_authority::CurrentConfigAuthorities::default();
+    for ((agent, _), source_format) in sources {
+        if agent == AgentKind::OpenCode {
+            continue;
+        }
         let mut context = crate::agent_config::ConfigContext::native(agent, home, None);
+        context.source_format = Some(source_format);
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
             crate::remediation::managed_configuration_present(agent, home);
         match crate::agent_config::advisory_resource_inventory(&context, []) {
-            Ok(inventory) => builder.observe_inventory(inventory, None),
+            Ok(inventory) => builder.observe_inventory_for_source(inventory, None, source_format),
             Err(_) => builder.mark_scan_failed(agent),
         }
     }
-    for (agent, cwd, root) in contexts {
+    let mut grouped_contexts = BTreeMap::<_, BTreeMap<_, _>>::new();
+    for ((agent, source_key, cwd, root), source_format) in contexts {
+        grouped_contexts
+            .entry((agent, cwd, root))
+            .or_default()
+            .insert(source_key, source_format);
+    }
+    for ((agent, cwd, root), formats) in grouped_contexts {
         let Some(mut context) =
             crate::remediation::config_context(agent, home, Some(&cwd), Some(&root))
         else {
             builder.mark_scan_failed(agent);
             continue;
         };
+        context.source_format = formats.values().next().copied();
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
             crate::remediation::managed_configuration_present(agent, home);
-        match crate::agent_config::advisory_resource_inventory(&context, []) {
-            Ok(inventory) => builder.observe_inventory(inventory, Some(&root)),
+        if agent == AgentKind::OpenCode {
+            authorities.capture(&cwd);
+        }
+        match crate::agent_config::ResourceInventory::discover_with_authority(
+            &context,
+            [],
+            authorities.get(&cwd),
+        ) {
+            Ok(inventory) => {
+                for source_format in formats.into_values() {
+                    builder.observe_inventory_for_source(
+                        inventory.clone(),
+                        Some(&root),
+                        source_format,
+                    );
+                }
+            }
             Err(_) => builder.mark_scan_failed(agent),
         }
     }
@@ -725,44 +582,6 @@ pub(crate) mod tests {
         AnalysisRecord, EvidenceCompletion, EvidenceFailure, FencedTurnRowStore,
         ProjectionRevisions, PublishedEvidence, RepositoryRecord, SessionKey, SessionRecord, Store,
     };
-
-    #[test]
-    fn complete_assessment_with_no_eligible_pairs_is_not_scoped_clean() {
-        let mut result = antiburn_local::analysis::ignored_instructions::AssessmentResult {
-            input_revision: "complete-input".into(),
-            model_version: "synthetic-model".into(),
-            findings: Vec::new(),
-            pending_rules: Vec::new(),
-            unassessed_comparisons: Vec::new(),
-            coverage: antiburn_local::analysis::ignored_instructions::AssessmentCoverage {
-                eligible_rules: 0,
-                candidate_pairs: 0,
-                selected_comparisons: 0,
-                unselected_pairs: 0,
-                skipped_rules: Vec::new(),
-                skipped_actions: Vec::new(),
-                processing_limit_reached: false,
-                sampled_pass: false,
-                selector_revision: 0,
-                limitations: Vec::new(),
-                reassessed_comparison_ids: Vec::new(),
-                reassessed_rule_ids: Vec::new(),
-                reassessed_finding_ids: Vec::new(),
-                instruction_sources: Vec::new(),
-            },
-            request_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-        };
-
-        assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
-
-        result
-            .coverage
-            .limitations
-            .push("source_evidence_is_partial".into());
-        assert!(!ignored_result_has_scoped_no_issues(&result, &[]));
-    }
 
     #[test]
     fn publication_cap_gives_all_detectors_an_opportunity() {
@@ -1012,6 +831,7 @@ pub(crate) mod tests {
             .unwrap();
         let writer = FencedTurnRowStore::new(store.clone(), session.key.clone(), claim.claim_fence);
         let turn = |index: u64, scope: TurnScope, model: &str| TurnRow {
+            accounting: None,
             source_key: "synthetic".to_owned(),
             thread_id: "synthetic".to_owned(),
             turn_index: index,
@@ -1352,6 +1172,7 @@ pub(crate) mod tests {
                 FencedTurnRowStore::new(store.clone(), session.key.clone(), claim.claim_fence);
             let turns = (0..turn_count)
                 .map(|turn_index| TurnRow {
+                    accounting: None,
                     source_key: "synthetic".to_owned(),
                     thread_id: "synthetic".to_owned(),
                     turn_index: turn_index as u64,
@@ -1927,55 +1748,44 @@ pub(crate) mod tests {
     }
 
     #[cfg(not(windows))]
-    #[test]
-    fn opencode_and_pi_old_model_controller_applies_once_to_temporary_configs() {
-        for (fixture, path, config) in [
-            (
-                RoutedModelFixture {
-                    agent: AgentKind::OpenCode,
-                    capabilities: SourceCapabilities::opencode(),
-                    api: "responses",
-                },
-                ".config/opencode/opencode.json",
-                r#"{"model":"openai/gpt-5.5"}"#,
-            ),
-            (
-                RoutedModelFixture {
-                    agent: AgentKind::Pi,
-                    capabilities: SourceCapabilities::pi(),
-                    api: "openai-responses",
-                },
-                ".pi/agent/settings.json",
-                r#"{"defaultProvider":"openai","defaultModel":"gpt-5.5"}"#,
-            ),
-        ] {
-            let agent = fixture.agent;
-            let data_dir = TempDir::new().unwrap();
-            let home = data_dir.path().join("home");
-            let config_path = home.join(path);
-            std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
-            std::fs::write(&config_path, config).unwrap();
-            let store = Store::open(data_dir.path()).unwrap();
-            publish_routed_attributed_model_turn(
-                data_dir.path(),
-                &store,
-                fixture,
-                "old-model",
-                2_000_000_000,
-                2_000_000_000_000,
-                "gpt-5.5",
-            );
-            let key = SessionKey::new("native", agent.slug(), "old-model");
-            let evidence_json: String = store
-                .lock()
-                .query_row(
-                    "SELECT evidence_json FROM session_evidence
-                      WHERE environment_key = 'native' AND agent = ?1 AND session_id = 'old-model'",
-                    [agent.slug()],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            let attribution = crate::remediation::publication_config_attribution_with_home(
+    fn old_model_controller_fixture(
+        data_dir: &Path,
+        fixture: RoutedModelFixture,
+        path: &str,
+        config: &str,
+    ) -> (
+        Store,
+        crate::remediation::RemediationController,
+        String,
+        PathBuf,
+    ) {
+        let agent = fixture.agent;
+        let home = data_dir.join("home");
+        let config_path = home.join(path);
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(&config_path, config).unwrap();
+        let store = Store::open(data_dir).unwrap();
+        publish_routed_attributed_model_turn(
+            data_dir,
+            &store,
+            fixture,
+            "old-model",
+            2_000_000_000,
+            2_000_000_000_000,
+            "gpt-5.5",
+        );
+        let key = SessionKey::new("native", agent.slug(), "old-model");
+        let evidence_json: String = store
+            .lock()
+            .query_row(
+                "SELECT evidence_json FROM session_evidence
+                  WHERE environment_key = 'native' AND agent = ?1 AND session_id = 'old-model'",
+                [agent.slug()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if let Some(attribution) =
+            crate::remediation::config::publication_config_attribution_with_home(
                 &store,
                 &key,
                 PublishedEvidence::Ready,
@@ -1984,7 +1794,7 @@ pub(crate) mod tests {
             )
             .unwrap()
             .model
-            .unwrap();
+        {
             store
                 .lock()
                 .execute(
@@ -1994,46 +1804,105 @@ pub(crate) mod tests {
                     params![attribution.0, attribution.1, attribution.2, agent.slug()],
                 )
                 .unwrap();
-            let controller = crate::remediation::RemediationController::new(data_dir.path().into());
-            let listed = controller
-                .list_burn_check_targets_with_home(
-                    &store,
-                    DetectorId::OldModelUsage,
-                    crate::remediation::BurnCheckTargetContext {
-                        environment_key: "native".into(),
-                        window: ReportWindow {
-                            start_epoch: 1_900_000_000,
-                            end_epoch: 2_100_000_000,
-                        },
-                    },
-                    &home,
-                )
-                .unwrap();
-            assert_eq!(listed.targets.len(), 1, "{agent:?}");
-            assert_eq!(
-                listed.targets[0].auto_fix,
-                crate::remediation::AutoFixAvailability::Available
-            );
-            let review = controller
-                .prepare_auto_fix_burn_check_target(&store, &listed.targets[0].action_id)
-                .unwrap();
-            assert_eq!(review.current_value, "openai/gpt-5.5");
-            assert_eq!(review.proposed_value, "openai/gpt-5.6-sol");
-            let applied = controller
-                .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
-                .unwrap();
-            assert_eq!(
-                controller
-                    .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
-                    .unwrap(),
-                applied
-            );
-            assert!(
-                std::fs::read_to_string(config_path)
-                    .unwrap()
-                    .contains("gpt-5.6-sol")
-            );
         }
+        let controller = crate::remediation::RemediationController::new(data_dir.into());
+        let listed = controller
+            .list_burn_check_targets_with_home(
+                &store,
+                DetectorId::OldModelUsage,
+                crate::remediation::BurnCheckTargetContext {
+                    environment_key: "native".into(),
+                    window: ReportWindow {
+                        start_epoch: 1_900_000_000,
+                        end_epoch: 2_100_000_000,
+                    },
+                },
+                &home,
+            )
+            .unwrap();
+        assert_eq!(listed.targets.len(), 1, "{agent:?}");
+        assert_eq!(
+            listed.targets[0].auto_fix,
+            if agent == AgentKind::OpenCode {
+                crate::remediation::AutoFixAvailability::Unavailable(
+                    crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
+                )
+            } else {
+                crate::remediation::AutoFixAvailability::Available
+            }
+        );
+        (
+            store,
+            controller,
+            listed.targets[0].action_id.clone(),
+            config_path,
+        )
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn opencode_v1_old_model_controller_does_not_write_without_consumer_authority() {
+        let data_dir = TempDir::new().unwrap();
+        let config = r#"{"model":"openai/gpt-5.5"}"#;
+        let (store, controller, action_id, config_path) = old_model_controller_fixture(
+            data_dir.path(),
+            RoutedModelFixture {
+                agent: AgentKind::OpenCode,
+                capabilities: SourceCapabilities::opencode(),
+                api: "responses",
+            },
+            ".config/opencode/opencode.json",
+            config,
+        );
+
+        assert!(matches!(
+            controller.prepare_auto_fix_burn_check_target(&store, &action_id),
+            Err(crate::remediation::ControllerError::AutoFixUnavailable(
+                crate::remediation::AutoFixUnavailableReason::UnsupportedOrUnprovenTarget
+            ))
+        ));
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), config);
+        assert_eq!(
+            std::fs::read_dir(config_path.parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn pi_old_model_controller_applies_once_to_a_temporary_config() {
+        let data_dir = TempDir::new().unwrap();
+        let (store, controller, action_id, config_path) = old_model_controller_fixture(
+            data_dir.path(),
+            RoutedModelFixture {
+                agent: AgentKind::Pi,
+                capabilities: SourceCapabilities::pi(),
+                api: "openai-responses",
+            },
+            ".pi/agent/settings.json",
+            r#"{"defaultProvider":"openai","defaultModel":"gpt-5.5"}"#,
+        );
+        let review = controller
+            .prepare_auto_fix_burn_check_target(&store, &action_id)
+            .unwrap();
+        assert_eq!(review.current_value, "openai/gpt-5.5");
+        assert_eq!(review.proposed_value, "openai/gpt-5.6-sol");
+        let applied = controller
+            .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+            .unwrap();
+        assert_eq!(
+            controller
+                .apply_prepared_burn_check_operation(&store, &review.prepared_operation_id)
+                .unwrap(),
+            applied
+        );
+        assert!(
+            std::fs::read_to_string(config_path)
+                .unwrap()
+                .contains("gpt-5.6-sol")
+        );
     }
 
     #[test]
@@ -2858,7 +2727,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .unwrap()
                 .prompt_group_id
-                .is_some()
+                .is_none()
         );
         let count: i64 = store
             .lock()
@@ -2900,7 +2769,7 @@ pub(crate) mod tests {
             .prompt;
 
         assert!(prompt.contains("Unused targets"));
-        assert_eq!(prompt.matches("Remediation reference: ABR-").count(), 1);
+        assert_eq!(prompt.matches("Remediation reference: ABR-").count(), 2);
         for resource in resources {
             assert!(prompt.contains(resource), "{prompt}");
         }
@@ -2924,7 +2793,7 @@ pub(crate) mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0], groups[1]);
+        assert!(groups.iter().all(Option::is_none));
         assert_eq!(
             controller.copy_prompt_fix_burn_check_targets(&store, &[]),
             Err(crate::remediation::ControllerError::CheckPromptUnavailable)
@@ -2932,7 +2801,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn resource_prompt_has_a_durable_group_marker_without_verification_claims() {
+    fn resource_prompt_has_an_exact_attempt_marker_without_verification_claims() {
         let data_dir = TempDir::new().unwrap();
         let store = Store::open(data_dir.path()).unwrap();
         publish_mcp_findings(&store, "baseline", 120, &["server-a"]);
@@ -3143,7 +3012,7 @@ pub(crate) mod tests {
         assert!(turn_probes > 0);
 
         let controller = crate::remediation::RemediationController::new(data_dir.path().to_owned());
-        let fallback = controller
+        let prompt = controller
             .copy_prompt_fix_burn_check(
                 &store,
                 DetectorId::UnusedMcpServers,
@@ -3153,9 +3022,9 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-        assert!(fallback.prompt.contains("Failed check\nUnused MCP servers"));
+        assert!(prompt.prompt.contains("Resource: \"server-a\""));
         assert!(
-            !fallback
+            !prompt
                 .prompt
                 .contains("/home/avery/.claude/older-finding.jsonl")
         );
@@ -3197,7 +3066,7 @@ pub(crate) mod tests {
         let prompt = controller
             .copy_prompt_fix_burn_check(&store, DetectorId::UnusedMcpServers, context)
             .unwrap();
-        assert!(prompt.prompt.contains("Failed check\nUnused MCP servers"));
+        assert!(prompt.prompt.contains("server-a"));
     }
 
     #[test]

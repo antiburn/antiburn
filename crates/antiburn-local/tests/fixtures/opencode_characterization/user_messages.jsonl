@@ -1,0 +1,7 @@
+{"type":"session_meta","payload":{"id":"root"}}
+{"type":"message","messageID":"human-1","sessionID":"root","time":{"created":1000},"payload":{"role":"user"}}
+{"type":"part","partID":"human-part-1","messageID":"human-1","sessionID":"root","time":{"created":1001},"payload":{"type":"text","text":"Review the API. Keep billing unchanged.","synthetic":false,"ignored":false}}
+{"type":"message","messageID":"agent-task-1","sessionID":"root","time":{"created":1010},"payload":{"role":"user","agent":"build","model":{"providerID":"test","modelID":"test-model"}}}
+{"type":"part","partID":"agent-part-1","messageID":"agent-task-1","sessionID":"root","time":{"created":1011},"payload":{"type":"text","text":"Implement the approved plan.","synthetic":true,"ignored":false}}
+{"type":"message","messageID":"assistant-1","sessionID":"root","time":{"created":1020},"payload":{"role":"assistant","modelID":"test-model","providerID":"test"}}
+{"type":"part","partID":"tool-1","messageID":"assistant-1","sessionID":"root","time":{"created":1021},"payload":{"type":"tool","tool":"bash","callID":"call-1","state":{"status":"completed","input":{"command":"cargo test"},"output":"ok"}}}

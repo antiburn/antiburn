@@ -8,6 +8,11 @@
 //! Adding a migration means appending one entry to [`MIGRATIONS`]. Never edit
 //! an entry that has shipped: an installed database has already run it.
 
+mod compatibility;
+#[cfg(test)]
+mod usage_observation_tests;
+pub(super) use compatibility::{prepare_source_metadata, repair_branch_version};
+
 /// Every migration, in order. The index of an entry plus one is the
 /// `user_version` it leaves behind.
 pub const MIGRATIONS: &[&str] = &[
@@ -86,7 +91,570 @@ pub const MIGRATIONS: &[&str] = &[
     V73,
     V74,
     V75,
+    V76,
+    V77,
+    V78,
+    V79,
+    V80,
+    V81,
+    V82,
+    V83,
+    antiburn_local::analysis::TURN_SCHEMA_V12_SQL,
+    V85,
+    V86,
+    V87,
+    V88,
+    V89,
+    V90,
+    V91,
+    V92,
 ];
+
+const V92: &str = r#"
+CREATE INDEX native_evidence_publication_correction ON native_tool_result_publication
+    (environment_key, agent, session_id, source_format, native_identity, event_kind,
+     publication_sequence, session_incarnation, project_cwd)
+    WHERE outcome IN ('update', 'removal');
+CREATE INDEX burn_check_observation_native_identity ON burn_check_observation
+    (session_key_json, source_format, native_identity, event_kind);
+CREATE INDEX burn_check_candidate_dependency_native_identity ON burn_check_candidate_dependency
+    (session_key_json, source_format,
+     CASE WHEN json_valid(dependency_binding_json)
+         THEN json_extract(dependency_binding_json, '$.NativeCurrent.identity') END,
+     event_kind)
+    WHERE CASE WHEN json_valid(dependency_binding_json)
+        THEN json_type(dependency_binding_json, '$.NativeCurrent') = 'object' ELSE 0 END;
+"#;
+
+const V91: &str = r#"
+ALTER TABLE burn_check_decision_usage ADD COLUMN served_model TEXT
+    CHECK (served_model IS NULL OR (usage_known = 1
+        AND length(served_model) BETWEEN 1 AND 128
+        AND instr(served_model, char(0)) = 0
+        AND served_model NOT GLOB '*[^A-Za-z0-9._:/-]*'));
+"#;
+
+const V90: &str = concat!(
+    r#"
+ALTER TABLE native_tool_result_publication ADD COLUMN session_selection_json TEXT
+    CHECK (session_selection_json IS NULL OR json_valid(session_selection_json));
+"#,
+    include_str!("schema/compatibility/legacy_soft_gaps.sql")
+);
+
+const V89: &str = include_str!("native_tool_results/evidence_schema.sql");
+
+const V88: &str = r#"
+ALTER TABLE burn_check_candidate ADD COLUMN started_cooldown_until_epoch INTEGER;
+CREATE TABLE burn_check_evaluation_attempt_v85 (
+    attempt_id TEXT PRIMARY KEY NOT NULL,
+    candidate_id TEXT NOT NULL REFERENCES burn_check_candidate(candidate_id),
+    decision_name TEXT,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 2),
+    state TEXT NOT NULL CHECK (state IN ('prepared', 'dispatch_intent', 'settled')),
+    outcome TEXT,
+    response_json TEXT CHECK (response_json IS NULL OR json_valid(response_json)),
+    updated_at_epoch INTEGER NOT NULL,
+    UNIQUE (candidate_id, decision_name, attempt_number),
+    CHECK ((state = 'settled' AND outcome IS NOT NULL)
+        OR (state <> 'settled' AND outcome IS NULL))
+) STRICT;
+INSERT INTO burn_check_evaluation_attempt_v85
+    (attempt_id, candidate_id, decision_name, attempt_number, state, outcome,
+     response_json, updated_at_epoch)
+SELECT attempt_id, candidate_id, NULL, attempt_number, state, outcome,
+    response_json, updated_at_epoch FROM burn_check_evaluation_attempt;
+DROP TABLE burn_check_evaluation_attempt;
+ALTER TABLE burn_check_evaluation_attempt_v85 RENAME TO burn_check_evaluation_attempt;
+
+UPDATE burn_check_evaluation_attempt SET state = 'settled', outcome = 'unknown'
+WHERE state = 'dispatch_intent';
+INSERT INTO burn_check_assessment_history
+SELECT 'assessment:' || candidate_id, candidate_id, check_id, activation_scope_key,
+    generation, branch_key, trigger_position, 'not_assessed', answer_json,
+    '{"detail":"The saved assessment uses an incompatible decision format."}',
+    0, updated_at_epoch
+FROM burn_check_candidate
+WHERE state IN ('pending', 'claimed', 'dispatching', 'answered')
+ON CONFLICT(candidate_id) DO NOTHING;
+UPDATE burn_check_candidate SET state = 'not_assessed', claim_owner = NULL,
+    claim_fence = claim_fence + 1,
+    diagnostic_json = '{"code":"invalid_decision","detail":"The saved assessment uses an incompatible decision format."}'
+WHERE state IN ('pending', 'claimed', 'dispatching', 'answered');
+"#;
+
+const V87: &str = r#"
+DELETE FROM remediation_contribution
+WHERE detector_id IN ('ignored_instructions', 'skill_opportunities', 'over_exploring', 'scope_creep')
+   OR remediation_id IN (
+       SELECT remediation_id FROM remediation
+       WHERE json_extract(definition_json, '$.detector') IN
+           ('ignored_instructions', 'skill_opportunities', 'over_exploring', 'scope_creep'));
+DELETE FROM remediation
+WHERE json_extract(definition_json, '$.detector') IN
+    ('ignored_instructions', 'skill_opportunities', 'over_exploring', 'scope_creep');
+DELETE FROM setting WHERE key IN (
+    'internal:burnChecksEnabledAtEpochV1',
+    'internal:burnCheckEnabledAtEpochV1:ignored_instructions',
+    'internal:burnCheckEnabledAtEpochV1:skill_opportunities',
+    'internal:burnCheckEnabledAtEpochV1:over_exploring',
+    'internal:burnCheckEnabledAtEpochV1:scope_creep',
+    'internal:jevBurnCheckHistoryDaysV1',
+    'internal:jevBurnCheckHistoryBatchEpochV1',
+    'internal:burnCheckSchedulerV1',
+    'internal:burnCheckResponseCacheV1');
+DROP TABLE burn_check_assessment;
+DROP TABLE burn_check_dispatch_attempt;
+DROP TABLE burn_check_sampled_pair;
+DROP TABLE burn_check_sample_origin;
+DROP TABLE burn_check_instruction_epoch;
+DROP TABLE burn_check_work_answer;
+DROP TABLE burn_check_response_cache;
+DROP TABLE burn_check_request_outcome;
+DROP TABLE burn_check_usage_reservation;
+"#;
+
+const V85: &str = r#"
+CREATE INDEX session_relation_related
+    ON session_relation(environment_key, agent, related_id, kind);
+ALTER TABLE session ADD COLUMN source_format TEXT
+    CHECK (source_format IS NULL OR (json_valid(source_format) AND json_type(source_format) = 'text'));
+UPDATE session SET source_format = CASE
+    WHEN source_kind = 'providerDb' AND source_label = 'opencode:' || session_id
+        THEN '"open_code_sqlite_v2"'
+    WHEN source_kind = 'providerDb'
+        AND source_label = 'opencode:' || session_id || ':open_code_v2_sqlite'
+        THEN '"open_code_v2_sqlite"'
+    WHEN source_kind = 'inline' AND source_label = 'opencode:' || session_id
+        THEN '"open_code_jsonl"'
+    END
+WHERE environment_key = 'native' AND agent = 'opencode';
+
+ALTER TABLE native_tool_result_publication ADD COLUMN gap_kind TEXT NOT NULL
+    DEFAULT 'invalidated' CHECK (gap_kind IN ('invalidated', 'partial', 'segment_reset'));
+DROP TRIGGER native_tool_result_publication_no_update;
+UPDATE native_tool_result_publication SET gap_kind = CASE
+    WHEN gap_reason = 'v2-history-incomplete' THEN 'partial'
+    ELSE 'segment_reset' END
+WHERE outcome = 'coverage_gap' AND source_format = '"open_code_v2_sqlite"';
+CREATE TRIGGER native_tool_result_publication_no_update
+BEFORE UPDATE ON native_tool_result_publication
+BEGIN
+    SELECT RAISE(ABORT, 'native tool-result publications are append-only');
+END;
+"#;
+
+const V83: &str = r#"
+ALTER TABLE opencode_v2_capture ADD COLUMN admitted_source_json TEXT
+    CHECK (admitted_source_json IS NULL OR json_valid(admitted_source_json));
+ALTER TABLE opencode_v2_capture ADD COLUMN retirement_reason TEXT
+    CHECK (retirement_reason IS NULL OR retirement_reason IN
+        ('session-moved', 'session-deleted', 'source-scope-changed'));
+"#;
+
+const V82: &str = r#"
+-- Selection history survives session deletion so retained V1 copies stay hidden.
+CREATE TABLE opencode_v2_selection (
+    environment_key TEXT NOT NULL CHECK (environment_key = 'native'),
+    agent TEXT NOT NULL CHECK (agent = 'opencode'),
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (environment_key, agent, session_id)
+) STRICT;
+INSERT INTO opencode_v2_selection (environment_key, agent, session_id)
+SELECT environment_key, agent, session_id FROM session
+WHERE environment_key = 'native' AND agent = 'opencode' AND source_kind = 'providerDb'
+  AND source_label = 'opencode:' || session_id || ':open_code_v2_sqlite';
+CREATE TABLE opencode_v2_capture (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL CHECK (agent = 'opencode'),
+    session_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    source_label TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    capture_epoch TEXT NOT NULL,
+    claim_fence INTEGER NOT NULL CHECK (claim_fence > 0),
+    baseline_sequence INTEGER,
+    last_sequence INTEGER,
+    history_gap INTEGER NOT NULL CHECK (history_gap IN (0, 1)),
+    lease_expires_at_epoch INTEGER,
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+        REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE,
+    CHECK (baseline_sequence IS NULL OR baseline_sequence >= 0),
+    CHECK (last_sequence IS NULL OR last_sequence >= 0)
+) STRICT;
+CREATE INDEX opencode_v2_capture_lease
+    ON opencode_v2_capture (lease_expires_at_epoch);
+CREATE TABLE opencode_v2_source_status (
+    environment_key TEXT NOT NULL CHECK (environment_key = 'native'),
+    agent TEXT NOT NULL CHECK (agent = 'opencode'),
+    session_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    source_label TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    code TEXT NOT NULL CHECK (code IN ('service-unavailable', 'authentication-rejected',
+        'source-mismatch', 'version-unsupported', 'capture-gap', 'source-limit', 'live')),
+    observed_at_epoch INTEGER NOT NULL CHECK (observed_at_epoch >= 0),
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+        REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+"#;
+
+/// v81 seeks published turns before reading their history payloads.
+const V81: &str = r#"
+CREATE INDEX IF NOT EXISTS turn_quota_published
+    ON turn(environment_key, agent, session_id, claim_fence, ts_ms)
+    WHERE ts_ms IS NOT NULL;
+"#;
+
+pub(super) const FINGERPRINT_WORK: &str = include_str!("source_fingerprint_work.sql");
+
+const V80: &str = concat!(
+    r#"
+ALTER TABLE session ADD COLUMN admission_revision TEXT;
+ALTER TABLE session ADD COLUMN strict_fingerprint_pending INTEGER NOT NULL DEFAULT 0
+    CHECK (strict_fingerprint_pending IN (0, 1));
+"#,
+    include_str!("source_fingerprint_work.sql")
+);
+
+const V86: &str = r#"
+CREATE TABLE IF NOT EXISTS burn_check_runtime_definition (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    generation INTEGER CHECK (generation IS NULL OR generation > 0),
+    definition_revision TEXT NOT NULL,
+    name TEXT NOT NULL,
+    availability TEXT NOT NULL CHECK (availability IN ('available', 'paused', 'invalid', 'unsupported')),
+    PRIMARY KEY (check_id, activation_scope_key)
+) STRICT;
+CREATE TABLE IF NOT EXISTS burn_check_runtime_definition_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    protocol_version INTEGER NOT NULL CHECK (protocol_version = 1),
+    initialized INTEGER NOT NULL CHECK (initialized IN (0, 1))
+) STRICT;
+INSERT OR IGNORE INTO burn_check_runtime_definition_state VALUES (1, 1, 0);
+CREATE INDEX IF NOT EXISTS turn_quota_published
+    ON turn(environment_key, agent, session_id, claim_fence, ts_ms)
+    WHERE ts_ms IS NOT NULL;
+"#;
+
+const V79: &str = r#"
+CREATE TABLE work_queue_schedule (
+    domain TEXT PRIMARY KEY CHECK (domain IN ('evidence', 'native_delivery')),
+    next_ticket INTEGER NOT NULL CHECK (next_ticket > 0),
+    successful_turns INTEGER NOT NULL DEFAULT 0 CHECK (successful_turns >= 0)
+) STRICT;
+INSERT INTO work_queue_schedule (domain, next_ticket, successful_turns)
+VALUES ('evidence', 1, 0), ('native_delivery', 1, 0);
+
+ALTER TABLE session_evidence ADD COLUMN service_ticket INTEGER;
+ALTER TABLE native_file_delivery ADD COLUMN service_ticket INTEGER;
+ALTER TABLE opencode_journal_delivery ADD COLUMN service_ticket INTEGER;
+
+WITH ordered AS (
+    SELECT e.rowid, ROW_NUMBER() OVER (ORDER BY s.first_seen_at, s.environment_key,
+        s.agent, s.session_id) AS ticket
+      FROM session_evidence e JOIN session s USING (environment_key, agent, session_id)
+     WHERE e.status IN ('pending', 'processing')
+)
+UPDATE session_evidence
+   SET service_ticket = (SELECT ticket FROM ordered WHERE ordered.rowid = session_evidence.rowid)
+ WHERE rowid IN (SELECT rowid FROM ordered);
+UPDATE work_queue_schedule
+   SET next_ticket = COALESCE((SELECT MAX(service_ticket) + 1 FROM session_evidence), 1)
+ WHERE domain = 'evidence';
+
+WITH ordered AS (
+    SELECT d.rowid, ROW_NUMBER() OVER (ORDER BY s.first_seen_at, s.environment_key,
+        s.agent, s.session_id) AS ticket
+      FROM native_file_delivery d JOIN session s USING (environment_key, agent, session_id)
+     WHERE d.pending = 1 OR d.claim_fence IS NOT NULL
+)
+UPDATE native_file_delivery
+   SET service_ticket = (SELECT ticket FROM ordered WHERE ordered.rowid = native_file_delivery.rowid)
+ WHERE rowid IN (SELECT rowid FROM ordered);
+WITH ordered AS (
+    SELECT d.rowid, COALESCE((SELECT MAX(service_ticket) FROM native_file_delivery), 0)
+        + ROW_NUMBER() OVER (ORDER BY s.first_seen_at, s.environment_key,
+                             s.agent, s.session_id) AS ticket
+      FROM opencode_journal_delivery d JOIN session s USING (environment_key, agent, session_id)
+     WHERE d.pending = 1 OR d.lease_expires_at_epoch IS NOT NULL
+)
+UPDATE opencode_journal_delivery
+   SET service_ticket = (SELECT ticket FROM ordered WHERE ordered.rowid = opencode_journal_delivery.rowid)
+ WHERE rowid IN (SELECT rowid FROM ordered);
+UPDATE work_queue_schedule
+   SET next_ticket = MAX(
+       COALESCE((SELECT MAX(service_ticket) + 1 FROM native_file_delivery), 1),
+       COALESCE((SELECT MAX(service_ticket) + 1 FROM opencode_journal_delivery), 1))
+ WHERE domain = 'native_delivery';
+
+CREATE TRIGGER session_evidence_clear_service_ticket
+AFTER UPDATE OF status ON session_evidence
+WHEN NEW.status IN ('ready', 'unsupported', 'failed')
+BEGIN
+    UPDATE session_evidence SET service_ticket = NULL
+     WHERE environment_key = NEW.environment_key AND agent = NEW.agent
+       AND session_id = NEW.session_id;
+END;
+"#;
+
+const V78: &str = include_str!("native_tool_results/file_delivery_schema.sql");
+
+const V77: &str = r#"
+ALTER TABLE burn_check_candidate ADD COLUMN preparation_json TEXT
+    CHECK (preparation_json IS NULL OR json_valid(preparation_json));
+ALTER TABLE burn_check_candidate ADD COLUMN diagnostic_json TEXT
+    CHECK (diagnostic_json IS NULL OR json_valid(diagnostic_json));
+"#;
+
+/// v76 stores committed native tool-result publications and durable Burn Check
+/// runtime state. The global autoincrement key orders delivery; native
+/// identity, position, and revision remain payload facts rather than cursors.
+const V76: &str = r#"
+CREATE TABLE native_tool_result_publication (
+    publication_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    outcome TEXT NOT NULL CHECK (
+        outcome IN ('update', 'removal', 'coverage_gap', 'coverage_complete')),
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    source_format TEXT,
+    native_identity TEXT,
+    native_position_json TEXT CHECK (
+        native_position_json IS NULL OR json_valid(native_position_json)),
+    native_revision INTEGER,
+    payload_json TEXT CHECK (payload_json IS NULL OR json_valid(payload_json)),
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    source_generation INTEGER NOT NULL,
+    claim_fence INTEGER NOT NULL,
+    live_eligible INTEGER CHECK (live_eligible IS NULL OR live_eligible IN (0, 1)),
+    project_cwd TEXT,
+    session_incarnation INTEGER,
+    gap_reason TEXT,
+    CHECK (
+        (outcome IN ('coverage_gap', 'coverage_complete') AND source_format IS NOT NULL
+            AND native_identity IS NULL AND native_position_json IS NULL
+            AND native_revision IS NULL AND payload_json IS NULL
+            AND complete = (outcome = 'coverage_complete'))
+        OR (outcome IN ('update', 'removal') AND source_format IS NOT NULL
+            AND native_identity IS NOT NULL AND native_position_json IS NOT NULL
+            AND native_revision IS NOT NULL AND payload_json IS NOT NULL)
+    )
+) STRICT;
+CREATE INDEX native_tool_result_publication_session
+    ON native_tool_result_publication (
+        environment_key, agent, session_id, publication_sequence);
+CREATE TRIGGER native_tool_result_publication_no_update
+BEFORE UPDATE ON native_tool_result_publication
+BEGIN
+    SELECT RAISE(ABORT, 'native tool-result publications are append-only');
+END;
+CREATE TRIGGER native_tool_result_publication_no_delete
+BEFORE DELETE ON native_tool_result_publication
+WHEN EXISTS (
+    SELECT 1 FROM session
+     WHERE environment_key = OLD.environment_key
+       AND agent = OLD.agent
+       AND session_id = OLD.session_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'native tool-result publications are append-only');
+END;
+
+CREATE TABLE native_tool_result_current (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    source_format TEXT NOT NULL,
+    native_identity TEXT NOT NULL,
+    native_position_json TEXT NOT NULL CHECK (json_valid(native_position_json)),
+    native_revision INTEGER NOT NULL,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    is_removed INTEGER NOT NULL CHECK (is_removed IN (0, 1)),
+    publication_sequence INTEGER NOT NULL REFERENCES
+        native_tool_result_publication(publication_sequence),
+    source_generation INTEGER NOT NULL,
+    claim_fence INTEGER NOT NULL,
+    PRIMARY KEY (
+        environment_key, agent, session_id, source_format, native_identity)
+) STRICT;
+CREATE INDEX native_tool_result_current_session
+    ON native_tool_result_current (environment_key, agent, session_id, is_removed);
+
+CREATE TABLE opencode_journal_delivery (
+    environment_key TEXT NOT NULL,
+    agent TEXT NOT NULL CHECK (agent = 'opencode'),
+    session_id TEXT NOT NULL,
+    incarnation INTEGER NOT NULL,
+    source_label TEXT NOT NULL,
+    cwd TEXT,
+    parser_revision INTEGER NOT NULL,
+    cursor_json TEXT CHECK (cursor_json IS NULL OR json_valid(cursor_json)),
+    main_session INTEGER NOT NULL CHECK (main_session IN (0, 1)),
+    baseline_sequence INTEGER,
+    observed_generation INTEGER NOT NULL DEFAULT -1,
+    pending INTEGER NOT NULL DEFAULT 1 CHECK (pending IN (0, 1)),
+    blocked INTEGER NOT NULL DEFAULT 0 CHECK (blocked IN (0, 1)),
+    history_gap INTEGER NOT NULL DEFAULT 0 CHECK (history_gap IN (0, 1)),
+    claim_fence INTEGER,
+    lease_expires_at_epoch INTEGER,
+    last_attempt_at_epoch INTEGER,
+    next_attempt_at_epoch INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    PRIMARY KEY (environment_key, agent, session_id),
+    FOREIGN KEY (environment_key, agent, session_id)
+        REFERENCES session (environment_key, agent, session_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX opencode_journal_delivery_due
+    ON opencode_journal_delivery (pending, next_attempt_at_epoch, lease_expires_at_epoch);
+
+CREATE TABLE burn_check_activation (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    definition_revision TEXT NOT NULL,
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    generation INTEGER NOT NULL CHECK (generation > 0),
+    bootstrap_sequence INTEGER NOT NULL CHECK (bootstrap_sequence >= 0),
+    applied_sequence INTEGER NOT NULL CHECK (
+        applied_sequence >= bootstrap_sequence),
+    updated_at_epoch INTEGER NOT NULL,
+    checkpoint_json TEXT CHECK (checkpoint_json IS NULL OR json_valid(checkpoint_json)),
+    lifecycle_json TEXT CHECK (lifecycle_json IS NULL OR json_valid(lifecycle_json)),
+    PRIMARY KEY (check_id, activation_scope_key)
+) STRICT;
+
+CREATE TABLE burn_check_observation (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    observation_id TEXT NOT NULL,
+    session_key_json TEXT NOT NULL CHECK (json_valid(session_key_json)),
+    publication_sequence INTEGER NOT NULL CHECK (publication_sequence > 0),
+    source_format TEXT NOT NULL,
+    native_identity TEXT NOT NULL,
+    native_revision INTEGER NOT NULL,
+    evidence_version TEXT NOT NULL,
+    removed INTEGER NOT NULL CHECK (removed IN (0, 1)),
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    PRIMARY KEY (check_id, activation_scope_key, observation_id)
+) STRICT;
+CREATE INDEX burn_check_observation_publication
+    ON burn_check_observation (check_id, activation_scope_key, publication_sequence);
+
+CREATE TABLE burn_check_candidate (
+    candidate_id TEXT PRIMARY KEY NOT NULL,
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    branch_key TEXT NOT NULL,
+    session_key_json TEXT NOT NULL CHECK (json_valid(session_key_json)),
+    trigger_position INTEGER NOT NULL CHECK (trigger_position >= 0),
+    selected_publication_head INTEGER NOT NULL CHECK (selected_publication_head >= 0),
+    dependencies_json TEXT NOT NULL CHECK (json_valid(dependencies_json)),
+    frozen_input_json TEXT NOT NULL CHECK (json_valid(frozen_input_json)),
+    answer_json TEXT CHECK (answer_json IS NULL OR json_valid(answer_json)),
+    input_fingerprint TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'pending', 'claimed', 'dispatching', 'answered', 'accepted',
+        'coalesced', 'not_assessed', 'execution_failed', 'cancelled', 'stale')),
+    claim_owner TEXT,
+    claim_fence INTEGER NOT NULL DEFAULT 0 CHECK (claim_fence >= 0),
+    claim_epoch INTEGER,
+    prior_status TEXT CHECK (prior_status IS NULL OR prior_status IN ('success', 'failure')),
+    created_at_epoch INTEGER NOT NULL,
+    updated_at_epoch INTEGER NOT NULL
+) STRICT;
+CREATE INDEX burn_check_candidate_due
+    ON burn_check_candidate (check_id, activation_scope_key, state, created_at_epoch);
+CREATE UNIQUE INDEX burn_check_candidate_branch_position
+    ON burn_check_candidate (
+        check_id, activation_scope_key, generation, branch_key, trigger_position);
+CREATE TABLE burn_check_candidate_dependency (
+    candidate_id TEXT NOT NULL REFERENCES burn_check_candidate(candidate_id) ON DELETE CASCADE,
+    observation_id TEXT NOT NULL,
+    session_key_json TEXT NOT NULL CHECK (json_valid(session_key_json)),
+    source_format TEXT NOT NULL,
+    native_revision INTEGER NOT NULL,
+    evidence_version TEXT NOT NULL,
+    removed INTEGER NOT NULL CHECK (removed IN (0, 1)),
+    payload_sha256 TEXT NOT NULL,
+    PRIMARY KEY (candidate_id, observation_id)
+) STRICT;
+CREATE INDEX burn_check_candidate_dependency_observation
+    ON burn_check_candidate_dependency (observation_id, session_key_json, candidate_id);
+CREATE TABLE burn_check_cooldown (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    branch_key TEXT NOT NULL,
+    cooldown_until_epoch INTEGER NOT NULL,
+    PRIMARY KEY (check_id, activation_scope_key, generation, branch_key)
+) STRICT;
+
+CREATE TABLE burn_check_evaluation_attempt (
+    attempt_id TEXT PRIMARY KEY NOT NULL,
+    candidate_id TEXT NOT NULL REFERENCES burn_check_candidate(candidate_id),
+    attempt_number INTEGER NOT NULL CHECK (attempt_number BETWEEN 1 AND 2),
+    state TEXT NOT NULL CHECK (state IN ('prepared', 'dispatch_intent', 'settled')),
+    outcome TEXT,
+    response_json TEXT CHECK (response_json IS NULL OR json_valid(response_json)),
+    updated_at_epoch INTEGER NOT NULL,
+    UNIQUE (candidate_id, attempt_number),
+    CHECK ((state = 'settled' AND outcome IS NOT NULL)
+        OR (state <> 'settled' AND outcome IS NULL))
+) STRICT;
+
+CREATE TABLE burn_check_decision_usage (
+    attempt_id TEXT PRIMARY KEY NOT NULL,
+    usage_known INTEGER NOT NULL CHECK (usage_known IN (0, 1))
+) STRICT;
+
+CREATE TABLE burn_check_assessment_history (
+    assessment_id TEXT PRIMARY KEY NOT NULL,
+    candidate_id TEXT NOT NULL UNIQUE REFERENCES burn_check_candidate(candidate_id),
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    branch_key TEXT NOT NULL,
+    trigger_position INTEGER NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN (
+        'assessed', 'not_assessed', 'execution_failed', 'cancelled', 'stale')),
+    answer_json TEXT CHECK (answer_json IS NULL OR json_valid(answer_json)),
+    actions_json TEXT NOT NULL CHECK (json_valid(actions_json)),
+    evidence_valid INTEGER NOT NULL CHECK (evidence_valid IN (0, 1)),
+    accepted_at_epoch INTEGER NOT NULL
+) STRICT;
+CREATE INDEX burn_check_assessment_history_branch_position
+    ON burn_check_assessment_history (check_id, activation_scope_key, branch_key, trigger_position DESC);
+
+CREATE TABLE burn_check_current_status (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    branch_key TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('success', 'failure')),
+    assessment_id TEXT NOT NULL REFERENCES burn_check_assessment_history(assessment_id),
+    position INTEGER NOT NULL,
+    evidence_valid INTEGER NOT NULL CHECK (evidence_valid IN (0, 1)),
+    updated_at_epoch INTEGER NOT NULL,
+    PRIMARY KEY (check_id, activation_scope_key, branch_key)
+) STRICT;
+
+CREATE TABLE burn_check_acceptance_watermark (
+    check_id TEXT NOT NULL,
+    activation_scope_key TEXT NOT NULL,
+    branch_key TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (check_id, activation_scope_key, branch_key)
+) STRICT;
+"#;
 
 const V73: &str = r#"
 ALTER TABLE burn_check_assessment ADD COLUMN eligible_targets INTEGER;
@@ -240,9 +808,10 @@ DELETE FROM setting WHERE key = 'internal:burnCheckResponseCacheV1';
 /// current shape, not a prohibition on future migrations storing messages,
 /// tool activity, or file content recorded in a transcript. Any such migration
 /// must still be deliberate, bounded, covered by the local-data
-/// clear/delete/retention paths, and must not create a network or logging path
-/// except for the opt-in Smart Burn Checks assessment path documented in
-/// `docs/smart-burn-checks.md`.
+/// clear/delete/retention paths. Model-based YAML Checks can send selected
+/// evidence to the configured provider after opt-in. See
+/// `docs/burn-check/authoring.md`. Never send stored work content through
+/// analytics or diagnostic logs.
 const V1: &str = r#"
 -- App settings, one row per key. Values are JSON scalars so a new preference
 -- is additive and needs no migration.
@@ -1649,3 +2218,182 @@ WHERE agent = 'claude-code' AND surface = 'cli';
 UPDATE setting SET value = ''
 WHERE key = 'internal:historyDoneForRetentionDays';
 "#;
+
+#[cfg(test)]
+mod decision_migration_tests {
+    use rusqlite::{Connection, params};
+
+    use super::*;
+
+    fn snapshot(connection: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| (0..columns).map(|index| row.get(index)).collect())
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn v88_preserves_accepted_evidence_progress_settings_and_usage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("migration.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", true)
+            .unwrap();
+        for migration in &MIGRATIONS[..87] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection.execute_batch(r#"
+            INSERT INTO setting VALUES ('synthetic-saved-connection', '{"provider":"custom","revision":3,"credential":"synthetic-reference"}');
+            INSERT INTO setting VALUES ('internal:burnCheckUsageLedgerV1', '{"synthetic":"preserved"}');
+            INSERT INTO burn_check_activation
+                (check_id, activation_scope_key, definition_revision, enabled, generation,
+                 bootstrap_sequence, applied_sequence, updated_at_epoch, checkpoint_json, lifecycle_json)
+                VALUES ('fixture', '{}', 'revision', 1, 1, 3, 8, 91, '{"version":1,"cursor":8}', '{"version":1}');
+            INSERT INTO burn_check_observation VALUES
+                ('fixture', '{}', 'observation', '["native","fixture","session"]', 8,
+                 'fixture', 'native', 2, 'evidence-v2', 0, '{"payload":"exact"}');
+        "#).unwrap();
+        for state in ["accepted", "pending", "claimed", "dispatching", "answered"] {
+            connection.execute("INSERT INTO burn_check_candidate
+                (candidate_id, check_id, activation_scope_key, generation, branch_key, session_key_json,
+                 trigger_position, selected_publication_head, dependencies_json, frozen_input_json, answer_json,
+                 input_fingerprint, state, claim_owner, claim_fence, created_at_epoch, updated_at_epoch, preparation_json)
+                VALUES (?1, 'fixture', '{}', 1, ?1, '[\"native\",\"fixture\",\"session\"]', ?2, 8,
+                 '{}', '{\"frozen\":true}', '{\"choices\":[]}', 'fingerprint', ?1, 'legacy-owner', 2, 90, 91,
+                 '{\"status\":\"ready\",\"profile\":\"legacy-v4\",\"input\":{\"exact\":true}}')",
+                params![state, state.len() as i64]).unwrap();
+            connection
+                .execute(
+                    "INSERT INTO burn_check_evaluation_attempt VALUES
+                (?1, ?2, 1, ?3, ?4, ?5, 91)",
+                    params![
+                        format!("{state}:1"),
+                        state,
+                        if state == "dispatching" {
+                            "dispatch_intent"
+                        } else {
+                            "settled"
+                        },
+                        if state == "dispatching" {
+                            None
+                        } else if state == "pending" {
+                            Some("safe_transient")
+                        } else {
+                            Some("answer")
+                        },
+                        if state == "dispatching" {
+                            None
+                        } else {
+                            Some("{\"legacy\":true}")
+                        }
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO burn_check_decision_usage (attempt_id, usage_known) VALUES (?1, ?2)",
+                    params![format!("{state}:1"), state != "dispatching"],
+                )
+                .unwrap();
+        }
+        connection.execute_batch(r#"
+            INSERT INTO burn_check_candidate_dependency VALUES
+                ('accepted', 'observation', '["native","fixture","session"]', 'fixture', 2, 'evidence-v2', 0, 'hash');
+            INSERT INTO burn_check_assessment_history VALUES
+                ('legacy-assessment', 'accepted', 'fixture', '{}', 1, 'accepted', 1, 'assessed',
+                 '{"choices":[]}', '{"outcomes":[{"message":"original"}]}', 1, 92);
+            INSERT INTO burn_check_current_status VALUES ('fixture', '{}', 'accepted', 1, 'failure', 'legacy-assessment', 1, 1, 92);
+            INSERT INTO burn_check_acceptance_watermark VALUES ('fixture', '{}', 'accepted', 1, 1);
+            INSERT INTO burn_check_cooldown VALUES ('fixture', '{}', 1, 'accepted', 150);
+        "#).unwrap();
+        let tables = [
+            "setting",
+            "burn_check_activation",
+            "burn_check_observation",
+            "burn_check_candidate_dependency",
+            "burn_check_current_status",
+            "burn_check_acceptance_watermark",
+            "burn_check_cooldown",
+            "burn_check_decision_usage",
+        ];
+        let before = tables.map(|table| snapshot(&connection, table));
+        let accepted = connection.query_row("SELECT json_array(frozen_input_json, preparation_json, answer_json, state, created_at_epoch, updated_at_epoch) FROM burn_check_candidate WHERE candidate_id = 'accepted'", [], |row| row.get::<_, String>(0)).unwrap();
+        let history = snapshot(&connection, "burn_check_assessment_history");
+        let expected_attempts = connection.prepare("SELECT json_array(attempt_id, candidate_id,
+            attempt_number, CASE WHEN state = 'dispatch_intent' THEN 'settled' ELSE state END,
+            CASE WHEN state = 'dispatch_intent' THEN 'unknown' ELSE outcome END, response_json, updated_at_epoch)
+            FROM burn_check_evaluation_attempt ORDER BY attempt_id").unwrap()
+            .query_map([], |row| row.get::<_, String>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        connection.execute_batch(V88).unwrap();
+        connection.pragma_update(None, "user_version", 88).unwrap();
+        drop(connection);
+        let connection = Connection::open(path).unwrap();
+        for (table, before) in tables.into_iter().zip(before) {
+            assert_eq!(snapshot(&connection, table), before, "{table}");
+        }
+        assert_eq!(connection.query_row("SELECT json_array(frozen_input_json, preparation_json, answer_json, state, created_at_epoch, updated_at_epoch) FROM burn_check_candidate WHERE candidate_id = 'accepted'", [], |row| row.get::<_, String>(0)).unwrap(), accepted);
+        assert_eq!(
+            snapshot(&connection, "burn_check_assessment_history")[0],
+            history[0]
+        );
+        let actual_attempts = connection
+            .prepare(
+                "SELECT json_array(attempt_id, candidate_id,
+            attempt_number, state, outcome, response_json, updated_at_epoch)
+            FROM burn_check_evaluation_attempt ORDER BY attempt_id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(actual_attempts, expected_attempts);
+        let legacy: (i64, String, i64) = connection.query_row("SELECT COUNT(*), MIN(outcome), MIN(updated_at_epoch) FROM burn_check_evaluation_attempt WHERE decision_name IS NULL AND state = 'settled'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(legacy, (5, "answer".into(), 91));
+        assert_eq!(connection.query_row("SELECT outcome FROM burn_check_evaluation_attempt WHERE attempt_id = 'dispatching:1'", [], |row| row.get::<_, String>(0)).unwrap(), "unknown");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM burn_check_candidate WHERE state = 'not_assessed'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            4
+        );
+        for decision in ["first", "second"] {
+            connection
+                .execute(
+                    "INSERT INTO burn_check_evaluation_attempt
+                (attempt_id, candidate_id, decision_name, attempt_number, state, updated_at_epoch)
+                VALUES (?1, 'pending', ?1, 1, 'dispatch_intent', 100)",
+                    [decision],
+                )
+                .unwrap();
+        }
+        assert!(
+            connection
+                .execute(
+                    "INSERT INTO burn_check_evaluation_attempt
+            (attempt_id, candidate_id, decision_name, attempt_number, state, updated_at_epoch)
+            VALUES ('duplicate', 'pending', 'first', 1, 'dispatch_intent', 100)",
+                    []
+                )
+                .is_err()
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+}

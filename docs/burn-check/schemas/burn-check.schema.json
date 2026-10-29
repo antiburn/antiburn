@@ -1,0 +1,424 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Burn Checks v1-alpha",
+  "description": "Experimental v1-alpha draft; not yet standardized. Syntax, semantics, and capabilities can change, including breaking changes, with no backward compatibility promise. Beta and stable scope are not set. Missing features are unassigned future work and are not usable today. This schema checks structure only. Acceptance does not prove compiler or runtime support, native source evidence, or provider capability. Use the file validator for YAML restrictions. Runtime validation must check expression syntax (including blank expressions), scoped references, frozen evidence and result values, source admission bounds, nesting limits, iteration budgets, glob syntax, map aliases that must not shadow public input roots, window min <= size, and fit paths, declared input roots, overlap, and evaluated target types. Message actions remain unsupported, including behind false conditions. Effective agent.skills, repo.branch, historical instruction activation, and historical effective skill inventories are unavailable. The broader draft does not promise Auto Fix, verification watches, burn estimates, or savings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "on", "actions"],
+  "properties": {
+    "name": { "$ref": "#/$defs/fixedText" },
+    "description": { "$ref": "#/$defs/fixedText" },
+    "on": { "$ref": "#/$defs/triggers" },
+    "if": { "$ref": "#/$defs/condition" },
+    "decisions": {
+      "type": "object",
+      "description": "Omit decisions for local status actions. A present value must be a nonempty mapping; null or an empty mapping does not select local execution. Named independent blocks support one to eight mixed Choice, Score, and Noul questions each. Shared runtime work and retained-state bounds apply without a syntax-only block count limit. Inputs cannot read decisions, and local actions cannot read undeclared decision results.",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/decision" }
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/statusAction" },
+          { "$ref": "#/$defs/messageAction" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "nonblank": { "type": "string", "pattern": "\\S" },
+    "fixedText": {
+      "type": "string",
+      "$ref": "#/$defs/nonblank",
+      "not": { "pattern": "\\$\\{\\{" }
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(?![\\s\\S])"
+    },
+    "expression": {
+      "type": "string",
+      "description": "Checks only the entire expression wrapper. Expression syntax, including blank bodies, requires runtime validation.",
+      "pattern": "^\\$\\{\\{[\\s\\S]*\\}\\}(?![\\s\\S])"
+    },
+    "condition": {
+      "description": "Boolean or nonblank expression string, with or without a wrapper. Expression syntax requires runtime validation.",
+      "anyOf": [{ "type": "boolean" }, { "$ref": "#/$defs/nonblank" }]
+    },
+    "statusResult": {
+      "description": "Literal success or failure, or a whole expression. Runtime expression results must be exactly success or failure, case-sensitive, without boolean coercion.",
+      "anyOf": [
+        { "enum": ["success", "failure"] },
+        { "$ref": "#/$defs/expression" }
+      ]
+    },
+    "messageTemplate": {
+      "$ref": "#/$defs/nonblank",
+      "description": "Literal text or a template with embedded or whole expressions. Runtime validation must restrict dynamic values to frozen contexts and validated result values."
+    },
+    "inputValue": {
+      "description": "Recursive JSON template value. Public input roots are session, turn, message, window, global, repo, and agent. message requires a message-family trigger; turn requires turn_end. window requires on.window in decision inputs and actions, not top-level if. window.messages is one flat mixed array of matching messages; turn.messages is a complete native-ordered cycle. message.kind is user_message, assistant_message, tool_call, or tool_result; tool results are at message.tool.result. session.model and session.fast_mode are optional explicit current selection on every family, never historical requester attribution. session.start_reason requires a configured session_start alternative; session.idle_seconds and session.last_activity_at require session_idle. Actual event fields can remain unavailable. Turn times and session.last_activity_at use recorded integer Unix milliseconds, not the local idle clock. Current inventories capture only when referenced and freeze with the candidate. Event metadata is internal. The compiler and runtime enforce these rules, closed-record access, expression syntax, and resource bounds; this schema does not validate evidence.",
+      "anyOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        { "type": "array", "items": { "$ref": "#/$defs/inputValue" } },
+        { "$ref": "#/$defs/inputObject" },
+        { "$ref": "#/$defs/mappingDirective" }
+      ]
+    },
+    "inputObject": {
+      "type": "object",
+      "propertyNames": { "type": "string", "not": { "pattern": "\\$\\{\\{" } },
+      "not": { "required": ["map"], "properties": { "map": true } },
+      "additionalProperties": { "$ref": "#/$defs/inputValue" }
+    },
+    "mappingDirective": {
+      "type": "object",
+      "description": "Runtime validation must reject aliases that shadow session, turn, message, window, global, repo, agent, decisions, or an enclosing alias, even when a root is unavailable in this phase. The alias messages is allowed unless it shadows an enclosing alias.",
+      "additionalProperties": false,
+      "required": ["map", "as", "value"],
+      "properties": {
+        "map": { "$ref": "#/$defs/expression" },
+        "as": { "$ref": "#/$defs/identifier" },
+        "value": { "$ref": "#/$defs/inputValue" },
+        "if": { "$ref": "#/$defs/condition" }
+      }
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)[smh](?![\\s\\S])"
+    },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "modelId": {
+      "type": "string",
+      "$ref": "#/$defs/fixedText",
+      "description": "Literal provider/model ID. The first slash separates the provider from the model. The model may contain more slash-separated namespace segments. Every segment must be nonempty and contain no whitespace; interpolation is not allowed.",
+      "pattern": "^[^\\s/]+/[^\\s/]+(?:/[^\\s/]+)*(?![\\s\\S])"
+    },
+    "commonEventFilters": {
+      "type": "object",
+      "description": "Common filters target session fields for session events, message fields for message events, and turn fields for turn_end, without fallback to another scope. session.model and session.fast_mode describe explicit current selection. message.model describes the recorded generator or requester; message.fast_mode can use reported speed, selected catalog mode, recorded requested-tier preference, or a low-confidence requester model-ID hint. It does not guarantee actual served tier. turn.model and turn.fast_mode require a complete, nonempty native generating-request set, including requests without public text; each field must be uniform independently. user_message has no generator, so its model and fast_mode fields are absent; configured common filters do not match absent fields. Use top-level if with session.model or session.fast_mode to filter current selection on any event. These attribution and matching rules require runtime enforcement; this schema validates only filter structure.",
+      "properties": {
+        "fast_mode": {
+          "type": "boolean",
+          "description": "Match recorded fast-mode evidence in the event scope: session for session events, message for message events, or turn for turn_end. Evidence can be a low-confidence hint and does not guarantee actual served tier. An absent field matches neither true nor false. Use top-level if with session.fast_mode to test the current setting. Matching requires runtime enforcement."
+        },
+        "models": {
+          "type": "array",
+          "description": "Match model in the event scope: session for session events, message for message events, or turn for turn_end. An absent field does not match. Use top-level if with session.model to test the current selection. Attribution and matching require runtime enforcement.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/modelId" }
+        }
+      }
+    },
+    "simpleEvent": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "$ref": "#/$defs/commonEventFilters",
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "paths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/fixedText" }
+    },
+    "tools": {
+      "type": "array",
+      "description": "Normalized check-facing categories. A source adapter must derive each category from a reviewed native tool identity, not recover a specific category from a collapsed metric category or tool output. An unavailable category is absent, not other. Schema acceptance does not establish source support.",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "shell",
+          "read",
+          "search",
+          "edit",
+          "write",
+          "delegate",
+          "skill",
+          "mcp",
+          "other"
+        ]
+      }
+    },
+    "toolFilter": {
+      "type": "object",
+      "$ref": "#/$defs/commonEventFilters",
+      "properties": {
+        "tools": { "$ref": "#/$defs/tools" },
+        "paths": { "$ref": "#/$defs/paths" },
+        "paths-ignore": { "$ref": "#/$defs/paths" }
+      }
+    },
+    "triggers": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Select one or more events from exactly one family. Message and session entries are alternatives; all filters within an entry must match. Message alternatives and top-level conditions apply before one mixed rolling window counts messages. Only message events support window. The compiler accepts all listed families, but each native event still requires source proof. Desktop session starts currently emit attached only; idle uses a persisted 120-second observation policy, not measured activity. Existing recent startup seeds remain result-only; other public kinds use a separate future-only boundary. Structural validation does not prove any runtime or source behavior.",
+      "oneOf": [
+        {
+          "propertyNames": {
+            "enum": [
+              "user_message",
+              "assistant_message",
+              "tool_call",
+              "tool_result",
+              "window",
+              "cooldown"
+            ]
+          },
+          "anyOf": [
+            {
+              "required": ["user_message"],
+              "properties": { "user_message": true }
+            },
+            {
+              "required": ["assistant_message"],
+              "properties": { "assistant_message": true }
+            },
+            { "required": ["tool_call"], "properties": { "tool_call": true } },
+            {
+              "required": ["tool_result"],
+              "properties": { "tool_result": true }
+            }
+          ]
+        },
+        {
+          "propertyNames": { "enum": ["turn_end", "cooldown"] },
+          "required": ["turn_end"],
+          "properties": { "turn_end": true }
+        },
+        {
+          "propertyNames": {
+            "enum": ["session_start", "session_idle", "cooldown"]
+          },
+          "anyOf": [
+            {
+              "required": ["session_start"],
+              "properties": { "session_start": true }
+            },
+            {
+              "required": ["session_idle"],
+              "properties": { "session_idle": true }
+            }
+          ]
+        }
+      ],
+      "properties": {
+        "session_start": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "$ref": "#/$defs/commonEventFilters",
+              "unevaluatedProperties": false,
+              "properties": {
+                "reason": {
+                  "type": "array",
+                  "description": "Draft start reasons. The desktop currently emits attached only; schema acceptance of new or resumed does not establish host proof.",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "enum": ["new", "resumed", "attached"] }
+                }
+              }
+            }
+          ]
+        },
+        "session_idle": { "$ref": "#/$defs/simpleEvent" },
+        "user_message": { "$ref": "#/$defs/simpleEvent" },
+        "assistant_message": { "$ref": "#/$defs/simpleEvent" },
+        "tool_call": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "$ref": "#/$defs/toolFilter",
+              "unevaluatedProperties": false
+            }
+          ]
+        },
+        "tool_result": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "$ref": "#/$defs/toolFilter",
+              "type": "object",
+              "unevaluatedProperties": false,
+              "properties": {
+                "status": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": ["completed", "error", "cancelled", "unknown"]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "turn_end": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "$ref": "#/$defs/commonEventFilters",
+              "unevaluatedProperties": false,
+              "properties": {
+                "status": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": { "enum": ["completed", "cancelled", "error"] }
+                }
+              }
+            }
+          ]
+        },
+        "window": {
+          "description": "One mixed message-family rolling window after event filters and top-level conditions. min defaults to 1 at runtime and must not exceed size. The runtime caps size at 40; this schema does not check that release bound or runtime membership.",
+          "anyOf": [
+            { "$ref": "#/$defs/positiveInteger" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["size"],
+              "properties": {
+                "size": { "$ref": "#/$defs/positiveInteger" },
+                "min": { "$ref": "#/$defs/positiveInteger", "default": 1 }
+              }
+            }
+          ]
+        },
+        "cooldown": {
+          "$ref": "#/$defs/duration",
+          "description": "Runtime default: 0s when decisions is absent, 60s for a model check. Zero cooldown still uses branch single flight. Schema validation does not apply defaults."
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "description": "One independent input and one complete multi-question request on the assessment's captured connection. Prepare every block before inference, execute blocks sequentially in authored order, and run actions only after all answers validate. Input expressions cannot read any decision result.",
+      "additionalProperties": false,
+      "required": ["input", "output"],
+      "properties": {
+        "input": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "additionalProperties": { "$ref": "#/$defs/inputValue" }
+        },
+        "fit": { "$ref": "#/$defs/inputFit" },
+        "output": {
+          "type": "object",
+          "description": "One to eight named questions. Choice returns a declared string label, Score returns a finite fractional criterion index, and Noul returns a finite yes-probability, not a Boolean. Optional Choice/Score details require selected-route capabilities; Noul details are a closed empty record.",
+          "minProperties": 1,
+          "maxProperties": 8,
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/$defs/choice" },
+              { "$ref": "#/$defs/score" },
+              { "$ref": "#/$defs/noul" }
+            ]
+          }
+        }
+      }
+    },
+    "inputFit": {
+      "type": "object",
+      "description": "Optional loss permission for evaluated decision input. Empty or absent means no loss. Keys start at a declared top-level input and support only .field and [*] array traversal. Root existence, overlap, and release rule/path limits require compiler validation. Present traversal values and targets require runtime type validation; absent optional properties and empty traversed arrays are skipped. Preserve YAML rule order and original array order. Expand once, then give each concrete non-exhausted target one strict round-robin turn and validate the complete request after every changed turn, stopping immediately on fit. recent drops one oldest array item and retains at least one. truncate removes up to 1024 original middle UTF-8 bytes per turn, retains at least 256 original bytes with upward Unicode alignment, and uses one omission marker. Skip a first truncation unless the omitted substring is larger than the marker after JSON escaping. No recursive truncation or expressions. Report concrete paths, strategies, and original/retained counts. Runtime preparation bounds are separate from local request-size validation. PreparationResourceLimit does not prove that further authorized reductions could not fit; typed NoFit reasons distinguish no rules, no matching targets, retention/marker limits, and exhausted reductions. Initial local failures have zero provider attempts, no new cooldown, no actions, and no status write; incompatible recovery has zero additional attempts. Deployed bounds are documented in authoring.md#preparation-limits, not authored YAML fields.",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*|\\[\\*\\])*(?![\\s\\S])"
+      },
+      "additionalProperties": { "enum": ["recent", "truncate"] }
+    },
+    "choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "question", "criteria"],
+      "properties": {
+        "type": { "const": "choice" },
+        "question": { "$ref": "#/$defs/fixedText" },
+        "criteria": {
+          "type": "object",
+          "description": "At least two labels with fixed string descriptions, in authored order. The host checks the selected connection's Choice-specific criteria limit before scheduling; the language has no fixed criteria maximum.",
+          "minProperties": 2,
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "additionalProperties": { "$ref": "#/$defs/fixedText" }
+        }
+      }
+    },
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "question", "criteria"],
+      "properties": {
+        "type": { "const": "score" },
+        "question": { "$ref": "#/$defs/fixedText" },
+        "criteria": {
+          "type": "array",
+          "description": "At least two fixed string descriptions in rubric order. Score ranges from zero through the last index, including fractions. Optional language probabilities use this array order. The selected route's Score-specific interval applies separately from Choice limits.",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/fixedText" }
+        }
+      }
+    },
+    "noul": {
+      "type": "object",
+      "description": "A fixed question without authored criteria. The result is a finite yes-probability in [0, 1], never a converted Boolean. Its language details are a closed empty record with no separate confidence or probability distribution.",
+      "additionalProperties": false,
+      "required": ["type", "question"],
+      "properties": {
+        "type": { "const": "noul" },
+        "question": { "$ref": "#/$defs/fixedText" }
+      }
+    },
+    "statusAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "input"],
+      "properties": {
+        "type": { "const": "status" },
+        "if": { "$ref": "#/$defs/condition" },
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result"],
+          "properties": {
+            "result": { "$ref": "#/$defs/statusResult" },
+            "message": { "$ref": "#/$defs/messageTemplate" }
+          }
+        }
+      }
+    },
+    "messageAction": {
+      "type": "object",
+      "description": "Broader draft syntax only. The current runtime rejects message actions before activation, including behind false conditions.",
+      "additionalProperties": false,
+      "required": ["type", "input"],
+      "properties": {
+        "type": { "const": "message" },
+        "if": { "$ref": "#/$defs/condition" },
+        "cooldown": { "$ref": "#/$defs/duration" },
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["message"],
+          "properties": { "message": { "$ref": "#/$defs/messageTemplate" } }
+        }
+      }
+    }
+  }
+}

@@ -10,449 +10,15 @@ use antiburn_local::analysis::{
 };
 use antiburn_local::insights::ReportWindow;
 
-pub(super) fn saved_instruction_cause() -> FindingCause {
-    FindingCause::IgnoredInstructionConflict(Box::new(
-        antiburn_local::remediation::IgnoredInstructionConflictEvidence {
-        decision: None,
-        assessment_revision: "revision".to_owned(),
-        assessment_finding_id: "finding".to_owned(),
-        instruction_id: "instruction".to_owned(),
-        instruction_digest: "instruction-digest".to_owned(),
-        instruction_excerpt: "Run the focused tests before committing.".to_owned(),
-        instruction_excerpt_truncated: false,
-        rule_id: "rule".to_owned(),
-        rule_heading: "Quality Review".to_owned(),
-        start_line: 4,
-        end_line: 6,
-        source: "home:.config/opencode/AGENTS.md".to_owned(),
-        provenance:
-            antiburn_local::analysis::ignored_instructions::InstructionProvenance::RecordedInjection,
-        instruction_scope: antiburn_local::analysis::ignored_instructions::InstructionScope::Global,
-        action_id: "action".to_owned(),
-        action_digest: "action-digest".to_owned(),
-        action_excerpt: "git commit -m 'Update Jev prompts'".to_owned(),
-        action_excerpt_truncated: false,
-        action_timestamp_ms: Some(1_000),
-        nearby_context_ids: Vec::new(),
-        counterevidence_ids: Vec::new(),
-        certainty: antiburn_local::analysis::ignored_instructions::FindingCertainty::Likely,
-        limitations: Box::default(),
-        },
-    ))
-}
-
-#[test]
-fn ignored_instruction_evidence_uses_the_saved_instruction_and_action_excerpts() {
-    let cause = saved_instruction_cause();
-
-    let saved = stored_instruction_evidence(&cause).unwrap();
-
-    assert_eq!(saved.status, BurnCheckEvidenceStatus::Available);
-    assert_eq!(saved.items.len(), 2);
-    assert_eq!(saved.items[0].label, BurnCheckEvidenceLabel::Instruction);
-    assert_eq!(
-        saved.items[0].excerpt,
-        "Run the focused tests before committing."
-    );
-    assert_eq!(saved.items[1].label, BurnCheckEvidenceLabel::ObservedAction);
-    assert_eq!(saved.items[1].excerpt, "git commit -m 'Update Jev prompts'");
-    assert_eq!(saved.items[1].observed_at_ms, Some(1_000));
-}
-
-#[test]
-fn saved_excerpts_survive_missing_context_and_changed_or_deleted_instruction_files() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("AGENTS.md");
-    let mut cause = saved_instruction_cause();
-    let FindingCause::IgnoredInstructionConflict(evidence) = &mut cause else {
-        unreachable!()
-    };
-    evidence.source = format!("project:{}", path.display());
-    for contents in [Some("Unrelated new instruction"), None] {
-        if let Some(contents) = contents {
-            std::fs::write(&path, contents).unwrap();
-        } else {
-            std::fs::remove_file(&path).unwrap();
-        }
-        let saved = merge_instruction_evidence(
-            stored_instruction_evidence(&cause),
-            unavailable_instruction_evidence(),
-        );
-        assert_eq!(saved.status, BurnCheckEvidenceStatus::Available);
-        assert_eq!(
-            saved.items[0].excerpt,
-            "Run the focused tests before committing."
-        );
-        assert_eq!(saved.items[0].start_line, Some(4));
-        assert_eq!(saved.items[0].end_line, Some(6));
-        assert_eq!(saved.items[1].excerpt, "git commit -m 'Update Jev prompts'");
-        assert!(
-            saved.items[1]
-                .limitation
-                .as_ref()
-                .unwrap()
-                .contains("cannot be validated")
-        );
-    }
-}
-
-pub(super) fn context_action(
-    id: &str,
-    turn_index: u64,
-    text: &str,
-) -> antiburn_local::analysis::jev_evidence::ContentAction {
-    use antiburn_local::analysis::jev_evidence::{ContentAction, ContentEventReference};
-    ContentAction {
-        reference: ContentEventReference {
-            id: id.to_owned(),
-            source_key_digest: "source".to_owned(),
-            thread_digest: "thread".to_owned(),
-            turn_index,
-            native_record_id: None,
-            part_index: 0,
-            stable: true,
-        },
-        timestamp_ms: Some(1_000),
-        turn_role: "assistant".to_owned(),
-        turn_scope: "main".to_owned(),
-        authority: "assistant".to_owned(),
-        kind: "text".to_owned(),
-        text: text.to_owned(),
-        tool_name: None,
-        tool_call_id: None,
-        normalized_fields: None,
-        metadata: Default::default(),
-        truncated: false,
-        context_only: false,
-    }
-}
-
-#[test]
-fn decision_proof_serializers_and_expanded_context_require_exact_bindings() {
-    use antiburn_local::analysis::ignored_instructions::*;
-    let mut cause = saved_instruction_cause();
-    let FindingCause::IgnoredInstructionConflict(evidence) = &mut cause else {
-        unreachable!()
-    };
-    let anchor = context_action("action", 12, "Published without required validation.");
-    let earlier = context_action("episode-early", 1, "Requested the first validation.");
-    evidence.action_digest = content_action_digest(&anchor);
-    let reference = RuleActionRef {
-        instruction_id: evidence.instruction_id.clone(),
-        instruction_digest: evidence.instruction_digest.clone(),
-        rule_id: evidence.rule_id.clone(),
-        rule_heading: evidence.rule_heading.clone(),
-        start_line: evidence.start_line,
-        end_line: evidence.end_line,
-        source: evidence.source.clone(),
-        provenance: evidence.provenance,
-        scope: evidence.instruction_scope,
-        action_id: evidence.action_id.clone(),
-        action_digest: evidence.action_digest.clone(),
-        action_timestamp_ms: evidence.action_timestamp_ms,
-        action_stable: true,
-    };
-    evidence.decision = Some(DecisionRecord {
-        explanation_basis: Some(InstructionExplanationBasis {
-            schema_revision: 2,
-            relationship: InstructionMismatch::RequirementConflict,
-            instruction: evidence.instruction_excerpt.clone(),
-            action: anchor.text.clone(),
-            instruction_context: Vec::new(),
-            earlier_events: Vec::new(),
-        }),
-        schema_revision: 2,
-        source_generation: 2,
-        source_fingerprint: Some("fingerprint".into()),
-        publication_fence: 3,
-        rule_action: reference,
-        rule_start_byte: 0,
-        rule_end_byte: evidence.instruction_excerpt.len(),
-        action_anchor: EvidenceIdentity {
-            source: anchor.reference.clone(),
-            content_digest: content_action_digest(&anchor),
-            start_byte: 0,
-            end_byte: anchor.text.len(),
-        },
-        action_authority: "assistant".into(),
-        action_is_request: true,
-        prerequisite: PrerequisiteOutcome::SelectedHistoryConflict,
-        selected_evidence: vec![EvidenceIdentity {
-            source: earlier.reference.clone(),
-            content_digest: content_action_digest(&earlier),
-            start_byte: 0,
-            end_byte: earlier.text.len(),
-        }],
-        coverage: DecisionCoverage {
-            source_complete: true,
-            selected_history_complete: true,
-            read_request_inventory_complete: false,
-            results_excluded: true,
-            user_authority_excluded: true,
-            limitations: vec![],
-        },
-        citations: vec![
-            CitationProof {
-                claim: CitationClaim::RuleRequirement,
-                source_ids: vec!["instruction:rule".into()],
-            },
-            CitationProof {
-                claim: CitationClaim::AnchoredAction,
-                source_ids: vec!["action".into()],
-            },
-            CitationProof {
-                claim: CitationClaim::PrerequisiteContrast,
-                source_ids: vec!["action".into(), "episode-early".into()],
-            },
-        ],
-        context_revision: "context".into(),
-        evaluator_revision: evaluator_revision(),
-        model: ASSESSMENT_MODEL.into(),
-    });
-    evidence.action_excerpt = anchor.text.clone();
-    assert!(evidence.decision_record().is_some());
-    let mut actions =
-        BTreeMap::from([("action".into(), anchor), ("episode-early".into(), earlier)]);
-    assert_eq!(
-        validated_evidence_references(evidence, &actions),
-        Some((vec!["episode-early".into(), "action".into()], false))
-    );
-    actions.get_mut("episode-early").unwrap().text = "Changed history".into();
-    assert_eq!(validated_evidence_references(evidence, &actions), None);
-    actions
-        .get_mut("action")
-        .unwrap()
-        .reference
-        .source_key_digest = "other-source".into();
-    assert!(validated_evidence_references(evidence, &actions).is_none());
-
-    let saved = stored_instruction_evidence(&cause).unwrap();
-    let json = serde_json::to_value(&saved).unwrap();
-    assert_eq!(
-        json["decisionProof"]["prerequisite"],
-        "selected_history_conflict"
-    );
-    assert_eq!(
-        json["decisionProof"]["citations"][2]["source_ids"][1],
-        "episode-early"
-    );
-    assert_eq!(
-        json["items"][1]["explanation"],
-        json["decisionProof"]["contrast"]
-    );
-    assert!(!json.to_string().contains("native_record_id"));
-    let occurrence = BurnCheckEvidenceOccurrence {
-        comparison: None,
-        finding_id: "finding".into(),
-        status: saved.status,
-        decision_proof: saved.decision_proof.clone(),
-        items: saved.items.clone(),
-    };
-    assert_eq!(
-        serde_json::to_value(occurrence).unwrap()["decisionProof"],
-        json["decisionProof"]
-    );
-    let payload = crate::dto::BurnCheckFindingPayload {
-        over_exploring_reason: None,
-        decision_proof: saved.decision_proof,
-        detector: crate::dto::BurnCheckDetectorId::IgnoredInstructions,
-        agent: "claude-code".into(),
-        source_format: crate::dto::BurnCheckSourceFormat::ClaudeJsonl,
-        observation: "Instruction conflict".into(),
-        labels: vec![],
-        omitted: 0,
-    };
-    assert_eq!(
-        serde_json::to_value(payload).unwrap()["decisionProof"],
-        json["decisionProof"]
-    );
-    let FindingCause::IgnoredInstructionConflict(evidence) = &mut cause else {
-        unreachable!()
-    };
-    evidence.decision.as_mut().unwrap().rule_action.action_id = "other".into();
-    let fallback = stored_instruction_evidence(&cause).unwrap();
-    assert!(fallback.decision_proof.is_none());
-    assert!(
-        serde_json::to_value(fallback)
-            .unwrap()
-            .get("decisionProof")
-            .is_none()
-    );
-}
-
-#[test]
-fn validated_context_requires_the_saved_anchor_and_orders_equal_timestamps_by_source() {
-    use antiburn_local::analysis::ignored_instructions::content_action_digest;
-    let mut cause = saved_instruction_cause();
-    let FindingCause::IgnoredInstructionConflict(evidence) = &mut cause else {
-        unreachable!()
-    };
-    let anchor = context_action("action", 3, "anchored action");
-    evidence.action_digest = content_action_digest(&anchor);
-    evidence.nearby_context_ids = vec![
-        "z-first".to_owned(),
-        "a-second".to_owned(),
-        "unrelated".to_owned(),
-        "missing".to_owned(),
-    ];
-    evidence.counterevidence_ids = vec!["counter".to_owned()];
-    let mut unrelated = context_action("unrelated", 0, "unrelated event");
-    unrelated.reference.source_key_digest = "other-source".to_owned();
-    let mut actions = BTreeMap::from([
-        ("action".to_owned(), anchor),
-        (
-            "z-first".to_owned(),
-            context_action("z-first", 1, "first event"),
-        ),
-        (
-            "a-second".to_owned(),
-            context_action("a-second", 2, "second event"),
-        ),
-        (
-            "counter".to_owned(),
-            context_action("counter", 4, "counterevidence"),
-        ),
-        ("unrelated".to_owned(), unrelated),
-    ]);
-    assert_eq!(
-        validated_evidence_references(evidence, &actions),
-        Some((
-            vec![
-                "z-first".to_owned(),
-                "a-second".to_owned(),
-                "action".to_owned(),
-                "counter".to_owned()
-            ],
-            true
-        ))
-    );
-    actions.get_mut("action").unwrap().text = "changed action".to_owned();
-    assert_eq!(validated_evidence_references(evidence, &actions), None);
-    evidence.action_digest.clear();
-    assert_eq!(validated_evidence_references(evidence, &actions), None);
-}
-
-#[test]
-fn saved_evidence_merges_validated_context_without_replacing_historical_text() {
-    let cause = saved_instruction_cause();
-    let mut validated = stored_instruction_evidence(&cause).unwrap();
-    validated.items[0].excerpt = "today's instruction".to_owned();
-    validated.items[1].excerpt = "normalized action".to_owned();
-    let mut context = validated.items[1].clone();
-    context.label = BurnCheckEvidenceLabel::Context;
-    context.reference = "counter".to_owned();
-    context.excerpt = "Earlier tests\n  passed".to_owned();
-    validated.items.push(context);
-    let merged = merge_instruction_evidence(stored_instruction_evidence(&cause), validated);
-    assert_eq!(
-        merged.items[0].excerpt,
-        "Run the focused tests before committing."
-    );
-    assert_eq!(
-        merged.items[1].excerpt,
-        "git commit -m 'Update Jev prompts'"
-    );
-    assert_eq!(merged.items[2].excerpt, "Earlier tests\n  passed");
-    assert!(merged.items[1].limitation.is_none());
-}
-
-#[test]
-fn legacy_partial_excerpts_keep_available_text_and_report_the_missing_text() {
-    let mut cause = saved_instruction_cause();
-    let FindingCause::IgnoredInstructionConflict(evidence) = &mut cause else {
-        unreachable!()
-    };
-    evidence.instruction_excerpt.clear();
-    let saved = stored_instruction_evidence(&cause).unwrap();
-    assert_eq!(saved.items[0].excerpt, "Instruction text unavailable.");
-    assert!(
-        saved.items[0]
-            .limitation
-            .as_ref()
-            .unwrap()
-            .contains("was not saved")
-    );
-    assert_eq!(saved.items[1].excerpt, "git commit -m 'Update Jev prompts'");
-    let FindingCause::IgnoredInstructionConflict(evidence) = &mut cause else {
-        unreachable!()
-    };
-    evidence.action_excerpt.clear();
-    assert!(stored_instruction_evidence(&cause).is_none());
-}
-
-#[test]
-fn instruction_context_rejects_stale_publications_and_excludes_private_thinking() {
-    use antiburn_local::analysis::{
-        ContentKind, ContentPart, PublishedContent, PublishedContentPart,
-    };
-    let published = PublishedContent {
-        publication_fence: 7,
-        source_generation: Some(3),
-        parts: [ContentKind::AssistantText, ContentKind::Thinking]
-            .into_iter()
-            .enumerate()
-            .map(|(index, kind)| PublishedContentPart {
-                source_key: "source".to_owned(),
-                thread_id: "thread".to_owned(),
-                turn_index: 1,
-                role: "assistant",
-                scope: "main".to_owned(),
-                ts_ms: Some(1_000),
-                uuid: Some("record".to_owned()),
-                message_id: None,
-                part_index: index as u32,
-                part: ContentPart::new(
-                    kind,
-                    if kind == ContentKind::Thinking {
-                        "private thought"
-                    } else {
-                        "visible action"
-                    },
-                ),
-                context_only: false,
-                stable_event_identity: true,
-            })
-            .collect(),
-        ..Default::default()
-    };
-    let prepared = validated_instruction_content(
-        "local\0opencode\0session",
-        SourceFormat::OpenCodeSqliteV2,
-        published.clone(),
-        7,
-        3,
-    )
-    .unwrap();
-    assert_eq!(prepared.actions.len(), 1);
-    assert_eq!(prepared.actions[0].text, "visible action");
-    assert!(
-        validated_instruction_content(
-            "local\0opencode\0session",
-            SourceFormat::OpenCodeSqliteV2,
-            published.clone(),
-            8,
-            3
-        )
-        .is_none()
-    );
-    assert!(
-        validated_instruction_content(
-            "local\0opencode\0session",
-            SourceFormat::OpenCodeSqliteV2,
-            published,
-            7,
-            4
-        )
-        .is_none()
-    );
-}
-
-const SOURCE_FORMATS: [SourceFormat; 32] = [
+const SOURCE_FORMATS: [SourceFormat; 35] = [
     SourceFormat::ClaudeJsonl,
     SourceFormat::CodexRolloutJsonl,
     SourceFormat::OpenCodeJsonl,
+    SourceFormat::OpenCodeSqliteV1,
     SourceFormat::OpenCodeSqliteV2,
+    SourceFormat::OpenCodeV2SessionExport,
     SourceFormat::PiV3Jsonl,
+    SourceFormat::OmpV3Jsonl,
     SourceFormat::CursorJsonl,
     SourceFormat::CursorCliAgentJsonl,
     SourceFormat::CursorCliStoreDb,
@@ -544,7 +110,7 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
         },
         Case {
             agent: AgentKind::OpenCode,
-            source: SourceFormat::OpenCodeSqliteV2,
+            source: SourceFormat::OpenCodeSqliteV1,
             config_path: ".config/opencode/opencode.json",
             config: r#"{"model":"openai/gpt-5.6-sol"}"#,
             provider: "openai",
@@ -635,7 +201,7 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
         .unwrap();
         assert_eq!(
             attribution.model.as_ref().map(|value| value.2.as_str()),
-            Some(case.effective_model),
+            (case.agent != AgentKind::OpenCode).then_some(case.effective_model),
             "{:?} {:?}",
             case.agent,
             case.source
@@ -649,7 +215,7 @@ fn publication_attribution_covers_supported_vendor_sources_and_settings() {
         );
         assert_eq!(
             attribution.records.len(),
-            1 + usize::from(case.reasoning.is_some()),
+            usize::from(case.agent != AgentKind::OpenCode) + usize::from(case.reasoning.is_some()),
             "{:?} {:?}",
             case.agent,
             case.source
@@ -701,7 +267,7 @@ fn automatic_editor_matrix_covers_all_agents_scopes_sources_and_platforms() {
             }
         }
     }
-    assert_eq!(supported.len(), 112);
+    assert_eq!(supported.len(), 132);
     assert!(
         supported
             .iter()
@@ -727,7 +293,9 @@ fn automatic_editor_matrix_covers_all_agents_scopes_sources_and_platforms() {
                                 | ConfigSetting::SubagentModel
                                 | ConfigSetting::McpServer
                                 | ConfigSetting::Skill,
-                            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2
+                            SourceFormat::OpenCodeJsonl
+                                | SourceFormat::OpenCodeSqliteV1
+                                | SourceFormat::OpenCodeSqliteV2
                         )
                         | (
                             AgentKind::Pi,
@@ -773,6 +341,7 @@ fn indexed_resource_target_enables_auto_fix_for_the_exact_effective_entry() {
     let controller = RemediationController::new(temporary.path().join("data"));
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -827,6 +396,7 @@ fn disabled_check_watch_is_dequeued_without_replacing_its_result() {
     let controller = RemediationController::new(temporary.path().join("data"));
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -915,6 +485,7 @@ fn advisory_resource_target_stays_prompt_only() {
     let controller = RemediationController::new(temporary.path().join("data"));
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -948,6 +519,7 @@ fn advisory_resource_target_stays_prompt_only() {
 fn resource_revalidation_keeps_the_indexed_provenance_requirement() {
     let indexed = insights_report::UnusedResourceTarget {
         agent: AgentKind::OpenCode,
+        source_format: SourceFormat::OpenCodeJsonl,
         kind: crate::agent_config::ResourceKind::Skill,
         canonical_name: "review".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -964,12 +536,23 @@ fn resource_revalidation_keeps_the_indexed_provenance_requirement() {
 
     assert!(!resource_target_matches(&indexed, &advisory));
     assert!(resource_target_matches(&advisory, &indexed));
+    let native = insights_report::UnusedResourceTarget {
+        source_format: SourceFormat::OpenCodeSqliteV2,
+        ..indexed.clone()
+    };
+    assert!(!resource_target_matches(&indexed, &native));
+    let different_case = insights_report::UnusedResourceTarget {
+        canonical_name: "REVIEW".into(),
+        ..native.clone()
+    };
+    assert!(!resource_target_matches(&native, &different_case));
 }
 
 #[test]
 fn resource_targets_do_not_expose_supporting_sessions_as_samples() {
     let target = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::Skill,
         canonical_name: "review".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -1019,76 +602,6 @@ fn resource_targets_do_not_expose_supporting_sessions_as_samples() {
     };
 
     assert!(cached.sample_sessions().is_empty());
-}
-
-#[test]
-fn a_new_prompt_cycle_does_not_reuse_a_recurred_prompt_group() {
-    let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    store
-        .lock()
-        .execute(
-            "INSERT INTO remediation (
-                remediation_id, target_key, environment_key, agent, scope_kind, scope_key,
-                state, definition_json, result_json, created_at_epoch, updated_at_epoch,
-                effective_boundary_ms, verified_at_epoch, recurred_at_epoch,
-                origin, prompt_group_id)
-             VALUES ('recurred', 'target', 'native', 'claude-code', 'global', 'scope',
-                'recurred', '{\"version\":1}', '{\"version\":1}', 1, 3,
-                1000, 2, 3, 'action', 'old-group')",
-            [],
-        )
-        .unwrap();
-    let target = CachedTarget {
-        findings: Vec::new(),
-        resource: Some(CachedResourceTarget {
-            target: insights_report::UnusedResourceTarget {
-                agent: AgentKind::Claude,
-                kind: crate::agent_config::ResourceKind::Skill,
-                canonical_name: "review".into(),
-                scope: insights_report::ResourceAssessmentScope::Global,
-                observations: 1,
-                indexed: false,
-                replicated_tokens: Some(10),
-                estimated_token_burn_basis_points: Some(100),
-                supporting_sessions: Vec::new(),
-            },
-            context: BurnCheckTargetContext {
-                environment_key: "native".into(),
-                window: ReportWindow {
-                    start_epoch: 0,
-                    end_epoch: 1,
-                },
-            },
-            finding: Finding::advisory_resource(
-                AgentKind::Claude,
-                SourceFormat::ClaudeJsonl,
-                FindingCause::UnusedSkill {
-                    skill: "review".into(),
-                    tokens: Some(10),
-                    cost_usd: None,
-                    pricing_revision: None,
-                },
-            )
-            .unwrap(),
-        }),
-        target_key: "target".into(),
-        canonical_identity: String::new(),
-        workspace_key: None,
-        agent: AgentKind::Claude,
-        scope_kind: "global".into(),
-        scope_key: "scope".into(),
-        physical_target_key: None,
-        config: None,
-    };
-    let controller = RemediationController::new(directory.path().to_owned());
-
-    let (reference, group) = controller
-        .prompt_reference_for_targets(&store, &[target])
-        .unwrap();
-
-    assert_ne!(reference, "old-group");
-    assert_eq!(group.as_deref(), Some(reference.as_str()));
 }
 
 #[cfg(not(windows))]
@@ -1572,13 +1085,19 @@ fn verification_availability_matches_all_documented_source_cells() {
             let agent = match source_format {
                 SourceFormat::ClaudeJsonl => AgentKind::Claude,
                 SourceFormat::CodexRolloutJsonl => AgentKind::Codex,
-                SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2 => AgentKind::OpenCode,
+                SourceFormat::OpenCodeJsonl
+                | SourceFormat::OpenCodeSqliteV1
+                | SourceFormat::OpenCodeSqliteV2
+                | SourceFormat::OpenCodeV2SessionExport => AgentKind::OpenCode,
                 SourceFormat::PiV3Jsonl => AgentKind::Pi,
+                SourceFormat::OmpV3Jsonl => AgentKind::Omp,
                 _ => AgentKind::Claude,
             };
             let engine_supported = verification_evidence_supported(detector, source_format);
             let desktop_supported = desktop_watch_verification_supported(detector, source_format);
-            let expected = engine_supported && desktop_supported;
+            let expected = engine_supported
+                && desktop_supported
+                && source_format != SourceFormat::OpenCodeSqliteV2;
             assert_eq!(
                 watch_verification_available(
                     &definition(detector, source_format),
@@ -1690,6 +1209,7 @@ fn current_config_controls_use_the_workspace_scope_when_available() {
         worker_model: "worker".into(),
         worker_ordinal: 1,
         parent_call_id: Some("call".into()),
+        config_binding: None,
     };
 
     for cause in [&depth, &worker] {
@@ -1728,29 +1248,22 @@ fn a_truncated_assessment_cannot_prove_a_fix() {
 #[test]
 fn category_lifecycle_keeps_pending_evidence_ahead_of_retained_findings() {
     assert_eq!(
-        resolve_category_lifecycle(DetectorId::ModelOverthinking, 1, 0, true),
+        resolve_category_lifecycle(1, 0, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 1, true),
+        resolve_category_lifecycle(0, 1, true),
         Some(crate::dto::ChecksCategoryLifecyclePayload::AwaitingVerification)
     );
     assert_eq!(
-        resolve_category_lifecycle(DetectorId::IgnoredInstructions, 1, 0, true),
+        resolve_category_lifecycle(1, 0, false),
         Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
     );
     assert_eq!(
-        resolve_category_lifecycle(DetectorId::ModelOverthinking, 1, 0, false),
-        Some(crate::dto::ChecksCategoryLifecyclePayload::Failing)
-    );
-    assert_eq!(
-        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 1, false),
+        resolve_category_lifecycle(0, 1, false),
         Some(crate::dto::ChecksCategoryLifecyclePayload::Passing)
     );
-    assert_eq!(
-        resolve_category_lifecycle(DetectorId::ModelOverthinking, 0, 0, false),
-        None
-    );
+    assert_eq!(resolve_category_lifecycle(0, 0, false), None);
 }
 
 #[test]
@@ -1770,312 +1283,6 @@ fn an_observed_resource_subset_cannot_prove_an_absent_target_fixed() {
         }],
     );
     assert!(matches!(result.outcome, VerificationOutcome::Unknown(_)));
-}
-
-#[test]
-fn instruction_evidence_excerpts_are_bounded_without_splitting_utf8() {
-    let text = "界".repeat(2_000);
-    let excerpt = bounded_evidence_excerpt(&text);
-    assert!(excerpt.len() <= 4096);
-    assert!(excerpt.is_char_boundary(excerpt.len()));
-    assert_eq!(excerpt, "界".repeat(1365));
-    let mut cause = saved_instruction_cause();
-    let FindingCause::IgnoredInstructionConflict(evidence) = &mut cause else {
-        unreachable!()
-    };
-    evidence.instruction_excerpt = text.clone();
-    evidence.action_excerpt = text;
-    let saved = stored_instruction_evidence(&cause).unwrap();
-    assert_eq!(saved.items[0].excerpt, excerpt);
-    assert_eq!(saved.items[1].excerpt, excerpt);
-    assert_eq!(
-        saved.items[0].limitation.as_deref(),
-        Some("The saved instruction excerpt is incomplete.")
-    );
-    assert_eq!(
-        saved.items[1].limitation.as_deref(),
-        Some("The saved action excerpt is incomplete.")
-    );
-    assert_eq!(
-        unavailable_instruction_evidence().status,
-        BurnCheckEvidenceStatus::Unavailable
-    );
-}
-
-#[test]
-fn a_missing_optional_context_keeps_the_required_action_available() {
-    let context = BTreeSet::from(["optional-context"]);
-    let available = BTreeSet::from(["required-action".to_owned()]);
-    assert_eq!(
-        available_evidence_references("required-action", &context, &available),
-        Some((vec!["required-action".to_owned()], true))
-    );
-    assert_eq!(
-        available_evidence_references("missing-action", &context, &available),
-        None
-    );
-}
-
-#[test]
-fn only_checks_with_supported_verification_create_prompt_watches() {
-    assert!(!prompt_watch_supported([] as [DetectorId; 0]));
-    assert!(!prompt_watch_supported([DetectorId::IgnoredInstructions]));
-    assert!(!prompt_watch_supported([DetectorId::SkillOpportunities]));
-    assert!(!prompt_watch_supported([DetectorId::OverExploring]));
-    assert!(!prompt_watch_supported([
-        DetectorId::IgnoredInstructions,
-        DetectorId::SkillOpportunities
-    ]));
-    assert_eq!(
-        display::verification_limit(DetectorId::SkillOpportunities),
-        BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix
-    );
-    assert_eq!(
-        resolve_category_lifecycle(DetectorId::SkillOpportunities, 1, 1, false),
-        Some(ChecksCategoryLifecyclePayload::Failing)
-    );
-    assert!(prompt_watch_supported([DetectorId::OldModelUsage]));
-}
-
-#[test]
-fn compact_duplicate_reads_reach_over_exploring_remediation_findings() {
-    use crate::over_exploring_worker::{
-        prepare, publication,
-        tests::{fixture, reduced},
-    };
-    use antiburn_local::checks::over_exploring::Reason;
-
-    let directory = tempfile::tempdir().unwrap();
-    let (store, candidate) = fixture(Some(directory.path()), "user");
-    let snapshot = store
-        .load_smart_check_inputs(
-            &candidate.session.key,
-            candidate.published_fence,
-            candidate.source_generation,
-            crate::smart_check_inputs::DetectorInput::OverExploring,
-        )
-        .unwrap();
-    let input = prepare(
-        &candidate,
-        snapshot,
-        &antiburn_local::analysis::jev::capabilities::ModelCapabilities::jev_default(),
-    )
-    .unwrap();
-    let mut result = reduced(&input, Reason::ExcessiveWithinFileReading);
-    assert!(!result.findings.is_empty());
-    result.coverage.selected_items = result.completed_work_item_ids.len();
-    assert!(crate::over_exploring_worker::publication_has_clean_coverage(&result));
-    let expected = result.findings[0].clone();
-    let now = now_epoch();
-    assert!(
-        store
-            .queue_burn_check_assessment(&input.durable, now, 180)
-            .unwrap()
-    );
-    assert!(
-        store
-            .claim_burn_check_assessment(&input.durable, now, 300, 180)
-            .unwrap()
-    );
-    assert!(
-        store
-            .complete_burn_check_assessment(
-                &input.durable,
-                &serde_json::to_string(&publication(&input, result)).unwrap(),
-                now,
-                180,
-            )
-            .unwrap()
-    );
-
-    let controller = RemediationController::new(directory.path().to_owned());
-    let targets = controller
-        .list_burn_check_targets_at(
-            &store,
-            DetectorId::OverExploring,
-            BurnCheckTargetContext {
-                environment_key: "native".into(),
-                window: ReportWindow {
-                    start_epoch: 0,
-                    end_epoch: 2000,
-                },
-            },
-            TargetListOptions {
-                now,
-                home: None,
-                cache_actions: true,
-            },
-        )
-        .unwrap();
-    let target = targets
-        .targets
-        .first()
-        .expect("finding reaches remediation");
-    assert_eq!(
-        target.over_exploring_reason,
-        Some(Reason::ExcessiveWithinFileReading)
-    );
-    assert!(target.evidence_available);
-    assert_eq!(
-        target.display.verification_limit,
-        BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix
-    );
-    let evidence = controller
-        .burn_check_target_evidence(&store, &target.action_id)
-        .unwrap();
-    assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
-    let task = evidence
-        .items
-        .iter()
-        .find(|item| item.source_label == "Requested task")
-        .expect("the requested task is retained");
-    assert_eq!(task.label, BurnCheckEvidenceLabel::Context);
-    assert_eq!(
-        task.excerpt,
-        "Fix the parser. Reuse matching recorded reads."
-    );
-    let explanation = evidence
-        .comparison
-        .as_ref()
-        .unwrap()
-        .explanation
-        .as_ref()
-        .unwrap();
-    assert_eq!(explanation.relationship, "laterReadRepeatsEarlier");
-    assert!(explanation.text.contains(&task.excerpt));
-    assert!(explanation.text.contains("identical recorded output"));
-
-    let expected_ids: BTreeSet<_> = expected
-        .task_evidence
-        .iter()
-        .map(|item| item.source_id.as_str())
-        .chain(expected.reads.iter().flat_map(|read| {
-            std::iter::once(read.request_id.as_str()).chain(read.result_id.as_deref())
-        }))
-        .chain(expected.explanation.iter().flat_map(|basis| {
-            basis
-                .compared
-                .evidence
-                .iter()
-                .map(|reference| reference.source_id.as_str())
-        }))
-        .collect();
-    let actual_ids: BTreeSet<_> = evidence
-        .items
-        .iter()
-        .map(|item| item.reference.as_str())
-        .collect();
-    assert_eq!(actual_ids, expected_ids);
-    for read in &expected.reads {
-        assert!(
-            evidence
-                .items
-                .iter()
-                .any(|item| item.reference == read.request_id)
-        );
-        let result_id = read.result_id.as_deref().expect("read result is bound");
-        let result = evidence
-            .items
-            .iter()
-            .find(|item| item.reference == result_id)
-            .expect("the result citation is retained");
-        assert!(result.excerpt.contains("recorded parser output"));
-    }
-
-    let copied = controller
-        .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
-        .unwrap();
-    assert!(copied.prompt.contains("future research instructions"));
-    assert_eq!(
-        store
-            .lock()
-            .query_row("SELECT count(*) FROM remediation", [], |row| row
-                .get::<_, u64>(0))
-            .unwrap(),
-        0
-    );
-    for available in [false, true] {
-        let statuses = crate::insights_report::smart_session_statuses(
-            directory.path(),
-            std::slice::from_ref(&candidate.session.key),
-            DetectorId::OverExploring,
-            available,
-        )
-        .unwrap();
-        assert_eq!(
-            statuses[0].status,
-            crate::dto::SessionHygieneStatus::Finding
-        );
-    }
-
-    store
-        .lock()
-        .execute(
-            "UPDATE burn_check_assessment SET status = 'queued' WHERE check_id = 'over_exploring'",
-            [],
-        )
-        .unwrap();
-    for available in [true, false] {
-        let statuses = crate::insights_report::smart_session_statuses(
-            directory.path(),
-            std::slice::from_ref(&candidate.session.key),
-            DetectorId::OverExploring,
-            available,
-        )
-        .unwrap();
-        assert_eq!(
-            statuses[0].status,
-            crate::dto::SessionHygieneStatus::Finding
-        );
-    }
-    assert_eq!(
-        controller
-            .burn_check_target_evidence(&store, &target.action_id)
-            .unwrap()
-            .status,
-        BurnCheckEvidenceStatus::Available
-    );
-    let continued = controller
-        .copy_prompt_fix_burn_check_targets(&store, std::slice::from_ref(&target.action_id))
-        .unwrap();
-    assert!(continued.prompt.contains("future research instructions"));
-}
-
-#[test]
-fn scope_evidence_resolves_published_compact_task_scope_bindings() {
-    let fixture = crate::scope_creep_worker::tests::NativeFixture::new(1);
-    fixture.publish_finding();
-    let controller = RemediationController::new(fixture.directory.path().to_owned());
-    let targets = controller
-        .list_burn_check_targets_at(
-            &fixture.store,
-            DetectorId::ScopeCreep,
-            BurnCheckTargetContext {
-                environment_key: "native".into(),
-                window: ReportWindow {
-                    start_epoch: 0,
-                    end_epoch: 2000,
-                },
-            },
-            TargetListOptions {
-                now: now_epoch(),
-                home: None,
-                cache_actions: true,
-            },
-        )
-        .unwrap();
-    assert_eq!(targets.targets.len(), 1);
-    let target = &targets.targets[0];
-    assert!(target.evidence_available);
-    assert_eq!(
-        target.display.verification_limit,
-        BurnCheckVerificationLimit::CurrentEvidenceCannotProveFix
-    );
-    let evidence = controller
-        .burn_check_target_evidence(&fixture.store, &target.action_id)
-        .unwrap();
-    assert_eq!(evidence.status, BurnCheckEvidenceStatus::Available);
-    assert!(!evidence.items.is_empty());
 }
 
 #[test]
@@ -2482,12 +1689,15 @@ fn aggregate_wins_decode_only_typed_safe_documents() {
     };
     let legacy = store.remediation("attempt").unwrap().unwrap();
     assert_eq!(public_watch(&store, &legacy).unwrap(), None);
-    let snapshot = serde_json::to_string(&StoredDisplaySnapshot {
+    let mut snapshot = serde_json::to_value(StoredDisplaySnapshot {
         version: 1,
         finding_id: "stable-finding".into(),
         display: display.clone(),
     })
     .unwrap();
+    snapshot["display"]["instructionTitle"] = serde_json::Value::Null;
+    let snapshot = serde_json::to_string(&snapshot).unwrap();
+    assert_eq!(parse_display_snapshot(&snapshot).unwrap().display, display);
     store
         .lock()
         .execute(
@@ -2870,6 +2080,7 @@ fn prepared_auto_fix_expires_across_a_check_off_on_cycle() {
     let controller = RemediationController::new(directory.path().to_owned());
     let resource = insights_report::UnusedResourceTarget {
         agent: AgentKind::Claude,
+        source_format: SourceFormat::ClaudeJsonl,
         kind: crate::agent_config::ResourceKind::McpServer,
         canonical_name: "docs".into(),
         scope: insights_report::ResourceAssessmentScope::Global,
@@ -2911,16 +2122,14 @@ fn prepared_auto_fix_expires_across_a_check_off_on_cycle() {
             id: action_id.clone(),
             value: target.clone(),
             check_preferences_revision,
-            smart_master_generation: None,
             created_at_epoch: now_epoch(),
         });
     state.prepared.push_back(PreparedAutoFix {
         id: prepared_operation_id.clone(),
         target,
-        prepared: Some(prepared),
+        prepared: Some(PreparedConfigOperation::Generic(prepared)),
         retained_bytes,
         check_preferences_revision,
-        smart_master_generation: None,
         created_at_epoch: now_epoch(),
         completed: None,
     });
@@ -3047,7 +2256,6 @@ fn project_folder_action_rejects_remote_origin_despite_matching_local_session_an
             id: "remote-action".into(),
             value: remote_target,
             check_preferences_revision: store.check_preferences_revision().unwrap(),
-            smart_master_generation: None,
             created_at_epoch: now_epoch(),
         });
     assert!(matches!(

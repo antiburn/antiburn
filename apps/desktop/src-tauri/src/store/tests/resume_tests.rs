@@ -476,29 +476,19 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
             .unwrap()
     );
 
-    let other = session("resume-vanish-other", 1_000);
+    let (other, other_claim) = claimed_projection(&store, "resume-vanish-other", 100, 300);
     let other_key = other.key.clone();
-    store.upsert_sessions(&[other], &[]).unwrap();
-    FencedTurnRowStore::new(store.clone(), other_key.clone(), 777)
+    let other_writer =
+        FencedTurnRowStore::new(store.clone(), other_key.clone(), other_claim.claim_fence);
+    other_writer
         .write_turn_rows(&[turn_row_for("child-1", 0)])
         .unwrap();
-    {
-        let connection = store.lock();
-        insert_source_resume(
-            &connection,
-            &turn_session_key(&other_key),
-            "child-1",
-            &sample_resume("fp-other-child"),
-        )
+    other_writer
+        .write_resume("child-1", sample_resume("fp-other-child"))
         .unwrap();
-        insert_source_resume(
-            &connection,
-            &turn_session_key(&other_key),
-            "empty-child",
-            &sample_resume("fp-other-empty"),
-        )
+    other_writer
+        .write_resume("empty-child", sample_resume("fp-other-empty"))
         .unwrap();
-    }
 
     // Second pass: the child transcript is gone (removed from disk, or
     // unreadable this time), so this pass names and reads only the parent.
@@ -572,7 +562,12 @@ fn a_vanished_source_has_its_rows_and_resume_dropped_on_the_next_publish() {
         Some(sample_resume("fp-other-empty"))
     );
     assert_eq!(
-        count_turn_rows(&connection, &turn_session_key(&other_key), 777).unwrap(),
+        count_turn_rows(
+            &connection,
+            &turn_session_key(&other_key),
+            other_claim.claim_fence
+        )
+        .unwrap(),
         1,
         "publication must keep another session's matching source keys"
     );
@@ -695,10 +690,10 @@ fn conflicting_duplicate_source_outcomes_are_rejected_without_publishing() {
 #[test]
 fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
-    assert_eq!(current.snapshot_revision, 14);
-    assert_eq!(current.parser_revision, 53);
+    assert_eq!(current.snapshot_revision, 25);
+    assert_eq!(current.parser_revision, 67);
     assert_eq!(current.analyzer_revision, 25);
-    assert_eq!(current.metrics_schema_revision, 9);
+    assert_eq!(current.metrics_schema_revision, 10);
     assert_eq!(current.evidence_schema_revision, 22);
     assert_eq!(current.coverage_schema_revision, 6);
     let mut stored = sample_resume("current");
@@ -712,16 +707,45 @@ fn current_resume_revisions_reject_each_prior_batch_revision() {
     for field in 0..6 {
         let mut stale = stored.clone();
         match field {
-            0 => stale.snapshot_revision = 12,
-            1 => stale.parser_revision = 32,
-            2 => stale.analyzer_revision = 20,
-            3 => stale.metrics_schema_revision = 7,
-            4 => stale.evidence_schema_revision = 16,
-            5 => stale.coverage_schema_revision = 3,
+            0 => stale.snapshot_revision = 24,
+            1 => stale.parser_revision = 66,
+            2 => stale.analyzer_revision = 24,
+            3 => stale.metrics_schema_revision = 9,
+            4 => stale.evidence_schema_revision = 21,
+            5 => stale.coverage_schema_revision = 5,
             _ => unreachable!(),
         }
         assert!(!current.matches(&stale), "accepted stale revision {field}");
     }
+}
+
+#[test]
+fn parser_64_batch_resume_is_rejected_and_purged_without_removing_current_state() {
+    let store = store();
+    let (record, _claim) = claimed_projection(&store, "parser-65-batch-resume", 100, 60);
+    let current = crate::analysis::resume_revisions();
+    assert_eq!(current.parser_revision, 67);
+    let mut old = sample_resume("parser-64");
+    old.parser_revision = 64;
+    assert!(!current.matches(&old));
+    {
+        let connection = store.lock();
+        let key = turn_session_key(&record.key);
+        insert_source_resume(&connection, &key, "parser-64", &old).unwrap();
+        insert_source_resume(&connection, &key, "parser-65", &sample_resume("parser-65")).unwrap();
+    }
+    assert_eq!(store.purge_stale_source_resume(current).unwrap(), 1);
+    let connection = store.lock();
+    let key = turn_session_key(&record.key);
+    assert!(
+        query_source_resume(&connection, &key, "parser-64")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        query_source_resume(&connection, &key, "parser-65").unwrap(),
+        Some(sample_resume("parser-65"))
+    );
 }
 
 #[test]

@@ -17,6 +17,30 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the Ignored Instructions, Skill Opportunities, Over-exploring, and
+  Scope Creep native checks. Their `checks` modules and the
+  `analysis::ignored_instructions` compatibility export are no longer public.
+  Removed their `DetectorId` and `FindingCause` variants, finding constructors,
+  and check-specific evidence types. The nine remaining detector keys, indices
+  0 through 8, order, and mask bits are unchanged.
+- Removed `analysis::session_scope` and `checks::sampling`. No surviving
+  repository production caller uses these old scope and scheduling contracts.
+  This is an intentional public API removal, not a compatibility wrapper.
+- Removed legacy Jev check planning, work-item packing, orchestration, reduction,
+  reuse, and evidence-store APIs. This includes `JevCheck`, `JevSessionContext`,
+  `JevCheckPlan`, `JevWorkItem`, `JevRequestBatch`, `JevEvidenceStore`, and their
+  runner and packing functions. Removed the retired-only `classification`,
+  `compact_ids`, `exact_facts`, `obligations`, and `text_ranges` modules.
+  System One request/response types, capabilities, prompt rendering, and
+  validation remain available under `analysis::jev`.
+- Removed `SessionContentEvidence.instructions`. Shared
+  `analysis::jev_evidence::prepare_session_content` now takes three arguments:
+  session ID, source format, and published content. Removed `FindingDisplay`
+  fields `certainty` and `instruction_provenance`. Shared native normalization,
+  source admission, selected-content APIs, `digest`, and `instructions` remain.
+
 ## [0.14.1] - 2026-10-14
 
 No user-facing engine changes.

@@ -71,6 +71,8 @@ pub struct JevReadResult {
 }
 
 const OPENCODE_READ_CONTRACT: &str = "opencode/read.ts@652c090dc119b5f3dc1e5e0bf1c4b40d9721f0ef";
+const OPENCODE_V2_READ_CONTRACT: &str =
+    "opencode/tool/plugin/read.ts@843a6c514e606b436a7fe713422ace0a93ad3d61";
 const PI_READ_CONTRACT: &str = "pi/core/tools/read.ts@b79e4cc834970cca69daebffab7df1da7d1e52c4";
 const CLAUDE_READ_CONTRACT: &str = "https://platform.claude.com/docs/en/agent-sdk/typescript#read";
 const CODEX_NATIVE_CONTRACT: &str = "openai/codex@d27764b82f7118f674371e6d6e76271d9d606edb";
@@ -127,6 +129,7 @@ pub fn normalize_read_evidence(source: SourceFormat, actions: &mut [ContentActio
         }
     }
     let mut directory_requests = std::collections::BTreeSet::new();
+    let mut file_requests = std::collections::BTreeSet::new();
     for action in actions.iter_mut() {
         let native_request = action.metadata.read_request.take();
         let native_result = action.metadata.read_result.take();
@@ -146,9 +149,15 @@ pub fn normalize_read_evidence(source: SourceFormat, actions: &mut [ContentActio
                         .and_then(|fields| fields.values.get(&JevInputField::ReadFileRequest))
                         .and_then(|text| serde_json::from_str::<JevReadRequest>(text).ok())
                 })
-                .filter(|request| valid_codex_request(source, action, request))
+                .filter(|request| {
+                    valid_codex_request(source, action, request)
+                        || valid_opencode_v2_request(source, action, request)
+                })
                 .map(|mut request| {
                     request.reference_id = action.reference.id.clone();
+                    if super::skill_metadata::opencode_v2_source(source) {
+                        request.extent.unit = JevReadUnit::Unknown;
+                    }
                     request
                 })
                 .or_else(|| read_request(source, action));
@@ -157,6 +166,8 @@ pub fn normalize_read_evidence(source: SourceFormat, actions: &mut [ContentActio
                     reference_id: action.reference.id.clone(),
                     tool_name: name.to_owned(),
                     state: action.metadata.state,
+                    native_record_id: action.reference.native_record_id.clone(),
+                    input_pointer: opencode_v2_input_pointer(action),
                     request: action.metadata.read_request.clone(),
                 });
             }
@@ -177,9 +188,7 @@ pub fn normalize_read_evidence(source: SourceFormat, actions: &mut [ContentActio
                 },
                 kind: JevReadResultKind::Unknown,
                 recorded_output_bytes: action.text.len() as u64,
-                recorded_output_digest: crate::checks::ignored_instructions::sha256_hex(
-                    action.text.as_bytes(),
-                ),
+                recorded_output_digest: crate::digest::sha256_hex(action.text.as_bytes()),
                 returned_extent: None,
                 truncated: action.truncated,
                 recorded_file_version: None,
@@ -192,7 +201,7 @@ pub fn normalize_read_evidence(source: SourceFormat, actions: &mut [ContentActio
                 result.reference_id = action.reference.id.clone();
             }
             result.request_reference_id = matched.map(|call| call.reference_id.clone());
-            if source == SourceFormat::OpenCodeSqliteV2
+            if source == SourceFormat::OpenCodeSqliteV1
                 && let Some(call) = matched
             {
                 result.status = match call.state {
@@ -201,7 +210,7 @@ pub fn normalize_read_evidence(source: SourceFormat, actions: &mut [ContentActio
                     _ => result.status,
                 };
             }
-            if source == SourceFormat::OpenCodeSqliteV2
+            if source == SourceFormat::OpenCodeSqliteV1
                 && name == "read"
                 && result.status != JevReadStatus::Failed
                 && action.text.len() <= crate::analysis::interface::MAX_CONTENT_PART_BYTES
@@ -214,10 +223,23 @@ pub fn normalize_read_evidence(source: SourceFormat, actions: &mut [ContentActio
             {
                 directory_requests.insert(id.clone());
             }
+            if result.kind == JevReadResultKind::File
+                && result.extent_contract.as_deref() == Some(OPENCODE_V2_READ_CONTRACT)
+                && let Some(id) = &result.request_reference_id
+            {
+                file_requests.insert(id.clone());
+            }
             action.metadata.read_result = Some(result);
         }
     }
     for action in actions {
+        if super::skill_metadata::opencode_v2_source(source)
+            && let Some(request) = &mut action.metadata.read_request
+            && !directory_requests.contains(&action.reference.id)
+            && file_requests.contains(&action.reference.id)
+        {
+            request.extent.unit = JevReadUnit::Lines;
+        }
         if directory_requests.contains(&action.reference.id)
             && let Some(request) = &mut action.metadata.read_request
         {
@@ -230,6 +252,8 @@ struct RecordedReadCall {
     reference_id: String,
     tool_name: String,
     state: super::JevOperationState,
+    native_record_id: Option<String>,
+    input_pointer: Option<String>,
     request: Option<JevReadRequest>,
 }
 
@@ -325,6 +349,116 @@ fn valid_codex_request(
         )
 }
 
+fn opencode_v2_input_pointer(action: &ContentAction) -> Option<String> {
+    action.metadata.bindings.iter().find_map(|binding| {
+        let index = binding
+            .pointer
+            .strip_prefix("/content/")?
+            .strip_suffix("/state/input/path")?;
+        (matches!(
+            binding.field,
+            JevInputField::ReadFilePath | JevInputField::ReadFileRequest
+        ) && super::skill_metadata::opencode_v2_index(index))
+        .then(|| format!("/content/{index}/state"))
+    })
+}
+
+fn valid_opencode_v2_request(
+    source: SourceFormat,
+    action: &ContentAction,
+    request: &JevReadRequest,
+) -> bool {
+    if !super::skill_metadata::opencode_v2_source(source)
+        || !super::skill_metadata::opencode_v2_action(action)
+        || action.tool_name.as_deref() != Some("read")
+        || action.authority != "assistant"
+        || action.turn_role != "assistant"
+        || !action.normalized_fields.as_ref().is_some_and(|fields| {
+            !fields.malformed
+                && fields.category == Some(crate::analysis::jev::JevNormalizedCategory::ReadFile)
+        })
+        || request.extent_contract.as_deref() != Some(OPENCODE_V2_READ_CONTRACT)
+        || request.truncated
+        || request.paths.len() != 1
+        || request.cwd.is_some()
+        || request.extent.end_inclusive.is_some()
+        || !matches!(
+            request.extent.unit,
+            JevReadUnit::Unknown | JevReadUnit::Lines
+        )
+        || request
+            .native_extent
+            .keys()
+            .any(|key| !matches!(key.as_str(), "offset" | "limit"))
+        || request
+            .native_extent
+            .values()
+            .any(|value| value.as_u64().is_none())
+        || request.extent.offset != request.native_extent.get("offset").and_then(Value::as_u64)
+        || request.extent.limit != request.native_extent.get("limit").and_then(Value::as_u64)
+    {
+        return false;
+    }
+    let path = &request.paths[0];
+    let Some(pointer) = opencode_v2_input_pointer(action) else {
+        return false;
+    };
+    if path.is_empty()
+        || path.len() > 4096
+        || path.chars().any(char::is_control)
+        || ![JevInputField::ReadFilePath, JevInputField::ReadFileRequest]
+            .iter()
+            .any(|field| {
+                native_binding(
+                    action,
+                    *field,
+                    &format!("{pointer}/input/path"),
+                    path.len() as u64,
+                )
+            })
+    {
+        return false;
+    }
+    if !action.text.is_empty() {
+        let Ok(input) = serde_json::from_str::<Value>(&action.text) else {
+            return false;
+        };
+        return input.is_object()
+            && input.get("path").and_then(Value::as_str) == Some(path.as_str())
+            && ["offset", "limit"]
+                .iter()
+                .all(|key| input.get(*key) == request.native_extent.get(*key))
+            && input.as_object().is_some_and(|input| {
+                input
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "path" | "offset" | "limit"))
+            });
+    }
+    action
+        .normalized_fields
+        .as_ref()
+        .filter(|fields| !fields.malformed)
+        .and_then(|fields| fields.values.get(&JevInputField::ReadFileRequest))
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .is_some_and(|input| {
+            if let Ok(mut selected) = serde_json::from_value::<JevReadRequest>(input.clone()) {
+                selected.reference_id = request.reference_id.clone();
+                selected.extent.unit = request.extent.unit;
+                selected == *request
+            } else {
+                input.get("paths") == Some(&serde_json::json!([path]))
+                    && input.as_object().is_some_and(|input| {
+                        input
+                            .keys()
+                            .all(|key| matches!(key.as_str(), "paths" | "offset" | "limit"))
+                    })
+                    && ["offset", "limit"]
+                        .iter()
+                        .all(|key| input.get(*key) == request.native_extent.get(*key))
+            }
+        })
+}
+
 fn valid_native_result(
     source: SourceFormat,
     action: &ContentAction,
@@ -334,6 +468,9 @@ fn valid_native_result(
     let Some(call) = call.filter(|call| call.request.is_some()) else {
         return false;
     };
+    if super::skill_metadata::opencode_v2_source(source) {
+        return valid_opencode_v2_result(action, call, result);
+    }
     let (contract, field, pointer) = match (source, action.tool_name.as_deref()) {
         (SourceFormat::CodexRolloutJsonl, Some("read"))
             if call
@@ -398,8 +535,7 @@ fn valid_native_result(
         && result.recorded_file_version.is_none()
         && (!action.truncated || result.truncated)
         && result.recorded_output_bytes == action.text.len() as u64
-        && result.recorded_output_digest
-            == crate::checks::ignored_instructions::sha256_hex(action.text.as_bytes())
+        && result.recorded_output_digest == crate::digest::sha256_hex(action.text.as_bytes())
         && result.returned_extent.as_ref().is_none_or(|extent| {
             result.kind == JevReadResultKind::File
                 && result.status == JevReadStatus::Success
@@ -413,6 +549,172 @@ fn valid_native_result(
                     extent,
                 )
         })
+}
+
+fn valid_opencode_v2_result(
+    action: &ContentAction,
+    call: &RecordedReadCall,
+    result: &JevReadResult,
+) -> bool {
+    if !super::skill_metadata::opencode_v2_action(action)
+        || action.tool_name.as_deref() != Some("read")
+        || action.authority != "tool"
+        || action.turn_role != "assistant"
+        || call.native_record_id != action.reference.native_record_id
+        || call.state != action.metadata.state
+        || call
+            .request
+            .as_ref()
+            .and_then(|request| request.extent_contract.as_deref())
+            != Some(OPENCODE_V2_READ_CONTRACT)
+        || result.extent_contract.as_deref() != Some(OPENCODE_V2_READ_CONTRACT)
+        || result.recorded_file_version.is_some()
+        || result.recorded_output_bytes != action.text.len() as u64
+        || result.recorded_output_digest != crate::digest::sha256_hex(action.text.as_bytes())
+    {
+        return false;
+    }
+    let Some(pointer) = &call.input_pointer else {
+        return false;
+    };
+    let bound = action.metadata.bindings.iter().any(|binding| {
+        binding
+            .pointer
+            .strip_prefix(&format!("{pointer}/content/"))
+            .and_then(|rest| rest.strip_suffix("/text"))
+            .is_some_and(super::skill_metadata::opencode_v2_index)
+            && native_binding(
+                action,
+                JevInputField::ReadFileResult,
+                &binding.pointer,
+                result.recorded_output_bytes,
+            )
+    });
+    let status = match action.metadata.state {
+        super::JevOperationState::Completed => JevReadStatus::Success,
+        super::JevOperationState::Error => JevReadStatus::Failed,
+        _ => JevReadStatus::Unknown,
+    };
+    let output = if status == JevReadStatus::Success {
+        let request = call.request.as_ref().expect("validated request");
+        opencode_v2_output(&action.text, &request.paths[0])
+    } else {
+        OpenCodeV2ReadOutput::default()
+    };
+    bound
+        && result.status == status
+        && result.kind == output.kind
+        && result.returned_extent == output.extent
+        && result.truncated == output.truncated
+        && result.returned_extent.as_ref().is_none_or(|extent| {
+            let request = call.request.as_ref().expect("validated request");
+            extent.offset
+                == Some(
+                    request
+                        .extent
+                        .offset
+                        .filter(|offset| *offset > 0)
+                        .unwrap_or(1),
+                )
+                && request
+                    .extent
+                    .limit
+                    .filter(|limit| *limit > 0)
+                    .is_none_or(|limit| extent.limit.is_some_and(|count| count <= limit.min(2000)))
+        })
+        && !result.truncated
+}
+
+pub(crate) struct OpenCodeV2ReadOutput {
+    pub kind: JevReadResultKind,
+    pub extent: Option<JevReadExtent>,
+    pub truncated: bool,
+}
+
+impl Default for OpenCodeV2ReadOutput {
+    fn default() -> Self {
+        Self {
+            kind: JevReadResultKind::Unknown,
+            extent: None,
+            truncated: false,
+        }
+    }
+}
+
+pub(crate) fn opencode_v2_output(text: &str, requested_path: &str) -> OpenCodeV2ReadOutput {
+    let unknown = OpenCodeV2ReadOutput::default;
+    let mut lines = text.split('\n');
+    let Some(header) = lines.next() else {
+        return unknown();
+    };
+    if header
+        .strip_prefix("Read directory ")
+        .is_some_and(|header| {
+            header.ends_with(", 0 entries")
+                || header.rsplit_once(", entries ").is_some_and(|(_, range)| {
+                    range.split_once('-').is_some_and(|(start, end)| {
+                        start
+                            .parse::<u64>()
+                            .ok()
+                            .zip(end.parse::<u64>().ok())
+                            .is_some_and(|(start, end)| start > 0 && end >= start)
+                    })
+                })
+        })
+    {
+        return OpenCodeV2ReadOutput {
+            kind: JevReadResultKind::Directory,
+            ..unknown()
+        };
+    }
+    let Some(header) = header.strip_prefix("Read file ") else {
+        return unknown();
+    };
+    if header.ends_with(", 0 lines") && lines.next().is_none() {
+        return OpenCodeV2ReadOutput {
+            kind: JevReadResultKind::File,
+            ..unknown()
+        };
+    }
+    let Some((returned_path, range)) = header.rsplit_once(", lines ") else {
+        return unknown();
+    };
+    let Some((start, end)) = range
+        .split_once('-')
+        .and_then(|(start, end)| start.parse::<u64>().ok().zip(end.parse::<u64>().ok()))
+        .filter(|(start, end)| *start > 0 && end >= start && end - start < 2000)
+    else {
+        return unknown();
+    };
+    let mut count = 0u64;
+    let mut truncated = false;
+    for line in lines {
+        if line.starts_with("[Output truncated.") {
+            truncated = true;
+            break;
+        }
+        let Some((number, _)) = line.split_once(": ") else {
+            return unknown();
+        };
+        if number.parse::<u64>().ok() != start.checked_add(count) {
+            return unknown();
+        }
+        truncated |= line.contains("... (line truncated to 2000 chars)");
+        count += 1;
+    }
+    if !truncated && count != end - start + 1 {
+        return unknown();
+    }
+    OpenCodeV2ReadOutput {
+        kind: JevReadResultKind::File,
+        extent: (!truncated && requested_path == returned_path).then_some(JevReadExtent {
+            unit: JevReadUnit::Lines,
+            offset: Some(start),
+            limit: Some(count),
+            end_inclusive: Some(end),
+        }),
+        truncated,
+    }
 }
 
 fn extent_matches_text(
@@ -491,7 +793,7 @@ fn read_request(source: SourceFormat, action: &ContentAction) -> Option<JevReadR
         .filter_map(|key| value.get(key).map(|v| (key.to_owned(), v.clone())))
         .collect();
     let contract = match (source, action.tool_name.as_deref()) {
-        (SourceFormat::OpenCodeSqliteV2, Some("read")) => Some(OPENCODE_READ_CONTRACT),
+        (SourceFormat::OpenCodeSqliteV1, Some("read")) => Some(OPENCODE_READ_CONTRACT),
         (SourceFormat::PiV3Jsonl, Some("read")) => Some(PI_READ_CONTRACT),
         (SourceFormat::ClaudeJsonl, Some("Read")) => Some(CLAUDE_READ_CONTRACT),
         _ => None,

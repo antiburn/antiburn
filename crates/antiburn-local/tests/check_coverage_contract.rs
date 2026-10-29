@@ -3,7 +3,9 @@ use std::path::Path;
 
 use antiburn_local::analysis::{
     ANALYZER_REVISION, CoverageReason, EVIDENCE_SCHEMA_REVISION, EvidenceCoverage, EvidenceSource,
-    EvidenceValue, PARSER_REVISION, SessionEvidence, SessionEvidenceAccumulator, SignalCoverage,
+    EvidenceValue, MAX_CONTENT_PART_BYTES, MAX_TOOL_RESULT_BYTES, MAX_TOOL_RESULT_OBSERVATIONS,
+    MAX_USER_MESSAGE_COLLECTION_BYTES, MAX_USER_MESSAGE_OBSERVATIONS, PARSER_REVISION,
+    RESUME_SNAPSHOT_REVISION, SessionEvidence, SessionEvidenceAccumulator, SignalCoverage,
     SourceCapabilities, SourceFormat, SourceKind, TurnFacts,
 };
 use antiburn_local::insights::{
@@ -85,10 +87,6 @@ const ESTIMATE_METHODS: [Option<SavingsEstimateMethod>; DetectorId::COUNT] = [
     Some(SavingsEstimateMethod::OldModelPriceDifference),
     Some(SavingsEstimateMethod::FastTierPricePremium),
     Some(SavingsEstimateMethod::CacheRehydrationPriceDifference),
-    None,
-    None,
-    None,
-    None,
 ];
 
 macro_rules! source_formats {
@@ -107,7 +105,7 @@ source_formats! {
     ClaudeJsonl => "claude_jsonl",
     CodexRolloutJsonl => "codex_rollout_jsonl",
     OpenCodeJsonl => "open_code_jsonl",
-    OpenCodeSqliteV2 => "open_code_sqlite_v2",
+    OpenCodeSqliteV1 => "open_code_sqlite_v2",
     PiV3Jsonl => "pi_v3_jsonl",
     OmpV3Jsonl => "omp_v3_jsonl",
     CursorJsonl => "cursor_jsonl",
@@ -137,6 +135,8 @@ source_formats! {
     WindsurfCascadeProtobuf => "windsurf_cascade_protobuf",
     DevinLocalSqlite => "devin_local_sqlite",
     Uncharacterized => "uncharacterized",
+    OpenCodeSqliteV2 => "open_code_v2_sqlite",
+    OpenCodeV2SessionExport => "open_code_v2_session_export",
 }
 
 fn complete_evidence(format: SourceFormat) -> SessionEvidence {
@@ -171,7 +171,7 @@ fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
     let mut capabilities = match format {
         SourceFormat::ClaudeJsonl => SourceCapabilities::claude(),
         SourceFormat::CodexRolloutJsonl => SourceCapabilities::codex(),
-        SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2 => {
+        SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1 => {
             SourceCapabilities::opencode()
         }
         SourceFormat::PiV3Jsonl => SourceCapabilities::pi(),
@@ -200,6 +200,8 @@ fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
         | SourceFormat::WindsurfMirrorJson
         | SourceFormat::WindsurfCascadeProtobuf
         | SourceFormat::DevinLocalSqlite
+        | SourceFormat::OpenCodeSqliteV2
+        | SourceFormat::OpenCodeV2SessionExport
         | SourceFormat::Uncharacterized => SourceCapabilities::uncharacterized(format),
         SourceFormat::CopilotCliJsonl => SourceCapabilities::copilot(),
         SourceFormat::ClineMessagesContractV1 => SourceCapabilities::cline_messages_contract_v1(),
@@ -284,7 +286,7 @@ fn source_formats_outside_the_clean_allowlist_deny_clean_with_synthetic_complete
             SourceFormat::ClaudeJsonl
                 | SourceFormat::CodexRolloutJsonl
                 | SourceFormat::OpenCodeJsonl
-                | SourceFormat::OpenCodeSqliteV2
+                | SourceFormat::OpenCodeSqliteV1
                 | SourceFormat::PiV3Jsonl
                 | SourceFormat::CopilotCliJsonl
         ) {
@@ -425,11 +427,7 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     );
     assert_table_source_formats(&check_matrix, &expected, "check coverage matrix");
     for row in check_matrix {
-        assert_eq!(
-            row.len(),
-            13,
-            "check coverage matrix has twelve check cells"
-        );
+        assert_eq!(row.len(), 10, "check coverage matrix has nine check cells");
         for status in &row[1..] {
             assert!(
                 CHECK_STATUSES.contains(&status.as_str()),
@@ -441,6 +439,76 @@ fn coverage_documents_list_every_source_format_once_with_valid_statuses() {
     let session_matrix =
         markdown_table_rows(&session_coverage, "## Source Matrix", "## Provider Routes");
     assert_table_source_formats(&session_matrix, &expected, "session source matrix");
+}
+
+#[test]
+fn documented_journal_state_limits_match_the_current_source_contract() {
+    let session_coverage = coverage_document("session-coverage.md");
+    let rows = markdown_table_rows(
+        &session_coverage,
+        "### Journal delivery limits",
+        "### Journal admission and metadata gaps",
+    );
+    let expected = BTreeMap::from([
+        (
+            "Parser revision",
+            usize::try_from(PARSER_REVISION).expect("positive parser revision"),
+        ),
+        (
+            "Resume snapshot revision",
+            usize::try_from(RESUME_SNAPSHOT_REVISION).expect("positive resume revision"),
+        ),
+        ("Result observations", MAX_TOOL_RESULT_OBSERVATIONS),
+        ("Result payload bytes", MAX_TOOL_RESULT_BYTES),
+        ("Request history records", MAX_USER_MESSAGE_OBSERVATIONS),
+        ("Request history bytes", MAX_USER_MESSAGE_COLLECTION_BYTES),
+        ("Frozen request context bytes", MAX_TOOL_RESULT_BYTES / 2),
+        ("Result field bytes", MAX_CONTENT_PART_BYTES),
+    ]);
+    assert_eq!(rows.len(), expected.len(), "one row per source-state limit");
+    let mut documented = BTreeMap::new();
+    for row in &rows {
+        assert_eq!(row.len(), 3, "limit row has value and scope: {row:?}");
+        assert!(!row[2].is_empty(), "source-state limit needs a scope");
+        assert!(
+            documented
+                .insert(
+                    row[0].as_str(),
+                    row[1].parse::<usize>().expect("integer source-state limit"),
+                )
+                .is_none(),
+            "duplicate source-state limit: {row:?}"
+        );
+    }
+    assert_eq!(documented, expected);
+}
+
+#[test]
+fn opencode_source_rows_link_to_the_bounded_journal_contract() {
+    let session_coverage = coverage_document("session-coverage.md");
+    let check_coverage = coverage_document("check-coverage.md");
+    let session_rows =
+        markdown_table_rows(&session_coverage, "## Source Matrix", "## Provider Routes");
+    let inventory_rows =
+        markdown_table_rows(&check_coverage, "## Source Inventory", "## Coverage Matrix");
+    for (rows, column, link) in [
+        (&session_rows, 3, "(#opencode-journal-delivery)"),
+        (
+            &inventory_rows,
+            2,
+            "(session-coverage.md#opencode-journal-delivery)",
+        ),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row[0] == "OpenCodeSqliteV1")
+            .expect("OpenCode source contract");
+        assert!(row[column].contains(link), "journal contract link: {row:?}");
+        assert!(
+            row[column].contains("53d1eabb61e21162157817bf677da0a4ad3332e3"),
+            "journal claims require the accepted producer pin: {row:?}"
+        );
+    }
 }
 
 #[test]
@@ -526,7 +594,7 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
         (
             "OpenCode",
             AgentKind::OpenCode,
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
         ),
         ("Pi", AgentKind::Pi, SourceFormat::PiV3Jsonl),
         (
@@ -553,17 +621,12 @@ fn first_tier_matrix_matches_engine_gates_and_reachable_routes() {
             let evidence = complete_evidence(source);
             // M/B/K product cells can be supplied by the desktop's current
             // inventory. The engine session gate covers the other checks.
-            if detector != DetectorId::IgnoredInstructions
-                && !matches!(
-                    detector,
-                    DetectorId::UnusedMcpServers
-                        | DetectorId::UnusedBuiltInTools
-                        | DetectorId::UnusedSkills
-                        | DetectorId::SkillOpportunities
-                        | DetectorId::OverExploring
-                        | DetectorId::ScopeCreep
-                )
-                && !(agent_index == 3 && detector == DetectorId::OverpoweredSubagents)
+            if !matches!(
+                detector,
+                DetectorId::UnusedMcpServers
+                    | DetectorId::UnusedBuiltInTools
+                    | DetectorId::UnusedSkills
+            ) && !(agent_index == 3 && detector == DetectorId::OverpoweredSubagents)
             {
                 assert_eq!(
                     eligible(detector, &evidence),
@@ -851,10 +914,6 @@ fn detector_from_code(value: &str) -> Option<DetectorId> {
         "O" => Some(DetectorId::OldModelUsage),
         "F" => Some(DetectorId::OveruseOfFastMode),
         "C" => Some(DetectorId::CacheChurn),
-        "I" => Some(DetectorId::IgnoredInstructions),
-        "SkillOpportunities" => Some(DetectorId::SkillOpportunities),
-        "OverExploring" => Some(DetectorId::OverExploring),
-        "ScopeCreep" => Some(DetectorId::ScopeCreep),
         _ => None,
     }
 }

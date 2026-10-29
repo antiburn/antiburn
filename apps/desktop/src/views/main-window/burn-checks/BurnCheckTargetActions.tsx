@@ -4,12 +4,9 @@ import { flushSync } from "react-dom"
 
 import {
   noteInteraction,
-  smartCheckForDetector,
   type AutoFixAnalyticsOutcome,
   type AutoFixReviewAnalyticsOutcome,
-  type PromptPreparationAnalyticsOutcome,
 } from "../../../lib/ipc"
-import { writeClipboardText } from "../../../lib/clipboard"
 import {
   applyPreparedBurnCheckOperation,
   copyPromptFixBurnCheckTarget,
@@ -19,20 +16,17 @@ import {
 } from "../../../lib/insightsIpc"
 import { BurnCheckReviewDialog } from "./BurnCheckReviewDialog"
 import { targetTitle } from "./BurnCheckTargetPresentation"
+import { useBurnCheckPromptCopy } from "./useBurnCheckPromptCopy"
 
 type ActionState = {
   attemptKey: string
   acceptedWatchId: string | null
-  busy: "prepare" | "apply" | "copy" | null
+  busy: "prepare" | "apply" | null
   review: AutoFixReviewPayload | null
   reviewBlocked: boolean
-  copied: boolean
-  prompt: string | null
   applied: boolean
   status: string | null
 }
-
-const REPEAT_COPY_FEEDBACK_MS = 120
 
 function attemptKey(target: BurnCheckTargetPayload): string {
   const watch = target.watch
@@ -50,8 +44,6 @@ function initialAction(key: string): ActionState {
     busy: null,
     review: null,
     reviewBlocked: false,
-    copied: false,
-    prompt: null,
     applied: false,
     status: null,
   }
@@ -77,33 +69,38 @@ function applyAnalytics(
   return outcome.outcome === "recoveryNeeded" ? "recovery_needed" : outcome.outcome
 }
 
-function promptAnalytics(
-  outcome: Awaited<ReturnType<typeof copyPromptFixBurnCheckTarget>>,
-): PromptPreparationAnalyticsOutcome {
-  if (!outcome) return "failed"
-  return outcome.outcome === "promptReady" ? "ready" : outcome.outcome
-}
-
 export function BurnCheckTargetActions({
   target,
   refresh,
   showPromptFix = true,
   embedded = false,
   compact = false,
+  active = true,
 }: {
   target: BurnCheckTargetPayload
   refresh: () => void
   showPromptFix?: boolean
   embedded?: boolean
   compact?: boolean
+  active?: boolean
 }) {
   const key = attemptKey(target)
-  const check = smartCheckForDetector(target.finding.detector)
-  const copyReported = useRef(false)
+  const {
+    busy: copyBusy,
+    copied,
+    status: copyStatus,
+    bindRoot: bindCopyRoot,
+    copy,
+  } = useBurnCheckPromptCopy({
+    subject: `${target.finding.detector}:${target.findingId}`,
+    active,
+    prepare: () => copyPromptFixBurnCheckTarget(target.finding.detector, target.findingId),
+    refresh,
+    onCopied: refresh,
+  })
   const [action, setAction] = useState(() => initialAction(key))
   const trigger = useRef<HTMLButtonElement>(null)
   const currentAttemptKey = useRef(key)
-  const copiedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const appliedTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   if (action.attemptKey !== key && action.busy !== "apply") {
     const continuesCreatedWatch =
@@ -132,19 +129,14 @@ export function BurnCheckTargetActions({
     queueMicrotask(() => trigger.current?.focus())
   }
 
-  const scheduleSuccessReset = (
-    kind: "copied" | "applied",
-    startedAttemptKey: string,
-    acceptedWatchId: string | null,
-  ) => {
-    const timeout = kind === "copied" ? copiedTimeout : appliedTimeout
-    if (timeout.current) clearTimeout(timeout.current)
-    timeout.current = setTimeout(() => {
-      timeout.current = null
+  const scheduleSuccessReset = (startedAttemptKey: string, acceptedWatchId: string | null) => {
+    if (appliedTimeout.current) clearTimeout(appliedTimeout.current)
+    appliedTimeout.current = setTimeout(() => {
+      appliedTimeout.current = null
       if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
       setAction((value) =>
         value.attemptKey === startedAttemptKey || value.attemptKey === acceptedWatchId
-          ? { ...value, [kind]: false }
+          ? { ...value, applied: false }
           : value,
       )
     }, 3_000)
@@ -155,7 +147,6 @@ export function BurnCheckTargetActions({
       if (node) currentAttemptKey.current = key
       else {
         currentAttemptKey.current = ""
-        if (copiedTimeout.current) clearTimeout(copiedTimeout.current)
         if (appliedTimeout.current) clearTimeout(appliedTimeout.current)
       }
     },
@@ -163,7 +154,7 @@ export function BurnCheckTargetActions({
   )
 
   const prepare = async () => {
-    if (action.busy) return
+    if (action.busy || copyBusy) return
     const startedAttemptKey = action.attemptKey
     setAction((value) => ({ ...value, busy: "prepare", status: null }))
     try {
@@ -189,7 +180,7 @@ export function BurnCheckTargetActions({
   }
 
   const apply = async () => {
-    if (action.busy || action.reviewBlocked) return
+    if (action.busy || copyBusy || action.reviewBlocked) return
     const operationId = action.review?.preparedOperationId
     if (!operationId) return
     const startedAttemptKey = action.attemptKey
@@ -218,13 +209,13 @@ export function BurnCheckTargetActions({
             busy: null,
             review: null,
             status: verificationUnavailable
-              ? "The change was made, but a later session could not confirm the result."
+              ? "Change applied. Automatic verification is unavailable."
               : null,
           }))
         })
         trigger.current?.focus()
         setAction((value) => ({ ...value, applied: true }))
-        scheduleSuccessReset("applied", startedAttemptKey, watchId)
+        scheduleSuccessReset(startedAttemptKey, watchId)
         refresh()
         return
       }
@@ -236,7 +227,7 @@ export function BurnCheckTargetActions({
         reviewBlocked: true,
         status:
           outcome?.outcome === "conflict"
-            ? "The setting changed during this review. Close it and check the current setting."
+            ? "The setting changed during this check. Close it and check the current setting."
             : outcome?.outcome === "unavailable"
               ? "The current setting changed, so this edit was not made."
               : null,
@@ -258,83 +249,6 @@ export function BurnCheckTargetActions({
     }
   }
 
-  const copy = async () => {
-    if (action.busy) return
-    const startedAttemptKey = action.attemptKey
-    const repeatCopy = action.copied
-    flushSync(() =>
-      setAction((value) => ({ ...value, busy: "copy", copied: false, status: null })),
-    )
-    let prompt = action.prompt
-    let acceptedWatchId = action.acceptedWatchId
-    try {
-      if (prompt === null) {
-        copyReported.current = false
-        const outcome = await copyPromptFixBurnCheckTarget(target.actionId)
-        const completedWatchId =
-          outcome?.outcome === "promptReady" ? (outcome.watch?.watchId ?? null) : null
-        noteInteraction({
-          kind: "burnCheckPromptPrepared",
-          outcome: promptAnalytics(outcome),
-          ...(check ? { check } : {}),
-        })
-        if (completionIsStale(startedAttemptKey, completedWatchId)) return
-        if (!outcome || outcome.outcome !== "promptReady") {
-          setAction((value) => ({
-            ...value,
-            busy: null,
-            status:
-              outcome?.outcome === "expired" || outcome?.outcome === "stale"
-                ? "Checking the current change."
-                : "A fix prompt is not available for this finding.",
-          }))
-          if (outcome?.outcome === "expired" || outcome?.outcome === "stale") refresh()
-          return
-        }
-        prompt = outcome.prompt
-        acceptedWatchId = outcome.watch?.watchId ?? null
-      }
-      await writeClipboardText(prompt)
-      if (repeatCopy) {
-        await new Promise<void>((resolve) =>
-          window.setTimeout(resolve, REPEAT_COPY_FEEDBACK_MS),
-        )
-      }
-      if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
-      if (!copyReported.current) {
-        noteInteraction({ kind: "burnCheckPromptCopied", ...(check ? { check } : {}) })
-        copyReported.current = true
-      }
-      setAction((value) => ({
-        ...value,
-        acceptedWatchId,
-        busy: null,
-        prompt,
-        copied: true,
-        status: null,
-      }))
-      scheduleSuccessReset("copied", startedAttemptKey, acceptedWatchId)
-      refresh()
-    } catch {
-      const preparationFailed = prompt === null
-      if (preparationFailed)
-        noteInteraction({
-          kind: "burnCheckPromptPrepared",
-          outcome: "failed",
-          ...(check ? { check } : {}),
-        })
-      if (completionIsStale(startedAttemptKey, acceptedWatchId)) return
-      setAction((value) => ({
-        ...value,
-        busy: null,
-        prompt,
-        status: preparationFailed
-          ? "The fix prompt could not be prepared. Try again."
-          : "The fix prompt could not be copied. Try again.",
-      }))
-    }
-  }
-
   const title = targetTitle(target)
   const hasAction =
     target.autoFix.status === "available" ||
@@ -350,7 +264,7 @@ export function BurnCheckTargetActions({
             <button
               ref={trigger}
               type="button"
-              disabled={action.applied || action.busy !== null}
+              disabled={action.applied || action.busy !== null || copyBusy}
               onClick={() => void prepare()}
               className="burn-check-action type-callout gap-1 disabled:opacity-100"
             >
@@ -368,24 +282,30 @@ export function BurnCheckTargetActions({
           )}
           {showPromptFix && target.promptFix.status === "available" && (
             <button
+              ref={bindCopyRoot}
               type="button"
-              disabled={action.busy !== null}
-              onClick={() => void copy()}
+              disabled={action.busy !== null || copyBusy}
+              onClick={() => {
+                if (action.busy) return
+                setAction((value) => ({ ...value, status: null }))
+                void copy()
+              }}
               className={`burn-check-action type-callout gap-1 disabled:opacity-100 ${compact ? "" : "mx-auto w-full max-w-sm"}`}
             >
-              {action.copied ? (
+              {copied ? (
                 <Check size={12} className="text-token-in" aria-hidden="true" />
               ) : (
                 <Clipboard size={12} aria-hidden="true" />
               )}
-              {action.copied
-                ? "Copied"
-                : action.busy === "copy"
-                  ? "Copying…"
-                  : "Copy fix prompt"}
+              {copied ? "Copied" : copyBusy ? "Copying…" : "Copy fix prompt"}
             </button>
           )}
         </div>
+      )}
+      {copyStatus && (
+        <p role="alert" className="mt-3 type-callout text-label-secondary">
+          {copyStatus}
+        </p>
       )}
       {action.status && !action.review && (
         <p role="alert" className="mt-3 type-callout text-label-secondary">

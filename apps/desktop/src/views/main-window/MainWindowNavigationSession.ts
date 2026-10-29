@@ -9,7 +9,7 @@ import {
   type MainWindowSessionIdentity,
 } from "../../lib/ipc"
 import type { MainViewId } from "../../lib/navigation/mainViews"
-import type { CHECK_LABELS } from "../../lib/presentation/checkReport"
+import type { CheckId } from "../../lib/insightsIpc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
   normalizeSessionFilters,
@@ -31,7 +31,7 @@ export type MainDestination = {
   section: MainViewId
   filters?: SessionFilters
   subject?: SessionSubject | null
-  check?: keyof typeof CHECK_LABELS
+  check?: CheckId
 }
 
 export type MainWindowNavigationSnapshot = {

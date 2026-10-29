@@ -1649,8 +1649,9 @@ fn sync_observation_converts_field_for_field() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_closed_inbox_drops_with_a_log_and_never_blocks() {
+async fn a_closed_inbox_records_async_recovery_without_blocking_or_delivery() {
     let events = SessionEvents::default();
+    let mut bus = events.subscribe();
     // Taking and dropping the receiver closes the inbox, as shutdown does.
     drop(events.claim_actor());
     events.report(sync_removed("late", 1, RemovalReason::Deleted, 1));
@@ -1659,12 +1660,78 @@ async fn a_closed_inbox_drops_with_a_log_and_never_blocks() {
         "a closed inbox never spills"
     );
     // The async path returns at once instead of waiting for room.
-    tokio::time::timeout(
+    let delivered = tokio::time::timeout(
         Duration::from_secs(1),
         events.report_async(touched("late", 1, BASE, 1)),
     )
     .await
     .expect("a closed inbox does not wait");
+    assert!(!delivered);
+    assert!(live(&events).is_empty());
+    assert!(drain(&mut bus).is_empty());
+    let registry = events.registry.lock().unwrap();
+    let recovery = registry.reconcile.recovery.as_ref().unwrap();
+    assert!(recovery.cursor.is_none());
+    assert!(recovery.page.is_none());
+    assert_eq!(
+        events.spill.lock().unwrap().index_changed,
+        BTreeSet::from([IndexChangeReason::Invalidated])
+    );
+}
+
+#[tokio::test]
+async fn failed_async_membership_handoffs_use_existing_recovery_pages() {
+    let events = SessionEvents::default();
+    let now = crate::scan::unix_now();
+    events.seed(vec![presence("gone", 1, now)], Revision(1), now);
+    let mut bus = events.subscribe();
+    drop(events.claim_actor());
+
+    assert!(!events.report_async(index("added", 2, now, true, 2)).await);
+    assert!(
+        !events
+            .report_async(removed("gone", 1, RemovalReason::Rejected, 3))
+            .await
+    );
+    assert_eq!(live(&events)[0].session, session_ref("gone"));
+    assert!(
+        drain(&mut bus).is_empty(),
+        "the stopped actor delivered no facts"
+    );
+
+    {
+        let mut registry = events.registry.lock().unwrap();
+        assert_eq!(
+            registry.reconcile.needs,
+            Some((RemovalReason::Rejected, Revision(3)))
+        );
+        let walk = registry.next_page_request(now).unwrap();
+        assert_eq!(
+            walk,
+            PageRequest::Walk {
+                keys: vec![key("gone")],
+                reason: RemovalReason::Rejected,
+            }
+        );
+        registry.apply_page(&walk, Vec::new(), Revision(3), now, &mut Vec::new());
+        let active = registry.next_page_request(now).unwrap();
+        assert!(matches!(active, PageRequest::Active { after: None, .. }));
+        registry.apply_page(
+            &active,
+            vec![presence("added", 2, now)],
+            Revision(3),
+            now,
+            &mut Vec::new(),
+        );
+        assert!(registry.reconcile.recovery.is_none());
+    }
+    assert_eq!(live(&events).len(), 1);
+    assert_eq!(live(&events)[0].session, session_ref("added"));
+    let spill = events.take_spill().unwrap();
+    apply_spill(&events, spill, now);
+    assert!(drain(&mut bus).contains(&SessionEvent::IndexChanged {
+        reason: IndexChangeReason::Invalidated,
+    }));
 }
 
 #[tokio::test(start_paused = true)]
@@ -1988,7 +2055,7 @@ fn sync_report_callers_are_the_pinned_list() {
         (
             "insights_worker.rs",
             include_str!("../insights_worker.rs"),
-            1,
+            2,
         ),
         ("retention.rs", include_str!("../retention.rs"), 1),
         (
@@ -2028,22 +2095,44 @@ fn sync_report_callers_are_the_pinned_list() {
         if name == "scan/mod.rs" {
             assert!(production.contains("session_lifecycle::report_async("));
         } else {
-            for reporter in [
-                "report_discovery",
-                "report_row_changes",
-                "report_rejected",
-                "report_membership_changed",
+            let refresh = function_body(production, "refresh_sessions_locked");
+            for boundary in [
+                "let mut incremental = super::IncrementalAdmission {",
+                "super::owner::refresh_logs(app, logs, &mut incremental).await?",
+                "incremental.finish()?",
             ] {
+                assert!(refresh.contains(boundary), "{name} uses {boundary}");
+            }
+            let scan = include_str!("../scan/mod.rs");
+            // Remove the impl indentation so the helper finds each method's end.
+            let admission_io = scan
+                .split("impl AdmissionIo {")
+                .nth(1)
+                .expect("AdmissionIo exists")
+                .replace("\n    ", "\n");
+            let report = function_body(&admission_io, "report");
+            assert!(
+                report.contains("session_lifecycle::report_async(app, observation).await"),
+                "AdmissionIo waits for capacity at the app boundary"
+            );
+            let admission = scan
+                .split("impl IncrementalAdmission<'_> {")
+                .nth(1)
+                .expect("IncrementalAdmission exists")
+                .replace("\n    ", "\n");
+            for method in ["commit", "delete_rejected"] {
+                let body = function_body(&admission, method);
                 assert!(
-                    production.contains(&format!("super::{reporter}(")),
-                    "{name} uses {reporter}"
-                );
-                let body = function_body(include_str!("../scan/mod.rs"), reporter);
-                assert!(
-                    body.contains("session_lifecycle::report_async("),
-                    "{reporter} waits for capacity"
+                    body.contains(".report(") && body.contains(".await;"),
+                    "IncrementalAdmission::{method} awaits reporting"
                 );
             }
+            let owner = include_str!("../scan/owner.rs");
+            let titles = function_body(owner, "refresh_titles");
+            assert!(
+                titles.contains("run_with_titles(") && titles.contains("writer.finish()?"),
+                "{name} reports title row changes through the scan owner"
+            );
         }
         assert!(
             !production.contains("session_lifecycle::report("),
@@ -2269,34 +2358,6 @@ fn retention_reports_a_broad_purge_with_a_revision() {
         revision < report,
         "the revision is read before it is reported"
     );
-}
-
-#[test]
-fn a_rejected_row_reports_the_deleted_incarnation() {
-    let scan = include_str!("../scan/mod.rs");
-    let rejected = function_body(scan, "report_rejected");
-    assert!(
-        rejected.contains("membership_reports(described, &[(key.clone(), incarnation, revision)])")
-    );
-    let membership = function_body(scan, "membership_reports");
-    assert!(membership.contains("RemovalScope::One(key.clone(), *incarnation)"));
-    assert!(membership.contains("RemovalReason::Rejected"));
-    assert!(membership.contains("revision: *revision"));
-    for (name, source) in [
-        ("scan/mod.rs", scan),
-        ("scan/scoped.rs", include_str!("../scan/scoped.rs")),
-    ] {
-        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
-        assert!(
-            production.contains("if let Some((incarnation, revision)) = removed {"),
-            "{name} reports only a delete that found a row, with its evidence"
-        );
-        assert!(
-            production
-                .contains("report_rejected(app, &described, key, incarnation, revision).await"),
-            "{name} routes the rejection through the shared reporter"
-        );
-    }
 }
 
 /// Seed through the production boundary and start the actor with a controlled clock.

@@ -41,6 +41,9 @@ const FLUSH_DELAY: Duration = Duration::from_millis(250);
 /// index refresh.
 const PENDING_ROW_CAP: usize = 512;
 
+/// Select three recent rows for each oldest-ticket row.
+const RECENT_TURNS: usize = 3;
+
 /// This quota bounds bus receipt before a completed load emits rows.
 const RECEIVE_BATCH: usize = 1024;
 
@@ -94,6 +97,7 @@ struct PendingRow {
     facets: UpdateFacets,
     at: i64,
     seq: u64,
+    ticket: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -127,6 +131,8 @@ impl From<Immediate> for Emission {
 #[derive(Default)]
 struct Pending {
     rows: HashMap<SessionKey, PendingRow>,
+    next_ticket: u64,
+    recent_turns: usize,
     /// The next flush replaces patches with one index refresh after overflow or
     /// recovery.
     index_refresh: bool,
@@ -140,6 +146,17 @@ struct Pending {
 impl Pending {
     /// Merge a row change without exceeding [`PENDING_ROW_CAP`].
     fn note_row(&mut self, key: SessionKey, facets: UpdateFacets, at: i64, seq: u64) {
+        self.note_row_with_ticket(key, facets, at, seq, None);
+    }
+
+    fn note_row_with_ticket(
+        &mut self,
+        key: SessionKey,
+        facets: UpdateFacets,
+        at: i64,
+        seq: u64,
+        ticket: Option<u64>,
+    ) {
         if self.index_refresh {
             // A refetch supersedes every patch in this batch.
             return;
@@ -155,14 +172,26 @@ impl Pending {
             self.index_refresh = true;
             return;
         }
-        self.rows.insert(key, PendingRow { facets, at, seq });
+        let ticket = ticket.unwrap_or_else(|| {
+            self.next_ticket = self.next_ticket.wrapping_add(1);
+            self.next_ticket
+        });
+        self.rows.insert(
+            key,
+            PendingRow {
+                facets,
+                at,
+                seq,
+                ticket,
+            },
+        );
     }
 
     fn has_work(&self) -> bool {
         self.index_refresh || !self.rows.is_empty()
     }
 
-    /// Drain rows in full identity order for deterministic output.
+    /// Drain rows with recent-first service and a guaranteed oldest-ticket turn.
     fn take(&mut self) -> FlushPlan {
         let index_refresh = std::mem::take(&mut self.index_refresh);
         let retried = std::mem::take(&mut self.retry);
@@ -172,9 +201,28 @@ impl Pending {
         if index_refresh {
             rows.clear();
         }
-        rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+        let mut ordered = Vec::with_capacity(rows.len());
+        while !rows.is_empty() {
+            let fair_turn = self.recent_turns == RECENT_TURNS;
+            let selected = rows
+                .iter()
+                .enumerate()
+                .min_by(|(_, (left_key, left)), (_, (right_key, right))| {
+                    if fair_turn {
+                        left.ticket
+                            .cmp(&right.ticket)
+                            .then_with(|| left_key.cmp(right_key))
+                    } else {
+                        right.at.cmp(&left.at).then_with(|| left_key.cmp(right_key))
+                    }
+                })
+                .map(|(index, _)| index)
+                .expect("pending rows are not empty");
+            ordered.push(rows.swap_remove(selected));
+            self.recent_turns = if fair_turn { 0 } else { self.recent_turns + 1 };
+        }
         FlushPlan {
-            rows,
+            rows: ordered,
             index_refresh,
             seq: self.last_seq,
             retried,
@@ -359,8 +407,13 @@ impl Projector {
         if let Some(batch) = self.in_flight.as_mut()
             && let Some(row) = batch.rows.remove(key)
         {
-            self.pending
-                .note_row(key.clone(), row.facets, row.at, row.seq);
+            self.pending.note_row_with_ticket(
+                key.clone(),
+                row.facets,
+                row.at,
+                row.seq,
+                Some(row.ticket),
+            );
         }
     }
 
@@ -469,7 +522,13 @@ impl Projector {
                     })];
                 }
                 for (key, row) in batch.rows {
-                    self.pending.note_row(key, row.facets, row.at, row.seq);
+                    self.pending.note_row_with_ticket(
+                        key,
+                        row.facets,
+                        row.at,
+                        row.seq,
+                        Some(row.ticket),
+                    );
                 }
                 self.pending.retry = true;
                 Vec::new()

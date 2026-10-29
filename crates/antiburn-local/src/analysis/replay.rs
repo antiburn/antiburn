@@ -7,6 +7,8 @@
 //! drives it, so the same code computes the same numbers. See
 //! `crates/antiburn-local/tests/turn_row_replay_parity.rs` for the proof.
 
+use std::collections::BTreeMap;
+
 use crate::analysis::engine::SessionMetrics;
 use crate::analysis::interface::{NormalizedRecord, RecordSink, SessionSummary};
 use crate::analysis::metrics_sink::{SessionMetricsAccumulator, merge_metrics};
@@ -90,7 +92,9 @@ pub(crate) fn event_from_row(row: &TurnRow) -> NormalizedEvent {
         cache_creation_tokens: row.cache_write_tokens,
         cache_creation_1h_tokens: row.cache_write_1h_tokens,
     };
+    event.accounting = row.accounting.clone();
     event.tools = synthesize_tools(row);
+    event.proven_subagent_launches = Some(row.subagent_launches);
     event.model = row.model.clone();
     event.provider = row.provider.clone();
     event.api = row.api.clone();
@@ -131,6 +135,25 @@ fn group_by_source<'a>(rows: &'a [TurnRow]) -> Vec<SourceGroup<'a>> {
         }
     }
     groups
+}
+
+fn groups_with_summaries<'a>(
+    rows: &'a [TurnRow],
+    source_summaries: &'a BTreeMap<String, SessionSummary>,
+) -> Vec<SourceGroup<'a>> {
+    let mut groups = group_by_source(rows)
+        .into_iter()
+        .map(|group| (group.source_key, group))
+        .collect::<BTreeMap<_, _>>();
+    for source_key in source_summaries.keys() {
+        groups
+            .entry(source_key.as_str())
+            .or_insert_with(|| SourceGroup {
+                source_key,
+                rows: Vec::new(),
+            });
+    }
+    groups.into_values().collect()
 }
 
 /// True when `group` is the parent transcript's own rows, among possibly
@@ -242,32 +265,45 @@ pub fn metrics_from_rows(
         accumulator.finish(summary_for(""));
         return Ok(accumulator.metrics());
     }
-    // A single source needs no parent/child call: there is no other group
-    // to fold it in as a sub-agent stream of, so it is the parent
-    // regardless of its own `source_key`.
+    // Treat a single row source as the parent, regardless of its source key.
     if groups.len() == 1 {
         let group = &groups[0];
         let summary = summary_for(group.source_key);
-        let parent = accumulator_from_group(&agent, &session_id, group, false, summary);
-        return Ok(parent.metrics());
+        return Ok(accumulator_from_group(&agent, &session_id, group, false, summary).metrics());
     }
     let parent_index = groups
         .iter()
         .position(|group| is_parent_group(group, &session_id))
         .ok_or(MissingParentRows)?;
+    Ok(merge_source_groups(
+        &agent,
+        &session_id,
+        &groups,
+        parent_index,
+        summary_for,
+    ))
+}
+
+fn merge_source_groups(
+    agent: &str,
+    session_id: &str,
+    groups: &[SourceGroup<'_>],
+    parent_index: usize,
+    mut summary_for: impl FnMut(&str) -> SessionSummary,
+) -> SessionMetrics {
     let parent_group = &groups[parent_index];
     let parent_summary = summary_for(parent_group.source_key);
-    let parent = accumulator_from_group(&agent, &session_id, parent_group, false, parent_summary);
+    let parent = accumulator_from_group(agent, session_id, parent_group, false, parent_summary);
     let children: Vec<SessionMetricsAccumulator> = groups
         .iter()
         .enumerate()
         .filter(|(index, _)| *index != parent_index)
         .map(|(_, group)| {
             let summary = summary_for(group.source_key);
-            accumulator_from_group(&agent, &session_id, group, true, summary)
+            accumulator_from_group(agent, session_id, group, true, summary)
         })
         .collect();
-    Ok(merge_metrics(&parent, &children))
+    merge_metrics(&parent, &children)
 }
 
 /// Rebuilds each source's own `SessionMetrics` from `rows`, keyed by
@@ -316,14 +352,92 @@ pub fn metrics_by_source(
     by_source
 }
 
+/// Rebuilds merged metrics from every source in `rows` or `source_summaries`.
+/// The caller must supply rows and summaries from the same published fence.
+/// The caller must sort rows by `(source_key, turn_index)`.
+///
+/// A summary admits a source with no rows. A row-only source uses the default
+/// summary. Returns [`MissingParentRows`] when neither input contains `session_id`.
+pub fn metrics_from_rows_with_summaries(
+    agent: impl Into<String>,
+    session_id: impl Into<String>,
+    rows: &[TurnRow],
+    source_summaries: &BTreeMap<String, SessionSummary>,
+) -> Result<SessionMetrics, MissingParentRows> {
+    let agent = agent.into();
+    let session_id = session_id.into();
+    let groups = groups_with_summaries(rows, source_summaries);
+    let parent_index = groups
+        .iter()
+        .position(|group| is_parent_group(group, &session_id))
+        .ok_or(MissingParentRows)?;
+    let summary_for = |source_key: &str| {
+        source_summaries
+            .get(source_key)
+            .cloned()
+            .unwrap_or_default()
+    };
+    Ok(merge_source_groups(
+        &agent,
+        &session_id,
+        &groups,
+        parent_index,
+        summary_for,
+    ))
+}
+
+/// Rebuilds separate metrics for every source in `rows` or `source_summaries`.
+/// Uses the same input contract as [`metrics_from_rows_with_summaries`].
+/// Like [`metrics_by_source`], this function does not require a parent source.
+pub fn metrics_by_source_with_summaries(
+    agent: impl Into<String>,
+    session_id: impl Into<String>,
+    rows: &[TurnRow],
+    source_summaries: &BTreeMap<String, SessionSummary>,
+) -> BTreeMap<String, SessionMetrics> {
+    let agent = agent.into();
+    let session_id = session_id.into();
+    groups_with_summaries(rows, source_summaries)
+        .into_iter()
+        .map(|group| {
+            let summary = source_summaries
+                .get(group.source_key)
+                .cloned()
+                .unwrap_or_default();
+            let accumulator = accumulator_from_group(
+                &agent,
+                &session_id,
+                &group,
+                !is_parent_group(&group, &session_id),
+                summary,
+            );
+            (group.source_key.to_owned(), accumulator.metrics())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::native_accounting::{
+        CalculatedCost, SourceAccounting, TokenClasses, UsageReconciliation,
+    };
     use crate::analysis::rows::turn_row_from_event;
 
     fn base_row() -> TurnRow {
         let event = NormalizedEvent::new(Role::Assistant);
         turn_row_from_event(&event, "s1", 0)
+    }
+
+    #[test]
+    fn stored_zero_launch_count_overrides_a_legacy_launch_name() {
+        let mut row = base_row();
+        row.last_tool = Some("Task".to_owned());
+        row.subagent_launches = 0;
+        let event = event_from_row(&row);
+        assert_eq!(event.tools.last().unwrap().name, "Task");
+        assert_eq!(event.proven_subagent_launches, Some(0));
+        assert_eq!(event.subagent_launch_count(), 0);
     }
 
     #[test]
@@ -770,5 +884,171 @@ mod tests {
         });
 
         assert_eq!(by_source.keys().collect::<Vec<_>>(), vec!["source-a"]);
+    }
+
+    fn accounting_summary(input_tokens: u64, cost: f64) -> SessionSummary {
+        SessionSummary {
+            accounting: Some(SourceAccounting {
+                aggregate_tokens: Some(TokenClasses {
+                    input_tokens,
+                    ..TokenClasses::default()
+                }),
+                aggregate_calculated_cost: CalculatedCost::producer_calculated(cost),
+                ..SourceAccounting::default()
+            }),
+            ..SessionSummary::default()
+        }
+    }
+
+    #[test]
+    fn summary_replay_keeps_empty_parent_and_children_without_creating_events() {
+        let summaries = BTreeMap::from([
+            ("parent".to_owned(), accounting_summary(15, 0.02)),
+            ("child-a".to_owned(), accounting_summary(30, 0.01)),
+            ("child-b".to_owned(), accounting_summary(40, 0.01)),
+        ]);
+        let by_source = metrics_by_source_with_summaries("opencode", "parent", &[], &summaries);
+        assert_eq!(by_source.len(), 3);
+        let mut parent = SessionMetricsAccumulator::new("opencode", "parent");
+        parent.finish(summaries["parent"].clone());
+        assert_eq!(by_source["parent"], parent.metrics());
+        let children = ["child-a", "child-b"].map(|source_key| {
+            let mut child = SessionMetricsAccumulator::new("opencode", "parent");
+            child.finish(summaries[source_key].clone());
+            assert_eq!(by_source[source_key], child.metrics());
+            child
+        });
+        let merged =
+            metrics_from_rows_with_summaries("opencode", "parent", &[], &summaries).unwrap();
+        assert_eq!(merged, merge_metrics(&parent, &children));
+        assert_eq!(merged.event_count, 0);
+        assert_eq!(merged.tokens_in, 0);
+        assert!(merged.model_runs.is_empty());
+        let accounting = merged.accounting.unwrap();
+        assert_eq!(accounting.aggregate_tokens.unwrap().input_tokens, 85);
+        assert_eq!(accounting.retained_tokens, Some(TokenClasses::default()));
+        assert_eq!(
+            merged.token_reconciliation,
+            Some(UsageReconciliation::Unallocated(TokenClasses {
+                input_tokens: 85,
+                ..TokenClasses::default()
+            }))
+        );
+        assert!((accounting.aggregate_calculated_cost.unwrap().usd - 0.04).abs() < 1e-12);
+        assert_eq!(accounting.retained_calculated_cost.unwrap().usd, 0.0);
+        assert!(
+            matches!(merged.cost_reconciliation, Some(UsageReconciliation::Unallocated(cost)) if (cost.usd - 0.04).abs() < 1e-12)
+        );
+    }
+
+    #[test]
+    fn summary_replay_unions_populated_empty_and_row_only_sources_once() {
+        let summaries = BTreeMap::from([
+            ("parent".to_owned(), accounting_summary(15, 0.02)),
+            ("child-empty".to_owned(), accounting_summary(40, 0.01)),
+            ("child-populated".to_owned(), SessionSummary::default()),
+        ]);
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.model = Some("claude-sonnet-4-6".to_owned());
+        event.usage.input_tokens = 30;
+        let mut populated = SessionMetricsAccumulator::new("opencode", "parent");
+        populated.record(NormalizedRecord::MetricsEvent(Box::new(event.clone())));
+        populated.finish(summaries["child-populated"].clone());
+        let mut populated_row = turn_row_from_event(&event, "child-populated", 0);
+        populated_row.scope = TurnScope::Delegated;
+
+        event.usage.input_tokens = 7;
+        let mut row_only = SessionMetricsAccumulator::new("opencode", "parent");
+        row_only.record(NormalizedRecord::MetricsEvent(Box::new(event.clone())));
+        row_only.finish(SessionSummary::default());
+        let mut row_only_row = turn_row_from_event(&event, "child-row-only", 0);
+        row_only_row.scope = TurnScope::Delegated;
+        let rows = [populated_row, row_only_row];
+
+        let by_source = metrics_by_source_with_summaries("opencode", "parent", &rows, &summaries);
+        assert_eq!(
+            by_source.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["child-empty", "child-populated", "child-row-only", "parent"]
+        );
+        assert_eq!(by_source["child-populated"], populated.metrics());
+        assert_eq!(by_source["child-row-only"], row_only.metrics());
+        let mut parent = SessionMetricsAccumulator::new("opencode", "parent");
+        parent.finish(summaries["parent"].clone());
+        let mut empty = SessionMetricsAccumulator::new("opencode", "parent");
+        empty.finish(summaries["child-empty"].clone());
+        assert_eq!(by_source["child-empty"], empty.metrics());
+        let merged =
+            metrics_from_rows_with_summaries("opencode", "parent", &rows, &summaries).unwrap();
+        assert_eq!(
+            merged,
+            merge_metrics(&parent, &[empty, populated, row_only])
+        );
+        assert_eq!(merged.event_count, 2);
+        assert_eq!(merged.tokens_in, 37);
+    }
+
+    #[test]
+    fn summary_replay_requires_parent_rows_or_summary_without_promoting_a_child() {
+        let summaries = BTreeMap::from([("child".to_owned(), accounting_summary(30, 0.01))]);
+        assert_eq!(
+            metrics_from_rows_with_summaries("opencode", "parent", &[], &summaries),
+            Err(MissingParentRows)
+        );
+        let by_source = metrics_by_source_with_summaries("opencode", "parent", &[], &summaries);
+        assert_eq!(by_source.keys().collect::<Vec<_>>(), ["child"]);
+
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.usage.input_tokens = 10;
+        let rows = [turn_row_from_event(&event, "parent", 0)];
+        let by_source = metrics_by_source_with_summaries("opencode", "parent", &rows, &summaries);
+        assert_eq!(by_source["parent"].event_count, 1);
+        assert_eq!(by_source["parent"].tokens_in, 10);
+        let merged =
+            metrics_from_rows_with_summaries("opencode", "parent", &rows, &summaries).unwrap();
+        assert_eq!(merged.event_count, 1);
+        assert_eq!(merged.tokens_in, 10);
+    }
+
+    #[test]
+    fn summary_replay_uses_the_same_parent_child_merge_as_row_replay() {
+        let mut event = NormalizedEvent::new(Role::Assistant);
+        event.usage.input_tokens = 12;
+        let rows = [
+            turn_row_from_event(&event, "child", 0),
+            turn_row_from_event(&event, "parent", 0),
+        ];
+        let summaries = BTreeMap::from([
+            ("parent".into(), SessionSummary::default()),
+            ("child".into(), SessionSummary::default()),
+        ]);
+        assert_eq!(
+            metrics_from_rows("opencode", "parent", &rows, |key| summaries[key].clone()).unwrap(),
+            metrics_from_rows_with_summaries("opencode", "parent", &rows, &summaries).unwrap()
+        );
+
+        let summaries = BTreeMap::from([("parent".into(), SessionSummary::default())]);
+        let group = SourceGroup {
+            source_key: "parent",
+            rows: vec![&rows[1]],
+        };
+        let parent = accumulator_from_group(
+            "opencode",
+            "parent",
+            &group,
+            false,
+            SessionSummary::default(),
+        );
+        assert_eq!(
+            metrics_from_rows_with_summaries("opencode", "parent", &rows[1..], &summaries).unwrap(),
+            merge_metrics(&parent, &[])
+        );
+        assert_eq!(
+            metrics_from_rows("opencode", "unrelated-key", &rows[1..], |_| {
+                SessionSummary::default()
+            })
+            .unwrap()
+            .event_count,
+            1
+        );
     }
 }

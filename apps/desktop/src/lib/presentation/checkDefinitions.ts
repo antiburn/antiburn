@@ -5,13 +5,13 @@ export const CHECK_DEFINITIONS = {
     label: "Session overdepth",
     aliases: ["long sessions", "context depth", "conversation length"],
     kind: "local",
-    description: "Checks recorded context depth against reviewed limits.",
+    description: "Checks recorded context depth against documented limits.",
   },
   modelOverthinking: {
     label: "Model overthinking",
     aliases: ["reasoning effort", "thinking budget"],
     kind: "local",
-    description: "Checks recorded reasoning settings and usage against reviewed limits.",
+    description: "Checks recorded reasoning settings and usage against documented limits.",
   },
   overpoweredSubagents: {
     label: "Overpowered subagents",
@@ -41,32 +41,13 @@ export const CHECK_DEFINITIONS = {
     label: "Old model usage",
     aliases: ["outdated models", "model versions"],
     kind: "local",
-    description: "Checks recorded model versions against reviewed replacements.",
-  },
-  skillOpportunities: {
-    label: "Skill opportunities",
-    aliases: ["improve skills", "skill improvements", "skill suggestions"],
-    kind: "smart",
-    description: "Finds a current skill procedure that could help a selected workflow.",
-  },
-  overExploring: {
-    label: "Over-exploring",
-    aliases: ["over_exploring", "redundant reads", "repeated reads", "unrelated files"],
-    kind: "smart",
-    description:
-      "Checks selected file reads for redundant output or a clearly separate purpose.",
-  },
-  scopeCreep: {
-    label: "Scope creep",
-    aliases: ["scope_creep", "extra work", "agreed task", "task scope", "unapproved work"],
-    kind: "smart",
-    description: "Checks selected performed work for a substantial unapproved objective.",
+    description: "Checks recorded model versions against documented replacements.",
   },
   overuseOfFastMode: {
     label: "Fast mode overuse",
     aliases: ["fast mode", "priority", "speed"],
     kind: "local",
-    description: "Checks recorded fast-tier use against reviewed limits.",
+    description: "Checks recorded fast-tier use against documented limits.",
   },
   cacheChurn: {
     label: "Excess cache rehydration",
@@ -74,18 +55,12 @@ export const CHECK_DEFINITIONS = {
     kind: "local",
     description: "Checks compatible request records for excess cache rehydration.",
   },
-  ignoredInstructions: {
-    label: "Ignored instructions",
-    aliases: ["instruction conflicts", "missed agent rules", "AGENTS.md", "CLAUDE.md"],
-    kind: "smart",
-    description: "Checks selected actions for direct conflicts with current instruction rules.",
-  },
 } as const satisfies Record<
   BurnCheckDetectorId,
   {
     label: string
     aliases: readonly string[]
-    kind: "local" | "smart"
+    kind: "local"
     description: string
   }
 >
@@ -96,25 +71,7 @@ export const CHECK_LABELS = Object.fromEntries(
 
 export function isCheckAvailable(
   id: BurnCheckDetectorId,
-  smartChecksAvailable: boolean,
+  _decisionConnectionAvailable: boolean,
 ): boolean {
-  return smartChecksAvailable || CHECK_DEFINITIONS[id].kind === "local"
-}
-
-const OVER_EXPLORING_DETAILS = {
-  unrelated_files: "A selected read sample suggests a purpose separate from the task.",
-  excessive_file_breadth: "The work read more files than it needed.",
-  excessive_within_file_reading:
-    "Later reads returned identical recorded output with no observed intervening work.",
-} as const
-
-export function overExploringDetail(reason: string | undefined): string | null {
-  switch (reason) {
-    case "unrelated_files":
-    case "excessive_file_breadth":
-    case "excessive_within_file_reading":
-      return OVER_EXPLORING_DETAILS[reason]
-    default:
-      return null
-  }
+  return CHECK_DEFINITIONS[id].kind === "local"
 }

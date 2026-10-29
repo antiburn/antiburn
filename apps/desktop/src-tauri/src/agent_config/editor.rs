@@ -269,6 +269,11 @@ impl AgentConfigEditor {
 
     #[cfg(not(windows))]
     fn apply_change(&self, prepared: &PreparedChange) -> Result<(), ApplyError> {
+        if prepared.agent == antiburn_local::model::AgentKind::OpenCode {
+            return Err(ApplyError::Unavailable(
+                ConfigUnavailableReason::RuntimeOverride,
+            ));
+        }
         let vendor = vendor_for(prepared.agent);
         let resource_name = match &prepared.operation {
             super::vendors::OperationSelector::NamedClaudeMcpServer(name)
@@ -291,6 +296,26 @@ impl AgentConfigEditor {
                 prepared.trusted_workspace_root.as_deref(),
             )
             .map_err(ApplyError::Unavailable)?;
+        self.apply_change_at_target(prepared, &current_target)
+    }
+
+    #[cfg(not(windows))]
+    pub(super) fn apply_change_at_target(
+        &self,
+        prepared: &PreparedChange,
+        current_target: &super::vendors::Target,
+    ) -> Result<(), ApplyError> {
+        self.apply_change_at_target_checked(prepared, current_target, &|| Ok(()))
+    }
+
+    #[cfg(not(windows))]
+    pub(super) fn apply_change_at_target_checked(
+        &self,
+        prepared: &PreparedChange,
+        current_target: &super::vendors::Target,
+        validate_dependencies: &dyn Fn() -> Result<(), ApplyError>,
+    ) -> Result<(), ApplyError> {
+        let vendor = vendor_for(prepared.agent);
         if current_target.path != prepared.path
             || current_target.scope != prepared.scope
             || current_target.safety_root != prepared.safety_root
@@ -343,6 +368,7 @@ impl AgentConfigEditor {
             if current.bytes != prepared.original_bytes {
                 return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
             }
+            validate_dependencies()?;
             write_backup(prepared, parent, file_name, nonce)?;
             let current = read_checked(&prepared.path, &prepared.safety_root)
                 .map_err(ApplyError::Unavailable)?;
@@ -352,6 +378,7 @@ impl AgentConfigEditor {
             if current.bytes != prepared.original_bytes {
                 return Err(ApplyError::Conflict(ApplyConflict::ChangedContent));
             }
+            validate_dependencies()?;
             fs::rename(&temporary, &prepared.path)
                 .map_err(|error| ApplyError::Unavailable(map_write_error(error)))?;
             Ok(replacement_identity)
@@ -563,6 +590,7 @@ fn validate_read_context(
     if !context.native_environment || !editor_access_supported(platform, false) {
         return Err(ConfigUnavailableReason::UnsupportedEnvironment);
     }
+    context.validate_source_format()?;
     if context.managed_configuration_present {
         return Err(ConfigUnavailableReason::ManagedConfiguration);
     }
@@ -584,6 +612,10 @@ fn validate_write_context(
 ) -> Result<&'static dyn super::vendors::VendorConfig, ConfigUnavailableReason> {
     if !context.native_environment || !editor_access_supported(platform, false) {
         return Err(ConfigUnavailableReason::UnsupportedEnvironment);
+    }
+    if context.agent == antiburn_local::model::AgentKind::OpenCode {
+        // Historical source formats do not identify the current config consumer.
+        return Err(ConfigUnavailableReason::RuntimeOverride);
     }
     let vendor = vendor_for(context.agent);
     match vendor.policy(setting) {

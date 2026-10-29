@@ -2,7 +2,58 @@ use serde::{Deserialize, Serialize};
 
 use super::{JevInputSelection, JevNativeFieldContainer, JevNativeFieldRange};
 use crate::analysis::SourceFormat;
-use crate::checks::ignored_instructions::sha256_hex;
+use crate::digest::sha256_hex;
+
+pub fn opencode_v2_source(source: SourceFormat) -> bool {
+    matches!(
+        source,
+        SourceFormat::OpenCodeSqliteV2 | SourceFormat::OpenCodeV2SessionExport
+    )
+}
+
+pub(super) fn opencode_v2_action(action: &super::ContentAction) -> bool {
+    opencode_v2_reference(action)
+        && action
+            .tool_call_id
+            .as_deref()
+            .is_some_and(native_skill_identity_is_valid)
+        && !action.truncated
+}
+
+fn opencode_v2_reference(action: &super::ContentAction) -> bool {
+    action.reference.stable
+        && super::non_authorizing_context::valid_digest(&action.reference.id)
+        && action
+            .reference
+            .native_record_id
+            .as_deref()
+            .is_some_and(native_skill_identity_is_valid)
+        && super::non_authorizing_context::valid_digest(&action.reference.source_key_digest)
+        && super::non_authorizing_context::valid_digest(&action.reference.thread_digest)
+        && action.reference.id
+            == sha256_hex(
+                format!(
+                    "{}\0{}\0{}\0{}",
+                    action.reference.source_key_digest,
+                    action
+                        .reference
+                        .native_record_id
+                        .as_deref()
+                        .unwrap_or_default(),
+                    action.reference.turn_index,
+                    action.reference.part_index
+                )
+                .as_bytes(),
+            )
+        && action.text.len() <= crate::analysis::interface::MAX_CONTENT_PART_BYTES
+        && action.metadata.bindings.len() <= 16
+}
+
+pub(super) fn opencode_v2_index(value: &str) -> bool {
+    value
+        .parse::<usize>()
+        .is_ok_and(|index| index < 1024 && index.to_string() == value)
+}
 
 /// Adapter-validated skill evidence. Completion does not mean task success.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +75,60 @@ pub struct JevRecordedSkillResult {
     pub text_digest: String,
     pub complete: bool,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_skill: Option<JevNativeSkillProof>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JevNativeSkillProducer {
+    OpenCodeV2Skill843a6c51,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JevNativeSkillOrigin {
+    ToolRequest,
+    ToolResult,
+    PromptAttachment { index: u32 },
+    SkillMessage,
+}
+
+impl JevNativeSkillOrigin {
+    pub fn is_injected(self) -> bool {
+        matches!(self, Self::PromptAttachment { .. } | Self::SkillMessage)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JevNativeSkillBody {
+    NotApplicable,
+    Recorded,
+    Unavailable,
+    Truncated,
+}
+
+impl JevNativeSkillBody {
+    pub(crate) fn from_part(part: &crate::analysis::ContentPart) -> Self {
+        if part.truncated {
+            Self::Truncated
+        } else if part.text.is_empty() {
+            Self::Unavailable
+        } else {
+            Self::Recorded
+        }
+    }
+}
+
+/// Native IDs and display names are separate. Injected text does not prove a call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JevNativeSkillProof {
+    pub producer: JevNativeSkillProducer,
+    pub origin: JevNativeSkillOrigin,
+    pub id: String,
+    pub display_name: Option<String>,
+    pub body: JevNativeSkillBody,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +138,7 @@ pub enum JevRecordedSkillIdentityKind {
     InferredName,
     Document,
     Unknown,
+    NativeId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +155,14 @@ pub fn skill_text_digest(text: &str) -> String {
 }
 
 pub fn is_recorded_skill_selection(action: &super::ContentAction) -> bool {
+    if let Some(fact) = &action.metadata.recorded_skill_result
+        && fact
+            .native_skill
+            .as_ref()
+            .is_some_and(|proof| proof.origin.is_injected())
+    {
+        return fact.matches_action(action, fact.source_format);
+    }
     action.turn_role == "user"
         && action.turn_scope == "main"
         && action
@@ -70,6 +184,9 @@ pub fn is_recorded_skill_selection(action: &super::ContentAction) -> bool {
 
 impl JevRecordedSkillResult {
     pub fn matches_action(&self, action: &super::ContentAction, source: SourceFormat) -> bool {
+        if opencode_v2_source(source) || self.native_skill.is_some() {
+            return self.matches_opencode_v2_action(action, source);
+        }
         self.source_format == source
             && self.message_id == action.reference.native_record_id
             && self.part_index == action.reference.part_index
@@ -150,8 +267,348 @@ impl JevRecordedSkillResult {
                         && self.ranges[0].start == 0
                         && self.ranges[0].end == action.text.len()
                 }
+                JevRecordedSkillIdentityKind::NativeId => false,
             }
     }
+
+    pub fn opencode_v2(
+        part: &crate::analysis::ContentPart,
+        source: SourceFormat,
+        session_id: &str,
+        message_id: &str,
+        part_index: u32,
+        proof: JevNativeSkillProof,
+    ) -> Self {
+        let field = match proof.origin {
+            JevNativeSkillOrigin::ToolRequest => super::JevInputField::OtherToolInput,
+            JevNativeSkillOrigin::ToolResult => super::JevInputField::OtherToolOutput,
+            JevNativeSkillOrigin::PromptAttachment { .. } | JevNativeSkillOrigin::SkillMessage => {
+                super::JevInputField::UserMessage
+            }
+        };
+        Self {
+            identity: JevRecordedSkillIdentityKind::NativeId,
+            name: None,
+            location: None,
+            state: part.metadata.state,
+            status: match proof.origin {
+                JevNativeSkillOrigin::ToolRequest => JevRecordedSkillStatus::Requested,
+                JevNativeSkillOrigin::ToolResult
+                    if part.metadata.state == super::JevOperationState::Error =>
+                {
+                    JevRecordedSkillStatus::Failed
+                }
+                _ => JevRecordedSkillStatus::Unknown,
+            },
+            source_format: source,
+            session_id: Some(session_id.to_owned()),
+            message_id: Some(message_id.to_owned()),
+            part_index,
+            call_id: part.tool_call_id.clone(),
+            request_message_id: None,
+            request_part_index: None,
+            field,
+            ranges: part
+                .metadata
+                .bindings
+                .iter()
+                .filter(|range| range.field == field)
+                .cloned()
+                .collect(),
+            text_digest: skill_text_digest(&part.text),
+            complete: !part.truncated
+                && matches!(
+                    proof.body,
+                    JevNativeSkillBody::NotApplicable | JevNativeSkillBody::Recorded
+                ),
+            truncated: part.truncated,
+            native_skill: Some(proof),
+        }
+    }
+
+    fn matches_opencode_v2_action(
+        &self,
+        action: &super::ContentAction,
+        source: SourceFormat,
+    ) -> bool {
+        let Some(proof) = &self.native_skill else {
+            return false;
+        };
+        if !opencode_v2_source(source)
+            || self.source_format != source
+            || !opencode_v2_reference(action)
+            || self.identity != JevRecordedSkillIdentityKind::NativeId
+            || self.name.is_some()
+            || self.location.is_some()
+            || self.message_id != action.reference.native_record_id
+            || self.part_index != action.reference.part_index
+            || self.call_id != action.tool_call_id
+            || self.text_digest != skill_text_digest(skill_action_text(action))
+            || self.state != action.metadata.state
+            || self.session_id.as_ref().is_none_or(|session| {
+                !native_skill_identity_is_valid(session)
+                    || action.reference.thread_digest != sha256_hex(session.as_bytes())
+            })
+            || proof.producer != JevNativeSkillProducer::OpenCodeV2Skill843a6c51
+            || !native_skill_identity_is_valid(&proof.id)
+            || proof
+                .display_name
+                .as_deref()
+                .is_some_and(|name| !native_skill_identity_is_valid(name))
+            || self.ranges.iter().any(|range| {
+                range.native_record_id != self.message_id
+                    || range.container != JevNativeFieldContainer::Record
+                    || range.field != self.field
+                    || range.start != 0
+                    || range.end > crate::analysis::interface::MAX_CONTENT_PART_BYTES
+                    || !action.metadata.bindings.contains(range)
+            })
+            || self.request_message_id.is_some() != self.request_part_index.is_some()
+            || self
+                .request_message_id
+                .as_deref()
+                .is_some_and(|id| !native_skill_identity_is_valid(id))
+            || !native_skill_body_matches(self, action, proof)
+        {
+            return false;
+        }
+        match proof.origin {
+            JevNativeSkillOrigin::ToolRequest => {
+                self.field == super::JevInputField::OtherToolInput
+                    && action.tool_name.as_deref() == Some("skill")
+                    && action
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(native_skill_identity_is_valid)
+                    && self.status == JevRecordedSkillStatus::Requested
+                    && self.request_message_id.is_none()
+                    && opencode_v2_skill_request_id(action).as_deref() == Some(proof.id.as_str())
+                    && proof.display_name.is_none()
+                    && self.ranges.len() == 1
+                    && self.ranges[0].end == proof.id.len()
+                    && opencode_v2_skill_pointer(&self.ranges[0].pointer, "/input/id")
+            }
+            JevNativeSkillOrigin::ToolResult => self.matches_opencode_v2_result(action, proof),
+            JevNativeSkillOrigin::PromptAttachment { index } => {
+                index < 64
+                    && action.turn_role == "user"
+                    && self.matches_opencode_v2_injection(
+                        action,
+                        proof,
+                        &format!("/skills/{index}/id"),
+                        &format!("/skills/{index}/name"),
+                        &format!("/skills/{index}/text"),
+                    )
+            }
+            JevNativeSkillOrigin::SkillMessage => {
+                action.turn_role == "system"
+                    && self.matches_opencode_v2_injection(action, proof, "/skill", "/name", "/text")
+            }
+        }
+    }
+
+    fn matches_opencode_v2_result(
+        &self,
+        action: &super::ContentAction,
+        proof: &JevNativeSkillProof,
+    ) -> bool {
+        let Some(prefix) = self.ranges.iter().find_map(|range| {
+            range
+                .pointer
+                .strip_suffix("/input/id")
+                .filter(|_| opencode_v2_skill_pointer(&range.pointer, "/input/id"))
+        }) else {
+            return false;
+        };
+        self.field == super::JevInputField::OtherToolOutput
+            && self.request_message_id == self.message_id
+            && self.request_message_id.is_some()
+            && self
+                .request_part_index
+                .is_some_and(|index| index < self.part_index)
+            && action.kind == "tool_result"
+            && action.authority == "tool"
+            && action.turn_role == "assistant"
+            && action.tool_name.as_deref() == Some("skill")
+            && action
+                .tool_call_id
+                .as_deref()
+                .is_some_and(native_skill_identity_is_valid)
+            && native_skill_range(self, &format!("{prefix}/input/id"), proof.id.len())
+            && proof.display_name.as_ref().is_none_or(|name| {
+                native_skill_range(self, &format!("{prefix}/metadata/name"), name.len())
+            })
+            && self.ranges.len()
+                == 1 + usize::from(proof.display_name.is_some())
+                    + usize::from(matches!(
+                        proof.body,
+                        JevNativeSkillBody::Recorded | JevNativeSkillBody::Truncated
+                    ))
+            && match self.state {
+                super::JevOperationState::Error => self.status == JevRecordedSkillStatus::Failed,
+                super::JevOperationState::Completed => {
+                    self.status == JevRecordedSkillStatus::Unknown
+                }
+                _ => false,
+            }
+            && self.ranges.iter().all(|range| {
+                if range.pointer == format!("{prefix}/input/id") {
+                    range.end == proof.id.len()
+                } else if let Some(name) = &proof.display_name
+                    && range.pointer == format!("{prefix}/metadata/name")
+                {
+                    range.end == name.len()
+                } else if range.pointer == format!("{prefix}/error/message") {
+                    range.end == action.text.len() && self.state == super::JevOperationState::Error
+                } else {
+                    range.end == action.text.len()
+                        && range
+                            .pointer
+                            .strip_prefix(&format!("{prefix}/content/"))
+                            .and_then(|rest| rest.strip_suffix("/text"))
+                            .is_some_and(opencode_v2_index)
+                }
+            })
+            && match proof.body {
+                JevNativeSkillBody::Recorded | JevNativeSkillBody::Truncated => {
+                    self.ranges
+                        .iter()
+                        .filter(|range| {
+                            range.pointer.starts_with(&format!("{prefix}/content/"))
+                                || range.pointer == format!("{prefix}/error/message")
+                        })
+                        .count()
+                        == 1
+                }
+                JevNativeSkillBody::Unavailable | JevNativeSkillBody::NotApplicable => true,
+            }
+    }
+
+    fn matches_opencode_v2_injection(
+        &self,
+        action: &super::ContentAction,
+        proof: &JevNativeSkillProof,
+        id_pointer: &str,
+        name_pointer: &str,
+        body_pointer: &str,
+    ) -> bool {
+        self.field == super::JevInputField::UserMessage
+            && matches!(action.kind.as_str(), "user" | "user_text")
+            && action.authority == "unknown"
+            && action.turn_scope == "main"
+            && action.tool_name.is_none()
+            && action.tool_call_id.is_none()
+            && action.metadata.human_text.is_none()
+            && action.metadata.user_text_history.is_none()
+            && self.status == JevRecordedSkillStatus::Unknown
+            && self.state == super::JevOperationState::Unknown
+            && self.request_message_id.is_none()
+            && proof
+                .display_name
+                .as_ref()
+                .is_some_and(|name| native_skill_range(self, name_pointer, name.len()))
+            && native_skill_range(self, id_pointer, proof.id.len())
+            && self.ranges.len()
+                == 2 + usize::from(matches!(
+                    proof.body,
+                    JevNativeSkillBody::Recorded | JevNativeSkillBody::Truncated
+                ))
+            && (!matches!(
+                proof.body,
+                JevNativeSkillBody::Recorded | JevNativeSkillBody::Truncated
+            ) || native_skill_range(self, body_pointer, action.text.len()))
+    }
+}
+
+fn native_skill_range(fact: &JevRecordedSkillResult, pointer: &str, len: usize) -> bool {
+    fact.ranges
+        .iter()
+        .filter(|range| range.pointer == pointer && range.end == len)
+        .count()
+        == 1
+}
+
+fn native_skill_body_matches(
+    fact: &JevRecordedSkillResult,
+    action: &super::ContentAction,
+    proof: &JevNativeSkillProof,
+) -> bool {
+    fact.truncated == action.truncated
+        && match proof.body {
+            JevNativeSkillBody::NotApplicable => {
+                proof.origin == JevNativeSkillOrigin::ToolRequest
+                    && fact.complete
+                    && !fact.truncated
+            }
+            JevNativeSkillBody::Recorded => {
+                proof.origin != JevNativeSkillOrigin::ToolRequest
+                    && fact.complete
+                    && !fact.truncated
+                    && !action.text.is_empty()
+            }
+            JevNativeSkillBody::Unavailable => {
+                proof.origin != JevNativeSkillOrigin::ToolRequest
+                    && !fact.complete
+                    && !fact.truncated
+                    && action.text.is_empty()
+            }
+            JevNativeSkillBody::Truncated => {
+                proof.origin != JevNativeSkillOrigin::ToolRequest
+                    && !fact.complete
+                    && fact.truncated
+                    && !action.text.is_empty()
+            }
+        }
+}
+
+pub(crate) fn native_skill_identity_is_valid(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+
+fn opencode_v2_skill_pointer(pointer: &str, suffix: &str) -> bool {
+    pointer
+        .strip_prefix("/content/")
+        .and_then(|rest| rest.strip_suffix(suffix))
+        .and_then(|rest| rest.strip_suffix("/state"))
+        .is_some_and(opencode_v2_index)
+}
+
+fn opencode_v2_skill_request_id(action: &super::ContentAction) -> Option<String> {
+    if action.kind != "tool_input"
+        || action.authority != "assistant"
+        || action.turn_role != "assistant"
+    {
+        return None;
+    }
+    let fields = action.normalized_fields.as_ref()?;
+    if fields.malformed
+        || fields.category != Some(crate::analysis::jev::JevNormalizedCategory::OtherTool)
+    {
+        return None;
+    }
+    let selected = fields.values.get(&super::JevInputField::OtherToolInput)?;
+    if !action.text.is_empty() && selected != &action.text {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(selected).ok()?;
+    let input = value.as_object()?;
+    let id = input.get("id")?.as_str()?;
+    if input.len() != 1 || !native_skill_identity_is_valid(id) {
+        return None;
+    }
+    action
+        .metadata
+        .bindings
+        .iter()
+        .any(|range| {
+            range.field == super::JevInputField::OtherToolInput
+                && range.native_record_id == action.reference.native_record_id
+                && range.container == JevNativeFieldContainer::Record
+                && range.start == 0
+                && range.end == id.len()
+                && opencode_v2_skill_pointer(&range.pointer, "/input/id")
+        })
+        .then(|| id.to_owned())
 }
 
 pub fn skill_name_is_valid(name: &str) -> bool {
@@ -162,8 +619,19 @@ pub fn skill_name_is_valid(name: &str) -> bool {
         })
 }
 
-/// Convert adapter evidence before smart checks receive actions.
+/// Convert adapter evidence into shared native skill facts.
 pub fn normalize_recorded_skill(action: &mut super::ContentAction, source: SourceFormat) {
+    if action
+        .metadata
+        .recorded_skill_result
+        .as_ref()
+        .and_then(|fact| fact.native_skill.as_ref())
+        .is_some_and(|proof| proof.origin.is_injected())
+    {
+        action.authority = "unknown".to_owned();
+        action.metadata.user_text_history = None;
+        action.metadata.human_text = None;
+    }
     if let Some(proof) = action.metadata.selected_skill.take() {
         action.metadata.recorded_skill_result = normalize_selected_skill(action, source, &proof);
         return;
@@ -179,9 +647,12 @@ pub fn normalize_recorded_skill(action: &mut super::ContentAction, source: Sourc
         }
         return;
     }
+    if opencode_v2_source(source) {
+        return;
+    }
     let tool = match source {
         SourceFormat::ClaudeJsonl => action.tool_name.as_deref() == Some("Skill"),
-        SourceFormat::OpenCodeSqliteV2 => action.tool_name.as_deref() == Some("skill"),
+        SourceFormat::OpenCodeSqliteV1 => action.tool_name.as_deref() == Some("skill"),
         SourceFormat::PiV3Jsonl => matches!(action.tool_name.as_deref(), Some("Skill" | "skill")),
         _ => false,
     };
@@ -213,6 +684,76 @@ pub fn normalize_recorded_skill(action: &mut super::ContentAction, source: Sourc
     action.metadata.recorded_skill_result = Some(fact);
 }
 
+pub(super) fn normalize_recorded_skill_results(
+    actions: &mut [super::ContentAction],
+    source: SourceFormat,
+) {
+    if !opencode_v2_source(source) {
+        return;
+    }
+    let invalid: Vec<_> = actions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, result)| {
+            let fact = result.metadata.recorded_skill_result.as_ref()?;
+            if !fact
+                .native_skill
+                .as_ref()
+                .is_some_and(|proof| proof.origin == JevNativeSkillOrigin::ToolResult)
+            {
+                return None;
+            }
+            let same_call = |action: &&super::ContentAction| {
+                action.reference.source_key_digest == result.reference.source_key_digest
+                    && action.reference.thread_digest == result.reference.thread_digest
+                    && action.turn_scope == result.turn_scope
+                    && action.tool_name == result.tool_name
+                    && action.tool_call_id == result.tool_call_id
+            };
+            let mut requests = actions
+                .iter()
+                .filter(|action| action.kind == "tool_input")
+                .filter(same_call);
+            let valid =
+                requests.next().is_some_and(|request| {
+                    fact.matches_action(result, source)
+                        && request.reference.stable
+                        && fact.request_message_id == request.reference.native_record_id
+                        && fact.request_part_index == Some(request.reference.part_index)
+                        && request.metadata.recorded_skill_result.as_ref().is_some_and(
+                            |request_fact| {
+                                request_fact.matches_action(request, source)
+                                    && request_fact
+                                        .native_skill
+                                        .as_ref()
+                                        .zip(fact.native_skill.as_ref())
+                                        .is_some_and(|(request, result)| request.id == result.id)
+                                    && request_fact.ranges.iter().all(|input| {
+                                        fact.ranges.iter().any(|output| {
+                                            input.native_record_id == output.native_record_id
+                                                && input.container == output.container
+                                                && input.pointer == output.pointer
+                                                && input.start == output.start
+                                                && input.end == output.end
+                                        })
+                                    })
+                            },
+                        )
+                }) && requests.next().is_none()
+                    && actions
+                        .iter()
+                        .filter(|action| action.kind == "tool_result")
+                        .filter(same_call)
+                        .count()
+                        == 1;
+            (!valid).then_some(index)
+        })
+        .collect();
+    for index in invalid {
+        actions[index].metadata.recorded_skill_result = None;
+    }
+}
+
 fn skill_fact(action: &super::ContentAction, source: SourceFormat) -> JevRecordedSkillResult {
     JevRecordedSkillResult {
         identity: JevRecordedSkillIdentityKind::Unknown,
@@ -232,6 +773,7 @@ fn skill_fact(action: &super::ContentAction, source: SourceFormat) -> JevRecorde
         text_digest: skill_text_digest(skill_action_text(action)),
         complete: !action.truncated,
         truncated: action.truncated,
+        native_skill: None,
     }
 }
 
@@ -263,7 +805,7 @@ fn request_identity(
         };
         input = decoded;
     }
-    let keys: &[&str] = if source == SourceFormat::OpenCodeSqliteV2 {
+    let keys: &[&str] = if source == SourceFormat::OpenCodeSqliteV1 {
         &["name"]
     } else {
         &["skill", "name", "skill_name", "skillName"]

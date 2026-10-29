@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react"
 
-import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
-import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
+import type { CheckId } from "../../../lib/insightsIpc"
+import { snoozedCheckIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
 import {
   overviewProgress,
   subscribeOverviewProgress,
@@ -16,7 +16,7 @@ import {
  */
 export function withSnoozes(
   progress: OverviewProgress,
-  snoozed: ReadonlySet<BurnCheckDetectorId>,
+  snoozed: ReadonlySet<CheckId>,
   snoozesKnown = true,
 ): OverviewProgress {
   if (!snoozesKnown) {
@@ -52,5 +52,5 @@ export function useOverviewProgress(): OverviewProgress {
   const snoozes = useSnoozedBurnChecks()
   // A failed refresh keeps the last records, so records also count as known.
   const snoozesKnown = snoozes.status === "ready" || snoozes.records.length > 0
-  return withSnoozes(progress, snoozedDetectorIds(snoozes.records), snoozesKnown)
+  return withSnoozes(progress, snoozedCheckIds(snoozes.records), snoozesKnown)
 }

@@ -59,12 +59,12 @@ afterEach(() => {
 // one test can take five times its local run time. 15 s is the bound, not a
 // target.
 describe("BurnChecksView actions", { timeout: 15_000 }, () => {
-  it("reports an Ignored Instructions prompt copy without sending the prompt", async () => {
-    render(<CheckPromptAction detector="ignoredInstructions" targets={[]} refresh={vi.fn()} />)
+  it("reports a prompt copy without sending the prompt or a check label", async () => {
+    render(<CheckPromptAction detector="sessionsOverDepth" targets={[]} refresh={vi.fn()} />)
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
     await screen.findByRole("button", { name: "Copied" })
     expect(commands.noteInteraction.mock.calls).toContainEqual([
-      { kind: "burnCheckPromptCopied", check: "ignored_instructions" },
+      { kind: "burnCheckPromptCopied" },
     ])
     expect(commands.noteInteraction.mock.calls.flat()).not.toContainEqual(
       expect.objectContaining({ prompt: expect.any(String) }),
@@ -79,7 +79,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     fireEvent.click(fix)
     expect(commands.prepare).toHaveBeenCalledOnce()
     await act(async () => undefined)
-    const dialog = screen.getByRole("dialog", { name: "Review change" })
+    const dialog = screen.getByRole("dialog", { name: "Confirm change" })
     expect(dialog).toHaveTextContent("Claude Code · Model · Global configuration")
     expect(dialog).toHaveTextContent("~/.claude/settings.json · model")
     expect(dialog).toHaveTextContent("claude-opus-4-6 → claude-sonnet-5")
@@ -95,8 +95,9 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy fix prompt" }))
     await act(async () => undefined)
-    expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
-    expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"])
+    expect(commands.writeClipboardText).toHaveBeenCalledWith("Inspect representative evidence.")
+    expect(commands.copyFallback).toHaveBeenCalledWith("unusedMcpServers")
+    expect(commands.copyBatch).not.toHaveBeenCalled()
     expect(commands.copy).not.toHaveBeenCalled()
     const copied = screen.getByRole("button", { name: "Copied" })
     const applied = screen.getByRole("button", { name: "Change applied" })
@@ -136,7 +137,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(session.getSnapshot().targets.unusedMcpServers?.data?.targets[0]?.actionId).toBe(
       "action-new",
     )
-    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled()
     expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
 
@@ -161,51 +162,99 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(session.getSnapshot().targets.unusedMcpServers?.data?.targets[0]?.actionId).toBe(
       "action-next-attempt",
     )
-    expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
   })
 
-  it("reviews and applies all selected automatic fixes", async () => {
-    const targets = Array.from({ length: 3 }, (_, index) => ({
-      ...target,
-      findingId: `finding-${index}`,
-      actionId: `action-${index}`,
-      display: {
-        ...target.display,
-        resourceIdentity: `model-${index}`,
-        currentValue: `model-${index}`,
-      },
-    }))
-    render(
-      <BurnCheckDetail
-        detector="oldModelUsage"
-        targets={targets}
-        samples={[]}
-        failedSessionCount={3}
-        refresh={vi.fn()}
-      />,
-    )
-
-    const fix = screen.getByRole("button", { name: "Fix" })
-    const prompt = screen.getByRole("button", { name: "Copy fix prompt" })
-    expect(fix.parentElement).not.toHaveClass("mt-3")
-    expect(fix.parentElement?.parentElement).toBe(prompt.parentElement?.parentElement)
-    fireEvent.click(fix)
-    let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
-    expect(within(dialog).getByRole("button", { name: "Review 0 changes" })).toBeDisabled()
-    fireEvent.click(within(dialog).getByRole("button", { name: "Select all" }))
-    fireEvent.click(within(dialog).getByRole("button", { name: "Review 3 changes" }))
-
-    dialog = await screen.findByRole("dialog", { name: "Review 3 changes" })
-    expect(within(dialog).getByText("model-0")).toBeVisible()
-    expect(within(dialog).getByText("model-1")).toBeVisible()
-    expect(within(dialog).getByText("model-2")).toBeVisible()
-    fireEvent.click(within(dialog).getByRole("button", { name: "Apply 3 changes" }))
-
-    dialog = await screen.findByRole("dialog", { name: "Changes applied" })
-    expect(within(dialog).getByRole("status")).toHaveTextContent("3 changes applied")
-    expect(commands.apply).toHaveBeenCalledTimes(3)
+  it("keeps the verification limit visible after an applied fix refreshes", async () => {
+    commands.apply.mockResolvedValue({
+      outcome: "appliedVerificationUnavailable",
+      watchId: "watch-unverified",
+    })
+    const { adapter, session } = setup()
+    fireEvent.click(await screen.findByRole("button", { name: "Fix" }))
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
+    await screen.findByText("Change applied. Automatic verification is unavailable.")
+    vi.mocked(adapter.getTargets).mockResolvedValueOnce({
+      targets: [
+        {
+          ...target,
+          actionId: "action-after-fix",
+          autoFix: { status: "unavailable", reason: "activeWatch" },
+          watch: {
+            watchId: "watch-unverified",
+            origin: "action",
+            lifecycle: "watching",
+            verification: { status: "verificationUnavailable" },
+            savings: { status: "unavailable" },
+          },
+        },
+      ],
+      samples: [],
+      truncated: false,
+    })
+    await act(async () => session.loadTargets("unusedMcpServers", true))
+    expect(screen.queryByRole("button", { name: "Fix" })).not.toBeInTheDocument()
+    expect(screen.getByText("The check cannot verify this change automatically.")).toBeVisible()
   })
+
+  it.each([false, true])(
+    "reviews and applies selected fixes with verification unavailable=%s",
+    async (verificationUnavailable) => {
+      if (verificationUnavailable) {
+        commands.apply.mockResolvedValue({
+          outcome: "appliedVerificationUnavailable",
+          watchId: "watch-unverified",
+        })
+      }
+      const targets = Array.from({ length: 3 }, (_, index) => ({
+        ...target,
+        findingId: `finding-${index}`,
+        actionId: `action-${index}`,
+        display: {
+          ...target.display,
+          resourceIdentity: `model-${index}`,
+          currentValue: `model-${index}`,
+        },
+      }))
+      render(
+        <BurnCheckDetail
+          detector="oldModelUsage"
+          targets={targets}
+          samples={[]}
+          failedSessionCount={3}
+          refresh={vi.fn()}
+        />,
+      )
+
+      const fix = screen.getByRole("button", { name: "Fix" })
+      const prompt = screen.getByRole("button", { name: "Copy fix prompt" })
+      expect(fix.parentElement).not.toHaveClass("mt-3")
+      expect(fix.parentElement?.parentElement).toBe(prompt.parentElement?.parentElement)
+      fireEvent.click(fix)
+      let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
+      expect(within(dialog).getByRole("button", { name: "Check 0 changes" })).toBeDisabled()
+      fireEvent.click(within(dialog).getByRole("button", { name: "Select all" }))
+      fireEvent.click(within(dialog).getByRole("button", { name: "Check 3 changes" }))
+
+      dialog = await screen.findByRole("dialog", { name: "Check 3 changes" })
+      expect(within(dialog).getByText("model-0")).toBeVisible()
+      expect(within(dialog).getByText("model-1")).toBeVisible()
+      expect(within(dialog).getByText("model-2")).toBeVisible()
+      fireEvent.click(within(dialog).getByRole("button", { name: "Apply 3 changes" }))
+
+      dialog = await screen.findByRole("dialog", { name: "Changes applied" })
+      expect(within(dialog).getByRole("status")).toHaveTextContent("3 changes applied")
+      if (verificationUnavailable) {
+        expect(within(dialog).getByRole("status")).toHaveTextContent(
+          "Some applied changes cannot be verified automatically.",
+        )
+        expect(within(dialog).queryByText(/A later session could not confirm/)).toBeNull()
+      }
+      expect(commands.apply).toHaveBeenCalledTimes(3)
+    },
+  )
 
   it("keeps long config values readable in the batch review", async () => {
     const currentValue = "copy-value-with-a-long-config-selector-".repeat(8)
@@ -245,9 +294,9 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Select all" }))
-    fireEvent.click(within(dialog).getByRole("button", { name: "Review 2 changes" }))
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check 2 changes" }))
 
-    dialog = await screen.findByRole("dialog", { name: "Review 2 changes" })
+    dialog = await screen.findByRole("dialog", { name: "Check 2 changes" })
     const values = within(dialog).getAllByText(`${currentValue} → ${proposedValue}`)
     expect(values).toHaveLength(2)
     for (const value of values) {
@@ -280,8 +329,8 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     let dialog = await screen.findByRole("dialog", { name: "Choose changes" })
     fireEvent.click(within(dialog).getByRole("checkbox", { name: /model-1/ }))
-    fireEvent.click(within(dialog).getByRole("button", { name: "Review 1 change" }))
-    dialog = await screen.findByRole("dialog", { name: "Review 1 change" })
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check 1 change" }))
+    dialog = await screen.findByRole("dialog", { name: "Check 1 change" })
     expect(within(dialog).getByText("model-1")).toBeVisible()
     expect(within(dialog).queryByText("model-0")).not.toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply 1 change" }))
@@ -347,7 +396,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled()
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
     await act(async () => undefined)
-    const dialog = screen.getByRole("dialog", { name: "Review change" })
+    const dialog = screen.getByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
     await act(async () => undefined)
     expect(screen.getByRole("button", { name: "Change applied" })).toBeDisabled()
@@ -355,14 +404,14 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     await act(async () => vi.advanceTimersByTime(3_000))
     expect(screen.getByRole("button", { name: "Copy fix prompt" })).toBeEnabled()
     expect(screen.getByRole("button", { name: "Fix" })).toBeEnabled()
-    expect(commands.copyBatch).toHaveBeenCalledWith(["action-fresh"])
+    expect(commands.copyFallback).toHaveBeenCalledWith("oldModelUsage")
     expect(commands.copy).not.toHaveBeenCalled()
     expect(commands.apply).toHaveBeenCalledOnce()
   })
 
   it("shows a busy label while the check prompt is prepared", async () => {
-    const pending = deferred<Awaited<ReturnType<typeof commands.copyBatch>>>()
-    commands.copyBatch.mockReturnValueOnce(pending.promise)
+    const pending = deferred<Awaited<ReturnType<typeof commands.copyFallback>>>()
+    commands.copyFallback.mockReturnValueOnce(pending.promise)
     render(<CheckPromptAction detector="unusedSkills" targets={[target]} refresh={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
@@ -373,7 +422,10 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(commands.writeClipboardText).toHaveBeenCalledWith("Batch backend prompt")
   })
 
-  it("copies again and restarts visible feedback while Copied is shown", async () => {
+  it("prepares fresh content and records each repeat copy while Copied is shown", async () => {
+    commands.copyFallback
+      .mockResolvedValueOnce({ outcome: "promptReady", prompt: "First prompt" })
+      .mockResolvedValueOnce({ outcome: "promptReady", prompt: "Latest prompt" })
     render(<CheckPromptAction detector="oldModelUsage" targets={[target]} refresh={vi.fn()} />)
 
     const copy = await screen.findByRole("button", { name: "Copy fix prompt" })
@@ -382,10 +434,22 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(copied).toBeEnabled()
 
     fireEvent.click(copied)
-    expect(await screen.findByRole("button", { name: "Preparing…" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Preparing…" })).toBeDisabled()
     expect(await screen.findByRole("button", { name: "Copied" })).toBeEnabled()
     expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
-    expect(commands.copyBatch).toHaveBeenCalledOnce()
+    expect(commands.copyFallback).toHaveBeenCalledTimes(2)
+    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(1, "First prompt")
+    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(2, "Latest prompt")
+    expect(
+      commands.noteInteraction.mock.calls.filter(
+        ([event]) => event.kind === "burnCheckPromptPrepared",
+      ),
+    ).toHaveLength(2)
+    expect(
+      commands.noteInteraction.mock.calls.filter(
+        ([event]) => event.kind === "burnCheckPromptCopied",
+      ),
+    ).toHaveLength(2)
   })
 
   it("copies the complete plain-text finding prompt without changing its structure", async () => {
@@ -401,7 +465,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
       "Representative session evidence (inspect only; not configuration edit targets):",
       '- "/sessions/example.jsonl"',
     ].join("\n")
-    commands.copyBatch.mockResolvedValueOnce({ outcome: "promptReady", prompt })
+    commands.copyFallback.mockResolvedValueOnce({ outcome: "promptReady", prompt })
     render(<CheckPromptAction detector="cacheChurn" targets={[target]} refresh={vi.fn()} />)
 
     fireEvent.click(await screen.findByRole("button", { name: "Copy fix prompt" }))
@@ -411,9 +475,9 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     expect(prompt.endsWith('- "/sessions/example.jsonl"')).toBe(true)
   })
 
-  it("retries clipboard failure without creating a second backend action", async () => {
+  it("prepares fresh content after clipboard failure without double-counting preparation", async () => {
     const prompt = "Batch backend prompt\n\nRemediation reference: ABR-shared-group"
-    commands.copyBatch.mockResolvedValueOnce({
+    commands.copyFallback.mockResolvedValueOnce({
       outcome: "promptReady",
       prompt,
     })
@@ -428,10 +492,13 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     )
     fireEvent.click(copy)
     await screen.findByRole("button", { name: "Copied" })
-    expect(commands.copyBatch).toHaveBeenCalledOnce()
+    expect(commands.copyFallback).toHaveBeenCalledTimes(2)
     expect(commands.writeClipboardText).toHaveBeenCalledTimes(2)
     expect(commands.writeClipboardText).toHaveBeenNthCalledWith(1, prompt)
-    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(2, prompt)
+    expect(commands.writeClipboardText).toHaveBeenNthCalledWith(
+      2,
+      "Inspect representative evidence.",
+    )
     expect(screen.queryByText(/clipboard access/i)).not.toBeInTheDocument()
     expect(commands.noteInteraction.mock.calls).toEqual(
       expect.arrayContaining([
@@ -443,7 +510,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
       commands.noteInteraction.mock.calls.filter(
         ([interaction]) => interaction.kind === "burnCheckPromptPrepared",
       ),
-    ).toHaveLength(1)
+    ).toHaveLength(2)
   })
 
   it("records a failed Auto Fix result without claiming success", async () => {
@@ -458,7 +525,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
     await waitFor(() =>
@@ -466,7 +533,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
         "The result could not be confirmed. Check the setting before trying again.",
       ),
     )
-    expect(screen.getByRole("dialog", { name: "Review change" })).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Confirm change" })).toBeVisible()
     await waitFor(() =>
       expect(commands.noteInteraction).toHaveBeenCalledWith({
         kind: "burnCheckAutoFixCompleted",
@@ -499,13 +566,13 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
       />,
     )
     fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     fireEvent.click(within(dialog).getByRole("button", { name: "Apply change" }))
 
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
     fireEvent.keyDown(dialog, { key: "Escape" })
     fireEvent.mouseDown(dialog.parentElement!)
-    expect(screen.getByRole("dialog", { name: "Review change" })).toHaveAttribute(
+    expect(screen.getByRole("dialog", { name: "Confirm change" })).toHaveAttribute(
       "aria-busy",
       "true",
     )
@@ -527,7 +594,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
     )
     const fix = screen.getByRole("button", { name: "Fix" })
     fireEvent.click(fix)
-    const dialog = await screen.findByRole("dialog", { name: "Review change" })
+    const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
     const cancel = within(dialog).getByRole("button", { name: "Cancel" })
     const apply = within(dialog).getByRole("button", { name: "Apply change" })
 
@@ -553,7 +620,7 @@ describe("BurnChecksView actions", { timeout: 15_000 }, () => {
         />,
       )
       fireEvent.click(screen.getByRole("button", { name: "Fix" }))
-      const dialog = await screen.findByRole("dialog", { name: "Review change" })
+      const dialog = await screen.findByRole("dialog", { name: "Confirm change" })
 
       expect(dialog).toHaveClass("bg-surface-card", "text-label")
       expect(dialog.querySelector("dl")).toBeNull()

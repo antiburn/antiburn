@@ -1,0 +1,85 @@
+name: antiburn Claude plugin
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-plugin-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  antiburn-mod:
+    name: antiburn Claude plugin
+    runs-on: ubuntu-24.04
+    env:
+      CLAUDE_CODE_VERSION: "2.1.303"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Claude Code
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Verify deterministic packaging
+        run: |
+          node --test scripts/assemble-claude-mod.test.mjs
+          node --test packages/antiburn-plugin-core/test/*.test.mjs
+          node scripts/assemble-antiburn-core-plugin.mjs
+          node scripts/assemble-antiburn-core-plugin.mjs --verify
+          node scripts/assemble-claude-mod.mjs --check
+
+      - name: Validate the release and marketplace
+        shell: bash
+        run: |
+          set -euo pipefail
+          claude plugin validate --strict --json .claude-plugin/marketplace.json > marketplace-validation.json
+          node scripts/assemble-claude-mod.mjs --validate-marketplace-log marketplace-validation.json
+          claude plugin validate --strict --json plugins/antiburn > validate.json
+          node scripts/assemble-claude-mod.mjs --validate-log validate.json
+
+      - name: Test the exact release artifact
+        run: |
+          node scripts/assemble-claude-mod.mjs --test
+          claude plugin test .agent-artifacts/claude-mod/test
+
+      - name: Verify development regression coverage
+        run: |
+          node scripts/assemble-claude-mod.mjs --dev
+          claude plugin validate --strict --json .agent-artifacts/claude-mod/dev > dev-marketplace-validation.json
+          claude plugin validate --strict --json .agent-artifacts/claude-mod/dev/plugins/antiburn-dev > dev-plugin-validation.json
+          node scripts/assemble-claude-mod.mjs --dev-test
+          claude plugin test .agent-artifacts/claude-mod/dev-test/plugins/antiburn-dev
+
+      - name: Check isolated local plugin lifecycle
+        run: node scripts/check-claude-mod-lifecycle.mjs
+
+  usage-layout:
+    name: Claude Desktop usage geometry
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: corepack enable
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @antiburn/desktop exec playwright install --with-deps chromium
+      - run: node scripts/check-claude-usage-layout.mjs

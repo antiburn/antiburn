@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retry-system-one-connection-operation"
+description = "Enables the retry_system_one_connection_operation command without any pre-configured scope."
+commands.allow = ["retry_system_one_connection_operation"]
+
+[[permission]]
+identifier = "deny-retry-system-one-connection-operation"
+description = "Denies the retry_system_one_connection_operation command without any pre-configured scope."
+commands.deny = ["retry_system_one_connection_operation"]

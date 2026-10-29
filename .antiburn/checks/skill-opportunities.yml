@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=../../docs/burn-check/schemas/burn-check.schema.json
+# This is inventory-level advice, not a specific skill pick.
+name: Skill opportunities
+description: Suggest whether supplied skill descriptions offer a useful next step.
+on:
+  tool_result:
+  window:
+    size: 20
+    min: 3
+  cooldown: 120s
+decisions:
+  review:
+    input:
+      requests: ${{ session.requests }}
+      request_history_complete: ${{ session.requests_complete }}
+      source_coverage: ${{ session.source_coverage }}
+      activity: ${{ window.messages }}
+      # Whole scopes keep unavailable arrays distinct from known empty arrays.
+      current_global_scope: ${{ global }}
+      current_repo_scope: ${{ repo }}
+    # Preserve descriptions, inventory limits, task context, and arguments.
+    fit:
+      "activity[*].tool.result.content": truncate
+    output:
+      opportunity:
+        type: choice
+        question: >-
+          Does an observed configured skill description identify a concrete next step that
+          could help with the user's task and the selected results, beyond the
+          steps already shown? Generic advice is not added guidance. Judge
+          usefulness now, not whether a skill was available or used earlier.
+          Read only skills arrays and their limits in the current scopes; ignore
+          unrelated instruction entries. These are observed global and repository
+          definitions, not proof of effective session loading. Missing arrays mean
+          unavailable, not empty. A known description remains usable beside an
+          unsupported entry or unavailable scope. Empty descriptions supply no
+          guidance; do not infer their bodies. Duplicate names remain separate
+          definitions with distinct paths. Paths identify files, not supplied bodies. Choose
+          uncertain when a description or the selected task context does not
+          support a clear answer. A partial history, source gap, or fitted omission
+          can hide steps already taken or task constraints; do not infer omitted
+          text or historical non-use. Judge only whether the retained description
+          adds a useful next step beyond the work shown.
+        criteria:
+          actionable_help: A supplied description identifies a useful next step beyond those shown.
+          already_adequate_or_unrelated: The supplied skills add no useful step for this task.
+          uncertain: The selected descriptions or task context do not support a clear answer.
+actions:
+  - type: status
+    if: decisions.review.outputs.opportunity == 'actionable_help' && decisions.review.details.opportunity.probabilities.actionable_help >= 0.95
+    input:
+      result: failure
+      message: Observed skill descriptions may offer a useful next step. Review the global and repository skills arrays in this assessment's saved input; this does not show past availability or non-use.
+  - type: status
+    if: "!(decisions.review.outputs.opportunity == 'actionable_help' && decisions.review.details.opportunity.probabilities.actionable_help >= 0.95)"
+    input:
+      result: success

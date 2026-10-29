@@ -547,7 +547,7 @@ pub fn configure_command_for_environment(
                 distribution,
                 "--user",
                 user,
-                "--",
+                "--exec",
                 program,
             ]);
             if let Some(repo) = repo {

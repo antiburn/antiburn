@@ -56,28 +56,7 @@ pub(crate) fn read_checked(
     path: &Path,
     trusted_root: &Path,
 ) -> Result<CheckedFile, ConfigUnavailableReason> {
-    reject_symlink_ancestors(path, trusted_root)?;
-    let metadata = fs::symlink_metadata(path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => ConfigUnavailableReason::MissingConfig,
-        std::io::ErrorKind::PermissionDenied => ConfigUnavailableReason::PermissionDenied,
-        _ => ConfigUnavailableReason::UnsafePath,
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(ConfigUnavailableReason::SymlinkTarget);
-    }
-    if !metadata.is_file() {
-        return Err(ConfigUnavailableReason::NonRegularFile);
-    }
-    if metadata.len() > MAX_CONFIG_BYTES {
-        return Err(ConfigUnavailableReason::FileTooLarge);
-    }
-    let canonical = path
-        .canonicalize()
-        .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
-    if !canonical.starts_with(trusted_root) {
-        return Err(ConfigUnavailableReason::UnsafePath);
-    }
-    check_owner(&metadata, path, trusted_root)?;
+    let metadata = checked_metadata(path, trusted_root)?;
     let bytes = fs::read(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::PermissionDenied {
             ConfigUnavailableReason::PermissionDenied
@@ -101,6 +80,35 @@ pub(crate) fn read_checked(
         #[cfg(unix)]
         ownership: file_ownership(&metadata),
     })
+}
+
+pub(super) fn checked_metadata(
+    path: &Path,
+    trusted_root: &Path,
+) -> Result<fs::Metadata, ConfigUnavailableReason> {
+    reject_symlink_ancestors(path, trusted_root)?;
+    let metadata = fs::symlink_metadata(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => ConfigUnavailableReason::MissingConfig,
+        std::io::ErrorKind::PermissionDenied => ConfigUnavailableReason::PermissionDenied,
+        _ => ConfigUnavailableReason::UnsafePath,
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(ConfigUnavailableReason::SymlinkTarget);
+    }
+    if !metadata.is_file() {
+        return Err(ConfigUnavailableReason::NonRegularFile);
+    }
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err(ConfigUnavailableReason::FileTooLarge);
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
+    if !canonical.starts_with(trusted_root) {
+        return Err(ConfigUnavailableReason::UnsafePath);
+    }
+    check_owner(&metadata, path, trusted_root)?;
+    Ok(metadata)
 }
 
 fn reject_symlink_ancestors(

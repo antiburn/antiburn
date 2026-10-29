@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{
-    capabilities, json_count, limit_as_usize, valid_probability, validate_probability_sum,
+    NATIVE_MODEL_ALIAS, capabilities, json_count, limit_as_usize, valid_probability,
+    valid_response_model, validate_probability_sum,
 };
 
 /// Sanitized failures shared by request preparation, TypeSafe transport, and
@@ -154,81 +155,6 @@ pub enum JevQuestion {
     },
 }
 
-impl JevQuestion {
-    pub(super) fn with_context_paths(
-        self,
-        path: &str,
-        has_shared_context: bool,
-        compact: bool,
-    ) -> Self {
-        match self {
-            Self::Choice {
-                instructions,
-                criteria,
-            } => Self::Choice {
-                instructions: contextual_instructions(
-                    instructions,
-                    path,
-                    has_shared_context,
-                    compact,
-                ),
-                criteria,
-            },
-            Self::Noul {
-                instructions,
-                criteria,
-            } => Self::Noul {
-                instructions: contextual_instructions(
-                    instructions,
-                    path,
-                    has_shared_context,
-                    compact,
-                ),
-                criteria,
-            },
-            Self::Score {
-                instructions,
-                criteria,
-            } => Self::Score {
-                instructions: contextual_instructions(
-                    instructions,
-                    path,
-                    has_shared_context,
-                    compact,
-                ),
-                criteria,
-            },
-        }
-    }
-}
-
-fn contextual_instructions(
-    instructions: Value,
-    path: &str,
-    has_shared_context: bool,
-    compact: bool,
-) -> Value {
-    if compact {
-        return if has_shared_context {
-            json!({"question": instructions, "evidence": path, "shared_evidence": "shared_context"})
-        } else {
-            json!({"question": instructions, "evidence": path})
-        };
-    }
-    if has_shared_context {
-        json!({
-            "question": instructions,
-            "context_path": format!("Use the evidence at `{path}`."),
-            "shared_context_path": "Use the complete shared context at `shared_context`.",
-        })
-    } else {
-        json!({
-            "question": instructions,
-            "context_path": format!("Use the evidence at `{path}`."),
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JevResponse {
     pub model: String,
@@ -237,7 +163,7 @@ pub struct JevResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 pub enum JevAnswer {
     Choice {
         choice: String,
@@ -261,10 +187,20 @@ pub struct JevUsage {
     pub output_tokens: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JevResponseObservation {
+    pub usage: JevUsage,
+    pub served_model: Option<String>,
+}
+
 pub fn validate_jev_response(response: &JevResponse, request: &JevRequest) -> Result<(), JevError> {
     if response.model != request.model {
         return Err(JevError::ResponseModelMismatch);
     }
+    validate_jev_answers(response, request)
+}
+
+fn validate_jev_answers(response: &JevResponse, request: &JevRequest) -> Result<(), JevError> {
     if response.answers.len() != request.questions.len() {
         return Err(JevError::ResponseAnswerCountMismatch);
     }
@@ -309,16 +245,32 @@ pub fn validate_jev_response(response: &JevResponse, request: &JevRequest) -> Re
                 },
             ) => {
                 if !score.is_finite()
+                    || criteria.is_empty()
+                    || *score < 0.0
+                    || *score > criteria.len().saturating_sub(1) as f64
                     || !valid_probability(*confidence)
                     || legend.len() != criteria.len()
                     || probabilities.len() != criteria.len()
+                    || criteria.iter().enumerate().any(|(index, criterion)| {
+                        let key = index.to_string();
+                        !probabilities.contains_key(&key)
+                            || !legend.get(&key).is_some_and(|text| match criterion {
+                                Value::String(expected) => text == expected,
+                                _ => {
+                                    let expected = criterion.to_string();
+                                    text == &expected
+                                }
+                            })
+                    })
                     || probabilities
                         .values()
                         .any(|value| !valid_probability(*value))
                 {
                     return Err(JevError::InvalidScoreDistribution);
                 }
-                validate_probability_sum(probabilities.values().copied())?;
+                validate_probability_sum(
+                    (0..criteria.len()).map(|index| probabilities[&index.to_string()]),
+                )?;
             }
             _ => return Err(JevError::ResponseAnswerTypeMismatch),
         }
@@ -331,22 +283,41 @@ pub fn validate_jev_response_with_capabilities(
     request: &JevRequest,
     capabilities: &capabilities::ModelCapabilities,
 ) -> Result<(), JevError> {
+    validate_response_capabilities(request, capabilities)?;
+    validate_jev_response(response, request)
+}
+
+/// Accept a safe served identifier only for an explicit native alias request.
+pub fn validate_native_jev_response_with_capabilities(
+    response: &JevResponse,
+    request: &JevRequest,
+    capabilities: &capabilities::ModelCapabilities,
+) -> Result<(), JevError> {
+    validate_response_capabilities(request, capabilities)?;
+    if request.model != NATIVE_MODEL_ALIAS {
+        return validate_jev_response(response, request);
+    }
+    if !valid_response_model(&response.model) {
+        return Err(JevError::ResponseModelMismatch);
+    }
+    validate_jev_answers(response, request)
+}
+
+fn validate_response_capabilities(
+    request: &JevRequest,
+    capabilities: &capabilities::ModelCapabilities,
+) -> Result<(), JevError> {
     if request.model != capabilities.model
         || u32::try_from(request.questions.len()).unwrap_or(u32::MAX)
             > capabilities.questions_per_request.value.unwrap_or_default()
-        || request.questions.values().any(|question| {
-            let count = match question {
-                JevQuestion::Choice { criteria, .. } => criteria.len(),
-                JevQuestion::Score { criteria, .. } => criteria.len(),
-                JevQuestion::Noul { .. } => 0,
-            };
-            u32::try_from(count).unwrap_or(u32::MAX)
-                > capabilities.criteria_per_question.value.unwrap_or_default()
-        })
+        || request
+            .questions
+            .values()
+            .any(|question| !criteria_count_fits(question, capabilities))
     {
         return Err(JevError::QuestionLimitExceeded);
     }
-    validate_jev_response(response, request)
+    Ok(())
 }
 
 /// Use the distribution to select an option when the returned choice disagrees.
@@ -371,6 +342,13 @@ pub fn validate_jev_request(request: &JevRequest) -> Result<usize, JevError> {
     validate_jev_request_with_capabilities(request, &capabilities::ModelCapabilities::jev_default())
 }
 
+/// Estimate the complete serialized request without the rendering reserve.
+pub fn estimate_jev_request_tokens(request: &JevRequest) -> Result<u64, JevError> {
+    json_count(request, usize::MAX)
+        .map(|measured| measured.estimate.tokens())
+        .map_err(|_| JevError::RequestSerialization)
+}
+
 pub fn validate_jev_request_with_capabilities(
     request: &JevRequest,
     capabilities: &capabilities::ModelCapabilities,
@@ -386,17 +364,14 @@ pub fn validate_jev_request_with_capabilities(
     {
         return Err(JevError::QuestionLimitExceeded);
     }
-    if request.questions.values().any(|question| {
-        let count = match question {
-            JevQuestion::Choice { criteria, .. } => criteria.len(),
-            JevQuestion::Score { criteria, .. } => criteria.len(),
-            JevQuestion::Noul { .. } => 0,
-        };
-        u32::try_from(count).unwrap_or(u32::MAX)
-            > capabilities.criteria_per_question.value.unwrap_or_default()
-    }) {
+    if request
+        .questions
+        .values()
+        .any(|question| !criteria_count_fits(question, capabilities))
+    {
         return Err(JevError::QuestionLimitExceeded);
     }
+    validate_request_content(request)?;
     let measured = json_count(request, usize::MAX).map_err(|_| JevError::RequestSerialization)?;
     let bytes = measured.bytes;
     if bytes > limit_as_usize(capabilities.request_body_bytes.value).unwrap_or_default() {
@@ -454,8 +429,94 @@ pub fn validate_jev_request_with_capabilities(
     Ok(bytes)
 }
 
+fn criteria_count_fits(
+    question: &JevQuestion,
+    capabilities: &capabilities::ModelCapabilities,
+) -> bool {
+    let (count, output) = match question {
+        JevQuestion::Choice { criteria, .. } => (criteria.len(), capabilities.output.choice),
+        JevQuestion::Score { criteria, .. } => (criteria.len(), capabilities.output.score),
+        JevQuestion::Noul { .. } => return true,
+    };
+    let count = u32::try_from(count).unwrap_or(u32::MAX);
+    let minimum = output.map_or(1, |output| output.minimum_criteria);
+    let maximum = capabilities.criteria_per_question.value.unwrap_or_default();
+    let maximum = output.map_or(maximum, |output| maximum.min(output.maximum_criteria));
+    (minimum..=maximum).contains(&count)
+}
+
+fn validate_request_content(request: &JevRequest) -> Result<(), JevError> {
+    let content = |value: &Value| match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Object(_) | Value::Array(_) => true,
+        _ => false,
+    };
+    if !content(&request.state) {
+        return Err(JevError::InvalidRequestSchema);
+    }
+    for (id, question) in &request.questions {
+        if id.trim().is_empty() {
+            return Err(JevError::InvalidRequestSchema);
+        }
+        let instructions = match question {
+            JevQuestion::Choice {
+                instructions,
+                criteria,
+            } => {
+                if criteria.iter().any(|(key, value)| {
+                    key.trim().is_empty()
+                        || !matches!(
+                            value,
+                            Value::Null | Value::String(_) | Value::Object(_) | Value::Array(_)
+                        )
+                }) {
+                    return Err(JevError::InvalidRequestSchema);
+                }
+                instructions
+            }
+            JevQuestion::Score {
+                instructions,
+                criteria,
+            } => {
+                if criteria.iter().any(|value| {
+                    !matches!(value, Value::String(_) | Value::Object(_) | Value::Array(_))
+                }) {
+                    return Err(JevError::InvalidRequestSchema);
+                }
+                instructions
+            }
+            JevQuestion::Noul {
+                instructions,
+                criteria,
+            } => {
+                if let Some(criteria) = criteria
+                    && !criteria.as_object().is_some_and(|criteria| {
+                        criteria.iter().all(|(key, value)| {
+                            matches!(key.as_str(), "false" | "true")
+                                && matches!(
+                                    value,
+                                    Value::Null
+                                        | Value::String(_)
+                                        | Value::Object(_)
+                                        | Value::Array(_)
+                                )
+                        })
+                    })
+                {
+                    return Err(JevError::InvalidRequestSchema);
+                }
+                instructions
+            }
+        };
+        if !instructions.is_null() && !content(instructions) {
+            return Err(JevError::InvalidRequestSchema);
+        }
+    }
+    Ok(())
+}
+
 /// Estimate the largest pinned Ollama payload before the chat/scoring reserve.
-/// Planners must use the packed request so that evidence paths and wrappers are counted.
+/// Use the final request so that all evidence and request wrappers count.
 pub fn estimate_jev_rendered_question_tokens(
     request: &JevRequest,
     capabilities: &capabilities::ModelCapabilities,

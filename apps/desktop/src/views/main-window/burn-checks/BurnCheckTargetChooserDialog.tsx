@@ -109,7 +109,7 @@ function selectionInstruction(targets: BurnCheckTargetPayload[]): string {
     !resourceKind ||
     !targets.every((target) => target.display.resourceKind === resourceKind)
   ) {
-    return "Select the config changes to review."
+    return "Select the config changes to check."
   }
   switch (resourceKind) {
     case "builtInTool":
@@ -119,7 +119,7 @@ function selectionInstruction(targets: BurnCheckTargetPayload[]): string {
     case "skill":
       return "Select the skills to disable."
     default:
-      return "Select the config changes to review."
+      return "Select the config changes to check."
   }
 }
 
@@ -130,9 +130,9 @@ function preparationMessage(outcome: PrepareAutoFixBurnCheckTargetOutcome | null
       return ""
     case "stale":
     case "expired":
-      return "The findings changed. Review the current targets and try again."
+      return "The findings changed. Check the current targets and try again."
     case "conflict":
-      return "A setting changed during this review. Check the current settings."
+      return "A setting changed during this check. Check the current settings."
     case "unavailable":
       return "One or more selected changes could not be checked against the current settings."
   }
@@ -280,7 +280,7 @@ export function BurnCheckTargetChooserDialog({
     setStatus(
       failed
         ? applyMessage(failed, applied, prepared.length)
-        : `${applied} ${pluralize(applied, "change", "changes")} applied.${verificationUnavailable ? " A later session could not confirm the results." : ""}`,
+        : `${applied} ${pluralize(applied, "change", "changes")} applied.${verificationUnavailable ? " Some applied changes cannot be verified automatically." : ""}`,
     )
     setStep("result")
     refresh()
@@ -293,7 +293,7 @@ export function BurnCheckTargetChooserDialog({
         ? appliedCount === prepared.length
           ? "Changes applied"
           : "Some changes need attention"
-        : `Review ${prepared.length} ${pluralize(prepared.length, "change", "changes")}`
+        : `Check ${prepared.length} ${pluralize(prepared.length, "change", "changes")}`
 
   return createPortal(
     <div
@@ -473,7 +473,7 @@ export function BurnCheckTargetChooserDialog({
               >
                 {step === "preparing"
                   ? "Preparing…"
-                  : `Review ${selectedTargets.length} ${pluralize(selectedTargets.length, "change", "changes")}`}
+                  : `Check ${selectedTargets.length} ${pluralize(selectedTargets.length, "change", "changes")}`}
               </PushButton>
             </>
           ) : step === "review" || step === "applying" ? (

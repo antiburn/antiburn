@@ -193,7 +193,7 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
       ...report,
       categories: [
         {
-          id: "ignoredInstructions",
+          id: "sessionsOverDepth",
           lifecycle: "passing",
           finding: 0,
           clean: 0,
@@ -204,8 +204,8 @@ describe("BurnChecksView layout", { timeout: 15_000 }, () => {
     })
 
     const message = await screen.findByText("No issue was found in 0 complete sessions.")
-    expect(message.parentElement?.querySelector("svg")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Ignored instructions, Passed" })).toBeVisible()
+    expect(message.closest(".rounded-control")?.querySelector("svg")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Session overdepth, Passed" })).toBeVisible()
   })
 
   it("counts check types including snoozed and unassessed checks, not session results", () => {

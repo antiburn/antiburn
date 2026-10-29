@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags};
 
-#[cfg(not(windows))]
-use super::json::edit_top_level_string;
 use super::json::parse;
 use super::{OperationSelector, Target, VendorConfig, VendorPolicy};
 use crate::agent_config::filesystem::{path_entry_exists, read_checked};
@@ -226,6 +224,13 @@ impl VendorConfig for OpenCode {
         bytes: &[u8],
         operation: &OperationSelector,
     ) -> Result<Option<String>, ConfigUnavailableReason> {
+        if let Some(value) =
+            crate::agent_config::opencode_current::write::read_value(bytes, operation)?
+        {
+            return serde_json::to_string(&value)
+                .map(Some)
+                .map_err(|_| ConfigUnavailableReason::MalformedConfig);
+        }
         match operation {
             OperationSelector::JsonKey("model") => model(bytes),
             OperationSelector::JsonPath(path)
@@ -257,52 +262,11 @@ impl VendorConfig for OpenCode {
     #[cfg(not(windows))]
     fn edit_value(
         &self,
-        bytes: &[u8],
-        operation: &OperationSelector,
-        proposed: &str,
+        _: &[u8],
+        _: &OperationSelector,
+        _: &str,
     ) -> Result<Vec<u8>, ConfigUnavailableReason> {
-        match operation {
-            OperationSelector::JsonKey("model") => edit_top_level_string(bytes, "model", proposed),
-            OperationSelector::JsonPath(path)
-                if path.as_slice() == ["compaction", "auto"]
-                    || path.as_slice() == ["compaction", "reserved"] =>
-            {
-                let mut document = parse(bytes)?;
-                let compaction = document
-                    .get_mut("compaction")
-                    .and_then(serde_json::Value::as_object_mut)
-                    .ok_or(ConfigUnavailableReason::MalformedConfig)?;
-                let value = if path[1] == "auto" {
-                    serde_json::Value::Bool(
-                        proposed
-                            .parse()
-                            .map_err(|_| ConfigUnavailableReason::InvalidTarget)?,
-                    )
-                } else {
-                    serde_json::Value::Number(
-                        proposed
-                            .parse::<u64>()
-                            .map_err(|_| ConfigUnavailableReason::InvalidTarget)?
-                            .into(),
-                    )
-                };
-                if !compaction.contains_key(path[1]) {
-                    return Err(ConfigUnavailableReason::MissingTarget);
-                }
-                compaction.insert(path[1].into(), value);
-                let mut output = serde_json::to_vec_pretty(&document)
-                    .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
-                output.push(b'\n');
-                Ok(output)
-            }
-            OperationSelector::NamedMarkdownModel(_) => edit_markdown_model(bytes, proposed),
-            OperationSelector::NamedJsonMcpServer(name) => edit_mcp_value(bytes, name),
-            OperationSelector::NamedOpenCodeBuiltInTool(name) => {
-                edit_opencode_built_in_tool(bytes, name)
-            }
-            OperationSelector::NamedOpenCodeSkill(name) => edit_opencode_skill(bytes, name),
-            _ => Err(ConfigUnavailableReason::UnsupportedSetting),
-        }
+        Err(ConfigUnavailableReason::RuntimeOverride)
     }
 }
 
@@ -480,6 +444,20 @@ impl OpenCode {
 
 fn mcp_value(bytes: &[u8], name: &str) -> Result<Option<String>, ConfigUnavailableReason> {
     let document = parse(bytes)?;
+    if document
+        .get("mcp")
+        .and_then(|mcp| mcp.get("servers"))
+        .and_then(serde_json::Value::as_object)
+        .filter(|servers| {
+            !servers
+                .get("type")
+                .is_some_and(serde_json::Value::is_string)
+        })
+        .and_then(|servers| servers.get(name))
+        .is_some()
+    {
+        return Err(ConfigUnavailableReason::InvalidPrecedence);
+    }
     let Some(server) = document
         .get("mcp")
         .and_then(serde_json::Value::as_object)
@@ -543,6 +521,15 @@ fn opencode_skill_value(
     name: &str,
 ) -> Result<Option<String>, ConfigUnavailableReason> {
     let document = parse(bytes)?;
+    reject_agent_overrides(&document)?;
+    if document.get("policies").is_some()
+        || document
+            .get("experimental")
+            .and_then(|value| value.get("policies"))
+            .is_some()
+    {
+        return Err(ConfigUnavailableReason::InvalidPrecedence);
+    }
     let Some(rules) = document.get("permissions") else {
         return Ok(None);
     };
@@ -594,78 +581,6 @@ fn opencode_v2_action(name: &str) -> Result<&str, ConfigUnavailableReason> {
     }
 }
 
-#[cfg(not(windows))]
-fn edit_opencode_built_in_tool(
-    bytes: &[u8],
-    name: &str,
-) -> Result<Vec<u8>, ConfigUnavailableReason> {
-    let action = opencode_v2_action(name)?;
-    let mut document = parse(bytes)?;
-    let rules = document
-        .get_mut("permissions")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or(ConfigUnavailableReason::MissingTarget)?;
-    if rules.iter().any(|rule| !is_v2_permission_rule(rule)) {
-        return Err(ConfigUnavailableReason::MalformedConfig);
-    }
-    if rules.iter().any(|rule| {
-        rule.get("action").and_then(serde_json::Value::as_str) == Some(action)
-            && rule.get("resource").and_then(serde_json::Value::as_str) == Some("*")
-            && rule.get("effect").and_then(serde_json::Value::as_str) == Some("deny")
-    }) {
-        return Err(ConfigUnavailableReason::CurrentValueMismatch);
-    }
-    rules.push(serde_json::json!({ "action": action, "resource": "*", "effect": "deny" }));
-    let mut output = serde_json::to_vec_pretty(&document)
-        .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
-    output.push(b'\n');
-    Ok(output)
-}
-
-#[cfg(not(windows))]
-fn edit_opencode_skill(bytes: &[u8], name: &str) -> Result<Vec<u8>, ConfigUnavailableReason> {
-    let mut document = parse(bytes)?;
-    let rules = document
-        .get_mut("permissions")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or(ConfigUnavailableReason::MissingTarget)?;
-    if rules.iter().any(|rule| !is_v2_permission_rule(rule)) {
-        return Err(ConfigUnavailableReason::MalformedConfig);
-    }
-    if rules.iter().any(|rule| {
-        rule.get("action").and_then(serde_json::Value::as_str) == Some("skill")
-            && rule.get("resource").and_then(serde_json::Value::as_str) == Some(name)
-            && rule.get("effect").and_then(serde_json::Value::as_str) == Some("deny")
-    }) {
-        return Err(ConfigUnavailableReason::CurrentValueMismatch);
-    }
-    rules.push(serde_json::json!({ "action": "skill", "resource": name, "effect": "deny" }));
-    let mut output = serde_json::to_vec_pretty(&document)
-        .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
-    output.push(b'\n');
-    Ok(output)
-}
-
-#[cfg(not(windows))]
-fn edit_mcp_value(bytes: &[u8], name: &str) -> Result<Vec<u8>, ConfigUnavailableReason> {
-    let mut document = parse(bytes)?;
-    let enabled = document
-        .get_mut("mcp")
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|servers| servers.get_mut(name))
-        .and_then(serde_json::Value::as_object_mut)
-        .and_then(|server| server.get_mut("enabled"))
-        .ok_or(ConfigUnavailableReason::MissingTarget)?;
-    if enabled.as_bool() != Some(true) {
-        return Err(ConfigUnavailableReason::CurrentValueMismatch);
-    }
-    *enabled = serde_json::Value::Bool(false);
-    let mut output = serde_json::to_vec_pretty(&document)
-        .map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
-    output.push(b'\n');
-    Ok(output)
-}
-
 fn markdown_model(bytes: &[u8]) -> Result<Option<String>, ConfigUnavailableReason> {
     let text = std::str::from_utf8(bytes).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
     let Some(frontmatter) = text.strip_prefix("---\n").and_then(|text| {
@@ -685,37 +600,6 @@ fn markdown_model(bytes: &[u8]) -> Result<Option<String>, ConfigUnavailableReaso
         [value] if !value.is_empty() => Ok(Some(value.clone())),
         _ => Err(ConfigUnavailableReason::DuplicateDefinition),
     }
-}
-
-#[cfg(not(windows))]
-fn edit_markdown_model(bytes: &[u8], proposed: &str) -> Result<Vec<u8>, ConfigUnavailableReason> {
-    let text = std::str::from_utf8(bytes).map_err(|_| ConfigUnavailableReason::MalformedConfig)?;
-    let Some((frontmatter, body)) = text
-        .strip_prefix("---\n")
-        .and_then(|text| text.split_once("\n---\n"))
-    else {
-        return Err(ConfigUnavailableReason::MalformedConfig);
-    };
-    let mut found = false;
-    let frontmatter = frontmatter
-        .lines()
-        .map(|line| {
-            if line
-                .split_once(':')
-                .is_some_and(|(key, _)| key.trim() == "model")
-            {
-                found = true;
-                format!("model: {proposed}")
-            } else {
-                line.to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !found {
-        return Err(ConfigUnavailableReason::MissingTarget);
-    }
-    Ok(format!("---\n{frontmatter}\n---\n{body}").into_bytes())
 }
 
 fn merge_directory_config(
@@ -783,6 +667,10 @@ fn operation_for(
     else {
         return Ok(None);
     };
+    if compaction.contains_key("buffer") || compaction.contains_key("keep") {
+        // A native buffer is not a depth limit.
+        return Err(ConfigUnavailableReason::InvalidPrecedence);
+    }
     match compaction.get("auto") {
         Some(serde_json::Value::Bool(false)) => Ok(Some(OperationSelector::JsonPath(vec![
             "compaction",
@@ -820,7 +708,10 @@ fn model(bytes: &[u8]) -> Result<Option<String>, ConfigUnavailableReason> {
 }
 
 fn reject_agent_overrides(document: &serde_json::Value) -> Result<(), ConfigUnavailableReason> {
-    if document.get("agent").is_some() || document.get("mode").is_some() {
+    if ["agent", "mode", "agents"]
+        .iter()
+        .any(|key| document.get(key).is_some())
+    {
         Err(ConfigUnavailableReason::InvalidPrecedence)
     } else {
         Ok(())

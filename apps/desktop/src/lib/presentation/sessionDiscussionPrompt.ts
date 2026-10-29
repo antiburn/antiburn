@@ -88,8 +88,6 @@ export function sessionDiscussionPrompt({
     const badge = hygiene.badges.find((item) => item.id === check.id)
     if (!badge) {
       otherChecks.push(`- Not assessed — ${check.name} (no result available).`)
-    } else if (badge.status === "noCandidates") {
-      otherChecks.push(`- Nothing to assess — ${check.name}.`)
     } else if (badge.status === "notAssessed") {
       const reason = badge.notAssessedReason
         ? notAssessedReasonLabel(badge.notAssessedReason)
@@ -97,10 +95,6 @@ export function sessionDiscussionPrompt({
       otherChecks.push(`- Not assessed — ${check.name} (${reason}).`)
     } else if (badge.status === "clean") {
       otherChecks.push(`- Passed — ${check.name}.`)
-    } else if (badge.status === "checking" || badge.status === "couldntCheck") {
-      const status = badge.status === "checking" ? "Checking" : "Couldn't check"
-      const reason = badge.checkReason ? ` (${text(badge.checkReason)})` : ""
-      otherChecks.push(`- ${status} — ${check.name}${reason}.`)
     } else {
       const details = sessionHygieneDocumentation(check).findingDetails
       findings.push(

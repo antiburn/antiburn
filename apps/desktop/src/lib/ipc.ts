@@ -353,20 +353,8 @@ export type Interaction =
   | {
       kind: "burnCheckPromptPrepared"
       outcome: PromptPreparationAnalyticsOutcome
-      check?: SmartCheck
     }
-  | { kind: "burnCheckPromptCopied"; check?: SmartCheck }
-  | {
-      kind: "smartCheckObserved"
-      check: SmartCheck
-      observation:
-        "finding_visible" | "evidence_available" | "evidence_unavailable" | "evidence_failed"
-    }
-  | {
-      kind: "ignoredInstructionObserved"
-      stage: "finding" | "evidence" | "prompt"
-      outcome: "visible" | "available" | "unavailable" | "failed" | "copied"
-    }
+  | { kind: "burnCheckPromptCopied" }
   | {
       kind: "burnCheckOutcomeObserved"
       outcome: "verified" | "recurred"
@@ -403,24 +391,6 @@ export type Interaction =
       label: StepSettingsAnalyticsLabel
       detail: StepSettingsDetail
     }
-
-export type SmartCheck =
-  "ignored_instructions" | "scope_creep" | "over_exploring" | "skill_opportunities"
-
-export function smartCheckForDetector(detector: string): SmartCheck | undefined {
-  switch (detector) {
-    case "ignoredInstructions":
-      return "ignored_instructions"
-    case "scopeCreep":
-      return "scope_creep"
-    case "overExploring":
-      return "over_exploring"
-    case "skillOpportunities":
-      return "skill_opportunities"
-    default:
-      return undefined
-  }
-}
 
 export type Surface =
   | "agents"
@@ -487,7 +457,8 @@ export type SessionFilterAction =
 /** A fixed step in the first-run Overview's funnel. */
 type FirstRunStep = "started" | "found" | "read" | "checked" | "result"
 /** Which result the first-run Overview showed. Only with `FirstRunStep` `"result"`. */
-export type FirstRunResult = "empty" | "clean" | "fixes_found" | "checks_disabled"
+export type FirstRunResult =
+  "empty" | "clean" | "fixes_found" | "checks_disabled" | "not_assessed"
 /** A deliberate action the first-run Overview can report. */
 type FirstRunActionKind =
   | "folder_access_requested"

@@ -486,10 +486,14 @@ fn analysis_from_rows_returns_none_before_anything_was_ever_published() {
 fn analysis_from_rows_serves_a_pass_published_unsupported() {
     let store = store();
     let (mut record, claim) = claimed_projection(&store, "s1", 100, 60);
-    // A row whose own `source_key` names the parent session, so
-    // `metrics_by_source` groups it under `record.key.session_id` the way
-    // `analysis_from_rows` expects for the parent entry.
-    record.source_summaries_json = Some("{}".into());
+    // Replay requires the parent summary that the worker publishes with its rows.
+    record.source_summaries_json = Some(
+        serde_json::to_string(&std::collections::BTreeMap::from([(
+            record.key.session_id.clone(),
+            antiburn_local::analysis::SessionSummary::default(),
+        )]))
+        .unwrap(),
+    );
     let key = record.key.clone();
     let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     writer.write_turn_rows(&[turn_row(0)]).unwrap();
@@ -603,6 +607,9 @@ async fn a_terminal_failure_clears_an_outdated_placeholder_payload() {
                 evidence: None,
                 outcome: crate::analysis::PassOutcome::SourceMissing,
                 source_outcomes: Vec::new(),
+                tool_result_observations: Vec::new(),
+                native_tool_result_source_format: None,
+                tool_result_observations_complete: false,
             }
         }) as crate::insights_worker::PassFuture
     };

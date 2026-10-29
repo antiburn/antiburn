@@ -194,6 +194,97 @@ fn log(agent: AgentKind, path: std::path::PathBuf, updated_at: i64) -> SessionLo
 }
 
 #[test]
+fn descriptions_sort_newest_sessions_first_with_stable_ties() {
+    let mut logs = vec![
+        log(AgentKind::Claude, std::path::PathBuf::from("/old"), 10),
+        log(AgentKind::OpenCode, std::path::PathBuf::from("/new"), 20),
+        log(AgentKind::Codex, std::path::PathBuf::from("/tie-b"), 20),
+        log(AgentKind::Codex, std::path::PathBuf::from("/tie-a"), 20),
+    ];
+
+    sort_logs_newest_first(&mut logs);
+
+    assert_eq!(logs[0].source_label(), "/tie-a");
+    assert_eq!(logs[1].source_label(), "/tie-b");
+    assert_eq!(logs[2].source_label(), "/new");
+    assert_eq!(logs[3].source_label(), "/old");
+}
+
+#[test]
+fn descriptions_keep_unknown_activity_after_known_activity_and_break_ties_by_identity() {
+    let mut unknown = log(AgentKind::Claude, std::path::PathBuf::from("/unknown"), 0);
+    unknown.updated_at = None;
+    let mut logs = vec![
+        log(AgentKind::Claude, std::path::PathBuf::from("/known-b"), 20),
+        unknown,
+        log(AgentKind::Claude, std::path::PathBuf::from("/known-a"), 20),
+        log(AgentKind::Claude, std::path::PathBuf::from("/older"), 10),
+    ];
+
+    sort_logs_newest_first(&mut logs);
+
+    assert_eq!(
+        logs.iter()
+            .map(|entry| entry.source_label())
+            .collect::<Vec<_>>(),
+        vec!["/known-a", "/known-b", "/older", "/unknown"]
+    );
+}
+
+#[tokio::test]
+async fn opencode_probe_coalesces_newer_snapshots_and_keeps_new_sessions_first() {
+    let provider_log = |session_id: &str, updated_at| SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: std::path::PathBuf::from("/tmp/opencode.db"),
+            session_id: session_id.into(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
+        },
+        updated_at,
+        environment: DiscoveryEnvironment::Native,
+    };
+    let first = provider_log("ses_first", Some(10));
+    let first_key = SessionActivityKey::new("native", "opencode", first.source_label());
+    let mut scheduled = std::collections::HashMap::from([(first_key, Some(10))]);
+    let mut pending = prepare_description_logs(vec![first], &std::collections::HashMap::new())
+        .await
+        .unwrap();
+
+    assert!(!enqueue_opencode_probe_log(
+        &mut pending,
+        &mut scheduled,
+        provider_log("ses_first", Some(20)),
+    ));
+    assert!(!enqueue_opencode_probe_log(
+        &mut pending,
+        &mut scheduled,
+        provider_log("ses_first", Some(30)),
+    ));
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].log.updated_at, Some(30));
+
+    assert!(enqueue_opencode_probe_log(
+        &mut pending,
+        &mut scheduled,
+        provider_log("ses_newer", Some(40)),
+    ));
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].log.updated_at, Some(40));
+}
+
+#[test]
+fn opencode_probe_passes_a_lookback_duration_to_discovery() {
+    let now = 1_800_000_000;
+
+    let (probe_now, since_secs) = opencode_probe_window(now);
+
+    assert_eq!(probe_now, now);
+    assert_eq!(since_secs, CURRENT_WINDOW_SECS);
+    assert_ne!(since_secs, now - CURRENT_WINDOW_SECS);
+}
+
+#[test]
 fn only_native_direct_agents_are_eligible_for_indexed_title_lookups() {
     let direct = [AgentKind::Claude, AgentKind::Codex, AgentKind::OpenCode];
     for agent in AgentKind::ALL {
@@ -202,6 +293,7 @@ fn only_native_direct_agents_are_eligible_for_indexed_title_lookups() {
             source: SessionSource::Inline {
                 label: "synthetic".into(),
                 content: String::new(),
+                source_format: None,
             },
             updated_at: None,
             environment: DiscoveryEnvironment::Native,
@@ -224,6 +316,24 @@ fn only_native_direct_agents_are_eligible_for_indexed_title_lookups() {
             "WSL {agent} must not query native stores"
         );
     }
+}
+
+#[test]
+fn opencode_provider_sessions_skip_the_all_titles_inventory_query() {
+    let log = SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: std::path::PathBuf::from("/tmp/opencode.db"),
+            session_id: "ses_recent".into(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
+        },
+        updated_at: Some(100),
+        environment: DiscoveryEnvironment::Native,
+    };
+
+    assert!(should_lookup_indexed_title(&log));
+    assert!(!should_batch_indexed_title(&log));
 }
 
 #[test]
@@ -662,6 +772,7 @@ async fn describing_an_opencode_provider_db_does_not_render_the_transcript() {
             agent: AgentKind::OpenCode,
             db_path: db_path.clone(),
             session_id: session_id.to_string(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
         },
         updated_at: Some(120),
         environment: DiscoveryEnvironment::Native,
@@ -689,6 +800,7 @@ async fn describing_an_opencode_fork_finds_its_parent_without_rendering_either_t
             agent: AgentKind::OpenCode,
             db_path: db_path.clone(),
             session_id: child_id.to_string(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
         },
         updated_at: Some(220),
         environment: DiscoveryEnvironment::Native,
@@ -719,6 +831,7 @@ async fn a_consumed_provider_db_preview_is_rendered() {
             agent: AgentKind::OpenCode,
             db_path: db_path.clone(),
             session_id: session_id.to_string(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
         },
         updated_at: Some(120),
         environment: DiscoveryEnvironment::Native,
@@ -745,6 +858,7 @@ async fn an_inline_claude_subagent_is_rejected_on_the_scan_path() {
         source: SessionSource::Inline {
             label: "inline-subagent".to_string(),
             content: content.to_string(),
+            source_format: None,
         },
         updated_at: Some(1_800_000_000),
         environment: DiscoveryEnvironment::Native,
@@ -801,6 +915,7 @@ async fn an_empty_session_id_is_skipped() {
         source: SessionSource::Inline {
             label: String::new(),
             content: "{}".to_string(),
+            source_format: None,
         },
         updated_at: None,
         environment: DiscoveryEnvironment::Native,
@@ -1132,6 +1247,7 @@ async fn the_current_window_filter_always_keeps_an_unknown_activity_source() {
         source: SessionSource::Inline {
             label: "inline".into(),
             content: String::new(),
+            source_format: None,
         },
         updated_at: Some(1_000),
         environment: DiscoveryEnvironment::Native,
@@ -1164,6 +1280,7 @@ async fn the_found_counts_report_each_agent_once_after_the_current_window_filter
         source: SessionSource::Inline {
             label: label.into(),
             content: String::new(),
+            source_format: None,
         },
         updated_at: Some(now),
         environment: DiscoveryEnvironment::Native,
@@ -1216,11 +1333,15 @@ async fn describe_trusts_precomputed_activity_instead_of_recomputing_it() {
 
     let described = describe_with_gate(
         vec![candidate_log],
-        home.path(),
-        &HashSet::new(),
-        &std::collections::HashMap::new(),
-        &precomputed,
-        false,
+        DescribeInputs {
+            home: home.path(),
+            ignored: &HashSet::new(),
+            previous_records: &std::collections::HashMap::new(),
+            precomputed: &precomputed,
+            include_non_repo_folders: false,
+            probe_app: None,
+            incremental: None,
+        },
         &mut |_, _, _| {},
     )
     .await;
@@ -1599,6 +1720,231 @@ fn record(agent: &str, session_id: &str, updated_at: Option<i64>) -> SessionReco
     }
 }
 
+fn admission_log(record: &SessionRecord) -> SessionLog {
+    SessionLog {
+        agent_type: AgentKind::Claude,
+        source: SessionSource::File(record.source_label.clone().into()),
+        updated_at: record.updated_at_epoch,
+        environment: DiscoveryEnvironment::Native,
+    }
+}
+
+#[tokio::test]
+async fn initial_duplicate_database_sources_choose_the_same_physical_source_in_any_order() {
+    let make_log = |path: &str| SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: path.into(),
+            session_id: "same-session".into(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
+        },
+        updated_at: Some(1_000),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let first = make_log("/first/opencode.db");
+    let second = make_log("/second/opencode.db");
+    assert_eq!(first.source_label(), second.source_label());
+    let previous = std::collections::HashMap::new();
+    let mut forward = prepare_description_logs(vec![first.clone(), second.clone()], &previous)
+        .await
+        .unwrap();
+    let mut reverse = prepare_description_logs(vec![second, first], &previous)
+        .await
+        .unwrap();
+    deduplicate_session_sources(&mut forward);
+    deduplicate_session_sources(&mut reverse);
+    assert_eq!(forward.len(), 1);
+    assert_eq!(reverse.len(), 1);
+    assert_eq!(
+        physical_source(&forward[0].log),
+        physical_source(&reverse[0].log)
+    );
+    assert!(physical_source(&forward[0].log).contains("/first/opencode.db"));
+}
+
+#[test]
+fn inline_admission_guard_uses_the_parsed_session_identity() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(home.path()).unwrap();
+    let log = SessionLog {
+        agent_type: AgentKind::Claude,
+        source: SessionSource::Inline {
+            label: "claude-fork-job:child".into(),
+            content: r#"{"sessionId":"child","type":"user","cwd":"/repo","message":{"role":"user","content":"Check the build"}}"#.into(),
+            source_format: None,
+        },
+        updated_at: Some(1_000),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let mut row = record(AgentKind::Claude.slug(), "child", Some(1_000));
+    row.source_kind = "inline".into();
+    row.source_label = log.source_label();
+    let guard = session_write_guard(
+        &store,
+        &log,
+        &row.key,
+        store.capture_destructive_write_epoch(),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.upsert_session_if_current(&guard, &row, &[]).unwrap(),
+        SessionCommitOutcome::Upserted(_)
+    ));
+    assert_eq!(
+        store
+            .session_records_for_session_keys(&[row.key])
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn description_dispatch_serializes_parsed_identity_across_source_labels() {
+    let home = tempfile::tempdir().unwrap();
+    let make_log = |label: &str, id: &str| SessionLog {
+        agent_type: AgentKind::Claude,
+        source: SessionSource::Inline {
+            label: label.into(),
+            content: format!(r#"{{"sessionId":"{id}","type":"user","cwd":"/repo"}}"#),
+            source_format: None,
+        },
+        updated_at: Some(1_000),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let mut set = JoinSet::new();
+    let mut in_flight = std::collections::HashMap::new();
+    let previous = std::collections::HashMap::new();
+    let mut pending = prepare_description_logs(
+        vec![
+            make_log("first-source", "same"),
+            make_log("second-source", "same"),
+            make_log("third-source", "other"),
+        ],
+        &previous,
+    )
+    .await
+    .unwrap();
+    let precomputed = std::collections::HashMap::new();
+    let context = DescriptionQueueContext {
+        home: home.path(),
+        previous_records: &previous,
+        precomputed: &precomputed,
+        concurrency: 3,
+    };
+    spawn_pending_descriptions(&mut set, &mut in_flight, &mut pending, &context, None);
+    assert_eq!(set.len(), 2);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].log.source_label(), "second-source");
+    assert_eq!(in_flight.len(), 2);
+    while let Some(result) = set.join_next().await {
+        let (key, _, _, _) = result.unwrap();
+        in_flight.remove(&key);
+    }
+    spawn_pending_descriptions(&mut set, &mut in_flight, &mut pending, &context, None);
+    assert_eq!(set.len(), 1);
+    assert!(pending.is_empty());
+    set.join_next().await.unwrap().unwrap();
+}
+
+#[test]
+fn physical_database_rebind_rejects_an_attempt_from_the_old_database() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(home.path()).unwrap();
+    let make_log = |path: &str| SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: path.into(),
+            session_id: "rebound-session".into(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
+        },
+        updated_at: Some(1_000),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let first = make_log("/first/opencode.db");
+    let second = make_log("/second/opencode.db");
+    let epoch = store.capture_destructive_write_epoch();
+    let mut row = record(AgentKind::OpenCode.slug(), "rebound-session", Some(1_000));
+    let old = session_write_guard(&store, &first, &row.key, epoch).unwrap();
+    let current = session_write_guard(&store, &second, &row.key, epoch).unwrap();
+    row.source_kind = "providerDb".into();
+    row.source_label = second.source_label();
+    assert!(matches!(
+        store
+            .upsert_session_if_current(&current, &row, &[])
+            .unwrap(),
+        SessionCommitOutcome::Upserted(_)
+    ));
+    row.title = Some("stale first database".into());
+    assert!(matches!(
+        store.upsert_session_if_current(&old, &row, &[]).unwrap(),
+        SessionCommitOutcome::Rejected(_)
+    ));
+    assert_eq!(
+        store.session_records_for_session_keys(&[row.key]).unwrap()[0].title,
+        None
+    );
+}
+
+#[test]
+fn opencode_format_change_fences_an_attempt_bound_to_v1() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(home.path()).unwrap();
+    let make_log = |source_format| SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: "/same/opencode.db".into(),
+            session_id: "format-switch".into(),
+            source_format: Some(source_format),
+        },
+        updated_at: Some(1_000),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let v1 = make_log(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1);
+    let v2 = make_log(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2);
+    let epoch = store.capture_destructive_write_epoch();
+    let mut row = record(AgentKind::OpenCode.slug(), "format-switch", Some(1_000));
+    let old = session_write_guard(&store, &v1, &row.key, epoch).unwrap();
+    let current = session_write_guard(&store, &v2, &row.key, epoch).unwrap();
+
+    row.source_kind = "providerDb".into();
+    row.source_label = v2.source_label();
+    assert!(matches!(
+        store
+            .upsert_session_if_current(&current, &row, &[])
+            .unwrap(),
+        SessionCommitOutcome::Upserted(_)
+    ));
+    row.title = Some("stale V1 source".into());
+    assert!(matches!(
+        store.upsert_session_if_current(&old, &row, &[]).unwrap(),
+        SessionCommitOutcome::Rejected(_)
+    ));
+    assert_eq!(
+        store.session_records_for_session_keys(&[row.key]).unwrap()[0].title,
+        None
+    );
+}
+
+#[tokio::test]
+async fn describe_loop_waits_for_a_probe_after_descriptions_drain() {
+    let descriptions = tokio::task::JoinSet::<()>::new();
+    let mut probes = tokio::task::JoinSet::<()>::new();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    probes.spawn(async move {
+        let _ = wait.await;
+    });
+    let pending = Vec::new();
+
+    assert!(describe_loop_has_work(&descriptions, &pending, &probes));
+    release.send(()).unwrap();
+    probes.join_next().await.unwrap().unwrap();
+    assert!(!describe_loop_has_work(&descriptions, &pending, &probes));
+}
+
 #[test]
 fn a_fresh_indexed_title_updates_a_cached_record() {
     let mut cached = record("codex", "cached-title", Some(1_000));
@@ -1629,80 +1975,6 @@ fn an_equal_indexed_title_keeps_a_cached_record_unchanged() {
     );
 
     assert!(!changed);
-}
-
-#[test]
-fn records_to_persist_keeps_only_changed_or_returned_rows() {
-    let a = record("claude-code", "a", Some(1_000));
-    let b = record("claude-code", "b", Some(2_000));
-    let c = record("codex", "c", Some(3_000));
-    let records = vec![a.clone(), b.clone(), c.clone()];
-
-    assert_eq!(records_to_persist(&records, &[], &[]), Vec::new());
-
-    assert_eq!(
-        records_to_persist(&records, std::slice::from_ref(&a.key), &[]),
-        vec![a.clone()],
-        "changed only"
-    );
-
-    assert_eq!(
-        records_to_persist(&records, &[], std::slice::from_ref(&c.key)),
-        vec![c.clone()],
-        "returned only"
-    );
-
-    assert_eq!(
-        records_to_persist(
-            &records,
-            &[a.key.clone(), b.key.clone()],
-            std::slice::from_ref(&b.key),
-        ),
-        vec![a, b],
-        "a key named by both changed and returned still yields one copy"
-    );
-}
-
-#[test]
-fn scoped_persistence_skips_unchanged_rows_without_calling_the_store() {
-    let records = vec![record("claude-code", "steady", Some(1_000))];
-    let calls = std::cell::Cell::new(0);
-
-    let persisted = persist_changed_records(&records, &[], &[], |_| {
-        calls.set(calls.get() + 1);
-        Ok(())
-    })
-    .unwrap();
-
-    assert!(persisted.is_none());
-    assert_eq!(calls.get(), 0);
-}
-
-#[test]
-fn scoped_persistence_writes_changed_new_and_returned_rows_once() {
-    let changed = record("claude-code", "changed", Some(1_000));
-    let new = record("claude-code", "new", Some(2_000));
-    let returned = record("codex", "returned", Some(3_000));
-    let unchanged = record("codex", "steady", Some(4_000));
-    let records = vec![changed.clone(), new.clone(), returned.clone(), unchanged];
-    let writes = Mutex::new(Vec::new());
-
-    let persisted = persist_changed_records(
-        &records,
-        &[changed.key.clone(), new.key.clone()],
-        std::slice::from_ref(&returned.key),
-        |batch| {
-            writes.lock().unwrap().push(batch.to_vec());
-            Ok(batch.len())
-        },
-    )
-    .unwrap();
-
-    assert_eq!(persisted, Some(3), "the write's own result comes back");
-    assert_eq!(
-        writes.into_inner().unwrap(),
-        vec![vec![changed, new, returned]]
-    );
 }
 
 #[test]
@@ -1811,6 +2083,7 @@ fn source_kinds_are_stable_wire_strings() {
         source_kind(&SessionSource::Inline {
             label: "opencode:x".into(),
             content: String::new(),
+            source_format: None,
         }),
         "inline"
     );
@@ -1819,6 +2092,7 @@ fn source_kinds_are_stable_wire_strings() {
             agent: AgentKind::OpenCode,
             db_path: "/tmp/opencode.db".into(),
             session_id: "x".into(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
         }),
         "providerDb"
     );
@@ -1832,6 +2106,7 @@ fn a_provider_database_session_recovers_its_id_from_the_source() {
             agent: AgentKind::OpenCode,
             db_path: "/tmp/opencode.db".into(),
             session_id: "ses_123".into(),
+            source_format: Some(antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1),
         },
         updated_at: Some(1_000),
         environment: Default::default(),
@@ -1961,6 +2236,48 @@ fn a_second_automatic_request_is_still_coalesced() {
         matches!(pending.as_ref(), Some(ScanTrigger::Launch)),
         "two automatic triggers coalesce to the first, as before"
     );
+}
+
+#[test]
+fn source_refreshes_merge_separately_from_one_shot_triggers() {
+    let controller = ScanController::default();
+    controller.request_source_refresh(AgentKind::OpenCode);
+    controller.request_source_refresh(AgentKind::Claude);
+    assert_eq!(
+        controller.take_source_refreshes(),
+        BTreeSet::from([AgentKind::OpenCode, AgentKind::Claude])
+    );
+
+    controller.request_source_refresh(AgentKind::OpenCode);
+    controller.request(ScanTrigger::ManualRescan);
+    assert!(matches!(
+        controller.take_pending_trigger(),
+        Some(ScanTrigger::ManualRescan)
+    ));
+    assert_eq!(
+        controller.take_source_refreshes(),
+        BTreeSet::from([AgentKind::OpenCode]),
+        "a pending full trigger cannot discard a source refresh"
+    );
+}
+
+#[test]
+fn source_refresh_runs_only_the_requested_agent_scope() {
+    assert!(matches!(
+        source_refresh_scope(&BTreeSet::from([AgentKind::OpenCode, AgentKind::Claude])),
+        PassScope::Agents(agents)
+            if agents == BTreeSet::from([AgentKind::OpenCode, AgentKind::Claude])
+    ));
+    assert!(matches!(
+        source_refresh_scope(&BTreeSet::new()),
+        PassScope::Agents(agents) if agents.is_empty()
+    ));
+    assert!(uses_history_window(&ScanTrigger::SourceRefresh {
+        agents: vec!["opencode"],
+    }));
+    assert!(!uses_history_window(&ScanTrigger::WatcherAgents {
+        agents: vec!["opencode"],
+    }));
 }
 
 #[test]
@@ -2615,11 +2932,11 @@ fn only_scheduler_owned_passes_cover_and_only_after_their_indexed_reports() {
 
 fn assert_scheduler_source_contract(source: &str) {
     let source = source.replace("\r\n", "\n");
-    let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+    let production = &source;
 
     let covered = {
-        let start = production.find("async fn run_covered_pass(").unwrap();
-        let body = &production[start..];
+        let start = source.find("async fn run_covered_pass(").unwrap();
+        let body = &source[start..];
         &body[..body.find("\n}\n").unwrap()]
     };
     let capture = covered
@@ -2641,8 +2958,8 @@ fn assert_scheduler_source_contract(source: &str) {
     // sends a cover.
     assert_eq!(
         production.matches("run_covered_pass(").count(),
-        4,
-        "one definition, three call sites"
+        5,
+        "one definition, four call sites"
     );
     assert!(
         !production.contains("run_pass(&app, None, "),
@@ -2893,11 +3210,15 @@ async fn the_read_total_shrinks_by_exactly_the_subagent_count_found() {
     let mut forced_calls = 0;
     let described = describe_with_gate(
         logs,
-        home.path(),
-        &HashSet::new(),
-        &std::collections::HashMap::new(),
-        &std::collections::HashMap::new(),
-        false,
+        DescribeInputs {
+            home: home.path(),
+            ignored: &HashSet::new(),
+            previous_records: &std::collections::HashMap::new(),
+            precomputed: &std::collections::HashMap::new(),
+            include_non_repo_folders: false,
+            probe_app: None,
+            incremental: None,
+        },
         &mut |completed, total, force| {
             assert!(completed <= total, "completed must never exceed total");
             last_completed = completed;
@@ -2955,11 +3276,15 @@ async fn a_full_pass_corrects_found_by_agent_to_what_the_read_stage_admits() {
 
     let described = describe_with_gate(
         logs,
-        home.path(),
-        &HashSet::new(),
-        &std::collections::HashMap::new(),
-        &std::collections::HashMap::new(),
-        false,
+        DescribeInputs {
+            home: home.path(),
+            ignored: &HashSet::new(),
+            previous_records: &std::collections::HashMap::new(),
+            precomputed: &std::collections::HashMap::new(),
+            include_non_repo_folders: false,
+            probe_app: None,
+            incremental: None,
+        },
         &mut |_, _, _| {},
     )
     .await;

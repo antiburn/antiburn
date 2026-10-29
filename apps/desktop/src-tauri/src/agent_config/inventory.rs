@@ -9,8 +9,7 @@ use super::filesystem::{canonical_root, path_entry_exists, read_checked};
 use super::vendors::{codex, json, opencode, pi};
 use super::{ConfigContext, ConfigUnavailableReason};
 
-mod skill_opportunity_reference;
-pub use skill_opportunity_reference::{SkillSnapshotError, skill_opportunity_snapshot};
+pub mod skill_definitions;
 
 const MAX_RESOURCES: usize = 512;
 const MAX_DIRECTORY_ENTRIES: usize = 256;
@@ -105,8 +104,6 @@ struct InventoryBuilder {
     agent: AgentKind,
     resources: BTreeMap<ResourceKey, AdvisoryResource>,
     issues: Vec<InventoryIssue>,
-    skill_definitions: Vec<skill_opportunity_reference::DiscoveredSkill>,
-    retain_skill_definitions: bool,
 }
 
 impl InventoryBuilder {
@@ -115,8 +112,6 @@ impl InventoryBuilder {
             agent,
             resources: BTreeMap::new(),
             issues: Vec::new(),
-            skill_definitions: Vec::new(),
-            retain_skill_definitions: false,
         }
     }
 
@@ -277,17 +272,42 @@ pub fn advisory_resource_inventory<'a>(
     context: &ConfigContext,
     indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
 ) -> Result<ResourceInventory, ConfigUnavailableReason> {
-    Ok(discover_inventory(context, indexed, false)?.finish())
+    ResourceInventory::discover_with_authority(context, indexed, None)
+}
+
+impl ResourceInventory {
+    pub(crate) fn discover_with_authority<'a>(
+        context: &ConfigContext,
+        indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
+        authority: Option<&super::opencode_config_authority::CurrentConfigAuthority>,
+    ) -> Result<ResourceInventory, ConfigUnavailableReason> {
+        let indexed = indexed.into_iter().collect::<Vec<_>>();
+        if context.source_format.is_some_and(|source| {
+            indexed
+                .iter()
+                .any(|item| item.evidence.capabilities.source_format != source)
+        }) {
+            return Err(ConfigUnavailableReason::InvalidPrecedence);
+        }
+        if context.agent == AgentKind::OpenCode {
+            if !context.native_environment {
+                return Err(ConfigUnavailableReason::UnsupportedEnvironment);
+            }
+            let authority = authority.ok_or(ConfigUnavailableReason::RuntimeOverride)?;
+            return super::opencode_current::current_inventory(context, authority);
+        }
+        Ok(discover_inventory(context, indexed)?.finish())
+    }
 }
 
 fn discover_inventory<'a>(
     context: &ConfigContext,
     indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
-    retain_skill_definitions: bool,
 ) -> Result<InventoryBuilder, ConfigUnavailableReason> {
     if !context.native_environment {
         return Err(ConfigUnavailableReason::UnsupportedEnvironment);
     }
+    context.validate_source_format()?;
     if !matches!(
         context.agent,
         AgentKind::Claude
@@ -307,7 +327,6 @@ fn discover_inventory<'a>(
     let home = canonical_root(&context.home_root)?;
     let (cwd, trusted_root) = canonical_workspace(context)?;
     let mut builder = InventoryBuilder::new(context.agent);
-    builder.retain_skill_definitions = retain_skill_definitions;
     if context.runtime_override_present {
         builder.issue(
             None,
@@ -565,8 +584,8 @@ fn enumerate_skill_directory(
         };
         let skill = path.join("SKILL.md");
         match path_entry_exists(&skill) {
-            Ok(true) => match skill_opportunity_reference::read_definition(&skill, safety_root) {
-                Ok((file, created_at_ms)) => {
+            Ok(true) => match skill_definitions::read_definition(&skill, safety_root) {
+                Ok(file) => {
                     builder.add_with_tokens(
                         ResourceKind::Skill,
                         &name,
@@ -575,16 +594,6 @@ fn enumerate_skill_directory(
                         ResourceProvenance::StandardDirectory,
                         skill_listing_tokens(&file.bytes),
                     );
-                    if builder.retain_skill_definitions {
-                        skill_opportunity_reference::retain_definition(
-                            builder,
-                            &name,
-                            &skill,
-                            scope,
-                            &file.bytes,
-                            created_at_ms,
-                        );
-                    }
                 }
                 Err(reason) => builder.issue(
                     Some(ResourceKind::Skill),
@@ -2078,6 +2087,16 @@ fn merge_indexed<'a>(
 ) {
     for indexed in indexed {
         if !evidence_agent_matches(builder.agent, &indexed.evidence.identity.agent) {
+            continue;
+        }
+        if builder.agent == AgentKind::OpenCode
+            && matches!(
+                indexed.evidence.capabilities.source_format,
+                antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2
+                    | antiburn_local::analysis::SourceFormat::OpenCodeV2SessionExport
+            )
+        {
+            builder.issue(None, indexed.scope, InventoryIssueReason::UnsupportedShape);
             continue;
         }
         let sources = match &indexed.evidence.context_sources {

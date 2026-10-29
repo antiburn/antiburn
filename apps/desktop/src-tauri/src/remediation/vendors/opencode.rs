@@ -24,10 +24,46 @@ impl VendorRemediationPolicy for OpenCodePolicy {
         AgentKind::OpenCode
     }
 
+    fn model_watch_evidence(&self, source: SourceFormat) -> super::ModelWatchEvidence {
+        if source == SourceFormat::OpenCodeSqliteV2 {
+            super::ModelWatchEvidence::ConfigAttribution
+        } else {
+            super::ModelWatchEvidence::ObservedUsage
+        }
+    }
+
+    fn resource_names_case_sensitive(&self, source: SourceFormat) -> bool {
+        source == SourceFormat::OpenCodeSqliteV2
+    }
+
+    fn subagent_config_value(
+        &self,
+        worker_model: &str,
+        model: &str,
+        binding: Option<&antiburn_local::analysis::SubagentConfigBinding>,
+    ) -> Option<String> {
+        use antiburn_local::model_catalog::{
+            ModelCatalog, ReviewedModelCatalog, Support, model_control_target,
+        };
+
+        let binding = binding?;
+        if binding.model_id != worker_model || binding.agent_id.is_empty() {
+            return None;
+        }
+        let target = model_control_target("opencode", Some(&binding.provider_id), None, model);
+        matches!(
+            ReviewedModelCatalog::default().resolve(&target),
+            Support::Supported(_)
+        )
+        .then(|| format!("{}/{}", binding.provider_id, model))
+    }
+
     fn action_support(&self, action: RemediationAction, source: SourceFormat) -> ActionSupport {
         if matches!(
             source,
-            SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV2
+            SourceFormat::OpenCodeJsonl
+                | SourceFormat::OpenCodeSqliteV1
+                | SourceFormat::OpenCodeSqliteV2
         ) && matches!(
             action,
             RemediationAction::AutomaticEdit(
@@ -103,6 +139,25 @@ fn trusted_workspace(candidate: Option<&Path>, root: Option<&Path>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_rules_stay_in_the_vendor_policy() {
+        for (source, case_sensitive, watch) in [
+            (
+                SourceFormat::OpenCodeSqliteV1,
+                false,
+                super::super::ModelWatchEvidence::ObservedUsage,
+            ),
+            (
+                SourceFormat::OpenCodeSqliteV2,
+                true,
+                super::super::ModelWatchEvidence::ConfigAttribution,
+            ),
+        ] {
+            assert_eq!(POLICY.resource_names_case_sensitive(source), case_sensitive);
+            assert_eq!(POLICY.model_watch_evidence(source), watch);
+        }
+    }
 
     #[test]
     fn cwd_sensitive_actions_allow_safe_nested_workspaces() {

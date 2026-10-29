@@ -887,16 +887,7 @@ pub fn fallback_token_burn_basis_points(
     finding_sessions: u64,
     assessed_sessions: u64,
 ) -> Option<u16> {
-    if finding_sessions == 0
-        || assessed_sessions == 0
-        || matches!(
-            detector,
-            DetectorId::IgnoredInstructions
-                | DetectorId::SkillOpportunities
-                | DetectorId::OverExploring
-                | DetectorId::ScopeCreep
-        )
-    {
+    if finding_sessions == 0 || assessed_sessions == 0 {
         return None;
     }
     let detector_share: u16 = match detector {
@@ -909,10 +900,6 @@ pub fn fallback_token_burn_basis_points(
         DetectorId::OldModelUsage => 1_500,
         DetectorId::OveruseOfFastMode => 1_000,
         DetectorId::CacheChurn => 1_000,
-        DetectorId::IgnoredInstructions
-        | DetectorId::SkillOpportunities
-        | DetectorId::OverExploring
-        | DetectorId::ScopeCreep => return None,
     };
     let scaled = u128::from(detector_share)
         .checked_mul(u128::from(finding_sessions))?

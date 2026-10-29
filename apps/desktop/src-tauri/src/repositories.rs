@@ -31,12 +31,13 @@ use antiburn_local::repositories::{
     normalize_remote_url, parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity,
     scan_roots_for_repos, verify_dir_access,
 };
+use anyhow::Context;
 use tauri::{AppHandle, Manager};
 
 use crate::consent::StoreConsentGrants;
 use crate::dto::{DeferredPermissionDir, RepositoryItem};
 use crate::scan::IGNORE_SCOPE;
-use crate::store::{DisabledAgents, RepositoryRecord, Store};
+use crate::store::{DisabledAgents, RepositoryPolicyPublishOutcome, RepositoryRecord, Store};
 
 /// Owners the forward scan runs for, most sessions first. A machine that works
 /// across many owners still gets its session-located repositories in full; the
@@ -50,13 +51,53 @@ const MAX_NEW_ROOTS_PER_PASS: usize = 64;
 /// Sessions considered when counting per-repository activity.
 const MAX_SESSIONS_CONSIDERED: usize = 2_000;
 
+// Keep the file mirror in the same order as repository policy changes.
+static REPOSITORY_POLICY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[derive(serde::Deserialize)]
+struct IgnoredPathsState {
+    #[serde(default, rename = "orgs")]
+    scopes: HashMap<String, Vec<IgnoredPathEntry>>,
+}
+
+#[derive(serde::Deserialize)]
+struct IgnoredPathEntry {
+    path: String,
+    #[serde(default, rename = "ignoredAt")]
+    _ignored_at: String,
+}
+
+fn load_ignored_paths(state_dir: &Path) -> anyhow::Result<HashSet<String>> {
+    let path = ignored_paths::state_path(state_dir);
+    let contents = match std::fs::read(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    let state: IgnoredPathsState = serde_json::from_slice(&contents)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(state
+        .scopes
+        .get(IGNORE_SCOPE)
+        .into_iter()
+        .flatten()
+        .map(|entry| ignored_paths::normalize(&entry.path))
+        .collect())
+}
+
 /// Re-derive the repository list and persist it.
 pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
     refresh_from_store(&app.state::<Store>()).await
 }
 
 async fn refresh_from_store(store: &Store) -> anyhow::Result<()> {
-    let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
+    let policy = store.repository_policy_snapshot()?;
+    let mut ignored = policy.ignored_paths.clone();
+    // Import exclusions written by earlier versions into the persisted
+    // repository records during this refresh.
+    ignored.extend(load_ignored_paths(store.state_dir())?);
 
     // Repository counts use the newest bounded slice of retained local sessions.
     // The cap protects an always-running utility
@@ -72,7 +113,7 @@ async fn refresh_from_store(store: &Store) -> anyhow::Result<()> {
     // What the user has already allowed. Read, never probed: confirming a grant
     // means reading the directory, which is the very thing that prompts.
     let consent = StoreConsentGrants::new(store);
-    let granted = consent.granted_dirs();
+    let granted = policy.granted_dirs.clone();
 
     let cwds: Vec<String> = distinct_cwds(&sessions);
     // `deferred` names the protected directories this pass deliberately left
@@ -90,7 +131,7 @@ async fn refresh_from_store(store: &Store) -> anyhow::Result<()> {
     // against what is true now — partitioning is pure, so this costs nothing
     // and saves the reader a pass spent wondering where their repositories
     // went.
-    let granted_now = consent.granted_dirs();
+    let granted_now = store.repository_policy_snapshot()?.granted_dirs;
     if granted_now != granted
         && let Some(home) = home_dir()
     {
@@ -104,9 +145,28 @@ async fn refresh_from_store(store: &Store) -> anyhow::Result<()> {
         records.push(to_record(repo, &sessions, &known, &ignored).await);
     }
     retain_disabled(&mut records, known);
-    surface_orphaned_opt_outs(&mut records, store.state_dir(), &granted).await;
-    store.replace_repositories(&records)?;
-    store.set_deferred_permission_dirs(&summarize_deferred(&deferred))?;
+    surface_orphaned_opt_outs(&mut records, &ignored, &granted).await;
+    publish_refresh(
+        store,
+        policy.generation,
+        &records,
+        &summarize_deferred(&deferred),
+    )?;
+    Ok(())
+}
+
+fn publish_refresh(
+    store: &Store,
+    expected_generation: u64,
+    records: &[RepositoryRecord],
+    deferred: &[DeferredPermissionDir],
+) -> anyhow::Result<()> {
+    match store.publish_repository_refresh(expected_generation, records, deferred)? {
+        RepositoryPolicyPublishOutcome::Published => {}
+        RepositoryPolicyPublishOutcome::Superseded => {
+            anyhow::bail!("repository refresh was superseded by a policy change")
+        }
+    }
     Ok(())
 }
 
@@ -130,7 +190,11 @@ pub fn refresh_session_counts(store: &Store) -> anyhow::Result<()> {
             })
             .unwrap_or(0);
     }
-    store.replace_repositories(&repositories)?;
+    let counts = repositories
+        .into_iter()
+        .map(|record| (record.key, record.session_count))
+        .collect::<Vec<_>>();
+    store.update_repository_session_counts(&counts)?;
     Ok(())
 }
 
@@ -174,7 +238,7 @@ fn summarize_deferred(deferred: &[DeferredProtectedPath]) -> Vec<DeferredPermiss
 /// its git remote when one answers, its folder name otherwise.
 async fn surface_orphaned_opt_outs(
     records: &mut Vec<RepositoryRecord>,
-    state_dir: &Path,
+    ignored: &HashSet<String>,
     granted: &HashSet<String>,
 ) {
     let listed: HashSet<String> = records
@@ -188,8 +252,10 @@ async fn surface_orphaned_opt_outs(
         })
         .collect();
 
-    for path in ignored_paths::list_ignored(state_dir, IGNORE_SCOPE) {
-        let root = Path::new(&path);
+    let mut paths: Vec<_> = ignored.iter().collect();
+    paths.sort();
+    for path in paths {
+        let root = Path::new(path);
         if listed.contains(&repo_root_identity(root)) || !root.is_dir() {
             continue;
         }
@@ -220,7 +286,7 @@ async fn surface_orphaned_opt_outs(
             repo_name,
             full_name,
             status: "accessible".to_string(),
-            repo_root: Some(path),
+            repo_root: Some(path.clone()),
             suspected_path: None,
             worktree_count: 0,
             session_count: 0,
@@ -274,11 +340,10 @@ pub fn list(store: &Store) -> anyhow::Result<Vec<RepositoryItem>> {
 
 /// Include or ignore one repository.
 ///
-/// The choice is written twice on purpose: the store's flag is the record the
-/// settings pane reads back, and the engine's ignored-path store is what the
-/// *next scan* enforces, so ignoring a repository also stops its sessions from
-/// being collected.
+/// The Store owns the policy. The ignored-path file mirrors it for scan readers.
+/// Repeat the request to retry a failed file update or session purge.
 pub async fn set_enabled(store: &Store, key: &str, enabled: bool) -> anyhow::Result<bool> {
+    let _guard = REPOSITORY_POLICY_LOCK.lock().await;
     let Some(record) = store
         .repositories()?
         .into_iter()
@@ -286,49 +351,39 @@ pub async fn set_enabled(store: &Store, key: &str, enabled: bool) -> anyhow::Res
     else {
         return Ok(false);
     };
+    // Store commits this policy mutation and its generation bump together.
+    // The file mirror and purge follow the commit and remain retryable.
+    let exists = store.set_repository_enabled(key, enabled)?;
+    if !exists {
+        return Ok(false);
+    }
     if let Some(path) = record
         .repo_root
         .as_deref()
         .or(record.suspected_path.as_deref())
     {
+        // The engine treats read errors as an empty file. Check it first so a
+        // failed read cannot make restore report success or discard exclusions.
+        load_ignored_paths(store.state_dir())?;
         if enabled {
             ignored_paths::unignore_path(store.state_dir(), IGNORE_SCOPE, path).await?;
         } else {
             ignored_paths::ignore_path(store.state_dir(), IGNORE_SCOPE, path).await?;
-            // Excluded means excluded: rows already indexed for this
-            // repository leave the store now rather than remaining stale.
-            // Re-checked against the full opt-out set as the scan
-            // does, so normalization matches exactly — which also sweeps any
-            // stragglers from earlier opt-outs.
-            purge_ignored_sessions(store)?;
         }
     }
-    store.set_repository_enabled(key, enabled)
+    if !enabled {
+        // Excluded means excluded: rows already indexed for this repository
+        // leave the Store after the policy change commits.
+        purge_ignored_sessions(store)?;
+    }
+    Ok(exists)
 }
 
 /// Remove every stored session whose working directory the reader has opted
 /// out of, using the same containment test the scan gate applies on the way
 /// in. Returns how many rows were removed.
 pub fn purge_ignored_sessions(store: &Store) -> anyhow::Result<usize> {
-    let ignored = ignored_paths::load_ignored(store.state_dir(), IGNORE_SCOPE);
-    if ignored.is_empty() {
-        return Ok(0);
-    }
-    let mut removed = 0;
-    for session in store.recent_sessions(0, usize::MAX)? {
-        if session.key.remote_host_id().is_some() {
-            continue;
-        }
-        let Some(cwd) = session.cwd.as_deref() else {
-            continue;
-        };
-        if ignored_paths::set_contains(&ignored, cwd)
-            && store.delete_session(&session.key)?.is_some()
-        {
-            removed += 1;
-        }
-    }
-    Ok(removed)
+    store.purge_ignored_sessions()
 }
 
 /// Distinct, non-empty working directories across the considered sessions.
@@ -641,6 +696,9 @@ fn under(path: &str, root: &str) -> bool {
 }
 
 #[cfg(test)]
+mod policy_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -820,7 +878,8 @@ mod tests {
             .unwrap();
 
         let mut records = vec![repo_record("widgets", true)];
-        surface_orphaned_opt_outs(&mut records, dir.path(), &HashSet::new()).await;
+        let ignored = load_ignored_paths(dir.path()).unwrap();
+        surface_orphaned_opt_outs(&mut records, &ignored, &HashSet::new()).await;
 
         assert_eq!(records.len(), 2);
         let orphan = &records[1];
@@ -830,7 +889,7 @@ mod tests {
 
         // Idempotent: a second pass sees the row listed and adds nothing.
         let mut again = records.clone();
-        surface_orphaned_opt_outs(&mut again, dir.path(), &HashSet::new()).await;
+        surface_orphaned_opt_outs(&mut again, &ignored, &HashSet::new()).await;
         assert_eq!(again.len(), 2);
     }
 
@@ -890,8 +949,19 @@ mod tests {
             )
             .unwrap();
 
-        ignored_paths::ignore_path(store.state_dir(), IGNORE_SCOPE, "/home/avery/code/widgets")
-            .await
+        store
+            .replace_repositories(&[RepositoryRecord {
+                key: "/home/avery/code/widgets".into(),
+                repo_name: "widgets".into(),
+                full_name: "avery/widgets".into(),
+                status: "accessible".into(),
+                repo_root: Some("/home/avery/code/widgets".into()),
+                suspected_path: None,
+                worktree_count: 1,
+                session_count: 2,
+                wsl_distro: None,
+                enabled: false,
+            }])
             .unwrap();
         let removed = purge_ignored_sessions(&store).unwrap();
 
@@ -899,6 +969,104 @@ mod tests {
         let remaining = store.recent_sessions(0, 10).unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].key.session_id, "in-gadgets");
+    }
+
+    #[tokio::test]
+    async fn excluding_a_repository_with_no_sessions_advances_policy_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        store
+            .replace_repositories(&[repo_record("widgets", true)])
+            .unwrap();
+        let before = store.repository_policy_snapshot().unwrap().generation;
+        let epoch = store.capture_destructive_write_epoch();
+
+        assert!(set_enabled(&store, "widgets", false).await.unwrap());
+
+        let after = store.repository_policy_snapshot().unwrap().generation;
+        assert!(after > before);
+        assert_ne!(store.capture_destructive_write_epoch(), epoch);
+        assert!(store.recent_sessions(0, 10).unwrap().is_empty());
+        assert!(!store.repositories().unwrap()[0].enabled);
+    }
+
+    #[tokio::test]
+    async fn retrying_exclusion_purges_sessions_left_after_an_interrupted_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let mut repository = repo_record("widgets", true);
+        repository.repo_root = Some("/home/avery/code/widgets".into());
+        store.replace_repositories(&[repository]).unwrap();
+
+        let left_behind = crate::store::SessionRecord {
+            key: crate::store::SessionKey::new("native", "claude-code", "left-behind"),
+            source_kind: "file".into(),
+            source_label: "file:left-behind".into(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: Some("/home/avery/code/widgets".into()),
+            surface: "cli".into(),
+            updated_at_epoch: Some(1),
+            activity_cursor: String::new(),
+            activity_source: "mtime".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: None,
+        };
+        store.upsert_sessions(&[left_behind], &[]).unwrap();
+        store
+            .lock()
+            .execute_batch(
+                "CREATE TEMP TRIGGER fail_repository_purge BEFORE DELETE ON session
+                 BEGIN SELECT RAISE(ABORT, 'injected repository purge failure'); END;",
+            )
+            .unwrap();
+
+        let before = store.repository_policy_snapshot().unwrap().generation;
+        let error = set_enabled(&store, "widgets", false).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("injected repository purge failure")
+        );
+        let policy = store.repository_policy_snapshot().unwrap();
+        assert!(policy.generation > before);
+        assert!(policy.ignored_paths.contains("/home/avery/code/widgets"));
+        assert!(!store.repositories().unwrap()[0].enabled);
+        assert_eq!(store.recent_sessions(0, 10).unwrap().len(), 1);
+        assert!(
+            load_ignored_paths(store.state_dir())
+                .unwrap()
+                .contains("/home/avery/code/widgets")
+        );
+        store
+            .lock()
+            .execute_batch("DROP TRIGGER fail_repository_purge")
+            .unwrap();
+
+        assert!(set_enabled(&store, "widgets", false).await.unwrap());
+        assert!(store.recent_sessions(0, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn superseded_refresh_is_reported_and_does_not_publish_its_results() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let existing = repo_record("existing", true);
+        store
+            .replace_repositories(std::slice::from_ref(&existing))
+            .unwrap();
+        let stale_generation = store.repository_policy_snapshot().unwrap().generation;
+        store.set_deferred_permission_dirs(&[]).unwrap();
+
+        let result = publish_refresh(&store, stale_generation, &[repo_record("stale", true)], &[]);
+
+        assert!(result.is_err());
+        let repositories = store.repositories().unwrap();
+        assert_eq!(repositories.len(), 1);
+        assert_eq!(repositories[0].key, "existing");
     }
 
     #[test]

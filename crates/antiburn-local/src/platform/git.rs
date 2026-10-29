@@ -399,9 +399,10 @@ pub async fn canonical_main_repo_root(repo_root: &Path) -> PathBuf {
     if let Ok(Some(common_dir)) = git_common_dir_at(repo_root).await
         && common_dir.file_name().and_then(|name| name.to_str()) == Some(".git")
         && let Some(main_root) = common_dir.parent()
-        && main_root != repo_root
     {
-        return main_root.to_path_buf();
+        return tokio::fs::canonicalize(main_root)
+            .await
+            .unwrap_or_else(|_| main_root.to_path_buf());
     }
     repo_root.to_path_buf()
 }
@@ -1442,10 +1443,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            canonical_main_repo_root(&worktree_path)
-                .await
-                .canonicalize()
-                .expect("canonical main repo root"),
+            canonical_main_repo_root(&worktree_path).await,
             dir.path().canonicalize().expect("canonical temp repo")
         );
         assert_eq!(worktree_count_at(dir.path()).await, 2);

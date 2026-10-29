@@ -37,7 +37,10 @@ jobs:
       - name: Install Rust license tools
         uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
         with:
-          tool: cargo-deny,cargo-about@0.9.2
+          tool: cargo-deny
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.2 --locked --features cli
 
       # setup-node runs pnpm to find the store for its cache, so the pnpm
       # shim must exist before setup-node starts. This is the same order as
