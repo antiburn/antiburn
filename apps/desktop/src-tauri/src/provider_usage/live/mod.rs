@@ -71,6 +71,22 @@ use crate::dto::{
     LiveUsageSupport, LiveUsageWindow,
 };
 
+/// Whether a failed check keeps the last reading. Matches
+/// `liveFailureIsRecoverable` in `lib/presentation/liveUsage.ts`.
+pub(crate) fn failure_is_recoverable(error: &LiveUsageSourceError) -> bool {
+    match error.detail {
+        // A new sign-in is the only recovery for these states.
+        Some(
+            SourceErrorDetail::SignInRequired
+            | SourceErrorDetail::CliMissing
+            | SourceErrorDetail::NotSignedIn
+            | SourceErrorDetail::DesktopOnly,
+        ) => false,
+        Some(SourceErrorDetail::RefreshPending | SourceErrorDetail::CredentialExpired) => true,
+        _ => matches!(error.category.as_str(), "rateLimited" | "unavailable"),
+    }
+}
+
 /// A source of provider-reported usage snapshots.
 ///
 /// Implementations either read a local artefact another application wrote, or

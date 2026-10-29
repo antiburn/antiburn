@@ -1469,18 +1469,19 @@ impl AnthropicTransport for LiveAnthropicTransport {
             );
             let response = sent.ok()?;
             if http::status_error(response.status()).is_some() {
-                return None;
+                return Some(None);
             }
-            http::read_capped_body(response).ok()
+            Some(http::read_capped_body(response).ok())
         })
     }
 }
 
-/// Cache both successful and failed profile requests until the token changes.
+/// Cache profile responses until the token changes, but leave transport
+/// failures uncached.
 fn cached_profile(
     cache: &Mutex<Option<(u64, Option<String>)>>,
     access_token: &str,
-    fetch: impl FnOnce() -> Option<String>,
+    fetch: impl FnOnce() -> Option<Option<String>>,
 ) -> Option<String> {
     let key = token_key(access_token);
     let mut cached = lock(cache);
@@ -1489,7 +1490,7 @@ fn cached_profile(
     {
         return body.clone();
     }
-    let body = fetch();
+    let body = fetch()?;
     *cached = Some((key, body.clone()));
     body
 }
@@ -3040,7 +3041,7 @@ mod tests {
         fn binary_present(&self) -> bool {
             self.binary_present
         }
-        fn fingerprint(&self) -> Option<claude_touch::Fingerprint> {
+        fn fingerprint(&self, _deadline: std::time::Instant) -> Option<claude_touch::Fingerprint> {
             let contents = fs::read(&self.path).unwrap_or_default();
             Some(claude_touch::Fingerprint(
                 String::from_utf8_lossy(&contents).into_owned(),
@@ -3065,7 +3066,7 @@ mod tests {
         fn binary_present(&self) -> bool {
             false
         }
-        fn fingerprint(&self) -> Option<claude_touch::Fingerprint> {
+        fn fingerprint(&self, _deadline: std::time::Instant) -> Option<claude_touch::Fingerprint> {
             panic!("this fetch must never reach the touch");
         }
         fn spawn(&self) -> Option<Box<dyn claude_touch::TouchChild>> {

@@ -234,22 +234,38 @@ fn unreadable_pi_store_is_unknown_and_never_launches() {
 }
 
 #[test]
-fn profile_success_and_failure_are_requested_once_until_token_changes() {
-    for response in [None, Some("synthetic-profile".to_owned())] {
+fn profile_success_and_http_failure_are_requested_once_until_token_changes() {
+    for (response, expected) in [
+        (
+            Some(Some("synthetic-profile".to_owned())),
+            Some("synthetic-profile".to_owned()),
+        ),
+        (Some(None), None),
+    ] {
         let cache = Mutex::new(None);
         assert_eq!(
             cached_profile(&cache, "first", || response.clone()),
-            response
+            expected
         );
         assert_eq!(
             cached_profile(&cache, "first", || panic!("duplicate profile request")),
-            response
+            expected
         );
         assert_eq!(
-            cached_profile(&cache, "second", || Some("second-profile".into())),
+            cached_profile(&cache, "second", || Some(Some("second-profile".into()))),
             Some("second-profile".into())
         );
     }
+}
+
+#[test]
+fn profile_transport_failure_is_retried_until_a_response_arrives() {
+    let cache = Mutex::new(None);
+    assert_eq!(cached_profile(&cache, "token", || None), None);
+    assert_eq!(
+        cached_profile(&cache, "token", || Some(Some("recovered-profile".into()))),
+        Some("recovered-profile".into())
+    );
 }
 
 #[test]

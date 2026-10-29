@@ -448,7 +448,7 @@ fn carry_forward_readings(summary: &mut LiveUsageSummary, previous: &LiveUsageSu
     let carried: Vec<_> = summary
         .errors
         .iter()
-        .filter(|error| transient_failure(error))
+        .filter(|error| provider_usage::live::failure_is_recoverable(error))
         .filter(|error| {
             !summary
                 .providers
@@ -467,19 +467,6 @@ fn carry_forward_readings(summary: &mut LiveUsageSummary, previous: &LiveUsageSu
         })
         .collect();
     summary.providers.extend(carried);
-}
-
-/// Whether a failed check says nothing about the account itself: a rate
-/// limit, an unreachable endpoint, or a refresh that has not happened yet.
-fn transient_failure(error: &crate::dto::LiveUsageSourceError) -> bool {
-    matches!(error.category.as_str(), "rateLimited" | "unavailable")
-        || matches!(
-            error.detail,
-            Some(
-                provider_usage::live::SourceErrorDetail::RefreshPending
-                    | provider_usage::live::SourceErrorDetail::CredentialExpired
-            )
-        )
 }
 
 /// Collect, publish, and evaluate one live-usage reading.

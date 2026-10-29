@@ -207,9 +207,9 @@ then keeps the cached login and does not read the secret. The `warn` event
 `claude_keychain_secret_missing` means that the secret read found no
 `Claude Code-credentials` item but the attribute read found it. The meter then
 shows a Keychain read failure, unless another credential carrier returns a
-reading. After a failed secret read, background checks do not read the secret
-again until the item changes. A check that the reader starts reads it again
-after 15 minutes. When no carrier holds a Claude login but the Claude Code
+reading. A failed secret read blocks another read at the same marker for 15
+minutes. After the backoff, any check can retry it; a changed marker can be
+read sooner. When no carrier holds a Claude login but the Claude Code
 config folder or CLI exists, the check reports `NotSignedIn`, so the meter
 stays visible. The debug event `live_source_absent` records any source that
 returned no reading and no error.

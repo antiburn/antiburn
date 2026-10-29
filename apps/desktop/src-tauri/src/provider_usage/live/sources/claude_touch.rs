@@ -28,9 +28,10 @@
 //! spawn, then polled until *quiescent*: changed from the pre-spawn
 //! fingerprint **and** re-observed unchanged for [`STABLE_POLLS`] consecutive
 //! polls, because the CLI may write more than once and the first change must
-//! not be trusted. The whole verification is capped at [`MAX_POLLS`] polls of
-//! [`POLL_INTERVAL`] each — about fifteen seconds — and the child is killed
-//! when it concludes, either way.
+//! not be trusted. Verification has a wall-clock deadline of
+//! [`MAX_VERIFY_DURATION`] and a secondary cap of [`MAX_POLLS`] polls. The
+//! polls share one deadline, so repeated metadata retries cannot extend
+//! verification. The child is killed when verification concludes.
 //!
 //! The fingerprint is **metadata only**. On macOS it comes from
 //! `security find-generic-password` *without* `-w`, which returns item
@@ -65,8 +66,9 @@
 //!
 //! An attribute read can fail for a short time, for example while the CLI
 //! writes the item. [`with_retries`] retries such a read with a short
-//! backoff ([`RETRY_DELAYS`]). The verification polls and the source's
-//! change-marker check use the same helper.
+//! backoff ([`RETRY_DELAYS`]). Fingerprint reads during verification use a
+//! deadline-aware helper. The source's change-marker check uses
+//! [`with_retries`].
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -78,9 +80,11 @@ use super::cli_locator;
 /// subprocess storm.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// The hard cap on verification polls — thirty polls of half a second, the
-/// ~15 s deadline on the whole touch. Past it the refresh is treated as
-/// transiently failed, never awaited further.
+/// The wall-clock budget for one fingerprint read and the verification loop.
+const MAX_VERIFY_DURATION: Duration = Duration::from_secs(15);
+
+/// A secondary cap on verification polls. The wall-clock deadline also ends
+/// verification when metadata reads take longer than the poll interval.
 const MAX_POLLS: u32 = 30;
 
 /// How many consecutive polls a changed fingerprint must be re-observed
@@ -140,6 +144,39 @@ pub(super) fn with_retries<T>(
     Err(attempts)
 }
 
+/// Run `attempt` with the same retry schedule, but stop at `deadline`.
+///
+/// Callers must bound any blocking work inside `attempt`. `Err` holds the
+/// number of attempts that failed or started before the deadline.
+pub(super) fn with_retries_until<T>(
+    deadline: Instant,
+    sleep: &dyn Fn(Duration),
+    mut attempt: impl FnMut() -> Option<T>,
+) -> Result<T, u32> {
+    let mut attempts = 0_u32;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(attempts);
+        }
+        attempts += 1;
+        let result = attempt();
+        if Instant::now() >= deadline {
+            return Err(attempts);
+        }
+        if let Some(value) = result {
+            return Ok(value);
+        }
+        let Some(delay) = RETRY_DELAYS.get((attempts - 1) as usize) else {
+            return Err(attempts);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(attempts);
+        }
+        sleep((*delay).min(remaining));
+    }
+}
+
 /// How one touch attempt runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TouchRequest {
@@ -175,9 +212,9 @@ pub trait TouchEnvironment: Send + Sync {
     fn binary_present(&self) -> bool;
 
     /// The carrier's current metadata fingerprint, or `None` when the
-    /// carrier cannot be observed — in which case no touch runs, because a
-    /// refresh that cannot be verified must not be started.
-    fn fingerprint(&self) -> Option<Fingerprint>;
+    /// carrier cannot be observed by `deadline`. Use the deadline to bound
+    /// retries and subprocess reads. The touch needs a fingerprint to start.
+    fn fingerprint(&self, deadline: Instant) -> Option<Fingerprint>;
 
     /// Start the PTY touch. `None` means the spawn itself failed.
     fn spawn(&self) -> Option<Box<dyn TouchChild>>;
@@ -211,13 +248,13 @@ pub enum TouchOutcome {
 /// verify, tear down.
 ///
 /// The child is killed as soon as verification concludes, settled or not —
-/// the hard deadline in [`MAX_POLLS`] is the child's lifetime cap.
+/// [`MAX_VERIFY_DURATION`] caps its verification lifetime.
 pub fn touch(env: &dyn TouchEnvironment, gate: &TouchGate, request: TouchRequest) -> TouchOutcome {
     if !env.binary_present() {
         log_touch_outcome("cli_missing");
         return TouchOutcome::CliMissing;
     }
-    let Some(before) = env.fingerprint() else {
+    let Some(before) = env.fingerprint(Instant::now() + MAX_VERIFY_DURATION) else {
         log_touch_outcome("metadata_unavailable");
         return TouchOutcome::Skipped;
     };
@@ -234,7 +271,7 @@ pub fn touch(env: &dyn TouchEnvironment, gate: &TouchGate, request: TouchRequest
         log_touch_outcome("spawn_failed");
         return TouchOutcome::Skipped;
     };
-    let settled = verify(env, &before);
+    let settled = verify(env, &before, Instant::now() + MAX_VERIFY_DURATION);
     child.kill();
     gate.finish();
     match settled {
@@ -264,13 +301,28 @@ fn log_touch_outcome(outcome: &'static str) {
 
 /// Poll the carrier until it is quiescent: changed from `before` and
 /// re-observed unchanged for [`STABLE_POLLS`] consecutive polls. `None`
-/// past [`MAX_POLLS`] polls — the deadline the module doc describes.
-fn verify(env: &dyn TouchEnvironment, before: &Fingerprint) -> Option<Fingerprint> {
+/// means the wall-clock deadline or poll cap expired.
+fn verify(
+    env: &dyn TouchEnvironment,
+    before: &Fingerprint,
+    deadline: Instant,
+) -> Option<Fingerprint> {
     let mut last: Option<Fingerprint> = None;
     let mut stable = 0_u32;
     for _ in 0..MAX_POLLS {
-        env.sleep(POLL_INTERVAL);
-        match env.fingerprint() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        env.sleep(POLL_INTERVAL.min(remaining));
+        if Instant::now() >= deadline {
+            return None;
+        }
+        let current = env.fingerprint(deadline);
+        if Instant::now() >= deadline {
+            return None;
+        }
+        match current {
             Some(current) if current != *before => {
                 if last.as_ref() == Some(&current) {
                     stable += 1;
@@ -456,10 +508,11 @@ impl TouchEnvironment for CliTouchEnvironment {
         cli_locator::locate(CLAUDE_BINARY).is_some()
     }
 
-    fn fingerprint(&self) -> Option<Fingerprint> {
+    fn fingerprint(&self, deadline: Instant) -> Option<Fingerprint> {
         let mut parts = Vec::new();
+        let sleep = |delay| std::thread::sleep(delay);
         #[cfg(target_os = "macos")]
-        match keychain_metadata_with_retries(&|delay| std::thread::sleep(delay)) {
+        match keychain_metadata_with_retries_until(deadline, &sleep) {
             Ok(KeychainMetadata::Found(text)) => {
                 parts.push(format!("keychain:{:016x}", hash(&text)));
             }
@@ -467,12 +520,10 @@ impl TouchEnvironment for CliTouchEnvironment {
             Ok(KeychainMetadata::Unreadable) | Err(_) => return None,
         }
         let file = self.credentials_path.as_deref().map(|path| {
-            with_retries(&|delay| std::thread::sleep(delay), || {
-                match std::fs::read(path) {
-                    Ok(bytes) => Some(Some(bytes)),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
-                    Err(_) => None,
-                }
+            with_retries_until(deadline, &sleep, || match std::fs::read(path) {
+                Ok(bytes) => Some(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+                Err(_) => None,
             })
         });
         match file {
@@ -480,7 +531,7 @@ impl TouchEnvironment for CliTouchEnvironment {
             Some(Err(_)) => parts.push("file:unreadable".to_owned()),
             Some(Ok(None)) | None => parts.push("file:absent".to_owned()),
         }
-        Some(Fingerprint(parts.join(";")))
+        (Instant::now() < deadline).then(|| Fingerprint(parts.join(";")))
     }
 
     fn spawn(&self) -> Option<Box<dyn TouchChild>> {
@@ -564,6 +615,9 @@ pub(super) enum KeychainMetadata {
     Unreadable,
 }
 
+#[cfg(target_os = "macos")]
+const KEYCHAIN_METADATA_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Read the Keychain item's attributes — never its secret.
 ///
 /// `security find-generic-password` without `-w` prints the item's
@@ -576,14 +630,19 @@ pub(super) fn keychain_metadata() -> KeychainMetadata {
     keychain_metadata_for("Claude Code-credentials", None)
 }
 
-/// Read the Claude item's attributes, with [`with_retries`] around a failed
-/// read. `Ok` is never [`KeychainMetadata::Unreadable`]. `Err` holds the
-/// number of attempts that failed.
+/// Read the Claude item's attributes until `deadline`. `Ok` is never
+/// [`KeychainMetadata::Unreadable`]. `Err` holds the failed attempt count.
 #[cfg(target_os = "macos")]
-pub(super) fn keychain_metadata_with_retries(
+pub(super) fn keychain_metadata_with_retries_until(
+    deadline: Instant,
     sleep: &dyn Fn(Duration),
 ) -> Result<KeychainMetadata, u32> {
-    retry_metadata(sleep, keychain_metadata)
+    with_retries_until(deadline, sleep, || {
+        match keychain_metadata_for_until("Claude Code-credentials", None, deadline) {
+            KeychainMetadata::Unreadable => None,
+            metadata => Some(metadata),
+        }
+    })
 }
 
 /// Retry `read` while it reports [`KeychainMetadata::Unreadable`].
@@ -601,18 +660,28 @@ pub(super) fn retry_metadata(
 /// Read attributes for the selected service and account without requesting the secret.
 #[cfg(target_os = "macos")]
 pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> KeychainMetadata {
+    keychain_metadata_for_until(service, account, Instant::now() + KEYCHAIN_METADATA_TIMEOUT)
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_metadata_for_until(
+    service: &str,
+    account: Option<&str>,
+    deadline: Instant,
+) -> KeychainMetadata {
     use std::io::Read as _;
     use std::process::Stdio;
     use std::sync::mpsc;
 
-    /// Matches `anthropic_fetch::macos_keychain::TIMEOUT` — a metadata read
-    /// is instant or wedged, never merely slow.
-    const TIMEOUT: Duration = Duration::from_secs(3);
     /// Attributes are a few hundred bytes; cap the read defensively.
     const MAX_BYTES: usize = 64 * 1024;
     /// `errSecItemNotFound`, the same exit the secret read classifies.
     const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
 
+    let deadline = deadline.min(Instant::now() + KEYCHAIN_METADATA_TIMEOUT);
+    if Instant::now() >= deadline {
+        return KeychainMetadata::Unreadable;
+    }
     let mut child = match keychain_metadata_command(service, account)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -623,6 +692,8 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
         Err(_) => return KeychainMetadata::Unreadable,
     };
     let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
         return KeychainMetadata::Unreadable;
     };
     let (tx, rx) = mpsc::channel();
@@ -643,7 +714,7 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
         }
         let _ = tx.send(buffer);
     });
-    let bytes = match rx.recv_timeout(TIMEOUT) {
+    let bytes = match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(bytes) => bytes,
         Err(_) => {
             let _ = child.kill();
@@ -651,7 +722,7 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
             return KeychainMetadata::Unreadable;
         }
     };
-    let Ok(status) = child.wait() else {
+    let Some(status) = wait_for_child_until(&mut child, deadline) else {
         return KeychainMetadata::Unreadable;
     };
     if !status.success() {
@@ -665,6 +736,38 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
         return KeychainMetadata::Unreadable;
     }
     KeychainMetadata::Found(bytes)
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_child_until(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> Option<std::process::ExitStatus> {
+    loop {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return (Instant::now() < deadline).then_some(status);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -751,7 +854,7 @@ mod tests {
         fn binary_present(&self) -> bool {
             self.binary_present
         }
-        fn fingerprint(&self) -> Option<Fingerprint> {
+        fn fingerprint(&self, _deadline: Instant) -> Option<Fingerprint> {
             self.polls.fetch_add(1, Ordering::SeqCst);
             let mut script = self.script.lock().unwrap();
             if script.len() > 1 {
@@ -772,11 +875,20 @@ mod tests {
     }
 
     #[test]
-    fn the_poll_floor_and_cap_bound_the_verification_deadline() {
+    fn the_poll_floor_and_cap_are_bounded_by_the_verification_deadline() {
         assert!(POLL_INTERVAL >= Duration::from_millis(500));
-        let deadline = POLL_INTERVAL * MAX_POLLS;
-        assert!(deadline >= Duration::from_secs(14));
-        assert!(deadline <= Duration::from_secs(16));
+        assert!(POLL_INTERVAL * MAX_POLLS <= MAX_VERIFY_DURATION);
+        assert_eq!(MAX_VERIFY_DURATION, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn verification_stops_when_its_wall_clock_deadline_expires() {
+        let env = ScriptedEnv::new(&["before"]);
+        assert_eq!(
+            verify(&env, &Fingerprint("before".into()), Instant::now()),
+            None
+        );
+        assert_eq!(env.polls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -838,7 +950,7 @@ mod tests {
             fn binary_present(&self) -> bool {
                 true
             }
-            fn fingerprint(&self) -> Option<Fingerprint> {
+            fn fingerprint(&self, _deadline: Instant) -> Option<Fingerprint> {
                 None
             }
             fn spawn(&self) -> Option<Box<dyn TouchChild>> {
@@ -1008,6 +1120,29 @@ mod tests {
         });
         assert_eq!(result, Ok("found"));
         assert_eq!(*waits.lock().unwrap(), vec![RETRY_DELAYS[0]]);
+    }
+
+    #[test]
+    fn an_expired_deadline_prevents_another_retry() {
+        let calls = AtomicUsize::new(0);
+        let result = with_retries_until(Instant::now(), &|_| {}, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None::<()>
+        });
+        assert_eq!(result, Err(0));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn retry_backoff_uses_only_the_remaining_deadline() {
+        let calls = AtomicUsize::new(0);
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let result = with_retries_until(deadline, &std::thread::sleep, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None::<()>
+        });
+        assert_eq!(result, Err(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(target_os = "macos")]

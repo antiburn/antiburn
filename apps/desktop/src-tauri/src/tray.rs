@@ -757,24 +757,6 @@ fn period_reset(window: &crate::dto::LiveUsageWindow, at: Option<time::OffsetDat
     }
 }
 
-/// Whether a failed check keeps the last reading. Matches
-/// `liveFailureIsRecoverable` in `lib/presentation/liveUsage.ts`.
-fn failure_is_recoverable(error: &crate::dto::LiveUsageSourceError) -> bool {
-    use crate::provider_usage::live::SourceErrorDetail;
-    match error.detail {
-        // Only a new sign-in can recover these. The tray meter does not show
-        // the last reading.
-        Some(
-            SourceErrorDetail::SignInRequired
-            | SourceErrorDetail::CliMissing
-            | SourceErrorDetail::NotSignedIn
-            | SourceErrorDetail::DesktopOnly,
-        ) => false,
-        Some(SourceErrorDetail::RefreshPending | SourceErrorDetail::CredentialExpired) => true,
-        _ => matches!(error.category.as_str(), "rateLimited" | "unavailable"),
-    }
-}
-
 fn columns_for_used_percent(used: f64) -> usize {
     ((100.0 - used) / 20.0).ceil() as usize
 }
@@ -790,7 +772,7 @@ fn provider_is_displayable(
     else {
         return true;
     };
-    if failure_is_recoverable(error) {
+    if crate::provider_usage::live::failure_is_recoverable(error) {
         return true;
     }
     let Ok(generated_at) = time::OffsetDateTime::parse(
@@ -1554,7 +1536,11 @@ mod tests {
                 detail: Some(detail),
                 plan: None,
             };
-            assert_eq!(failure_is_recoverable(&error), keeps, "{detail:?}");
+            assert_eq!(
+                crate::provider_usage::live::failure_is_recoverable(&error),
+                keeps,
+                "{detail:?}"
+            );
         }
     }
 

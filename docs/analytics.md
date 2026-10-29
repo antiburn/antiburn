@@ -485,8 +485,8 @@ again? It reports each changed outcome of the login read and the refresh. The
 shell keeps at most sixteen pending outcomes between checks and drops the rest.
 `keychain_metadata_failed` means the macOS Keychain attribute read failed four
 times in a row; `keychain_secret_missing` means the attribute read found the
-item but the secret read did not. `gated` means a cooldown or another running
-refresh delayed the attempt. From the release with the #704 policy correction,
+item but the secret read did not. `gated` means the refresh did not run; it does
+not identify why. From the release with the #704 policy correction,
 `sign_in_required` with `cannot_refresh` reports a decision without an owner
 launch. Earlier releases could attempt one refresh for that state. Segment
 these outcomes by app version; this event is not an owner-launch counter.
