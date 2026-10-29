@@ -413,6 +413,38 @@ describe("UsagePane", () => {
     },
   )
 
+  it.each([true, false])("keeps Pi recovery guidance with an error: %s", async (withError) => {
+    getLiveUsage.mockResolvedValue(
+      summary({
+        errors: withError
+          ? [
+              {
+                source: "claude",
+                provider: "anthropic",
+                displayName: "Claude",
+                category: "authentication",
+                detail: "signInRequired",
+              },
+            ]
+          : [],
+        meters: [
+          {
+            provider: "anthropic",
+            displayName: "Claude",
+            shown: true,
+            detection: "signInRequired",
+            carrierLabel: "Pi",
+          },
+        ],
+      }),
+    )
+    pane({ liveUsageEnabled: true })
+    expect(
+      await screen.findByText("Need to sign in again. Sign in inside Pi again."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Claude Code/)).not.toBeInTheDocument()
+  })
+
   it("lists what each source can currently prove", async () => {
     getLiveUsage.mockResolvedValue(
       summary({

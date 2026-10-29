@@ -28,7 +28,8 @@ pub struct PiOauth {
 impl PiOauth {
     /// Whether the access token has not yet passed its stated expiry.
     pub fn is_live(&self, now: time::OffsetDateTime) -> bool {
-        i128::from(self.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
+        !self.access_token.trim().is_empty()
+            && i128::from(self.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
     }
 }
 
@@ -68,12 +69,22 @@ pub fn provider_keys(path: &Path) -> Option<std::collections::BTreeSet<String>> 
 
 /// Read a live OAuth entry for `provider_key`.
 pub fn read_entry(path: &Path, provider_key: &str) -> Option<PiOauth> {
-    let metadata = fs::metadata(path).ok()?;
+    read_entry_checked(path, provider_key).ok().flatten()
+}
+
+/// Keep an unreadable store separate from an absent provider login.
+pub fn read_entry_checked(path: &Path, provider_key: &str) -> std::io::Result<Option<PiOauth>> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
     if metadata.len() > MAX_AUTH_BYTES {
-        return None;
+        return Err(std::io::ErrorKind::InvalidData.into());
     }
-    let contents = fs::read_to_string(path).ok()?;
-    parse_entry(&contents, provider_key)
+    let contents = fs::read_to_string(path)?;
+    serde_json::from_str::<Value>(&contents).map_err(|_| std::io::ErrorKind::InvalidData)?;
+    Ok(parse_entry(&contents, provider_key))
 }
 
 fn parse_entry(contents: &str, provider_key: &str) -> Option<PiOauth> {
@@ -82,12 +93,32 @@ fn parse_entry(contents: &str, provider_key: &str) -> Option<PiOauth> {
     if entry.get("type").and_then(Value::as_str) != Some("oauth") {
         return None;
     }
-    let access_token = entry.get("access")?.as_str()?.to_owned();
-    let refresh_token = entry.get("refresh")?.as_str()?.to_owned();
-    let expires_at_ms = entry.get("expires")?.as_i64()?;
-    if access_token.is_empty() || refresh_token.is_empty() || expires_at_ms <= 0 {
-        return None;
-    }
+    let (access_token, refresh_token, expires_at_ms) = if provider_key == ANTHROPIC_KEY {
+        (
+            entry
+                .get("access")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            entry
+                .get("refresh")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            entry
+                .get("expires")
+                .and_then(Value::as_i64)
+                .unwrap_or_default(),
+        )
+    } else {
+        let access = entry.get("access")?.as_str()?;
+        let refresh = entry.get("refresh")?.as_str()?;
+        let expires = entry.get("expires")?.as_i64()?;
+        if access.is_empty() || refresh.is_empty() || expires <= 0 {
+            return None;
+        }
+        (access.to_owned(), refresh.to_owned(), expires)
+    };
     let account_id = entry
         .get("accountId")
         .and_then(Value::as_str)
@@ -134,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_oauth_missing_and_tombstoned_entries() {
+    fn keeps_incomplete_anthropic_logins_but_rejects_other_shapes() {
         assert!(parse_entry(STORE, "openrouter").is_none());
         assert!(parse_entry(STORE, "missing").is_none());
         for entry in [
@@ -142,7 +173,7 @@ mod tests {
             r#"{"anthropic":{"type":"oauth","access":"a","refresh":"","expires":1800000000000}}"#,
             r#"{"anthropic":{"type":"oauth","access":"a","refresh":"r","expires":0}}"#,
         ] {
-            assert!(parse_entry(entry, ANTHROPIC_KEY).is_none());
+            assert!(parse_entry(entry, ANTHROPIC_KEY).is_some());
         }
     }
 

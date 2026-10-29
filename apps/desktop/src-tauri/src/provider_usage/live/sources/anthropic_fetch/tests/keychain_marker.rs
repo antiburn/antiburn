@@ -136,8 +136,16 @@ fn a_failed_attribute_read_retries_then_keeps_the_cache() {
             &sleep,
             false,
         )
-        .unwrap();
-    assert!(kept.is_some());
+        .err()
+        .expect("unreadable metadata");
+    assert_eq!(kept.detail, Some(SourceErrorDetail::KeychainUnreadable));
+    assert!(
+        lock(&source.logins.keychain)
+            .as_ref()
+            .unwrap()
+            .login
+            .is_some()
+    );
 
     // A read that recovers on a retry continues as normal.
     let calls = Cell::new(0);
@@ -189,20 +197,15 @@ fn a_listed_item_whose_secret_reads_as_absent_is_a_keychain_failure() {
             .read_keychain_login(found(ATTRIBUTES_A), no_secret_read, &sleep, true)
             .is_err()
     );
-    // After the backoff, a check that the reader started reads again.
+    // After the backoff, a background check can recover without a marker change.
     backdate_secret_failure(&source);
-    assert!(
-        source
-            .read_keychain_login(found(ATTRIBUTES_A), no_secret_read, &sleep, false)
-            .is_err()
-    );
     assert!(
         source
             .read_keychain_login(
                 found(ATTRIBUTES_A),
                 secret(credentials_file(i64::MAX, "max")),
                 &sleep,
-                true,
+                false,
             )
             .unwrap()
             .is_some()
@@ -255,8 +258,8 @@ fn an_mcp_only_item_is_no_login_and_detection_skips_it() {
         .unwrap();
     assert!(login.is_none());
     assert_eq!(source.logins.keychain(ATTRIBUTES_A), CachedState::NoLogin);
-    // A changed item counts as signed in until a check reads it.
-    assert_eq!(source.logins.keychain(ATTRIBUTES_B), CachedState::Unknown);
+    // A changed item keeps the confirmed state until a successful read.
+    assert_eq!(source.logins.keychain(ATTRIBUTES_B), CachedState::NoLogin);
 
     let mut probe = RecordingPresence {
         keychain: Some(KeychainMetadata::Found(ATTRIBUTES_A.to_vec())),
@@ -292,6 +295,198 @@ fn an_mcp_only_item_is_no_login_and_detection_skips_it() {
     );
     assert_eq!(
         presence,
+        Presence::via(Detection::SignInRequired, LoginCarrier::ClaudeKeychain)
+    );
+}
+
+#[test]
+fn changed_malformed_keychain_preserves_published_detection_then_recovers() {
+    struct MockKeychain {
+        source: ClaudeDirectFetch,
+        material: Mutex<(&'static [u8], String)>,
+    }
+    impl LiveUsageSource for MockKeychain {
+        fn id(&self) -> &'static str {
+            self.source.id()
+        }
+        fn provider(&self) -> &'static str {
+            self.source.provider()
+        }
+        fn detect(&self, _: bool) -> Presence {
+            let (attributes, _) = &*lock(&self.material);
+            let mut probe = RecordingPresence {
+                keychain: Some(KeychainMetadata::Found(attributes.to_vec())),
+                ..Default::default()
+            };
+            probe.paths.insert(PRESENCE_CONFIG.into(), Ok(true));
+            detect_presence(
+                &probe,
+                &self.source.logins,
+                Some(Path::new(PRESENCE_CREDENTIALS)),
+                None,
+                || panic!("must not ask Pi"),
+            )
+        }
+        fn fetch(&self, max_age: std::time::Duration) -> SourceOutcome {
+            let now = OffsetDateTime::now_utc();
+            self.source.cooldown.poll(now, max_age, || {
+                let (attributes, body) = &*lock(&self.material);
+                let login = self.source.read_keychain_login(
+                    found(attributes),
+                    secret(body.clone()),
+                    &|_| {},
+                    false,
+                )?;
+                let Some(login) = login else {
+                    return Err(auth_failure(SourceErrorDetail::NotSignedIn));
+                };
+                if !login.is_live(now) {
+                    self.source.logins.set_sign_in_required(true);
+                    return Err(auth_failure(SourceErrorDetail::SignInRequired));
+                }
+                fetch_from_carriers(&OnlyToken("synthetic-token"), vec![login], None, now)
+                    .map_err(FetchFailure::from)
+            })
+        }
+    }
+
+    for initial in [BLANK_LOGIN, MCP_ONLY] {
+        let mock = Arc::new(MockKeychain {
+            source: source(),
+            material: Mutex::new((ATTRIBUTES_A, initial.into())),
+        });
+        let expected = if initial == BLANK_LOGIN {
+            Detection::SignInRequired
+        } else {
+            Detection::InstalledNotSignedIn
+        };
+        reliability::assert_published_detection(
+            mock.clone(),
+            expected,
+            Some(ProviderUsageError::Authentication),
+        );
+        *lock(&mock.material) = (ATTRIBUTES_B, "{\"claudeAiOauth\":".into());
+        mock.source.cooldown.open_for_test();
+        reliability::assert_published_detection(
+            mock.clone(),
+            expected,
+            Some(ProviderUsageError::Unavailable),
+        );
+        backdate_secret_failure(&mock.source);
+        *lock(&mock.material) = (ATTRIBUTES_B, credentials_file(i64::MAX, "pro"));
+        mock.source.cooldown.open_for_test();
+        reliability::assert_published_detection(mock.clone(), Detection::SignedIn, None);
+        assert_eq!(mock.detect(false).detection, Detection::SignedIn);
+    }
+}
+
+fn seed_reading(source: &ClaudeDirectFetch) {
+    let now = OffsetDateTime::now_utc();
+    let login = parse_credentials_json(&credentials_file(i64::MAX, "max"))
+        .unwrap()
+        .unwrap();
+    let outcome = source.cooldown.poll(now, USER_MAX_AGE, || {
+        fetch_from_carriers(&OnlyToken("synthetic-token"), vec![login], None, now)
+            .map_err(FetchFailure::from)
+    });
+    assert_eq!(outcome.snapshots.len(), 1);
+    source.cooldown.open_for_test();
+}
+
+fn assert_kept_reading(source: &ClaudeDirectFetch, failure: FetchFailure) {
+    let outcome = source
+        .cooldown
+        .poll(OffsetDateTime::now_utc(), USER_MAX_AGE, || Err(failure));
+    assert_eq!(outcome.error, Some(ProviderUsageError::Unavailable));
+    assert_eq!(outcome.snapshots.len(), 1);
+}
+
+#[test]
+fn malformed_secret_preserves_login_and_retries_after_backoff() {
+    let source = source();
+    seed_reading(&source);
+    source
+        .read_keychain_login(
+            found(ATTRIBUTES_A),
+            secret(credentials_file(i64::MAX, "max")),
+            &|_| {},
+            false,
+        )
+        .unwrap();
+    source.logins.set_sign_in_required(true);
+    let failed = source
+        .read_keychain_login(
+            found(ATTRIBUTES_B),
+            secret("{\"claudeAiOauth\":".into()),
+            &|_| {},
+            false,
+        )
+        .err()
+        .unwrap();
+    assert_kept_reading(&source, failed);
+    assert_eq!(
+        source.logins.keychain(ATTRIBUTES_B),
+        CachedState::SignInRequired
+    );
+    assert!(
+        source
+            .read_keychain_login(found(ATTRIBUTES_B), no_secret_read, &|_| {}, false)
+            .is_err()
+    );
+    backdate_secret_failure(&source);
+    source
+        .read_keychain_login(
+            found(ATTRIBUTES_B),
+            secret(credentials_file(i64::MAX, "pro")),
+            &|_| {},
+            false,
+        )
+        .unwrap();
+    assert_eq!(source.logins.keychain(ATTRIBUTES_B), CachedState::Usable);
+}
+
+#[test]
+fn metadata_failure_preserves_confirmed_detection_before_and_after_collection() {
+    let source = source();
+    seed_reading(&source);
+    source
+        .read_keychain_login(
+            found(ATTRIBUTES_A),
+            secret(BLANK_LOGIN.into()),
+            &|_| {},
+            false,
+        )
+        .unwrap();
+    source.logins.set_sign_in_required(true);
+    let probe = RecordingPresence {
+        keychain: Some(KeychainMetadata::Unreadable),
+        ..Default::default()
+    };
+    let detected = || {
+        detect_presence(
+            &probe,
+            &source.logins,
+            Some(Path::new(PRESENCE_CREDENTIALS)),
+            None,
+            || panic!("must not ask Pi"),
+        )
+    };
+    assert_eq!(
+        detected(),
+        Presence::via(Detection::SignInRequired, LoginCarrier::ClaudeKeychain)
+    );
+    let failure = source
+        .read_keychain_login(
+            || KeychainMetadata::Unreadable,
+            no_secret_read,
+            &|_| {},
+            false,
+        )
+        .err()
+        .unwrap();
+    assert_kept_reading(&source, failure);
+    assert_eq!(
+        detected(),
         Presence::via(Detection::SignInRequired, LoginCarrier::ClaudeKeychain)
     );
 }

@@ -1221,6 +1221,40 @@ describe("UsageView — the grace period", () => {
     )
   })
 
+  it("sends an expired Pi login back to Pi rather than Claude Code", () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({
+          providers: [],
+          meters: [
+            {
+              provider: "anthropic",
+              displayName: "Claude",
+              shown: true,
+              detection: "signInRequired",
+              carrierLabel: "Pi",
+            },
+          ],
+          errors: [
+            {
+              source: "claude-usage-fetch",
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "authentication",
+              detail: "signInRequired",
+            },
+          ],
+        })}
+        now={NOW}
+      />,
+    )
+    expect(
+      screen.getByText("Need to sign in again. Sign in inside Pi again."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Claude Code/)).not.toBeInTheDocument()
+  })
+
   it("reads exactly the grace boundary as still shown", () => {
     // Exactly 10 minutes before `live()`'s generatedAt — LIVE_USAGE_GRACE_MS
     // itself.

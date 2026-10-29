@@ -180,7 +180,10 @@ refreshes. `claude_refresh_result` adds the trigger (`expired`, `pre_expiry`,
 or `cannot_refresh`), the origin (`user` or `background`), and the result
 (`refreshed`, `pending`, `sign_in_required`, `cli_missing`, `unchanged`,
 `gated`, or `retry_failed`). Background checks run the CLI refresh, too, with a
-longer cooldown.
+longer cooldown. A login without a usable refresh token reports
+`sign_in_required` without launching Claude or Pi. Missing access with a usable
+refresh token stays eligible for owner refresh. Credential read failures remain
+unknown and retry; they do not prove logout.
 `live_source_failed` also includes the typed error detail. These events contain
 no credentials or CLI output. A settled refresh means the credential carrier
 changed; the subsequent usage request still determines whether recovery worked.
@@ -210,6 +213,12 @@ after 15 minutes. When no carrier holds a Claude login but the Claude Code
 config folder or CLI exists, the check reports `NotSignedIn`, so the meter
 stays visible. The debug event `live_source_absent` records any source that
 returned no reading and no error.
+
+The debug event `live_usage_request` records each request to the Claude usage
+API with its endpoint (`usage` or `profile`) and HTTP status. It contains no
+token or body. The debug event `live_usage_rate_limit_backoff` records each
+rate limit with the count in a row, the wait before the next attempt, and the
+provider's `Retry-After` when it sent one.
 
 At launch, the `info` event `cli_located` records where antiburn finds the
 `claude` CLI: `process_path`, `install_dir` (an install directory outside the

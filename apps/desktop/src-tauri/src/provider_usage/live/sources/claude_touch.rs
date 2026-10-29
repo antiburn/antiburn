@@ -53,9 +53,10 @@
 //! until the reader runs `claude` and signs in again.
 //!
 //! An attempt that does not settle also counts against the material. A
-//! login that cannot refresh (a blank login, or a login without a refresh
-//! token) and a live login that the endpoint rejected get one attempt per
-//! change of the material. An expired login with a refresh token gets
+//! live login that the endpoint rejected gets one attempt per change of
+//! the material, if it has a usable refresh token. The caller does not
+//! attempt refresh without that token. An expired or blank login with a
+//! refresh token gets
 //! [`UNCHANGED_ATTEMPT_LIMIT`] attempts. After the limit, the gate marks the
 //! material terminal. A refresh before expiry never counts. See
 //! [`TouchRequest::attempt_limit`].

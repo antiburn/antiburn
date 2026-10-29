@@ -72,6 +72,7 @@ function sectioned(providers: readonly ProviderUsagePayload[]): {
 }
 
 interface UsageCardEntry {
+  carrierLabel?: string
   local: ProviderUsagePayload[]
   live: LiveProviderUsagePayload[]
   errors: LiveUsageSourceErrorPayload[]
@@ -230,6 +231,10 @@ function usageCards(
       errors: [],
       key: `provider:${error.provider}`,
     }
+    const carrierLabel = live.meters?.find(
+      (meter) => meter.provider === error.provider,
+    )?.carrierLabel
+    if (carrierLabel) card.carrierLabel = carrierLabel
     card.errors.push(error)
     cards.set(error.provider, card)
   }
@@ -352,12 +357,14 @@ function UsageSection({
 }
 
 function ProviderCard({
+  carrierLabel,
   local,
   live,
   errors,
   now,
   generatedAt,
 }: {
+  carrierLabel?: string
   local: readonly ProviderUsagePayload[]
   live: readonly LiveProviderUsagePayload[]
   errors: readonly LiveUsageSourceErrorPayload[]
@@ -567,7 +574,7 @@ function ProviderCard({
                     : "bg-system-orange/10 text-system-orange",
                 )}
               >
-                {liveErrorNote(error.category, error.provider, error.detail)}
+                {liveErrorNote(error.category, error.provider, error.detail, carrierLabel)}
               </p>
             ))}
 

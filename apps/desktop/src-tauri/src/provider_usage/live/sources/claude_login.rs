@@ -5,7 +5,6 @@
 //! module holds the parsed login, the change markers, and the cached state
 //! that detection consults. See that module's doc for the rules.
 
-use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -21,11 +20,11 @@ use super::claude_touch;
 /// general state file — cap the read defensively rather than trust that.
 pub(super) const MAX_CREDENTIAL_BYTES: u64 = 256 * 1024;
 
-/// What the last check learned about one native carrier at its current
-/// change marker. Detection reads it and never reads a secret itself.
+/// What the last successful read learned about one native carrier.
+/// Detection keeps this state until collection confirms a change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CachedState {
-    /// No check read this carrier at its current marker yet.
+    /// No check has successfully read this carrier yet.
     Unknown,
     /// The carrier holds no Claude login, for example an MCP-only item.
     NoLogin,
@@ -57,6 +56,11 @@ pub(super) trait LoginStates {
     /// The state of the Keychain item, by its attribute output.
     #[cfg(target_os = "macos")]
     fn keychain(&self, attributes: &[u8]) -> CachedState;
+    /// The last confirmed state when Keychain metadata cannot be read.
+    #[cfg(target_os = "macos")]
+    fn keychain_unavailable(&self) -> Option<CachedState> {
+        None
+    }
 }
 
 /// No check ran yet: every carrier that exists counts as signed in.
@@ -93,7 +97,7 @@ impl ClaudeCredentials {
     /// A login with no usable token: an empty access token, or an expiry of
     /// zero or less. See the `anthropic_fetch` module doc.
     pub(super) fn is_blank(&self) -> bool {
-        self.access_token.is_empty() || self.expires_at_ms <= 0
+        self.access_token.trim().is_empty() || self.expires_at_ms <= 0
     }
 
     pub(super) fn is_live(&self, now: OffsetDateTime) -> bool {
@@ -102,7 +106,7 @@ impl ClaudeCredentials {
 
     /// Whether the CLI can refresh this login without a new sign-in.
     pub(super) fn can_refresh(&self) -> bool {
-        !self.is_blank() && self.has_refresh_token
+        self.has_refresh_token
     }
 
     /// Whether this live token expires within `window` from `now`.
@@ -114,10 +118,16 @@ impl ClaudeCredentials {
 /// Parse the `{"claudeAiOauth": {...}}` shape both carriers hold — the
 /// Keychain's raw value and the credentials file's contents are the same
 /// JSON, so one function reads either. `None` means "no Claude login": the
-/// input is not JSON, or it has no `claudeAiOauth` object. An object with
+/// input has no `claudeAiOauth` object. Invalid JSON returns an error. An object with
 /// missing or blank fields is a blank login — see the `anthropic_fetch` module doc.
-pub(super) fn parse_credentials_json(contents: &str) -> Option<ClaudeCredentials> {
-    let value: Value = serde_json::from_str(contents).ok()?;
+pub(super) fn parse_credentials_json(
+    contents: &str,
+) -> Result<Option<ClaudeCredentials>, serde_json::Error> {
+    let value: Value = serde_json::from_str(contents)?;
+    Ok(parse_credentials_value(&value))
+}
+
+fn parse_credentials_value(value: &Value) -> Option<ClaudeCredentials> {
     let oauth = value.get("claudeAiOauth")?.as_object()?;
     let access_token = oauth
         .get("accessToken")
@@ -131,7 +141,7 @@ pub(super) fn parse_credentials_json(contents: &str) -> Option<ClaudeCredentials
     let has_refresh_token = oauth
         .get("refreshToken")
         .and_then(Value::as_str)
-        .is_some_and(|token| !token.is_empty());
+        .is_some_and(|token| !token.trim().is_empty());
     Some(ClaudeCredentials {
         access_token,
         expires_at_ms,
@@ -358,8 +368,6 @@ pub(super) fn parse_mdat(attributes: &[u8]) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FileMarker {
     pub(super) content_hash: u64,
-    pub(super) modified: Option<std::time::SystemTime>,
-    pub(super) len: u64,
 }
 
 /// One native carrier's parsed login at one change marker.
@@ -431,29 +439,24 @@ impl NativeLogins {
 }
 
 impl LoginStates for NativeLogins {
-    fn file(&self, path: &Path) -> CachedState {
-        let Ok(metadata) = fs::metadata(path) else {
-            return CachedState::Unknown;
-        };
-        match lock(&self.file).as_ref() {
-            Some(cached)
-                if cached.marker.len == metadata.len()
-                    && cached.marker.modified.is_some()
-                    && cached.marker.modified == metadata.modified().ok() =>
-            {
-                cached.state()
-            }
-            _ => CachedState::Unknown,
-        }
+    #[cfg(target_os = "macos")]
+    fn keychain_unavailable(&self) -> Option<CachedState> {
+        lock(&self.keychain).as_ref().map(CachedLogin::state)
+    }
+
+    fn file(&self, _path: &Path) -> CachedState {
+        // A changed marker does not prove a new login. Collection must read it.
+        lock(&self.file)
+            .as_ref()
+            .map_or(CachedState::Unknown, CachedLogin::state)
     }
 
     #[cfg(target_os = "macos")]
-    fn keychain(&self, attributes: &[u8]) -> CachedState {
-        let marker = KeychainMarker::from_attributes(attributes);
-        match lock(&self.keychain).as_ref() {
-            Some(cached) if cached.marker == marker => cached.state(),
-            _ => CachedState::Unknown,
-        }
+    fn keychain(&self, _attributes: &[u8]) -> CachedState {
+        // Attribute changes alone cannot replace a confirmed login state.
+        lock(&self.keychain)
+            .as_ref()
+            .map_or(CachedState::Unknown, CachedLogin::state)
     }
 }
 
@@ -476,7 +479,7 @@ pub(super) enum RefreshTrigger {
     Expired,
     /// A live login that can refresh expires within [`PRE_EXPIRY_WINDOW`].
     PreExpiry,
-    /// No native login can refresh: each is blank or has no refresh token.
+    /// No native login has a usable refresh token.
     CannotRefresh,
 }
 
@@ -542,7 +545,9 @@ mod tests {
             NOW * 1_000,
             (NOW + 30_000_000) * 1_000
         );
-        let credentials = parse_credentials_json(&keychain_value).expect("parses");
+        let credentials = parse_credentials_json(&keychain_value)
+            .unwrap()
+            .expect("parses");
         assert_eq!(credentials.access_token, "synthetic-token");
         assert_eq!(credentials.expires_at_ms, NOW * 1_000);
         assert_eq!(credentials.subscription_type.as_deref(), Some("max"));
@@ -553,39 +558,52 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_keychain_shaped_text_reads_as_absent() {
-        assert!(parse_credentials_json("not json at all").is_none());
-        assert!(parse_credentials_json(r#"{"somethingElse": true}"#).is_none());
+    fn invalid_json_is_unknown_and_valid_non_login_json_is_absent() {
+        assert!(parse_credentials_json("not json at all").is_err());
+        assert!(
+            parse_credentials_json(r#"{"somethingElse": true}"#)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn a_blank_login_is_an_expired_login_and_mcp_only_is_no_login() {
-        let blank = parse_credentials_json(BLANK_LOGIN).expect("a blank login is a login");
+        let blank = parse_credentials_json(BLANK_LOGIN)
+            .unwrap()
+            .expect("a blank login is a login");
         assert!(blank.is_blank());
         assert!(!blank.is_live(OffsetDateTime::from_unix_timestamp(NOW).unwrap()));
         assert!(!blank.can_refresh());
 
         // An object with missing fields is blank, too.
-        let missing = parse_credentials_json(r#"{"claudeAiOauth":{}}"#).expect("a login");
+        let missing = parse_credentials_json(r#"{"claudeAiOauth":{}}"#)
+            .unwrap()
+            .expect("a login");
         assert!(missing.is_blank());
 
         // Only the presence of the refresh token is kept.
         let refreshable = parse_credentials_json(&format!(
             r#"{{"claudeAiOauth":{{"accessToken":"synthetic","refreshToken":"synthetic-refresh","expiresAt":{}}}}}"#,
             NOW * 1_000
-        )).unwrap();
+        )).unwrap().unwrap();
         assert!(refreshable.has_refresh_token);
         assert!(refreshable.can_refresh());
         let no_refresh = parse_credentials_json(&format!(
             r#"{{"claudeAiOauth":{{"accessToken":"synthetic","expiresAt":{}}}}}"#,
             NOW * 1_000
         ))
+        .unwrap()
         .unwrap();
         assert!(!no_refresh.has_refresh_token);
         assert!(!no_refresh.can_refresh());
 
-        assert!(parse_credentials_json(MCP_ONLY).is_none());
-        assert!(parse_credentials_json(r#"{"claudeAiOauth":null}"#).is_none());
+        assert!(parse_credentials_json(MCP_ONLY).unwrap().is_none());
+        assert!(
+            parse_credentials_json(r#"{"claudeAiOauth":null}"#)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[cfg(target_os = "macos")]

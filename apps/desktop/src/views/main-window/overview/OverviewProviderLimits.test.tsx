@@ -104,6 +104,37 @@ describe("OverviewProviderLimits", () => {
     expect(screen.queryByText(/\$/)).toBeNull()
   })
 
+  it("keeps Pi recovery guidance in the overview meter", () => {
+    render(
+      <OverviewProviderLimits
+        live={liveSummary({
+          providers: [],
+          meters: [
+            {
+              provider: "anthropic",
+              displayName: "Claude",
+              shown: true,
+              detection: "signInRequired",
+              carrierLabel: "Pi",
+            },
+          ],
+          errors: [
+            sourceError({
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "authentication",
+              detail: "signInRequired",
+            }),
+          ],
+        })}
+      />,
+    )
+    expect(
+      screen.getByText("Need to sign in again. Sign in inside Pi again."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Claude Code/)).not.toBeInTheDocument()
+  })
+
   it("adds dots as the group grows and keeps the lit share", () => {
     expect(meterSegmentsForWidth(0)).toBe(32)
     expect(meterSegmentsForWidth(100)).toBe(16)

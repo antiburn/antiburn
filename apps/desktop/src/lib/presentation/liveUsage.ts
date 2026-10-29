@@ -41,6 +41,7 @@ export interface UnavailableLiveProvider {
   detail?: LiveUsageSourceErrorPayload["detail"]
   /** The plan, in words, when a local file named one. */
   planLabel?: string
+  carrierLabel?: string
 }
 import { modelMatchesScope } from "./models"
 import { relativeTime } from "./relativeTime"
@@ -646,12 +647,16 @@ export function liveUnavailableProviders(
     if (!error.provider || showing.has(error.provider) || seen.has(error.provider)) continue
     seen.add(error.provider)
     const plan = planLabel(error.provider, error.plan ?? null)
+    const carrierLabel = summary.meters?.find(
+      (meter) => meter.provider === error.provider,
+    )?.carrierLabel
     unavailable.push({
       provider: error.provider,
       displayName: error.displayName || error.provider,
       category: error.category,
       ...(error.detail ? { detail: error.detail } : {}),
       ...(plan ? { planLabel: plan } : {}),
+      ...(carrierLabel ? { carrierLabel } : {}),
     })
   }
   return unavailable
@@ -754,6 +759,7 @@ export function liveDetectionNote(
     case "signedIn":
       return carrierLabel ? `Signed in through ${carrierLabel}.` : "Signed in."
     case "signInRequired":
+      if (carrierLabel === "Pi") return "Need to sign in again. Sign in inside Pi again."
       return provider === ANTHROPIC
         ? "Need to sign in again. Run /login in Claude Code."
         : `Need to sign in again. Sign in inside ${tool} again.`
@@ -773,7 +779,15 @@ export function liveErrorNote(
   category: string,
   provider?: string,
   detail?: LiveUsageSourceErrorDetail,
+  carrierLabel?: string,
 ): string {
+  if (
+    category === "authentication" &&
+    carrierLabel === "Pi" &&
+    (detail === "signInRequired" || detail === "notSignedIn" || detail === "cliMissing")
+  ) {
+    return "Need to sign in again. Sign in inside Pi again."
+  }
   if (category === "authentication" && provider === ANTHROPIC) {
     if (detail === "desktopOnly") {
       return "Usage limits not available for Claude Desktop."

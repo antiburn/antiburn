@@ -1306,3 +1306,30 @@ describe("liveWindowSweeps", () => {
     )
   })
 })
+
+describe("Pi-owned login recovery", () => {
+  it("preserves the owner for detection and unavailable meters", () => {
+    expect(liveDetectionNote("anthropic", "signInRequired", true, "Pi")).toBe(
+      "Need to sign in again. Sign in inside Pi again.",
+    )
+    const entries = liveUnavailableProviders({
+      generatedAt: "",
+      providers: [],
+      meters: [
+        {
+          provider: "anthropic",
+          displayName: "Claude",
+          shown: true,
+          detection: "signInRequired",
+          carrierLabel: "Pi",
+        },
+      ],
+      errors: [sourceError({ category: "authentication", detail: "signInRequired" })],
+    })
+    expect(entries).toHaveLength(1)
+    const entry = entries[0]!
+    expect(
+      liveErrorNote(entry.category, entry.provider, entry.detail, entry.carrierLabel),
+    ).toBe("Need to sign in again. Sign in inside Pi again.")
+  })
+})
