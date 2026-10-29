@@ -126,6 +126,15 @@ pub fn collect(
             continue;
         }
         let outcome = source.fetch(max_age);
+        // No reading and no error removes the provider from every usage
+        // surface. Log it so that the state is visible.
+        if outcome.error.is_none() && outcome.snapshots.is_empty() {
+            ::tracing::debug!(
+                event = "live_source_absent",
+                source = source.id(),
+                provider = source.provider()
+            );
+        }
         if let Some(error) = outcome.error {
             ::tracing::warn!(
                 event = "live_source_failed",
