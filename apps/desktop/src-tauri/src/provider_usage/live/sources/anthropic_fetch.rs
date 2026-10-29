@@ -762,10 +762,7 @@ impl ClaudeDirectFetch {
     /// marker changed. `user` is true for a check that the reader started.
     fn read_native_carriers(&self, _user: bool) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
         let mut carriers = Vec::new();
-        #[cfg(target_os = "macos")]
         let mut error = None;
-        #[cfg(not(target_os = "macos"))]
-        let error = None;
         #[cfg(target_os = "macos")]
         if self.try_keychain {
             match self.read_keychain_login(
