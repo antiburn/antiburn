@@ -247,9 +247,10 @@ async fn opencode_probe_coalesces_newer_snapshots_and_keeps_new_sessions_first()
     let first = provider_log("ses_first", Some(10));
     let first_key = SessionActivityKey::new("native", "opencode", first.source_label());
     let mut scheduled = std::collections::HashMap::from([(first_key, Some(10))]);
-    let mut pending = prepare_description_logs(vec![first], &std::collections::HashMap::new())
-        .await
-        .unwrap();
+    let mut pending =
+        prepare_description_logs(vec![first], &std::collections::HashMap::new(), false)
+            .await
+            .unwrap();
 
     assert!(!enqueue_opencode_probe_log(
         &mut pending,
@@ -1746,10 +1747,11 @@ async fn initial_duplicate_database_sources_choose_the_same_physical_source_in_a
     let second = make_log("/second/opencode.db");
     assert_eq!(first.source_label(), second.source_label());
     let previous = std::collections::HashMap::new();
-    let mut forward = prepare_description_logs(vec![first.clone(), second.clone()], &previous)
-        .await
-        .unwrap();
-    let mut reverse = prepare_description_logs(vec![second, first], &previous)
+    let mut forward =
+        prepare_description_logs(vec![first.clone(), second.clone()], &previous, false)
+            .await
+            .unwrap();
+    let mut reverse = prepare_description_logs(vec![second, first], &previous, false)
         .await
         .unwrap();
     deduplicate_session_sources(&mut forward);
@@ -1823,6 +1825,7 @@ async fn description_dispatch_serializes_parsed_identity_across_source_labels() 
             make_log("third-source", "other"),
         ],
         &previous,
+        false,
     )
     .await
     .unwrap();

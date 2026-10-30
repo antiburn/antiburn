@@ -2,6 +2,7 @@ use super::*;
 use antiburn_local::discovery::SessionLog;
 use antiburn_local::platform::environment::DiscoveryEnvironment;
 
+mod bundle_claims;
 mod claude_parent_child;
 
 #[tokio::test]
@@ -18,7 +19,7 @@ async fn parser_panic_before_progress_returns_adapter_failed() {
 }
 
 #[tokio::test]
-async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
+async fn evidence_pass_rejects_a_stale_file_claim_before_parsing_or_writing_rows() {
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path().join("session.jsonl");
     std::fs::write(
@@ -27,6 +28,9 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
     )
     .unwrap();
 
+    let signal = PassSignal::new();
+    let rows = MemoryTurnRowStore::new("claude-code", "session");
+    let changes = rows.with_connection(|connection| connection.total_changes());
     let pass = analyze_located_for_evidence(
         AgentKind::Claude,
         "session",
@@ -34,8 +38,8 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
             fingerprint: Some("sv1:stale-discovery-claim".to_owned()),
             generation: 1,
         },
-        PassSignal::new(),
-        None,
+        signal.clone(),
+        Some(rows.clone()),
         None,
         LocatedTranscripts {
             source: SessionSource::File(path),
@@ -47,6 +51,53 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
     assert_eq!(pass.outcome, PassOutcome::SourceChanged);
     assert!(pass.evidence.is_none());
     assert!(pass.source_fingerprint.is_none());
+    assert_eq!(signal.progress(), 1);
+    assert_eq!(
+        rows.with_connection(|connection| connection.total_changes()),
+        changes
+    );
+    assert!(rows.query_coverage_record().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn evidence_pass_parses_files_with_a_current_or_absent_discovery_claim() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("session.jsonl");
+    std::fs::write(
+        &path,
+        r#"{"type":"assistant","timestamp":100,"message":{"id":"m","role":"assistant","model":"claude-opus-4-6","usage":{"input_tokens":2,"output_tokens":3},"content":[{"type":"text","text":"done"}]}}"#,
+    )
+    .unwrap();
+    let fingerprint = claim_file(&path).unwrap().fingerprint;
+
+    for expected in [Some(fingerprint.clone()), None] {
+        let signal = PassSignal::new();
+        let rows = MemoryTurnRowStore::new("claude-code", "session");
+        let pass = analyze_located_for_evidence(
+            AgentKind::Claude,
+            "session",
+            ClaimedSource {
+                fingerprint: expected,
+                generation: 1,
+            },
+            signal.clone(),
+            Some(rows.clone()),
+            None,
+            LocatedTranscripts {
+                source: SessionSource::File(path.clone()),
+                children: Vec::new(),
+            },
+        )
+        .await;
+
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        assert_eq!(
+            pass.source_fingerprint.as_deref(),
+            Some(fingerprint.as_str())
+        );
+        assert!(signal.progress() > 0);
+        assert!(rows.query_coverage_record().unwrap().is_some());
+    }
 }
 
 #[test]
