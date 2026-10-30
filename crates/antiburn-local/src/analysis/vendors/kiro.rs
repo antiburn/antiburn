@@ -136,20 +136,38 @@ fn visit_crew(input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result
                     first = false;
                     continue;
                 };
-                if first && value.get("_type").and_then(Value::as_str) == Some("metadata") {
-                    model = value
-                        .get("model")
-                        .and_then(Value::as_str)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned);
+                if first {
                     first = false;
-                    continue;
+                    if value.get("_type").and_then(Value::as_str) == Some("metadata") {
+                        model = value
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .filter(|value| !value.is_empty())
+                            .map(str::to_owned);
+                        continue;
+                    }
+                    // A Crew log always opens with its metadata header; without
+                    // one the session model is unknown, so the read is partial.
+                    invalid = true;
+                    sink.record(crate::analysis::NormalizedRecord::Unusable(
+                        PartialReason::MalformedRecord,
+                    ));
                 }
-                first = false;
-                if value.get("role").and_then(Value::as_str) == Some("assistant") {
-                    sink.record(crate::analysis::NormalizedRecord::MetricsEvent(Box::new(
-                        crew_assistant_event(model.as_deref()),
-                    )));
+                match value.get("role").and_then(Value::as_str) {
+                    Some("assistant") => {
+                        sink.record(crate::analysis::NormalizedRecord::MetricsEvent(Box::new(
+                            crew_assistant_event(model.as_deref()),
+                        )));
+                    }
+                    Some(role) if CREW_NON_MODEL_ROLES.contains(&role) => {}
+                    // An unknown role (or no role) could be a model turn in a
+                    // newer shape; report it rather than dropping it silently.
+                    _ => {
+                        invalid = true;
+                        sink.record(crate::analysis::NormalizedRecord::Unusable(
+                            PartialReason::MalformedRecord,
+                        ));
+                    }
                 }
             }
         }
@@ -164,6 +182,21 @@ fn visit_crew(input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result
     sink.finish(summary);
     Ok(VisitOutcome::Unvalidated)
 }
+
+/// Crew record roles that are known and carry no model turn: the user's
+/// prompt, tool results, and dashboard-side events (errors, attached files,
+/// injected context, cards, system notices, MCP OAuth prompts).
+const CREW_NON_MODEL_ROLES: &[&str] = &[
+    "user",
+    "tool",
+    "error",
+    "file",
+    "inject",
+    "card",
+    "system",
+    "notice",
+    "mcp_oauth",
+];
 
 /// One assistant turn in a Crew log, carrying model identity and no usage.
 fn crew_assistant_event(model: Option<&str>) -> NormalizedEvent {
@@ -554,5 +587,62 @@ mod tests {
         assert_eq!(session.events.len(), 1);
         assert_eq!(session.model, None);
         assert_eq!(session.events[0].model, None);
+    }
+
+    fn crew_coverage(temp: &TempDir, body: &str) -> RecordCoverage {
+        let path = temp.path().join("dashboard_chat-3-1793312745.jsonl");
+        std::fs::write(&path, body).unwrap();
+        let input = SessionInput {
+            agent: "kiro".to_owned(),
+            session_id: "dashboard_chat-3-1793312745".to_owned(),
+            source: RawSource::File(path),
+            source_format: SourceFormat::KiroCrewJsonl,
+            fork_parent_session_id: None,
+        };
+        let mut sink = SessionCollector::new("kiro", "dashboard_chat-3-1793312745");
+        KiroSessionReader.visit(&input, &mut sink).unwrap();
+        sink.coverage()
+    }
+
+    #[test]
+    fn crew_log_with_known_roles_is_complete() {
+        let temp = TempDir::new().unwrap();
+        let body = concat!(
+            r#"{"_type":"metadata","model":"safe-model"}"#,
+            "\n",
+            r#"{"role":"user","content":"hi"}"#,
+            "\n",
+            r#"{"role":"inject","content":"x"}"#,
+            "\n",
+            r#"{"role":"assistant","content":"hello"}"#,
+            "\n",
+            r#"{"role":"notice","content":"y"}"#,
+            "\n",
+        );
+        assert_eq!(crew_coverage(&temp, body), RecordCoverage::Complete);
+    }
+
+    #[test]
+    fn crew_log_without_a_metadata_header_is_partial() {
+        let temp = TempDir::new().unwrap();
+        let body = concat!(
+            r#"{"role":"user","content":"hi"}"#,
+            "\n",
+            r#"{"role":"assistant","content":"hello"}"#,
+            "\n",
+        );
+        assert_eq!(crew_coverage(&temp, body), RecordCoverage::Partial);
+    }
+
+    #[test]
+    fn crew_log_with_an_unknown_role_is_partial() {
+        let temp = TempDir::new().unwrap();
+        for record in [
+            r#"{"role":"agent","content":"hello"}"#,
+            r#"{"content":"no role"}"#,
+        ] {
+            let body = format!("{{\"_type\":\"metadata\",\"model\":\"m\"}}\n{record}\n");
+            assert_eq!(crew_coverage(&temp, &body), RecordCoverage::Partial);
+        }
     }
 }

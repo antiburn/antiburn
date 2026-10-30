@@ -354,7 +354,9 @@ async fn session_id_for_file(path: &Path, canonical: bool) -> String {
     {
         return id.to_owned();
     }
-    if canonical {
+    // Crew logs are multi-line JSONL, so a whole-file parse always fails; take
+    // the filename directly instead of reading a potentially large transcript.
+    if canonical || is_kiro_crew_session_file(path) {
         return path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -509,6 +511,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v2_discovery_recency_uses_the_newest_required_sibling() {
+        let home = TempDir::new().unwrap();
+        let cli = home.path().join(".kiro").join("sessions").join("cli");
+        tokio::fs::create_dir_all(&cli).await.unwrap();
+        let metadata = cli.join("11111111-1111-4111-8111-111111111111.json");
+        let journal = metadata.with_extension("jsonl");
+        tokio::fs::write(&metadata, "{}").await.unwrap();
+        tokio::fs::write(&journal, "{}").await.unwrap();
+        set_file_mtime(&metadata, 1_700_000_000 - 100);
+        set_file_mtime(&journal, 1_700_000_000 - 10);
+
+        let logs = discover_recent_in(
+            &[home.path().join(".kiro").join("sessions")],
+            1_700_000_000,
+            20,
+        )
+        .await;
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].updated_at, Some(1_700_000_000 - 10));
+    }
+
+    #[tokio::test]
     async fn crew_sessions_are_discovered_and_housekeeping_files_are_skipped() {
         let home = TempDir::new().unwrap();
         let crew = kiro_crew_sessions_root_in(home.path());
@@ -544,5 +568,22 @@ mod tests {
             other => panic!("expected the crew session file, got {other:?}"),
         }
         assert_eq!(logs[0].agent_type, AgentKind::Kiro);
+    }
+
+    #[tokio::test]
+    async fn crew_session_id_comes_from_the_filename() {
+        let home = TempDir::new().unwrap();
+        let crew = kiro_crew_sessions_root_in(home.path());
+        tokio::fs::create_dir_all(&crew).await.unwrap();
+        // A JSON body carrying a `sessionId` must not override the filename:
+        // Crew ids are derived without reading the transcript.
+        let session = crew.join("dashboard_chat-9-1793312799.jsonl");
+        tokio::fs::write(&session, "{\"sessionId\":\"from-body\"}")
+            .await
+            .unwrap();
+        assert_eq!(
+            session_id_for_file(&session, false).await,
+            "dashboard_chat-9-1793312799"
+        );
     }
 }
