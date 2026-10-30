@@ -489,4 +489,70 @@ mod tests {
         std::fs::remove_file(messages_path).unwrap();
         assert!(KiroSessionReader.normalize(&input).is_err());
     }
+
+    fn crew_input(temp: &TempDir) -> SessionInput {
+        let path = temp.path().join("dashboard_chat-1-1793312743.jsonl");
+        std::fs::write(
+            &path,
+            include_str!("../../../tests/fixtures/kiro_crew_bundle/session.jsonl"),
+        )
+        .unwrap();
+        SessionInput {
+            agent: "kiro".to_owned(),
+            session_id: "dashboard_chat-1-1793312743".to_owned(),
+            source: RawSource::File(path),
+            source_format: SourceFormat::KiroCrewJsonl,
+            fork_parent_session_id: None,
+        }
+    }
+
+    #[test]
+    fn crew_log_emits_model_identity_per_assistant_turn_without_usage() {
+        let temp = TempDir::new().unwrap();
+        let input = crew_input(&temp);
+        let session = KiroSessionReader.normalize(&input).unwrap();
+
+        // Two assistant records → two events; the user and tool records add none.
+        assert_eq!(session.events.len(), 2);
+        assert_eq!(session.model.as_deref(), Some("safe-model"));
+        for event in &session.events {
+            assert_eq!(event.model.as_deref(), Some("safe-model"));
+            // Crew logs carry no per-turn usage and no typed tool-call identity.
+            assert_eq!(event.usage, Usage::default());
+            assert!(event.tools.is_empty());
+        }
+        assert_eq!(
+            KiroSessionReader.capabilities(&input),
+            SourceCapabilities::uncharacterized(SourceFormat::KiroCrewJsonl)
+        );
+    }
+
+    #[test]
+    fn crew_log_without_a_model_is_still_read() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("dashboard_chat-2-1793312744.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"_type":"metadata","title":"no model","agent":"kirocrew","model":""}"#,
+                "\n",
+                r#"{"role":"user","content":"hi"}"#,
+                "\n",
+                r#"{"role":"assistant","content":"hello"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let input = SessionInput {
+            agent: "kiro".to_owned(),
+            session_id: "dashboard_chat-2-1793312744".to_owned(),
+            source: RawSource::File(path),
+            source_format: SourceFormat::KiroCrewJsonl,
+            fork_parent_session_id: None,
+        };
+        let session = KiroSessionReader.normalize(&input).unwrap();
+        assert_eq!(session.events.len(), 1);
+        assert_eq!(session.model, None);
+        assert_eq!(session.events[0].model, None);
+    }
 }

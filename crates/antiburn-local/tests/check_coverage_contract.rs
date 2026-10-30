@@ -195,6 +195,7 @@ fn source_capabilities(format: SourceFormat) -> SourceCapabilities {
         | SourceFormat::KiroCliV2Bundle
         | SourceFormat::KiroCliV3Bundle
         | SourceFormat::KiroChatSaveExport
+        | SourceFormat::KiroCrewJsonl
         | SourceFormat::AmpThreadJson
         | SourceFormat::AmpFileChanges
         | SourceFormat::WindsurfWorkspaceJson

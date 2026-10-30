@@ -509,24 +509,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v2_discovery_recency_uses_the_newest_required_sibling() {
+    async fn crew_sessions_are_discovered_and_housekeeping_files_are_skipped() {
         let home = TempDir::new().unwrap();
-        let cli = home.path().join(".kiro").join("sessions").join("cli");
-        tokio::fs::create_dir_all(&cli).await.unwrap();
-        let metadata = cli.join("11111111-1111-4111-8111-111111111111.json");
-        let journal = metadata.with_extension("jsonl");
-        tokio::fs::write(&metadata, "{}").await.unwrap();
-        tokio::fs::write(&journal, "{}").await.unwrap();
-        set_file_mtime(&metadata, 1_700_000_000 - 100);
-        set_file_mtime(&journal, 1_700_000_000 - 10);
+        let crew = kiro_crew_sessions_root_in(home.path());
+        tokio::fs::create_dir_all(crew.join(".index"))
+            .await
+            .unwrap();
 
-        let logs = discover_recent_in(
-            &[home.path().join(".kiro").join("sessions")],
-            1_700_000_000,
-            20,
-        )
-        .await;
+        let session = crew.join("dashboard_chat-1-1793312743.jsonl");
+        tokio::fs::write(&session, "{\"_type\":\"metadata\"}\n")
+            .await
+            .unwrap();
+        // Files that share the directory but are not user sessions.
+        let cron = crew.join("cron_09faa074.jsonl");
+        let lock = crew.join("dashboard_chat-1-1793312743.jsonl.lock");
+        let index = crew.join(".index").join("session_index.db");
+        tokio::fs::write(&cron, "{}\n").await.unwrap();
+        tokio::fs::write(&lock, "").await.unwrap();
+        tokio::fs::write(&index, "").await.unwrap();
+
+        assert!(is_kiro_session_file(&session));
+        assert!(!is_kiro_session_file(&cron));
+        assert!(!is_kiro_session_file(&lock));
+        assert!(!is_kiro_session_file(&index));
+
+        let now = 1_700_000_000;
+        set_file_mtime(&session, now - 10);
+        set_file_mtime(&cron, now - 5);
+
+        let logs = discover_recent_in(&[crew], now, 3600).await;
         assert_eq!(logs.len(), 1);
-        assert_eq!(logs[0].updated_at, Some(1_700_000_000 - 10));
+        match &logs[0].source {
+            SessionSource::File(path) => assert_eq!(path, &session),
+            other => panic!("expected the crew session file, got {other:?}"),
+        }
+        assert_eq!(logs[0].agent_type, AgentKind::Kiro);
     }
 }
