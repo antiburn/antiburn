@@ -431,6 +431,14 @@ pub enum SourceFormat {
     /// Bounded OpenCode V2 `SessionTransfer.Data` exported from an already-running service.
     #[serde(rename = "open_code_v2_session_export")]
     OpenCodeV2SessionExport,
+    /// Kiro Crew autonomous-layer session log: a single `.jsonl` under
+    /// `~/.kiro/crew/sessions/` whose first line is a `{"_type":"metadata",…}`
+    /// header followed by `{"role":…,"content":…}` message records. Carries no
+    /// per-turn token usage, so analysis is model/tool identity only.
+    ///
+    /// Appended last so existing variants keep their index-based (postcard)
+    /// encoding for already-persisted evidence.
+    KiroCrewJsonl,
 }
 
 /// Paid context beyond positive growth across compatible main-thread requests.

@@ -1,0 +1,5 @@
+{"_type":"metadata","created_at":"2026-10-29T22:25:43.410534+00:00","memory_mode":"persistent","title":"Add Kiro Crew support","agent":"kirocrew","model":"safe-model","agent_kind":"template","project":"/tmp/repo","origin":"user"}
+{"role":"user","content":"add support for Kiro Crew","ts":"2026-10-29T22:25:59.789404+00:00","meta":{"human":true}}
+{"role":"assistant","content":"Looking at the repo first.","ts":"2026-10-29T22:26:05.364261+00:00","meta":{}}
+{"role":"tool","content":"<tool result bytes>","ts":"2026-10-29T22:26:06.000000+00:00","meta":{}}
+{"role":"assistant","content":"Here is the plan.","ts":"2026-10-29T22:26:10.000000+00:00","meta":{}}

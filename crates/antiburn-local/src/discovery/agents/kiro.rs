@@ -1,10 +1,14 @@
 //! Kiro log discovery.
 //!
-//! Kiro stores IDE and CLI session files in:
+//! Kiro stores IDE, CLI, and Crew session files in:
 //! - `<Kiro app config>/User/globalStorage/kiro.kiroagent/workspace-sessions/**/<sessionId>.json`
 //! - `<Kiro app config>/User/globalStorage/kiro.kiroagent/*.chat`
 //! - `~/.kiro/sessions/cli/<uuid>.json` plus `<uuid>.jsonl` (CLI V2)
 //! - `~/.kiro/sessions/<workspace>/sess_<uuid>/session.json` plus `messages.jsonl` (CLI V3)
+//! - `~/.kiro/crew/sessions/<name>.jsonl` (Kiro Crew autonomous layer)
+//!
+//! Every surface reports as the single `kiro` agent; the IDE, CLI, and Crew
+//! front-ends are not differentiated.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +29,7 @@ pub async fn all_log_dirs() -> Vec<PathBuf> {
     vec![
         kiro_storage_root_in(&home),
         kiro_cli_sessions_root_in(&home),
+        kiro_crew_sessions_root_in(&home),
     ]
 }
 
@@ -51,6 +56,7 @@ impl AgentExplorer for KiroExplorer {
             || path_lower.contains("/appdata/roaming/kiro/user/globalstorage/kiro.kiroagent/")
             || path_lower.contains("/.kiro/sessions/cli/")
             || path_lower.contains("/.kiro/sessions/") && path_lower.contains("/sess_")
+            || path_lower.contains("/.kiro/crew/sessions/")
     }
 
     fn unmatched_surface(&self) -> &'static str {
@@ -59,7 +65,10 @@ impl AgentExplorer for KiroExplorer {
 
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         SurfacePaths {
-            cli: vec![kiro_cli_sessions_root_in(home)],
+            cli: vec![
+                kiro_cli_sessions_root_in(home),
+                kiro_crew_sessions_root_in(home),
+            ],
             ide_desktop: vec![kiro_storage_root_in(home)],
             mirror: Vec::new(),
         }
@@ -263,7 +272,32 @@ fn kiro_cli_sessions_root_in(home: &Path) -> PathBuf {
     home.join(".kiro").join("sessions")
 }
 
+fn kiro_crew_sessions_root_in(home: &Path) -> PathBuf {
+    home.join(".kiro").join("crew").join("sessions")
+}
+
+/// A Kiro Crew session log: a `.jsonl` directly under `~/.kiro/crew/sessions/`.
+///
+/// The directory also holds cron worker logs (`cron_*.jsonl`), lock files, and
+/// an `.index/` subtree; none of those are user-facing sessions, so they are
+/// skipped. A `.jsonl.lock` has a `jsonl` *stem* extension, so the extension
+/// check alone is not enough — the full file name must end in `.jsonl`.
+fn is_kiro_crew_session_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !name.ends_with(".jsonl") || name.starts_with("cron_") || name.starts_with('.') {
+        return false;
+    }
+    path.parent()
+        .is_some_and(|parent| parent.ends_with(Path::new(".kiro/crew/sessions")))
+}
+
 fn is_kiro_session_file(path: &Path) -> bool {
+    if is_kiro_crew_session_file(path) {
+        return true;
+    }
+
     let file_name = match path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name,
         None => return false,
@@ -320,7 +354,9 @@ async fn session_id_for_file(path: &Path, canonical: bool) -> String {
     {
         return id.to_owned();
     }
-    if canonical {
+    // Crew logs are multi-line JSONL, so a whole-file parse always fails; take
+    // the filename directly instead of reading a potentially large transcript.
+    if canonical || is_kiro_crew_session_file(path) {
         return path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -494,5 +530,60 @@ mod tests {
         .await;
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].updated_at, Some(1_700_000_000 - 10));
+    }
+
+    #[tokio::test]
+    async fn crew_sessions_are_discovered_and_housekeeping_files_are_skipped() {
+        let home = TempDir::new().unwrap();
+        let crew = kiro_crew_sessions_root_in(home.path());
+        tokio::fs::create_dir_all(crew.join(".index"))
+            .await
+            .unwrap();
+
+        let session = crew.join("dashboard_chat-1-1793312743.jsonl");
+        tokio::fs::write(&session, "{\"_type\":\"metadata\"}\n")
+            .await
+            .unwrap();
+        // Files that share the directory but are not user sessions.
+        let cron = crew.join("cron_09faa074.jsonl");
+        let lock = crew.join("dashboard_chat-1-1793312743.jsonl.lock");
+        let index = crew.join(".index").join("session_index.db");
+        tokio::fs::write(&cron, "{}\n").await.unwrap();
+        tokio::fs::write(&lock, "").await.unwrap();
+        tokio::fs::write(&index, "").await.unwrap();
+
+        assert!(is_kiro_session_file(&session));
+        assert!(!is_kiro_session_file(&cron));
+        assert!(!is_kiro_session_file(&lock));
+        assert!(!is_kiro_session_file(&index));
+
+        let now = 1_700_000_000;
+        set_file_mtime(&session, now - 10);
+        set_file_mtime(&cron, now - 5);
+
+        let logs = discover_recent_in(&[crew], now, 3600).await;
+        assert_eq!(logs.len(), 1);
+        match &logs[0].source {
+            SessionSource::File(path) => assert_eq!(path, &session),
+            other => panic!("expected the crew session file, got {other:?}"),
+        }
+        assert_eq!(logs[0].agent_type, AgentKind::Kiro);
+    }
+
+    #[tokio::test]
+    async fn crew_session_id_comes_from_the_filename() {
+        let home = TempDir::new().unwrap();
+        let crew = kiro_crew_sessions_root_in(home.path());
+        tokio::fs::create_dir_all(&crew).await.unwrap();
+        // A JSON body carrying a `sessionId` must not override the filename:
+        // Crew ids are derived without reading the transcript.
+        let session = crew.join("dashboard_chat-9-1793312799.jsonl");
+        tokio::fs::write(&session, "{\"sessionId\":\"from-body\"}")
+            .await
+            .unwrap();
+        assert_eq!(
+            session_id_for_file(&session, false).await,
+            "dashboard_chat-9-1793312799"
+        );
     }
 }
