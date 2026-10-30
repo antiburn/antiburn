@@ -44,39 +44,37 @@
 //! token, this source asks the CLI to refresh its own credential:
 //! [`claude_touch`] spawns `claude` in a PTY, types `/status`, verifies the
 //! carrier changed and settled by polling *metadata only* — never the secret
-//! — and only then does this source read the secret once, through the normal
-//! parser, and retry the usage call once. Background checks do this too, so
-//! a reading does not go stale while no usage surface is open. A live token
-//! that expires within [`super::claude_login::PRE_EXPIRY_WINDOW`] also starts the touch, before
-//! the usage call. A network or 5xx failure never triggers the touch, only
+//! — and a user recovery can then read the secret and retry usage once.
+//! Background and pre-expiry touches run on a separate worker. Collection
+//! returns its current reading or pending state without waiting for that worker.
+//! A later collection reads changed files; only a user check reads a new
+//! Keychain secret. A live token inside
+//! [`super::claude_login::PRE_EXPIRY_WINDOW`] also schedules a touch. A network or 5xx failure never triggers the touch, only
 //! the expired/rejected credential state. No native login means no touch:
 //! the CLI would only show its login screen. The Pi carrier alone never
 //! triggers it either — this source delegates its refresh to Pi.
 //!
 //! A login without a usable refresh token never starts the CLI and reports
 //! [`SourceErrorDetail::SignInRequired`]. A missing access token can still
-//! recover when a refresh token exists. A live rejected token with a refresh
-//! token gets one touch per carrier change. An expired login with a refresh token gets
-//! [`claude_touch::UNCHANGED_ATTEMPT_LIMIT`] touches. When those touches do
-//! not recover it, the check reports [`SourceErrorDetail::SignInRequired`]. A
-//! login with no `claude` CLI to refresh it reports
+//! recover when a refresh token exists. An unchanged touch remains pending:
+//! offline operation and slow startup do not prove that sign-in is required.
+//! The cooldown bounds repeated attempts. A login with no CLI reports
 //! [`SourceErrorDetail::CliMissing`]. When Pi's own refresh rejects its entry,
 //! the check also reports [`SourceErrorDetail::SignInRequired`].
 //!
 //! # Reading a carrier only when it changed
 //!
 //! On macOS each check first reads the Keychain item's attributes, which
-//! never raises a prompt. The item's change marker is its `mdat` value and a
-//! hash of the whole attribute output. The parsed login is cached with that
-//! marker:
+//! never raises a prompt. The item's change marker hashes the whole attribute
+//! output, including `mdat`. The parsed login is cached with that marker:
 //!
 //! - The same marker uses the cached login. The secret is not read.
-//! - A changed marker reads the secret once and replaces the cache. When
-//!   that read fails, checks retry after a backoff, even at the same marker.
+//! - A user check reads a changed secret once. Failed reads and background
+//!   checks use a still-live cached credential, if one exists. Failed secret
+//!   reads retry after a backoff, even at the same marker.
 //! - An absent item clears the cache.
-//! - A failed attribute read is retried ([`claude_touch::with_retries`]).
-//!   When every retry fails, the check keeps the cached login and does not
-//!   read the secret.
+//! - Attribute retries share a bounded deadline. On failure, the check uses
+//!   a still-live cached login and never reads the secret.
 //!
 //! The credentials file uses a content hash in the same way: an unchanged
 //! file is not parsed again. Detection uses the same caches, so it never
@@ -86,8 +84,8 @@
 //! The same rule holds: its token is never refreshed here. When that entry
 //! has expired, the one recovery lever is delegating the refresh to Pi's
 //! own `auth check` command through [`super::pi_refresh`], which runs Pi's
-//! own locked refresh-and-write; when that lever is unavailable the
-//! expired entry reads exactly as it did before the lever existed.
+//! own locked refresh-and-write. Unavailable recovery keeps the expired
+//! entry recoverable; it does not prove that Pi rejected the login.
 //!
 //! Finding no carrier — no Keychain item, no credentials file, no Pi entry,
 //! or one without a Claude login — reports
@@ -137,7 +135,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(feature = "analytics")]
 use std::time::Instant;
@@ -248,7 +246,7 @@ fn detect_presence(
     };
     match presence::path_exists(probe, credentials_path) {
         Ok(true) => {
-            if let Some(detection) = cached.file(credentials_path).detection() {
+            if let Some(detection) = cached.file().detection() {
                 return Presence::via(detection, LoginCarrier::ClaudeCredentialsFile);
             }
         }
@@ -257,8 +255,8 @@ fn detect_presence(
     }
     #[cfg(target_os = "macos")]
     match probe.keychain_metadata(KEYCHAIN_SERVICE, None) {
-        KeychainMetadata::Found(attributes) => {
-            if let Some(detection) = cached.keychain(&attributes).detection() {
+        KeychainMetadata::Found(_) => {
+            if let Some(detection) = cached.keychain().detection() {
                 return Presence::via(detection, LoginCarrier::ClaudeKeychain);
             }
         }
@@ -443,7 +441,7 @@ pub struct ClaudeDirectFetch {
     /// and the module doc's "Delegating refresh to the CLI" section. `None`
     /// disables the touch outright; the ordinary state for a test whose
     /// scenario never reaches it, not a special mode.
-    touch_env: Option<Box<dyn claude_touch::TouchEnvironment>>,
+    touch_env: Option<Arc<dyn claude_touch::TouchEnvironment>>,
     /// The cooldown, in-flight dedup, and terminal state the touch runs
     /// behind, so one expired credential cannot spawn PTYs repeatedly.
     touch_gate: claude_touch::TouchGate,
@@ -538,7 +536,7 @@ impl ClaudeDirectFetch {
             transport: Box::new(LiveAnthropicTransport::default()),
             cooldown: Cooldown::new(),
             pi_refresh: PiRefresher::new(),
-            touch_env: Some(Box::new(claude_touch::CliTouchEnvironment::new(
+            touch_env: Some(Arc::new(claude_touch::CliTouchEnvironment::new(
                 default_credentials_path(),
             ))),
             touch_gate: claude_touch::TouchGate::new(),
@@ -583,6 +581,7 @@ impl ClaudeDirectFetch {
         transport: Box<dyn AnthropicTransport>,
         touch_env: Box<dyn claude_touch::TouchEnvironment>,
     ) -> ClaudeDirectFetch {
+        let touch_env = Arc::from(touch_env);
         ClaudeDirectFetch {
             credentials_path: Some(credentials_path),
             pi_auth_path: None,
@@ -610,6 +609,7 @@ impl ClaudeDirectFetch {
         transport: Box<dyn AnthropicTransport>,
         touch_env: Box<dyn claude_touch::TouchEnvironment>,
     ) -> ClaudeDirectFetch {
+        let touch_env = Arc::from(touch_env);
         ClaudeDirectFetch {
             credentials_path: None,
             pi_auth_path: Some(pi_auth_path),
@@ -699,13 +699,13 @@ impl ClaudeDirectFetch {
     /// Read Pi's carrier. An expired entry first goes through Pi's own
     /// refresh — see `pi_refresh`.
     ///
-    /// The second value is true when Pi's own refresh rejected its expired
-    /// entry: that entry needs a new sign-in, not Pi's next run.
+    /// The second value is true when Pi rejects refresh or the expired entry
+    /// has no refresh token. That entry needs a new sign-in.
     fn read_pi_carrier(&self) -> Result<(Option<ClaudeCredentials>, bool), FetchFailure> {
         let Some(path) = self.pi_auth_path.as_deref() else {
             return Ok((None, false));
         };
-        let Some(entry) = pi_auth::read_entry_checked(path, pi_auth::ANTHROPIC_KEY)
+        let Some(entry) = pi_auth::read_raw_entry_checked(path, pi_auth::ANTHROPIC_KEY)
             .map_err(|_| FetchFailure::from(ProviderUsageError::Unavailable))?
         else {
             return Ok((None, false));
@@ -721,11 +721,8 @@ impl ClaudeDirectFetch {
             match self.pi_refresh.recover(path, pi_auth::ANTHROPIC_KEY) {
                 // The rotated entry is the one retry this lever earns.
                 Recovery::Fresh(fresh) => fresh,
-                // Every other verdict keeps the expired entry as a
-                // carrier, exactly as before the lever existed:
-                // `fetch_from_carriers` reports an all-expired set as
-                // an authentication failure, which is already the
-                // sign-in-again state a terminal rejection asks for.
+                // Keep the entry so the result distinguishes required
+                // sign-in from recovery that remains pending.
                 Recovery::SignInWithPi => {
                     pi_rejected = true;
                     entry
@@ -747,13 +744,22 @@ impl ClaudeDirectFetch {
     /// read failure stays separate so a later live carrier can suppress it.
     #[cfg(feature = "analytics")]
     fn read_carriers(&self) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
-        let (mut carriers, error) = self.read_native_carriers(false);
+        let (mut carriers, mut error) = self.read_native_carriers(false);
+        let (carrier, _) = self.read_pi_carrier_with_error(&mut error);
+        carriers.extend(carrier);
+        (carriers, error)
+    }
+
+    fn read_pi_carrier_with_error(
+        &self,
+        error: &mut Option<FetchFailure>,
+    ) -> (Option<ClaudeCredentials>, bool) {
         match self.read_pi_carrier() {
-            Ok((carrier, _)) => {
-                carriers.extend(carrier);
-                (carriers, error)
+            Ok(result) => result,
+            Err(failure) => {
+                *error = error.take().or(Some(failure));
+                (None, false)
             }
-            Err(failure) => (carriers, error.or(Some(failure))),
         }
     }
 
@@ -765,8 +771,9 @@ impl ClaudeDirectFetch {
         let mut error = None;
         #[cfg(target_os = "macos")]
         if self.try_keychain {
+            let deadline = std::time::Instant::now() + Duration::from_millis(750);
             match self.read_keychain_login(
-                claude_touch::keychain_metadata,
+                || claude_touch::keychain_metadata(deadline),
                 macos_keychain::read,
                 &|delay| std::thread::sleep(delay),
                 _user,
@@ -780,7 +787,7 @@ impl ClaudeDirectFetch {
             match self.read_file_login(path) {
                 Ok(Some(credentials)) => carriers.push(credentials),
                 Ok(None) => {}
-                Err(failure) => error = Some(failure),
+                Err(failure) => error = error.or(Some(failure)),
             }
         }
         (carriers, error)
@@ -840,19 +847,28 @@ impl ClaudeDirectFetch {
         metadata: impl FnMut() -> KeychainMetadata,
         secret: impl FnOnce() -> macos_keychain::KeychainRead,
         sleep: &dyn Fn(std::time::Duration),
-        _user: bool,
+        user: bool,
     ) -> Result<Option<ClaudeCredentials>, FetchFailure> {
+        let fallback = || {
+            lock(&self.logins.keychain)
+                .as_ref()
+                .and_then(|cached| cached.login.as_ref())
+                .filter(|login| login.is_live(OffsetDateTime::now_utc()))
+                .cloned()
+                .map(Some)
+                .ok_or_else(keychain_unreadable)
+        };
         let attributes = match claude_touch::retry_metadata(sleep, metadata) {
             Ok(KeychainMetadata::Found(attributes)) => attributes,
             Ok(KeychainMetadata::Absent) => {
                 *lock(&self.logins.keychain) = None;
                 return Ok(None);
             }
-            Ok(KeychainMetadata::Unreadable) | Err(_) => {
-                let attempts = 1 + claude_touch::RETRY_DELAYS.len();
+            failed => {
+                let attempts = failed.err().unwrap_or(1);
                 ::tracing::warn!(event = "claude_keychain_metadata_failed", attempts);
                 self.logins.observe("keychain_metadata_failed", None);
-                return Err(keychain_unreadable());
+                return fallback();
             }
         };
         let marker = KeychainMarker::from_attributes(&attributes);
@@ -861,15 +877,19 @@ impl ClaudeDirectFetch {
         {
             return Ok(cached.login.clone());
         }
+        // A background refresh must not raise a new Keychain prompt.
+        if !user {
+            return fallback();
+        }
         if let Some((failed, at)) = lock(&self.logins.keychain_secret_failed).as_ref()
             && *failed == marker
             && at.elapsed() < SECRET_RETRY_BACKOFF
         {
-            return Err(keychain_unreadable());
+            return fallback();
         }
         let failed = |marker| {
             *lock(&self.logins.keychain_secret_failed) = Some((marker, std::time::Instant::now()));
-            Err(keychain_unreadable())
+            fallback()
         };
         let login = match secret() {
             macos_keychain::KeychainRead::Found(text) => match parse_credentials_json(&text) {
@@ -901,61 +921,31 @@ impl ClaudeDirectFetch {
         Ok(login)
     }
 
-    /// The touch request for this check: the cooldown by caller, and how
-    /// many attempts at one marker can end unchanged.
-    ///
-    /// A live login gets one attempt when the endpoint rejects it:
-    /// the CLI has no expired
-    /// token to refresh, so the marker does not change. An expired login
-    /// with a refresh token gets [`claude_touch::UNCHANGED_ATTEMPT_LIMIT`].
-    /// A refresh before expiry never gives up, because the login still works.
-    fn touch_request(
-        user: bool,
-        trigger: RefreshTrigger,
-        rejected_live: bool,
-    ) -> claude_touch::TouchRequest {
-        let attempt_limit = match trigger {
-            RefreshTrigger::PreExpiry => None,
-            RefreshTrigger::CannotRefresh => Some(0),
-            RefreshTrigger::Expired if rejected_live => Some(1),
-            RefreshTrigger::Expired => Some(claude_touch::UNCHANGED_ATTEMPT_LIMIT),
-        };
+    /// Unchanged verification remains recoverable, regardless of expiry.
+    fn touch_request(user: bool) -> claude_touch::TouchRequest {
         claude_touch::TouchRequest {
             cooldown: if user {
                 claude_touch::TOUCH_COOLDOWN
             } else {
                 claude_touch::BACKGROUND_TOUCH_COOLDOWN
             },
-            attempt_limit,
         }
     }
 
-    /// Refresh a live login that expires soon. Returns the native carriers
-    /// read again when the CLI wrote a new login, and `None` otherwise: the
-    /// check then uses the login it has, which is still live.
-    fn refresh_before_expiry(
-        &self,
-        user: bool,
-    ) -> Option<(Vec<ClaudeCredentials>, Option<FetchFailure>)> {
-        let env = self.touch_env.as_deref()?;
-        let trigger = RefreshTrigger::PreExpiry;
-        let outcome = claude_touch::touch(
-            env,
-            &self.touch_gate,
-            Self::touch_request(user, trigger, false),
-        );
-        let label = match &outcome {
-            claude_touch::TouchOutcome::Settled(_) => "refreshed",
-            claude_touch::TouchOutcome::CliMissing => "cli_missing",
-            claude_touch::TouchOutcome::Terminal => "sign_in_required",
-            claude_touch::TouchOutcome::Skipped => "gated",
-            claude_touch::TouchOutcome::NotRefreshed => "unchanged",
-        };
-        log_refresh(trigger, user, label);
-        self.logins.observe(label, Some(trigger.name()));
-        match outcome {
-            claude_touch::TouchOutcome::Settled(_) => Some(self.read_native_carriers(user)),
-            _ => None,
+    /// The worker only asks the owner to refresh. A later collection reads
+    /// changed credentials; only a user check may read a new Keychain secret.
+    fn schedule_refresh(&self, user: bool, trigger: RefreshTrigger) {
+        if let Some(env) = &self.touch_env {
+            let logins = self.logins.clone();
+            claude_touch::schedule(
+                env.clone(),
+                self.touch_gate.clone(),
+                Self::touch_request(user),
+                move |outcome| {
+                    log_refresh(trigger, user, outcome.label());
+                    logins.observe(outcome.label(), Some(trigger.name()));
+                },
+            );
         }
     }
 
@@ -973,7 +963,6 @@ impl ClaudeDirectFetch {
         now: OffsetDateTime,
         user: bool,
         trigger: RefreshTrigger,
-        rejected_live: bool,
     ) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
         if trigger == RefreshTrigger::CannotRefresh {
             self.logins.set_sign_in_required(true);
@@ -982,7 +971,17 @@ impl ClaudeDirectFetch {
                 .observe("sign_in_required", Some(trigger.name()));
             return Err(auth_failure(SourceErrorDetail::SignInRequired));
         }
-        let result = self.touch_and_read(now, user, trigger, rejected_live);
+        if !user {
+            let completed = self.touch_gate.completed();
+            self.schedule_refresh(false, trigger);
+            let detail = match completed {
+                Some(claude_touch::TouchOutcome::CliMissing) => SourceErrorDetail::CliMissing,
+                Some(claude_touch::TouchOutcome::Terminal) => SourceErrorDetail::SignInRequired,
+                _ => SourceErrorDetail::RefreshPending,
+            };
+            return Err(auth_failure(detail));
+        }
+        let result = self.touch_and_read(now, user, trigger);
         let label = match &result {
             Ok(_) => "refreshed",
             Err(failure) => match failure.detail {
@@ -993,9 +992,12 @@ impl ClaudeDirectFetch {
             },
         };
         log_refresh(trigger, user, label);
-        match label {
-            "refreshed" => self.logins.set_sign_in_required(false),
-            "cli_missing" | "sign_in_required" => self.logins.set_sign_in_required(true),
+        match &result {
+            Ok(_) => self.logins.set_sign_in_required(false),
+            Err(FetchFailure {
+                detail: Some(SourceErrorDetail::CliMissing | SourceErrorDetail::SignInRequired),
+                ..
+            }) => self.logins.set_sign_in_required(true),
             _ => {}
         }
         result
@@ -1006,7 +1008,6 @@ impl ClaudeDirectFetch {
         now: OffsetDateTime,
         user: bool,
         trigger: RefreshTrigger,
-        rejected_live: bool,
     ) -> Result<Option<ProviderUsageSnapshot>, FetchFailure> {
         let observe = |label| self.logins.observe(label, Some(trigger.name()));
         let Some(env) = self.touch_env.as_deref() else {
@@ -1016,7 +1017,7 @@ impl ClaudeDirectFetch {
             );
             return Err(auth_failure(SourceErrorDetail::RefreshPending));
         };
-        let request = Self::touch_request(user, trigger, rejected_live);
+        let request = Self::touch_request(user);
         let settled = match claude_touch::touch(env, &self.touch_gate, request) {
             claude_touch::TouchOutcome::Settled(settled) => settled,
             claude_touch::TouchOutcome::CliMissing => {
@@ -1153,32 +1154,22 @@ impl LiveUsageSource for ClaudeDirectFetch {
         // `security` subprocess, and a poll that the cooldown is going to
         // skip anyway should not pay for either.
         let outcome = self.cooldown.poll(now, max_age, || {
-            let (mut native_carriers, mut carrier_error) = self.read_native_carriers(user);
-            if expires_soon(&native_carriers, now)
-                && let Some((refreshed, error)) = self.refresh_before_expiry(user)
-            {
-                native_carriers = refreshed;
-                carrier_error = error;
+            let (native_carriers, mut carrier_error) = self.read_native_carriers(user);
+            if expires_soon(&native_carriers, now) {
+                self.schedule_refresh(user, RefreshTrigger::PreExpiry);
             }
             let mut carriers = native_carriers.clone();
-            let (pi_carrier, pi_rejected) = match self.read_pi_carrier() {
-                Ok(result) => result,
-                Err(failure) => {
-                    carrier_error = carrier_error.or(Some(failure));
-                    (None, false)
-                }
-            };
+            let (pi_carrier, pi_rejected) = self.read_pi_carrier_with_error(&mut carrier_error);
+            let pi_present = pi_carrier.is_some();
+            let pi_live = pi_carrier
+                .as_ref()
+                .is_some_and(|carrier| carrier.is_live(now));
             carriers.extend(pi_carrier);
             // The touch below requires a *native* carrier: Pi's read-only
             // entry alone never triggers one — see the module doc's
             // "Delegating refresh to the CLI" section.
-            let native_present = !native_carriers.is_empty();
+            let mut native_present = !native_carriers.is_empty();
             let mut trigger = RefreshTrigger::after_rejection(&native_carriers);
-            // A live native login that the endpoint rejects below was
-            // rejected before its expiry.
-            let rejected_live = native_carriers
-                .iter()
-                .any(|credentials| credentials.is_live(now));
             let native = native_carriers
                 .into_iter()
                 .find(|credentials| credentials.is_live(now));
@@ -1197,11 +1188,6 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 .iter()
                 .map(|carrier| carrier.access_token.clone())
                 .collect();
-            // Every carrier held a token and every token expired, so an
-            // authentication failure below is expiry, not a rejection.
-            let all_expired = !pi_rejected
-                && !carriers.is_empty()
-                && !carriers.iter().any(|carrier| carrier.is_live(now));
             let mut fetched = fetch_from_carriers(
                 self.transport.as_ref(),
                 carriers,
@@ -1215,7 +1201,8 @@ impl LiveUsageSource for ClaudeDirectFetch {
             if matches!(fetched, Err(ProviderUsageError::Authentication)) && native_present {
                 let (current, read_error) = self.read_native_carriers(user);
                 trigger = RefreshTrigger::after_rejection(&current);
-                if current.is_empty() && read_error.is_none() {
+                native_present = !current.is_empty();
+                if current.is_empty() && read_error.is_none() && !pi_present {
                     fetched = Ok(None);
                 }
                 let changed: Vec<_> = current
@@ -1252,10 +1239,12 @@ impl LiveUsageSource for ClaudeDirectFetch {
             // too, so the reading recovers while no surface is open.
             let fetched = match fetched {
                 Err(ProviderUsageError::Authentication) if native_present => {
-                    if let Some(failure) = carrier_error.take() {
+                    if trigger == RefreshTrigger::CannotRefresh
+                        && let Some(failure) = carrier_error.take()
+                    {
                         Err(failure)
                     } else {
-                        self.touch_then_retry(now, user, trigger, rejected_live)
+                        self.touch_then_retry(now, user, trigger)
                     }
                 }
                 Ok(Some(snapshot)) => {
@@ -1267,14 +1256,14 @@ impl LiveUsageSource for ClaudeDirectFetch {
                     }
                     Ok(Some(snapshot))
                 }
-                // Pi's own refresh rejected its entry. Only a new sign-in in
-                // Pi fixes it.
-                Err(ProviderUsageError::Authentication) if pi_rejected => {
+                // Pi has no refresh token, rejects recovery, or its live
+                // token fails authentication. Native absence cannot hide it.
+                Err(ProviderUsageError::Authentication) if pi_rejected || pi_live => {
                     Err(auth_failure(SourceErrorDetail::SignInRequired))
                 }
-                // Only Pi's entry is left, and Pi keeps a refresh token for
-                // it (see `read_pi_carrier`). Pi refreshes it on its next run.
-                Err(ProviderUsageError::Authentication) if all_expired => {
+                // Pi still holds an expired refreshable entry. Unavailable
+                // recovery is not proof that a new sign-in is required.
+                Err(ProviderUsageError::Authentication) if pi_present => {
                     Err(auth_failure(SourceErrorDetail::CredentialExpired))
                 }
                 other => other.map_err(FetchFailure::from),
@@ -1387,8 +1376,8 @@ trait AnthropicTransport: Send + Sync {
     }
 }
 
-/// The production transport. All calls run inside the source's cooldown
-/// lock, so the two caches below see one request at a time.
+/// The production transport. Each cache has its own lock; diagnostics can
+/// run outside the source's cooldown lock.
 #[derive(Default)]
 struct LiveAnthropicTransport {
     /// The `Retry-After` from the last usage response that was a rate limit.
@@ -1409,10 +1398,7 @@ impl AnthropicTransport for LiveAnthropicTransport {
         let response = sent.map_err(|_| ProviderUsageError::Unavailable)?;
         if let Some(error) = http::status_error(response.status()) {
             if error == ProviderUsageError::RateLimited {
-                *self
-                    .retry_after
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = retry_after(&response);
+                *lock(&self.retry_after) = retry_after(&response);
             }
             return Err(error);
         }
@@ -1420,10 +1406,7 @@ impl AnthropicTransport for LiveAnthropicTransport {
     }
 
     fn take_retry_after(&self) -> Option<Duration> {
-        self.retry_after
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
+        lock(&self.retry_after).take()
     }
 
     #[cfg(feature = "analytics")]
@@ -1469,15 +1452,15 @@ impl AnthropicTransport for LiveAnthropicTransport {
             );
             let response = sent.ok()?;
             if http::status_error(response.status()).is_some() {
-                return Some(None);
+                return None;
             }
-            Some(http::read_capped_body(response).ok())
+            http::read_capped_body(response).ok().map(Some)
         })
     }
 }
 
-/// Cache profile responses until the token changes, but leave transport
-/// failures uncached.
+/// Cache successful profile responses until the token changes. Transport,
+/// HTTP, and body-read failures remain retryable.
 fn cached_profile(
     cache: &Mutex<Option<(u64, Option<String>)>>,
     access_token: &str,
@@ -1497,10 +1480,7 @@ fn cached_profile(
 
 /// A hash that tells two access tokens apart without keeping either.
 fn token_key(access_token: &str) -> u64 {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher = std::hash::DefaultHasher::new();
-    access_token.hash(&mut hasher);
-    hasher.finish()
+    claude_touch::hash(access_token.as_bytes())
 }
 
 /// Log one outgoing request to the Claude usage API. `status` is `None`
@@ -3186,11 +3166,10 @@ mod tests {
                 spawns: Arc::clone(&spawns),
             }),
         );
-        // The endpoint rejected a live token, and the CLI did not write a
-        // new one. One unchanged attempt is enough to say so.
+        // A rejected live token can recover without new credential material.
         assert_eq!(
             source.fetch(USER_MAX_AGE).detail,
-            Some(SourceErrorDetail::SignInRequired)
+            Some(SourceErrorDetail::RefreshPending)
         );
         source.cooldown.open_for_test();
         // The next check still tries the token. When it works, the sign-in
@@ -3228,10 +3207,9 @@ mod tests {
                 spawns: Arc::clone(&spawns),
             }),
         );
-        // A live token the endpoint rejects, and a CLI that writes nothing:
-        // only a new sign-in helps.
+        // An unchanged touch earns no immediate usage retry, but stays recoverable.
         let outcome = source.fetch(USER_MAX_AGE);
-        assert_eq!(outcome.detail, Some(SourceErrorDetail::SignInRequired));
+        assert_eq!(outcome.detail, Some(SourceErrorDetail::RefreshPending));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
     }
@@ -3306,24 +3284,23 @@ mod tests {
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
         assert_eq!(usage_calls.load(Ordering::SeqCst), 0);
 
-        // The CLI never writes a new login. After the unchanged limit the
-        // check says that only a new sign-in helps, and no PTY starts again.
+        // Offline or slow startup never proves that sign-in is required.
         let mut last = None;
-        for _ in 1..claude_touch::UNCHANGED_ATTEMPT_LIMIT {
+        for _ in 1..5 {
             source.cooldown.open_for_test();
             source.touch_gate.open_cooldown_for_test();
             last = source.fetch(USER_MAX_AGE).detail;
         }
-        assert_eq!(last, Some(SourceErrorDetail::SignInRequired));
+        assert_eq!(last, Some(SourceErrorDetail::RefreshPending));
         let attempts = spawns.load(Ordering::SeqCst);
-        assert_eq!(attempts, claude_touch::UNCHANGED_ATTEMPT_LIMIT as usize);
+        assert_eq!(attempts, 5);
         source.cooldown.open_for_test();
         source.touch_gate.open_cooldown_for_test();
         assert_eq!(
             source.fetch(USER_MAX_AGE).detail,
-            Some(SourceErrorDetail::SignInRequired)
+            Some(SourceErrorDetail::RefreshPending)
         );
-        assert_eq!(spawns.load(Ordering::SeqCst), attempts);
+        assert_eq!(spawns.load(Ordering::SeqCst), attempts + 1);
     }
 
     #[test]
@@ -3516,12 +3493,7 @@ mod tests {
         assert!(!user_initiated(USER_INITIATED_MAX_AGE));
     }
 
-    /// A blank login in the shape the CLI leaves after its login expires
-    /// for good. Synthetic values only.
-    const BLANK_LOGIN: &str = r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"scopes":[],"subscriptionType":"max"}}"#;
-
-    /// An item that holds only MCP logins.
-    const MCP_ONLY: &str = r#"{"mcpOAuth":{"synthetic-server":{}}}"#;
+    use super::super::claude_login::{BLANK_LOGIN, MCP_ONLY};
 
     #[test]
     fn a_blank_login_does_not_shadow_a_live_carrier() {
@@ -3562,20 +3534,20 @@ mod tests {
         fs::write(&path, credentials_file((NOW + 3_600) * 1_000, "max")).unwrap();
         let source = ClaudeDirectFetch::at(path.clone());
         assert!(source.read_file_login(&path).unwrap().is_some());
-        assert_eq!(source.logins.file(&path), CachedState::Usable);
+        assert_eq!(source.logins.file(), CachedState::Usable);
         // The flag stays while the content hash stays.
         source.logins.set_sign_in_required(true);
         assert!(source.read_file_login(&path).unwrap().is_some());
-        assert_eq!(source.logins.file(&path), CachedState::SignInRequired);
+        assert_eq!(source.logins.file(), CachedState::SignInRequired);
         // A new file is parsed again and starts without the flag.
         fs::write(&path, credentials_file((NOW + 7_200) * 1_000, "pro")).unwrap();
         let login = source.read_file_login(&path).unwrap().unwrap();
         assert_eq!(login.subscription_type.as_deref(), Some("pro"));
-        assert_eq!(source.logins.file(&path), CachedState::Usable);
+        assert_eq!(source.logins.file(), CachedState::Usable);
         // An MCP-only file holds no Claude login.
         fs::write(&path, MCP_ONLY).unwrap();
         assert!(source.read_file_login(&path).unwrap().is_none());
-        assert_eq!(source.logins.file(&path), CachedState::NoLogin);
+        assert_eq!(source.logins.file(), CachedState::NoLogin);
         // A removed file clears the cache.
         fs::remove_file(&path).unwrap();
         assert!(source.read_file_login(&path).unwrap().is_none());
@@ -3641,9 +3613,12 @@ mod tests {
             }),
         );
 
-        // `TEST_MAX_AGE` is the background monitor's shape.
+        // The current collection returns before the owner refresh completes.
+        let pending = source.fetch(TEST_MAX_AGE);
+        assert_eq!(pending.detail, Some(SourceErrorDetail::RefreshPending));
+        source.touch_gate.wait_for_worker();
+        source.cooldown.open_for_test();
         let outcome = source.fetch(TEST_MAX_AGE);
-
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.snapshots.len(), 1);
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
@@ -3672,6 +3647,7 @@ mod tests {
         let outcome = source.fetch(TEST_MAX_AGE);
         // A refreshable login that did not refresh yet stays recoverable.
         assert_eq!(outcome.detail, Some(SourceErrorDetail::RefreshPending));
+        source.touch_gate.wait_for_worker();
         source.cooldown.open_for_test();
         let outcome = source.fetch(TEST_MAX_AGE);
         assert_eq!(outcome.detail, Some(SourceErrorDetail::RefreshPending));
@@ -3681,11 +3657,11 @@ mod tests {
             RefreshTrigger::after_rejection(&[valid_credentials()])
         );
         assert_eq!(
-            ClaudeDirectFetch::touch_request(false, RefreshTrigger::Expired, false).cooldown,
+            ClaudeDirectFetch::touch_request(false).cooldown,
             claude_touch::BACKGROUND_TOUCH_COOLDOWN
         );
         assert_eq!(
-            ClaudeDirectFetch::touch_request(true, RefreshTrigger::Expired, false).cooldown,
+            ClaudeDirectFetch::touch_request(true).cooldown,
             claude_touch::TOUCH_COOLDOWN
         );
     }
@@ -3704,7 +3680,7 @@ mod tests {
     }
 
     #[test]
-    fn a_login_that_expires_soon_refreshes_before_the_usage_call() {
+    fn a_login_that_expires_soon_uses_the_current_token_without_waiting() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join(".credentials.json");
         fs::write(
@@ -3721,7 +3697,7 @@ mod tests {
         let spawns = Arc::new(AtomicUsize::new(0));
         let source = ClaudeDirectFetch::at_with_touch(
             path.clone(),
-            Box::new(OnlyToken("refreshed-access")),
+            Box::new(OnlyToken("synthetic-token")),
             Box::new(FileTouchEnv {
                 path,
                 binary_present: true,
@@ -3730,6 +3706,7 @@ mod tests {
             }),
         );
         let outcome = source.fetch(TEST_MAX_AGE);
+        source.touch_gate.wait_for_worker();
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.snapshots.len(), 1);
         assert_eq!(spawns.load(Ordering::SeqCst), 1);
@@ -3756,6 +3733,7 @@ mod tests {
             }),
         );
         let outcome = source.fetch(USER_MAX_AGE);
+        source.touch_gate.wait_for_worker();
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.snapshots.len(), 1);
         assert_eq!(spawns.load(Ordering::SeqCst), 1);

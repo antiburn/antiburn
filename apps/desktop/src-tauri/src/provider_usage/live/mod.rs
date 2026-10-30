@@ -513,7 +513,7 @@ pub fn summarize_collected(
         .collect();
     providers.sort_by(|a, b| a.provider.cmp(&b.provider));
 
-    LiveUsageSummary {
+    let mut summary = LiveUsageSummary {
         providers,
         errors: collected
             .errors
@@ -529,6 +529,35 @@ pub fn summarize_collected(
             .collect(),
         meters,
         generated_at: crate::store::iso_from_epoch(Some(now)),
+    };
+    clear_expired_window_figures(&mut summary, at);
+    summary
+}
+
+/// Remove old-period figures before any surface reads a retained snapshot.
+pub(crate) fn clear_expired_window_figures(
+    summary: &mut LiveUsageSummary,
+    at: time::OffsetDateTime,
+) {
+    for provider in &mut summary.providers {
+        let retained = provider.freshness == LiveUsageFreshness::Stale
+            || summary
+                .errors
+                .iter()
+                .any(|error| error.provider == provider.provider);
+        if !retained {
+            continue;
+        }
+        for window in &mut provider.windows {
+            let reset = window.resets_at.as_deref().and_then(|value| {
+                time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                    .ok()
+            });
+            if reset.is_some_and(|reset| reset <= at) {
+                window.used_percent = None;
+                window.elapsed_fraction = None;
+            }
+        }
     }
 }
 

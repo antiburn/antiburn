@@ -232,7 +232,7 @@ is intent only; no installation outcome is observable in this event contract.
 | `step_settings_viewed`                             | A progress step's settings become visible in the first-run takeover's "Show settings" disclosure. `label`: `agents`, `limits`, `sessions`, or `checks`; `detail`: `first_run`.                                                                                                               | `StepSettingsDisclosure`. One per exposure (one open), not per re-render. `limits` only ever reports `first_run`.                                                                                                                                                                                                                                                                                                                                                                            |
 | `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response.                                                                      | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`.                                                                                                                                                                                                               |
 | `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `login_recovering`, `rate_limited`, `unavailable`, `no_credentials`, `sign_in_required`, or `not_signed_in`. | Map existing presentation states without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `login_recovering` means refresh may recover without a new sign-in. `no_credentials` means Claude Desktop is installed but Claude Code and Pi have no login. `sign_in_required` means a login exists but needs `/login`; `not_signed_in` means Claude Code is installed with no login. Send no account, plan, balance, quota value, or raw response. |
-| `onboarding_started`, extend `onboarding_finished` | Visible start or resume and committed completion of a setup flow. `label`: `new` or `restart`.                                                                                                                                                                                               | Emit a start on the first visible start or resume in each app process. A quit and later resume emits another start with the persisted classification. Emit completion once per pending-to-complete transition. Preserve the four existing step events.                                                                                                                                                                                                                                       |
+| `first_run_step_reached`, `first_run_finished` | The first-run Overview reaches a fixed step (`started`, `found`, `read`, `checked`, or `result`), or its completion is saved. `found` carries a session-count bucket; `result` carries a closed result category. Completion has no properties.                                                                                                                                                                                               | `overviewProgressStore` reports each step at most once per first run. The native `finish_first_run` command reports completion only after saving the incomplete-to-complete transition. Failed saves emit no finish. See the First-run Overview funnel contract below; retired onboarding events remain separate.                                                                                                                                                                                                                                       |
 
 `surface_state_observed` also needs a closed `properties.origin` value of `user`
 or `automatic`, inherited from its exposure. This optional wire field lets
@@ -251,13 +251,11 @@ sanitized type list alongside the label and bucket, so a newly observed name
 is a reportable change even when both stay the same. It stays absent on every
 other event, and on an event from an app version that predates it.
 
-Define the start classification from the explicit restart path and existing
-onboarding state, not from whether the analytics identifier has been seen.
-Analyze setup progress by distinct installation and ordered times; repeated
-flows in one observation window are not independent new installations. Earlier
-`onboarding_finished` events have no classification label. Exclude those legacy
-events from new-versus-restart cohorts instead of treating a missing label as
-`new`.
+Analyze first-run progress by distinct reporting installation and ordered times,
+using the First-run Overview funnel contract below. Keep retired onboarding
+events separate. Historical `new`/`restart` classifications came from explicit
+restart paths and saved onboarding state, not analytics identity. Unlabeled
+historical `onboarding_finished` events do not establish a `new` flow.
 
 Keep `session_opened` as the existing activity-card intent event. Pair it with
 visible session detail and data state for the activation funnel. Record visible
@@ -602,11 +600,19 @@ event, split by `detail`; and the share with `sign_in_required` or
 `cli_missing`. `keychain_metadata_failed` and `keychain_secret_missing` count
 installations where the macOS Keychain read was not reliable.
 
-The shell emits the event after a live-usage collection, from fixed outcome
-values the Claude source keeps. Only a changed `(label, detail)` pair is
+The shell emits the event after a live-usage collection, from fixed refresh
+outcomes, refresh-eligibility decisions, and selected Keychain-read failures the
+Claude source keeps. Ordinary successful login reads emit nothing. Only a changed `(label, detail)` pair is
 queued, so a stable state reports once per run. The values carry no token,
 path, account identifier, or CLI output; the Rust boundary drops any value
 outside the closed lists (`claude_login_observations_use_closed_vocabularies`).
+`sign_in_required` with `cannot_refresh` means no usable refresh token exists,
+so the owner is not launched. A missing access token with a usable refresh token
+can still recover through its owner. A refresh timeout without verified
+credential evidence does not prove that a new sign-in is required. Do not count
+a no-launch decision as a failed owner attempt; this event is not an owner-launch
+counter. Reports start at the first shipping app version with this event.
+
 The existing `live_usage_state_observed` event also accepts the renderer
 states `sign_in_required` and `not_signed_in`. Owner: the live-usage
 maintainer. Review this diagnostic by 2027-01-31.
@@ -1190,15 +1196,6 @@ with sessions is `ready`; completed discovery without sessions is `empty`.
 Unsettled discovery can report `loading_timeout` after ten seconds. Leaving the
 page ends the exposure. These events contain no agent names, counts, or paths and
 do not establish that a session link was followed.
-
-### Claude owner-refresh eligibility (#704 correction)
-
-The existing closed `claude_login_observed` contract remains unchanged in shape.
-`sign_in_required` with `cannot_refresh` now means no usable refresh token exists
-and no owner refresh runs. A missing access token with a usable refresh token
-can still recover through its owner. Compare recovery and sign-in outcomes by
-app version; do not count the no-launch decision as a failed owner attempt.
-The event adds no credentials, paths, identifiers, or provider response content.
 
 ### Promotion campaign registration
 

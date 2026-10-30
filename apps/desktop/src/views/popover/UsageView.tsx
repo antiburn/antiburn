@@ -28,7 +28,9 @@ import {
   livePlanLabel,
   liveDisplayableProviders,
   liveProviderStatus,
-  liveStatusNote,
+  liveStatusNotes,
+  liveCarrierLabel,
+  planLabel,
   liveWindows,
   orderedLiveAccounts,
 } from "../../lib/presentation/liveUsage"
@@ -72,6 +74,7 @@ function sectioned(providers: readonly ProviderUsagePayload[]): {
 }
 
 interface UsageCardEntry {
+  metadata?: { displayName: string; plan: string | null }
   carrierLabel?: string
   local: ProviderUsagePayload[]
   live: LiveProviderUsagePayload[]
@@ -231,14 +234,32 @@ function usageCards(
       errors: [],
       key: `provider:${error.provider}`,
     }
-    const carrierLabel = live.meters?.find(
-      (meter) => meter.provider === error.provider,
-    )?.carrierLabel
+    const carrierLabel = liveCarrierLabel(live, error.provider)
     if (carrierLabel) card.carrierLabel = carrierLabel
     card.errors.push(error)
     cards.set(error.provider, card)
   }
-  return [...cards.values()]
+  return [...cards.values()].map((card) => {
+    const provider =
+      card.local[0]?.provider ?? card.live[0]?.provider ?? card.errors[0]?.provider
+    const readings = live.providers.filter((reading) => reading.provider === provider)
+    const first = readings[0]
+    const error = card.errors[0]
+    const plans = readings.map(livePlanLabel)
+    const plan =
+      first && plans.every((value) => value === plans[0])
+        ? livePlanAccountLabel(first)
+        : error
+          ? planLabel(error.provider, error.plan ?? null)
+          : null
+    return {
+      ...card,
+      metadata: {
+        displayName: first?.displayName ?? error?.displayName ?? provider ?? "",
+        plan,
+      },
+    }
+  })
 }
 
 /**
@@ -357,6 +378,7 @@ function UsageSection({
 }
 
 function ProviderCard({
+  metadata,
   carrierLabel,
   local,
   live,
@@ -364,6 +386,7 @@ function ProviderCard({
   now,
   generatedAt,
 }: {
+  metadata?: UsageCardEntry["metadata"]
   carrierLabel?: string
   local: readonly ProviderUsagePayload[]
   live: readonly LiveProviderUsagePayload[]
@@ -418,11 +441,16 @@ function ProviderCard({
     accountPlans.length > 0 && accountPlans.every((entry) => entry === accountPlans[0])
       ? accountPlans[0]
       : null
-  const plan = live.length === 1 ? livePlanAccountLabel(live[0]!) : aggregatePlan
+  const plan =
+    metadata?.plan ?? (live.length === 1 ? livePlanAccountLabel(live[0]!) : aggregatePlan)
   const showAccountPlans = accountPlans.some((entry) => entry !== aggregatePlan)
   const provider = primaryLocal?.provider ?? live[0]?.provider ?? errors[0]?.provider ?? ""
   const displayName =
-    primaryLocal?.displayName ?? live[0]?.displayName ?? errors[0]?.displayName ?? provider
+    primaryLocal?.displayName ??
+    metadata?.displayName ??
+    live[0]?.displayName ??
+    errors[0]?.displayName ??
+    provider
   const [open, setOpen] = useState(provider !== "unknown")
   const bodyId = useId()
   const todayTotal = summedWindow(shownLocal, "today")
@@ -501,30 +529,17 @@ function ProviderCard({
                 : undefined
             const primaryWindow = liveWindows(reading)[0]
             const status = liveProviderStatus({ errors, generatedAt }, reading)
-            const note = liveStatusNote(status, reading.provider)
-            const graceNote = status.kind === "grace" ? note : null
-            const staleNote = status.kind === "stale" ? note : null
+            const { graceNote, staleNote, actionNote } = liveStatusNotes(
+              status,
+              reading.provider,
+            )
             return (
               <div
                 key={key}
                 className="space-y-1.5"
                 {...(staleNote ? { title: staleNote } : {})}
               >
-                {staleNote ? (
-                  <div className="opacity-60">
-                    <LiveUsageDetail
-                      live={reading}
-                      now={now}
-                      accountCount={accounts.length}
-                      showPlan={
-                        showAccountPlans ||
-                        (accounts.length > 1 && reading.accountEmail != null)
-                      }
-                      showRunway={!matchingLocal}
-                      {...(accountLabel ? { accountLabel } : {})}
-                    />
-                  </div>
-                ) : (
+                <div className={cn(staleNote && "opacity-60")}>
                   <LiveUsageDetail
                     live={reading}
                     now={now}
@@ -535,8 +550,10 @@ function ProviderCard({
                     showRunway={!matchingLocal}
                     {...(accountLabel ? { accountLabel } : {})}
                   />
+                </div>
+                {(actionNote ?? graceNote) && (
+                  <p className="type-caption text-label-tertiary">{actionNote ?? graceNote}</p>
                 )}
-                {graceNote && <p className="type-caption text-label-tertiary">{graceNote}</p>}
                 {matchingLocal && (
                   <LocalUsageDetail
                     provider={matchingLocal}
@@ -548,10 +565,8 @@ function ProviderCard({
             )
           })}
 
-          {/* A provider in grace already carries its explanation as the note
-              above, directly under its reading — not as a second, orange one
-              here. A failed or reading-less provider's error keeps this
-              note, which is the only trace of the failure it has. */}
+          {/* Shown readings carry age and actionable guidance above.
+              Only failures without a shown reading need a separate note. */}
           {errors
             .filter(
               (error) =>

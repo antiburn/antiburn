@@ -519,6 +519,57 @@ fn a_completed_background_collection_records_history_and_shapes_the_view() {
 }
 
 #[test]
+fn retained_snapshots_clear_only_figures_from_periods_that_reset() {
+    for freshness in [Freshness::Fresh, Freshness::Stale] {
+        let mut reading = snapshot(freshness, NOW - 60, 81.0);
+        let template = reading.windows[0].clone();
+        reading.windows = [Some(NOW - 1), Some(NOW), Some(NOW + 1), None]
+            .into_iter()
+            .enumerate()
+            .map(|(index, reset)| {
+                let mut window = template.clone();
+                window.id = format!("window-{index}");
+                window.resets_at = reset.map(at);
+                window
+            })
+            .collect();
+        let summary = summarize_collected(
+            sources::Collected {
+                snapshots: vec![reading],
+                errors: Vec::new(),
+            },
+            Vec::new(),
+            None,
+            None,
+            NOW,
+            0,
+        );
+        let windows = &summary.providers[0].windows;
+        for (index, window) in windows.iter().enumerate() {
+            let expired = freshness == Freshness::Stale && index < 2;
+            assert_eq!(window.used_percent, (!expired).then_some(81.0));
+            if expired {
+                assert_eq!(window.elapsed_fraction, None);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_failed_provider_clears_reset_figures_even_if_its_snapshot_says_fresh() {
+    let mut reading = snapshot(Freshness::Fresh, NOW - 60, 81.0);
+    reading.windows[0].resets_at = Some(at(NOW));
+    let sources: Vec<Box<dyn LiveUsageSource>> = vec![
+        Box::new(Fixed("held-reading", vec![reading])),
+        Box::new(Broken("failed-check", ProviderUsageError::Unavailable)),
+    ];
+    let summary = summarize(&sources, None, NOW, 0, MAX_AGE);
+    assert_eq!(summary.providers[0].windows[0].used_percent, None);
+    assert_eq!(summary.providers[0].windows[0].elapsed_fraction, None);
+    assert_eq!(summary.errors.len(), 1);
+}
+
+#[test]
 fn the_forecast_is_computed_from_durable_observations() {
     // The forecast cache blob is gone: two readings recorded a pass apart
     // must still give the forecast a rate, now read straight from
@@ -1156,25 +1207,26 @@ fn only_a_clean_provider_snapshot_upgrades_detection() {
     }
 }
 
+struct DetailedFailure(ProviderUsageError, Option<super::SourceErrorDetail>);
+
+impl LiveUsageSource for DetailedFailure {
+    fn id(&self) -> &'static str {
+        "detail-fixture"
+    }
+    fn provider(&self) -> &'static str {
+        "anthropic"
+    }
+    fn fetch(&self, _: std::time::Duration) -> SourceOutcome {
+        match self.1 {
+            Some(detail) => SourceOutcome::failed_with_detail(self.0, detail),
+            None => SourceOutcome::failed(self.0),
+        }
+    }
+}
+
 #[test]
 fn collection_and_summary_preserve_optional_error_details() {
     use super::SourceErrorDetail;
-
-    struct DetailedFailure(ProviderUsageError, Option<SourceErrorDetail>);
-    impl LiveUsageSource for DetailedFailure {
-        fn id(&self) -> &'static str {
-            "detail-fixture"
-        }
-        fn provider(&self) -> &'static str {
-            "anthropic"
-        }
-        fn fetch(&self, _: std::time::Duration) -> SourceOutcome {
-            match self.1 {
-                Some(detail) => SourceOutcome::failed_with_detail(self.0, detail),
-                None => SourceOutcome::failed(self.0),
-            }
-        }
-    }
 
     for (error, detail, wire) in [
         (
@@ -1421,25 +1473,15 @@ fn a_silent_source_is_not_given_a_sign_in_state() {
 fn a_sign_in_failure_sets_the_meter_state() {
     use super::SourceErrorDetail;
 
-    struct Failing(SourceErrorDetail);
-    impl LiveUsageSource for Failing {
-        fn id(&self) -> &'static str {
-            "failing-fixture"
-        }
-        fn provider(&self) -> &'static str {
-            "anthropic"
-        }
-        fn fetch(&self, _: std::time::Duration) -> SourceOutcome {
-            SourceOutcome::failed_with_detail(ProviderUsageError::Authentication, self.0)
-        }
-    }
-
     for (detail, expected) in [
         (SourceErrorDetail::SignInRequired, Detection::SignInRequired),
         (SourceErrorDetail::CliMissing, Detection::SignInRequired),
         (SourceErrorDetail::RefreshPending, Detection::SignedIn),
     ] {
-        let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(Failing(detail))];
+        let sources: Vec<Box<dyn LiveUsageSource>> = vec![Box::new(DetailedFailure(
+            ProviderUsageError::Authentication,
+            Some(detail),
+        ))];
         let collected = sources::collect(&sources, true, &HiddenMeters::default(), MAX_AGE);
         let detected = DetectionMap::from([(
             "anthropic".into(),

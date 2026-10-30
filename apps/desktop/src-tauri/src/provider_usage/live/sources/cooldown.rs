@@ -234,18 +234,6 @@ impl Cooldown {
         inner.retry_at = None;
     }
 
-    /// End a rate-limit backoff early without forgetting how many rate
-    /// limits came in a row, so a test can observe the next, longer wait.
-    #[cfg(test)]
-    fn end_backoff_for_test(&self) {
-        let mut inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inner.retry_at = None;
-        inner.last_attempt = None;
-    }
-
     /// The time left in the current rate-limit backoff.
     #[cfg(test)]
     pub(super) fn backoff_left_for_test(&self) -> Option<Duration> {
@@ -870,14 +858,14 @@ mod tests {
     fn repeated_rate_limits_wait_longer_and_a_success_resets_the_wait() {
         let cooldown = Cooldown::new();
         cooldown.poll(at(1_000), Duration::ZERO, || rate_limited(None));
-        cooldown.end_backoff_for_test();
+        cooldown.open_for_test();
         cooldown.poll(at(1_100), Duration::ZERO, || {
             rate_limited(Some(Duration::ZERO))
         });
         let second = cooldown.backoff_left_for_test().expect("a backoff");
         assert!(second > MIN_FAILURE_COOLDOWN && second <= MIN_FAILURE_COOLDOWN * 2);
 
-        cooldown.end_backoff_for_test();
+        cooldown.open_for_test();
         let recovered = cooldown.poll(at(1_300), Duration::ZERO, || {
             Ok(Some(snapshot(at(1_300), 45.0)))
         });
@@ -905,7 +893,7 @@ mod tests {
     fn another_failure_clears_a_rate_limit_backoff() {
         let cooldown = Cooldown::new();
         cooldown.poll(at(1_000), Duration::ZERO, || rate_limited(None));
-        cooldown.end_backoff_for_test();
+        cooldown.open_for_test();
         cooldown.poll(at(1_100), Duration::ZERO, || {
             Err(ProviderUsageError::Unavailable.into())
         });

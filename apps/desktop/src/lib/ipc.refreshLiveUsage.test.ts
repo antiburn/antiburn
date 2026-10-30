@@ -11,18 +11,25 @@ describe("refreshLiveUsage", () => {
     invoke.mockReset()
   })
 
-  it("shares one check between calls at the same time", async () => {
-    let finish: (value: null) => void = () => undefined
-    invoke.mockReturnValue(new Promise<null>((resolve) => (finish = resolve)))
+  it.each(["settings change", "period reset"])(
+    "requests a new check after a %s while an earlier check runs",
+    async () => {
+      let finish: (value: typeof EMPTY_LIVE_USAGE) => void = () => undefined
+      const before = { ...EMPTY_LIVE_USAGE, generatedAt: "2026-10-30T12:00:00Z" }
+      const after = { ...EMPTY_LIVE_USAGE, generatedAt: "2026-10-30T12:01:00Z" }
+      invoke
+        .mockReturnValueOnce(new Promise((resolve) => (finish = resolve)))
+        .mockResolvedValueOnce(after)
 
-    const first = refreshLiveUsage()
-    const second = refreshLiveUsage()
-    finish(null)
+      const first = refreshLiveUsage()
+      const second = refreshLiveUsage()
 
-    await expect(first).resolves.toEqual(EMPTY_LIVE_USAGE)
-    await expect(second).resolves.toEqual(EMPTY_LIVE_USAGE)
-    expect(invoke).toHaveBeenCalledTimes(1)
-  })
+      expect(invoke).toHaveBeenCalledTimes(2)
+      await expect(second).resolves.toEqual(after)
+      finish(before)
+      await expect(first).resolves.toEqual(before)
+    },
+  )
 
   it("starts a new check after the last one ends", async () => {
     invoke.mockResolvedValue(null)

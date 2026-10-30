@@ -5,7 +5,6 @@
 //! module holds the parsed login, the change markers, and the cached state
 //! that detection consults. See that module's doc for the rules.
 
-use std::path::Path;
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -48,14 +47,14 @@ impl CachedState {
     }
 }
 
-/// The cached login states detection may consult. Each method gets only
-/// metadata and never reads a secret.
+/// The last confirmed login states. Detection does not read a secret or
+/// replace these states until collection reads the carrier successfully.
 pub(super) trait LoginStates {
-    /// The state of the credentials file at `path`, by its file metadata.
-    fn file(&self, path: &Path) -> CachedState;
-    /// The state of the Keychain item, by its attribute output.
+    /// The last confirmed state of the credentials file.
+    fn file(&self) -> CachedState;
+    /// The last confirmed state of the Keychain item.
     #[cfg(target_os = "macos")]
-    fn keychain(&self, attributes: &[u8]) -> CachedState;
+    fn keychain(&self) -> CachedState;
     /// The last confirmed state when Keychain metadata cannot be read.
     #[cfg(target_os = "macos")]
     fn keychain_unavailable(&self) -> Option<CachedState> {
@@ -69,11 +68,11 @@ pub(super) struct NoCachedLogins;
 
 #[cfg(test)]
 impl LoginStates for NoCachedLogins {
-    fn file(&self, _path: &Path) -> CachedState {
+    fn file(&self) -> CachedState {
         CachedState::Unknown
     }
     #[cfg(target_os = "macos")]
-    fn keychain(&self, _attributes: &[u8]) -> CachedState {
+    fn keychain(&self) -> CachedState {
         CachedState::Unknown
     }
 }
@@ -326,13 +325,10 @@ pub(super) mod macos_keychain {
     }
 }
 
-/// The change marker of the Keychain item: its `mdat` value and a hash of
-/// the whole attribute output. `mdat` has a one-second precision, so the
-/// hash also catches two writes in one second.
+/// The hash covers all Keychain attributes, including the modification date.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct KeychainMarker {
-    pub(super) mdat: Option<String>,
     pub(super) attributes_hash: u64,
 }
 
@@ -340,31 +336,13 @@ pub(super) struct KeychainMarker {
 impl KeychainMarker {
     pub(super) fn from_attributes(attributes: &[u8]) -> KeychainMarker {
         KeychainMarker {
-            mdat: parse_mdat(attributes),
             attributes_hash: claude_touch::hash(attributes),
         }
     }
 }
 
-/// The `mdat` value from `security find-generic-password` attribute output,
-/// for example `20260101120000Z` from
-/// `"mdat"<timedate>=0x3230… "20260101120000Z\000"`.
-#[cfg(target_os = "macos")]
-pub(super) fn parse_mdat(attributes: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(attributes);
-    let line = text
-        .lines()
-        .find(|line| line.trim_start().starts_with("\"mdat\""))?;
-    let (_, value) = line.split_once('=')?;
-    let (_, quoted) = value.split_once('"')?;
-    let (date, _) = quoted.split_once('"')?;
-    let date = date.trim_end_matches("\\000");
-    (!date.is_empty()).then(|| date.to_owned())
-}
-
-/// The change marker of the credentials file. The content hash decides
-/// whether the file changed. Detection compares only `modified` and `len`,
-/// because detection reads no file contents.
+/// Collection compares this content hash before it parses the file again.
+/// Detection uses the last confirmed state without checking this marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FileMarker {
     pub(super) content_hash: u64,
@@ -392,18 +370,20 @@ impl<M> CachedLogin<M> {
 
 /// The cached logins of the native carriers. See the `anthropic_fetch` module doc's
 /// "Reading a carrier only when it changed" section.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(super) struct NativeLogins {
     #[cfg(target_os = "macos")]
-    pub(super) keychain: Mutex<Option<CachedLogin<KeychainMarker>>>,
+    pub(super) keychain: std::sync::Arc<Mutex<Option<CachedLogin<KeychainMarker>>>>,
     /// The marker where the last secret read failed, and when. A denied or
     /// ignored Keychain prompt must not come back on every check.
     #[cfg(target_os = "macos")]
-    pub(super) keychain_secret_failed: Mutex<Option<(KeychainMarker, std::time::Instant)>>,
-    pub(super) file: Mutex<Option<CachedLogin<FileMarker>>>,
+    pub(super) keychain_secret_failed:
+        std::sync::Arc<Mutex<Option<(KeychainMarker, std::time::Instant)>>>,
+    pub(super) file: std::sync::Arc<Mutex<Option<CachedLogin<FileMarker>>>>,
     /// Login and refresh outcomes that wait for the analytics pass.
     #[cfg(feature = "analytics")]
-    pub(super) observations: Mutex<Vec<crate::provider_usage::live::LoginObservation>>,
+    pub(super) observations:
+        std::sync::Arc<Mutex<Vec<crate::provider_usage::live::LoginObservation>>>,
 }
 
 /// The most outcomes that wait for the analytics pass. Later outcomes are
@@ -444,7 +424,7 @@ impl LoginStates for NativeLogins {
         lock(&self.keychain).as_ref().map(CachedLogin::state)
     }
 
-    fn file(&self, _path: &Path) -> CachedState {
+    fn file(&self) -> CachedState {
         // A changed marker does not prove a new login. Collection must read it.
         lock(&self.file)
             .as_ref()
@@ -452,7 +432,7 @@ impl LoginStates for NativeLogins {
     }
 
     #[cfg(target_os = "macos")]
-    fn keychain(&self, _attributes: &[u8]) -> CachedState {
+    fn keychain(&self) -> CachedState {
         // Attribute changes alone cannot replace a confirmed login state.
         lock(&self.keychain)
             .as_ref()
@@ -506,27 +486,27 @@ impl RefreshTrigger {
 /// Whether the live native logins all expire soon, and one of them can
 /// refresh. See [`PRE_EXPIRY_WINDOW`].
 pub(super) fn expires_soon(native: &[ClaudeCredentials], now: OffsetDateTime) -> bool {
-    let mut live = native.iter().filter(|login| login.is_live(now)).peekable();
-    live.peek().is_some()
-        && native
-            .iter()
-            .filter(|login| login.is_live(now))
-            .all(|login| login.expires_within(now, PRE_EXPIRY_WINDOW))
-        && live.any(ClaudeCredentials::can_refresh)
+    let mut refreshable = false;
+    for login in native.iter().filter(|login| login.is_live(now)) {
+        if !login.expires_within(now, PRE_EXPIRY_WINDOW) {
+            return false;
+        }
+        refreshable |= login.can_refresh();
+    }
+    refreshable
 }
+
+#[cfg(test)]
+pub(super) const BLANK_LOGIN: &str = r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"scopes":[],"subscriptionType":"max"}}"#;
+
+#[cfg(test)]
+pub(super) const MCP_ONLY: &str = r#"{"mcpOAuth":{"synthetic-server":{}}}"#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
-
-    /// A blank login in the shape the CLI leaves after its login expires
-    /// for good. Synthetic values only.
-    const BLANK_LOGIN: &str = r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0,"scopes":[],"subscriptionType":"max"}}"#;
-
-    /// An item that holds only MCP logins.
-    const MCP_ONLY: &str = r#"{"mcpOAuth":{"synthetic-server":{}}}"#;
 
     /// The Keychain and the file carrier hold the identical JSON shape, so
     /// this exercises `parse_credentials_json` directly against a synthetic
@@ -608,12 +588,11 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn the_marker_holds_mdat_and_the_attribute_hash() {
+    fn the_marker_tracks_attribute_changes() {
         let first: &[u8] = b"attributes:\n    \"mdat\"<timedate>=0x3230323630313031313230303030305A00  \"20260101120000Z\\000\"\n";
         let second: &[u8] = b"attributes:\n    \"mdat\"<timedate>=0x3230323630313031313230303031305A00  \"20260101120001Z\\000\"\n";
         let marker = KeychainMarker::from_attributes(first);
-        assert_eq!(marker.mdat.as_deref(), Some("20260101120000Z"));
+        assert_eq!(marker, KeychainMarker::from_attributes(first));
         assert_ne!(marker, KeychainMarker::from_attributes(second));
-        assert_eq!(parse_mdat(b"no attributes"), None);
     }
 }

@@ -9,6 +9,8 @@ import {
 import type { LiveUsageSummaryPayload } from "./providerUsageIpc"
 import {
   liveDisplayableProviders,
+  isRecoveringLiveLogin,
+  isTerminalLiveSignIn,
   liveProviderStatus,
   liveUnavailableProviders,
   liveWindows,
@@ -49,13 +51,10 @@ function failedState(category: string, detail?: string): LiveUsageState {
   // The tool is installed, but it holds no login.
   if (detail === "notSignedIn") return "not_signed_in"
   // A login exists, but only a new sign-in can make it usable.
-  if (detail === "signInRequired" || detail === "cliMissing") return "sign_in_required"
+  if (isTerminalLiveSignIn(detail)) return "sign_in_required"
   // The login expired, but it can recover without a new sign-in. The surface
   // keeps the last reading and gives no instruction.
-  if (
-    category === "authentication" &&
-    (detail === "credentialExpired" || detail === "refreshPending")
-  ) {
+  if (category === "authentication" && isRecoveringLiveLogin(detail)) {
     return "login_recovering"
   }
   switch (category) {

@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 26 October 2026
+Effective: 30 October 2026
 
 This policy explains first-party analytics and optional model-based Burn Check assessment
 requests sent by the antiburn desktop application.

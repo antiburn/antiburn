@@ -706,6 +706,33 @@ describe("UsagePane — the grace period", () => {
     expect(screen.getByText("Signed in · checking again soon")).toBeInTheDocument()
   })
 
+  it.each([
+    ["2027-01-15T11:56:00Z", true],
+    ["2027-01-15T11:49:00Z", false],
+  ] as const)(
+    "matches meter grace for terminal authentication at %s",
+    async (observedAt, visible) => {
+      const snapshot = withGracedReading(observedAt)
+      snapshot.errors = [
+        {
+          source: "claude-usage-fetch",
+          provider: "anthropic",
+          displayName: "Claude",
+          category: "authentication",
+          detail: "signInRequired",
+        },
+      ]
+      getLiveUsage.mockResolvedValue(snapshot)
+      pane({ liveUsageEnabled: true })
+      await waitFor(() => expect(screen.getByText("Anthropic")).toBeInTheDocument())
+      expect(screen.queryByText(/^Signed in · 0 limits tracked/) !== null).toBe(visible)
+      if (!visible)
+        expect(
+          screen.getByText("Need to sign in again. Run /login in Claude Code."),
+        ).toBeInTheDocument()
+    },
+  )
+
   it("keeps the reading at the grace boundary too", async () => {
     // Exactly 10 minutes before `GENERATED_AT` — LIVE_USAGE_GRACE_MS itself.
     getLiveUsage.mockResolvedValue(withGracedReading("2027-01-15T11:50:00Z"))

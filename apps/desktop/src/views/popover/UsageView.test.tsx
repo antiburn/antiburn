@@ -606,10 +606,10 @@ describe("UsageView — plan limits layered over local estimates", () => {
 
     const firstGroup = screen.getByRole("region", {
       name: "Google Account 1 plan limits",
-    }).parentElement!
+    }).parentElement!.parentElement!
     const secondGroup = screen.getByRole("region", {
       name: "Google Account 2 plan limits",
-    }).parentElement!
+    }).parentElement!.parentElement!
     expect(within(firstGroup).getAllByText("$2.00 · 0").length).toBeGreaterThan(0)
     expect(within(firstGroup).queryByText("$1.00 · 0")).not.toBeInTheDocument()
     expect(within(secondGroup).getAllByText("$1.00 · 0").length).toBeGreaterThan(0)
@@ -1155,7 +1155,7 @@ describe("UsageView — the grace period", () => {
     expect(within(card).queryByRole("status")).not.toBeInTheDocument()
   })
 
-  it("drops the figure of a stale window whose period reset since the reading", () => {
+  it("shows the native-normalized unknown figure after a stale window reset", () => {
     // The reading is two hours old; its five-hour window reset an hour ago.
     const reading = liveProvider()
     const reset = {
@@ -1163,7 +1163,8 @@ describe("UsageView — the grace period", () => {
       observedAt: "2027-01-15T10:00:00Z",
       windows: reading.windows.map((window) => ({
         ...window,
-        usedPercent: 87,
+        usedPercent: null,
+        elapsedFraction: null,
         resetsAt: "2027-01-15T11:00:00Z",
       })),
     }
@@ -1197,7 +1198,12 @@ describe("UsageView — the grace period", () => {
       <UsageView
         summary={summary()}
         live={live({
-          providers: [{ ...liveProvider(), observedAt: "2027-01-15T11:49:00Z" }],
+          providers: [
+            {
+              ...liveProvider({ plan: { name: "max", tier: null } }),
+              observedAt: "2027-01-15T11:49:00Z",
+            },
+          ],
           errors: [
             {
               source: "claude-usage-fetch",
@@ -1218,6 +1224,35 @@ describe("UsageView — the grace period", () => {
     ).not.toBeInTheDocument()
     expect(within(card).getByRole("status")).toHaveTextContent(
       "Need to sign in again. Run /login in Claude Code.",
+    )
+    expect(within(card).getByRole("heading")).toHaveTextContent("Max")
+  })
+
+  it("keeps Keychain guidance visible beside a recoverable stale reading", () => {
+    render(
+      <UsageView
+        summary={summary()}
+        live={live({
+          providers: [{ ...liveProvider(), observedAt: "2027-01-15T03:00:00Z" }],
+          errors: [
+            {
+              source: "claude-usage-fetch",
+              provider: "anthropic",
+              displayName: "Claude",
+              category: "unavailable",
+              detail: "keychainUnreadable",
+            },
+          ],
+        })}
+        now={NOW}
+      />,
+    )
+    expect(screen.getByText(/If a prompt appears, choose Always Allow/)).toBeVisible()
+    const reading = screen.getByRole("region", { name: "Anthropic plan limits" })
+    expect(reading.parentElement).toHaveClass("opacity-60")
+    expect(reading.closest("[title]")).toHaveAttribute(
+      "title",
+      expect.stringContaining("Last updated 9 hr ago."),
     )
   })
 

@@ -335,6 +335,29 @@ describe("PopoverPeekController", () => {
     expect(analytics.expose).toHaveBeenCalledWith(expect.objectContaining({ state: "ready" }))
   })
 
+  it.each(["notSignedIn", "desktopOnly"] as const)(
+    "reports %s setup without readings as empty",
+    (detail) => {
+      const controller = controllerWith(
+        vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),
+      )
+      const data = providerData("2027-01-15T12:00:00Z")
+      if (data.kind === "provider")
+        data.live.errors = [
+          {
+            source: "claude",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "authentication",
+            detail,
+          },
+        ]
+      controller.accept({ ...request(4, "anthropic"), initialPresentation: data })
+      controller.confirmPresented(4)
+      expect(analytics.expose).toHaveBeenCalledWith(expect.objectContaining({ state: "empty" }))
+    },
+  )
+
   it("reports a reading dropped after a terminal sign-in failure as an error", () => {
     const controller = controllerWith(
       vi.fn(() => new Promise<PopoverPeekData>(() => undefined)),

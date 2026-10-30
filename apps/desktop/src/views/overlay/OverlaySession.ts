@@ -156,6 +156,8 @@ function sameBars(left: UsageBarItem[], right: UsageBarItem[]): boolean {
         bar.key === other.key &&
         bar.label === other.label &&
         bar.percent === other.percent &&
+        bar.stale === other.stale &&
+        bar.statusNote === other.statusNote &&
         bar.resetsAt?.getTime() === other.resetsAt?.getTime() &&
         bar.color === other.color &&
         bar.expectedFraction === other.expectedFraction
@@ -692,6 +694,8 @@ export class OverlaySession {
         key: bar.key,
         label: bar.label,
         percent: bar.percent,
+        stale: bar.stale ?? false,
+        statusNote: bar.statusNote ?? null,
         resetsAt: bar.resetsAt ? bar.resetsAt.toISOString() : null,
         color: bar.color,
         expectedFraction: bar.expectedFraction,

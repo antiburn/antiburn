@@ -658,26 +658,18 @@ export async function getLiveUsage(
   )
 }
 
-/** The check that is running now. Callers at the same time share it. */
-let liveUsageRefresh: Promise<LiveUsageSummaryPayload> | null = null
-
 /**
  * Ask each provider for current limits and replace the cached snapshot.
  *
- * The offset makes "used today" use the reader's calendar day. Calls while a
- * check runs share that check. Two panes that open together, or a pane that
- * mounts twice, then start one check.
+ * The offset makes "used today" use the reader's calendar day. Each call asks
+ * for a new check. The shell serializes checks so calls after a settings change
+ * or period reset do not reuse a check that started before that change.
  */
 export function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
   if (!hasShell()) return Promise.resolve(EMPTY_LIVE_USAGE)
-  liveUsageRefresh ??= invoke<LiveUsageSummaryPayload | null>("refresh_live_usage", {
+  return invoke<LiveUsageSummaryPayload | null>("refresh_live_usage", {
     utcOffsetMinutes: -new Date().getTimezoneOffset(),
-  })
-    .then((summary) => summary ?? EMPTY_LIVE_USAGE)
-    .finally(() => {
-      liveUsageRefresh = null
-    })
-  return liveUsageRefresh
+  }).then((summary) => summary ?? EMPTY_LIVE_USAGE)
 }
 
 /**
@@ -711,6 +703,8 @@ interface HudDetailBar {
   key: string
   label: string
   percent: number
+  stale?: boolean
+  statusNote?: string | null
   /** ISO timestamp, or null when the reset time is unknown. */
   resetsAt: string | null
   color: string

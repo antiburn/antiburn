@@ -8,7 +8,11 @@ import {
   type PopoverPeekTarget,
 } from "../../lib/popoverPeekIpc"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
-import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
+import {
+  liveDisplayableProviders,
+  liveFailureIsSetup,
+  liveWindows,
+} from "../../lib/presentation/liveUsage"
 import { providerWindow, windowHasEvidence } from "../../lib/presentation/providerUsage"
 
 export interface PopoverPeekSnapshot {
@@ -94,7 +98,12 @@ function presentationState(
     .filter((entry) => entry.provider === provider)
     .some((entry) => liveWindows(entry).length > 0)
   if (localReady || liveReady) return "ready"
-  if (data.live.errors.some((entry) => entry.provider === provider)) return "error"
+  if (
+    data.live.errors.some(
+      (entry) => entry.provider === provider && !liveFailureIsSetup(entry.detail),
+    )
+  )
+    return "error"
   return "empty"
 }
 

@@ -969,17 +969,41 @@ describe("the grace period", () => {
     expect(liveFailureIsRecoverable("schema")).toBe(false)
   })
 
+  it("keeps Keychain guidance with a stale reading", () => {
+    const status = liveProviderStatus(
+      {
+        errors: [sourceError({ category: "unavailable", detail: "keychainUnreadable" })],
+        generatedAt: GENERATED_AT,
+      },
+      provider({ observedAt: "2027-01-15T03:00:00Z" }),
+    )
+    expect(status.kind).toBe("stale")
+    expect(liveStatusNote(status, "anthropic")).toContain("Always Allow")
+    expect(liveStatusNote(status, "anthropic")).toContain("Last updated 9 hr ago.")
+  })
+
+  it("does not claim a previous Pi sign-in for an unsigned install", () => {
+    expect(liveErrorNote("authentication", "anthropic", "notSignedIn", "Pi")).toBe(
+      "Not signed in through Pi. Sign in inside Pi to see usage limits.",
+    )
+  })
+
   it("gives the age of an old reading in hours or days", () => {
     expect(liveStaleNote(3 * 86_400_000)).toBe("Last updated 3 days ago.")
     expect(liveStaleNote(90 * 60_000)).toBe("Last updated 1 hr ago.")
   })
 
-  it("drops the figure of a window whose period reset since the reading", () => {
+  it("preserves native-normalized figures after a window reset", () => {
     // The five-hour window reset at 11:00; the weekly window resets later.
     const reading = provider({
       observedAt: "2027-01-15T08:00:00Z",
       windows: [
-        window({ id: "five-hour", usedPercent: 80, resetsAt: "2027-01-15T11:00:00Z" }),
+        window({
+          id: "five-hour",
+          usedPercent: null,
+          elapsedFraction: null,
+          resetsAt: "2027-01-15T11:00:00Z",
+        }),
         window({ id: "seven-day", usedPercent: 40, resetsAt: "2027-01-19T00:00:00Z" }),
       ],
     })
@@ -994,9 +1018,18 @@ describe("the grace period", () => {
       ["seven-day", 40],
     ])
 
-    // A live reading is never rewritten.
+    expect(shown).toBe(reading)
+
+    // Presentation does not rewrite native readings.
     const live = summary({ providers: [reading], errors: [], generatedAt: GENERATED_AT })
     expect(liveDisplayableProviders(live)).toEqual([reading])
+  })
+
+  it("keeps a restored stale snapshot dimmed before the first failed check", () => {
+    const reading = provider({ freshness: "stale", observedAt: "2027-01-15T10:00:00Z" })
+    const status = liveProviderStatus({ errors: [], generatedAt: GENERATED_AT }, reading)
+    expect(status).toEqual({ kind: "stale", category: "unavailable", ageMs: 2 * 60 * 60_000 })
+    expect(liveStatusNote(status, reading.provider)).toBe("Last updated 2 hr ago.")
   })
 
   it("fails a settled-but-dead sign-in past the window and carries the detail", () => {

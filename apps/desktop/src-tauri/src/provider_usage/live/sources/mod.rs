@@ -140,13 +140,25 @@ pub fn collect(
             );
         }
         if let Some(error) = outcome.error {
-            ::tracing::warn!(
-                event = "live_source_failed",
-                source = source.id(),
-                provider = source.provider(),
-                category = error.category(),
-                detail = ?outcome.detail
-            );
+            if matches!(
+                outcome.detail,
+                Some(SourceErrorDetail::NotSignedIn | SourceErrorDetail::DesktopOnly)
+            ) {
+                ::tracing::debug!(
+                    event = "live_source_setup",
+                    source = source.id(),
+                    provider = source.provider(),
+                    detail = ?outcome.detail
+                );
+            } else {
+                ::tracing::warn!(
+                    event = "live_source_failed",
+                    source = source.id(),
+                    provider = source.provider(),
+                    category = error.category(),
+                    detail = ?outcome.detail
+                );
+            }
             // Only a Desktop-only failure proves that no other login is in
             // play, so only then can the local file's plan name the account.
             let plan = if outcome.snapshots.is_empty()

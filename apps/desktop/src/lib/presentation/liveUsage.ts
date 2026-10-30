@@ -9,8 +9,7 @@
  * Two rules follow from that, and everything below is one of them:
  *
  * 1. **Say when it was true.** Every reading carries the moment the provider
- *    stated it, and a reading past its age budget says so in as many words
- *    rather than quietly ageing on screen.
+ *    stated it. Older readings are dimmed and expose their age in a tooltip.
  * 2. **Never fill a gap.** A window with no percentage renders as unknown, not
  *    as zero; a window with no reset says the reset is unavailable rather than
  *    guessing one from the window's name.
@@ -447,19 +446,23 @@ export type LiveProviderStatus =
   | { kind: "stale"; category: string; ageMs: number; detail?: LiveUsageSourceErrorDetail }
   | { kind: "failed"; category: string; detail?: LiveUsageSourceErrorDetail }
 
-/**
- * Whether a failed check leaves the last reading worth keeping: the failure
- * can pass without an action from the reader. A sign-in the provider rejected, and a reply antiburn cannot read,
- * are not: the reader must act, so the reading gives way to that action.
- */
+export function isRecoveringLiveLogin(detail?: string): boolean {
+  return detail === "refreshPending" || detail === "credentialExpired"
+}
+
+export function isTerminalLiveSignIn(detail?: string): boolean {
+  return detail === "signInRequired" || detail === "cliMissing" || detail === "notSignedIn"
+}
+
+/** Keep readings for failures that can recover without a new sign-in or app update. */
 export function liveFailureIsRecoverable(
   category: string,
   detail?: LiveUsageSourceErrorDetail,
 ): boolean {
-  if (detail === "signInRequired" || detail === "cliMissing" || detail === "notSignedIn") {
+  if (isTerminalLiveSignIn(detail)) {
     return false
   }
-  if (detail === "refreshPending" || detail === "credentialExpired") return true
+  if (isRecoveringLiveLogin(detail)) return true
   return category === "rateLimited" || category === "unavailable"
 }
 
@@ -477,9 +480,17 @@ export function liveProviderStatus(
   provider: LiveProviderUsagePayload,
 ): LiveProviderStatus {
   const error = summary.errors.find((entry) => entry.provider === provider.provider)
-  if (!error) return { kind: "live" }
-  const detail = error.detail ? { detail: error.detail } : {}
   const ageMs = Date.parse(summary.generatedAt) - Date.parse(provider.observedAt)
+  if (!error) {
+    return provider.freshness === "stale"
+      ? {
+          kind: "stale",
+          category: "unavailable",
+          ageMs: Number.isNaN(ageMs) ? 0 : Math.max(0, ageMs),
+        }
+      : { kind: "live" }
+  }
+  const detail = error.detail ? { detail: error.detail } : {}
   if (Number.isNaN(ageMs) || ageMs <= LIVE_USAGE_GRACE_MS) {
     return {
       kind: "grace",
@@ -504,39 +515,15 @@ export function liveProviderStatus(
  * `summary.providers` directly, so a failed provider drops out of all of
  * them at once and appears only through `liveUnavailableProviders`.
  *
- * A reading that is not live loses the figure of every window whose reset
- * time has passed: the old percentage belongs to the previous period, and
- * the new period's usage is unknown. The window stays, without a figure.
+ * The native summary clears figures from stale windows whose periods reset.
+ * Presentation keeps that normalized payload unchanged.
  */
 export function liveDisplayableProviders(
   summary: LiveUsageSummaryPayload,
 ): LiveProviderUsagePayload[] {
-  const at = Date.parse(summary.generatedAt)
-  return summary.providers.flatMap((provider) => {
-    const status = liveProviderStatus(summary, provider)
-    if (status.kind === "failed") return []
-    if (status.kind === "live" && provider.freshness !== "stale") return [provider]
-    return [withoutPastPeriods(provider, at)]
-  })
-}
-
-/** `provider` with no figure on a window whose reset time is at or before `at`. */
-function withoutPastPeriods(
-  provider: LiveProviderUsagePayload,
-  at: number,
-): LiveProviderUsagePayload {
-  if (Number.isNaN(at)) return provider
-  const reset = (window: LiveUsageWindowPayload) => {
-    const resetsAt = window.resetsAt == null ? Number.NaN : Date.parse(window.resetsAt)
-    return !Number.isNaN(resetsAt) && resetsAt <= at
-  }
-  if (!provider.windows.some(reset)) return provider
-  return {
-    ...provider,
-    windows: provider.windows.map((window) =>
-      reset(window) ? { ...window, usedPercent: null, elapsedFraction: null } : window,
-    ),
-  }
+  return summary.providers.filter(
+    (provider) => liveProviderStatus(summary, provider).kind !== "failed",
+  )
 }
 
 /** `"4 min"`, `"3 hr"`, or `"2 days"`; `"under 1 min"` below a minute. */
@@ -549,11 +536,7 @@ function formatGraceAge(ageMs: number): string {
   return `${Math.floor(hours / 24)} days`
 }
 
-/**
- * The tooltip of a dimmed, last-known reading: its age only. The dimming
- * shows the state. antiburn checks again by itself, so the words give no
- * instruction.
- */
+/** The age of a dimmed, last-known reading. */
 export function liveStaleNote(ageMs: number): string {
   return `Last updated ${formatGraceAge(ageMs)} ago.`
 }
@@ -571,17 +554,16 @@ export function liveStatusNote(
     case "grace":
       return liveGraceNote(status.category, provider, status.ageMs, status.detail)
     case "stale":
-      return liveStaleNote(status.ageMs)
+      return status.detail === "keychainUnreadable"
+        ? `${liveErrorNote(status.category, provider, status.detail)} ${liveStaleNote(status.ageMs)}`
+        : liveStaleNote(status.ageMs)
     default:
       return null
   }
 }
 
 /**
- * The one sentence a grace-period reading needs: still shown, and why.
- *
- * Reuses `liveErrorNote`'s provider naming, so the two notes name a provider
- * the same way.
+ * The age of a grace-period reading, with guidance when the reader can act.
  */
 export function liveGraceNote(
   category: string,
@@ -590,12 +572,15 @@ export function liveGraceNote(
   detail?: LiveUsageSourceErrorDetail,
 ): string {
   const name = liveProviderDisplayName(provider) ?? "Your provider"
-  const updated = `Last updated ${formatGraceAge(ageMs)} ago.`
+  const updated = liveStaleNote(ageMs)
+  if (detail === "keychainUnreadable") {
+    return `${liveErrorNote(category, provider, detail)} ${updated}`
+  }
   // Another client on the same account can cause a rate limit. The reading
   // is still good; its age is the useful fact.
   if (category === "rateLimited") return updated
   // The login can still recover, and antiburn checks again by itself.
-  if (detail === "refreshPending" || detail === "credentialExpired") return updated
+  if (isRecoveringLiveLogin(detail)) return updated
   if (
     category === "authentication" &&
     (detail === "signInRequired" || detail === "cliMissing")
@@ -627,9 +612,9 @@ export function liveAuthNote(summary: LiveUsageSummaryPayload): string | null {
  * A failed source with a cached last-good reading still appears in
  * `providers`, carrying its stale figures; while that reading is within its
  * grace period, the staleness treatment covers it and no entry appears
- * here. This list covers two cases instead: the cold-start failure — first
- * fetch rejected, nothing cached — and a reading that has aged past its
- * grace period, which is treated the same way. An error without a provider
+ * here. This list covers cold-start failures and terminal failures past
+ * grace. Recoverable failures keep their last reading and do not appear
+ * here while they have windows. An error without a provider
  * id (a snapshot cached before the field existed) cannot name a section and
  * is skipped.
  */
@@ -647,9 +632,7 @@ export function liveUnavailableProviders(
     if (!error.provider || showing.has(error.provider) || seen.has(error.provider)) continue
     seen.add(error.provider)
     const plan = planLabel(error.provider, error.plan ?? null)
-    const carrierLabel = summary.meters?.find(
-      (meter) => meter.provider === error.provider,
-    )?.carrierLabel
+    const carrierLabel = liveCarrierLabel(summary, error.provider)
     unavailable.push({
       provider: error.provider,
       displayName: error.displayName || error.provider,
@@ -670,12 +653,17 @@ export function liveErrorHasDocs(detail?: LiveUsageSourceErrorDetail): boolean {
   return detail === "desktopOnly"
 }
 
+/** Expected setup states are not failed attempts to read an existing login. */
+export function liveFailureIsSetup(detail?: LiveUsageSourceErrorDetail): boolean {
+  return detail === "notSignedIn" || detail === "desktopOnly"
+}
+
 /** A failure category as two or three words, for a row with no room. */
 export function liveUnavailableReason(
   category: string,
   detail?: LiveUsageSourceErrorDetail,
 ): string {
-  if (detail === "refreshPending" || detail === "credentialExpired") return "update pending"
+  if (isRecoveringLiveLogin(detail)) return "update pending"
   if (detail === "notSignedIn") return "not signed in"
   if (detail === "desktopOnly") return "not available for Claude Desktop"
   switch (category) {
@@ -715,6 +703,34 @@ const LIVE_TOOLS: Readonly<Record<string, LiveTool>> = {
   [ANTHROPIC]: { tool: "Claude Code" },
   [GOOGLE]: { tool: "Antigravity" },
   [OPENAI]: { tool: "Codex" },
+}
+
+function signInAgainNote(provider: string | undefined, carrierLabel?: string): string {
+  const tool =
+    carrierLabel === "Pi" ? "Pi" : (LIVE_TOOLS[provider ?? ""]?.tool ?? "your coding tool")
+  return provider === ANTHROPIC && carrierLabel !== "Pi"
+    ? "Need to sign in again. Run /login in Claude Code."
+    : `Need to sign in again. Sign in inside ${tool} again.`
+}
+
+export function liveCarrierLabel(
+  summary: Pick<LiveUsageSummaryPayload, "meters">,
+  provider: string,
+): string | undefined {
+  return summary.meters?.find((meter) => meter.provider === provider)?.carrierLabel
+}
+
+/** Separate visible grace guidance from the stale tooltip once for all surfaces. */
+export function liveStatusNotes(status: LiveProviderStatus, provider?: string) {
+  const note = liveStatusNote(status, provider)
+  return {
+    graceNote: status.kind === "grace" ? note : null,
+    staleNote: status.kind === "stale" ? note : null,
+    actionNote:
+      status.kind === "stale" && status.detail === "keychainUnreadable"
+        ? liveErrorNote(status.category, provider, status.detail)
+        : null,
+  }
 }
 
 /** A provider group's accessible name: the provider, then its plan when known. */
@@ -759,10 +775,7 @@ export function liveDetectionNote(
     case "signedIn":
       return carrierLabel ? `Signed in through ${carrierLabel}.` : "Signed in."
     case "signInRequired":
-      if (carrierLabel === "Pi") return "Need to sign in again. Sign in inside Pi again."
-      return provider === ANTHROPIC
-        ? "Need to sign in again. Run /login in Claude Code."
-        : `Need to sign in again. Sign in inside ${tool} again.`
+      return signInAgainNote(provider, carrierLabel)
     case "installedNotSignedIn":
       return carrierLabel === "Pi"
         ? `Found Pi, but it isn't signed in to ${tool}.`
@@ -774,19 +787,17 @@ export function liveDetectionNote(
   }
 }
 
-/** One action for a failed source, with the provider name when it is known. */
+/** A failed source's status, with recovery guidance when the reader can act. */
 export function liveErrorNote(
   category: string,
   provider?: string,
   detail?: LiveUsageSourceErrorDetail,
   carrierLabel?: string,
 ): string {
-  if (
-    category === "authentication" &&
-    carrierLabel === "Pi" &&
-    (detail === "signInRequired" || detail === "notSignedIn" || detail === "cliMissing")
-  ) {
-    return "Need to sign in again. Sign in inside Pi again."
+  if (category === "authentication" && carrierLabel === "Pi" && isTerminalLiveSignIn(detail)) {
+    return detail === "notSignedIn"
+      ? "Not signed in through Pi. Sign in inside Pi to see usage limits."
+      : signInAgainNote(provider, carrierLabel)
   }
   if (category === "authentication" && provider === ANTHROPIC) {
     if (detail === "desktopOnly") {
@@ -795,7 +806,7 @@ export function liveErrorNote(
     if (detail === "cliMissing") {
       return "Need to sign in again. Install Claude Code and run /login."
     }
-    if (detail === "signInRequired") return "Need to sign in again. Run /login in Claude Code."
+    if (detail === "signInRequired") return signInAgainNote(provider, carrierLabel)
   }
   if (category === "authentication" && detail === "notSignedIn") {
     const tool = (provider ? LIVE_TOOLS[provider]?.tool : undefined) ?? "your coding tool"
@@ -805,10 +816,7 @@ export function liveErrorNote(
   }
   // The login can still recover without the reader, and antiburn checks
   // again by itself. Give no instruction.
-  if (
-    category === "authentication" &&
-    (detail === "credentialExpired" || detail === "refreshPending")
-  ) {
+  if (category === "authentication" && isRecoveringLiveLogin(detail)) {
     const name = liveProviderDisplayName(provider)
     return name ? `No ${name} usage reading yet.` : "No usage reading yet."
   }

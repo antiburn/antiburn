@@ -22,7 +22,7 @@ import {
   liveDetectionNote,
   liveErrorHasDocs,
   liveErrorNote,
-  liveFailureIsRecoverable,
+  liveDisplayableProviders,
   liveSourceAge,
   liveUnavailableReason,
   liveWindows,
@@ -184,10 +184,8 @@ export function UsageMetersSection({
       </p>
       <Card>
         {meters.map((meter) => {
-          // The last reading, however old: this row reports what antiburn
-          // knows, and a failed check is a reason beside it, not a reason
-          // to hide it. The popover and HUD apply the grace window.
-          const reading = live.providers.find(
+          // Match the meters' grace, recovery, and reset-period policy.
+          const reading = liveDisplayableProviders(live).find(
             (provider) => provider.provider === meter.provider,
           )
           const failure = live.errors.find((error) => error.provider === meter.provider)
@@ -285,16 +283,11 @@ function meterNote({
   // A reading and a failure can both be true — a figure from an earlier
   // check that the latest one could not replace — so the row keeps the
   // figure and its own check time, and adds why the latest check failed.
-  // Only a new sign-in can recover this login. The meter does not show the
-  // last reading, so the row does not say "Signed in" either.
-  const signInLost =
-    failure?.category === "authentication" &&
-    !liveFailureIsRecoverable(failure.category, failure.detail)
-  if (reading && !signInLost) {
+  if (reading) {
     const count = liveWindows(reading).length
     const line = `Signed in · ${count} ${pluralize(count, "limit", "limits")} tracked ${liveSourceAge(reading)}`
     return failure
-      ? `${line} · ${liveUnavailableReason(failure.category, failure.detail)}`
+      ? `${line} · ${failure.detail === "keychainUnreadable" ? liveErrorNote(failure.category, provider, failure.detail, meter.carrierLabel) : liveUnavailableReason(failure.category, failure.detail)}`
       : line
   }
   if (failure) {

@@ -9,7 +9,7 @@ import {
   liveDisplayableProviders,
   livePlanAccountLabel,
   liveProviderStatus,
-  liveStatusNote,
+  liveStatusNotes,
   liveUnavailableProviders,
   liveWindows,
   orderedLiveAccounts,
@@ -124,9 +124,10 @@ export function OverviewProviderLimits({
                         : reading.displayName
                     const plan = livePlanAccountLabel(reading, count)
                     const status = liveProviderStatus(live, reading)
-                    const note = liveStatusNote(status, reading.provider)
-                    const graceNote = status.kind === "grace" ? note : null
-                    const staleNote = status.kind === "stale" ? note : null
+                    const { graceNote, staleNote, actionNote } = liveStatusNotes(
+                      status,
+                      reading.provider,
+                    )
 
                     return (
                       <Fragment key={key}>
@@ -143,9 +144,9 @@ export function OverviewProviderLimits({
                             {plan && <span className="text-label-secondary"> · {plan}</span>}
                           </h3>
 
-                          {graceNote && (
+                          {(actionNote ?? graceNote) && (
                             <p className="pt-0.5 type-footnote text-label-tertiary">
-                              {graceNote}
+                              {actionNote ?? graceNote}
                             </p>
                           )}
 

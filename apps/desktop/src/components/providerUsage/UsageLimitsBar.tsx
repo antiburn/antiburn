@@ -20,6 +20,7 @@ import {
   livePlanAccountLabel,
   liveProviderStatus,
   liveStatusNote,
+  liveStatusNotes,
   liveResetLabel,
   liveUnavailableProviders,
   liveUnavailableReason,
@@ -327,9 +328,7 @@ function ProviderGroup({
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const plan = livePlanAccountLabel(provider, accountCount)
-  const note = liveStatusNote(status, provider.provider)
-  const graceNote = status.kind === "grace" ? note : null
-  const staleNote = status.kind === "stale" ? note : null
+  const { graceNote, staleNote, actionNote } = liveStatusNotes(status, provider.provider)
   return (
     <div
       role="group"
@@ -354,7 +353,9 @@ function ProviderGroup({
         {action}
       </div>
       {/* Not orange: a grace-period reading is still fine, not a failure. */}
-      {graceNote && <p className="pb-1.5 type-footnote text-label-tertiary">{graceNote}</p>}
+      {(actionNote ?? graceNote) && (
+        <p className="pb-1.5 type-footnote text-label-tertiary">{actionNote ?? graceNote}</p>
+      )}
       <div className={cn("space-y-2.5", staleNote && "opacity-60")}>
         {liveWindows(provider).map((window, index) => (
           <WindowMeterRow

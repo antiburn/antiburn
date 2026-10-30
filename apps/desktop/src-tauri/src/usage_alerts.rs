@@ -215,6 +215,11 @@ impl LiveUsage {
         for provider in &mut snapshot.providers {
             provider.freshness = LiveUsageFreshness::Stale;
         }
+        let now = time::OffsetDateTime::now_utc();
+        if !snapshot.providers.is_empty() {
+            snapshot.generated_at = crate::store::iso_from_epoch(Some(now.unix_timestamp()));
+        }
+        provider_usage::live::clear_expired_window_figures(&mut snapshot, now);
         live.replace_snapshot(snapshot, None);
         *live
             .utc_offset_minutes
@@ -467,6 +472,12 @@ fn carry_forward_readings(summary: &mut LiveUsageSummary, previous: &LiveUsageSu
         })
         .collect();
     summary.providers.extend(carried);
+    if let Ok(at) = time::OffsetDateTime::parse(
+        &summary.generated_at,
+        &time::format_description::well_known::Rfc3339,
+    ) {
+        provider_usage::live::clear_expired_window_figures(summary, at);
+    }
 }
 
 /// Collect, publish, and evaluate one live-usage reading.
@@ -909,6 +920,32 @@ mod tests {
     }
 
     #[test]
+    fn carried_readings_clear_figures_from_reset_periods() {
+        let mut reading = claude_reading("2026-08-20T00:00:00Z");
+        reading.windows.push(crate::dto::LiveUsageWindow {
+            id: "five-hour".into(),
+            role: "primaryShort".into(),
+            kind: "rolling".into(),
+            scope_model: None,
+            used_percent: Some(85.0),
+            starts_at: None,
+            resets_at: Some("2026-08-20T00:30:00Z".into()),
+            elapsed_fraction: Some(0.9),
+            has_nonzero_usage_in_current_period: true,
+            forecast: Default::default(),
+        });
+        let previous = LiveUsageSummary {
+            providers: vec![reading],
+            ..Default::default()
+        };
+        let mut summary = failed_pass(claude_error("rateLimited", None));
+        carry_forward_readings(&mut summary, &previous);
+        assert_eq!(summary.providers[0].windows[0].used_percent, None);
+        assert_eq!(summary.providers[0].windows[0].elapsed_fraction, None);
+        assert_eq!(previous.providers[0].windows[0].used_percent, Some(85.0));
+    }
+
+    #[test]
     fn a_sign_in_failure_or_a_fresh_reading_is_not_replaced_by_the_previous_one() {
         use provider_usage::live::SourceErrorDetail;
         let previous = LiveUsageSummary {
@@ -970,9 +1007,19 @@ mod tests {
 
         LiveUsage::new().replace_snapshot(stored.clone(), Some(&store));
 
+        let before = crate::scan::unix_now();
+        let restored = LiveUsage::from_store(&store).snapshot();
+        let restored_at = time::OffsetDateTime::parse(
+            &restored.generated_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
+        .unix_timestamp();
+        assert!((before..=crate::scan::unix_now()).contains(&restored_at));
         let mut expected = stored;
+        expected.generated_at = restored.generated_at.clone();
         expected.providers[0].freshness = LiveUsageFreshness::Stale;
-        assert_eq!(LiveUsage::from_store(&store).snapshot(), expected);
+        assert_eq!(restored, expected);
     }
 
     #[test]

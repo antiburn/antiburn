@@ -723,23 +723,11 @@ fn tray_dot_alpha_indices(rgba: &[u8], width: u32, height: u32) -> Vec<Vec<usize
 }
 
 fn usage_used_percent(summary: &crate::dto::LiveUsageSummary) -> Option<f64> {
-    let generated_at = parse_rfc3339(&summary.generated_at);
     summary
         .providers
         .iter()
         .filter(|provider| provider_is_displayable(summary, provider))
-        .flat_map(|provider| {
-            // A reading that is not live says nothing about a period that
-            // has reset since, matching `liveDisplayableProviders`.
-            let not_live = provider.freshness == crate::dto::LiveUsageFreshness::Stale
-                || summary
-                    .errors
-                    .iter()
-                    .any(|error| error.provider == provider.provider);
-            visible_windows(provider)
-                .into_iter()
-                .filter(move |window| !(not_live && period_reset(window, generated_at)))
-        })
+        .flat_map(visible_windows)
         .filter_map(|window| window.used_percent)
         .filter(|percent| percent.is_finite() && (0.0..=100.0).contains(percent))
         .max_by(f64::total_cmp)
@@ -747,14 +735,6 @@ fn usage_used_percent(summary: &crate::dto::LiveUsageSummary) -> Option<f64> {
 
 fn parse_rfc3339(value: &str) -> Option<time::OffsetDateTime> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
-}
-
-/// Whether the window's period reset at or before `at`.
-fn period_reset(window: &crate::dto::LiveUsageWindow, at: Option<time::OffsetDateTime>) -> bool {
-    match (window.resets_at.as_deref().and_then(parse_rfc3339), at) {
-        (Some(resets_at), Some(at)) => resets_at <= at,
-        _ => false,
-    }
 }
 
 fn columns_for_used_percent(used: f64) -> usize {
@@ -775,15 +755,9 @@ fn provider_is_displayable(
     if crate::provider_usage::live::failure_is_recoverable(error) {
         return true;
     }
-    let Ok(generated_at) = time::OffsetDateTime::parse(
-        &summary.generated_at,
-        &time::format_description::well_known::Rfc3339,
-    ) else {
-        return true;
-    };
-    let Ok(observed_at) = time::OffsetDateTime::parse(
-        &provider.observed_at,
-        &time::format_description::well_known::Rfc3339,
+    let (Some(generated_at), Some(observed_at)) = (
+        parse_rfc3339(&summary.generated_at),
+        parse_rfc3339(&provider.observed_at),
     ) else {
         return true;
     };
@@ -1479,6 +1453,8 @@ mod tests {
         };
         summary.providers[0].windows[0].resets_at = Some("2026-09-04T13:00:00Z".to_string());
         summary.providers[0].windows[1].resets_at = Some("2026-09-08T00:00:00Z".to_string());
+        let at = parse_rfc3339(&summary.generated_at).unwrap();
+        crate::provider_usage::live::clear_expired_window_figures(&mut summary, at);
         assert_eq!(usage_used_percent(&summary), Some(35.0));
     }
 

@@ -1,7 +1,151 @@
 //! Approved owner-refresh policy with synthetic carriers and transports.
 
+#[test]
+fn owner_refresh_does_not_block_collection_and_later_fetch_observes_completion() {
+    use super::super::super::claude_touch::{Fingerprint, TouchChild, TouchEnvironment};
+    use std::sync::mpsc;
+
+    struct BlockedOwner {
+        inner: FileTouchEnv,
+        started: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl TouchEnvironment for BlockedOwner {
+        fn binary_present(&self) -> bool {
+            true
+        }
+        fn fingerprint(&self, deadline: std::time::Instant) -> Option<Fingerprint> {
+            self.inner.fingerprint(deadline)
+        }
+        fn spawn(&self) -> Option<Box<dyn TouchChild>> {
+            self.started.send(()).unwrap();
+            lock(&self.release).recv().unwrap();
+            self.inner.spawn()
+        }
+        fn sleep(&self, _: Duration) {}
+    }
+
+    for pre_expiry in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        let expires = real_now_secs() + if pre_expiry { 300 } else { -300 };
+        fs::write(&path, credentials_file(expires * 1_000, "max")).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let source = Arc::new(ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(OnlyToken("synthetic-token")),
+            Box::new(BlockedOwner {
+                inner: FileTouchEnv {
+                    path,
+                    binary_present: true,
+                    writes_on_spawn: Some(credentials_file(
+                        (real_now_secs() + 7200) * 1_000,
+                        "max",
+                    )),
+                    spawns: spawns.clone(),
+                },
+                started: started_tx,
+                release: Mutex::new(release_rx),
+            }),
+        ));
+        let (done_tx, done_rx) = mpsc::channel();
+        let fetching = source.clone();
+        let collector = std::thread::spawn(move || {
+            done_tx
+                .send(fetching.fetch(if pre_expiry {
+                    USER_MAX_AGE
+                } else {
+                    TEST_MAX_AGE
+                }))
+                .unwrap();
+        });
+        let started = started_rx.recv_timeout(Duration::from_secs(2));
+        let result = done_rx.recv_timeout(Duration::from_secs(2));
+        // Release even on failure so the test cannot leave a blocked worker.
+        release_tx.send(()).unwrap();
+        collector.join().unwrap();
+        source.touch_gate.wait_for_worker();
+        started.unwrap();
+        let outcome = result.expect("collection waited for the owner refresh");
+        if pre_expiry {
+            assert_eq!(outcome.error, None);
+            assert_eq!(outcome.snapshots.len(), 1);
+        } else {
+            assert_eq!(outcome.detail, Some(SourceErrorDetail::RefreshPending));
+        }
+        source.cooldown.open_for_test();
+        assert_eq!(source.fetch(TEST_MAX_AGE).error, None);
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+    }
+}
+
 use super::*;
 use crate::provider_usage::live::sources::pi_refresh::{RefreshRunner, RunOutcome};
+
+#[test]
+fn native_removal_does_not_hide_a_failed_pi_carrier() {
+    struct RemoveNative(PathBuf);
+    impl AnthropicTransport for RemoveNative {
+        fn usage(&self, _: &str) -> Result<String, ProviderUsageError> {
+            let _ = fs::remove_file(&self.0);
+            Err(ProviderUsageError::Authentication)
+        }
+        fn profile(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+    for live in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().join(".credentials.json");
+        let pi = dir.path().join("auth.json");
+        fs::write(&native, credentials_file(i64::MAX, "max")).unwrap();
+        let expiry = if live { i64::MAX } else { 1 };
+        fs::write(&pi, format!(r#"{{"anthropic":{{"type":"oauth","access":"pi-access","refresh":"pi-refresh","expires":{expiry}}}}}"#)).unwrap();
+        let mut source = ClaudeDirectFetch::with_pi(
+            pi,
+            Box::new(RemoveNative(native.clone())),
+            PiRefresher::unavailable(),
+        );
+        source.credentials_path = Some(native);
+        assert_eq!(
+            source.fetch(USER_MAX_AGE).detail,
+            Some(if live {
+                SourceErrorDetail::SignInRequired
+            } else {
+                SourceErrorDetail::CredentialExpired
+            })
+        );
+    }
+}
+
+#[test]
+fn a_background_missing_cli_is_reported_on_the_next_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".credentials.json");
+    fs::write(&path, credentials_file(1, "max")).unwrap();
+    let source = ClaudeDirectFetch::at_with_touch(
+        path.clone(),
+        Box::new(UnreachableTransport),
+        Box::new(FileTouchEnv {
+            path,
+            binary_present: false,
+            writes_on_spawn: None,
+            spawns: Arc::new(AtomicUsize::new(0)),
+        }),
+    );
+    assert_eq!(
+        source.fetch(TEST_MAX_AGE).detail,
+        Some(SourceErrorDetail::RefreshPending)
+    );
+    source.touch_gate.wait_for_worker();
+    source.cooldown.open_for_test();
+    assert_eq!(
+        source.fetch(TEST_MAX_AGE).detail,
+        Some(SourceErrorDetail::CliMissing)
+    );
+}
 
 pub(super) fn assert_published_detection<T: LiveUsageSource + 'static>(
     source: Arc<T>,
