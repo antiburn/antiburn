@@ -1429,14 +1429,14 @@ fn stream_vendor_with_hooks(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
-    database_claim: Option<&str>,
+    expected_parent_fingerprint: Option<&str>,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
 ) -> StreamOutcome {
     stream_vendor_with_delivery(
         inputs,
         cancelled,
         after_claim,
-        database_claim,
+        expected_parent_fingerprint,
         turn_row_store,
         false,
     )
@@ -1488,7 +1488,7 @@ fn stream_vendor_with_delivery(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
-    database_claim: Option<&str>,
+    expected_parent_fingerprint: Option<&str>,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
     journal_delivery: bool,
 ) -> StreamOutcome {
@@ -1591,6 +1591,12 @@ fn stream_vendor_with_delivery(
                     }
                 };
                 let fingerprint = claim.fingerprint.clone();
+                if index == 0
+                    && expected_parent_fingerprint.is_some_and(|expected| expected != fingerprint)
+                {
+                    log_source_changed("claimed_source_fingerprint", "fingerprint-mismatch");
+                    return StreamOutcome::SourceChanged;
+                }
                 after_claim(index, path);
 
                 let attempt = turn_row_store.as_ref().and_then(|store| {
@@ -1757,7 +1763,7 @@ fn stream_vendor_with_delivery(
                         kind,
                         turn_row_store.clone(),
                     );
-                    let outcome = match database_claim {
+                    let outcome = match expected_parent_fingerprint {
                         Some(fingerprint) => {
                             adapter.visit_db_claimed(input, fingerprint, cancelled, &mut grouped)
                         }
@@ -1769,7 +1775,11 @@ fn stream_vendor_with_delivery(
                     source_roster = grouped.roster;
                     outcome
                 } else {
-                    match (input.source_format, database_claim, journal_delivery) {
+                    match (
+                        input.source_format,
+                        expected_parent_fingerprint,
+                        journal_delivery,
+                    ) {
                         (SourceFormat::OpenCodeSqliteV1, Some(fingerprint), true) => adapter
                             .visit_db_claimed(
                                 input,
@@ -1789,8 +1799,8 @@ fn stream_vendor_with_delivery(
                         (_, None, _) => adapter.visit(input, &mut accumulator),
                     }
                 };
-                if database_claim.is_some() {
-                    parent_fingerprint = database_claim.map(str::to_owned);
+                if expected_parent_fingerprint.is_some() {
+                    parent_fingerprint = expected_parent_fingerprint.map(str::to_owned);
                 }
                 outcome
             }
@@ -2266,9 +2276,7 @@ pub async fn analyze_located_for_evidence(
     };
 
     let subagent_paths: Vec<_> = children.iter().map(|(_, _, path)| path.clone()).collect();
-    let database_claim = matches!(&source, SessionSource::ProviderDb { .. })
-        .then(|| claimed.fingerprint.clone())
-        .flatten();
+    let expected_parent_fingerprint = claimed.fingerprint.clone();
     let fingerprint = if matches!(&source, SessionSource::ProviderDb { .. }) {
         let parent_fingerprint = claimed
             .fingerprint
@@ -2328,7 +2336,7 @@ pub async fn analyze_located_for_evidence(
                 &inputs,
                 &cancelled,
                 &no_after_claim,
-                database_claim.as_deref(),
+                expected_parent_fingerprint.as_deref(),
                 turn_row_store,
                 true,
             )
@@ -2337,7 +2345,7 @@ pub async fn analyze_located_for_evidence(
                 &inputs,
                 &cancelled,
                 &no_after_claim,
-                database_claim.as_deref(),
+                expected_parent_fingerprint.as_deref(),
                 turn_row_store,
             )
         };

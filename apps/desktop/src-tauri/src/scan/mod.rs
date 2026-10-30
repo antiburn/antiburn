@@ -1315,6 +1315,7 @@ async fn pass(
             ignored,
             include_non_repo_folders,
             refresh_repositories: trigger.refreshes_repositories(),
+            refresh_file_sources: matches!(trigger, ScanTrigger::SourceRefresh { .. }),
         },
         &mut incremental,
     )
@@ -1845,11 +1846,14 @@ struct DescriptionLog {
     log: SessionLog,
     key: SessionKey,
     read: Option<antiburn_local::discovery::SourceRead>,
+    // Keep the refresh policy when the identity read fails.
+    refresh_source: bool,
 }
 
 async fn prepare_description_logs(
     mut logs: Vec<SessionLog>,
     previous_records: &std::collections::HashMap<SessionActivityKey, SessionRecord>,
+    refresh_file_sources: bool,
 ) -> anyhow::Result<Vec<DescriptionLog>> {
     sort_logs_newest_first(&mut logs);
     let mut prepared = Vec::with_capacity(logs.len());
@@ -1861,9 +1865,12 @@ async fn prepare_description_logs(
         );
         let previous = previous_records.get(&activity_key);
         let mut read = None;
+        let refresh_source = refresh_file_sources && matches!(&log.source, SessionSource::File(_));
         let id = match &log.source {
             SessionSource::File(_) => {
-                if let Some(record) = reuse_unchanged_record(&log, previous, None).await {
+                if !refresh_source
+                    && let Some(record) = reuse_unchanged_record(&log, previous, None).await
+                {
                     Some(record.key.session_id)
                 } else {
                     read = session_log_read(&log).await;
@@ -1879,7 +1886,12 @@ async fn prepare_description_logs(
         };
         if let Some(id) = id.filter(|id| !id.is_empty()) {
             let key = SessionKey::new(log.environment.key(), log.agent_type.slug(), id);
-            prepared.push(DescriptionLog { log, key, read });
+            prepared.push(DescriptionLog {
+                log,
+                key,
+                read,
+                refresh_source,
+            });
         }
     }
     Ok(prepared)
@@ -2106,7 +2118,7 @@ async fn describe_with_gate(
     // cover the setting.
     #[cfg(test)]
     let _ = include_non_repo_folders;
-    let mut logs = match prepare_description_logs(logs, previous_records).await {
+    let mut logs = match prepare_description_logs(logs, previous_records, false).await {
         Ok(logs) => logs,
         Err(error) => {
             if let Some(writer) = incremental {
@@ -2714,6 +2726,7 @@ fn enqueue_opencode_probe_log(
         log,
         key: session_key,
         read: None,
+        refresh_source: false,
     };
     let log = &prepared.log;
     let added = match scheduled.get_mut(&key) {
@@ -2769,10 +2782,12 @@ fn spawn_pending_descriptions(
         else {
             break;
         };
-        let DescriptionLog { log, key, read } = pending.remove(index);
+        let description = pending.remove(index);
+        let log = &description.log;
+        let key = description.key.clone();
         let guard = if let Some(writer) = incremental.as_deref_mut() {
             writer.outcomes.insert(key.clone(), AttemptOutcome::Failed);
-            match session_write_guard(writer.store, &log, &key, writer.write_fence) {
+            match session_write_guard(writer.store, log, &key, writer.write_fence) {
                 Ok(guard) => Some(guard),
                 Err(error) => {
                     writer.fail(error);
@@ -2804,17 +2819,20 @@ fn spawn_pending_descriptions(
         let home = context.home.to_path_buf();
         let task_key = key.clone();
         let handle = set.spawn(async move {
-            let indexed_titles = indexed_titles_for_logs(std::slice::from_ref(&log)).await;
-            let indexed_title = recovered_id(&log)
-                .and_then(|id| indexed_titles.get(&(log.agent_type, id)).cloned());
+            let indexed_titles =
+                indexed_titles_for_logs(std::slice::from_ref(&description.log)).await;
+            let indexed_title = recovered_id(&description.log).and_then(|id| {
+                indexed_titles
+                    .get(&(description.log.agent_type, id))
+                    .cloned()
+            });
             let (_, outcome, changed) = describe_candidate_with_read(
-                log,
+                description,
                 home,
                 previous,
                 activity,
                 indexed_title,
                 Instant::now(),
-                read,
             )
             .await;
             (task_key, outcome, changed, guard)
@@ -2861,14 +2879,19 @@ enum DescribeOutcome {
 }
 
 async fn describe_candidate_with_read(
-    log: SessionLog,
+    description: DescriptionLog,
     home: PathBuf,
     previous: Option<SessionRecord>,
     activity: Option<CandidateActivity>,
     indexed_title: Option<ResolvedTitle>,
     queued_at: Instant,
-    read: Option<antiburn_local::discovery::SourceRead>,
 ) -> (SessionActivityKey, DescribeOutcome, bool) {
+    let DescriptionLog {
+        log,
+        read,
+        refresh_source,
+        ..
+    } = description;
     let agent = log.agent_type.slug();
     let source_label = log.source_label();
     let activity_key = SessionActivityKey::new(
@@ -2885,8 +2908,9 @@ async fn describe_candidate_with_read(
         activity_at,
         queue_wait_ms = queued_at.elapsed().as_millis() as u64,
     );
-    let result = if let Some(reused) =
-        reuse_unchanged_record(&log, previous.as_ref(), indexed_title.as_ref()).await
+    let result = if !refresh_source
+        && let Some(reused) =
+            reuse_unchanged_record(&log, previous.as_ref(), indexed_title.as_ref()).await
     {
         let changed = previous.as_ref().is_some_and(|stored| stored != &reused);
         (DescribeOutcome::Session(Box::new(reused)), changed)

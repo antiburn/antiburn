@@ -40,6 +40,7 @@ struct OwnerPolicy {
     include_non_repo_folders: bool,
     progress: bool,
     refresh_repositories: bool,
+    refresh_file_sources: bool,
     #[cfg(test)]
     hooks: Option<Arc<prepare::PreparationHooks>>,
 }
@@ -74,6 +75,7 @@ pub(super) struct PassInputs {
     pub ignored: HashSet<String>,
     pub include_non_repo_folders: bool,
     pub refresh_repositories: bool,
+    pub refresh_file_sources: bool,
 }
 
 pub(super) async fn refresh_titles(
@@ -136,6 +138,7 @@ pub(super) async fn refresh_titles(
         include_non_repo_folders: store.settings_snapshot().include_non_repo_folders,
         progress: false,
         refresh_repositories: false,
+        refresh_file_sources: false,
         #[cfg(test)]
         hooks: None,
     };
@@ -165,6 +168,7 @@ pub(super) async fn discover_and_run(
         ignored,
         include_non_repo_folders,
         refresh_repositories,
+        refresh_file_sources,
     } = inputs;
     let (sender, receiver) = mpsc::channel(2);
     let scope = scope.clone();
@@ -197,6 +201,7 @@ pub(super) async fn discover_and_run(
         include_non_repo_folders,
         progress,
         refresh_repositories,
+        refresh_file_sources,
         #[cfg(test)]
         hooks: None,
     };
@@ -220,6 +225,7 @@ pub(super) async fn refresh_logs(
         include_non_repo_folders: store.settings_snapshot().include_non_repo_folders,
         progress: false,
         refresh_repositories: false,
+        refresh_file_sources: false,
         #[cfg(test)]
         hooks: None,
     };
@@ -419,6 +425,8 @@ async fn run_with_titles(
                     .iter()
                     .map(|record| (activity_key.clone(), record.clone()))
                     .collect();
+                let refresh_file_sources =
+                    policy.refresh_file_sources && work.origin == WorkOrigin::Pass;
                 #[cfg(test)]
                 let hooks = policy.hooks.clone();
                 let handle = tasks.spawn(async move {
@@ -428,10 +436,14 @@ async fn run_with_titles(
                             .wait(&work.payload, prepare::PreparationStage::Identity)
                             .await;
                     }
-                    let description = prepare_description_logs(vec![work.payload], &previous_map)
-                        .await
-                        .expect("identity preparation has no store writes")
-                        .pop();
+                    let description = prepare_description_logs(
+                        vec![work.payload],
+                        &previous_map,
+                        refresh_file_sources,
+                    )
+                    .await
+                    .expect("identity preparation has no store writes")
+                    .pop();
                     PreparedTask::Identity(description, previous)
                 });
                 owners.insert(

@@ -1532,6 +1532,12 @@ reconciliation requeues old ready evidence when these identities differ. This
 repairs stale transcript evidence through native reindexing; it does not enroll
 historical YAML assessments.
 
+For ordinary file transcripts, evidence analysis rejects an outdated discovery
+claim before parsing records or reading resume state. A source-change refresh
+rereads file identity even when the activity cursor is unchanged. Normal scans
+keep their unchanged-file fast path. Refresh still requires discovery and folder
+admission; it does not restore sessions from excluded or missing folders.
+
 ## Desktop Refresh
 
 The desktop watcher requests a scoped refresh when a native source changes.
