@@ -564,6 +564,7 @@ fn source_matches_agent(agent: AgentKind, source: SourceFormat) -> bool {
                 | SourceFormat::KiroCliV2Bundle
                 | SourceFormat::KiroCliV3Bundle
                 | SourceFormat::KiroChatSaveExport
+                | SourceFormat::KiroCrewJsonl
         ),
         AgentKind::AmpCode => matches!(
             source,

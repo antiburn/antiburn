@@ -40,6 +40,9 @@ impl SessionReader for KiroSessionReader {
         input: &SessionInput,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
+        if input.source_format == SourceFormat::KiroCrewJsonl {
+            return visit_crew(input, sink);
+        }
         if input.source_format != SourceFormat::KiroCliV2Bundle {
             sink.record(crate::analysis::NormalizedRecord::Unusable(
                 PartialReason::MalformedRecord,
@@ -96,6 +99,101 @@ impl SessionReader for KiroSessionReader {
         }
         sink.finish(summary);
         Ok(VisitOutcome::Unvalidated)
+    }
+}
+
+/// Read a Kiro Crew session log: one `.jsonl` whose first line is a
+/// `{"_type":"metadata",…}` header and whose remaining lines are
+/// `{"role":"user"|"assistant"|"tool","content":…}` records.
+///
+/// Crew logs record no per-turn token usage, so this emits model identity only
+/// (one assistant event per assistant record carrying the session model). Tool
+/// identity is not recoverable: a `role:"tool"` record is a tool *result* with
+/// no typed tool name, so no `ToolCall` is fabricated. Prompts, message bodies,
+/// and tool content are never retained.
+fn visit_crew(input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result<VisitOutcome> {
+    let RawSource::File(path) = &input.source else {
+        anyhow::bail!("Kiro Crew source must be a single JSONL file");
+    };
+    let mut invalid = false;
+    let mut model: Option<String> = None;
+    let mut framed = BoundedJsonlReader::new(BufReader::new(File::open(path)?));
+    let mut first = true;
+    while let Some(record) = framed.next_record(&|| false) {
+        match record {
+            FramedRecord::Skipped(skip) => {
+                invalid = true;
+                sink.record(crate::analysis::NormalizedRecord::Unusable(
+                    skip.partial_reason(),
+                ));
+            }
+            FramedRecord::Complete { bytes, .. } => {
+                let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+                    invalid = true;
+                    sink.record(crate::analysis::NormalizedRecord::Unusable(
+                        PartialReason::MalformedRecord,
+                    ));
+                    first = false;
+                    continue;
+                };
+                if first && value.get("_type").and_then(Value::as_str) == Some("metadata") {
+                    model = value
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned);
+                    first = false;
+                    continue;
+                }
+                first = false;
+                if value.get("role").and_then(Value::as_str) == Some("assistant") {
+                    sink.record(crate::analysis::NormalizedRecord::MetricsEvent(Box::new(
+                        crew_assistant_event(model.as_deref()),
+                    )));
+                }
+            }
+        }
+    }
+    let mut summary = SessionSummary {
+        model,
+        ..SessionSummary::default()
+    };
+    if invalid {
+        summary.coverage_gaps.push(PartialReason::MalformedRecord);
+    }
+    sink.finish(summary);
+    Ok(VisitOutcome::Unvalidated)
+}
+
+/// One assistant turn in a Crew log, carrying model identity and no usage.
+fn crew_assistant_event(model: Option<&str>) -> NormalizedEvent {
+    NormalizedEvent {
+        accounting: None,
+        ts_ms: None,
+        usage_ts_ms: None,
+        role: Role::Assistant,
+        source: Default::default(),
+        usage: Usage::default(),
+        tools: Vec::new(),
+        model: model.map(str::to_owned),
+        provider: None,
+        api: None,
+        thinking_mode: None,
+        speed: None,
+        has_thinking: false,
+        message_id: None,
+        is_compaction_boundary: false,
+        compaction_trigger: None,
+        compaction_pre_tokens: None,
+        compaction_post_tokens: None,
+        wrapper_tool: None,
+        may_resolve_late_tool: false,
+        late_tool_candidate_is_builtin: false,
+        uuid: None,
+        parent_uuid: None,
+        logical_parent_uuid: None,
+        thread_id: None,
+        proven_subagent_launches: None,
     }
 }
 

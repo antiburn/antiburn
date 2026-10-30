@@ -128,6 +128,7 @@ source_formats! {
     KiroCliV2Bundle => "kiro_cli_v2_bundle",
     KiroCliV3Bundle => "kiro_cli_v3_bundle",
     KiroChatSaveExport => "kiro_chat_save_export",
+    KiroCrewJsonl => "kiro_crew_jsonl",
     AmpThreadJson => "amp_thread_json",
     AmpFileChanges => "amp_file_changes",
     WindsurfWorkspaceJson => "windsurf_workspace_json",

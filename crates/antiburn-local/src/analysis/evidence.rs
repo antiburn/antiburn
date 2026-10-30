@@ -417,6 +417,11 @@ pub enum SourceFormat {
     KiroCliV2Bundle,
     KiroCliV3Bundle,
     KiroChatSaveExport,
+    /// Kiro Crew autonomous-layer session log: a single `.jsonl` under
+    /// `~/.kiro/crew/sessions/` whose first line is a `{"_type":"metadata",…}`
+    /// header followed by `{"role":…,"content":…}` message records. Carries no
+    /// per-turn token usage, so analysis is model/tool identity only.
+    KiroCrewJsonl,
     AmpThreadJson,
     AmpFileChanges,
     WindsurfWorkspaceJson,
