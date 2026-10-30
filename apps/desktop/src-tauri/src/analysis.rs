@@ -31,7 +31,9 @@ use antiburn_local::analysis::{
     metrics_by_source_with_summaries, metrics_from_rows_with_summaries, price_breakdown,
     pricing_generation, reader_for_input,
 };
-use antiburn_local::discovery::source_version::claude_sidecar_fingerprint;
+use antiburn_local::discovery::source_version::{
+    bundle_fingerprint as discovered_bundle_fingerprint, claude_sidecar_fingerprint,
+};
 use antiburn_local::discovery::{
     ACTIVE_SESSION_WINDOW_SECS, Explorers, FORK_OBSERVATION_KEY, FingerprintInputs,
     ForkObservation, SessionSource, SourceStat, session_source_content,
@@ -1567,6 +1569,49 @@ fn stream_vendor_with_delivery(
         // resume or bootstrap — every non-`File` source, and a `File`
         // source whose adapter does not support resume at all.
         let mut pending_resume: Option<(SourcePublishMode, Option<AdapterResume>, String)> = None;
+        let bundle_source_claim = match (index, &input.source) {
+            (
+                0,
+                RawSource::CopilotCliBundle {
+                    events_path: path, ..
+                },
+            )
+            | (
+                0,
+                RawSource::ClineBundle {
+                    manifest_path: path,
+                    ..
+                },
+            )
+            | (
+                0,
+                RawSource::KiroCliV2Bundle {
+                    metadata_path: path,
+                    ..
+                },
+            )
+            | (
+                0,
+                RawSource::KiroCliV3Bundle {
+                    metadata_path: path,
+                    ..
+                },
+            ) => {
+                let source = SessionSource::File(path.clone());
+                let cache_fingerprint = fingerprint_of(&source);
+                let Some(fingerprint) = discovered_bundle_fingerprint(&source, input.source_format)
+                else {
+                    return StreamOutcome::ParentUnreadable(UnreadableReason::ClaimFailed);
+                };
+                if expected_parent_fingerprint.is_some_and(|expected| expected != fingerprint) {
+                    log_source_changed("claimed_source_fingerprint", "fingerprint-mismatch");
+                    return StreamOutcome::SourceChanged;
+                }
+                parent_fingerprint = Some(fingerprint.clone());
+                Some((source, fingerprint, cache_fingerprint))
+            }
+            _ => None,
+        };
         let result = match &input.source {
             RawSource::File(path) => {
                 let claim = match claim_file(path) {
@@ -1806,9 +1851,6 @@ fn stream_vendor_with_delivery(
             }
             RawSource::Sqlite(_) => continue,
             RawSource::CopilotCliBundle { events_path, .. } if index == 0 => {
-                let bundle_source = SessionSource::File(events_path.clone());
-                let bundle_claim = fingerprint_of(&bundle_source);
-                parent_fingerprint = Some(bundle_claim.clone());
                 after_claim(index, events_path);
                 let outcome = match adapter.visit(input, &mut accumulator) {
                     Ok(outcome) => outcome,
@@ -1816,13 +1858,7 @@ fn stream_vendor_with_delivery(
                         return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
                     }
                 };
-                if fingerprint_of(&bundle_source) != bundle_claim {
-                    Ok(VisitOutcome::SourceChanged(
-                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
-                    ))
-                } else {
-                    Ok(outcome)
-                }
+                Ok(outcome)
             }
             RawSource::CopilotCliBundle { .. } => continue,
             RawSource::ClineBundle { manifest_path, .. } if index == 0 => {
@@ -1832,9 +1868,7 @@ fn stream_vendor_with_delivery(
                         return StreamOutcome::ParentUnreadable(UnreadableReason::ClaimFailed);
                     }
                 };
-                let bundle_source = SessionSource::File(manifest_path.clone());
-                let bundle_claim = fingerprint_of(&bundle_source);
-                parent_fingerprint = Some(bundle_claim.clone());
+                after_claim(index, manifest_path);
                 let outcome = match adapter.visit_claimed(
                     input,
                     &claim,
@@ -1847,54 +1881,40 @@ fn stream_vendor_with_delivery(
                         return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
                     }
                 };
-                if fingerprint_of(&bundle_source) != bundle_claim {
-                    Ok(VisitOutcome::SourceChanged(
-                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
-                    ))
-                } else {
-                    Ok(outcome)
-                }
+                Ok(outcome)
             }
             RawSource::ClineBundle { .. } => continue,
             RawSource::KiroCliV2Bundle { metadata_path, .. } if index == 0 => {
-                let bundle_source = SessionSource::File(metadata_path.clone());
-                let bundle_claim = fingerprint_of(&bundle_source);
-                parent_fingerprint = Some(bundle_claim.clone());
+                after_claim(index, metadata_path);
                 let outcome = match adapter.visit(input, &mut accumulator) {
                     Ok(outcome) => outcome,
                     Err(_) => {
                         return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
                     }
                 };
-                if fingerprint_of(&bundle_source) != bundle_claim {
-                    Ok(VisitOutcome::SourceChanged(
-                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
-                    ))
-                } else {
-                    Ok(outcome)
-                }
+                Ok(outcome)
             }
             RawSource::KiroCliV2Bundle { .. } => continue,
             RawSource::KiroCliV3Bundle { metadata_path, .. } if index == 0 => {
-                let bundle_source = SessionSource::File(metadata_path.clone());
-                let bundle_claim = fingerprint_of(&bundle_source);
-                parent_fingerprint = Some(bundle_claim.clone());
+                after_claim(index, metadata_path);
                 let outcome = match adapter.visit(input, &mut accumulator) {
                     Ok(outcome) => outcome,
                     Err(_) => {
                         return StreamOutcome::ParentUnreadable(UnreadableReason::AdapterFailed);
                     }
                 };
-                if fingerprint_of(&bundle_source) != bundle_claim {
-                    Ok(VisitOutcome::SourceChanged(
-                        antiburn_local::analysis::SourceChangedReason::FingerprintMismatch,
-                    ))
-                } else {
-                    Ok(outcome)
-                }
+                Ok(outcome)
             }
             RawSource::KiroCliV3Bundle { .. } => continue,
         };
+        if let Some((source, fingerprint, cache_fingerprint)) = bundle_source_claim
+            && (fingerprint_of(&source) != cache_fingerprint
+                || discovered_bundle_fingerprint(&source, input.source_format).as_deref()
+                    != Some(fingerprint.as_str()))
+        {
+            log_source_changed("claimed_source_fingerprint", "fingerprint-mismatch");
+            return StreamOutcome::SourceChanged;
+        }
         match result {
             Ok(outcome @ VisitOutcome::SourceChanged(reason)) => {
                 log_source_changed("adapter_validity", source_changed_reason_label(reason));

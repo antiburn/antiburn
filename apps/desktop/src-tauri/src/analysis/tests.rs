@@ -2,6 +2,7 @@ use super::*;
 use antiburn_local::discovery::SessionLog;
 use antiburn_local::platform::environment::DiscoveryEnvironment;
 
+mod bundle_claims;
 mod claude_parent_child;
 
 #[tokio::test]
