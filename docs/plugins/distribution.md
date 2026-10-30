@@ -1,8 +1,10 @@
 # Plugin distribution
 
-The current repository candidate is **antiburn** 0.2.5 for Claude Code.
-It fixes Desktop meter width and AbovePrompt composition while preserving quota
-behavior and the embedded 0.2.1 shared core. It is generated locally as `plugins/antiburn`,
+The current repository candidate is **antiburn** 0.2.6 for Claude Code.
+It combines responsive Desktop meters and anchored reset/pace hover details from
+PR #779 with the source tree containing PR #778’s development icon refinement.
+The public icon is unchanged. It preserves quota behavior and the embedded
+0.2.1 shared core. It is generated locally as `plugins/antiburn`,
 with a separate local-only `antiburn-dev` build.
 Codex, Cursor, OpenCode and Pi adapters remain unpublished future candidates.
 The user-facing name remains antiburn; the internal package is
@@ -16,19 +18,18 @@ for this initial launch. Fresh installs, current-version updates, removal and
 public/dev independence still require validation.
 
 The repository remains the source of truth. The [plugin page](../../plugins/README.md)
-is its dedicated GitHub folder page. The candidate marketplace catalog lists
-public `antiburn` 0.2.5 from `plugins/antiburn`, pinned to an immutable artifact
-commit. The catalog on `main` points to an earlier unreleased 0.2.5 candidate.
-This revision supersedes that candidate before acceptance; the submitted
-0.2.4 artifact and tag remain unchanged. This public version contains exactly 24 files; the
-[Claude catalog](../../.claude-plugin/marketplace.json) records the authoritative
-artifact SHA. Keep submitted and released bytes immutable. Unreleased candidate
-revisions need acceptance against their exact artifact SHA. Use a fresh host
-profile when comparing candidate snapshots with the same version. When the catalog pins
-a commit introduced by a pull request, merge that pull request with a merge
-commit. Do not squash or rebase it: those methods replace the pinned commit in
-main history and can leave fresh CI checkouts without the artifact object. Use the permanent
-marketplace commands in the [plugin guide](../../plugins/README.md#install).
+is its dedicated GitHub folder page. This candidate catalog selects public
+`antiburn` 0.2.6 from `plugins/antiburn` at immutable artifact
+`f9dabe20b7dac6d33a4e8fecad88e93f1fff87d5`. The public package contains exactly 26 files
+and retains the embedded 0.2.1 shared core. The catalog on `main` determines what
+public installs receive; a local or PR catalog change does not promote it.
+The submitted 0.2.4 artifact and tag remain unchanged.
+
+Keep released and submitted bytes immutable. Validate candidates against their
+exact artifact SHA. When a PR introduces a pinned artifact commit, merge it with
+a merge commit. Do not squash or rebase it: the pinned commit must remain in main
+history and be available to fresh CI checkouts. Use the permanent marketplace
+commands in the [plugin guide](../../plugins/README.md#install).
 The local `antiburn-dev` build stays outside the hosted catalog. Its burn
 animation and preview controls are temporarily disabled; live checks and
 actions remain.
@@ -45,8 +46,11 @@ local transport checks alone are insufficient. Verify these checks through the
 permanent main route. Do not treat the catalog merge as evidence that all hosted
 acceptance checks have passed.
 
-For 0.2.5, verify an update from the immutable 0.2.4 artifact, as well as fresh
-installation, reinstall and removal. Internal testing marketplaces are disposable
+Before promoting 0.2.6, verify hosted updates from the immutable 0.2.4 artifact
+and the public 0.2.5 artifact `af3d284cc5a28fa57eb992a1953c6be436efed0a`,
+as well as fresh installation, reinstall and removal. Compare every installed
+file against the selected artifact; a version string alone is insufficient.
+Internal testing marketplaces are disposable
 test setup; they are not a supported user upgrade route. Keep the historical
 0.2.1 pin and bytes available for recovery.
 
@@ -89,9 +93,10 @@ submissions, pushes and release drafts require separate authorization.
 
 The submitted 0.2.4 candidate selects `claude-plugin-v0.2.4` at
 `f795e08059e993d7f226c4891c845a9f91e63c68`, with marketplace artifact
-`ceb2800b4bb9b25744624b7ee309ef9532f596d0`. The owner reports that its security
-scan passed and policy review is underway. Preserve its bytes and tag. The 0.2.5
-candidate is local and unsubmitted; no portal setting or tracked reference changes. The
+`ceb2800b4bb9b25744624b7ee309ef9532f596d0`. The recorded 0.2.4 owner report
+states that its security scan passed and policy review was underway; confirm the
+current portal state before taking action. Preserve its bytes and tag. The 0.2.6
+candidate is unsubmitted; no portal setting or tracked reference changes. The
 recommended directory release channel is a dedicated `claude-plugin-release`
 branch, as described below; it is not configured by this documentation change.
 The repository marketplace selects an immutable artifact commit independently.
@@ -103,6 +108,11 @@ The listing homepage is
 submits manually through the [Claude developer portal](https://claude.ai/directory/manage),
 following the [submission workflow](https://claude.com/docs/plugins/submit) and
 [pre-submission checklist](https://claude.com/docs/plugins/pre-submission-checklist).
+
+A future 0.2.6 tag, if separately authorized, must use the existing format:
+`claude-plugin-v0.2.6`. Point it at the final validated artifact commit and never
+move it. No tag, GitHub Release or release draft is created by this preparation.
+A tag alone does not change the directory’s tracked reference or publish a version.
 
 ### Directory update channel
 

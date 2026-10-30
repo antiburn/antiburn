@@ -2,7 +2,7 @@
 
 Native tools for getting more from your coding-agent sessions. antiburn is vendor-agnostic, with a shared foundation and an adapter for each agent. **Claude Code is the first rollout:** account usage, reset times and pace above its prompt, in both Terminal and the Code tab of Claude Desktop.
 
-The plugin works without the antiburn desktop app or CLI. The current repository candidate is **0.2.5**; other agent adapters are not published yet.
+The plugin works without the antiburn desktop app or CLI. The current repository candidate is **0.2.6**; other agent adapters are not published yet.
 
 [Install](#install) · [Usage](#use-the-claude-mod) · [Supported agents](#supported-agents) · [Privacy](#privacy)
 
@@ -39,7 +39,7 @@ The usage-state demos use synthetic preview data; the hover examples show reset 
 
 | Agent                          | Rollout status                 | What is available                                                                       |
 | ------------------------------ | ------------------------------ | --------------------------------------------------------------------------------------- |
-| Claude Code                    | 0.2.5 repository package       | Native usage mod in Terminal and Desktop Code; install below                            |
+| Claude Code                    | 0.2.6 repository candidate     | Native usage mod in Terminal and Desktop Code; install below                            |
 | Codex, Cursor, OpenCode and Pi | Unpublished adapter candidates | Shared development foundation; no public installation or native compatibility claim yet |
 
 Each adapter connects the shared product to its agent's package format, lifecycle and UI. Features depend on what that host exposes. Claude's usage meters do not imply equivalent quota access on other vendors.
@@ -57,7 +57,15 @@ claude plugin install antiburn@antiburn --scope user
 
 Open a new Claude Code session. In an existing session, run `/reload-plugins`; restart Claude Code if the mod does not appear. Installation needs no antiburn configuration flags. In Desktop, use the **Code** tab. The mod appears once the session initializes; the blank new-session landing page has no active mod UI.
 
-The candidate catalog selects an immutable **0.2.5** artifact. The catalog on `main` points to an earlier unreleased 0.2.5 snapshot. Validate the revised candidate against its exact artifact SHA in a fresh host profile; the submitted 0.2.4 artifact remains unchanged. Installation does not depend on the feature branch. See the [distribution guide](../docs/plugins/distribution.md) for how the catalog and artifact pin work.
+The repository candidate is **0.2.6**, with responsive Desktop meters and
+anchored reset/pace hover details. Its candidate catalog selects artifact
+`f9dabe20b7dac6d33a4e8fecad88e93f1fff87d5`. The catalog on `main`
+determines the version installed by these commands; preparing a candidate does
+not promote it. The submitted 0.2.4 artifact remains unchanged. Installation
+does not depend on the feature branch. See the
+[distribution guide](../docs/plugins/distribution.md) for promotion requirements
+and the [validation scope](../docs/plugins/validation.md) for remaining native
+Desktop and hosted-delivery acceptance.
 
 ## Use the Claude mod
 
@@ -122,7 +130,7 @@ claude --plugin-dir ./plugins/antiburn
 
 For contributor documentation, see the [development guide](antiburn-live/README.md), [shared core](../packages/antiburn-plugin-core/README.md) and [plugin architecture](../docs/plugins/architecture.md).
 
-This is the plugin's page within the **antiburn/antiburn** repository. The [bundled 0.2.5 README](antiburn/README.md) describes the current repository candidate; the catalog's exact artifact SHA identifies the reviewed snapshot. This page is the current installation and usage guide. Plugin versions are independent of desktop app versions.
+This is the plugin's page within the **antiburn/antiburn** repository. The [bundled 0.2.6 README](antiburn/README.md) describes the current repository candidate; the catalog's exact artifact SHA identifies the reviewed snapshot. This page is the current installation and usage guide. Plugin versions are independent of desktop app versions.
 
 [Open an issue](https://github.com/antiburn/antiburn/issues) with the plugin and host versions, the affected surface and steps to reproduce. Leave credentials and private session content out of public reports. Contributions follow [CONTRIBUTING.md](../CONTRIBUTING.md). Licensed under [MIT](../LICENSE); bundled Bitcount lettering retains its [SIL OFL notice](antiburn/assets/bitcount/OFL.txt).
 

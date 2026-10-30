@@ -60,7 +60,7 @@ test('release allowlist is self-contained and preserves authoritative assets', (
     )
   const manifest = JSON.parse(files.get('.claude-plugin/plugin.json'))
   assert.equal(manifest.name, 'antiburn')
-  assert.equal(manifest.version, '0.2.5')
+  assert.equal(manifest.version, '0.2.6')
   assert.equal(manifest.types, undefined)
   assert.equal(manifest.icon, './assets/icon.png')
   assert.equal(
@@ -69,7 +69,9 @@ test('release allowlist is self-contained and preserves authoritative assets', (
   )
   assert.equal(manifest.userConfig, undefined)
   assert.match(files.get('lib/product.mjs').toString(), /VERSION = '0\.2\.1'/)
-  assert.deepEqual(JSON.parse(files.get('hooks/hooks.json')).modules, ['./quota-controller.tsx'])
+  assert.deepEqual(JSON.parse(files.get('hooks/hooks.json')).modules, [
+    './quota-controller.tsx',
+  ])
   assert.ok(files.has('hooks/register.ts'))
   assert.ok(files.has('hooks/commands.ts'))
   assert.ok(files.has('hooks/quota-controller.tsx'))
@@ -348,7 +350,9 @@ test('website capabilities require exclusive opener attribution for every occurr
     }
     assert.throws(
       () =>
-        assertCapabilities(report('$.session.usage', `${name} (via openTerminalWebsite)`, name)),
+        assertCapabilities(
+          report('$.session.usage', `${name} (via openTerminalWebsite)`, name),
+        ),
       /Unapproved release capability/,
     )
     const mixed = report('$.session.usage', `${name} (via openTerminalWebsite)`)
@@ -426,9 +430,13 @@ test('assembly is deterministic and isolates private, development, and test file
   )
   cpSync(join(root, 'LICENSE'), join(path, 'LICENSE'))
   mkdirSync(join(path, 'integrations/antiburn/claude'), { recursive: true })
-  cpSync(join(root, 'integrations/antiburn/claude'), join(path, 'integrations/antiburn/claude'), {
-    recursive: true,
-  })
+  cpSync(
+    join(root, 'integrations/antiburn/claude'),
+    join(path, 'integrations/antiburn/claude'),
+    {
+      recursive: true,
+    },
+  )
   mkdirSync(join(path, 'packages/antiburn-plugin-core'), { recursive: true })
   for (const file of [
     'product.mjs',
@@ -456,7 +464,10 @@ test('assembly is deterministic and isolates private, development, and test file
   })
   const sourceReadme = join(path, 'plugins/antiburn-live/release/README.md')
   const originalReadme = readFileSync(sourceReadme)
-  writeFileSync(sourceReadme, Buffer.concat([originalReadme, Buffer.from('\nSource update.\n')]))
+  writeFileSync(
+    sourceReadme,
+    Buffer.concat([originalReadme, Buffer.from('\nSource update.\n')]),
+  )
   assemble(path)
   checkTree(destination, releaseFiles(path))
   writeFileSync(sourceReadme, originalReadme)
@@ -471,7 +482,9 @@ test('assembly is deterministic and isolates private, development, and test file
   assert.equal(existsSync(join(destination, 'hooks/checks.ts')), false)
   const devRoot = assemble(path, 'dev')
   const plugin = join(devRoot, 'plugins/antiburn-dev')
-  const devManifest = JSON.parse(readFileSync(join(plugin, '.claude-plugin/plugin.json'), 'utf8'))
+  const devManifest = JSON.parse(
+    readFileSync(join(plugin, '.claude-plugin/plugin.json'), 'utf8'),
+  )
   assert.equal(devManifest.name, 'antiburn-dev')
   assert.equal(devManifest.userConfig.usageUiEnabled.default, true)
   assert.equal(devManifest.userConfig.startupNoticeEnabled.default, false)
@@ -525,7 +538,8 @@ test('account capabilities require exclusive fetchAccountUsage attribution', () 
       )
     }
     assert.throws(
-      () => assertCapabilities(report('$.session.usage', `${name} (via fetchAccountUsage)`, name)),
+      () =>
+        assertCapabilities(report('$.session.usage', `${name} (via fetchAccountUsage)`, name)),
       /Unapproved release capability/,
     )
   }
@@ -537,13 +551,21 @@ test('public hook helpers keep capability and registration arguments in their mo
   for (const [path, bytes] of files) {
     if (!path.startsWith('hooks/') || !/\.tsx?$/.test(path)) continue
     const source = bytes.toString()
-    const local = new Set([...source.matchAll(/\bfunction\s+(\w+)\s*\(/g)].map((match) => match[1]))
+    const local = new Set(
+      [...source.matchAll(/\bfunction\s+(\w+)\s*\(/g)].map((match) => match[1]),
+    )
     for (const match of source.matchAll(/\b(\w+)\(\s*(\$|on)(?=[\s,)])/g)) {
       if (match[1] === 'read' || match[1] === 'update') {
-        assert.match(source, /import\s*\{[^}]*\bread\b[^}]*\bupdate\b[^}]*\}\s*from "claude-code"/)
+        assert.match(
+          source,
+          /import\s*\{[^}]*\bread\b[^}]*\bupdate\b[^}]*\}\s*from "claude-code"/,
+        )
         continue
       }
-      assert.ok(local.has(match[1]), `${path}: ${match[1]} forwards ${match[2]} outside its module`)
+      assert.ok(
+        local.has(match[1]),
+        `${path}: ${match[1]} forwards ${match[2]} outside its module`,
+      )
       checked++
     }
   }

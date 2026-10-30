@@ -104,6 +104,14 @@
     "allow-set-repository-enabled",
     "allow-set-settings",
     "allow-start-live-usage",
-    "allow-update-remote-host"
+    "allow-update-remote-host",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/antiburn/antiburn/*"
+        }
+      ]
+    }
   ]
 }

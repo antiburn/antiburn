@@ -15,6 +15,8 @@ import { noteInteraction, openSettingsWindow } from "../lib/ipc"
 import { memoryCountStore } from "../lib/memoryCountStore"
 import { MainWindowView } from "./MainWindowView"
 import { searchApp } from "../lib/appSearch"
+
+vi.mock("virtual:promotions", () => ({ default: [] }))
 import type * as ProgressStore from "./main-window/overview/overviewProgressStore"
 import type { OverviewProgress } from "./main-window/overview/overviewProgressStore"
 

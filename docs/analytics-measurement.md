@@ -196,6 +196,33 @@ payloads. Use event-specific Rust types even when serializing into existing
 `label`, `detail`, and `bucket` fields. Update disclosures for new meanings even
 when the wire field count stays unchanged.
 
+### Claude Mod promotion (implemented)
+
+The product question is whether the Claude Mod announcement earns deliberate
+interest and where readers stop in its short setup path. The single
+`antiburn.promotion_interaction` event uses `label` for one of
+`announcement_viewed`, `setup_viewed`, `primary_activated`,
+`learn_more_activated`, `command_copied`, or `dismissed`. Its `origin` is
+`automatic` when the panel was opened by the post-onboarding announcement gate,
+and `user` when opened from the Claude Code Mod sidebar launcher. The origin is carried through the
+panel opening, including later clicks.
+
+Emit screen views only after the screen is visible, at most once for each
+screen per panel opening. Emit each action label at most once per opening.
+Count the primary action and Learn more only after their destination action
+succeeds; count a command only after clipboard write succeeds; count dismissal
+only for an explicit close. Back navigation is not a dismissal. Do not emit for
+the development-only dummy promotion. This event
+measures exposure and setup intent, not successful installation or use of the
+Claude Mod. It carries no promotion identifier, revision, YAML text, asset
+path, URL, command, or other content. Maximum volume is two screen views and
+four action events per opening; repeated openings are separate exposures.
+
+Use distinct reporting installations that viewed the announcement as the
+denominator for setup-screen reach, action rates, and explicit dismissal.
+Compare automatic and user-opened origins separately. A copied install command
+is intent only; no installation outcome is observable in this event contract.
+
 ### Visible use and value (implemented)
 
 | Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                                                                                  | Owner and volume rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -1172,3 +1199,14 @@ and no owner refresh runs. A missing access token with a usable refresh token
 can still recover through its owner. Compare recovery and sign-in outcomes by
 app version; do not count the no-launch decision as a failed owner attempt.
 The event adds no credentials, paths, identifiers, or provider response content.
+
+### Promotion campaign registration
+
+A promotion opts in with `analytics: { campaign: claude_mod }` in its YAML.
+Omitting this block disables promotion events. The schema and Rust boundary
+both reject unregistered campaigns. `detail` carries the fixed campaign value;
+`label` and `origin` retain the closed action and opening-source contracts
+above. Development-only test promotions never emit events. Extending the
+registry requires reviewing the schema, closed backend enum, mapping, tests,
+and this measurement contract together. YAML cannot define event names or
+arbitrary payload properties.

@@ -19,6 +19,7 @@ export function MainWindowLayout({
   onForward,
   onSearch,
   searchOpen = false,
+  overlay,
 }: {
   sidebar: ReactNode | ((close: () => void) => ReactNode)
   children: ReactNode
@@ -28,6 +29,7 @@ export function MainWindowLayout({
   onForward?: () => void
   onSearch?: () => void
   searchOpen?: boolean
+  overlay?: ReactNode
 }) {
   const compact = useViewportWidth() < 720
   const mac = isMacOS()
@@ -136,6 +138,7 @@ export function MainWindowLayout({
           {children}
         </div>
       </div>
+      {overlay}
     </main>
   )
 }

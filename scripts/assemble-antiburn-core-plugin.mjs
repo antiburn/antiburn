@@ -303,7 +303,7 @@ export async function assemble(output = defaultOutput) {
       }),
     )
     for (const host of ['claude', 'codex', 'cursor']) {
-      for (const [name, content] of [...files])
+      for (const [name, content] of files)
         if (name.startsWith(`${host}/`))
           add(`catalogs/${host}/plugins/antiburn/${name.slice(host.length + 1)}`, content)
       if (host === 'codex')

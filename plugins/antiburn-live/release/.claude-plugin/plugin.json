@@ -1,7 +1,7 @@
 {
   "name": "antiburn",
   "displayName": "antiburn",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "● ● ● ○ │ ○ ○ · Stop hitting your limits! Pace your Claude Code usage for five-hour and weekly limits across sessions. See usage and reset times at a glance, above your prompt in both desktop and terminal.",
   "author": {
     "name": "Antiburn"

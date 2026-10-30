@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.6 — responsive meters and anchored hover details
+
+- Share responsive Desktop meter geometry between the public and development builds.
+- Keep visible meters and reset/pace interaction frames aligned during resizing.
+- Anchor hover captions to their controls and choose the side with room for the text.
+- Keep hover details readable in inline and stacked layouts, with keyboard focus and reduced motion.
+- Preserve Terminal rendering, quota behavior and the embedded 0.2.1 shared core.
+
 ## 0.2.5 — mod composition and responsive Desktop usage
 
 - Preserve unrelated AbovePrompt mods in either stacking order.

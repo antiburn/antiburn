@@ -4,11 +4,20 @@ import tailwindcss from "@tailwindcss/vite"
 import babel from "@rolldown/plugin-babel"
 import react, { reactCompilerPreset } from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
+import { createPromotionFixture } from "../promotionFixture"
+import { promotionCatalogPlugin } from "../../scripts/promotionCatalog"
 
 const fixture = (path: string) => fileURLToPath(new URL(path, import.meta.url))
 
-export default defineConfig({
-  plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss()],
+export default defineConfig(async () => ({
+  plugins: [
+    promotionCatalogPlugin("serve", "test", {
+      developmentDirectory: await createPromotionFixture(),
+    }),
+    react(),
+    babel({ presets: [reactCompilerPreset()] }),
+    tailwindcss(),
+  ],
   resolve: {
     alias: {
       "@tauri-apps/api/core": fixture("./fakes/core.ts"),
@@ -21,4 +30,4 @@ export default defineConfig({
     },
   },
   server: { host: "127.0.0.1", port: 4174, strictPort: true },
-})
+}))

@@ -332,6 +332,18 @@ export type Interaction =
       action: "reveal" | "archive" | "restore" | "remove_index_line" | "open_from_session"
       outcome: "succeeded" | "failed" | "changed_on_disk" | "unsupported"
     }
+  | {
+      kind: "promotionInteraction"
+      campaign: "claude_mod"
+      action:
+        | "announcement_viewed"
+        | "setup_viewed"
+        | "primary_activated"
+        | "learn_more_activated"
+        | "command_copied"
+        | "dismissed"
+      origin: SurfaceOrigin
+    }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {

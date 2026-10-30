@@ -88,6 +88,7 @@ export function SidebarNav({
   onActivate,
   className = "",
   footer,
+  beforeFooter,
 }: {
   items: ReadonlyArray<SidebarNavItem>
   value: string
@@ -97,6 +98,8 @@ export function SidebarNav({
   className?: string
   /** Optional non-tab content pinned below the row list, past a hairline. */
   footer?: ReactNode
+  /** Optional actions appear above the footer separator. */
+  beforeFooter?: ReactNode
 }) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>())
   const rows = flattenItems(items)
@@ -200,8 +203,13 @@ export function SidebarNav({
           )
         })}
       </div>
-
-      {footer && <div className="px-2 pb-3">{footer}</div>}
+      {(footer || beforeFooter) && (
+        <div className="sidebar-nav-footer px-2 pb-3">
+          {beforeFooter && <div className="mb-2">{beforeFooter}</div>}
+          <div role="presentation" className="mb-2 h-px bg-separator" />
+          {footer}
+        </div>
+      )}
     </div>
   )
 }

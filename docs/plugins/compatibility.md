@@ -1,7 +1,8 @@
-> Status: the unified 0.2.1 candidate initially targets Claude Code only. The
-> observations below describe earlier adapter snapshots and are historical,
-> not certification of the consolidated artifact. Other-agent releases remain
-> deferred. See [validation](validation.md) for current acceptance limits.
+> Status: the 0.2.6 Claude repository candidate retains the runtime tested at
+> `143d4b05681938cb362e828ecc27d2e082638176`; its version and bundled documents
+> are new. The earlier Terminal smoke and browser checks do not establish full
+> native Desktop or hosted-delivery acceptance. See [validation](validation.md).
+> Other-agent adapters remain unpublished; the tables below are historical.
 
 # Plugin adapter compatibility
 

@@ -58,7 +58,9 @@ function executable(env, platform) {
           accessSync(candidate, platform === 'win32' ? constants.F_OK : constants.X_OK)
           return candidate
         }
-      } catch {}
+      } catch {
+        continue
+      }
     }
   }
   return undefined

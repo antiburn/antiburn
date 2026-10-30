@@ -7,9 +7,10 @@ weekly percentages, reset times and even-pace markers. Pace compares usage with
 the elapsed part of a limit window; it is a reference, not a forecast or a
 guarantee that a limit will not be reached. Missing readings stay unavailable.
 
-Version **0.2.5** fills the available Desktop width while preserving glyph and
-dot size as the window changes. It also preserves other mods above the prompt
-and retains the existing Terminal rendering. The plugin version is independent of
+Version **0.2.6** keeps Desktop meters and their reset and pace controls aligned
+as the window changes. Hover captions stay anchored to their controls in inline
+and stacked layouts. It preserves glyph and dot size, other mods above the
+prompt, and the existing Terminal rendering. The plugin version is independent of
 Antiburn desktop app versions.
 
 ## Supported surfaces

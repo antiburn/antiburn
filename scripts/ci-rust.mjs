@@ -132,7 +132,7 @@ export function planRustChecks({
         cwd: workspace.directory,
         program,
         args: [...command.args],
-        env: { ...(command.env ?? {}) },
+        env: { ...command.env },
       });
     }
   }

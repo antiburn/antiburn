@@ -50,7 +50,9 @@ export async function runJsonHook(handler) {
     const output = await handler(/** @type {Record<string, unknown>} */ (parsed))
     if (!output) return
     await handoffJsonHook(/** @type {Record<string, unknown>} */ (output))
-  } catch {}
+  } catch {
+    return
+  }
 }
 
 /** @param {string} filename */

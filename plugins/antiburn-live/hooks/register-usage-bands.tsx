@@ -8,11 +8,11 @@ import type { UsageWindow } from "./usage";
 import {
   meterDescription,
   meterLayer,
+  RESPONSIVE_FRAME_WIDTH,
   secondaryTextSvg,
 } from "./usage-graphics";
 import { PRESENTATION, type usageLayout } from "./usage-presentation";
 import { renderUsageMeterBand } from "./usage-meter-band";
-import { RESPONSIVE_FRAME_WIDTH } from "./usage-graphics";
 
 type UsageUi = ReturnType<EngineInterface["ui"]["resolve"]>;
 type AbovePromptEvent = RenderInput<"AbovePrompt">;

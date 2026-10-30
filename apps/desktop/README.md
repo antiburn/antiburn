@@ -481,3 +481,131 @@ details only for opened checks. It coalesces refreshes, rejects stale results, a
 after a refresh error. Its snapshot subscription reports bounded visible-state and outcome
 analytics. Actions report only reviewed closed outcomes. They never report work data, target values,
 paths, identifiers, exact tokens, or exact costs.
+
+## Bundled promotions
+
+See the [promotion authoring guide](docs/promotions.md) for the YAML schema,
+actions, media rules, display lifecycle, analytics, and verification workflow.
+
+Promotions appear automatically. An optional YAML `sidebar` block supplies a
+mini panel above Settings. The generic launcher shows one audience-matching,
+non-development promotion: highest priority first, then ascending promotion ID.
+Card copy, optional badge/link label, icon, priority, and audience come from YAML.
+The single optional `icon` string accepts existing agent slugs or `megaphone`
+(the default); artwork and audience are independent. Audiences support everyone
+or any specified detected agent. Clicking opens the enclosing promotion by ID.
+Definitions without `sidebar` create no card. A future eligible promo with higher
+priority replaces the current card without React changes. Sidebar selection does
+not change automatic announcement selection or timing.
+
+The shipped Claude Mod card targets detected Claude users. It uses the same detection as Settings →
+Agents: Claude sessions, installation/sign-in, or Claude Desktop; a Pi-only login does not qualify.
+Agent visibility switches do not hide the action. Unknown or failed detection without
+other evidence keeps it hidden. The action opens the Claude Mod announcement directly,
+even after dismissal or automatic viewing, without changing the selected app view.
+Pointer opening grows the panel from its bottom-left corner over 180ms; keyboard
+opening is immediate. Reduced motion uses a 100ms fade.
+Its **NEW** badge remains visible for as long as the promo card is available, including
+after activation and app restarts. Activation history is still saved separately under
+`antiburn.promotions.launcher-opened.v1`; it does not control the badge.
+The launcher stays available after activation. It is hidden during FTUE and becomes
+available immediately after completion, including the same app session. This deliberate
+opening bypasses the automatic cooldown; automatic display retains its existing timing.
+**What’s new** is reserved for a future recent-changes panel. Add each promotion in `src/promotions/<id>/promo.yaml` with relative assets in that
+folder. The Vite catalog validates the YAML and imports media as hashed assets.
+The Claude Mod definition provides announcement and setup examples.
+
+Definitions support plain-text content, gauge/clock feature icons, image/GIF
+or video media, copyable commands, screen navigation, HTTPS links, and the
+Settings Usage destination. Videos require a poster; image/GIF definitions can
+also supply one. GIFs with a poster show it for reduced motion or an image load failure.
+Videos and GIFs keep looping across window focus changes; focus does not swap
+the image source, pause playback, or reset its position. The optional `media.light` object overrides
+`kind`, `src`, and `poster` in light mode; the base media remains the dark-mode
+and legacy fallback. Video variants require their own poster. Explicit theme
+changes and system appearance changes select the source and poster together,
+resetting playback failure state without changing the display policy.
+Both Claude Mod themes use label-free H.264 MP4s at 800 × 416, 50fps,
+with no audio and fast-start metadata, plus matching PNG posters. No command executes.
+
+Automatic display waits for onboarding and foreground visibility. New users never
+receive a promo during the MAIN-window FTUE or in the same app session. Completion
+of the final guided step starts a 24-hour delay, saved locally under
+`antiburn.promotions.ftue.v1`. A later app session becomes eligible after that delay;
+returning focus checks eligibility again. Existing users without this timing record
+remain eligible immediately. A reset FTUE starts the delay again. Revision bumps
+respect this timing gate too. Seen history
+is local and keyed by ID and revision; increment the revision only when the
+promotion should announce again. An ignored, generated dummy exercises different
+content, a static image, and an app action. Its YAML and assets are never committed and are excluded from
+production builds. Tests generate the local fixture from a synthetic factory. The component tests exercise its manual catalog and app action; the visual tests exercise automatic display.
+
+Run the focused browser checks from `apps/desktop` with
+`node node_modules/@playwright/test/cli.js test --config tests/visual/promotions.config.ts`.
+
+To repeat automatic display in a debug build, open the main window’s developer
+tools (`Command+Option+I` on macOS), run the following in the console, then
+reload the main window or quit and reopen the app:
+
+```js
+localStorage.removeItem("antiburn.promotions.seen.v1")
+```
+
+The sidebar’s NEW badge needs no reset: it remains visible while the promo card
+is available. Launcher activation history does not control its visibility.
+
+The seen-key command clears only promotion history for that app profile. Onboarding must be
+complete and the main window must be in the foreground. App version changes
+do not reset this history. To announce again after a future update, increment
+`revision` in the promotion YAML. The new ID/revision pair is shown once.
+
+### Promotion analytics
+
+The YAML definition opts into a registered campaign:
+
+```yaml
+analytics:
+  campaign: claude_mod
+```
+
+Omit `analytics` to disable promotion events. `campaign` accepts only
+`claude_mod` in schema version 1. The validator rejects unknown campaigns,
+event names, and tracking properties. Development-only fixtures emit nothing,
+even when they include an analytics block. The generated dummy YAML and media
+live under the ignored `.agent-artifacts/promotions/` directory; they are not
+product definitions and are not committed or imported by production builds.
+
+The shared renderer owns interaction timing. The closed event is
+`antiburn.promotion_interaction`. Its existing `detail` field identifies the
+registered campaign; `label` contains one of:
+
+| Label                  | Trigger                                      |
+| ---------------------- | -------------------------------------------- |
+| `announcement_viewed`  | The announcement is actually presented.      |
+| `setup_viewed`         | The setup screen is actually presented.      |
+| `primary_activated`    | The primary action completes successfully.   |
+| `learn_more_activated` | The secondary action completes successfully. |
+| `command_copied`       | The clipboard write succeeds.                |
+| `dismissed`            | The reader closes the panel.                 |
+
+Each screen view is counted at most once per opening. Each action label is counted at most once per opening after a successful
+activation. `origin` preserves how the opening began:
+`automatic` or `user`, including after navigation to setup. Hidden or blocked
+screens do not report views. Failed clipboard/link actions do not report
+success. Async actions retain their original campaign and opening origin.
+Copying an install command does not prove installation or activation.
+
+All events pass through the existing consent/configuration gate. YAML content,
+promotion IDs, revisions, URLs, command text, asset paths, and work data are not
+sent. Rust accepts only the registered campaign, listed actions, and origins.
+The complete payload and measurement contract lives in
+[analytics](../../docs/analytics.md) and
+[analytics measurement](../../docs/analytics-measurement.md).
+
+To register another campaign, update the YAML campaign type and validator,
+the IPC payload type, Rust campaign enum and fixed wire mapping, tests, and
+measurement documentation together. Do not add arbitrary YAML event names or
+free-form tracking properties. External URLs are currently limited to HTTPS
+pages in the antiburn GitHub repository, matching the native opener permission;
+adding another destination requires updating that scope and the shared link
+validator together.
