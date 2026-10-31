@@ -1,37 +1,67 @@
-/**
- * The folders that antiburn reads for each agent's sessions, for the Agents
- * step settings list. The folders do not change while the app runs, so the
- * store reads them one time and keeps them.
- */
 import { agentSessionLocations, type AgentSessionLocations } from "./ipc"
+import { scanStatusStore } from "./scanStatusStore"
 
 let cache: AgentSessionLocations[] | null = null
 let inFlight: Promise<void> | null = null
+let revision = 0
+let stopScan: (() => void) | null = null
 const listeners = new Set<() => void>()
 
-function startLoad(): void {
-  if (cache !== null || inFlight) return
+function notify(): void {
+  for (const listener of listeners) listener()
+}
+
+function refreshAgentSessionLocations(): Promise<void> {
+  if (listeners.size === 0) return Promise.resolve()
+  if (inFlight) return inFlight
+  const requestRevision = revision
   inFlight = agentSessionLocations()
     .then((locations) => {
-      cache = locations
+      if (requestRevision === revision) cache = locations
     })
-    .catch(() => {
-      cache = []
+    .catch((error: unknown) => {
+      if (requestRevision === revision) cache ??= []
+      throw error
     })
     .finally(() => {
       inFlight = null
-      for (const listener of listeners) listener()
+      if (requestRevision === revision) notify()
+      else void refreshAgentSessionLocations().catch(() => undefined)
     })
+  return inFlight
 }
 
-/** `useSyncExternalStore` subscribe: starts the one-shot load on first use. */
 export function subscribeAgentSessionLocations(listener: () => void): () => void {
-  startLoad()
   listeners.add(listener)
-  return () => listeners.delete(listener)
+  if (listeners.size === 1) {
+    revision += 1
+    let previous = scanStatusStore.getSnapshot()
+    stopScan = scanStatusStore.subscribe(() => {
+      const status = scanStatusStore.getSnapshot()
+      const finished =
+        status &&
+        !status.running &&
+        (previous?.running ||
+          (status.finishedAt !== null && status.finishedAt !== previous?.finishedAt))
+      previous = status
+      if (finished) {
+        revision += 1
+        void refreshAgentSessionLocations().catch(() => undefined)
+      }
+    })
+    void refreshAgentSessionLocations().catch(() => undefined)
+  }
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) {
+      revision += 1
+      stopScan?.()
+      stopScan = null
+    }
+  }
 }
 
-/** `null` while the first read is still in flight or has not started. */
+/** Null means the initial root read has not completed. */
 export function agentSessionLocationsSnapshot(): AgentSessionLocations[] | null {
   return cache
 }

@@ -280,3 +280,14 @@ describe("static app search", () => {
     expect(groups[0]!.results[0]!.detail).toBe("Settings · Sessions")
   })
 })
+
+it("routes connection management aliases to Agents settings", () => {
+  for (const query of ["integrations", "connections", "hooks", "plugins", "extensions"]) {
+    expect(
+      searchApp(query).some(
+        (result) =>
+          result.target.kind === "setting" && result.target.control === "sourceAgents",
+      ),
+    ).toBe(true)
+  }
+})

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-get-agent-integrations"
+description = "Enables the get_agent_integrations command without any pre-configured scope."
+commands.allow = ["get_agent_integrations"]
+
+[[permission]]
+identifier = "deny-get-agent-integrations"
+description = "Denies the get_agent_integrations command without any pre-configured scope."
+commands.deny = ["get_agent_integrations"]

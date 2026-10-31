@@ -1207,3 +1207,31 @@ above. Development-only test promotions never emit events. Extending the
 registry requires reviewing the schema, closed backend enum, mapping, tests,
 and this measurement contract together. YAML cannot define event names or
 arbitrary payload properties.
+
+## Private CLI operation measurement
+
+- **Question and decision:** Do automatic runtime setup and explicit Test/Repair
+  complete successfully? Use outcome rates to prioritize installation and
+  troubleshooting fixes.
+- **Metric and denominator:** Successful completions divided by all reported
+  completions, grouped by `startup`, `test`, or `repair`, among consenting
+  installations. This is not all attempts, unique installations, or vendor
+  integration success. Canceled operations and process termination can leave no
+  completion event. Debug/source builds do not run automatic startup staging.
+- **Producer:** Native CLI-install commands own `antiburn.cli_operation_completed`.
+  Emit once after the final result, including path resolution, lock, process and
+  blocking-worker failures. A startup reconciliation's retries produce one
+  outcome; repeated explicit actions each produce their own completion. Status
+  reads produce no event. There is no additional client-side deduplication.
+- **Closed dimensions:** Existing `label` is `startup`, `test`, or `repair`;
+  existing `detail` is `succeeded` or `failed`. Reconciliation/Repair succeeds
+  only with an available runtime and no installation diagnostic. Test succeeds
+  only after capabilities validation. No arbitrary failure reasons or new wire
+  properties enter the payload.
+- **Privacy and rollout:** Existing consent, disabled-build, endpoint, identity
+  rotation and delivery rules apply. This event adds no CLI paths, CLI versions,
+  payload digests, command output or diagnostic strings. Standard analytics envelope
+  fields still apply. Reports begin with the first shipping
+  build containing this producer; earlier Settings views are not a baseline for
+  installation success. Validate fixed payloads, completed success/failure paths,
+  no-analytics builds, opt-out gates and the event catalog contract.

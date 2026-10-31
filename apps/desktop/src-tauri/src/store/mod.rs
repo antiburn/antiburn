@@ -549,7 +549,15 @@ fn remove_native_tool_results_from_other_formats_in(
 impl Store {
     /// Open (creating if absent) and migrate the database under `data_dir`.
     pub fn open(data_dir: &Path) -> Result<Store> {
-        std::fs::create_dir_all(data_dir)
+        let mut directory = std::fs::DirBuilder::new();
+        directory.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            directory.mode(0o700);
+        }
+        directory
+            .create(data_dir)
             .with_context(|| format!("failed to create {}", data_dir.display()))?;
         let path = database_path(data_dir);
         let connection = Connection::open(&path)

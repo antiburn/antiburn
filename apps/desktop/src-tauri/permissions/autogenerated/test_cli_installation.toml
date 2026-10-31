@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-test-cli-installation"
+description = "Enables the test_cli_installation command without any pre-configured scope."
+commands.allow = ["test_cli_installation"]
+
+[[permission]]
+identifier = "deny-test-cli-installation"
+description = "Denies the test_cli_installation command without any pre-configured scope."
+commands.deny = ["test_cli_installation"]

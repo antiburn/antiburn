@@ -64,7 +64,9 @@ export async function discover(options = {}) {
     override !== undefined
       ? [override]
       : directories.flatMap((dir) =>
-          extensions.map((ext) => paths.resolve(cwd, dir || '.', `antiburn${ext}`)),
+          ['antiburn-cli', 'antiburn'].flatMap((name) =>
+            extensions.map((ext) => paths.resolve(cwd, dir || '.', `${name}${ext}`)),
+          ),
         )
   let expired = false
   /** @type {ReturnType<typeof setTimeout> | undefined} */

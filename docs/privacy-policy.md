@@ -262,3 +262,13 @@ complain to your local privacy regulator. Send requests to
 We will update this page when the analytics data or its use changes. A change
 that adds data requires a matching update to the closed event schema and public
 event catalog before release.
+
+### Private CLI operation outcomes
+
+Anonymised analytics may record completion of automatic CLI startup reconciliation
+and explicit Test or Repair. The event adds only the fixed operation
+(`startup`, `test`, `repair`) and outcome (`succeeded`, `failed`). It adds no
+CLI paths, CLI versions, payload digests, command output or diagnostic messages.
+Standard analytics envelope fields still apply, including the app version and
+random installation and analytics-session identifiers. Existing analytics opt-out
+and build configuration gates apply.

@@ -84,6 +84,7 @@ dependencies = [
  "antiburn-local",
  "clap",
  "dirs",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

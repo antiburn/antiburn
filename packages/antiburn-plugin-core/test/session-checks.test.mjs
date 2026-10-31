@@ -56,6 +56,34 @@ function runnerFor(value = response, ack = { protocol_version: 1, acknowledged: 
   }
 }
 
+test(
+  'delivery PATH fallback supports runtime and legacy export names',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const bin = await mkdtemp(join(tmpdir(), 'antiburn-export-delivery-'))
+    try {
+      for (const name of ['antiburn-cli', 'antiburn']) {
+        const executable = join(bin, name)
+        const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`
+        await writeFile(
+          executable,
+          `#!/bin/sh\n[ "$ANTIBURN_EXECUTABLE" = ${quote(executable)} ] || exit 1\nprintf '%s' ${quote(JSON.stringify(response))}\n`,
+        )
+        await chmod(executable, 0o700)
+        const result = await readSessionChecks({
+          host: 'claude-code',
+          sessionId: 'session-1',
+          env: { PATH: bin },
+        })
+        assert.match(result?.message ?? '', /Repeated failed retries/)
+        await rm(executable)
+      }
+    } finally {
+      await rm(bin, { recursive: true, force: true })
+    }
+  },
+)
+
 test('delivers staged findings without acknowledgement before native handoff', async () => {
   const runner = runnerFor()
   const result = await readSessionChecks({

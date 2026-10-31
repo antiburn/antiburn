@@ -21,7 +21,9 @@
         "popover-peek",
         "popover-peek-anchor",
         "checks-remediation",
-        "checks-settings"
+        "checks-settings",
+        "cli-settings",
+        "agent-integrations-settings"
       ]
     }
   },
@@ -36,7 +38,8 @@
     "resources": {
       "../../../LICENSE": "LICENSE",
       "../../../NOTICE": "NOTICE",
-      "../../../THIRD_PARTY_NOTICES": "THIRD_PARTY_NOTICES"
+      "../../../THIRD_PARTY_NOTICES": "THIRD_PARTY_NOTICES",
+      "resources/agent-integrations/": "agent-integrations/"
     },
     "icon": [
       "icons/32x32.png",

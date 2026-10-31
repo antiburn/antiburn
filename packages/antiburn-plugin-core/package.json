@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs ../../scripts/artifact-files.test.mjs",
     "assemble": "node ../../scripts/assemble-antiburn-core-plugin.mjs",
     "verify": "node ../../scripts/assemble-antiburn-core-plugin.mjs --verify",
     "lint": "node check.mjs lint",

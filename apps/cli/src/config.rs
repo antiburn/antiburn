@@ -31,6 +31,7 @@ pub struct Config {
     pub database_filename: String,
     pub busy_timeout: Duration,
     pub state_file: Option<PathBuf>,
+    pub log_file: Option<PathBuf>,
     pub pricing_snapshot_path: Option<PathBuf>,
     pub price_outlier: PriceOutlierConfig,
 }
@@ -43,6 +44,7 @@ struct ConfigOverrides {
     database_filename: Option<String>,
     busy_timeout_ms: Option<u64>,
     state_file: Option<PathBuf>,
+    log_file: Option<PathBuf>,
     pricing_snapshot_path: Option<PathBuf>,
     price_outlier: Option<PriceOutlierOverrides>,
 }
@@ -91,6 +93,7 @@ impl Config {
             database_filename: DEFAULT_DATABASE_FILENAME.to_owned(),
             busy_timeout: Duration::from_millis(DEFAULT_BUSY_TIMEOUT_MS),
             state_file: None,
+            log_file: None,
             pricing_snapshot_path: None,
             price_outlier: PriceOutlierConfig {
                 max_sessions: DEFAULT_PRICE_OUTLIER_MAX_SESSIONS,
@@ -117,6 +120,7 @@ impl Config {
             config.busy_timeout = Duration::from_millis(busy_timeout_ms);
         }
         config.state_file = overrides.state_file;
+        config.log_file = overrides.log_file;
         config.pricing_snapshot_path = overrides.pricing_snapshot_path;
         if let Some(price_outlier) = overrides.price_outlier {
             if let Some(value) = price_outlier.max_sessions {
@@ -137,6 +141,13 @@ impl Config {
         }
         validate_price_outlier_config(config.price_outlier)?;
         Ok(config)
+    }
+
+    pub(crate) fn log_path(&self) -> Result<PathBuf, String> {
+        self.log_file
+            .clone()
+            .or_else(|| dirs::data_local_dir().map(|root| root.join("antiburn/cli/calls.log")))
+            .ok_or_else(|| "could not locate the platform data directory for CLI logs".to_owned())
     }
 
     pub(crate) fn state_path(&self) -> Result<PathBuf, String> {
@@ -222,6 +233,22 @@ mod tests {
         assert!(config.is_err());
     }
 
+    #[test]
+    fn log_path_defaults_to_stable_data_and_accepts_an_override() {
+        let mut config = Config::defaults();
+        assert_eq!(
+            config.log_path().unwrap(),
+            dirs::data_local_dir()
+                .unwrap()
+                .join("antiburn/cli/calls.log")
+        );
+        config.log_file = Some(PathBuf::from("custom/calls.log"));
+        assert_eq!(
+            config.log_path().unwrap(),
+            PathBuf::from("custom/calls.log")
+        );
+    }
+
     #[tokio::test]
     async fn config_file_overrides_release_values() {
         let temp = tempdir().unwrap();
@@ -234,6 +261,7 @@ mod tests {
                 "database_filename": "antiburn-debug.sqlite3",
                 "busy_timeout_ms": 12000,
                 "state_file": "/tmp/antiburn-state.json",
+                "log_file": "/tmp/antiburn-calls.log",
                 "pricing_snapshot_path": "/tmp/model-pricing.json",
                 "price_outlier": {
                     "max_sessions": 20,
@@ -247,6 +275,10 @@ mod tests {
         .unwrap();
 
         let config = Config::load(Some(path)).await.unwrap();
+        assert_eq!(
+            config.log_path().unwrap(),
+            PathBuf::from("/tmp/antiburn-calls.log")
+        );
         assert_eq!(
             config.data_root.as_ref().unwrap().clone(),
             PathBuf::from("/tmp/antiburn-data")

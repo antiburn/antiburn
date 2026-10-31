@@ -50,12 +50,14 @@
 //! policy limits the webview to local application and IPC connections.
 
 pub mod agent_config;
+pub mod agent_integrations;
 mod agent_memory;
 mod agents;
 mod analysis;
 mod analytics;
 mod app_presence;
 pub mod check_store;
+pub mod cli_install;
 mod commands;
 mod consent;
 mod diagnostics_export;
@@ -410,6 +412,19 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        cli_install::start(app.handle());
+        agent_integrations::desktop::start(app.handle(), |app, validation| {
+            let runtime = match validation {
+                agent_integrations::desktop::CliValidation::Fresh => cli_install::resolve_cli(app),
+                agent_integrations::desktop::CliValidation::Cached => cli_install::inspect_cli(app),
+            };
+            runtime.map(|runtime| agent_integrations::lifecycle::CliConnection {
+                executable: runtime.executable,
+                version: runtime.version,
+                sha256: runtime.sha256,
+                delivery_protocols: runtime.delivery_protocols,
+            })
+        });
         // Only file metadata, but keep it off the launch path.
         tauri::async_runtime::spawn_blocking(provider_usage::live::sources::log_cli_location);
         let settings = app.state::<store::Store>().settings().ok();

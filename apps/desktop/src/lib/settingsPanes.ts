@@ -15,6 +15,7 @@ export const SETTINGS_PANES = [
   { id: "notifications", label: "Notifications" },
   { id: "usage", label: "Usage" },
   { id: "appearance", label: "Appearance" },
+  { id: "cli", label: "CLI" },
   { id: "privacy", label: "Privacy" },
   { id: "about", label: "About" },
 ] as const

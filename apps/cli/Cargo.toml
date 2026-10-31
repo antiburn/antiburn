@@ -27,6 +27,9 @@ tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "rt"] 
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "json"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 

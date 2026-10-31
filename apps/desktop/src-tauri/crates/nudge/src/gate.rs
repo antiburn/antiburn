@@ -352,13 +352,13 @@ mod linux {
     use std::time::Duration;
 
     use gio::prelude::SettingsExt;
-    use zbus::blocking::{Proxy, connection};
     use zbus::proxy::MethodFlags;
-    use zbus::zvariant::OwnedValue;
+    use zbus::{OwnedVariant, Proxy, connection};
 
     use super::{LinuxProbe, NotificationGateState, linux_state};
 
     const PLASMA_TIMEOUT: Duration = Duration::from_millis(150);
+    const PLASMA_METHOD_FLAGS: MethodFlags = MethodFlags::NO_AUTO_START;
     static PLASMA_PROBE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
     fn gnome_banners() -> LinuxProbe<bool> {
@@ -389,10 +389,11 @@ mod linux {
         }
     }
 
-    fn plasma_inhibited_blocking() -> LinuxProbe<bool> {
+    async fn plasma_inhibited_query() -> LinuxProbe<bool> {
         let connection = match connection::Builder::session()
-            .map(|builder| builder.method_timeout(PLASMA_TIMEOUT))
-            .and_then(connection::Builder::build)
+            .method_timeout(PLASMA_TIMEOUT)
+            .build()
+            .await
         {
             Ok(connection) => connection,
             Err(error) => return classify_error(&error),
@@ -402,18 +403,27 @@ mod linux {
             "org.freedesktop.Notifications",
             "/org/freedesktop/Notifications",
             "org.freedesktop.DBus.Properties",
-        ) {
+        )
+        .await
+        {
             Ok(proxy) => proxy,
             Err(error) => return classify_error(&error),
         };
-        let reply: Option<OwnedValue> = match proxy.call_with_flags(
-            "Get",
-            MethodFlags::NoAutoStart.into(),
-            &("org.freedesktop.Notifications", "Inhibited"),
-        ) {
+        let reply: Option<OwnedVariant> = match proxy
+            .call_with_flags(
+                "Get",
+                PLASMA_METHOD_FLAGS,
+                &("org.freedesktop.Notifications", "Inhibited"),
+            )
+            .await
+        {
             Ok(reply) => reply,
             Err(error) => return classify_error(&error),
         };
+        classify_plasma_reply(reply)
+    }
+
+    fn classify_plasma_reply(reply: Option<OwnedVariant>) -> LinuxProbe<bool> {
         let Some(value) = reply else {
             return LinuxProbe::Malformed;
         };
@@ -439,7 +449,7 @@ mod linux {
         let worker = std::thread::Builder::new()
             .name("antiburn-plasma-notification-probe".to_string())
             .spawn(move || {
-                let result = plasma_inhibited_blocking();
+                let result = zbus::block_on(plasma_inhibited_query());
                 PLASMA_PROBE_IN_FLIGHT.store(false, Ordering::Release);
                 let _ = sender.send(result);
             });
@@ -463,6 +473,46 @@ mod linux {
             linux_state(LinuxProbe::Missing, plasma_inhibited())
         } else {
             NotificationGateState::Unknown
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn plasma_call_disables_service_start_and_keeps_replies_enabled() {
+            let message = zbus::Message::method_call("/org/freedesktop/Notifications", "Get")
+                .destination("org.freedesktop.Notifications")
+                .interface("org.freedesktop.DBus.Properties")
+                .with_flags(PLASMA_METHOD_FLAGS.into())
+                .build(&("org.freedesktop.Notifications", "Inhibited"))
+                .expect("valid Plasma property request");
+
+            assert_eq!(message.primary_header().flags().bits(), 0x2);
+            assert_eq!(
+                message.primary_header().flags(),
+                zbus::message::Flags::NO_AUTO_START
+            );
+        }
+
+        #[test]
+        fn plasma_boolean_replies_preserve_the_inhibited_state() {
+            for inhibited in [true, false] {
+                assert_eq!(
+                    classify_plasma_reply(Some(OwnedVariant::from(inhibited))),
+                    LinuxProbe::Value(inhibited)
+                );
+            }
+        }
+
+        #[test]
+        fn plasma_missing_and_non_boolean_replies_are_malformed() {
+            assert_eq!(classify_plasma_reply(None), LinuxProbe::Malformed);
+            assert_eq!(
+                classify_plasma_reply(Some(OwnedVariant::from(1_u32))),
+                LinuxProbe::Malformed
+            );
         }
     }
 }

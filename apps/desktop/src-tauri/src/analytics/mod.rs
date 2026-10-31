@@ -30,6 +30,18 @@ pub mod ingested_incidents;
 #[cfg(feature = "analytics")]
 mod resources;
 
+pub fn record_cli_operation(
+    app: &tauri::AppHandle,
+    operation: event::CliOperation,
+    succeeded: bool,
+) {
+    record(
+        app,
+        event::EventName::CliOperationCompleted,
+        event::cli_operation_facts(operation, succeeded),
+    );
+}
+
 #[cfg(not(feature = "analytics"))]
 pub fn available() -> bool {
     false

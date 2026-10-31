@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { delimiter, isAbsolute, resolve, win32 } from 'node:path'
+import { managedExecutable } from './managed-connection.mjs'
 import {
   formatSessionCheckUpdates,
   formatSessionChecksContext,
@@ -27,6 +28,8 @@ function safeSessionId(value) {
  * @param {string} platform
  */
 function executable(env, platform) {
+  const managed = managedExecutable({ platform })
+  if (managed.managed) return managed.executable
   const pathApi = platform === 'win32' ? win32 : { isAbsolute, resolve }
   const override = env.ANTIBURN_EXECUTABLE
   if (override !== undefined) {
@@ -47,7 +50,10 @@ function executable(env, platform) {
   }
   const search = env.PATH
   if (!search || search.length > 32768) return undefined
-  const names = platform === 'win32' ? ['antiburn.exe', 'antiburn.com'] : ['antiburn']
+  const names =
+    platform === 'win32'
+      ? ['antiburn-cli.exe', 'antiburn-cli.com', 'antiburn.exe', 'antiburn.com']
+      : ['antiburn-cli', 'antiburn']
   const dirs = search.split(platform === 'win32' ? ';' : delimiter)
   if (dirs.length > 128 || dirs.some((dir) => /[\x00-\x1f\x7f]/.test(dir))) return undefined
   for (const dir of dirs) {
@@ -91,7 +97,7 @@ export async function readSessionChecks(options) {
     const platform = options.platform ?? process.platform
     const cli = options.run ? 'antiburn' : executable(env, platform)
     if (!cli) return undefined
-    const run = options.run ?? ((args, limits) => runCli(cli, args, limits))
+    const run = options.run ?? ((args, limits) => runCli(cli, args, limits, env))
     const consumer = options.consumer ?? 'context'
     if (!['context', 'ui', 'status'].includes(consumer)) return undefined
     const timeoutMs = Math.max(100, Math.min(3000, options.timeoutMs ?? DEFAULT_TIMEOUT_MS))
@@ -158,7 +164,7 @@ async function acknowledgeReceipt(options) {
   const platform = options.platform ?? process.platform
   const cli = options.run ? 'antiburn' : executable(env, platform)
   if (!cli) return false
-  const run = options.run ?? ((args, limits) => runCli(cli, args, limits))
+  const run = options.run ?? ((args, limits) => runCli(cli, args, limits, env))
   const timeoutMs = Math.max(100, Math.min(3000, options.timeoutMs ?? DEFAULT_TIMEOUT_MS))
   const maxOutputBytes = Math.max(
     1024,
@@ -198,13 +204,14 @@ export function acknowledgeAfterHandoff(options) {
   setTimeout(() => void acknowledgeSessionChecks(options), 0)
 }
 
-/** @param {string} cli @param {string[]} args @param {{timeoutMs:number,maxOutputBytes:number}} limits */
-function runCli(cli, args, limits) {
+/** @param {string} cli @param {string[]} args @param {{timeoutMs:number,maxOutputBytes:number}} limits @param {NodeJS.ProcessEnv} env */
+function runCli(cli, args, limits, env) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(cli, args, {
       shell: false,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
+      env: { ...env, ANTIBURN_EXECUTABLE: cli },
     })
     let output = ''
     let size = 0

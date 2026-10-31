@@ -948,14 +948,11 @@ mod tests {
             (
                 "value: !custom text\n",
                 DiagnosticCode::YamlUnsupportedTag,
-                15,
+                7,
             ),
-            (
-                "value: !custom {}\n",
-                DiagnosticCode::YamlUnsupportedTag,
-                15,
-            ),
-            ("value: &shared text\n", DiagnosticCode::YamlAnchor, 15),
+            ("value: !custom {}\n", DiagnosticCode::YamlUnsupportedTag, 7),
+            ("value: !custom []\n", DiagnosticCode::YamlUnsupportedTag, 7),
+            ("value: &shared text\n", DiagnosticCode::YamlAnchor, 7),
             ("value: *missing\n", DiagnosticCode::YamlAlias, 7),
             ("value: {<<: {a: b}}\n", DiagnosticCode::YamlMergeKey, 8),
             ("value: {\"<<\": {a: b}}\n", DiagnosticCode::YamlMergeKey, 8),
@@ -965,9 +962,9 @@ mod tests {
             (
                 "value: !!set {a: null}\n",
                 DiagnosticCode::YamlUnsupportedTag,
-                13,
+                7,
             ),
-            ("value: !!float 2x\n", DiagnosticCode::YamlInvalidScalar, 15),
+            ("value: !!float 2x\n", DiagnosticCode::YamlInvalidScalar, 7),
         ];
         for (source, code, offset) in cases {
             let error = parse_yaml(source).expect_err(source).remove(0);

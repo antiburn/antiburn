@@ -10,6 +10,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Gauge,
+  SquareTerminal,
 } from "lucide-react"
 import { useState, useSyncExternalStore, type ReactNode } from "react"
 
@@ -24,6 +25,7 @@ import { useViewportWidth } from "../lib/viewport"
 import { SETTINGS_PANES, isSettingsPane, type SettingsPane } from "../lib/settingsPanes"
 import { AboutPane } from "./settings/AboutPane"
 import { AppearancePane } from "./settings/AppearancePane"
+import { CliSection } from "./settings/CliSection"
 import { GeneralPane } from "./settings/GeneralPane"
 import { AgentsStepSettings } from "./main-window/overview/stepSettings/AgentsStepSettings"
 import { ChecksStepSettings } from "./main-window/overview/stepSettings/ChecksStepSettings"
@@ -66,6 +68,7 @@ const PANE_ICONS: Record<SettingsPane, LucideIcon> = {
   notifications: Bell,
   usage: Gauge,
   appearance: Palette,
+  cli: SquareTerminal,
   privacy: ShieldCheck,
   about: Info,
 }
@@ -83,12 +86,13 @@ export function SettingsView() {
   const [targetFocus] = useState(() => new SettingsTargetFocus())
   const paneRenderers: Record<SettingsPane, () => ReactNode> = {
     general: () => <GeneralPane {...controller} />,
+    cli: () => <CliSection />,
     agents: () => (
       <Pane
         title="Agents"
         description="The coding agents antiburn scans for sessions to report on."
       >
-        <AgentsStepSettings titled />
+        <AgentsStepSettings titled manageConnections onOpenCli={() => session.setPane("cli")} />
       </Pane>
     ),
     sessions: () => (

@@ -247,6 +247,7 @@ function main() {
     "crates/antiburn-local",
     "crates/antiburn-remote",
     "apps/desktop/src-tauri",
+    "apps/cli",
   ].map((directory) =>
     JSON.parse(
       run(

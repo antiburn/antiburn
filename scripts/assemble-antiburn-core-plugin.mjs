@@ -1,25 +1,15 @@
-import { createHash } from 'node:crypto'
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  writeFile,
-} from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { VERSION, CONTRACT_VERSION } from '../packages/antiburn-plugin-core/core.mjs'
 import { instructions } from '../packages/antiburn-plugin-core/content.mjs'
 import { releaseFiles } from './assemble-claude-mod.mjs'
+import { hash, rejectSymlinkParents, verifyArtifactFiles } from './artifact-files.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const defaultOutput = join(root, '.agent-artifacts/antiburn-core-plugin')
 const hosts = ['claude', 'codex', 'cursor', 'opencode', 'pi']
 const json = (value) => JSON.stringify(value, null, 2) + '\n'
-const hash = (value) => createHash('sha256').update(value).digest('hex')
 const metadata = {
   name: 'antiburn',
   version: VERSION,
@@ -28,48 +18,12 @@ const metadata = {
   license: 'MIT',
 }
 
-async function inventory(directory, prefix = '') {
-  const files = []
-  for (const entry of await readdir(join(directory, prefix), {
-    withFileTypes: true,
-  })) {
-    const name = prefix ? `${prefix}/${entry.name}` : entry.name
-    if (entry.isSymbolicLink()) throw new Error(`Artifact symlink refused: ${name}`)
-    if (entry.isDirectory()) files.push(...(await inventory(directory, name)))
-    else if (entry.isFile()) files.push(name)
-    else throw new Error(`Unsupported artifact file: ${name}`)
-  }
-  return files.sort()
-}
-
-async function rejectSymlinkParents(destination) {
-  let current = resolve(destination)
-  for (;;) {
-    try {
-      if ((await lstat(current)).isSymbolicLink()) throw new Error('Output symlink refused')
-    } catch (error) {
-      if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error
-    }
-    const parent = dirname(current)
-    if (current === parent) return
-    current = parent
-  }
-}
-
 export async function verify(output = defaultOutput) {
   await rejectSymlinkParents(output)
   const manifest = JSON.parse(await readFile(join(output, 'artifact-manifest.json'), 'utf8'))
   if (manifest.owner !== 'antiburn-core-plugin-assembler-v1' || !Array.isArray(manifest.files))
     throw new Error('Unowned artifact output')
-  const actual = (await inventory(output)).filter(
-    (name) => !['artifact-manifest.json', 'SHA256SUMS'].includes(name),
-  )
-  if (JSON.stringify(actual) !== JSON.stringify(manifest.files.map((entry) => entry.path)))
-    throw new Error('Artifact inventory mismatch')
-  for (const entry of manifest.files) {
-    if (hash(await readFile(join(output, entry.path))) !== entry.sha256)
-      throw new Error(`Artifact hash mismatch: ${entry.path}`)
-  }
+  await verifyArtifactFiles(output, manifest.files, ['artifact-manifest.json', 'SHA256SUMS'])
   const sums = manifest.files.map((entry) => `${entry.sha256}  ${entry.path}\n`).join('')
   if ((await readFile(join(output, 'SHA256SUMS'), 'utf8')) !== sums)
     throw new Error('Artifact hash inventory mismatch')
@@ -121,6 +75,7 @@ export async function assemble(output = defaultOutput) {
       for (const source of [
         'session-checks.mjs',
         'session-checks-validation.mjs',
+        'managed-connection.mjs',
         'native-hook.mjs',
       ])
         add(`${host}/lib/${source}`, await read(`packages/antiburn-plugin-core/${source}`))
@@ -185,6 +140,10 @@ export async function assemble(output = defaultOutput) {
         await read('packages/antiburn-plugin-core/session-checks-validation.mjs'),
       ],
       ['lib/native-hook.mjs', await read('packages/antiburn-plugin-core/native-hook.mjs')],
+      [
+        'lib/managed-connection.mjs',
+        await read('packages/antiburn-plugin-core/managed-connection.mjs'),
+      ],
       ['LICENSE', license],
       [
         'README.md',

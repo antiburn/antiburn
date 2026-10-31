@@ -6,9 +6,15 @@ Cargo can patch the version required by Tauri 2.12. It is not an unmodified copy
 of the upstream 0.25.1 source.
 
 The fork uses `muda` 0.20 and the feature names that Tauri 2.12 requests. Keep
-its public tray API compatible with upstream 0.25.1. Upstream's Windows GUID API
-and GTK-free Linux/BSD backend are not included because the app does not use
-them. Recheck upstream changes before each Tauri/tray update.
+the `muda` version requirement on the same minor version as Tauri's requirement:
+Tauri passes `muda::ContextMenu` values directly to this fork, and different
+minor versions define incompatible types. The `muda-libxdo` feature also needs
+`muda` 0.20's `libxdo` feature, which 0.21 does not provide. Review both
+requirements together before updating `muda`.
+
+Keep the public tray API compatible with upstream 0.25.1. Upstream's Windows
+GUID API and GTK-free Linux/BSD backend are not included because the app does
+not use them. Recheck upstream changes before each Tauri/tray update.
 
 The local patch retains the macOS 27 menu attachment fix from
 [upstream PR 341](https://github.com/tauri-apps/tray-icon/pull/341), originally

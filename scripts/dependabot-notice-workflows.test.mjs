@@ -79,6 +79,30 @@ test("Dependabot checks the Burn Check validator Cargo workspace", () => {
   assert.ok(cargo.directories.includes("/crates/antiburn-checks"));
 });
 
+test("generation fetches each Rust notice workspace before generating notices", () => {
+  const steps = generation.jobs.generate.steps;
+  const fetchIndex = steps.findIndex(
+    (step) => step.name === "Fetch Rust dependencies",
+  );
+  const generationIndex = steps.findIndex(
+    (step) => step.name === "Generate third-party notices",
+  );
+
+  assert.ok(fetchIndex >= 0 && fetchIndex < generationIndex);
+  assert.deepEqual(
+    steps[fetchIndex].run.trim().split("\n"),
+    [
+      "crates/antiburn-local",
+      "crates/antiburn-remote",
+      "apps/desktop/src-tauri",
+      "apps/cli",
+    ].map(
+      (directory) =>
+        `cargo fetch --locked --manifest-path ${directory}/Cargo.toml`,
+    ),
+  );
+});
+
 test("generation installs without lifecycle scripts and uploads only changed notices", () => {
   const steps = generation.jobs.generate.steps;
   const install = steps.find((step) =>

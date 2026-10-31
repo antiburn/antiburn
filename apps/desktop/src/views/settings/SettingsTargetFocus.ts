@@ -44,9 +44,10 @@ export class SettingsTargetFocus {
       const pending = row.hasAttribute("data-settings-target-pending")
       if (pending && this.recoveryKey === key && this.recoveryRow === row) return false
       row.scrollIntoView({ block: "center", behavior: "instant" })
+      const focusScope = row.querySelector<HTMLElement>("[data-settings-focus]") ?? row
       const field = row.hasAttribute("data-settings-focus-self")
         ? null
-        : row.querySelector<HTMLElement>(
+        : focusScope.querySelector<HTMLElement>(
             "button:not(:disabled):not([aria-disabled=true]), input:not(:disabled):not([aria-disabled=true]), select:not(:disabled):not([aria-disabled=true]), [role=switch]:not(:disabled):not([aria-disabled=true])",
           )
       const target = field ?? row

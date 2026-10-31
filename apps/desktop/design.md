@@ -23,6 +23,7 @@ sources:
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
   - src/views/main-window/overview/stepSettings/remote-hosts.css
+  - src/views/main-window/overview/stepSettings/agent-settings.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -979,6 +980,35 @@ Notes for what isn't expressible as a token:
   before completing search focus. When Model usage has no visible content, its
   search result focuses the Model-based checks group without selecting a control.
   Keep the standard separation between groups.
+- **CLI settings pane** — present the CLI as an internal runtime managed by antiburn.
+  Add the purpose-led pane description: “Helps antiburn share check findings with
+  your coding agents.” The card explains automatic management by antiburn.
+  Place the secondary version beside `antiburn-cli` and keep green Installed beside the runtime
+  name, using compact icon-free status badges: `type-caption`, `font-medium!`,
+  `rounded-control`, `px-2`, `text-system-green`, `bg-system-green/10` and
+  `border-system-green/25`. Keep Test passed as plain green text without an icon. No vertical
+  padding; align badges to the title centre. Reserve the title slot for Installed;
+  show compact test results beside the maintenance buttons. Use body-sized warning text,
+  a state icon and `text-system-orange` below the description when recovery is needed.
+  Place a direct Repair action beside recovery warnings while details are collapsed.
+  Keep integration management out of the CLI pane. Use collapsed Technical details
+  with compact spacing and content aligned to the card text.
+  Technical details groups maintenance actions and startup-test
+  scope separately from location and diagnostics. Version does not repeat there.
+  Use Stethoscope for Test and Wrench for Repair; omit CLI from their button labels.
+  Place a square 32px ghost copy button immediately beside the location label with a 40px hit area.
+  Swap its copy glyph for a check on success and show “Copied!” in a reserved
+  adjacent slot with `gap-1` for two seconds. Announce the feedback, preserve the selectable
+  path on failure, and clear stale copy feedback when runtime status changes. Keep the compatibility export out of Settings: do not expose
+  terminal setup, export/removal controls or PATH status. A successful CLI execution test does not establish vendor integration
+  success. Use shared buttons, disclosure and Settings row treatments.
+  CLI maintenance buttons reserve `min-w-28` for one changing label and a 12px icon.
+  Use operation-specific busy labels and `LoaderCircle` with `motion-safe:animate-spin`.
+  Disable all CLI actions and reject repeat presses while an operation is pending.
+  Keep status text static. Announce Repair completion inline even if status is
+  unchanged, beneath maintenance controls; keep startup testing as an explicit next step.
+  Label raw troubleshooting output Diagnostic within Technical details. Show no success for
+  failed operations, and discard feedback when the underlying runtime status changes.
 - **Remote hosts in Settings** — keep the folder-access warning above all settings
   sections when access is needed. Place Remote hosts first among the Sources sections,
   before Scanning and Coding agents. Keep the introductory description inside the card, above
@@ -1726,6 +1756,114 @@ replaces its icon with a check for two seconds and announces the result. Errors
 stay inline. The selectable monospace path prefers directory-boundary wraps and
 gives the final directory primary ink. No path, folder name, or error text enters
 analytics. Unknown project paths hide the control; deleted paths remain copyable.
+
+### Agent connection management
+
+Settings → Agents uses compact expandable rows. Each row aligns its disclosure,
+agent mark/name and a muted, noninteractive account badge on the first line.
+The badge uses surface-card fill, label-secondary ink, type-caption, rounded-control,
+6px horizontal padding and no vertical padding. Centre the badge vertically with
+the vendor name. When a desktop app is detected,
+show “Desktop” before the existing login text, separated by a middle dot.
+Desktop detection alone must not imply a signed-in account. Do not infer a
+“Terminal” login source from the absence of a desktop app. Group searched-location
+summary and session count on the second line. Centre the Integration badge and
+visibility switch across both lines, with the badge directly before the switch.
+Keep desktop-app detection in the account badge; omit its repeated expanded label. Keep the existing first-run discovery controls when management is disabled.
+Completed searches show “Searched X locations”, with singular “location” for one
+root. Completed searches with no sessions say “No sessions yet”; omit that message
+and its separator when there are no search locations. Incomplete searches say
+“Searching locations…”. Missing individual paths retain
+“Not found”. Session roots, agent app/login, or sessions establish detection.
+Always reserve a switch: undetected agents use a disabled unchecked switch with
+a transparent outlined track and dim thumb, distinct from an interactive off switch.
+
+Start with all rows collapsed; allow one expanded row. The name/chevron opens
+Session locations. Only the Integration badge opens directly to Integration.
+Order the tabs Session locations, then Integration. Omit prefix icons.
+Render the 12px trailing Integration status slot only when a status icon exists;
+unavailable states without an icon reserve no empty space. Keep this geometry
+stable between selected and unselected states. Show the integration state’s green
+check, neutral circle or amber warning with a tooltip and accessible description.
+Use medium-weight labels, label ink for the selected tab, and label-secondary ink
+for the unselected tab. On pointer hover, restore label ink. Keep the underline
+border reserved in both states. Labels stay on one line without shrinking.
+Expand and collapse details together over duration-medium (180ms), using
+ease-out-quart and a reversible grid track/opacity transition. Clip exiting
+content and make it inert and hidden from assistive technology immediately.
+Retain it until collapse finishes. Rotate the disclosure chevron on the same
+timing. The shared reduced-motion clamp removes height and chevron movement.
+Tab hover changes only color over duration-fast; tab selection stays instant.
+The integration badge opens the row directly to Integration and focuses that tab.
+Tabs support arrow keys, Home and End. Keep switches and badge targets separate.
+
+Use a content-width, 18px-high rounded-control badge with 8px horizontal padding
+and a 4px gap: an 11px leading status glyph followed by “Integration” at type-caption/medium.
+Do not use a plug in the row badge: it can imply agent connectivity.
+Mix success ink with label ink (60% status) for the success heading and tab icon.
+Mix warning ink locally from 85% system-orange and 15% label ink for contrast,
+including the status heading and tab icon. The amber attention row badge uses
+system-orange at 10% for the fill (15% on hover), with a 1px border at 25%.
+Tab indicators use status ink without a filled badge.
+Keep shared status tokens unchanged. Green Integration/check means
+owned registered or active setup; amber Integration/warning means approval,
+restart/reload, or changed setup needs action. These describe integration setup, never check execution or verified delivery.
+Show a row badge only for actionable attention states: approval required, restart
+required, or changed setup. Omit successful and neutral row badges. Keep the green
+check and neutral circle available on the Integration tab and keep setup details
+reachable through the row disclosure. Missing agents, unconfigured setup, gated
+versions and deliberate opt-outs do not create warnings.
+Shared runtime blockers override badges. Tooltips and accessible descriptions
+explain status. Keep a 40px target (44px for coarse pointers) without overlap.
+
+The feature-owned list shares subgrid columns for two-line identity/discovery
+content, the content-width Integration badge and the 32px switch. Size the badge
+column to its widest visible content across rows. Keep
+12px column gaps, 14px row side padding and a 39px detail inset. Below 440px container width, keep discovery metadata below
+the name and use 8px gaps. Coarse pointers keep a 44px-high badge target.
+Hover fills the entire row, including the badge and switch columns. Keep
+individual keyboard focus indicators and independent badge/switch actions.
+Tabs and disclosure controls use 40px minimum heights (44px for coarse pointers).
+Use semantic token surfaces and existing controls; do not add entrance motion.
+
+The Integration tab supplies context; add no repeated heading, branding or enclosing
+inset card. Lead with a semibold status and muted supporting guidance. Omit redundant
+success guidance. Match the status title ink to the row badge’s success or attention
+colour when a badge exists. For approval, show a plain numbered list immediately below
+the status; omit the duplicate explanatory sentence and reveal button. Group labelled
+Refresh status and Repair setup in one quiet maintenance row below
+the guidance, wrapping on narrow widths. Use standard secondary `ui-push-button`
+faces with 8px horizontal gaps and 40px hit targets (44px for coarse pointers).
+Reserve 24px between wrapped lines so hit targets do not overlap. Missing setup files explain the prerequisite
+without offering repair.
+Omit integration removal and its confirmation from the app.
+Refresh and Repair identify their own pending operation with aria-busy and the
+existing motion-safe spinner (one linear rotation per second). Repair uses a
+leading Wrench while idle and a rotating LoaderCircle with “Repairing…” while
+pending, in a single label node. Keep the icon square and prevent flex shrinking. Its
+minimum width is 12ch plus space-xl, so changing the label does not resize it.
+Keep an atomic polite status line below the actions, reserving one line height.
+Show checking/repairing progress, then completion feedback even when status does
+not change. Report pending approval/reload accurately; completion does not mean
+host acceptance. Errors retain the existing alert and show no success message.
+Keep the details component mounted across status changes so feedback survives;
+focus Integration when the initiating action changes the status. Reduced motion
+keeps text feedback and disables spinner rotation. Do not animate status text,
+tabs, or inventory badges for action completion.
+Busy state disables integration actions,
+not session switches. Put metadata and the separate usage-plugin note inside a collapsed
+Technical details disclosure, separated with a divider. Use muted labels and medium-weight
+values, wrapping monospace paths, and omit absent fields.
+Place runtime/setup availability guidance inside the selected Integration tab.
+Show no availability strip above the inventory. Omit Refresh status for unavailable,
+shared-runtime blockers or gated setup.
+Do not add a general rescan action to the Agents header. Keep the existing
+per-integration Refresh status action, its pending spinner and synchronous guard
+against repeated presses.
+Above the card, explain: “Switch off an agent to hide its sessions and reports.
+Automatic checks continue.” The switch changes visibility, not processing. Put update errors above
+the card so they remain visible after an integration action fails. Settings CLI keeps its
+runtime controls and internal navigation to Agents. Native compatibility gates remain.
 
 ## Promotion panel
 

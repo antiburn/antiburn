@@ -27,6 +27,8 @@ use serde::Serialize;
 /// back at the call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventName {
+    /// A private CLI operation completed.
+    CliOperationCompleted,
     /// The application started.
     AppLaunched,
     /// A discovery pass completed, with a bucketed count of what it found.
@@ -172,6 +174,7 @@ pub enum EventName {
 /// `docs/analytics.md`.
 #[cfg(all(test, feature = "analytics"))]
 pub const EVERY_EVENT: &[EventName] = &[
+    EventName::CliOperationCompleted,
     EventName::AppLaunched,
     EventName::ScanCompleted,
     EventName::SettingToggled,
@@ -225,6 +228,7 @@ pub const EVERY_EVENT: &[EventName] = &[
 impl EventName {
     pub fn as_str(self) -> &'static str {
         match self {
+            EventName::CliOperationCompleted => "antiburn.cli_operation_completed",
             EventName::AppLaunched => "antiburn.app_launched",
             EventName::ScanCompleted => "antiburn.scan_completed",
             EventName::SettingToggled => "antiburn.setting_toggled",
@@ -281,6 +285,7 @@ impl EventName {
     /// letting background telemetry extend an interaction session by default.
     pub fn is_user_oriented(self, facts: &Facts) -> bool {
         match self {
+            EventName::CliOperationCompleted => matches!(facts.label, Some("test" | "repair")),
             EventName::SettingToggled
             | EventName::AnalyticsOptedOut
             | EventName::SessionOpened
@@ -482,6 +487,25 @@ pub struct Properties {
     /// sentinel `<rejected>`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unrecognized_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CliOperation {
+    Startup,
+    Test,
+    Repair,
+}
+
+pub fn cli_operation_facts(operation: CliOperation, succeeded: bool) -> Facts {
+    Facts {
+        label: Some(match operation {
+            CliOperation::Startup => "startup",
+            CliOperation::Test => "test",
+            CliOperation::Repair => "repair",
+        }),
+        detail: Some(if succeeded { "succeeded" } else { "failed" }),
+        ..Facts::default()
+    }
 }
 
 /// What a caller may attach to an event.
@@ -2952,6 +2976,34 @@ mod tests {
     /// User-origin events refresh the timeout; automatic and background
     /// telemetry does not.
     #[test]
+    fn cli_outcomes_have_only_closed_dimensions() {
+        assert!(
+            serde_json::from_value::<Interaction>(serde_json::json!({
+                "kind": "cliOperationCompleted", "label": "startup", "detail": "succeeded"
+            }))
+            .is_err()
+        );
+        for (operation, label) in [
+            (CliOperation::Startup, "startup"),
+            (CliOperation::Test, "test"),
+            (CliOperation::Repair, "repair"),
+        ] {
+            for succeeded in [false, true] {
+                let facts = cli_operation_facts(operation, succeeded);
+                assert_eq!(facts.label, Some(label));
+                assert_eq!(
+                    facts.detail,
+                    Some(if succeeded { "succeeded" } else { "failed" })
+                );
+                assert_eq!(
+                    EventName::CliOperationCompleted.is_user_oriented(&facts),
+                    label != "startup"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn user_oriented_classification_excludes_automatic_events() {
         assert!(EventName::SessionOpened.is_user_oriented(&Facts::default()));
         assert!(EventName::SettingToggled.is_user_oriented(&Facts::default()));
@@ -3040,7 +3092,8 @@ mod tests {
     fn no_variant_escapes_the_catalog() {
         fn listed(event: EventName) -> bool {
             match event {
-                EventName::AppLaunched
+                EventName::CliOperationCompleted
+                | EventName::AppLaunched
                 | EventName::ScanCompleted
                 | EventName::SettingToggled
                 | EventName::AnalyticsOptedOut

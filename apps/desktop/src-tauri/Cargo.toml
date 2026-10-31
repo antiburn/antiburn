@@ -61,6 +61,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+antiburn-cli-runtime = { path = "../../../crates/antiburn-cli-runtime" }
 # Strict installed-check parsing, runtime selection, and decision contracts.
 antiburn-checks = { path = "../../../crates/antiburn-checks" }
 antiburn-checks-store = { path = "../../../crates/antiburn-checks-store" }
@@ -174,7 +175,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # instead, and the Codex app-server fallback spawns synchronously through
 # `std::process` — so this feature list still names only what this crate's own
 # async code needs.
-tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time", "process", "io-util"] }
 url = "2"
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
@@ -278,6 +279,7 @@ winreg = "0.56"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security_Credentials",
+  "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_RestartManager",
   "Win32_System_Threading",

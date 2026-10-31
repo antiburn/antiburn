@@ -12,6 +12,7 @@ describe("isSettingsPane", () => {
       "notifications",
       "usage",
       "appearance",
+      "cli",
       "privacy",
       "about",
     ]) {

@@ -33,3 +33,5 @@ node_modules
 !/.aislop/config.yml
 
 /worktrees
+/apps/desktop/src-tauri/cli-payload/
+/apps/desktop/src-tauri/resources/agent-integrations/payload/

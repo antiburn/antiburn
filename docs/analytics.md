@@ -350,6 +350,18 @@ can leave it unobserved. This deliberate action refreshes the analytics session
 timeout. Existing consent and delivery gates apply. Keep it separate from
 definition opens and project-folder opens; none proves repair or check success.
 
+### Private CLI operations
+
+| Event                              | When it fires                                                                                                                                                                  | Carries                                                                                                                                                                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `antiburn.cli_operation_completed` | A distribution startup reconciliation, explicit Test, or explicit Repair completes, including failure. Startup lock retries emit one final outcome; status reads emit nothing. | `label`: `startup`, `test`, or `repair`; `detail`: `succeeded` or `failed`. No CLI paths, CLI versions, payload digests, command output, or diagnostics are added by this event. Standard analytics envelope fields still apply. |
+
+Success means reconciliation/Repair returned a runtime without an installation
+diagnostic, or Test validated the installed executable's capabilities. It does
+not prove native vendor integration success. Test and Repair are deliberate
+activity; startup does not refresh the analytics activity timeout. Existing
+consent, endpoint and build gates apply. No wire property is added.
+
 ### Remote-host operations
 
 Remote-host operations add the following closed events. They use the existing

@@ -1,6 +1,12 @@
 macro_rules! with_app_commands {
     ($callback:ident) => {
         $callback! {
+            cli_install::get_cli_install_state => "get_cli_install_state",
+            cli_install::test_cli_installation => "test_cli_installation",
+            cli_install::repair_cli_installation => "repair_cli_installation",
+            agent_integrations::desktop::get_agent_integrations => "get_agent_integrations",
+            agent_integrations::desktop::repair_agent_integration => "repair_agent_integration",
+            agent_integrations::desktop::remove_agent_integration => "remove_agent_integration",
             commands::add_scan_root => "add_scan_root",
             commands::advance_first_run => "advance_first_run",
             remote_sessions::add_remote_host => "add_remote_host",

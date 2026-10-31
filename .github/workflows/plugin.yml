@@ -39,7 +39,7 @@ jobs:
 
       - name: Verify deterministic packaging
         run: |
-          node --test scripts/assemble-claude-mod.test.mjs
+          node --test scripts/assemble-claude-mod.test.mjs scripts/artifact-files.test.mjs
           node --test packages/antiburn-plugin-core/test/*.test.mjs
           node scripts/assemble-antiburn-core-plugin.mjs
           node scripts/assemble-antiburn-core-plugin.mjs --verify

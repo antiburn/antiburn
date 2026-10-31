@@ -76,6 +76,10 @@ fn configure_windows_common_controls() {
 }
 
 fn main() {
+    println!(
+        "cargo:rustc-env=ANTIBURN_CLI_TARGET={}",
+        env::var("TARGET").expect("Cargo target")
+    );
     // `analytics::config` reads these with `option_env!`, which is
     // resolved at compile time. Cargo does not track an environment variable
     // as an input unless it is told to, so without these two lines changing

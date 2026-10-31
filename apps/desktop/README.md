@@ -103,6 +103,11 @@ deliberately not joined with the engine's workspace: the engine resolves under
 its own dependency boundary that keeps it free of any service of ours, and the
 shell's app-framework dependencies must not leak into that resolution.
 
+The desktop build also assembles the existing session-check adapters as a
+separate verified runtime payload. Automatic user-profile registration remains
+behind exact native compatibility gates. See [agent integrations](../../docs/agent-integrations.md)
+for ownership, recovery, runtime requirements, and the native acceptance ledger.
+
 ## Prerequisites
 
 - Rust, per [`rust-toolchain.toml`](../../rust-toolchain.toml)
@@ -402,6 +407,20 @@ Settings teardown, and the memory rules behind those policies.
 Settings and native macOS hover previews have dedicated HTML and
 TypeScript entries. The resident shell uses URL fragments for the nudge and overlay, with the popover
 as its default. Each window owns one surface until the shell releases it.
+
+## CLI runtime
+
+For source development with a prepared host CLI payload, use
+`pnpm --filter @antiburn/desktop dev:cli`; use `dev:bundle:cli` for a debug bundle.
+These commands build the CLI and add its resource mapping. Open Settings → CLI →
+Technical details → Repair to stage it. Ordinary `dev` and `dev:bundle` do not
+prepare the payload and remain unchanged.
+
+Distribution builds package and automatically stage a durable per-user `antiburn-cli`.
+Settings → CLI reports runtime status and offers Test, Repair, and a copyable
+location under Technical details. The app does not publish a terminal command or
+change PATH. See the
+[CLI ownership and acceptance contract](../../docs/cli-installation.md).
 
 ## Known gaps
 

@@ -12,6 +12,92 @@ use serde_json::{Value, json};
 use tempfile::tempdir;
 
 #[test]
+fn public_command_help_and_version_use_antiburn_name() {
+    let executable = env!("CARGO_BIN_EXE_antiburn");
+    let help = Command::new(executable).arg("--help").output().unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.starts_with("Read Antiburn check updates"));
+    assert!(help.contains("Usage: antiburn "));
+    assert!(!help.contains("antiburn-cli"));
+
+    let version = Command::new(executable).arg("--version").output().unwrap();
+    assert!(version.status.success());
+    assert!(
+        String::from_utf8(version.stdout)
+            .unwrap()
+            .starts_with("antiburn ")
+    );
+}
+
+#[test]
+fn terminal_setup_commands_are_unavailable() {
+    let temp = tempdir().unwrap();
+    for operation in ["install", "status", "uninstall"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_antiburn"))
+            .args(["terminal", operation])
+            .env("HOME", temp.path())
+            .env("USERPROFILE", temp.path())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("unrecognized subcommand 'terminal'")
+        );
+    }
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn checks_logs_use_configured_storage_and_logging_failure_is_nonfatal() {
+    let temp = tempdir().unwrap();
+    let data_root = platform_data_root(temp.path());
+    let database_dir = data_root.join("ai.antiburn.desktop");
+    std::fs::create_dir_all(&database_dir).unwrap();
+    create_fixture_database(&database_dir.join("antiburn.sqlite3"));
+    let generation = temp.path().join("versions/synthetic-generation");
+    std::fs::create_dir_all(&generation).unwrap();
+    let executable = generation.join(if cfg!(windows) {
+        "antiburn-cli.exe"
+    } else {
+        "antiburn-cli"
+    });
+    std::fs::copy(env!("CARGO_BIN_EXE_antiburn"), &executable).unwrap();
+    let config = temp.path().join("custom.json");
+    let log = temp.path().join("diagnostics/calls.log");
+    for (log_file, succeeds) in [(log.as_path(), true), (temp.path(), false)] {
+        std::fs::write(&config, json!({"data_root":data_root,"state_file":temp.path().join("state.json"),"log_file":log_file}).to_string()).unwrap();
+        let mut command = Command::new(&executable);
+        configure_data_directory(&mut command, temp.path(), &data_root);
+        let output = command
+            .arg("--config")
+            .arg(&config)
+            .args(["checks", "argument-session"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if succeeds {
+            assert!(
+                std::fs::read_to_string(&log)
+                    .unwrap()
+                    .contains("checks_lookup_completed")
+            );
+        } else {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("file tracing unavailable"));
+        }
+    }
+    assert!(!generation.join("calls.log").exists());
+}
+
+#[test]
 fn checks_command_reads_the_selected_database() {
     let temp = tempdir().unwrap();
     let data_root = platform_data_root(temp.path());
@@ -381,7 +467,8 @@ fn default_lookup_command(home: &std::path::Path, data_root: &std::path::Path) -
             &config_path,
             json!({
                 "data_root": data_root,
-                "state_file": home.join("cli-state.json")
+                "state_file": home.join("cli-state.json"),
+                "log_file": home.join("calls.log")
             })
             .to_string(),
         )
@@ -873,4 +960,29 @@ fn delivery_at_capacity_reclaims_legacy_state_without_database_writes() {
     let repeated = delivery_call(temp.path(), &config, "claude-code:context", None);
     assert!(repeated["updates"].as_array().unwrap().is_empty());
     assert_eq!(std::fs::read(database).unwrap(), before);
+}
+
+#[test]
+fn capabilities_is_database_free_and_has_no_profile_side_effects() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_antiburn"))
+        .args(["--config", "missing-config.json", "capabilities", "--json"])
+        .env("HOME", temp.path())
+        .env("USERPROFILE", temp.path())
+        .env("XDG_DATA_HOME", temp.path())
+        .env("XDG_STATE_HOME", temp.path())
+        .env("APPDATA", temp.path())
+        .env("LOCALAPPDATA", temp.path())
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        value["delivery_protocols"],
+        serde_json::json!(["delivery-v1"])
+    );
+    assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }

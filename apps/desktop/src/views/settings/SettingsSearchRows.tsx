@@ -29,7 +29,8 @@ export function SettingsRow({
   searchId,
   label,
   ...props
-}: Omit<ComponentProps<typeof Row>, "label"> & SearchRowProps) {
+}: Omit<ComponentProps<typeof Row>, "label"> &
+  Omit<SearchRowProps, "label"> & { label?: ReactNode }) {
   return (
     <Row
       {...props}
@@ -71,4 +72,8 @@ export function SettingsSectionGroup({
       tabIndex={-1}
     />
   )
+}
+
+export function SettingsFocusTarget(props: ComponentProps<"div">) {
+  return <div {...props} data-settings-focus />
 }

@@ -10,9 +10,28 @@ const nativeOffsetWidth = Object.getOwnPropertyDescriptor(
   HTMLElement.prototype,
   "offsetWidth",
 )?.get
+const nativeClientHeight = Object.getOwnPropertyDescriptor(
+  Element.prototype,
+  "clientHeight",
+)?.get
+const nativeClientWidth = Object.getOwnPropertyDescriptor(Element.prototype, "clientWidth")?.get
 
 // jsdom has no layout. Give virtual lists stable DOM geometry for component tests.
 Object.defineProperties(HTMLElement.prototype, {
+  clientHeight: {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (this.classList.contains("ui-scroll-viewport")) return this.offsetHeight
+      return nativeClientHeight?.call(this) ?? 0
+    },
+  },
+  clientWidth: {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (this.classList.contains("ui-scroll-viewport")) return this.offsetWidth
+      return nativeClientWidth?.call(this) ?? 0
+    },
+  },
   offsetHeight: {
     configurable: true,
     get(this: HTMLElement) {

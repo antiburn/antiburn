@@ -257,6 +257,13 @@ jobs:
           fi
           mv "$produced" "sbom/antiburn-${VERSION}-rust.cdx.json"
 
+      - name: Inventory the CLI dependency tree
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cargo cyclonedx --manifest-path apps/cli/Cargo.toml --format json --all --target all --spec-version 1.5 --override-filename "antiburn-${VERSION}-cli"
+          mv apps/cli/antiburn-${VERSION}-cli*.json sbom/antiburn-${VERSION}-cli.cdx.json
+
       # Production dependencies only: the linter, the test runner, and the
       # bundler are not in the shipped webview bundle.
       - name: Inventory the frontend dependency tree
@@ -672,6 +679,30 @@ jobs:
           echo "${LINUXDEPLOY_SHA256}  ${destination}" | sha256sum --check --strict
           chmod +x "$destination"
 
+      - name: Build native CLI payload
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: node scripts/build-cli-sidecar.mjs --target "$TARGET"
+
+      - name: Sign CLI before app signing and notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" apps/desktop/src-tauri/cli-payload/antiburn-cli
+          codesign --verify --strict --verbose=2 apps/desktop/src-tauri/cli-payload/antiburn-cli
+
+      - name: Sign native Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows-signing.ps1 -FilePath apps/desktop/src-tauri/cli-payload/antiburn-cli.exe
+
+      - name: Seal signed CLI manifest
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: node scripts/build-cli-sidecar.mjs --finalize --target "$TARGET"
+
       - name: Build and sign
         shell: bash
         env:
@@ -721,10 +752,10 @@ jobs:
           fi
           if [[ -n "${TAURI_SIGNING_CONFIG:-}" ]]; then
             pnpm --filter @antiburn/desktop exec tauri build \
-              --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES" --config "$TAURI_SIGNING_CONFIG"
+              --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES" --config src-tauri/tauri.sidecar.conf.json --config "$TAURI_SIGNING_CONFIG"
           else
             pnpm --filter @antiburn/desktop exec tauri build \
-              --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES"
+              --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES" --config src-tauri/tauri.sidecar.conf.json
           fi
 
       # Host graphics drivers must use the host Wayland client ABI.
@@ -1017,7 +1048,7 @@ jobs:
           require_count '*.deb' 2
           require_count '*.app.tar.gz' 2
           require_count '*.sig' 6
-          require_count '*.cdx.json' 2
+          require_count '*.cdx.json' 3
           require_count 'install.sh' 1
           require_count 'install.ps1' 1
           require_count "antiburn-remote-${VERSION}-x86_64-unknown-linux-musl.tar.gz" 1

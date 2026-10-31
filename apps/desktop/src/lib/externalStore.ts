@@ -17,8 +17,8 @@ export type ExternalStore<T> = {
   getSnapshot: () => T
   /** Ref-counted: the first listener starts the store, the last stops it. */
   subscribe: (listener: () => void) => () => void
-  /** Re-run `load` (if any) and publish its result. */
-  refresh: () => Promise<void>
+  /** Run the supplied request, or `load`, and publish its current result. */
+  refresh: (load?: () => Promise<T>) => Promise<void>
   /** Publish a value directly, bypassing `load`. */
   set: (value: T) => void
 }
@@ -125,15 +125,21 @@ export function createExternalStore<T>(config: ExternalStoreConfig<T>): External
       }
     },
 
-    refresh: async () => {
-      if (!config.load) return
+    refresh: async (load = config.load) => {
+      if (!load) return
+      const thisGeneration = generation
       const thisRevision = revision
       const thisLoadRequest = ++loadRequest
-      const value = await config.load()
+      const value = await load()
       // Same guard as `start()`'s load: a push that landed, or a later
       // load()/refresh() that started, while this one was in flight is
       // newer than its result.
-      if (revision === thisRevision && loadRequest === thisLoadRequest) publish(value)
+      if (
+        generation === thisGeneration &&
+        revision === thisRevision &&
+        loadRequest === thisLoadRequest
+      )
+        publish(value)
     },
 
     set(value: T) {

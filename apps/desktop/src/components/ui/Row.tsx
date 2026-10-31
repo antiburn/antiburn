@@ -18,7 +18,7 @@ export function Row({
   className,
   ...rootProps
 }: {
-  label: string
+  label: ReactNode
   // `| undefined` on the forwarded props is deliberate: under
   // `exactOptionalPropertyTypes` a wrapper such as `ToggleRow` cannot pass its
   // own optional value through unless the target accepts an explicit undefined.

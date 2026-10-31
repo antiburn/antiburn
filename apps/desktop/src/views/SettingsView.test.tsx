@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { NOTICE_TEXT, THIRD_PARTY_NOTICES_TEXT } from "../lib/legalNotices"
 import { SettingsView } from "./SettingsView"
 import { searchApp, resolveSettingsSearchTarget } from "../lib/appSearch"
+import { SETTINGS_PANES } from "../lib/settingsPanes"
 import { defaultConnection } from "../lib/smartCheckProviders"
 
 /**
@@ -180,6 +181,7 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       case "list_repositories":
       case "list_scan_roots":
       case "refresh_repositories":
+      case "get_agent_integrations":
         return Promise.resolve([])
       default:
         return Promise.resolve(null)
@@ -1083,9 +1085,13 @@ describe("SettingsView", () => {
     expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
   })
 
-  it.each(["macos", "windows", "linux"] as const)(
-    "connects every rendered Settings destination to search on %s",
-    async (os) => {
+  it.each(
+    (["macos", "windows", "linux"] as const).flatMap((os) =>
+      SETTINGS_PANES.map((pane) => ({ os, ...pane })),
+    ),
+  )(
+    "connects rendered $label Settings destinations to search on $os",
+    async ({ os, id: expectedPane, label }) => {
       platform.mac = os === "macos"
       platform.other = os === "linux" ? "linux" : "windows"
       HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -1094,36 +1100,44 @@ describe("SettingsView", () => {
       await screen.findByRole("switch", { name: "Start at login" })
       const catalog = searchApp("", os)
       const seen = new Set<string>()
-      for (const tab of screen.getAllByRole("tab")) {
-        const label = tab.textContent!.trim()
-        const result = searchApp(`${label} settings`, os)[0]!
-        expect(result.target.kind, label).toBe("setting")
-        if (result.target.kind !== "setting") throw new Error("Missing Settings destination")
-        const { pane } = resolveSettingsSearchTarget(result.target)
-        fireEvent.click(tab)
-        expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `${pane}-panel`)
-        emit("settings:pane", pane)
-        await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"))
-        for (const row of container.querySelectorAll<HTMLElement>("[data-settings-control]")) {
-          const control = row.dataset.settingsControl!
-          expect(seen.has(control), control).toBe(false)
-          seen.add(control)
-          const matches = catalog.filter(
-            ({ target }) => target.kind === "setting" && target.control === control,
-          )
-          expect(matches, control).toHaveLength(1)
-          const match = matches[0]!
-          const visibleLabel =
-            row.querySelector(":scope > button[aria-expanded]")?.getAttribute("aria-label") ??
-            row.querySelector(
-              ":scope > label, :scope > p, :scope > span, :scope > div > h2, :scope > div > h3, :scope > div > button[aria-expanded] > span",
-            )?.textContent
-          expect(match.label, control).toBe(visibleLabel)
-          expect(searchApp(visibleLabel!, os).some(({ id }) => id === match.id)).toBe(true)
-        }
+      expect(screen.getAllByRole("tab").map((tab) => tab.textContent!.trim())).toEqual(
+        SETTINGS_PANES.map((pane) => pane.label),
+      )
+      const tab = screen.getByRole("tab", { name: label })
+      const result = searchApp(`${label} settings`, os)[0]!
+      expect(result.target.kind, label).toBe("setting")
+      if (result.target.kind !== "setting") throw new Error("Missing Settings destination")
+      const { pane } = resolveSettingsSearchTarget(result.target)
+      expect(pane).toBe(expectedPane)
+      fireEvent.click(tab)
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `${pane}-panel`)
+      emit("settings:pane", pane)
+      await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"))
+      for (const row of container.querySelectorAll<HTMLElement>("[data-settings-control]")) {
+        const control = row.dataset.settingsControl!
+        expect(seen.has(control), control).toBe(false)
+        seen.add(control)
+        const matches = catalog.filter(
+          ({ target }) => target.kind === "setting" && target.control === control,
+        )
+        expect(matches, control).toHaveLength(1)
+        const match = matches[0]!
+        const visibleLabel =
+          row.querySelector(":scope > button[aria-expanded]")?.getAttribute("aria-label") ??
+          row.querySelector(
+            ":scope > label, :scope > p, :scope > span, :scope > div > h2, :scope > div > h3, :scope > div > button[aria-expanded] > span",
+          )?.textContent
+        expect(match.label, control).toBe(visibleLabel)
+        expect(searchApp(visibleLabel!, os).some(({ id }) => id === match.id)).toBe(true)
       }
       const controls = catalog.filter(
-        ({ target }) => target.kind === "setting" && target.control,
+        ({ target }) =>
+          target.kind === "setting" &&
+          target.control &&
+          resolveSettingsSearchTarget(target).pane === expectedPane,
+      )
+      fireEvent.click(
+        screen.getByRole("tab", { name: expectedPane === "general" ? "About" : "General" }),
       )
       for (const { target } of controls) {
         if (target.kind !== "setting") throw new Error("Unexpected target")
@@ -1293,6 +1307,24 @@ describe("SettingsView — window chrome", () => {
     expect(closeWindow).not.toHaveBeenCalled()
   })
 
+  it("keeps CLI in its own release-visible pane and routes search to Details", async () => {
+    render(<SettingsView />)
+    await screen.findByRole("switch", { name: "Start at login" })
+    expect(screen.queryByText("Antiburn CLI")).not.toBeInTheDocument()
+    expect(INFO.debugBuild).toBe(false)
+    fireEvent.click(screen.getByRole("tab", { name: "CLI" }))
+    expect(await screen.findByRole("heading", { name: "CLI" })).toBeInTheDocument()
+    expect(screen.getByText("Antiburn CLI")).toBeInTheDocument()
+    expect(screen.queryByRole("switch", { name: "Start at login" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("tab", { name: "General" }))
+    emit("settings:pane", "cli#cliCommand")
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Technical details" })).toHaveFocus(),
+    )
+    expect(invoke).not.toHaveBeenCalledWith("test_cli_installation")
+    expect(invoke).not.toHaveBeenCalledWith("repair_cli_installation")
+  })
+
   it("orders the sidebar with setup first and the explanatory panes last", async () => {
     render(<SettingsView />)
     await screen.findByRole("switch", { name: "Start at login" })
@@ -1305,6 +1337,7 @@ describe("SettingsView — window chrome", () => {
       "Notifications",
       "Usage",
       "Appearance",
+      "CLI",
       "Privacy",
       "About",
     ])

@@ -34,6 +34,7 @@ common-controls-v6 = ["muda-common-controls-v6"]
 gtk = ["libappindicator"]
 
 [dependencies]
+# Match Tauri's muda version because its ContextMenu types cross this API.
 muda = { version = "0.20", default-features = false }
 crossbeam-channel = "0.5"
 once_cell = "1"

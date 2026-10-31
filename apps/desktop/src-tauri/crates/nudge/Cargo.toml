@@ -72,7 +72,7 @@ gtk = { version = "0.18", features = ["v3_24"] }
 # bounded, no-auto-start D-Bus call through zbus. Both probes run on demand
 # and hold no connection at idle.
 gio = "0.22"
-zbus = "5"
+zbus = "6"
 
 [dev-dependencies]
 serde_json = "1"

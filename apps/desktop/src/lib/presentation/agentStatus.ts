@@ -53,7 +53,7 @@ export function agentStatus(
   const notes: string[] = []
   const desktopApp = meter?.desktopAppLabel
   if (desktopApp) notes.push(desktopApp)
-  const login = ownMeter ? loginPart(ownMeter, Boolean(desktopApp)) : null
+  const login = agentLoginLabel(meter)
   if (login) notes.push(login)
 
   const signedInOrInstalled =
@@ -64,6 +64,13 @@ export function agentStatus(
   const facts =
     sessionsSeen > 0 ? sessionCountLabel(sessionsSeen) : found ? "No sessions yet" : ""
   return { found, facts, note: notes.join(" · ") }
+}
+
+/** The agent's own login label, separate from desktop-app detection. */
+export function agentLoginLabel(meter: LiveUsageMeterPayload | undefined): string {
+  return meter && meter.carrierLabel !== "Pi"
+    ? (loginPart(meter, Boolean(meter.desktopAppLabel)) ?? "")
+    : ""
 }
 
 /** The login half of the line, or null when detection has nothing definite. */

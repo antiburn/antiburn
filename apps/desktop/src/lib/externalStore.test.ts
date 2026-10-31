@@ -119,6 +119,32 @@ describe("createExternalStore", () => {
     expect(store.getSnapshot()).toBe("second")
   })
 
+  it("can publish an action result without another load", async () => {
+    const load = vi.fn(async () => "loaded")
+    const store = createExternalStore({ initial: "initial", load })
+    const stop = store.subscribe(() => {})
+    await flush()
+    await store.refresh(async () => "action result")
+    expect(store.getSnapshot()).toBe("action result")
+    expect(load).toHaveBeenCalledOnce()
+    stop()
+  })
+
+  it("does not publish an action result after the store stops and restarts", async () => {
+    const action = deferred<string>()
+    const store = createExternalStore({ initial: "initial", load: async () => "loaded" })
+    const stop = store.subscribe(() => {})
+    await flush()
+    const refresh = store.refresh(() => action.promise)
+    stop()
+    const stopAgain = store.subscribe(() => {})
+    await flush()
+    action.resolve("stale action")
+    await refresh
+    expect(store.getSnapshot()).toBe("loaded")
+    stopAgain()
+  })
+
   it("does not publish a startup load after a later refresh has started", async () => {
     const initial = deferred<string>()
     const refreshed = deferred<string>()

@@ -15,6 +15,6 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-saphyr-parser = "=0.2.1"
+saphyr-parser = "=0.3.2"
 serde_json = { version = "1", features = ["float_roundtrip"] }
 sha2 = "0.11"

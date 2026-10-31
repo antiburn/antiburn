@@ -147,6 +147,17 @@ pub struct BoundedOutputOptions<'a> {
     pub current_dir: Option<&'a Path>,
 }
 
+/// Optional isolation and early-stop rules for bounded child processes.
+#[derive(Default)]
+pub struct BoundedOutputPolicy {
+    /// Clear the inherited environment before applying the explicit variables.
+    pub clear_env: bool,
+    /// Stop the child with `FileTooLarge` when stdout exceeds its limit.
+    pub fail_on_stdout_limit: bool,
+    /// On Unix, stop descendants as soon as the direct child exits.
+    pub kill_descendants_on_exit: bool,
+}
+
 /// Run a headless child with a hard deadline and bounded captured output.
 ///
 /// When a Windows process host is installed, its kill-on-close job owns the
@@ -181,11 +192,30 @@ pub async fn bounded_headless_output_with_stdin(
     stdin: Option<&[u8]>,
     options: BoundedOutputOptions<'_>,
 ) -> io::Result<BoundedOutput> {
+    bounded_headless_output_with_stdin_and_policy(
+        program,
+        args,
+        stdin,
+        options,
+        BoundedOutputPolicy::default(),
+    )
+    .await
+}
+
+/// Run a bounded child with explicit environment and early-stop rules.
+pub async fn bounded_headless_output_with_stdin_and_policy(
+    program: impl AsRef<OsStr>,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    options: BoundedOutputOptions<'_>,
+    policy: BoundedOutputPolicy,
+) -> io::Result<BoundedOutput> {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     async fn drain_bounded<R: tokio::io::AsyncRead + Unpin>(
         mut reader: R,
         limit: usize,
+        fail_on_limit: bool,
     ) -> io::Result<(Vec<u8>, bool)> {
         let mut kept = Vec::with_capacity(limit.min(8192));
         let mut buf = [0_u8; 8192];
@@ -198,6 +228,12 @@ pub async fn bounded_headless_output_with_stdin(
             let remaining = limit.saturating_sub(kept.len());
             kept.extend_from_slice(&buf[..read.min(remaining)]);
             truncated |= read > remaining;
+            if truncated && fail_on_limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "child stdout exceeded its limit",
+                ));
+            }
         }
         Ok((kept, truncated))
     }
@@ -215,6 +251,9 @@ pub async fn bounded_headless_output_with_stdin(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if policy.clear_env {
+        command.env_clear();
+    }
     command.envs(options.env.iter().copied());
     for key in options.env_remove {
         command.env_remove(key);
@@ -247,35 +286,55 @@ pub async fn bounded_headless_output_with_stdin(
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("child stderr was not piped"))?;
-    let mut stdout_task = tokio::spawn(drain_bounded(stdout, options.max_stdout_bytes));
-    let mut stderr_task = tokio::spawn(drain_bounded(stderr, options.max_stderr_bytes));
+    let mut stdout_task = tokio::spawn(drain_bounded(
+        stdout,
+        options.max_stdout_bytes,
+        policy.fail_on_stdout_limit,
+    ));
+    let mut stderr_task = tokio::spawn(drain_bounded(stderr, options.max_stderr_bytes, false));
 
     let completed = tokio::time::timeout(options.timeout, async {
-        let status = child.wait().await?;
-        if let Some(task) = stdin_task.as_mut() {
-            task.await
-                .map_err(|error| io::Error::other(format!("stdin task failed: {error}")))??;
-        }
-        let (stdout, stdout_truncated) = (&mut stdout_task)
-            .await
-            .map_err(|error| io::Error::other(format!("stdout task failed: {error}")))??;
-        let (_stderr, stderr_truncated) = (&mut stderr_task)
-            .await
-            .map_err(|error| io::Error::other(format!("stderr task failed: {error}")))??;
+        let wait = async {
+            let status = child.wait().await?;
+            #[cfg(unix)]
+            if policy.kill_descendants_on_exit {
+                kill_process_group(process_group_id);
+            }
+            Ok::<_, io::Error>(status)
+        };
+        let write_stdin = async {
+            if let Some(task) = stdin_task.as_mut() {
+                task.await
+                    .map_err(|error| io::Error::other(format!("stdin task failed: {error}")))??;
+            }
+            Ok::<_, io::Error>(())
+        };
+        let read_stdout = async {
+            (&mut stdout_task)
+                .await
+                .map_err(|error| io::Error::other(format!("stdout task failed: {error}")))?
+        };
+        let read_stderr = async {
+            (&mut stderr_task)
+                .await
+                .map_err(|error| io::Error::other(format!("stderr task failed: {error}")))?
+        };
+        let (status, (), (stdout, stdout_truncated), (_stderr, stderr_truncated)) =
+            tokio::try_join!(wait, write_stdin, read_stdout, read_stderr)?;
         Ok::<_, io::Error>((status, stdout, stdout_truncated, stderr_truncated))
     })
     .await;
+    let completed = completed.unwrap_or_else(|_| {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "child process timed out",
+        ))
+    });
     let (status, stdout, stdout_truncated, stderr_truncated) = match completed {
-        Ok(result) => result?,
-        Err(_) => {
+        Ok(output) => output,
+        Err(error) => {
             #[cfg(unix)]
-            if let Some(process_id) = process_group_id {
-                // SAFETY: The child starts a dedicated process group with its PID as the group ID.
-                // A negative PID targets that group and cannot affect this process's own group.
-                unsafe {
-                    libc::kill(-(process_id as i32), libc::SIGKILL);
-                }
-            }
+            kill_process_group(process_group_id);
             let _ = child.kill().await;
             let _ = child.wait().await;
             if let Some(task) = stdin_task.as_ref() {
@@ -283,10 +342,7 @@ pub async fn bounded_headless_output_with_stdin(
             }
             stdout_task.abort();
             stderr_task.abort();
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "child process timed out",
-            ));
+            return Err(error);
         }
     };
     Ok(BoundedOutput {
@@ -296,6 +352,17 @@ pub async fn bounded_headless_output_with_stdin(
         stdout_truncated,
         stderr_truncated,
     })
+}
+
+#[cfg(unix)]
+fn kill_process_group(process_group_id: Option<u32>) {
+    if let Some(process_id) = process_group_id {
+        // SAFETY: The child owns a process group whose ID is its PID.
+        // A negative PID targets that group, not this process's group.
+        unsafe {
+            libc::kill(-(process_id as i32), libc::SIGKILL);
+        }
+    }
 }
 
 /// Prevent short-lived console children from flashing windows in a Windows GUI
@@ -453,6 +520,120 @@ mod tests {
             bounded_headless_output("sh", &["-c", &script], Duration::from_millis(50), 64).await;
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
         tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_output_can_clear_environment_before_explicit_changes() {
+        let output = bounded_headless_output_with_stdin_and_policy(
+            "/usr/bin/env",
+            &[],
+            None,
+            BoundedOutputOptions {
+                timeout: Duration::from_secs(2),
+                max_stdout_bytes: 128,
+                max_stderr_bytes: 0,
+                env: &[("ALLOWED_VALUE", "accepted"), ("REMOVED_VALUE", "removed")],
+                env_remove: &["REMOVED_VALUE"],
+                current_dir: None,
+            },
+            BoundedOutputPolicy {
+                clear_env: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ALLOWED_VALUE=accepted\n");
+        assert!(!output.truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_bounded_output_still_inherits_the_parent_environment() {
+        let path = std::env::var("PATH").unwrap();
+        let output = bounded_headless_output(
+            "/bin/sh",
+            &["-c", "printf '%s' \"$PATH\""],
+            Duration::from_secs(2),
+            path.len(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(output.stdout, path.as_bytes());
+        assert!(!output.truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_output_can_stop_on_overflow_and_kill_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("descendant-finished");
+        let script = "(/bin/sleep 0.3; printf leaked > \"$1\") & while :; do printf overflow; done";
+        let started = std::time::Instant::now();
+        let error = bounded_headless_output_with_stdin_and_policy(
+            "/bin/sh",
+            &["-c", script, "probe", marker.to_str().unwrap()],
+            None,
+            BoundedOutputOptions {
+                timeout: Duration::from_secs(2),
+                max_stdout_bytes: 8,
+                max_stderr_bytes: 0,
+                env: &[],
+                env_remove: &[],
+                current_dir: None,
+            },
+            BoundedOutputPolicy {
+                fail_on_stdout_limit: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::FileTooLarge);
+        assert!(started.elapsed() < Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!marker.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_output_can_kill_descendants_when_the_direct_child_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("descendant-finished");
+        let output = bounded_headless_output_with_stdin_and_policy(
+            "/bin/sh",
+            &[
+                "-c",
+                "(/bin/sleep 0.3; printf leaked > \"$1\") & printf ok",
+                "probe",
+                marker.to_str().unwrap(),
+            ],
+            None,
+            BoundedOutputOptions {
+                timeout: Duration::from_secs(2),
+                max_stdout_bytes: 8,
+                max_stderr_bytes: 0,
+                env: &[],
+                env_remove: &[],
+                current_dir: None,
+            },
+            BoundedOutputPolicy {
+                kill_descendants_on_exit: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ok");
+        tokio::time::sleep(Duration::from_millis(500)).await;
         assert!(!marker.exists());
     }
 }

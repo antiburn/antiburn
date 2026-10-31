@@ -5,6 +5,10 @@ This private Node >=22 package holds shared product metadata, bounded command pa
 For the relationship between shared code, host adapters, maintained sources and
 generated artifacts, start with the [plugin architecture](../../docs/plugins/architecture.md).
 
+The desktop's separate [agent integration payload](../../docs/agent-integrations.md)
+uses these same adapters with a managed absolute CLI connection. It does not
+change the public Claude release or the unmanaged executable discovery contract.
+
 From the repository root:
 
 ```sh
@@ -44,6 +48,13 @@ Node adapter tests exercise actual source with controlled host interfaces;
 those tests establish contract behavior, not native compatibility.
 
 The resolver reads only PATH, PATHEXT, ANTIBURN_EXECUTABLE, and filesystem metadata. An explicit executable override must be absolute. It accepts only executable regular files on POSIX and COM/EXE/BAT/CMD candidates on Windows. Missing PATH, unsupported platform or extensions, inaccessible metadata, and an incomplete bounded search produce `unavailable`. It does not return candidate paths, run candidates, read transcripts, or contact the app.
+
+Unmanaged availability and delivery resolution checks `antiburn-cli` before the
+legacy `antiburn` name in each PATH directory. Desktop-managed adapters use their
+private connection binding instead; they pass its absolute executable through
+`ANTIBURN_EXECUTABLE` in the CLI child's environment without changing the host
+process environment. The owned terminal export remains a compatibility fallback
+until native delivery acceptance passes for all five agents.
 
 The development Claude adapter launches Node with a fixed argument vector solely to run this resolver. The candidate antiburn executable is never a process argument. If Node or the host process API is unavailable, the output says the CLI check is unavailable. The Pi and OpenCode adapters call the resolver directly in their host runtime.
 

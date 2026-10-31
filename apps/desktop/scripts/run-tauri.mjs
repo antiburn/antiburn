@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { parseEnv } from "node:util"
 import { fileURLToPath } from "node:url"
+import { prepareCliDev } from "./cli-dev.mjs"
 
 const envPath = fileURLToPath(new URL("../.env", import.meta.url))
 let localEnv = {}
@@ -17,7 +18,7 @@ const command = isWindows ? "tauri.cmd" : "tauri"
 // Node refuses to spawn a `.cmd` file directly since 20.x, so Windows goes
 // through the shell. The shell receives one joined command line, which splits
 // an argument that contains a space, so quote those arguments here.
-const args = process.argv.slice(2).map((argument) => {
+const args = prepareCliDev(process.argv.slice(2)).map((argument) => {
   if (!isWindows || !/[\s&|<>^"]/.test(argument)) return argument
   return `"${argument.replaceAll('"', '\\"')}"`
 })

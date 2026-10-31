@@ -5,6 +5,7 @@ pub mod current_context;
 mod editor;
 pub(crate) mod filesystem;
 mod inventory;
+pub(crate) mod json;
 #[path = "../opencode_config_authority.rs"]
 pub(crate) mod opencode_config_authority;
 pub(crate) mod opencode_current;

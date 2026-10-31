@@ -3,6 +3,11 @@ import { isSettingsPane, type SettingsPane } from "./settingsPanes"
 
 /** Stable targets keep navigation independent of translated or edited labels. */
 export const SETTINGS_SEARCH_TARGETS = {
+  cliCommand: {
+    pane: "cli",
+    label: "Antiburn CLI",
+    aliases: ["CLI", "antiburn-cli", "internal runtime", "test CLI", "repair CLI"],
+  },
   trayIcon: {
     pane: "general",
     label: "Show in menubar",
@@ -33,7 +38,15 @@ export const SETTINGS_SEARCH_TARGETS = {
   sourceAgents: {
     pane: "agents",
     label: "Coding agents",
-    aliases: ["harnesses", "enabled agents"],
+    aliases: [
+      "harnesses",
+      "enabled agents",
+      "integrations",
+      "connections",
+      "hooks",
+      "plugins",
+      "extensions",
+    ],
   },
   sourceRemoteHosts: {
     pane: "sessions",

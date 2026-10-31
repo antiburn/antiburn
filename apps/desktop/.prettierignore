@@ -3,5 +3,6 @@ node_modules
 src-tauri/target
 src-tauri/crates/*/target
 src-tauri/gen
+src-tauri/resources/agent-integrations/payload
 src-tauri/vendor
 pnpm-lock.yaml

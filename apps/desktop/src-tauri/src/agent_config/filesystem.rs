@@ -1,13 +1,14 @@
 use std::fs;
 #[cfg(not(windows))]
 use std::fs::OpenOptions;
+use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use super::ConfigUnavailableReason;
 
-const MAX_CONFIG_BYTES: u64 = 256 * 1024;
+pub(crate) const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 
 pub(crate) struct CheckedFile {
     pub(crate) bytes: Vec<u8>,
@@ -57,16 +58,14 @@ pub(crate) fn read_checked(
     trusted_root: &Path,
 ) -> Result<CheckedFile, ConfigUnavailableReason> {
     let metadata = checked_metadata(path, trusted_root)?;
-    let bytes = fs::read(path).map_err(|error| {
+    let file = fs::File::open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::PermissionDenied {
             ConfigUnavailableReason::PermissionDenied
         } else {
             ConfigUnavailableReason::UnsafePath
         }
     })?;
-    if bytes.len() as u64 > MAX_CONFIG_BYTES {
-        return Err(ConfigUnavailableReason::FileTooLarge);
-    }
+    let bytes = read_bounded(file)?;
     let after = fs::symlink_metadata(path).map_err(|_| ConfigUnavailableReason::UnsafePath)?;
     if after.file_type().is_symlink() || file_identity(&after) != file_identity(&metadata) {
         return Err(ConfigUnavailableReason::ChangedIdentity);
@@ -82,6 +81,37 @@ pub(crate) fn read_checked(
     })
 }
 
+pub(crate) fn read_bounded(reader: impl Read) -> Result<Vec<u8>, ConfigUnavailableReason> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::PermissionDenied {
+                ConfigUnavailableReason::PermissionDenied
+            } else {
+                ConfigUnavailableReason::UnsafePath
+            }
+        })?;
+    if bytes.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(ConfigUnavailableReason::FileTooLarge);
+    }
+    Ok(bytes)
+}
+
+pub(crate) fn check_regular_file(metadata: &fs::Metadata) -> Result<(), ConfigUnavailableReason> {
+    if metadata.file_type().is_symlink() {
+        return Err(ConfigUnavailableReason::SymlinkTarget);
+    }
+    if !metadata.is_file() {
+        return Err(ConfigUnavailableReason::NonRegularFile);
+    }
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err(ConfigUnavailableReason::FileTooLarge);
+    }
+    Ok(())
+}
+
 pub(super) fn checked_metadata(
     path: &Path,
     trusted_root: &Path,
@@ -92,15 +122,7 @@ pub(super) fn checked_metadata(
         std::io::ErrorKind::PermissionDenied => ConfigUnavailableReason::PermissionDenied,
         _ => ConfigUnavailableReason::UnsafePath,
     })?;
-    if metadata.file_type().is_symlink() {
-        return Err(ConfigUnavailableReason::SymlinkTarget);
-    }
-    if !metadata.is_file() {
-        return Err(ConfigUnavailableReason::NonRegularFile);
-    }
-    if metadata.len() > MAX_CONFIG_BYTES {
-        return Err(ConfigUnavailableReason::FileTooLarge);
-    }
+    check_regular_file(&metadata)?;
     let canonical = path
         .canonicalize()
         .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
@@ -204,5 +226,38 @@ pub(crate) fn map_write_error(error: std::io::Error) -> ConfigUnavailableReason 
         ConfigUnavailableReason::PermissionDenied
     } else {
         ConfigUnavailableReason::WriteFailed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_reads_accept_the_limit_and_stop_after_one_extra_byte() {
+        let bytes = vec![b'x'; MAX_CONFIG_BYTES as usize];
+        assert_eq!(read_bounded(bytes.as_slice()).unwrap(), bytes);
+        let mut reader = std::io::Cursor::new(vec![b'x'; MAX_CONFIG_BYTES as usize + 32]);
+        assert_eq!(
+            read_bounded(&mut reader),
+            Err(ConfigUnavailableReason::FileTooLarge)
+        );
+        assert_eq!(reader.position(), MAX_CONFIG_BYTES + 1);
+    }
+
+    #[test]
+    fn regular_file_checks_reject_directories_and_oversized_files() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            check_regular_file(&fs::symlink_metadata(temp.path()).unwrap()),
+            Err(ConfigUnavailableReason::NonRegularFile)
+        );
+        let path = temp.path().join("config");
+        let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_CONFIG_BYTES + 1).unwrap();
+        assert_eq!(
+            check_regular_file(&fs::symlink_metadata(&path).unwrap()),
+            Err(ConfigUnavailableReason::FileTooLarge)
+        );
     }
 }
