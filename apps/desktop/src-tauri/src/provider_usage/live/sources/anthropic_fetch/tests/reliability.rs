@@ -121,30 +121,61 @@ fn native_removal_does_not_hide_a_failed_pi_carrier() {
 }
 
 #[test]
-fn a_background_missing_cli_is_reported_on_the_next_check() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join(".credentials.json");
-    fs::write(&path, credentials_file(1, "max")).unwrap();
-    let source = ClaudeDirectFetch::at_with_touch(
-        path.clone(),
-        Box::new(UnreachableTransport),
-        Box::new(FileTouchEnv {
-            path,
-            binary_present: false,
+fn background_refresh_outcomes_keep_cached_detection_consistent() {
+    use super::super::super::claude_touch::TouchEnvironment;
+
+    for (binary_present, terminal, detail, detection) in [
+        (
+            false,
+            false,
+            SourceErrorDetail::CliMissing,
+            Detection::SignInRequired,
+        ),
+        (
+            true,
+            true,
+            SourceErrorDetail::SignInRequired,
+            Detection::SignInRequired,
+        ),
+        (
+            true,
+            false,
+            SourceErrorDetail::RefreshPending,
+            Detection::SignedIn,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        fs::write(&path, credentials_file(1, "max")).unwrap();
+        let env = FileTouchEnv {
+            path: path.clone(),
+            binary_present,
             writes_on_spawn: None,
             spawns: Arc::new(AtomicUsize::new(0)),
-        }),
-    );
-    assert_eq!(
-        source.fetch(TEST_MAX_AGE).detail,
-        Some(SourceErrorDetail::RefreshPending)
-    );
-    source.touch_gate.wait_for_worker();
-    source.cooldown.open_for_test();
-    assert_eq!(
-        source.fetch(TEST_MAX_AGE).detail,
-        Some(SourceErrorDetail::CliMissing)
-    );
+        };
+        let fingerprint = env.fingerprint(std::time::Instant::now() + Duration::from_secs(1));
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(UnreachableTransport),
+            Box::new(env),
+        );
+        if terminal {
+            source.touch_gate.mark_terminal(fingerprint.unwrap());
+        }
+        assert_eq!(
+            source.fetch(TEST_MAX_AGE).detail,
+            Some(SourceErrorDetail::RefreshPending)
+        );
+        assert_eq!(source.detect(false).detection, Detection::SignedIn);
+        source.touch_gate.wait_for_worker();
+        source.cooldown.open_for_test();
+        assert_eq!(source.fetch(TEST_MAX_AGE).detail, Some(detail));
+        assert_eq!(source.detect(false).detection, detection);
+
+        fs::write(&path, credentials_file(i64::MAX, "max")).unwrap();
+        source.read_file_login(&path).unwrap();
+        assert_eq!(source.detect(false).detection, Detection::SignedIn);
+    }
 }
 
 pub(super) fn assert_published_detection<T: LiveUsageSource + 'static>(

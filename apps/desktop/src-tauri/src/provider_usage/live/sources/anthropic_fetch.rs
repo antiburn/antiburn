@@ -979,6 +979,12 @@ impl ClaudeDirectFetch {
                 Some(claude_touch::TouchOutcome::Terminal) => SourceErrorDetail::SignInRequired,
                 _ => SourceErrorDetail::RefreshPending,
             };
+            if matches!(
+                detail,
+                SourceErrorDetail::CliMissing | SourceErrorDetail::SignInRequired
+            ) {
+                self.logins.set_sign_in_required(true);
+            }
             return Err(auth_failure(detail));
         }
         let result = self.touch_and_read(now, user, trigger);
