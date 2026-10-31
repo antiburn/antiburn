@@ -421,7 +421,15 @@ export type SurfaceOrigin = "user" | "automatic"
 export type SurfaceState = "ready" | "empty" | "error" | "loading_timeout"
 export type LiveUsageProvider = "anthropic" | "openai" | "google"
 export type LiveUsageState =
-  "fresh" | "stale" | "authentication" | "rate_limited" | "unavailable" | "no_credentials"
+  | "fresh"
+  | "stale"
+  | "authentication"
+  | "login_recovering"
+  | "rate_limited"
+  | "unavailable"
+  | "no_credentials"
+  | "sign_in_required"
+  | "not_signed_in"
 export type AutoFixReviewAnalyticsOutcome =
   "ready" | "stale" | "expired" | "conflict" | "unavailable" | "failed"
 export type AutoFixAnalyticsOutcome =
@@ -653,15 +661,15 @@ export async function getLiveUsage(
 /**
  * Ask each provider for current limits and replace the cached snapshot.
  *
- * The offset makes "used today" use the reader's calendar day.
+ * The offset makes "used today" use the reader's calendar day. Each call asks
+ * for a new check. The shell serializes checks so calls after a settings change
+ * or period reset do not reuse a check that started before that change.
  */
-export async function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
-  if (!hasShell()) return EMPTY_LIVE_USAGE
-  return (
-    (await invoke<LiveUsageSummaryPayload | null>("refresh_live_usage", {
-      utcOffsetMinutes: -new Date().getTimezoneOffset(),
-    })) ?? EMPTY_LIVE_USAGE
-  )
+export function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
+  if (!hasShell()) return Promise.resolve(EMPTY_LIVE_USAGE)
+  return invoke<LiveUsageSummaryPayload | null>("refresh_live_usage", {
+    utcOffsetMinutes: -new Date().getTimezoneOffset(),
+  }).then((summary) => summary ?? EMPTY_LIVE_USAGE)
 }
 
 /**
@@ -695,6 +703,8 @@ interface HudDetailBar {
   key: string
   label: string
   percent: number
+  stale?: boolean
+  statusNote?: string | null
   /** ISO timestamp, or null when the reset time is unknown. */
   resetsAt: string | null
   color: string

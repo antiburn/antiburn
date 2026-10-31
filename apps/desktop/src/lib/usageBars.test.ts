@@ -93,6 +93,25 @@ describe("deriveUsageBars", () => {
     expect(deriveUsageBars(summary([]))).toEqual([])
   })
 
+  it("carries the age and dimming of a nine-hour recoverable reading", () => {
+    const snapshot = summary([
+      provider({ observedAt: new Date(NOW - 9 * 3_600_000).toISOString(), freshness: "stale" }),
+    ])
+    snapshot.errors = [
+      {
+        source: "claude",
+        provider: "anthropic",
+        displayName: "Claude",
+        category: "rateLimited",
+      },
+    ]
+    expect(deriveUsageBars(snapshot)[0]).toMatchObject({
+      percent: 40,
+      stale: true,
+      statusNote: "Last updated 9 hr ago.",
+    })
+  })
+
   it("orders primary windows first and omits a single provider prefix", () => {
     const bars = deriveUsageBars(
       summary([

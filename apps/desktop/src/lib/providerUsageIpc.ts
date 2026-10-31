@@ -485,7 +485,9 @@ export type LiveUsageSourceErrorDetail =
   | "cliMissing"
   | "signInRequired"
   | "refreshPending"
+  | "credentialExpired"
   | "desktopOnly"
+  | "notSignedIn"
 
 /** Live provider usage as one snapshot. Mirrors Rust `LiveUsageSummary`. */
 export interface LiveUsageSummaryPayload {
@@ -496,7 +498,7 @@ export interface LiveUsageSummaryPayload {
 }
 
 export type LiveUsageDetection =
-  "notInstalled" | "installedNotSignedIn" | "signedIn" | "unknown"
+  "notInstalled" | "installedNotSignedIn" | "signInRequired" | "signedIn" | "unknown"
 
 /** One provider antiburn can meter. Mirrors Rust `LiveUsageMeter`. */
 export interface LiveUsageMeterPayload {

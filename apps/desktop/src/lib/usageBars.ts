@@ -3,6 +3,9 @@ import { siClaude } from "simple-icons"
 import type { LiveUsageSummaryPayload } from "./ipc"
 import {
   liveDisplayableProviders,
+  liveProviderStatus,
+  liveStatusNote,
+  liveStaleNote,
   liveWindowElapsed,
   liveWindowLabel,
   liveWindows,
@@ -21,6 +24,8 @@ export type UsageBarItem = {
   /** The tool the limit belongs to, as shown to the reader. */
   providerName: string
   percent: number
+  stale?: boolean
+  statusNote?: string | null
   resetsAt: Date | null
   color: string
   /** Elapsed share of the window's period, 0-1, or null when unknown. */
@@ -108,13 +113,25 @@ export function noMeterSelected(response: LiveUsageSummaryPayload | null): boole
 
 /** Convert a live usage snapshot into the HUD bar order. */
 export function deriveUsageBars(response: LiveUsageSummaryPayload | null): UsageBarItem[] {
-  const withBars = (response ? liveDisplayableProviders(response) : [])
-    .map((provider) => ({
-      provider,
-      windows: liveWindows(provider, { includeIdleModelLimits: true }).filter(
-        (window) => window.usedPercent != null,
-      ),
-    }))
+  if (!response) return []
+  const withBars = liveDisplayableProviders(response)
+    .map((provider) => {
+      const status = liveProviderStatus(response, provider)
+      const stale = status.kind === "stale" || provider.freshness === "stale"
+      const statusNote =
+        liveStatusNote(status, provider.provider) ??
+        (stale
+          ? liveStaleNote(Date.parse(response.generatedAt) - Date.parse(provider.observedAt))
+          : null)
+      return {
+        provider,
+        stale,
+        statusNote,
+        windows: liveWindows(provider, { includeIdleModelLimits: true }).filter(
+          (window) => window.usedPercent != null,
+        ),
+      }
+    })
     .filter((group) => group.windows.length > 0)
 
   const multiProvider = withBars.length > 1
@@ -129,6 +146,8 @@ export function deriveUsageBars(response: LiveUsageSummaryPayload | null): Usage
         ? `${group.provider.displayName} · ${liveWindowLabel(window)}`
         : liveWindowLabel(window),
       percent: window.usedPercent!,
+      stale: group.stale,
+      statusNote: group.statusNote,
       resetsAt: resetDate(window.resetsAt),
       color: providerBarColor(group.provider.provider),
       expectedFraction: liveWindowElapsed(window),

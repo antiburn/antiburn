@@ -22,6 +22,7 @@ import {
   liveDetectionNote,
   liveErrorHasDocs,
   liveErrorNote,
+  liveDisplayableProviders,
   liveSourceAge,
   liveUnavailableReason,
   liveWindows,
@@ -183,10 +184,8 @@ export function UsageMetersSection({
       </p>
       <Card>
         {meters.map((meter) => {
-          // The last reading, however old: this row reports what antiburn
-          // knows, and a failed check is a reason beside it, not a reason
-          // to hide it. The popover and HUD apply the grace window.
-          const reading = live.providers.find(
+          // Match the meters' grace, recovery, and reset-period policy.
+          const reading = liveDisplayableProviders(live).find(
             (provider) => provider.provider === meter.provider,
           )
           const failure = live.errors.find((error) => error.provider === meter.provider)
@@ -288,14 +287,14 @@ function meterNote({
     const count = liveWindows(reading).length
     const line = `Signed in · ${count} ${pluralize(count, "limit", "limits")} tracked ${liveSourceAge(reading)}`
     return failure
-      ? `${line} · ${liveUnavailableReason(failure.category, failure.detail)}`
+      ? `${line} · ${failure.detail === "keychainUnreadable" ? liveErrorNote(failure.category, provider, failure.detail, meter.carrierLabel) : liveUnavailableReason(failure.category, failure.detail)}`
       : line
   }
   if (failure) {
     // A rate limit is a provider answering — the sign-in worked.
     return failure.category === "rateLimited"
-      ? "Signed in · rate limited · retrying"
-      : liveErrorNote(failure.category, provider, failure.detail)
+      ? "Signed in · checking again soon"
+      : liveErrorNote(failure.category, provider, failure.detail, meter.carrierLabel)
   }
   return liveDetectionNote(
     provider,

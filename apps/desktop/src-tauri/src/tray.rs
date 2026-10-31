@@ -733,6 +733,10 @@ fn usage_used_percent(summary: &crate::dto::LiveUsageSummary) -> Option<f64> {
         .max_by(f64::total_cmp)
 }
 
+fn parse_rfc3339(value: &str) -> Option<time::OffsetDateTime> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+}
+
 fn columns_for_used_percent(used: f64) -> usize {
     ((100.0 - used) / 20.0).ceil() as usize
 }
@@ -741,22 +745,19 @@ fn provider_is_displayable(
     summary: &crate::dto::LiveUsageSummary,
     provider: &crate::dto::LiveProviderUsage,
 ) -> bool {
-    let Some(_error) = summary
+    let Some(error) = summary
         .errors
         .iter()
         .find(|error| error.provider == provider.provider)
     else {
         return true;
     };
-    let Ok(generated_at) = time::OffsetDateTime::parse(
-        &summary.generated_at,
-        &time::format_description::well_known::Rfc3339,
-    ) else {
+    if crate::provider_usage::live::failure_is_recoverable(error) {
         return true;
-    };
-    let Ok(observed_at) = time::OffsetDateTime::parse(
-        &provider.observed_at,
-        &time::format_description::well_known::Rfc3339,
+    }
+    let (Some(generated_at), Some(observed_at)) = (
+        parse_rfc3339(&summary.generated_at),
+        parse_rfc3339(&provider.observed_at),
     ) else {
         return true;
     };
@@ -1428,6 +1429,36 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_reading_drives_the_meter_except_for_a_period_that_reset() {
+        let mut summary = crate::dto::LiveUsageSummary {
+            providers: vec![provider(
+                "anthropic",
+                "Asked Claude directly",
+                vec![
+                    window("five-hour", "primaryShort", None, Some(90.0)),
+                    window("seven-day", "primaryLong", None, Some(35.0)),
+                ],
+            )],
+            errors: vec![LiveUsageSourceError {
+                source: "claude-usage-fetch".to_string(),
+                provider: "anthropic".to_string(),
+                display_name: "Claude".to_string(),
+                category: "rateLimited".to_string(),
+                detail: None,
+                plan: None,
+            }],
+            // Two hours after the reading: past the grace period.
+            generated_at: "2026-09-04T14:00:00Z".to_string(),
+            ..Default::default()
+        };
+        summary.providers[0].windows[0].resets_at = Some("2026-09-04T13:00:00Z".to_string());
+        summary.providers[0].windows[1].resets_at = Some("2026-09-08T00:00:00Z".to_string());
+        let at = parse_rfc3339(&summary.generated_at).unwrap();
+        crate::provider_usage::live::clear_expired_window_figures(&mut summary, at);
+        assert_eq!(usage_used_percent(&summary), Some(35.0));
+    }
+
+    #[test]
     fn hidden_supplemental_and_expired_failed_readings_do_not_drive_the_meter() {
         let mut summary = crate::dto::LiveUsageSummary {
             providers: vec![
@@ -1451,8 +1482,8 @@ mod tests {
                 source: "codex".to_string(),
                 provider: "openai".to_string(),
                 display_name: "Codex".to_string(),
-                category: "unavailable".to_string(),
-                detail: None,
+                category: "authentication".to_string(),
+                detail: Some(crate::provider_usage::live::SourceErrorDetail::SignInRequired),
                 plan: None,
             }],
             generated_at: "2026-09-04T12:20:01Z".to_string(),
@@ -1460,6 +1491,33 @@ mod tests {
         };
         summary.providers[1].observed_at = "2026-09-04T12:10:00Z".to_string();
         assert_eq!(usage_used_percent(&summary), None);
+    }
+
+    #[test]
+    fn only_a_login_that_can_recover_keeps_its_reading_on_the_tray() {
+        use crate::provider_usage::live::SourceErrorDetail;
+        for (detail, keeps) in [
+            (SourceErrorDetail::RefreshPending, true),
+            (SourceErrorDetail::CredentialExpired, true),
+            (SourceErrorDetail::SignInRequired, false),
+            (SourceErrorDetail::CliMissing, false),
+            (SourceErrorDetail::NotSignedIn, false),
+            (SourceErrorDetail::DesktopOnly, false),
+        ] {
+            let error = LiveUsageSourceError {
+                source: "claude".to_string(),
+                provider: "anthropic".to_string(),
+                display_name: "Claude".to_string(),
+                category: "authentication".to_string(),
+                detail: Some(detail),
+                plan: None,
+            };
+            assert_eq!(
+                crate::provider_usage::live::failure_is_recoverable(&error),
+                keeps,
+                "{detail:?}"
+            );
+        }
     }
 
     fn provider(

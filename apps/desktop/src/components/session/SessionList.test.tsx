@@ -178,6 +178,56 @@ function liveUsageWithWindow(
 }
 
 describe("SessionList — rows", () => {
+  it("dims an allocation based on an old reading and exposes its age", () => {
+    const liveUsage = liveUsageWithWindow("anthropic", "Claude", {
+      id: "weekly",
+      kind: "weekly",
+    })
+    liveUsage.providers[0]!.observedAt = new Date(NOW.getTime() - 9 * 3_600_000).toISOString()
+    liveUsage.errors = [
+      {
+        source: "claude",
+        provider: "anthropic",
+        displayName: "Claude",
+        category: "rateLimited",
+      },
+    ]
+    list({
+      badgeMetric: "weeklyPercent",
+      liveUsage,
+      sessionLimitAllocations: {
+        generatedAt: NOW.toISOString(),
+        allocations: [
+          {
+            agent: "claude-code",
+            sessionId: "session-1",
+            wslDistro: null,
+            provider: "anthropic",
+            displayName: "Claude",
+            accountKey: null,
+            metric: "weekly",
+            windowId: "weekly",
+            percent: 12.345,
+            confidence: "learned",
+          },
+        ],
+      },
+    })
+    expect(screen.getByText("12.3%")).toHaveClass("opacity-60")
+    expect(screen.getByText("12.3%")).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("Last updated 9 hr ago."),
+    )
+  })
+
+  it("does not use stale evidence to confirm an absent window", () => {
+    const liveUsage = liveUsageWithWindow("anthropic", "Claude")
+    liveUsage.providers[0]!.freshness = "stale"
+    list({ entries: [entry({ totalTokens: 1_200 })], badgeMetric: "weeklyPercent", liveUsage })
+    expect(screen.getByText("unknown")).toBeInTheDocument()
+    expect(screen.queryByText("no limit")).not.toBeInTheDocument()
+  })
+
   it("shows the backend weekly allocation for the exact session identity", () => {
     list({
       badgeMetric: "weeklyPercent",
