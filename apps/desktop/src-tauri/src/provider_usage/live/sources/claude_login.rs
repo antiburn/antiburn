@@ -12,7 +12,6 @@ use time::OffsetDateTime;
 
 use crate::provider_usage::live::model::Detection;
 
-#[cfg(target_os = "macos")]
 use super::claude_touch;
 
 /// The credentials file is a small, purpose-built OAuth token store, not a
