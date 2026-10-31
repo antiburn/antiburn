@@ -941,6 +941,7 @@ impl ClaudeDirectFetch {
                 env.clone(),
                 self.touch_gate.clone(),
                 Self::touch_request(user),
+                logins.refresh_fingerprint(),
                 move |outcome| {
                     log_refresh(trigger, user, outcome.label());
                     logins.observe(outcome.label(), Some(trigger.name()));
@@ -972,7 +973,9 @@ impl ClaudeDirectFetch {
             return Err(auth_failure(SourceErrorDetail::SignInRequired));
         }
         if !user {
-            let completed = self.touch_gate.completed();
+            let completed = self
+                .touch_gate
+                .completed(&self.logins.refresh_fingerprint());
             self.schedule_refresh(false, trigger);
             let detail = match completed {
                 Some(claude_touch::TouchOutcome::CliMissing) => SourceErrorDetail::CliMissing,
@@ -1024,7 +1027,12 @@ impl ClaudeDirectFetch {
             return Err(auth_failure(SourceErrorDetail::RefreshPending));
         };
         let request = Self::touch_request(user);
-        let settled = match claude_touch::touch(env, &self.touch_gate, request) {
+        let settled = match claude_touch::touch(
+            env,
+            &self.touch_gate,
+            request,
+            &self.logins.refresh_fingerprint(),
+        ) {
             claude_touch::TouchOutcome::Settled(settled) => settled,
             claude_touch::TouchOutcome::CliMissing => {
                 observe("cli_missing");

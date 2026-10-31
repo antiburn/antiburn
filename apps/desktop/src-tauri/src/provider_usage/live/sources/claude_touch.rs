@@ -217,8 +217,13 @@ pub enum TouchOutcome {
 ///
 /// The child is killed as soon as verification concludes, settled or not —
 /// [`MAX_VERIFY_DURATION`] caps its verification lifetime.
-pub fn touch(env: &dyn TouchEnvironment, gate: &TouchGate, request: TouchRequest) -> TouchOutcome {
-    if !gate.reserve(request.cooldown) {
+pub fn touch(
+    env: &dyn TouchEnvironment,
+    gate: &TouchGate,
+    request: TouchRequest,
+    credential: &Fingerprint,
+) -> TouchOutcome {
+    if !gate.reserve(request.cooldown, Some(credential)) {
         return TouchOutcome::Skipped;
     }
     let _flight = Flight(gate);
@@ -230,9 +235,10 @@ pub fn schedule(
     env: Arc<dyn TouchEnvironment>,
     gate: TouchGate,
     request: TouchRequest,
+    credential: Fingerprint,
     completed: impl FnOnce(&TouchOutcome) + Send + 'static,
 ) {
-    if !gate.reserve(request.cooldown) {
+    if !gate.reserve(request.cooldown, Some(&credential)) {
         completed(&TouchOutcome::Skipped);
         return;
     }
@@ -243,7 +249,7 @@ pub fn schedule(
             let _flight = Flight(&worker_gate);
             let outcome = touch_reserved(env.as_ref(), &worker_gate);
             completed(&outcome);
-            super::claude_login::lock(&worker_gate.inner).completed = Some(outcome);
+            super::claude_login::lock(&worker_gate.inner).completed = Some((credential, outcome));
         })
         .is_err()
     {
@@ -368,7 +374,8 @@ struct GateInner {
     /// carrier still matches it, no touch runs: the fix is signing in with
     /// the CLI, not another touch.
     terminal: Option<Fingerprint>,
-    completed: Option<TouchOutcome>,
+    scheduled_credential: Option<Fingerprint>,
+    completed: Option<(Fingerprint, TouchOutcome)>,
 }
 
 impl TouchGate {
@@ -376,24 +383,35 @@ impl TouchGate {
         TouchGate::default()
     }
 
-    pub fn completed(&self) -> Option<TouchOutcome> {
-        super::claude_login::lock(&self.inner).completed.clone()
+    pub fn completed(&self, credential: &Fingerprint) -> Option<TouchOutcome> {
+        super::claude_login::lock(&self.inner)
+            .completed
+            .as_ref()
+            .filter(|(marker, _)| marker == credential)
+            .map(|(_, outcome)| outcome.clone())
     }
 
     /// Whether a touch may start against the carrier's current fingerprint.
     /// `true` claims the in-flight slot and stamps the attempt.
     #[cfg(test)]
     fn begin(&self, before: &Fingerprint, cooldown: Duration) -> bool {
-        !self.is_terminal(before) && self.reserve(cooldown)
+        !self.is_terminal(before) && self.reserve(cooldown, None)
     }
 
-    fn reserve(&self, cooldown: Duration) -> bool {
+    fn reserve(&self, cooldown: Duration, credential: Option<&Fingerprint>) -> bool {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if inner.in_flight {
             return false;
+        }
+        if let Some(credential) = credential
+            && inner.scheduled_credential.as_ref() != Some(credential)
+        {
+            // A replacement login must not inherit the previous login's cooldown.
+            inner.last_attempt = None;
+            inner.scheduled_credential = Some(credential.clone());
         }
         if inner.last_attempt.is_some_and(|at| at.elapsed() < cooldown) {
             return false;
@@ -790,6 +808,10 @@ mod tests {
         cooldown: TOUCH_COOLDOWN,
     };
 
+    fn touch(env: &dyn TouchEnvironment, gate: &TouchGate, request: TouchRequest) -> TouchOutcome {
+        super::touch(env, gate, request, &Fingerprint("cached-login".into()))
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn metadata_commands_select_attributes_without_requesting_secrets() {
@@ -879,7 +901,7 @@ mod tests {
     fn gated_attempts_do_not_probe_metadata_and_all_polls_share_one_deadline() {
         let gate = TouchGate::new();
         let env = ScriptedEnv::new(&["a"]);
-        assert!(gate.reserve(TOUCH_COOLDOWN));
+        assert!(gate.reserve(TOUCH_COOLDOWN, Some(&Fingerprint("cached-login".into()))));
         assert_eq!(touch(&env, &gate, REQUEST), TouchOutcome::Skipped);
         assert_eq!(env.polls.load(Ordering::SeqCst), 0);
         gate.finish();

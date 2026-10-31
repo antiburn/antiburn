@@ -178,6 +178,199 @@ fn background_refresh_outcomes_keep_cached_detection_consistent() {
     }
 }
 
+#[test]
+fn replacement_login_does_not_inherit_completed_background_failure_or_cooldown() {
+    use super::super::super::claude_touch::{Fingerprint, TouchChild, TouchEnvironment};
+    use std::sync::atomic::AtomicBool;
+
+    struct InstalledOwner {
+        inner: FileTouchEnv,
+        installed: Arc<AtomicBool>,
+    }
+    impl TouchEnvironment for InstalledOwner {
+        fn binary_present(&self) -> bool {
+            self.installed.load(Ordering::SeqCst)
+        }
+        fn fingerprint(&self, deadline: std::time::Instant) -> Option<Fingerprint> {
+            self.inner.fingerprint(deadline)
+        }
+        fn spawn(&self) -> Option<Box<dyn TouchChild>> {
+            self.inner.spawn()
+        }
+        fn sleep(&self, _: Duration) {}
+    }
+    struct AcceptRefreshed;
+    impl AnthropicTransport for AcceptRefreshed {
+        fn usage(&self, token: &str) -> Result<String, ProviderUsageError> {
+            if token == "synthetic-token" {
+                Ok(LIVE_USAGE_BODY.to_owned())
+            } else {
+                Err(ProviderUsageError::Authentication)
+            }
+        }
+        fn profile(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+
+    for terminal in [false, true] {
+        for rejected in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(".credentials.json");
+            fs::write(&path, credentials_file(1, "max")).unwrap();
+            let installed = Arc::new(AtomicBool::new(terminal));
+            let spawns = Arc::new(AtomicUsize::new(0));
+            let env = InstalledOwner {
+                inner: FileTouchEnv {
+                    path: path.clone(),
+                    binary_present: true,
+                    writes_on_spawn: Some(credentials_file(i64::MAX, "max")),
+                    spawns: spawns.clone(),
+                },
+                installed: installed.clone(),
+            };
+            let fingerprint = env.fingerprint(std::time::Instant::now() + Duration::from_secs(1));
+            let source = ClaudeDirectFetch::at_with_touch(
+                path.clone(),
+                Box::new(AcceptRefreshed),
+                Box::new(env),
+            );
+            if terminal {
+                source.touch_gate.mark_terminal(fingerprint.unwrap());
+            }
+            assert_eq!(
+                source.fetch(TEST_MAX_AGE).detail,
+                Some(SourceErrorDetail::RefreshPending)
+            );
+            source.touch_gate.wait_for_worker();
+            source.cooldown.open_for_test();
+            assert_eq!(
+                source.fetch(TEST_MAX_AGE).detail,
+                Some(if terminal {
+                    SourceErrorDetail::SignInRequired
+                } else {
+                    SourceErrorDetail::CliMissing
+                })
+            );
+
+            installed.store(true, Ordering::SeqCst);
+            let replacement = credentials_file(if rejected { i64::MAX } else { 2 }, "max")
+                .replace("synthetic-token", "replacement-token");
+            fs::write(&path, replacement).unwrap();
+            source.cooldown.open_for_test();
+            assert_eq!(
+                source.fetch(TEST_MAX_AGE).detail,
+                Some(SourceErrorDetail::RefreshPending)
+            );
+            assert_eq!(source.detect(false).detection, Detection::SignedIn);
+            source.touch_gate.wait_for_worker();
+            assert_eq!(spawns.load(Ordering::SeqCst), 1);
+            source.cooldown.open_for_test();
+            assert_eq!(source.fetch(TEST_MAX_AGE).error, None);
+            assert_eq!(source.detect(false).detection, Detection::SignedIn);
+        }
+    }
+}
+
+#[test]
+fn user_and_background_refreshes_share_the_same_credential_cooldown() {
+    for user_first in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        fs::write(&path, credentials_file(1, "max")).unwrap();
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let source = ClaudeDirectFetch::at_with_touch(
+            path.clone(),
+            Box::new(UnreachableTransport),
+            Box::new(FileTouchEnv {
+                path: path.clone(),
+                binary_present: true,
+                writes_on_spawn: None,
+                spawns: spawns.clone(),
+            }),
+        );
+        let ages = if user_first {
+            [USER_MAX_AGE, TEST_MAX_AGE]
+        } else {
+            [TEST_MAX_AGE, USER_MAX_AGE]
+        };
+        for age in ages {
+            source.cooldown.open_for_test();
+            assert_eq!(
+                source.fetch(age).detail,
+                Some(SourceErrorDetail::RefreshPending)
+            );
+            source.touch_gate.wait_for_worker();
+            assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        }
+        fs::write(&path, credentials_file(2, "max")).unwrap();
+        source.cooldown.open_for_test();
+        assert_eq!(
+            source.fetch(ages[1]).detail,
+            Some(SourceErrorDetail::RefreshPending)
+        );
+        source.touch_gate.wait_for_worker();
+        assert_eq!(spawns.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[test]
+fn an_old_worker_cannot_publish_failure_for_a_replacement_login() {
+    use super::super::super::claude_touch::{Fingerprint, TouchChild, TouchEnvironment};
+    use std::sync::mpsc;
+
+    struct BlockedMissingOwner {
+        started: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl TouchEnvironment for BlockedMissingOwner {
+        fn binary_present(&self) -> bool {
+            self.started.send(()).unwrap();
+            lock(&self.release).recv().unwrap();
+            false
+        }
+        fn fingerprint(&self, _: std::time::Instant) -> Option<Fingerprint> {
+            unreachable!()
+        }
+        fn spawn(&self) -> Option<Box<dyn TouchChild>> {
+            unreachable!()
+        }
+        fn sleep(&self, _: Duration) {
+            unreachable!()
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".credentials.json");
+    fs::write(&path, credentials_file(1, "max")).unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let source = ClaudeDirectFetch::at_with_touch(
+        path.clone(),
+        Box::new(UnreachableTransport),
+        Box::new(BlockedMissingOwner {
+            started: started_tx,
+            release: Mutex::new(release_rx),
+        }),
+    );
+    assert_eq!(
+        source.fetch(TEST_MAX_AGE).detail,
+        Some(SourceErrorDetail::RefreshPending)
+    );
+    let started = started_rx.recv_timeout(Duration::from_secs(2));
+    fs::write(&path, credentials_file(2, "max")).unwrap();
+    source.read_file_login(&path).unwrap();
+    release_tx.send(()).unwrap();
+    source.touch_gate.wait_for_worker();
+    started.unwrap();
+    assert_eq!(
+        source
+            .touch_gate
+            .completed(&source.logins.refresh_fingerprint()),
+        None
+    );
+    assert_eq!(source.detect(false).detection, Detection::SignedIn);
+}
+
 pub(super) fn assert_published_detection<T: LiveUsageSource + 'static>(
     source: Arc<T>,
     expected: Detection,

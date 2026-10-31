@@ -392,6 +392,20 @@ pub(super) struct NativeLogins {
 pub(super) const MAX_PENDING_OBSERVATIONS: usize = 16;
 
 impl NativeLogins {
+    /// Identify the cached carriers without reading secrets or probing metadata.
+    pub(super) fn refresh_fingerprint(&self) -> claude_touch::Fingerprint {
+        let file = lock(&self.file)
+            .as_ref()
+            .map(|cached| cached.marker.content_hash);
+        #[cfg(target_os = "macos")]
+        let keychain = lock(&self.keychain)
+            .as_ref()
+            .map(|cached| cached.marker.attributes_hash);
+        #[cfg(not(target_os = "macos"))]
+        let keychain: Option<u64> = None;
+        claude_touch::Fingerprint(format!("file={file:?};keychain={keychain:?}"))
+    }
+
     /// Record whether the CLI refresh could not recover the cached logins.
     pub(super) fn set_sign_in_required(&self, required: bool) {
         #[cfg(target_os = "macos")]
