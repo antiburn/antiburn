@@ -879,7 +879,7 @@ impl ClaudeDirectFetch {
         }
         // A background refresh must not raise a new Keychain prompt.
         if !user {
-            return fallback();
+            return fallback().map_err(|_| auth_failure(SourceErrorDetail::RefreshPending));
         }
         if let Some((failed, at)) = lock(&self.logins.keychain_secret_failed).as_ref()
             && *failed == marker

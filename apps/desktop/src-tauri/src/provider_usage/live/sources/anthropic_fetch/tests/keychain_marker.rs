@@ -334,6 +334,38 @@ fn unreadable_secret_without_live_cache_is_not_signed_out() {
 }
 
 #[test]
+fn skipped_background_secret_read_without_live_cache_is_pending() {
+    for body in [
+        None,
+        Some(BLANK_LOGIN.into()),
+        Some(MCP_ONLY.into()),
+        Some(credentials_file(1, "max")),
+    ] {
+        let source = source();
+        if let Some(body) = body {
+            seed(&source, body);
+        }
+        let error = source
+            .read_keychain_login(found(ATTRIBUTES_B), no_secret_read, &|_| {}, false)
+            .err()
+            .unwrap();
+        assert_eq!(error.detail, Some(SourceErrorDetail::RefreshPending));
+        assert!(lock(&source.logins.keychain_secret_failed).is_none());
+        let login = source
+            .read_keychain_login(
+                found(ATTRIBUTES_B),
+                secret(credentials_file(i64::MAX, "pro")),
+                &|_| {},
+                true,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(login.is_live(OffsetDateTime::now_utc()));
+        assert_eq!(login.subscription_type.as_deref(), Some("pro"));
+    }
+}
+
+#[test]
 fn background_never_reads_a_new_secret_even_after_backoff() {
     let source = source();
     assert!(
