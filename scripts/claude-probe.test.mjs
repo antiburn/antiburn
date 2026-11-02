@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -181,69 +182,112 @@ fi
 printf '%s\\n' "$PROBE_STUB_HEX"
 `;
 
-test(
-  "the full probe decodes hex Keychain output and reports a denied read",
-  {
-    skip: process.platform === "win32" && "the probe test needs POSIX tools",
-  },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), "antiburn-claude-probe-home-"));
-    const bin = join(home, "bin");
-    mkdirSync(bin);
-    writeFileSync(join(bin, "security"), securityStub);
-    // Keep the run fast and independent of the host's brew and npm.
-    writeFileSync(join(bin, "brew"), "#!/bin/sh\nexit 0\n");
-    writeFileSync(join(bin, "npm"), "#!/bin/sh\nexit 0\n");
-    // Simulate macOS so Linux CI also checks the Keychain pipeline.
-    writeFileSync(join(bin, "uname"), "#!/bin/sh\necho Darwin\n");
-    writeFileSync(join(bin, "sw_vers"), "#!/bin/sh\necho 26.0\n");
-    writeFileSync(join(bin, "zsh"), "#!/bin/sh\nexit 0\n");
-    for (const name of ["security", "brew", "npm", "uname", "sw_vers", "zsh"]) {
-      chmodSync(join(bin, name), 0o755);
-    }
-    const out = join(home, "out");
-    const result = spawnSync(
-      "bash",
-      [probe, "--label", "stub", "--out", out, "--keychain-shape"],
-      {
-        cwd: home,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          HOME: home,
-          PATH: `${bin}:${process.env.PATH}`,
-          CLAUDE_CONFIG_DIR: join(home, "no-config"),
-          CLAUDE_PROBE_NOW_MS: String(nowMs),
-          PROBE_STUB_HEX: hex(
-            login({
-              accessToken: "synthetic-access-token",
-              refreshToken: "synthetic-refresh-token",
-              expiresAt: nowMs - 60 * 60_000,
-            }),
-          ),
+for (const fileState of ["absent", "readable", "unreadable"]) {
+  test(
+    `the full probe handles Keychain reads with credentials file state: ${fileState}`,
+    {
+      skip:
+        (process.platform === "win32" && "the probe test needs POSIX tools") ||
+        (fileState === "unreadable" &&
+          process.getuid?.() === 0 &&
+          "root bypasses file permissions"),
+    },
+    (t) => {
+      const home = mkdtempSync(join(tmpdir(), "antiburn-claude-probe-home-"));
+      t.after(() => rmSync(home, { recursive: true, force: true }));
+      const config = join(home, "config");
+      if (fileState !== "absent") {
+        mkdirSync(config);
+        const credentials = join(config, ".credentials.json");
+        writeFileSync(
+          credentials,
+          login({ accessToken: "synthetic-access-token" }),
+        );
+        if (fileState === "unreadable") chmodSync(credentials, 0o000);
+      }
+      const bin = join(home, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "security"), securityStub);
+      // Keep the run fast and independent of the host's brew and npm.
+      writeFileSync(join(bin, "brew"), "#!/bin/sh\nexit 0\n");
+      writeFileSync(join(bin, "npm"), "#!/bin/sh\nexit 0\n");
+      // Simulate macOS so Linux CI also checks the Keychain pipeline.
+      writeFileSync(join(bin, "uname"), "#!/bin/sh\necho Darwin\n");
+      writeFileSync(join(bin, "sw_vers"), "#!/bin/sh\necho 26.0\n");
+      writeFileSync(join(bin, "zsh"), "#!/bin/sh\nexit 0\n");
+      for (const name of [
+        "security",
+        "brew",
+        "npm",
+        "uname",
+        "sw_vers",
+        "zsh",
+      ]) {
+        chmodSync(join(bin, name), 0o755);
+      }
+      const out = join(home, "out");
+      const result = spawnSync(
+        "bash",
+        [probe, "--label", "stub", "--out", out, "--keychain-shape"],
+        {
+          cwd: home,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            HOME: home,
+            PATH: `${bin}:${process.env.PATH}`,
+            CLAUDE_CONFIG_DIR: config,
+            CLAUDE_PROBE_NOW_MS: String(nowMs),
+            PROBE_STUB_HEX: hex(
+              login({
+                accessToken: "synthetic-access-token",
+                refreshToken: "synthetic-refresh-token",
+                expiresAt: nowMs - 60 * 60_000,
+              }),
+            ),
+          },
         },
-      },
-    );
-    assert.equal(result.status, 0, result.stderr);
-    const [file] = readdirSync(out);
-    const report = readFileSync(join(out, file), "utf8");
-    for (const secret of secrets) {
-      assert.ok(!report.includes(secret), `report shows ${secret}`);
-    }
-    const plain = report.split("- `Claude Code-credentials`: present")[1];
-    const hashed = report.split("- `Claude Code-credentials-0abc`: present")[1];
-    assert.ok(plain && hashed, report);
-    assert.match(
-      plain.split("- `Claude Code-credentials-0abc`")[0],
-      /    - data: hex-encoded, decoded\n[\s\S]*    - claudeAiOauth.expiresAt: past, about 60 min ago/,
-    );
-    assert.match(
-      hashed,
-      /^ \(acct set: yes, mdat: 20240101000000Z\)\n  - login shape \(secret read, can show a Keychain prompt\):\n    - data: unreadable \(security exit 51: /,
-    );
-    assert.ok(
-      !hashed.split("\n- `Claude Safe Storage`")[0].includes("data: empty"),
-    );
-    assert.match(report, /- `Claude Safe Storage`: absent/);
-  },
-);
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const [file] = readdirSync(out);
+      const report = readFileSync(join(out, file), "utf8");
+      for (const secret of secrets) {
+        assert.ok(!report.includes(secret), `report shows ${secret}`);
+      }
+      const plain = report.split("- `Claude Code-credentials`: present")[1];
+      const hashed = report.split(
+        "- `Claude Code-credentials-0abc`: present",
+      )[1];
+      assert.ok(plain && hashed, report);
+      assert.match(
+        plain.split("- `Claude Code-credentials-0abc`")[0],
+        /    - data: hex-encoded, decoded\n[\s\S]*    - claudeAiOauth.expiresAt: past, about 60 min ago/,
+      );
+      assert.match(
+        hashed,
+        /^ \(acct set: yes, mdat: 20240101000000Z\)\n  - login shape \(secret read, can show a Keychain prompt\):\n    - data: unreadable \(security exit 51: /,
+      );
+      assert.ok(
+        !hashed.split("\n- `Claude Safe Storage`")[0].includes("data: empty"),
+      );
+      assert.match(report, /- `Claude Safe Storage`: absent/);
+      const fileSection = report
+        .split("## CLI config/credential files")[1]
+        .split("## CLI transcripts")[0];
+      if (fileState === "unreadable") {
+        assert.match(
+          fileSection,
+          /data: unreadable \(credentials file cannot be read\)/,
+        );
+        assert.ok(!fileSection.includes("data: empty"));
+        assert.equal(result.stderr, "");
+      } else if (fileState === "readable") {
+        assert.match(fileSection, /accessToken: string, non-empty/);
+      } else {
+        assert.match(fileSection, /credentials file .*: absent/);
+      }
+      assert.match(report, /## Other macOS footprints/);
+      assert.match(result.stdout, /wrote /);
+    },
+  );
+}

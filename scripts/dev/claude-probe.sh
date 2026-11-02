@@ -215,7 +215,9 @@ jsonl_shape() {
   if [[ -f "$creds" ]]; then
     echo "- credentials file (\$CLAUDE_CONFIG_DIR or ~/.claude)/.credentials.json: present (mtime: $(file_mtime "$creds"))"
     echo "  - login shape:"
-    login_shape < "$creds" | sed 's/^/    /'
+    if ! { login_shape < "$creds"; } 2>/dev/null | sed 's/^/    /'; then
+      echo "    - data: unreadable (credentials file cannot be read)"
+    fi
   else
     echo "- credentials file (\$CLAUDE_CONFIG_DIR or ~/.claude)/.credentials.json: absent"
   fi
