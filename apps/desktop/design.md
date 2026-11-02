@@ -1900,7 +1900,7 @@ What’s new is reserved for recent changes. Small windows constrain the frame a
 its content. The media cell uses a 32:15 ratio (150px tall at the default width) and bottom-aligned cover fitting.
 Light-mode media and its poster switch together through the optional YAML `media.light` variant.
 The base source remains the dark-mode fallback. Theme changes reset media failures;
-reduced motion still shows the poster. Videos and GIFs keep looping across focus
+reduced motion still shows the poster. Animated images keep looping across focus
 changes without swapping sources or resetting playback.
 Use the opaque `surface-overlay`, `rounded-promotion`, and `shadow-promotion`
 tokens. The promotion shadow retains the popover shadow in light mode. In dark mode,

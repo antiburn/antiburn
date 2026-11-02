@@ -282,21 +282,31 @@ test("label-free animations and posters switch together between themes", async (
   const panel = page.locator(".promotion-panel")
   await expect(panel).toBeVisible()
   const image = panel.locator(".promotion-media img")
-  await expect(image).toHaveAttribute("src", /claude-mod-desktop-light-no-label-800.*\.webp/)
-  // An animated image gives JavaScript no frame position, so this asserts that
-  // the webview decoded the asset at its exact canvas size. It does not prove
-  // that the animation advances.
-  await expect.poll(() => image.evaluate((node: HTMLImageElement) => node.complete)).toBe(true)
-  expect(
-    await image.evaluate((node: HTMLImageElement) => ({
-      width: node.naturalWidth,
-      height: node.naturalHeight,
-    })),
-  ).toEqual({ width: 800, height: 416 })
+  // Chromium can decode the WebP at its canvas size. This does not prove animation advances.
+  const expectDecoded = async (theme: "light" | "dark") => {
+    const source = new RegExp(`claude-mod-desktop-${theme}-no-label-800.*\\.webp`)
+    await expect
+      .poll(() =>
+        image.evaluate(async (node: HTMLImageElement) => {
+          try {
+            await node.decode()
+            return {
+              src: node.currentSrc,
+              width: node.naturalWidth,
+              height: node.naturalHeight,
+            }
+          } catch {
+            return null
+          }
+        }),
+      )
+      .toEqual({ src: expect.stringMatching(source), width: 800, height: 416 })
+  }
+  await expectDecoded("light")
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "dark"
   })
-  await expect(image).toHaveAttribute("src", /claude-mod-desktop-dark-no-label-800.*\.webp/)
+  await expectDecoded("dark")
   await expect(image).toHaveCSS("visibility", "visible")
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "light"

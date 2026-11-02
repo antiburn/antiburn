@@ -82,6 +82,21 @@ it("shows the still poster when the reader requests less motion", () => {
   expect(preview().querySelector("img")).toHaveAttribute("src", "/light.png")
 })
 
+it("tries the animation after a reduced-motion poster fails", () => {
+  reduced = true
+  render(<PromotionMedia media={media} />)
+  const image = preview().querySelector("img")!
+  expect(image).toHaveAttribute("src", "/light.png")
+  fireEvent.error(image)
+  act(() => {
+    reduced = false
+    changes.dispatchEvent(new Event("change"))
+  })
+  expect(image).toHaveAttribute("src", "/light.webp")
+  fireEvent.error(image)
+  expect(image).toHaveAttribute("src", "/light.png")
+})
+
 it("falls back to the poster once, and never loops on a broken poster", () => {
   render(<PromotionMedia media={media} />)
   const image = preview().querySelector("img")!

@@ -54,7 +54,7 @@ function PromotionMediaContent({ media }: { media: Media }) {
       <img
         src={imageSource}
         // A broken poster has no further fallback, so it must not set the flag.
-        onError={media.poster && !failed ? () => setFailed(true) : undefined}
+        onError={media.poster && !failed && animateImage ? () => setFailed(true) : undefined}
         alt=""
         aria-hidden="true"
       />
