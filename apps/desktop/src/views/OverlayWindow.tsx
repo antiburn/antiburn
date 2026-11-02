@@ -382,7 +382,11 @@ function HudContent({
           style={{ rowGap: `${rowGap}px` }}
         >
           {state.bars.map((bar, index) => (
-            <div key={bar.key}>
+            <div
+              key={bar.key}
+              className={bar.stale ? "opacity-60" : undefined}
+              aria-label={bar.statusNote ?? undefined}
+            >
               {labelled && (
                 <div
                   className={`led-caption type-footnote ${ink} mb-1 flex items-baseline justify-between gap-2`}
@@ -413,7 +417,7 @@ function HudContent({
                   className={`led-caption type-footnote ${ink} mt-1 opacity-60`}
                   data-testid="hud-bar-reset"
                 >
-                  {resetsIn(bar.resetsAt, state.now)}
+                  {bar.statusNote ?? resetsIn(bar.resetsAt, state.now)}
                 </p>
               )}
             </div>

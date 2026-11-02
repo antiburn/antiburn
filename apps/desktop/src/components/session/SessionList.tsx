@@ -15,7 +15,13 @@ import {
   type AgentIconAppearance,
   type AgentSurface,
 } from "../../lib/presentation/agents"
-import { liveDisplayableProviders, liveWindows } from "../../lib/presentation/liveUsage"
+import {
+  liveDisplayableProviders,
+  liveProviderStatus,
+  liveStatusNote,
+  liveStaleNote,
+  liveWindows,
+} from "../../lib/presentation/liveUsage"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
   INITIAL_SESSION_HYGIENE,
@@ -260,10 +266,15 @@ function providerConfirmsNoWindow(
   if (!live) return false
   const provider = agentProvider(agent)
   if (!provider) return false
-  return !liveDisplayableProviders(live).some(
-    (entry) =>
-      entry.provider === provider &&
-      liveWindows(entry).some((window) => windowMatchesMetric(provider, window, metric)),
+  const readings = live.providers.filter((entry) => entry.provider === provider)
+  return (
+    readings.length > 0 &&
+    readings.every(
+      (entry) =>
+        entry.freshness !== "stale" &&
+        liveProviderStatus(live, entry).kind === "live" &&
+        !liveWindows(entry).some((window) => windowMatchesMetric(provider, window, metric)),
+    )
   )
 }
 
@@ -295,8 +306,20 @@ export function sessionLimitBadge(
       metric === "weeklyPercent"
         ? `This session used about ${n}% of your ${allocation.displayName} weekly limit, across all models. Estimated.`
         : `This session used about ${n}% of your ${allocation.displayName} 5-hour limit. Estimated.`
+    const reading = liveUsage?.providers.find((entry) => entry.provider === allocation.provider)
+    const status = liveUsage && reading ? liveProviderStatus(liveUsage, reading) : null
+    const stale =
+      reading?.freshness === "stale" || status?.kind === "stale" || status?.kind === "failed"
+    const note =
+      status && reading
+        ? (liveStatusNote(status, reading.provider) ??
+          (stale
+            ? liveStaleNote(Date.parse(liveUsage!.generatedAt) - Date.parse(reading.observedAt))
+            : null))
+        : null
     return {
-      label,
+      label: note ? `${label} ${note}` : label,
+      stale,
       percent: allocation.percent,
       provider: allocation.provider,
       windowId: allocation.windowId,

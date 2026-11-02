@@ -28,7 +28,8 @@ pub struct PiOauth {
 impl PiOauth {
     /// Whether the access token has not yet passed its stated expiry.
     pub fn is_live(&self, now: time::OffsetDateTime) -> bool {
-        i128::from(self.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
+        !self.access_token.trim().is_empty()
+            && i128::from(self.expires_at_ms) > now.unix_timestamp_nanos() / 1_000_000
     }
 }
 
@@ -66,28 +67,54 @@ pub fn provider_keys(path: &Path) -> Option<std::collections::BTreeSet<String>> 
     Some(value.as_object()?.keys().cloned().collect())
 }
 
-/// Read a live OAuth entry for `provider_key`.
+/// Read a complete OAuth entry for `provider_key`, including expired entries.
 pub fn read_entry(path: &Path, provider_key: &str) -> Option<PiOauth> {
-    let metadata = fs::metadata(path).ok()?;
-    if metadata.len() > MAX_AUTH_BYTES {
-        return None;
-    }
-    let contents = fs::read_to_string(path).ok()?;
-    parse_entry(&contents, provider_key)
+    read_entry_checked(path, provider_key).ok().flatten()
 }
 
-fn parse_entry(contents: &str, provider_key: &str) -> Option<PiOauth> {
-    let value: Value = serde_json::from_str(contents).ok()?;
+/// Keep an unreadable store separate from an absent provider login.
+pub fn read_entry_checked(path: &Path, provider_key: &str) -> std::io::Result<Option<PiOauth>> {
+    Ok(read_raw_entry_checked(path, provider_key)?.filter(|entry| {
+        !entry.access_token.is_empty() && !entry.refresh_token.is_empty() && entry.expires_at_ms > 0
+    }))
+}
+
+/// Read an OAuth login even when its credential fields are incomplete.
+/// Callers must check usability before they use the token.
+pub fn read_raw_entry_checked(path: &Path, provider_key: &str) -> std::io::Result<Option<PiOauth>> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if metadata.len() > MAX_AUTH_BYTES {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    let contents = fs::read_to_string(path)?;
+    let value: Value =
+        serde_json::from_str(&contents).map_err(|_| std::io::ErrorKind::InvalidData)?;
+    Ok(parse_entry(&value, provider_key))
+}
+
+fn parse_entry(value: &Value, provider_key: &str) -> Option<PiOauth> {
     let entry = value.get(provider_key)?;
     if entry.get("type").and_then(Value::as_str) != Some("oauth") {
         return None;
     }
-    let access_token = entry.get("access")?.as_str()?.to_owned();
-    let refresh_token = entry.get("refresh")?.as_str()?.to_owned();
-    let expires_at_ms = entry.get("expires")?.as_i64()?;
-    if access_token.is_empty() || refresh_token.is_empty() || expires_at_ms <= 0 {
-        return None;
-    }
+    let access_token = entry
+        .get("access")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let refresh_token = entry
+        .get("refresh")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let expires_at_ms = entry
+        .get("expires")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
     let account_id = entry
         .get("accountId")
         .and_then(Value::as_str)
@@ -104,6 +131,10 @@ fn parse_entry(contents: &str, provider_key: &str) -> Option<PiOauth> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_entry(contents: &str, provider_key: &str) -> Option<PiOauth> {
+        super::parse_entry(&serde_json::from_str::<Value>(contents).ok()?, provider_key)
+    }
 
     #[test]
     fn only_a_debug_build_with_the_value_one_ignores_pi() {
@@ -134,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_oauth_missing_and_tombstoned_entries() {
+    fn raw_parser_keeps_incomplete_logins_but_rejects_other_shapes() {
         assert!(parse_entry(STORE, "openrouter").is_none());
         assert!(parse_entry(STORE, "missing").is_none());
         for entry in [
@@ -142,7 +173,7 @@ mod tests {
             r#"{"anthropic":{"type":"oauth","access":"a","refresh":"","expires":1800000000000}}"#,
             r#"{"anthropic":{"type":"oauth","access":"a","refresh":"r","expires":0}}"#,
         ] {
-            assert!(parse_entry(entry, ANTHROPIC_KEY).is_none());
+            assert!(parse_entry(entry, ANTHROPIC_KEY).is_some());
         }
     }
 
@@ -153,6 +184,53 @@ mod tests {
         let after = time::OffsetDateTime::from_unix_timestamp(1_900_000_000).unwrap();
         assert!(entry.is_live(before));
         assert!(!entry.is_live(after));
+    }
+
+    #[test]
+    fn strict_readers_reject_incomplete_entries_for_every_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        for provider in [ANTHROPIC_KEY, CODEX_KEY] {
+            for entry in [
+                r#"{"type":"oauth"}"#,
+                r#"{"type":"oauth","access":"","refresh":"r","expires":1}"#,
+                r#"{"type":"oauth","access":"a","refresh":"","expires":1}"#,
+                r#"{"type":"oauth","access":"a","refresh":"r","expires":0}"#,
+                r#"{"type":"oauth","access":1,"refresh":"r","expires":1}"#,
+                r#"{"type":"oauth","access":"a","refresh":1,"expires":1}"#,
+                r#"{"type":"oauth","access":"a","refresh":"r","expires":"1"}"#,
+            ] {
+                fs::write(&path, format!(r#"{{"{provider}":{entry}}}"#)).unwrap();
+                assert!(read_entry(&path, provider).is_none());
+                assert!(read_entry_checked(&path, provider).unwrap().is_none());
+                assert!(read_raw_entry_checked(&path, provider).unwrap().is_some());
+            }
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"{provider}":{{"type":"oauth","access":"a","refresh":"r","expires":1}}}}"#
+                ),
+            )
+            .unwrap();
+            assert!(read_entry_checked(&path, provider).unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn checked_readers_distinguish_missing_login_from_invalid_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        for reader in [read_entry_checked, read_raw_entry_checked] {
+            assert!(reader(&path, ANTHROPIC_KEY).unwrap().is_none());
+            fs::write(&path, "{}").unwrap();
+            assert!(reader(&path, ANTHROPIC_KEY).unwrap().is_none());
+            fs::write(&path, "{").unwrap();
+            assert_eq!(
+                reader(&path, ANTHROPIC_KEY).err().unwrap().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            fs::remove_file(&path).unwrap();
+        }
     }
 
     #[test]
