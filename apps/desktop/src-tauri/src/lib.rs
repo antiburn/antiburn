@@ -50,11 +50,14 @@
 //! policy limits the webview to local application and IPC connections.
 
 pub mod agent_config;
+pub mod agent_integrations;
 mod agent_memory;
 mod agents;
 mod analysis;
 mod analytics;
 mod app_presence;
+pub mod check_store;
+pub mod cli_install;
 mod commands;
 mod consent;
 mod diagnostics_export;
@@ -66,12 +69,13 @@ mod global_click;
 mod hud;
 mod hud_commands;
 mod hud_token_map;
-mod ignored_instructions_worker;
 mod insights_ipc;
 mod insights_report;
 mod insights_worker;
+mod installed_checks;
 mod interface_scale;
 mod jev;
+pub mod published_evidence_reader;
 pub use jev::client::evaluate_custom as evaluate_custom_system_one;
 pub use jev::config as jev_config;
 pub mod jev_cloudflare;
@@ -82,7 +86,7 @@ mod main_window;
 mod memory_probe;
 mod notifications;
 mod nudges;
-mod over_exploring_worker;
+mod opencode_live;
 mod popover;
 mod popover_peek;
 mod provider_accounts;
@@ -91,21 +95,23 @@ pub mod remediation;
 mod remote_cache;
 mod remote_sessions;
 mod remote_sync;
+#[cfg(test)]
+#[path = "../eval/replay/mod.rs"]
+mod replay;
 mod repositories;
 mod retention;
 mod runtime_pricing;
 mod runtime_pricing_config;
 mod scan;
-mod scope_creep_worker;
 mod session_lifecycle;
 mod session_projection;
-pub mod session_scope;
 mod settings;
-mod skill_opportunities_worker;
-pub mod smart_check_inputs;
 mod startup_registration;
 mod storage_health;
 mod store;
+#[cfg(test)]
+#[path = "store/burn_checks/trace_capture_tests.rs"]
+mod trace_capture;
 // This bridge keeps the CH-007 evidence readers reachable. The insights
 // commands consume the backlog reader, but `Store::evidence` still has no
 // production caller outside tests, so the re-export stays until CH-013's
@@ -254,24 +260,13 @@ pub fn run() {
         // engine's state helpers as an explicit argument.
         let data_dir = app.path().app_data_dir()?;
         app.manage(store::Store::open(&data_dir)?);
-        // Disclose requests abandoned by an earlier process before Settings
-        // reads usage or the worker can dispatch another request.
-        let (newly_recovered, unresolved_identities) = app
-            .state::<store::Store>()
-            .recover_abandoned_burn_check_usage(time::OffsetDateTime::now_utc().unix_timestamp())?;
-        if newly_recovered > 0 || unresolved_identities > 0 {
-            ::tracing::warn!(
-                event = "burn_check_usage_recovered",
-                newly_recovered,
-                unresolved_identities
-            );
-        }
         app.manage(remediation::RemediationController::new(data_dir.clone()));
         let main_window_state = main_window::MainWindowState::load(&app.state::<store::Store>());
         app.manage(main_window_state);
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(jev::worker::WorkerHandle::default());
+        app.manage(installed_checks::InstalledChecks::default());
         app.manage(insights_ipc::InsightsController::default());
         jev::settings::restore_at_launch(app.handle());
         let evidence_reconcile_started = std::time::Instant::now();
@@ -417,6 +412,19 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        cli_install::start(app.handle());
+        agent_integrations::desktop::start(app.handle(), |app, validation| {
+            let runtime = match validation {
+                agent_integrations::desktop::CliValidation::Fresh => cli_install::resolve_cli(app),
+                agent_integrations::desktop::CliValidation::Cached => cli_install::inspect_cli(app),
+            };
+            runtime.map(|runtime| agent_integrations::lifecycle::CliConnection {
+                executable: runtime.executable,
+                version: runtime.version,
+                sha256: runtime.sha256,
+                delivery_protocols: runtime.delivery_protocols,
+            })
+        });
         // Only file metadata, but keep it off the launch path.
         tauri::async_runtime::spawn_blocking(provider_usage::live::sources::log_cli_location);
         let settings = app.state::<store::Store>().settings().ok();
@@ -439,7 +447,7 @@ pub fn run() {
             schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
-            schedulers.push(jev::worker::spawn(app.handle()));
+            installed_checks::start(app.handle());
             schedulers.push(updates::spawn_scheduler(app.handle()));
             schedulers.push(usage_alerts::spawn_scheduler(app.handle()));
             schedulers.push(disk_monitor::spawn_disk_monitor(app.handle().clone()));
@@ -495,6 +503,7 @@ pub fn run() {
         // A deliberate quit: stop the background tasks before the store
         // they write to is dropped.
         RunEvent::Exit => {
+            installed_checks::shutdown(app);
             #[cfg(target_os = "macos")]
             if let Some(manager) = app.try_state::<popover_peek::PopoverPeekManager>() {
                 manager.shutdown();
@@ -800,6 +809,57 @@ mod tests {
         );
     }
 
+    /// Settings → Agents, Sessions, and Checks render the same step settings
+    /// as the main window's first run. The settings window gets the app's
+    /// default set, so every command those panes call must be in it, or in
+    /// a capability that names the settings window.
+    #[test]
+    fn settings_window_can_call_the_step_settings_commands() {
+        let defaults = include_str!("../permissions/default.toml");
+        for expected in [
+            "allow-agent-session-locations",
+            "allow-get-settings",
+            "allow-set-settings",
+            "allow-get-scan-status",
+            "allow-scan-now",
+            "allow-scan-history",
+            "allow-cancel-scan",
+            "allow-app-info",
+            "allow-add-scan-root",
+            "allow-remove-scan-root",
+            "allow-list-scan-roots",
+            "allow-list-repositories",
+            "allow-refresh-repositories",
+            "allow-set-repository-enabled",
+            "allow-get-folder-permissions",
+            "allow-recheck-folder-permissions",
+            "allow-get-consent-diagnostics",
+            "allow-open-folder-access-settings",
+            "allow-request-folder-access",
+            "allow-get-remote-hosts",
+            "allow-get-remote-sync-status",
+            "allow-check-remote-host",
+            "allow-add-remote-host",
+            "allow-update-remote-host",
+            "allow-set-remote-host-sync-enabled",
+            "allow-remove-remote-host",
+            "allow-scan-remote-host",
+            "allow-set-remote-sync-interval",
+            "allow-open-remote-helper-downloads",
+            "allow-get-check-availability",
+            "allow-open-main-window-section",
+        ] {
+            let line = format!("\"{expected}\",");
+            assert!(
+                defaults.lines().any(|candidate| candidate.trim() == line),
+                "missing {expected}"
+            );
+        }
+        let default_capability = include_str!("../capabilities/default.json");
+        assert!(default_capability.contains("\"settings\""));
+        assert!(default_capability.contains("\"default\""));
+    }
+
     #[test]
     fn main_window_capability_includes_window_actions_without_broad_defaults() {
         let capability = include_str!("../capabilities/main.json");
@@ -878,6 +938,30 @@ mod tests {
             capability.contains("\"settings\""),
             "missing settings window"
         );
+        for command in [
+            "get_system_one_settings",
+            "test_system_one_connection",
+            "save_system_one_connection",
+            "remove_system_one_connection",
+            "retry_system_one_connection_operation",
+            "switch_system_one_connection",
+            "refresh_system_one_limits",
+            "remove_system_one_credential",
+        ] {
+            assert!(include_str!("app_commands.rs").contains(command));
+            assert!(
+                capability.contains(&format!("allow-{}", command.replace('_', "-"))),
+                "missing permission for {command}"
+            );
+        }
+        for command in [
+            "run_check_backfill",
+            "set_check_history_days",
+            "get_burn_check_target_evidence",
+        ] {
+            assert!(!include_str!("app_commands.rs").contains(command));
+            assert!(!capability.contains(&format!("allow-{}", command.replace('_', "-"))));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -971,6 +1055,9 @@ mod tests {
                     evidence: None,
                     outcome: PassOutcome::SourceMissing,
                     source_outcomes: Vec::new(),
+                    tool_result_observations: Vec::new(),
+                    tool_result_observations_complete: false,
+                    native_tool_result_source_format: None,
                 }
             }) as PassFuture
         };

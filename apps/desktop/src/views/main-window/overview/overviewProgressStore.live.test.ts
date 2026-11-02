@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { DEFAULT_SETTINGS } from "../../../lib/ipc"
 import type { ScanPhase, ScanStatus } from "../../../lib/ipcPayloads"
+import { installedCheckFixture } from "../burn-checks/tests/installedCheckFixture"
 
 type Handler = (event: { payload: unknown }) => void
 
@@ -506,7 +507,8 @@ describe("overviewProgressStore's rewind", () => {
 
   it("goes back to a docked step and undocks every later one", async () => {
     const store = await reachFixes("skip")
-    store.rewindTo("sessions")
+    await store.previousStep()
+    await store.previousStep()
     await vi.waitFor(() => expect(store.overviewProgress().flow).toBe("sessions"))
     expect(store.stepDocked(store.overviewProgress().flow, "sessions")).toBe(false)
     expect(store.stepDocked(store.overviewProgress().flow, "checks")).toBe(false)
@@ -515,9 +517,26 @@ describe("overviewProgressStore's rewind", () => {
     expect(store.overviewProgress().flow).toBe("checks")
   })
 
+  it("can return to Welcome without sending backend commands or losing completed work", async () => {
+    const store = await reachFixes("skip")
+    mocks.invoke.mockClear()
+    for (const expected of ["checks", "sessions", "limits", "agents", "welcome"]) {
+      await store.previousStep()
+      expect(store.overviewProgress().flow).toBe(expected)
+    }
+    expect(mocks.invoke).not.toHaveBeenCalled()
+    expect(store.overviewProgress().agents.done).toBe(true)
+    expect(store.overviewProgress().sessions.done).toBe(true)
+    await store.previousStep()
+    expect(store.overviewProgress().flow).toBe("welcome")
+  })
+
   it("offers the live limits step again only when the reader skipped it", async () => {
     const skipped = await reachFixes("skip")
-    skipped.rewindTo("agents")
+    await skipped.previousStep()
+    await skipped.previousStep()
+    await skipped.previousStep()
+    await skipped.previousStep()
     await vi.waitFor(() => expect(skipped.overviewProgress().flow).toBe("agents"))
     await skipped.nextStep()
     expect(skipped.overviewProgress().flow).toBe("limits")
@@ -525,20 +544,23 @@ describe("overviewProgressStore's rewind", () => {
 
   it("passes over the live limits step once live usage is on", async () => {
     const shown = await reachFixes("show")
-    shown.rewindTo("agents")
+    await shown.previousStep()
+    await shown.previousStep()
+    await shown.previousStep()
+    await shown.previousStep()
     await vi.waitFor(() => expect(shown.overviewProgress().flow).toBe("agents"))
     await shown.nextStep()
     expect(shown.overviewProgress().flow).toBe("sessions")
   })
 
-  it("keeps Fixes open after a failed finish and lets Enhance retry", async () => {
+  it("keeps completion open after a failed finish and lets Get Started retry", async () => {
     const store = await reachFixes("skip")
     const invoke = mocks.invoke.getMockImplementation()!
     mocks.invoke.mockImplementation(async (command, args) => {
       if (command === "finish_first_run") throw new Error("save failed")
       return invoke(command, args)
     })
-    expect(await store.enhanceFixes()).toBe(false)
+    await store.nextStep()
     expect(mocks.invoke).not.toHaveBeenCalledWith("note_interaction", {
       interaction: { kind: "firstRunAction", action: "enhance_opened" },
     })
@@ -548,23 +570,23 @@ describe("overviewProgressStore's rewind", () => {
       actionError: expect.any(String),
     })
     mocks.invoke.mockImplementation(invoke)
-    expect(await store.enhanceFixes()).toBe(true)
+    await store.nextStep()
     expect(store.overviewProgress()).toMatchObject({ flow: "done", actionError: null })
   })
 
-  it("records Enhance and finishes the first run the same way Done does", async () => {
+  it("finishes setup on Get Started without an Enhance action", async () => {
     const store = await reachFixes("skip")
-    await store.enhanceFixes()
+    await store.nextStep()
     expect(store.overviewProgress().flow).toBe("done")
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
-    expect(mocks.invoke).toHaveBeenCalledWith("note_interaction", {
+    expect(mocks.invoke).not.toHaveBeenCalledWith("note_interaction", {
       interaction: { kind: "firstRunAction", action: "enhance_opened" },
     })
   })
 
   it("reports the result once, however often the reader returns to it", async () => {
     const store = await reachFixes("skip")
-    store.rewindTo("checks")
+    await store.previousStep()
     await vi.waitFor(() => expect(store.overviewProgress().flow).toBe("checks"))
     await store.nextStep()
     expect(store.overviewProgress().flow).toBe("fixes")
@@ -584,60 +606,68 @@ describe("overviewProgressStore's first-run analytics", () => {
       .map(([, args]) => args as { interaction: Record<string, unknown> })
   }
 
-  it("reports each funnel step once, then the result and the finish", async () => {
-    const invoke = mocks.invoke.getMockImplementation()!
-    mocks.invoke.mockImplementation(async (command, args) => {
-      if (command === "get_settings")
-        return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
-      return invoke(command, args)
-    })
+  it.each(["checks_disabled", "not_assessed"] as const)(
+    "reports each funnel step once, then %s and the finish",
+    async (expectedResult) => {
+      const invoke = mocks.invoke.getMockImplementation()!
+      mocks.invoke.mockImplementation(async (command, args) => {
+        if (command === "get_settings")
+          return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
+        if (command === "get_checks_report" && expectedResult === "not_assessed")
+          return {
+            ...SETTLED_REPORT,
+            installedChecks: [{ ...installedCheckFixture, finding: 0, clean: 0, targets: [] }],
+          }
+        return invoke(command, args)
+      })
 
-    const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
-      await import("./overviewProgressStore")
-    stops.push(subscribeOverviewProgress(() => undefined))
-    await waitForListener("scan:finished")
+      const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
+        await import("./overviewProgressStore")
+      stops.push(subscribeOverviewProgress(() => undefined))
+      await waitForListener("scan:finished")
 
-    runLaunchPass()
+      runLaunchPass()
 
-    await vi.waitFor(() => expect(overviewProgress().mode).toBe("firstRun"))
-    await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
+      await vi.waitFor(() => expect(overviewProgress().mode).toBe("firstRun"))
+      await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
 
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("agents"))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("limits"))
-    skipLiveLimits()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("sessions"))
-    await vi.waitFor(() => expect(overviewProgress().stepShown).toBe(true))
-    await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("checks"))
-    await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("fixes"))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("done"))
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("agents"))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("limits"))
+      skipLiveLimits()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("sessions"))
+      await vi.waitFor(() => expect(overviewProgress().stepShown).toBe(true))
+      await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("checks"))
+      await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("fixes"))
+      await nextStep()
+      await vi.waitFor(() => expect(overviewProgress().flow).toBe("done"))
+      await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
 
-    const steps = noteInteractionCalls().filter(
-      ({ interaction }) => interaction.kind === "firstRunStepReached",
-    )
-    expect(steps.filter((call) => call.interaction.step === "started")).toHaveLength(1)
-    const found = steps.filter((call) => call.interaction.step === "found")
-    expect(found).toHaveLength(1)
-    expect(found[0]?.interaction.sessions).toBe(49)
-    expect(steps.filter((call) => call.interaction.step === "read")).toHaveLength(1)
-    expect(steps.filter((call) => call.interaction.step === "checked")).toHaveLength(1)
-    const result = steps.filter((call) => call.interaction.step === "result")
-    expect(result).toHaveLength(1)
-    expect(result[0]?.interaction.result).toBe("checks_disabled")
-    // The shell command records `first_run_finished` after it saves.
-    expect(
-      noteInteractionCalls().filter(
-        ({ interaction }) => interaction.kind === "firstRunFinished",
-      ),
-    ).toHaveLength(0)
-  })
+      const steps = noteInteractionCalls().filter(
+        ({ interaction }) => interaction.kind === "firstRunStepReached",
+      )
+      expect(steps.filter((call) => call.interaction.step === "started")).toHaveLength(1)
+      const found = steps.filter((call) => call.interaction.step === "found")
+      expect(found).toHaveLength(1)
+      expect(found[0]?.interaction.sessions).toBe(49)
+      expect(steps.filter((call) => call.interaction.step === "read")).toHaveLength(1)
+      expect(steps.filter((call) => call.interaction.step === "checked")).toHaveLength(1)
+      const result = steps.filter((call) => call.interaction.step === "result")
+      expect(result).toHaveLength(1)
+      expect(result[0]?.interaction.result).toBe(expectedResult)
+      // The shell command records `first_run_finished` after it saves.
+      expect(
+        noteInteractionCalls().filter(
+          ({ interaction }) => interaction.kind === "firstRunFinished",
+        ),
+      ).toHaveLength(0)
+    },
+  )
 
   it("reports nothing in steady mode, where the funnel never shows", async () => {
     // onboardingCompleted stays true (the default fixture), so the device
@@ -682,6 +712,36 @@ describe("overviewProgressStore's steady mode", () => {
 })
 
 describe("overview progress recovery", () => {
+  it("drops removed installed findings from the sidebar count on the report event", async () => {
+    let report = { ...SETTLED_REPORT, installedChecks: [installedCheckFixture] }
+    const invoke = mocks.invoke.getMockImplementation()!
+    mocks.invoke.mockImplementation(async (command, args) => {
+      if (command === "get_checks_report") return report
+      return invoke(command, args)
+    })
+    const store = await import("./overviewProgressStore")
+    const { sidebarProgress } = await import("./sidebarProgress")
+    stops.push(store.subscribeOverviewProgress(() => undefined))
+    await waitForListener("checks:report-changed")
+    await vi.waitFor(() => expect(store.overviewProgress().failingCount).toBe(1))
+    expect(sidebarProgress("burnChecks", store.overviewProgress(), null).status).toBe(
+      "1 to fix",
+    )
+
+    report = { ...report, installedChecks: [] }
+    emit("checks:report-changed", null)
+
+    await vi.waitFor(() => expect(store.overviewProgress().failingCount).toBe(0))
+    expect(sidebarProgress("burnChecks", store.overviewProgress(), null).status).toBe(
+      "0 to fix",
+    )
+    expect(store.overviewProgress().categories).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: installedCheckFixture.effectiveId }),
+      ]),
+    )
+  })
+
   it("refreshes checks when a finished scan snapshot arrives after the first report", async () => {
     runLaunchPass()
     let resolveScan!: (status: ScanStatus) => void

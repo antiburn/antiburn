@@ -7,6 +7,81 @@ This report is observational documentation. No workflow reads it, it is not a
 release artifact, and changing it cannot alter a required check, package,
 signature, checksum, updater manifest, SBOM, draft, or published release.
 
+## Current state: staged CI
+
+`ci.yml` selects its checks by stage. The `classify` job finds the stage, reads
+the diff, and reads the pull request labels and draft state live from the API.
+A re-run after a label change therefore sees the new label, and a push that
+arrives together with "ready for review" still runs the ready stage. The sections after this one
+describe the earlier revision and its measurements; they are historical.
+
+| Stage   | When                                               | Rust platforms                                    | Frontend platforms | Extra checks                                                                                                                                                                   |
+| ------- | -------------------------------------------------- | ------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| draft   | Pull request is a draft and has no `ci:full` label | Linux                                             | Linux              | Slop gate on changed files. No licenses, installers, or remote helper build                                                                                                    |
+| ready   | Any other pull request event                       | Linux, Windows, macOS                             | Linux, Windows     | Slop gate on changed files; licenses and installers when their files change; advisories when a `Cargo.lock` changes; remote helper build when the engine or the helper changes |
+| main    | Push to `main`                                     | Linux, Linux ARM64, Windows, Windows ARM64, macOS | Linux, Windows     | Full-tree slop gate, advisories when a `Cargo.lock` changes, release credential check, shell Clippy without analytics, remote helper build, release cache warm-up              |
+| nightly | `schedule` (03:17 UTC) or `workflow_dispatch`      | Linux, Linux ARM64, Windows, Windows ARM64, macOS | Linux, Windows     | Every check regardless of the diff, plus `cargo deny check advisories`                                                                                                         |
+| release | Tag push (`release-app.yml`, `release-engine.yml`) | Not repeated                                      | Not repeated       | Requires the successful `main` push run for the exact tag SHA (`scripts/wait-for-main-ci.mjs`)                                                                                 |
+
+The diff selects Rust workspaces in every stage except nightly. A change to a
+workspace selects it and every workspace that depends on it. Most
+documentation selects no workspace. A file outside the workspaces that a
+workspace reads selects each reader: for example, `docs/support.md` selects
+the engine and the shell (`CROSS_WORKSPACE_INPUTS`). Workflow changes and
+unknown paths select everything.
+
+### Jobs
+
+| Job                  | Checks                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `classify`           | Design-contract drift, then the classifier and workspace registry tests (`scripts/classify-ci-changes.test.mjs`, `scripts/ci-workspaces.test.mjs`). They run on every event, so a Rust change that adds a file read outside a workspace (with `include_str!`, or at test time from a path relative to `CARGO_MANIFEST_DIR`), a path dependency, or a doctest cannot skip them. Then the stage and the selection (`scripts/classify-ci-changes.mjs`) |
+| `ci-scripts`         | `node --test` for the CI and release control-plane scripts, when `scripts/`, `.github/`, or the root package files change                                                                                                                                                                                                                                                                                                                           |
+| `repository`         | DCO sign-off (pull requests), release credentials (`main` pushes), secret scan, slop gate (changed files on pull requests, drafts included; full tree on `main` and nightly)                                                                                                                                                                                                                                                                        |
+| `engine`             | `scripts/ci-rust.mjs` for the engine and the remote helper crate: format on Linux, Clippy, nextest. One job per platform with one shared `CARGO_TARGET_DIR`                                                                                                                                                                                                                                                                                         |
+| `desktop-backend`    | `scripts/ci-rust.mjs` in two parallel parts per platform: the shell, and its path crates. Format on Linux, Clippy, nextest. The shell builds only with `--features analytics`, except one Clippy pass without analytics on Linux in `main` and nightly                                                                                                                                                                                              |
+| `desktop-frontend`   | Format, lint, type check, knip, and build on Linux; tests on every frontend platform                                                                                                                                                                                                                                                                                                                                                                |
+| `remote-helper`      | Static musl build and packaging of the remote helper (`build-remote-helper.yml`). Its format, Clippy, and test checks run in the `engine` job, so CI calls it with `test: false`. Release builds keep its tests                                                                                                                                                                                                                                     |
+| `licenses`           | `cargo deny` bans and licenses, advisories on nightly and when a `Cargo.lock` changes after draft, and third-party notices (`dependency-checks.yml`)                                                                                                                                                                                                                                                                                                |
+| `installer-tests`    | POSIX and PowerShell installer tests and linters (`installer-tests.yml`)                                                                                                                                                                                                                                                                                                                                                                            |
+| `release-metadata`   | Version, tag, and changelog checks for a version bump                                                                                                                                                                                                                                                                                                                                                                                               |
+| `warm-release-cache` | Unsigned release compile on `main` after an app version bump, so the tag workflow restores a warm cache                                                                                                                                                                                                                                                                                                                                             |
+| `ci-required`        | The only required check. It needs `classify` and `repository`, and every selected job. A job that the stage does not select can be skipped                                                                                                                                                                                                                                                                                                          |
+
+Rust jobs save their caches only on `main` pushes and nightly runs, and only
+for the platforms that pull requests run: Linux, Windows, and macOS. The ARM
+platforms build without a cache. The engine job saves one cache per platform.
+The two desktop parts of a platform share one cache key, and only the shell
+part saves it; the crates part restores it and reuses the dependencies that it
+shares with the shell. Each key hashes every workspace lockfile of the job.
+
+The repository cache limit is 10 GB, and GitHub evicts the least recently used
+entries above it. The first `main` run with a cache for every job, part, and
+platform saved 16.5 GB, and the desktop caches alone used 15.1 GB. The rules
+above keep the CI caches at about 4 GB, so the `desktop-release` caches that
+the release workflow restores stay in the limit too.
+
+### The `ci:full` label
+
+Add `ci:full` to a draft pull request to run the ready stage on it. Then use
+**Re-run all jobs** on the latest run; the label itself does not start a run.
+**Re-run failed jobs** does not run `classify` again, so it does not see the
+label.
+
+### Why `main` runs are not cancelled
+
+The release workflows require a successful `push` run for the exact tag SHA,
+and `scripts/wait-for-main-ci.mjs` rejects a cancelled run. Thus each run
+outside pull requests has its own concurrency group per SHA. A new push to
+`main` does not cancel or queue behind the previous run. Pull request runs
+still replace older runs of the same pull request.
+
+### Known risk: drafts
+
+In the draft stage, `ci-required` passes on a reduced set of checks (Linux
+only, no licenses or installers). GitHub does not merge a draft
+pull request, and `ready_for_review` starts a ready-stage run at once, which
+replaces the `ci-required` result.
+
 ## Executive comparison
 
 | Flow                                                     |    Before |                     After model |      Expected saving |

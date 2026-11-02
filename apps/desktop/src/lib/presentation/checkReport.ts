@@ -1,14 +1,9 @@
-import type {
-  BurnCheckDetectorId,
-  ChecksCategoryPayload,
-  ChecksReportPayload,
-} from "../insightsIpc"
-import {
-  aggregateBurnCheckPresentation,
-  checkHasProvisionalResult,
-  type BurnCheckPresentation,
-} from "./checkStatus"
+import { pluralize } from "./text"
+import type { CheckId, ChecksReportPayload } from "../insightsIpc"
+import { aggregateBurnCheckPresentation, type BurnCheckPresentation } from "./checkStatus"
 import { activeChecksReport } from "../snoozedBurnChecks"
+import { checkRows, isInstalledCheck, type CheckRow } from "./checkRows"
+import { checkStatusFacts } from "./checkRowStatus"
 
 export { CHECK_LABELS } from "./checkDefinitions"
 
@@ -17,13 +12,13 @@ interface ChecksEstimate {
 }
 
 export interface ChecksPresentation {
-  activeAssessed: ChecksCategoryPayload[]
-  activeUnavailable: ChecksCategoryPayload[]
-  snoozed: ChecksCategoryPayload[]
-  failures: ChecksCategoryPayload[]
-  awaiting?: ChecksCategoryPayload[]
-  wins: ChecksCategoryPayload[]
-  unavailable: ChecksCategoryPayload[]
+  activeAssessed: CheckRow[]
+  activeUnavailable: CheckRow[]
+  snoozed: CheckRow[]
+  failures: CheckRow[]
+  awaiting?: CheckRow[]
+  wins: CheckRow[]
+  unavailable: CheckRow[]
   refreshUnavailable: boolean
   noActiveChecks?: boolean
   noEnabledChecks?: boolean
@@ -38,25 +33,26 @@ export interface ChecksHeroPresentation {
   tone: string
 }
 
-function estimateOrder(category: ChecksCategoryPayload): number {
+function estimateOrder(category: CheckRow): number {
   return category.estimatedTokenBurnBasisPoints ?? -1
 }
 
 export function checksPresentation(
   report: ChecksReportPayload,
   refreshUnavailable = false,
-  snoozed: ReadonlySet<BurnCheckDetectorId> = new Set(),
+  snoozed: ReadonlySet<CheckId> = new Set(),
 ): ChecksPresentation {
   const activeReport = activeChecksReport(report, snoozed)
-  const activeAssessed = activeReport.categories.filter(
-    (category) => category.lifecycle != null,
+  const activeRows = checkRows(activeReport)
+  const activeAssessed = activeRows.filter(
+    (category) => checkStatusFacts(category).lifecycle != null,
   )
-  const activeUnavailable = activeReport.categories.filter(
-    (category) => category.lifecycle == null && !checkHasProvisionalResult(category),
+  const activeUnavailable = activeRows.filter(
+    (category) => checkStatusFacts(category).lifecycle == null,
   )
-  const snoozedCategories = report.categories.filter((category) => snoozed.has(category.id))
-  const noEnabledChecks = report.evidenceSettled && report.categories.length === 0
-  const noActiveChecks = report.evidenceSettled && activeReport.categories.length === 0
+  const snoozedCategories = checkRows(report).filter((category) => snoozed.has(category.id))
+  const noEnabledChecks = report.evidenceSettled && checkRows(report).length === 0
+  const noActiveChecks = report.evidenceSettled && activeRows.length === 0
   const burnChecks = aggregateBurnCheckPresentation(activeReport, refreshUnavailable)
   return {
     activeAssessed,
@@ -68,9 +64,7 @@ export function checksPresentation(
     awaiting: activeAssessed.filter(
       (category) => category.lifecycle === "awaitingVerification",
     ),
-    wins: activeReport.categories.filter(
-      (category) => category.lifecycle === "passing" || checkHasProvisionalResult(category),
-    ),
+    wins: activeRows.filter((category) => checkStatusFacts(category).lifecycle === "passing"),
     unavailable: activeUnavailable,
     refreshUnavailable,
     noActiveChecks,
@@ -78,14 +72,18 @@ export function checksPresentation(
     burnChecks: noActiveChecks
       ? {
           ...burnChecks,
-          headline: noEnabledChecks ? "No checks enabled" : "No active checks",
+          headline: noEnabledChecks ? "No checks enabled" : "All checks are snoozed",
           accessibleDescription: noEnabledChecks
             ? "No Burn Checks enabled."
-            : "No active Burn Checks.",
+            : "All checks are snoozed.",
         }
       : burnChecks,
     estimate: {
-      tokenBurnBasisPoints: activeReport.estimatedTokenBurnBasisPoints,
+      tokenBurnBasisPoints: activeRows.some(
+        (check) => isInstalledCheck(check) && check.lifecycle === "failing",
+      )
+        ? null
+        : activeReport.estimatedTokenBurnBasisPoints,
     },
   }
 }
@@ -97,11 +95,16 @@ export function checksHeroPresentation(
     return { result: "No checks enabled", summary: null, state: "pending", tone: "text-label" }
   }
   if (presentation.noActiveChecks) {
-    return { result: "No active checks", summary: null, state: "pending", tone: "text-label" }
+    return {
+      result: "All checks are snoozed",
+      summary: null,
+      state: "pending",
+      tone: "text-label",
+    }
   }
   const failureCount = presentation.failures.length
   if (failureCount > 0) {
-    const failed = `${failureCount} check${failureCount === 1 ? "" : "s"} failed`
+    const failed = `${failureCount} ${pluralize(failureCount, "check", "checks")} failed`
     const basisPoints = presentation.estimate.tokenBurnBasisPoints
     return {
       result:
@@ -117,8 +120,8 @@ export function checksHeroPresentation(
   const awaitingCount = presentation.awaiting?.length ?? 0
   if (awaitingCount > 0) {
     return {
-      result: "Awaiting verification",
-      summary: `${awaitingCount} check${awaitingCount === 1 ? "" : "s"} awaiting verification`,
+      result: "Verifying",
+      summary: `Verifying ${awaitingCount} ${pluralize(awaitingCount, "check", "checks")}`,
       state: "pending",
       tone: "text-label",
     }
@@ -129,9 +132,9 @@ export function checksHeroPresentation(
   )
   const completePass = passed.length > 0
   return {
-    result: completePass ? "No issues found" : "No checks assessed",
+    result: completePass ? "No issues in available results" : "No checks assessed",
     summary: completePass
-      ? `${passed.length} check${passed.length === 1 ? "" : "s"} passed`
+      ? `${passed.length} ${pluralize(passed.length, "check", "checks")} passed`
       : null,
     state: completePass ? "passed" : "pending",
     tone: "text-label",

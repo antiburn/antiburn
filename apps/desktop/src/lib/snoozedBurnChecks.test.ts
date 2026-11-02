@@ -22,27 +22,27 @@ import {
 } from "./snoozedBurnChecks"
 import { sessionHygieneChecks } from "./presentation/sessionHygiene"
 
-it("filters Scope Creep badges and preserves its canonical aggregate bit", () => {
+it("filters cache rehydration badges and preserves its canonical aggregate bit", () => {
   const checks = sessionHygieneChecks({
     evidenceState: "ready",
     unusedResources: null,
-    badges: [{ id: "scopeCreep", status: "finding", notAssessedReason: null }],
+    badges: [{ id: "excessCacheRehydration", status: "finding", notAssessedReason: null }],
   })
   expect(
-    visibleSessionHygieneChecks(checks, new Set(["scopeCreep"])).some(
-      (check) => check.id === "scopeCreep",
+    visibleSessionHygieneChecks(checks, new Set(["cacheChurn"])).some(
+      (check) => check.id === "excessCacheRehydration",
     ),
   ).toBe(false)
   const categories = [
     {
-      id: "scopeCreep" as const,
+      id: "cacheChurn" as const,
       finding: 1,
       clean: 0,
       unavailable: 0,
       estimatedTokenBurnBasisPoints: 200,
     },
     {
-      id: "overExploring" as const,
+      id: "modelOverthinking" as const,
       finding: 1,
       clean: 0,
       unavailable: 0,
@@ -58,12 +58,12 @@ it("filters Scope Creep badges and preserves its canonical aggregate bit", () =>
       estimatedTokenBurnBasisPoints: 300,
       categories,
       estimatedTokenBurnBasisPointsByDetectorMask: Array.from({ length: 8192 }, (_, mask) =>
-        mask === 1 << 12 ? 200 : null,
+        mask === 1 << 8 ? 200 : null,
       ),
     },
-    new Set(["overExploring"]),
+    new Set(["modelOverthinking"]),
   )
-  expect(report.categories.map((category) => category.id)).toEqual(["scopeCreep"])
+  expect(report.categories.map((category) => category.id)).toEqual(["cacheChurn"])
   expect(report.estimatedTokenBurnBasisPoints).toBe(200)
 })
 
@@ -128,6 +128,18 @@ describe("snoozed burn checks", () => {
 
     expect(result.current.status).toBe("error")
     expect(result.current.records.map((record) => record.detector)).toContain("cacheChurn")
+  })
+
+  it("rejects a failed save while retaining the ready report preferences", async () => {
+    const { result } = renderHook(() => useSnoozedBurnChecks())
+    await act(async () => undefined)
+    const before = result.current
+    invoke.mockRejectedValueOnce(new Error("write failed"))
+    await act(async () => {
+      await expect(snoozeBurnCheck("cacheChurn", "forever")).rejects.toThrow("write failed")
+    })
+    expect(result.current).toEqual(before)
+    expect(result.current.status).toBe("ready")
   })
 
   it("ignores an older read that resolves after a newer read", async () => {

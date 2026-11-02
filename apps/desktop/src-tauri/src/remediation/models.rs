@@ -15,8 +15,6 @@ pub struct BurnCheckTargetContext {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BurnCheckTarget {
-    pub over_exploring_reason: Option<antiburn_local::checks::over_exploring::Reason>,
-    pub decision_proof: Option<IgnoredInstructionDecisionProof>,
     pub finding_id: String,
     pub action_id: String,
     pub finding: FindingDisplay,
@@ -69,7 +67,7 @@ pub struct BurnCheckEvidenceItem {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckTargetEvidence {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub decision_proof: Option<IgnoredInstructionDecisionProof>,
+    pub comparison: Option<BurnCheckEvidenceComparison>,
     pub status: BurnCheckEvidenceStatus,
     pub items: Vec<BurnCheckEvidenceItem>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -80,54 +78,61 @@ pub struct BurnCheckTargetEvidence {
 #[serde(rename_all = "camelCase")]
 pub struct BurnCheckEvidenceOccurrence {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub decision_proof: Option<IgnoredInstructionDecisionProof>,
+    pub comparison: Option<BurnCheckEvidenceComparison>,
     pub finding_id: String,
     pub status: BurnCheckEvidenceStatus,
     pub items: Vec<BurnCheckEvidenceItem>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IgnoredInstructionDecisionProof {
-    pub contrast: String,
-    pub prerequisite: antiburn_local::analysis::ignored_instructions::PrerequisiteOutcome,
-    pub citations: Vec<antiburn_local::analysis::ignored_instructions::CitationProof>,
-    pub coverage: antiburn_local::analysis::ignored_instructions::DecisionCoverage,
-    pub context_revision: String,
+pub struct BurnCheckEvidenceComparison {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observation_kind: Option<BurnCheckObservationKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<BurnCheckExplanation>,
+    pub reads: Vec<BurnCheckReadEvidence>,
+    pub source_ranges: Vec<BurnCheckSourceRange>,
 }
 
-impl IgnoredInstructionDecisionProof {
-    pub(super) fn from_cause(cause: &antiburn_local::remediation::FindingCause) -> Option<Self> {
-        let antiburn_local::remediation::FindingCause::IgnoredInstructionConflict(evidence) = cause
-        else {
-            return None;
-        };
-        if evidence.instruction_excerpt.is_empty() || evidence.action_excerpt.is_empty() {
-            return None;
-        }
-        let decision = evidence.decision_record()?;
-        let rule_id = format!("{}:{}", evidence.instruction_id, evidence.rule_id);
-        if decision.citations.iter().any(|citation| {
-            citation.source_ids.is_empty()
-                || citation.source_ids.iter().any(|id| {
-                    id != &rule_id
-                        && id != &evidence.action_id
-                        && !decision
-                            .selected_evidence
-                            .iter()
-                            .any(|item| &item.source.id == id)
-                })
-        }) {
-            return None;
-        }
-        Some(Self {
-            contrast: decision.contrast_template()?.to_owned(),
-            prerequisite: decision.prerequisite,
-            citations: decision.citations.clone(),
-            coverage: decision.coverage.clone(),
-            context_revision: decision.context_revision.clone(),
-        })
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckSourceRange {
+    pub reference: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub range_source: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BurnCheckObservationKind {
+    Proposal,
+    Attempt,
+    Recorded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckExplanation {
+    pub version: u32,
+    pub relationship: String,
+    pub text: String,
+    pub references: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BurnCheckReadEvidence {
+    pub request_reference: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_reference: Option<String>,
+    pub paths: Vec<String>,
+    pub requested_extent: antiburn_local::analysis::jev_evidence::JevReadExtent,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returned_extent: Option<antiburn_local::analysis::jev_evidence::JevReadExtent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_status: Option<antiburn_local::analysis::jev_evidence::JevReadStatus>,
 }
 
 /// Internal session identity used only to mint an opaque renderer handle.
@@ -198,6 +203,7 @@ pub enum BurnCheckVerificationLimit {
 pub struct BurnCheckDisplayFacts {
     pub resource_kind: BurnCheckResourceKind,
     pub resource_identity: Option<String>,
+    /// Existing deterministic display snapshots include this field.
     pub instruction_title: Option<String>,
     pub current_value: Option<String>,
     pub replacement_value: Option<String>,
@@ -434,6 +440,8 @@ pub enum AutoFixSetting {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoFixEffect {
+    FutureModelDefault,
+    SkillAdvertising,
     ModelSelection,
     ReasoningEffort,
     SessionCompaction,
@@ -446,6 +454,8 @@ pub enum AutoFixEffect {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoFixSideEffect {
+    ActiveSessionsKeepTheirModel,
+    ExplicitSkillUseRemainsAvailable,
     ModelBehaviorMayChange,
     ResponsesMayUseLessReasoning,
     EarlierSessionSummarization,

@@ -27,6 +27,12 @@ pub(super) enum VendorPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OperationSelector {
+    OpenCodeDefaultModel,
+    OpenCodeAgentModel { field: String, agent: String },
+    OpenCodeMarkdownAgentModel(String),
+    OpenCodeAutomaticCompaction,
+    OpenCodeMcpServer { server: String, native: bool },
+    OpenCodeSkillAdvertising(String),
     JsonKey(&'static str),
     TomlKey(&'static str),
     PiModel,
@@ -49,6 +55,13 @@ pub(super) enum OperationSelector {
 impl OperationSelector {
     pub(super) fn physical_selector(&self) -> &'static str {
         match self {
+            Self::OpenCodeDefaultModel => "model",
+            Self::OpenCodeAgentModel { .. } => "agents.<id>.model",
+            Self::OpenCodeMarkdownAgentModel(_) => "frontmatter.model",
+            Self::OpenCodeAutomaticCompaction => "compaction.auto",
+            Self::OpenCodeMcpServer { native: true, .. } => "mcp.servers.<id>.disabled",
+            Self::OpenCodeMcpServer { native: false, .. } => "mcp.<id>.enabled",
+            Self::OpenCodeSkillAdvertising(_) => "metadata.opencode/autoinvoke",
             Self::JsonKey("model") => "model",
             Self::JsonKey("effortLevel") => "effortLevel",
             Self::JsonKey("defaultThinkingLevel") => "defaultThinkingLevel",
@@ -78,6 +91,35 @@ impl OperationSelector {
             Self::NamedClaudeSkill(_) => "skillOverrides.<name>",
             Self::NamedTomlSkill(_) => "skills.config.<name>.enabled",
             Self::NamedOpenCodeSkill(_) => "permissions[].action=skill",
+        }
+    }
+
+    #[cfg(any(test, not(windows)))]
+    pub(super) fn exact_path(&self) -> Vec<String> {
+        match self {
+            Self::OpenCodeDefaultModel => vec!["model".into()],
+            Self::OpenCodeAgentModel { field, agent } => {
+                vec![field.clone(), agent.clone(), "model".into()]
+            }
+            Self::OpenCodeAutomaticCompaction => vec!["compaction".into(), "auto".into()],
+            Self::OpenCodeMcpServer { server, native } => {
+                if *native {
+                    vec![
+                        "mcp".into(),
+                        "servers".into(),
+                        server.clone(),
+                        "disabled".into(),
+                    ]
+                } else {
+                    vec!["mcp".into(), server.clone(), "enabled".into()]
+                }
+            }
+            Self::OpenCodeSkillAdvertising(_) => {
+                vec!["metadata".into(), "opencode/autoinvoke".into()]
+            }
+            Self::OpenCodeMarkdownAgentModel(_) => vec!["model".into()],
+            Self::NamedMarkdownModel(_) => vec!["model".into()],
+            _ => vec![self.physical_selector().into()],
         }
     }
 }

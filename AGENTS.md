@@ -66,6 +66,18 @@ depend on Settings metadata. Test rendered destinations against search, includin
 platform labels, availability, and focus without value changes.
 See [main-window navigation](docs/main-window-navigation.md) for the boundaries.
 
+## Burn Checks
+
+Use `docs/burn-check/specification.md` and the supported subset in
+`docs/burn-check/authoring.md` for Burn Checks work. The exact draft label is
+`v1-alpha`: experimental, not yet standardized, and open to breaking syntax,
+semantic, and capability changes with no backward compatibility promise.
+Keep the current draft precise. Revisit proposed remaining work against user
+needs and source evidence before implementing it. When the actual contract
+changes, review its impact and update the specification, schema, code, examples,
+and session/check coverage together. Do not add a YAML version field or confuse
+the draft label with internal serialization versions.
+
 ## Comments
 
 Write code comments in ASD-STE100 Simplified Technical English. Use active

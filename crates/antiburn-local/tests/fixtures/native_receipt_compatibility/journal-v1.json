@@ -1,0 +1,409 @@
+{
+  "completed": [
+    {
+      "arguments": {
+        "command": "run-call-0"
+      },
+      "call_id": "call-0",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "error-0",
+      "context": {
+        "complete_through_event": false,
+        "main_session": true,
+        "result_position": {
+          "OpenCodeEvent": {
+            "item_index": 0,
+            "sequence": 4
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "request",
+            "origin": "OpenCodeUserText",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": "request-text",
+                "text": "xxxxxxxxxxxxxxxx"
+              }
+            ],
+            "position": {
+              "OpenCodeEvent": {
+                "sequence": 1
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "root",
+            "source_format": "open_code_sqlite_v2"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "OpenCodeEvent": {
+          "item_index": 0,
+          "sequence": 4
+        }
+      },
+      "provider_executed": null,
+      "record_id": "assistant",
+      "result_id": "part-0",
+      "revision": 5,
+      "session_id": "root",
+      "source_format": "open_code_sqlite_v2",
+      "status": "Error",
+      "tool_category": "bash",
+      "tool_name": "bash"
+    }
+  ],
+  "completion": {
+    "part": {
+      "callID": "call-1",
+      "id": "part-1",
+      "messageID": "assistant",
+      "sessionID": "root",
+      "state": {
+        "error": "error-0",
+        "input": {
+          "command": "run-call-1"
+        },
+        "status": "error"
+      },
+      "tool": "bash",
+      "type": "tool"
+    },
+    "sessionID": "root",
+    "time": 0
+  },
+  "cursor": {
+    "live": {
+      "baseline": 0,
+      "boundary": [
+        113,
+        106,
+        31,
+        122,
+        172,
+        225,
+        58,
+        153,
+        63,
+        76,
+        132,
+        120,
+        182,
+        54,
+        196,
+        136,
+        252,
+        176,
+        43,
+        149,
+        11,
+        147,
+        150,
+        78,
+        7,
+        173,
+        132,
+        214,
+        84,
+        128,
+        75,
+        50
+      ],
+      "contexts": [
+        [
+          0,
+          {
+            "complete_through_event": false,
+            "main_session": true,
+            "result_position": {
+              "OpenCodeEvent": {
+                "item_index": 0,
+                "sequence": 4
+              }
+            },
+            "user_messages": [
+              {
+                "change": "Present",
+                "completeness": "Complete",
+                "message_id": "request",
+                "origin": "OpenCodeUserText",
+                "parts": [
+                  {
+                    "item_index": 0,
+                    "native_part_id": "request-text",
+                    "text": "xxxxxxxxxxxxxxxx"
+                  }
+                ],
+                "position": {
+                  "OpenCodeEvent": {
+                    "sequence": 1
+                  }
+                },
+                "proof_revision": 2,
+                "scope": "MainSession",
+                "session_id": "root",
+                "source_format": "open_code_sqlite_v2"
+              }
+            ]
+          }
+        ]
+      ],
+      "evidence_gap": false,
+      "history_safe": true,
+      "next_context": 1,
+      "origin": [
+        211,
+        11,
+        118,
+        7,
+        79,
+        215,
+        66,
+        84,
+        223,
+        201,
+        11,
+        85,
+        71,
+        137,
+        171,
+        136,
+        222,
+        94,
+        61,
+        225,
+        154,
+        208,
+        197,
+        169,
+        63,
+        96,
+        189,
+        47,
+        76,
+        174,
+        134,
+        169
+      ],
+      "parts": {
+        "part-0": {
+          "context": 0,
+          "last_sequence": 4,
+          "state": {
+            "context": null,
+            "first_terminal": 4,
+            "identity": [
+              "assistant",
+              "call-0",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        },
+        "part-1": {
+          "context": null,
+          "last_sequence": 5,
+          "state": {
+            "context": null,
+            "first_terminal": null,
+            "identity": [
+              "assistant",
+              "call-1",
+              "bash",
+              "tool"
+            ],
+            "invalid": false,
+            "revision": 1
+          },
+          "unsafe_ownership": false
+        }
+      },
+      "requests": {
+        "bytes": 171,
+        "incomplete": true,
+        "messages": {
+          "assistant": [
+            3,
+            {
+              "id": "assistant",
+              "parentID": "request",
+              "role": "assistant"
+            }
+          ],
+          "request": [
+            1,
+            {
+              "id": "request",
+              "role": "user"
+            }
+          ]
+        },
+        "parts": {
+          "request-text": [
+            2,
+            {
+              "id": "request-text",
+              "messageID": "request",
+              "text": "xxxxxxxxxxxxxxxx",
+              "type": "text"
+            }
+          ]
+        },
+        "removed_messages": [],
+        "root": true,
+        "unsafe_identity": false
+      },
+      "revision": 2
+    },
+    "owner_id": null,
+    "parser_revision": 64,
+    "prefix_hash": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "session_id": "root",
+    "through_sequence": 5
+  },
+  "events": [
+    {
+      "data": {
+        "info": {
+          "id": "root"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-0",
+      "seq": 0,
+      "type": "session.created.1"
+    },
+    {
+      "data": {
+        "info": {
+          "id": "request",
+          "role": "user"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-1",
+      "seq": 1,
+      "type": "message.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "id": "request-text",
+          "messageID": "request",
+          "text": "xxxxxxxxxxxxxxxx",
+          "type": "text"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-2",
+      "seq": 2,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "info": {
+          "id": "assistant",
+          "parentID": "request",
+          "role": "assistant"
+        },
+        "sessionID": "root"
+      },
+      "id": "event-3",
+      "seq": 3,
+      "type": "message.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-0",
+          "id": "part-0",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-0"
+            },
+            "status": "error"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-4",
+      "seq": 4,
+      "type": "message.part.updated.1"
+    },
+    {
+      "data": {
+        "part": {
+          "callID": "call-1",
+          "id": "part-1",
+          "messageID": "assistant",
+          "sessionID": "root",
+          "state": {
+            "error": "error-0",
+            "input": {
+              "command": "run-call-1"
+            },
+            "status": "running"
+          },
+          "tool": "bash",
+          "type": "tool"
+        },
+        "sessionID": "root",
+        "time": 0
+      },
+      "id": "event-5",
+      "seq": 5,
+      "type": "message.part.updated.1"
+    }
+  ],
+  "parser_revision": 64
+}

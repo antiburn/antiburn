@@ -17,11 +17,13 @@ sources:
   - src/styles/session-analysis-colors.css
   - src/styles/session-rows.css
   - src/styles/session-detail.css
+  - src/components/promotions/promotion.css
   - src/components/ui/text-roll.css
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
   - src/views/main-window/overview/stepSettings/remote-hosts.css
+  - src/views/main-window/overview/stepSettings/agent-settings.css
 colors:
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
@@ -108,6 +110,24 @@ colors:
   brand-tint: # antiburn orange for large fills
     light: "hsl(17.6 100% 54%)"
     dark: "hsl(17.6 100% 54%)"
+  brand-hover: # clearer hover for orange actions; dark ink remains legible
+    light: "hsl(17.6 100% 64%)"
+    dark: "hsl(17.6 100% 64%)"
+  brand-ink: # dark text on the shared bright orange action fill
+    light: "hsl(0 0% 0% / 0.85)"
+    dark: "hsl(0 0% 0% / 0.85)"
+  brand-action: # orange action fill with AA white text
+    light: "hsl(17.6 100% 42%)"
+    dark: "hsl(17.6 100% 42%)"
+  brand-action-hover:
+    light: "hsl(17.6 100% 40%)"
+    dark: "hsl(17.6 100% 40%)"
+  brand-action-pressed:
+    light: "hsl(17.6 100% 38%)"
+    dark: "hsl(17.6 100% 38%)"
+  brand-action-ink:
+    light: "hsl(0 0% 100%)"
+    dark: "hsl(0 0% 100%)"
   brand-unlit: # an unlit meter segment: the brand tint, a quarter less saturated
     light: "hsl(17.7 75% 54%)"
     dark: "hsl(17.7 75% 54%)"
@@ -323,6 +343,15 @@ colors:
   token-subagent: # quiet label-family neutral
     light: "hsl(240 5.5% 25% / 0.45)"
     dark: "hsl(240 33% 94% / 0.4)"
+  agent-claude-code: # Claude Code in the Overview usage charts; the context blue
+    light: "hsl(221.2 83% 53.3%)"
+    dark: "hsl(221 89% 59.8%)"
+  agent-codex: # Codex in the Overview usage charts; mid grey
+    light: "hsl(240 4% 66%)"
+    dark: "hsl(240 5% 52%)"
+  agent-other: # any other agent in the Overview usage charts; neutral
+    light: "hsl(240 5.5% 25% / 0.45)"
+    dark: "hsl(240 33% 94% / 0.4)"
   cost-cache-read: # cost burnup chart, cache-read layer; muted blue-green
     light: "hsl(165 45% 40%)"
     dark: "hsl(165 50% 62%)"
@@ -443,10 +472,12 @@ rounded:
   small: 4px
   control: 5px
   popover: 10px # outer corner for macOS floating popover and notification surfaces
+  promotion: 16px # announcement and setup panel, including media clipping
   full: 9999px
 shadow:
+  promotion: "var(--shadow-promotion)" # @theme-registered; light uses popover, dark adds a soft right shadow
   stats-card: "inset 0 0 0 1px var(--color-stats-edge)"
-  popover: "0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08)"
+  popover: "0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08)" # @theme-registered; consume as the `shadow-popover` utility
   tooltip: "0 2px 8px rgb(0 0 0 / 0.12), 0 0.5px 2px rgb(0 0 0 / 0.06)"
   raised: "0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04)" # @theme-registered; consume as the `shadow-raised` utility
 motion:
@@ -469,6 +500,7 @@ motion:
   segmented-indicator: "120ms ease-out slide; reduced motion swaps to a 60ms per-segment crossfade"
   anchored-content: "100ms opacity-only crossfade after native geometry commits; reduced motion uses 60ms"
   text-roll: "300ms overshoot per character, 45ms stagger; retune with --text-roll-duration / --text-roll-stagger / --text-roll-ease"
+  overview-banner-in: "700ms ease-out-quart; a Usage banner's plot grows up from the date row (scaleY from the bottom) each time it mounts, so a tab switch draws the new chart in; reduced motion clamps it through the shared rule"
   overview-entrance: "700ms ease-out; the chart reveals from the left with a clip-path inset, the headline figures fade in; plays once per app run and is recorded on animationend; reduced motion clamps it through the shared rule"
   tray-usage-meter: "launch: 1.5s column-by-column depletion; later changes: 300ms column-by-column"
   hud-led-blink: "steps(1) loop; --led-period 300ms to 3s on eight geometric rungs, set per segment from the spend rate; 300ms is the flash-safety cap for a 6px dot"
@@ -599,10 +631,16 @@ Notes for what isn't expressible as a token:
   from the window with a clamp — the page needs the width more at small sizes and less at
   large — keeps the full window height between its margins, and scrolls alone when the accounts
   outgrow it. It uses the popover corner, the opaque `surface-window` fill under the
-  `surface-sidebar` tint, and `shadow-raised` over the `shadow-stats-card` outline.
+  `surface-sidebar` tint, and the `shadow-stats-card` outline with no drop shadow. The Overview's
+  usage card has no outline, shadow, or fill, so its banner sits on the window background.
+  During first run, hide the usage card and Recent sessions until the user advances past
+  Session checks. Keep data collection active while they are hidden. The subsequent completion
+  step shows “You’re all set!” and Get Started beside Back, with no Enhance or Skip action. It takes the same card and fills the free height between them. The config checks grid
+  that replaces it has no card.
 
-- **Overview cost chart** — show daily estimated cost as stacked areas, one per source
-  agent, for the latest 30 days. Keep agent colors stable and name each agent in the
+- **Overview cost chart** — show daily estimated cost as side-by-side columns, one per source
+  agent, for the latest 30 days. Each agent takes its `agent-*` colour: blue for Claude Code, grey
+  for Codex. Keep agent colors stable and name each agent in the
   legend. Do not show the previous period. Leave gaps for unknown costs and mark
   incomplete days; tooltips distinguish unpriced usage from known subtotals.
 
@@ -687,14 +725,74 @@ Notes for what isn't expressible as a token:
   these rows hidden by default; the disclosure makes them reachable when needed.
   Start it collapsed; search opens and focuses its target. Collapsing a focused row
   returns focus to the disclosure. Never describe an unassessed row as failed.
-  Put running checks without failures in Passed checks. Keep their row order,
-  selection, and disclosure state stable during continuation. Show `Checking`
-  in monospace without a spinner or an extra status row. Running failures show
-  `43 failed · 0 passed · 2 checking` on one monospace line. When the report
-  does not supply a checking count, show `checking` without a number. Animate
-  only the checking text with the shared `activity-row-title-shimmer` recipe
-  and its existing shimmer token and reduced-motion rule. The Passed disclosure
+  Keep checks without a saved result in Not assessed, including during checking.
+  Do not create a separate Checking group or show a provisional pass.
+  Keep saved findings and passes in their result groups during new work, errors,
+  and reviews without a status change. Keep selection and keyboard focus on the
+  same check during group transitions. Use one shared concise status presentation
+  in the collection, detail, Overview, reachable popover, and accessible labels.
+  Show Snoozed beside retained results in both visible and accessible status text.
+  Installed checks retain `Not assessed`, `Passed`, or their saved failure label.
+  Append `Checking` while work is queued or running. Show catch-up and activity
+  waits in detail rather than replacing the saved result. Keep this progress visible
+  beside saved results and after reviews that do not write a status. Show a valid remaining
+  event count only in detail, such as `Needs 3 more tool results.`, after catch-up.
+  In the detail body, combine progress and the saved outcome in one neutral panel.
+  Label the retained outcome `Saved check result` or `Saved check results`; it is
+  not necessarily the latest completed work. Show its explanation once. Do not
+  stack a separate passing panel beneath Checking. Keep actionable errors first
+  and separate, and retain finding evidence below the combined status. Use
+  `check`, not `assessment`, in app-owned display prose.
+  Snooze takes priority. Definition, source, and provider errors do not replace
+  `Not assessed` or a saved outcome; show their reasons in detail. Keep saved outcomes in their result groups and detail
+  content. Do not append source waits, review counts, or no-write outcomes to the
+  progress label. Use monospace without a spinner or an extra status row. Waiting
+  text stays still. Only checking text animates, with `activity-row-title-shimmer`.
+  The loop stops under reduced motion. Built-in checks keep their supplied checking counts and
+  use `Verifying` for verification waits. Announce
+  selected-check status changes with a polite live region. The Passed disclosure
   counts its rows; assessed-result summaries count only confirmed passes.
+  Installed definition and execution errors use short detail titles such as
+  `Input too large` or `Check needs fixing`; keep explanations out of card labels.
+  Their detail panels reuse the passing-panel geometry: `rounded-control`,
+  `bg-surface-card/75`, `p-4`, a `gap-3` leading icon, and `type-callout` content.
+  Use a decorative 14px `CircleAlert` in `text-system-red` for an execution or
+  definition error, not the failure palette that represents an assessed concern.
+  Show a semibold `text-label` title, a short `text-label-secondary` explanation,
+  and the available YAML path and line/column in wrapping caption text.
+  Put the keyboard-accessible `Open check file` action with an external-open icon
+  with the location. Open the file in its default application; do not imply an
+  editor line jump. Keep open failures inline beside the action and preserve the
+  diagnostic. Put useful decision, YAML field, input path, fitting cause, and local
+  limit details in a collapsed, keyboard-accessible `Technical details` disclosure.
+  Use compact label/value rows. Keep prose and numeric limits in system sans;
+  use monospace only for code and technical identifiers. Show the safe diagnostic
+  code once as a muted line without a repeated label. Omit affected-session counts,
+  repeated primary explanations, and unrelated stored-analysis boilerplate. Keep
+  source causes short rather than repeating saved-history limits. Retain the full
+  diagnostic payload for debugging.
+  Do not display raw failure strings or provider bodies. Label estimated tokens
+  as estimates. Distinguish a preparation resource stop from exhausted fitting;
+  it does not prove that further permitted reductions could not fit. Keep its
+  detail title short, such as `Could not check`.
+  Show errors before empty or passing content, retain earlier valid findings, and
+  group repeated errors without hiding distinct file/decision locations. Do not
+  repeat one source issue as both an error and an information card. Show capture
+  alerts only for current capture failures, not old gaps during healthy capture.
+  Keep primary alert copy short and free of source-version labels. Keep diagnostic
+  codes in the collapsed technical details. Put distinct extra issues
+  in a separate collapsed disclosure with a visible count. Announce a selected
+  check's new primary error even when its saved result does not change. Do not
+  add a session-open link for definition or fitting errors. Successful shortened
+  inputs use the same panel with a tertiary information icon and the title
+  `Input shortened`; they are not failures. Clear stale errors after repair. Keep
+  error and waiting labels still; only Checking animates. Show a retry promise
+  only when retry work is scheduled.
+  Search keeps its last loaded check destinations after an availability error.
+  Show `Could not load checks.` with a keyboard-accessible `Retry` action for
+  failed reads, failed availability events, or subscription failures. Keep other
+  destinations usable. A successful current snapshot clears the read error;
+  a failed subscription also needs a successful subscription retry.
   When Ignored Instructions reports priority sampling, place a small tertiary
   information icon next to its detail title. Its shared tooltip explains that
   likely conflicts are checked first and later checks can reduce the remaining
@@ -705,9 +803,45 @@ Notes for what isn't expressible as a token:
   click toggle, control fill, or separate row. Keep source and historical-evidence
   limits readable in the tooltip. Show instruction path and line metadata once.
   Show the main occurrence inline without an occurrence picker or duplicate cards.
-  Initial evidence loads use the shared `Skeleton`: a 64px comparison block,
-  two compact metadata lines, a 64px instruction block, and an 80px action block.
-  The evidence body reserves a 288px minimum height while loading and after load.
+  Smart Check findings use a summary-first compact card. Show the saved finding
+  observation as soon as the target loads. Keep instruction and action, reads
+  under review, task and work, or skill and related work behind a matching
+  disclosure, collapsed by default. Do not show transcript
+  previews, large evidence skeletons, or a reserved evidence height. Request
+  evidence only when the user opens the disclosure. Loading and failure statuses
+  stay compact inside it; unavailable evidence never replaces the finding summary
+  or creates an empty evidence panel. Keep one useful status and a retry only for
+  request failures. Bind the summary, excerpts, and citation destinations to one
+  occurrence. Retain that occurrence after a list reorder; replace the complete
+  snapshot when the occurrence disappears. Keep loaded details mounted when a
+  check or window section becomes inactive. Pause new evidence requests while
+  hidden. Returning from a session card keeps the retained occurrence. Hidden
+  evidence responses do not emit reader events. Keep the complete snapshot after
+  a refresh error. Show task context and decisive earlier events with their source
+  labels only inside the disclosure.
+  Installed findings show `Assessed input` and optional `Input omissions` for the
+  assessment that wrote the displayed status. Render these as generic JSON values
+  with their original nested structure, scalar/null meaning, backend explanation,
+  and limitations. Do not apply tool/request heuristics or show full original
+  output as assessed input after fitting. Keep raw JSON in an optional disclosure.
+  Legacy evidence without saved preparation uses explicit `Original source`
+  labels and the limitation that exact assessed input was not saved. Its request
+  text, tool names, arguments, and results retain readable source fields. Show each finding
+  observation once. Snooze failures retain the report and offer an action-specific retry.
+  Show review counts once at check level. Keep skipped comparisons separate from
+  reviewed answers. Terminal zero-target work uses Nothing to assess in neutral
+  ink and stays outside Passed checks. A context-blocked review shows the model
+  context message and recorded counts without retrying unchanged inputs.
+  Stop Checking when runnable work ends. Keep partial findings visible after
+  review stops; unanswered or skipped work does not become a clean result.
+  Over-exploring uses one Files read section. Nest each result under its explicit
+  request binding. Show each path and request time once, even for repeated reads.
+  Label requested limits and returned ranges separately. Keep returned contents
+  collapsed behind Show file contents / Hide file contents. Expansion controls
+  expose their expanded state. Scope Creep uses Proposed work or Attempted work
+  from typed evidence, with Recorded work for older findings. Skill Opportunities
+  uses Relevant skill and Recorded work. Paths, commands, and timestamps wrap
+  within the reading column at narrow widths and large interface scales.
   Excerpts can grow beyond this minimum. Background refreshes keep the loaded
   content and pause stale citation navigation instead of showing a skeleton.
   Session-card rows use a 2px interline gap inside unchanged 12px vertical card padding. A zero-failure result with at least one assessed check uses an outlined ring and tick, even
@@ -733,47 +867,18 @@ Notes for what isn't expressible as a token:
   Failure wording and evidence use `burn-check-failure-text`, including card tooltips
   and expanded guidance. Passing row wording stays neutral. Unassessed checks remain
   omitted from the detail cards and rows.
-  The popover summary uses a stable “All burn checks” heading without a dial, reserving circular indicators
-  for provider usage and individual sessions. It uses `--space-md` (12px) horizontal padding and a 12px text-to-meter gap.
-  The text block uses `--space-sm` (8px) top and bottom padding, matching the spend card.
-  Failed and passed counts use `font-mono type-footnote tabular-nums`, matching session verdicts.
-  Failed counts use semibold failure ink; passed counts use regular cyan `burn-check-pass-fill`.
-  The headline uses system sans with `type-headline font-semibold! text-label`. A regular
-  `type-footnote text-label-tertiary` “30 days” label shares its baseline with an 8px gap.
-  Counts carry the visible verdict;
-  the accessible description and companion retain the full result and evidence status.
-  When no counts exist, the second line shows the loading or unavailable status.
-  Remaining context stays in system sans. The summary omits visible “Evidence incomplete” wording;
-  its accessible description retains the evidence status.
-  The summary is the first card in the collapsing overview header, above spend and provider limits.
-  Its wrapper uses twelve pixels of top padding and `--space-sm` (8px) horizontal padding.
-  The wrapper and inner padding use the same tokens as the spend card, so their text starts on the same line.
-  Provider rings retain their existing optical indent.
-  A single separator after
-  the provider limits is inset twelve pixels from both popover edges. The session toolbar starts eight
-  pixels below that rule.
-  The session list uses the remaining popover height without a persistent footer.
-  A static one-pixel edge sits one pixel inside the card. Its state color starts at 40% opacity and fades
-  to 10% at the 45% stop, then into a faint separator at the right. Findings use
-  `burn-check-failure-fill`; results with passes and no findings use `burn-check-pass-fill`;
-  loading, unavailable, and unassessed states use `burn-check-neutral`. Failure takes precedence over pass.
-  The fill stays neutral at 50% of `surface-card`, so the semantic state remains in the edge and content.
-  The surface uses `rounded-control` (5px), matching the spend summary card. The twelve-pixel gap between these cards matches the top inset. Hover uses 35% of `surface-hover`, and the active preview uses 40% of
-  `surface-selected`, while the keyboard-focus treatment remains unchanged.
-  Increased contrast uses a solid edge in the resolved state color.
-  The trailing estimate uses four filled Lucide flame silhouettes, masked over a neutral track.
-  Each full flame represents 25% token burn and fills from the bottom, in order from left to right.
-  The 78 × 18px meter uses local SVG geometry. Values below five percent use a yellow-to-brand
-  gradient; higher values use brand-to-red, matching the existing token-burn threshold.
-  The exact estimate stays in the accessible summary, meter value, app tooltip, and companion
-  panel. The flame tooltip opens on hover or keyboard focus and explains the estimate and scale.
-  The summary button opens Burn checks in the main window. The meter is a separate focus target
-  beside the button, so inspecting it does not open the main window.
-  Its estimate uses semibold `font-mono type-callout tabular-nums` in `burn-check-failure-text`,
-  or cyan `burn-check-pass-fill` for zero burn. The explanation uses secondary callout text,
-  followed by the scale in tertiary footnote text. Color identifies the result, not the explanatory prose.
-  Its target is at least 40px high. Inspecting the flames dismisses the companion, so only one
-  explanation opens at a time. Unknown estimates omit the meter. Flames remain static when reports update.
+  The usage section of the collapsing popover header starts with provider limits, followed by spend totals when available.
+  Subscription usage leads with tokens and shows estimated dollars in the secondary row. Non-subscription usage leads
+  with estimated dollars when available and show tokens in the secondary row. Its separator is inset twelve pixels
+  from both popover edges. The session toolbar starts eight
+  pixels below that rule. The list shows live sessions and sessions with valid activity timestamps
+  from the previous three hours. It groups those rows by local calendar date, including Yesterday
+  when the window crosses midnight. When the list is empty, say “No current sessions” and explain
+  that live sessions and recent activity appear here.
+  The list viewport extends to the bottom of the popover. Place “Open all sessions in main window”
+  in a 40px target, centered eight pixels above the bottom edge. Position it absolutely over the
+  viewport so the list scrolls beneath it. Use `hover:bg-surface-overlay` for an opaque hover fill.
+  Add 56px of viewport bottom padding so the final row can scroll clear of the link.
 - **Themes** — three sources, in cascade order. The system light/dark preference is the default. A
   platform whose webview exposes live system label/separator/accent tokens picks those up through
   `@supports`, so text and chrome track the OS exactly. Detect native accent support
@@ -812,6 +917,98 @@ Notes for what isn't expressible as a token:
   (`SectionGroup`) → row label `type-body` (`Row`) → row description
   `type-footnote text-label-secondary`. Only the pane title is semibold; below it size and contrast
   carry the hierarchy. Hand-rolled rows must match `Row`'s label type.
+- **Checks settings**: Use sentence case. Keep one `Model-based checks` group
+  with one compact configuration `Card` owned by `ChecksStepSettings`. Normal use
+  shows the master toggle and a visible saved-connection list. Keep `Add connection`
+  in the list header. Each row has one quiet actions menu with `Edit` and `Remove`.
+  An inactive row has an explicit `Use` action; the selected row has a quiet
+  selected mark. Selection does not claim connection health or a passed test.
+  Keep menu actions keyboard-accessible and restore focus to the row's menu
+  trigger after dialog dismissal. Use readable provider/model labels and stable duplicate
+  numbers instead of internal IDs. Do not add a connection-name field.
+  Keep setup available while checks are off. Do not add a `Decision model`
+  heading, nested provider card, or manual Model limits controls.
+  Add and edit use one named modal dialog with stacked full-width fields and
+  labels above controls. Show the Provider picker only when adding. Omit redundant
+  provider subtitles, internal model-code subtitles, field-by-field dividers, and
+  nested cards. A saved credential shows a compact Saved state and Change action;
+  never insert a fake password. Keep rare credential removal separate from
+  connection removal and retain its shared-key warning. Keep secrets out of the
+  normal view. The footer has secondary Test connection, Cancel, and one primary
+  Add connection or Save action. Keep one short sample-data/charge notice and test
+  status by Test. Save does not select another connection. The first saved
+  connection becomes selected without enabling checks. Use explicitly selects a
+  saved connection; focus alone never changes routing. Use the shared type scale
+  and field spacing rather than shrinking text. Keep actions reachable at 200%
+  interface size. Contain dialog focus, restore it to the opener, and handle Escape
+  like Cancel. Confirm connection removal. Removing the selected connection turns
+  checks off and clears selection, including when it is the last connection.
+  The empty state keeps Add connection available and preserves saved results.
+  Keep Check files and Model usage as full-width accordion rows inside this same
+  card, with matching row padding and separators. Both start collapsed. Put the
+  short usage summary with its accordion header, not below a closed disclosure.
+  Allow that summary to wrap at larger interface sizes. Omit unknown values and
+  absent cost estimates. Do not replace them with zero. Hide the usage section
+  when it has no current recorded information to show.
+  Check files starts collapsed and shows only enabled folders with a confirmed
+  positive physical check-file count. Show actual container paths, per-folder
+  counts, and a platform-specific open action. Do not show
+  an aggregate logical count without reliable discovery readiness. Keep paths
+  wrapping and counts distinct from readiness. Omit missing, paused, empty, and
+  uncounted folders. Load a fresh list on each visit to Checks settings; do not
+  add a Refresh folders control or show old rows during that load. Never present
+  an installation template as an openable discovered folder. Usage leads with recorded requests and estimated cost for
+  this device. Use one empty sentence instead of zero-filled diagnostic rows.
+  Keep supported usage fields when another field has no value. Omit unknown
+  request counts and diagnostic explanations from this settings view. Stored
+  accounting and delivery safety do not depend on which fields the view shows.
+  Put toggle errors beside the toggle, connection read errors and Retry by the
+  list, dialog action errors by the actions, and folder-open failures by their
+  row. Preserve draft values through recoverable errors. Mark active state
+  unconfirmed when recovery readback fails. A confirmed null selection is not a
+  read failure. A pending connection operation has an explicit Retry action that
+  remains reachable after its row is removed or Settings reopens. Show it beside
+  the connection list or in the open editor, not in both places at once. Keep
+  typed fields until a result bound to that Save submission proves completion.
+  Do not finish an operation from a settings read, search, or render. Keep Run
+  checks available to turn off during recovery; block new enablement until the
+  operation settles. Native Jev labels omit release
+  versions and distinguish connections when several exist. The master-row
+  subtitle says that check files define which session data goes to the provider.
+  Search reveals and focuses the actual dialog field or secondary disclosure
+  once. It does not save, test, open a folder, or change routing. A busy form waits
+  before completing search focus. When Model usage has no visible content, its
+  search result focuses the Model-based checks group without selecting a control.
+  Keep the standard separation between groups.
+- **CLI settings pane** — present the CLI as an internal runtime managed by antiburn.
+  Add the purpose-led pane description: “Helps antiburn share check findings with
+  your coding agents.” The card explains automatic management by antiburn.
+  Place the secondary version beside `antiburn-cli` and keep green Installed beside the runtime
+  name, using compact icon-free status badges: `type-caption`, `font-medium!`,
+  `rounded-control`, `px-2`, `text-system-green`, `bg-system-green/10` and
+  `border-system-green/25`. Keep Test passed as plain green text without an icon. No vertical
+  padding; align badges to the title centre. Reserve the title slot for Installed;
+  show compact test results beside the maintenance buttons. Use body-sized warning text,
+  a state icon and `text-system-orange` below the description when recovery is needed.
+  Place a direct Repair action beside recovery warnings while details are collapsed.
+  Keep integration management out of the CLI pane. Use collapsed Technical details
+  with compact spacing and content aligned to the card text.
+  Technical details groups maintenance actions and startup-test
+  scope separately from location and diagnostics. Version does not repeat there.
+  Use Stethoscope for Test and Wrench for Repair; omit CLI from their button labels.
+  Place a square 32px ghost copy button immediately beside the location label with a 40px hit area.
+  Swap its copy glyph for a check on success and show “Copied!” in a reserved
+  adjacent slot with `gap-1` for two seconds. Announce the feedback, preserve the selectable
+  path on failure, and clear stale copy feedback when runtime status changes. Keep the compatibility export out of Settings: do not expose
+  terminal setup, export/removal controls or PATH status. A successful CLI execution test does not establish vendor integration
+  success. Use shared buttons, disclosure and Settings row treatments.
+  CLI maintenance buttons reserve `min-w-28` for one changing label and a 12px icon.
+  Use operation-specific busy labels and `LoaderCircle` with `motion-safe:animate-spin`.
+  Disable all CLI actions and reject repeat presses while an operation is pending.
+  Keep status text static. Announce Repair completion inline even if status is
+  unchanged, beneath maintenance controls; keep startup testing as an explicit next step.
+  Label raw troubleshooting output Diagnostic within Technical details. Show no success for
+  failed operations, and discard feedback when the underlying runtime status changes.
 - **Remote hosts in Settings** — keep the folder-access warning above all settings
   sections when access is needed. Place Remote hosts first among the Sources sections,
   before Scanning and Coding agents. Keep the introductory description inside the card, above
@@ -851,6 +1048,48 @@ Notes for what isn't expressible as a token:
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
+- **Sidebar summaries** — Agents and Sessions show their scan counts; Checks shows the
+  unsnoozed count as “N to fix”. Limits shows the Overview subscription percentages in
+  account order, separated by “ / ”. Use trailing `type-caption`, `label-secondary`,
+  tabular figures. No duplicate footer pills. Agents opens a summary page with session
+  links and an Agent settings action. Memories shows a file count once known; omit it
+  before the first successful read and until onboarding completes. Settings stays
+  disabled during onboarding, including its keyboard shortcut.
+- **Onboarding docking** — completed step cards share a view-transition name with their
+  sidebar destination and shrink into that row. Checks and its result dock into Checks.
+  Each step after Welcome has Back; Back changes the visible step without restarting
+  completed work. Reduced motion applies changes immediately. On compact windows the
+  closed navigation drawer provides no visible docking target.
+- **Settings pane descriptions** — the Agents, Sessions and Checks panes put one
+  `type-callout` `label-secondary` line under the `type-title-2` title that says what the pane
+  controls. Sessions stays one page, so Settings search finds every row.
+- **Overview stacking** — the usage card sits at the top and Recent sessions at the bottom.
+  Recent sessions has no card: its heading and rows sit on the window background. Free space
+  collects between them.
+- **Overview usage banner** — both Usage tabs draw their chart behind the figures, not under
+  them: the Cost tab's daily spend by agent, and the Subscription tab's weekly fill and 5-hour
+  peaks in `context-stroke` tints. Subscription uses a fixed 0–100% scale with guide lines
+  and labels at 0%, 25%, 50%, and 75% inside the plot's right edge, inset by `space-lg`.
+  Omit the 100% label but keep the top of the scale at 100%. The plot, dates, and hover
+  targets use the full width. Reserve 3rem (`--overview-banner-value-axis`) beside the
+  header controls to keep them clear of the labels.
+  Axis labels use secondary caption ink and stay outside the plot's fade and entrance animation.
+  Cost scales to its own peak and has no value axis. Both plots fade toward the top.
+  The figures and the unit tabs share the top
+  row; when the figures need the full width to stay side by side, the tabs move to a row above. A date row (every 7 days and "Today") and then the key close the card, and the lower half shows a tooltip for each day:
+  a `UsageBannerTip` card with the day's figure and one row and share bar per layer. The
+  hovered day takes a faint band, and on the Cost tab the other days' columns dim. With more
+  than one subscription account, a figure picks the account the banner draws.
+  The usage card has no fill and no outline and takes the page's free height, so the chart grows with the
+  window.
+- **Overview config checks** — a grid of check cards, as wide as the space allows (at least
+  14rem each): the tinted category icon, the check name, its result, and for a failing check
+  the estimated burn, with the agents as a watermark. Failing checks come first, highest burn
+  first. Every card has the quiet card fill and no outline; a failing card shows its failed count
+  in the failure text colour, and every other status is neutral. The category icon is the bare
+  glyph in its check colour, with no tinted circle. On hover, a card takes a faint tint of its icon colour.
+- **Overview Recent sessions row** — the check icon leads the row, then the title and models,
+  tokens, the cost or limit share, the check phrase, and the time, right-aligned, last.
 - **Data views** — a view that shows figures (Session Detail, the Overview) keeps the home
   screen's density of styles. One data size per view: every figure, row, and data label is
   `type-body`; hierarchy comes from ink and weight, and size changes are reserved for a hero
@@ -1149,15 +1388,13 @@ The actions align with that first line and wrap without negative vertical offset
 Every finding explanation appears below the header metrics.
 All check actions sit at the header’s right edge. Named resource cards contain evidence only.
 Do not repeat explanations or check-level actions in the body.
-An Ignored Instructions finding shows the same two sections in every detail state: “Instruction”
-and “Where it was ignored”. Load bounded saved excerpts when the detail opens, without another
-disclosure. Include the instruction source and line range, plus the cited action and its available
-time. Show each complete bounded excerpt with its source and a short explanation. Keep surrounding
-events chronological behind “Show context”. Keep the finding summary visible while excerpts load
-or fail; offer Retry after a failed read. New assessments save the compared excerpts with the finding so later session changes
-do not hide the example. For older findings without saved excerpts, show the instruction location
-and action summary, then state that exact text was not saved. Closing or changing the selected
-detail discards late responses. Other session findings may load bounded evidence on demand.
+YAML check details show bounded saved evidence from the exact status-writing assessment.
+Model evidence separates each named decision's original input, fitted input, and omissions.
+Show the saved provider and model, not the current Settings selection. Local evidence uses
+the label "Frozen local context" and does not claim that a provider request occurred.
+Keep the finding summary visible while evidence loads or fails, and offer Retry after a failed
+read. Closing or changing the selected detail discards late responses. YAML status and
+explanations do not grant native fix prompts, Auto Fix, verification, burn estimates, or savings.
 The collection and detail panes start at the top of the workspace. The collection docks directly to
 the sidebar and uses the same `--main-window-collection-width` geometry as Sessions. Its 340px width
 does not change by breakpoint. The detail pane remains flexible, and both panes own independent scroll
@@ -1514,3 +1751,179 @@ replaces its icon with a check for two seconds and announces the result. Errors
 stay inline. The selectable monospace path prefers directory-boundary wraps and
 gives the final directory primary ink. No path, folder name, or error text enters
 analytics. Unknown project paths hide the control; deleted paths remain copyable.
+
+### Agent connection management
+
+Settings → Agents uses compact expandable rows. Each row aligns its disclosure,
+agent mark/name and a muted, noninteractive account badge on the first line.
+The badge uses surface-card fill, label-secondary ink, type-caption, rounded-control,
+6px horizontal padding and no vertical padding. Centre the badge vertically with
+the vendor name. When a desktop app is detected,
+show “Desktop” before the existing login text, separated by a middle dot.
+Desktop detection alone must not imply a signed-in account. Do not infer a
+“Terminal” login source from the absence of a desktop app. Group searched-location
+summary and session count on the second line. Centre the Integration badge and
+visibility switch across both lines, with the badge directly before the switch.
+Keep desktop-app detection in the account badge; omit its repeated expanded label. Keep the existing first-run discovery controls when management is disabled.
+Completed searches show “Searched X locations”, with singular “location” for one
+root. Completed searches with no sessions say “No sessions yet”; omit that message
+and its separator when there are no search locations. Incomplete searches say
+“Searching locations…”. Missing individual paths retain
+“Not found”. Session roots, agent app/login, or sessions establish detection.
+Always reserve a switch: undetected agents use a disabled unchecked switch with
+a transparent outlined track and dim thumb, distinct from an interactive off switch.
+
+Start with all rows collapsed; allow one expanded row. The name/chevron opens
+Session locations. Only the Integration badge opens directly to Integration.
+Order the tabs Session locations, then Integration. Omit prefix icons.
+Render the 12px trailing Integration status slot only when a status icon exists;
+unavailable states without an icon reserve no empty space. Keep this geometry
+stable between selected and unselected states. Show the integration state’s green
+check, neutral circle or amber warning with a tooltip and accessible description.
+Use medium-weight labels, label ink for the selected tab, and label-secondary ink
+for the unselected tab. On pointer hover, restore label ink. Keep the underline
+border reserved in both states. Labels stay on one line without shrinking.
+Expand and collapse details together over duration-medium (180ms), using
+ease-out-quart and a reversible grid track/opacity transition. Clip exiting
+content and make it inert and hidden from assistive technology immediately.
+Retain it until collapse finishes. Rotate the disclosure chevron on the same
+timing. The shared reduced-motion clamp removes height and chevron movement.
+Tab hover changes only color over duration-fast; tab selection stays instant.
+The integration badge opens the row directly to Integration and focuses that tab.
+Tabs support arrow keys, Home and End. Keep switches and badge targets separate.
+
+Use a content-width, 18px-high rounded-control badge with 8px horizontal padding
+and a 4px gap: an 11px leading status glyph followed by “Integration” at type-caption/medium.
+Do not use a plug in the row badge: it can imply agent connectivity.
+Mix success ink with label ink (60% status) for the success heading and tab icon.
+Mix warning ink locally from 85% system-orange and 15% label ink for contrast,
+including the status heading and tab icon. The amber attention row badge uses
+system-orange at 10% for the fill (15% on hover), with a 1px border at 25%.
+Tab indicators use status ink without a filled badge.
+Keep shared status tokens unchanged. Green Integration/check means
+owned registered or active setup; amber Integration/warning means approval,
+restart/reload, or changed setup needs action. These describe integration setup, never check execution or verified delivery.
+Show a row badge only for actionable attention states: approval required, restart
+required, or changed setup. Omit successful and neutral row badges. Keep the green
+check and neutral circle available on the Integration tab and keep setup details
+reachable through the row disclosure. Missing agents, unconfigured setup, gated
+versions and deliberate opt-outs do not create warnings.
+Shared runtime blockers override badges. Tooltips and accessible descriptions
+explain status. Keep a 40px target (44px for coarse pointers) without overlap.
+
+The feature-owned list shares subgrid columns for two-line identity/discovery
+content, the content-width Integration badge and the 32px switch. Size the badge
+column to its widest visible content across rows. Keep
+12px column gaps, 14px row side padding and a 39px detail inset. Below 440px container width, keep discovery metadata below
+the name and use 8px gaps. Coarse pointers keep a 44px-high badge target.
+Hover fills the entire row, including the badge and switch columns. Keep
+individual keyboard focus indicators and independent badge/switch actions.
+Tabs and disclosure controls use 40px minimum heights (44px for coarse pointers).
+Use semantic token surfaces and existing controls; do not add entrance motion.
+
+The Integration tab supplies context; add no repeated heading, branding or enclosing
+inset card. Lead with a semibold status and muted supporting guidance. Omit redundant
+success guidance. Match the status title ink to the row badge’s success or attention
+colour when a badge exists. For approval, show a plain numbered list immediately below
+the status; omit the duplicate explanatory sentence and reveal button. Group labelled
+Refresh status and Repair setup in one quiet maintenance row below
+the guidance, wrapping on narrow widths. Use standard secondary `ui-push-button`
+faces with 8px horizontal gaps and 40px hit targets (44px for coarse pointers).
+Reserve 24px between wrapped lines so hit targets do not overlap. Missing setup files explain the prerequisite
+without offering repair.
+Omit integration removal and its confirmation from the app.
+Refresh and Repair identify their own pending operation with aria-busy and the
+existing motion-safe spinner (one linear rotation per second). Repair uses a
+leading Wrench while idle and a rotating LoaderCircle with “Repairing…” while
+pending, in a single label node. Keep the icon square and prevent flex shrinking. Its
+minimum width is 12ch plus space-xl, so changing the label does not resize it.
+Keep an atomic polite status line below the actions, reserving one line height.
+Show checking/repairing progress, then completion feedback even when status does
+not change. Report pending approval/reload accurately; completion does not mean
+host acceptance. Errors retain the existing alert and show no success message.
+Keep the details component mounted across status changes so feedback survives;
+focus Integration when the initiating action changes the status. Reduced motion
+keeps text feedback and disables spinner rotation. Do not animate status text,
+tabs, or inventory badges for action completion.
+Busy state disables integration actions,
+not session switches. Put metadata and the separate usage-plugin note inside a collapsed
+Technical details disclosure, separated with a divider. Use muted labels and medium-weight
+values, wrapping monospace paths, and omit absent fields.
+Place runtime/setup availability guidance inside the selected Integration tab.
+Show no availability strip above the inventory. Omit Refresh status for unavailable,
+shared-runtime blockers or gated setup.
+Do not add a general rescan action to the Agents header. Keep the existing
+per-integration Refresh status action, its pending spinner and synchronous guard
+against repeated presses.
+Above the card, explain: “Switch off an agent to hide its sessions and reports.
+Automatic checks continue.” The switch changes visibility, not processing. Put update errors above
+the card so they remain visible after an integration action fails. Settings CLI keeps its
+runtime controls and internal navigation to Agents. Native compatibility gates remain.
+
+## Promotion panel
+
+The main-window promotion panel uses a 320 × 440 logical-pixel frame in both
+announcement and setup views. It sits 8px from the left and bottom window edges,
+covering the sidebar footer while open. The covered footer stays hidden and leaves
+the tab order until the panel closes. Settings remains below the footer separator.
+One YAML-defined promo card appears above the Settings separator when its audience
+matches. Highest priority wins, with ascending promotion ID as the tie-breaker.
+The shipped Claude Mod card targets detected Claude users.
+Use `rounded-popover`, `surface-card`, `space-md` padding and `space-xs` between
+its content rows. The header uses a 14px icon, a `type-body font-medium` label,
+and an optional neutral badge. YAML `icon` accepts an agent slug or `megaphone`;
+omission uses the generic megaphone in secondary ink. The Claude mark keeps its
+orange. Let the heading wrap within the card. The `type-caption` subtitle uses `label-secondary`
+and wraps naturally: Usage, resets, and pace above your prompt.
+Keep this in one text block. Append the optional YAML link label with a 12px right arrow inline,
+using `font-medium`, secondary `label-secondary` ink and a `space-xs` label-to-icon gap. Keep the
+affordance label and arrow together as the description wraps.
+Keep it inside the single card button. Use `space-md` between the card and separator
+to optically balance the separator-to-Settings content gap.
+In light mode, use `surface-overlay` to match the larger promo panel’s near-white fill.
+Use a 6% `brand-tint` upper-left radial glow fading to transparent at 45%, with
+a 1px inset edge using 65% `separator` ink. Do not add an outer shadow. On hover, add
+97% `surface-overlay` mixed with 3% `label`, and strengthen the inset edge with 85% `separator` ink.
+Use 50% white `input-fill` for NEW, with 85% `label-secondary` mixed with 15% `label`
+for slightly stronger gray text. The badge has no border.
+In dark mode, keep `surface-card`, `surface-secondary` on hover, a 12% glow, and
+`shadow-stats-card` in both states. System and explicit themes match.
+Transition only background color and box shadow over `duration-fast`.
+The entire card opens the promo. Preserve
+standard keyboard focus. NEW uses `type-caption`, `rounded-control`,
+`surface-secondary` and `label-secondary`, with a `space-lg` (16px) height.
+Keep the header and subtitle clear of clipping.
+Hide the launcher during FTUE; allow manual opening after completion while preserving
+the automatic cooldown. A configured badge remains visible while its card is available; omission hides it.
+Keep the action after activation. Restore focus to it after manual dismissal.
+What’s new is reserved for recent changes. Small windows constrain the frame and scroll only
+its content. The media cell uses a 32:15 ratio (150px tall at the default width) and bottom-aligned cover fitting.
+Light-mode media and its poster switch together through the optional YAML `media.light` variant.
+The base source remains the dark-mode fallback. Theme changes reset media failures;
+reduced motion still shows the poster. Videos and GIFs keep looping across focus
+changes without swapping sources or resetting playback.
+Use the opaque `surface-overlay`, `rounded-promotion`, and `shadow-promotion`
+tokens. The promotion shadow retains the popover shadow in light mode. In dark mode,
+it uses `6px 0 18px rgb(0 0 0 / 0.32), 0 2px 6px rgb(0 0 0 / 0.18)`
+to separate its right edge from the app. System and explicit themes match.
+A pointer-transparent inset `shadow-stats-card` highlights every panel edge,
+including media. Promo actions use `brand-action` with white `brand-action-ink`,
+`brand-action-hover` for hover and keyboard focus, and `brand-action-pressed` for a press.
+All states exceed 4.5:1 text contrast in both themes. These tokens do not change meter fills.
+The action retains a 28px visible fill inside a 40px hit area and `type-callout font-medium!` text.
+The first visible panel appearance uses the Web Animations API: opacity 0 to 1,
+`scale(0.96)` to `scale(1)` from `left bottom`, `duration-medium` (180ms), and `ease-out-quart`.
+It plays once per opening, without replaying on focus, screen changes, or overlay restoration.
+Keyboard activation opens immediately. Reduced motion uses opacity only for `duration-quick` (100ms). Closing cancels the reveal immediately.
+The announcement eyebrow says Now available and uses `type-footnote` with `brand` ink.
+The body uses 16px horizontal padding.
+The footer uses 12px horizontal padding, 4px vertical padding, and a 48px minimum height.
+Both footer actions use `space-xs` (4px) between their label and icon.
+Copy controls keep their 60 × 40px target and feedback slot, with a 28px square
+hover fill around the icon. The fill aligns with the command box’s right edge
+for both steps. Copied feedback replaces the icon in the same slot.
+The dismiss circle measures 28px inside a 40px hit area. Its surface-overlay fill
+uses 10% opacity at rest and 35% on hover; the opaque label glyph uses a 2.5px stroke for clearer definition. Learn more changes only its text color
+on hover and keeps a transparent background.
+Use `type-title-2`, `type-body`, `type-callout`, and `type-footnote`. Commands
+use muted text, 4px horizontal and 8px vertical padding, and retain selectable wrapping. The panel remains non-modal.

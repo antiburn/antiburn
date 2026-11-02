@@ -1,3 +1,4 @@
+import { pluralize } from "../../../../lib/presentation/text"
 import { Tooltip } from "../../../../components/presentation/Tooltip"
 import { StatusText } from "../../../../components/ui/StatusText"
 import { ToggleSwitch } from "../../../../components/ui/ToggleSwitch"
@@ -19,7 +20,7 @@ import {
 } from "../../../../lib/remoteHosts"
 import { agentDisplayName } from "../../../../lib/presentation/agents"
 import { relativeTime } from "../../../../lib/presentation/relativeTime"
-import { StepSettingsRow, StepSettingsSectionGroup } from "./StepSettingsSearchRows"
+import { SettingsRow, SettingsSectionGroup } from "../../../settings/SettingsSearchRows"
 import type { SourcesSession } from "./SourcesSession"
 import { openMainWindowRemoteHost } from "../../../../lib/mainWindowIpc"
 import "./remote-hosts.css"
@@ -465,7 +466,7 @@ function RemoteHostRow({
             }
           }}
         >
-          {host.cachedSessionCount} {host.cachedSessionCount === 1 ? "session" : "sessions"}
+          {host.cachedSessionCount} {pluralize(host.cachedSessionCount, "session", "sessions")}
         </button>
         <span aria-hidden="true">·</span>
         {host.automaticSyncEnabled ? (
@@ -620,7 +621,7 @@ export function RemoteHostsSection({
   }
   return (
     <>
-      <StepSettingsSectionGroup searchId="sourceRemoteHosts">
+      <SettingsSectionGroup searchId="sourceRemoteHosts">
         <Card className="remote-hosts-card">
           <div>
             <p className="px-4 pt-3 type-footnote text-label-secondary">
@@ -628,7 +629,7 @@ export function RemoteHostsSection({
               local sessions. Synced sessions are saved on this computer so you can view them
               offline.
             </p>
-            <StepSettingsRow
+            <SettingsRow
               searchId="sourceAutomaticSync"
               className="remote-sync-row"
               description={
@@ -721,7 +722,7 @@ export function RemoteHostsSection({
             ) : null}
           </div>
         </Card>
-      </StepSettingsSectionGroup>
+      </SettingsSectionGroup>
       {editor ? (
         <RemoteHostEditor
           key={editor.host === "new" ? "new" : editor.host.id}

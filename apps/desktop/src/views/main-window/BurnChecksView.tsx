@@ -1,5 +1,5 @@
-import type { ChecksCategoryPayload } from "../../lib/insightsIpc"
 import { useSyncExternalStore } from "react"
+import type { CheckId } from "../../lib/insightsIpc"
 
 import { refreshSnoozedBurnChecks, useSnoozedBurnChecks } from "../../lib/snoozedBurnChecks"
 
@@ -18,7 +18,7 @@ export function BurnChecksView({
   active: boolean
   session: BurnChecksController
   focusRevision?: number | undefined
-  focusedCheck?: ChecksCategoryPayload["id"] | undefined
+  focusedCheck?: CheckId | undefined
 }) {
   const state = useSyncExternalStore(
     active ? session.subscribe : session.subscribeInactive,

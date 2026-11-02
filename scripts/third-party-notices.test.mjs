@@ -63,12 +63,12 @@ test("formats dependency inventories without machine-specific paths", () => {
       },
     ],
   };
-  const rust = rustPackages(report);
+  const rust = rustPackages([report]);
 
   const result = generatedSection(
     frontend,
     rust,
-    legalBodies(frontend, report),
+    legalBodies(frontend, [report]),
   );
   assert.match(
     result,
@@ -123,7 +123,7 @@ test("includes vendored tray-icon attribution and legal text", () => {
     ],
   };
 
-  assert.deepEqual(rustPackages(report), [
+  assert.deepEqual(rustPackages([report]), [
     {
       name: "tray-icon",
       version: "0.24.1",
@@ -131,7 +131,7 @@ test("includes vendored tray-icon attribution and legal text", () => {
       source: "https://github.com/tauri-apps/tray-icon",
     },
   ]);
-  assert.deepEqual(legalBodies([], report), [
+  assert.deepEqual(legalBodies([], [report]), [
     {
       text: "Tray library license text\n",
       packages: ["tray-icon@0.24.1"],
@@ -164,10 +164,78 @@ test("deduplicates identical legal texts and lists every package", () => {
     { name: "beta", version: "2.0.0", legalTexts: ["same text\n"] },
   ];
 
-  assert.deepEqual(legalBodies(frontend, { licenses: [] }), [
+  assert.deepEqual(legalBodies(frontend, [{ licenses: [] }]), [
     {
       text: "same text\n",
       packages: ["alpha@1.0.0", "beta@2.0.0"],
     },
   ]);
+});
+
+test("combines locked Rust production graphs without losing package notices", () => {
+  const reports = [
+    {
+      crates: [
+        {
+          package: {
+            name: "saphyr-parser",
+            version: "0.0.6",
+            source: "registry+https://github.com/rust-lang/crates.io-index",
+          },
+          license: "MIT",
+        },
+      ],
+      licenses: [
+        {
+          text: "Parser license text",
+          used_by: [
+            {
+              crate: {
+                name: "saphyr-parser",
+                version: "0.0.6",
+                source: "registry+https://github.com/rust-lang/crates.io-index",
+              },
+            },
+          ],
+        },
+      ],
+    },
+    {
+      crates: [
+        {
+          package: {
+            name: "arraydeque",
+            version: "0.5.1",
+            source: "registry+https://github.com/rust-lang/crates.io-index",
+          },
+          license: "MIT",
+        },
+      ],
+      licenses: [
+        {
+          text: "Array deque license text",
+          used_by: [
+            {
+              crate: {
+                name: "arraydeque",
+                version: "0.5.1",
+                source: "registry+https://github.com/rust-lang/crates.io-index",
+              },
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  const rust = rustPackages(reports);
+  const bodies = legalBodies([], reports);
+  const generated = generatedSection([], rust, bodies);
+
+  assert.deepEqual(
+    rust.map(({ name }) => name),
+    ["arraydeque", "saphyr-parser"],
+  );
+  assert.match(generated, /Parser license text/);
+  assert.match(generated, /Array deque license text/);
 });

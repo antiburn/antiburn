@@ -18,10 +18,14 @@ export function withViewTransition(update: () => void): Promise<void> {
   if (
     typeof document === "undefined" ||
     typeof document.startViewTransition !== "function" ||
+    document.visibilityState !== "visible" ||
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
   ) {
     update()
     return Promise.resolve()
   }
-  return document.startViewTransition(() => flushSync(update)).finished
+  const transition = document.startViewTransition(() => flushSync(update))
+  // A skipped visual transition must not reject a successful state update.
+  const finished = transition.finished.catch(() => undefined)
+  return transition.updateCallbackDone.then(() => finished)
 }

@@ -126,22 +126,16 @@ function OverviewRecentSessionRow({
     >
       {entry.isActive && <span className="sr-only">Active session</span>}
 
-      <span className="shrink-0 whitespace-nowrap font-mono type-metadata tabular-nums text-label-tertiary">
-        {entry.isActive ? (
-          <span>active</span>
-        ) : (
-          entry.timestamp && (
-            <time
-              dateTime={entry.timestamp}
-              aria-label={`Last activity ${relativeTime(entry.timestamp, { now })}`}
-            >
-              {relativeTime(entry.timestamp, { now })}
-            </time>
-          )
-        )}
-      </span>
-
       <span className="flex min-w-0 items-center">
+        {/* The check icon leads the row. A fixed slot keeps the titles in
+          line while the first run holds the check results back. */}
+        <span className="me-2.5 flex w-4 shrink-0 justify-center">
+          {showChecks && (
+            <Tooltip label={presentation.accessibleDescription} delayMs={150}>
+              <BurnCheckStatus presentation={presentation} hideText />
+            </Tooltip>
+          )}
+        </span>
         <span className="min-w-0 truncate">
           {/* An inline-block, so the shimmer overlay (`::before`, `inset: 0`)
             gets the line box as its containing block and sits on the text. */}
@@ -207,13 +201,33 @@ function OverviewRecentSessionRow({
           : limitBadge && <SessionLimitBadge limitBadge={limitBadge} suffix="of week" plain />}
       </span>
 
-      {showChecks ? (
-        <Tooltip label={presentation.accessibleDescription} delayMs={150}>
-          <BurnCheckStatus presentation={presentation} />
-        </Tooltip>
-      ) : (
-        <span />
-      )}
+      <span
+        className={cn(
+          "whitespace-nowrap font-mono type-footnote font-semibold! tabular-nums",
+          presentation.compactPhrase.outcome === "failed"
+            ? "text-burn-check-failure-text"
+            : presentation.compactPhrase.outcome === "passed"
+              ? "text-burn-check-pass-fill"
+              : "font-normal! text-label-secondary",
+        )}
+      >
+        {showChecks && presentation.compactPhrase.text}
+      </span>
+
+      <span className="shrink-0 justify-self-end whitespace-nowrap font-mono type-metadata tabular-nums text-label-tertiary">
+        {entry.isActive ? (
+          <span>active</span>
+        ) : (
+          entry.timestamp && (
+            <time
+              dateTime={entry.timestamp}
+              aria-label={`Last activity ${relativeTime(entry.timestamp, { now })}`}
+            >
+              {relativeTime(entry.timestamp, { now })}
+            </time>
+          )
+        )}
+      </span>
     </div>
   )
 }
@@ -297,7 +311,7 @@ export function OverviewRecentSessions({
       ) : entries?.length === 0 && snoozes.status === "ready" ? (
         <p className="type-callout text-label-secondary">No sessions yet.</p>
       ) : (
-        <div className="overview-recent-rows grid grid-cols-[auto_1fr_auto_auto_auto] @max-[720px]:grid-cols-[auto_1fr_auto_auto] gap-y-1.5">
+        <div className="overview-recent-rows grid grid-cols-[1fr_auto_auto_auto_auto] @max-[720px]:grid-cols-[1fr_auto_auto_auto] gap-y-1.5">
           {entries && snoozes.status === "ready"
             ? entries.slice(0, OVERVIEW_RECENT_SESSION_COUNT).map((entry) => (
                 <OverviewRecentSessionRow

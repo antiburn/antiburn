@@ -9,7 +9,7 @@ import {
   type MainWindowSessionIdentity,
 } from "../../lib/ipc"
 import type { MainViewId } from "../../lib/navigation/mainViews"
-import type { CHECK_LABELS } from "../../lib/presentation/checkReport"
+import type { CheckId } from "../../lib/insightsIpc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import {
   normalizeSessionFilters,
@@ -19,7 +19,6 @@ import {
 import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 
 import type { MainActivitySession } from "./MainActivitySession"
-import { openProgressStep } from "./overview/overviewProgressStore"
 
 const HISTORY_LIMIT = 100
 const NATIVE_VIEW_IDS = {
@@ -32,7 +31,7 @@ export type MainDestination = {
   section: MainViewId
   filters?: SessionFilters
   subject?: SessionSubject | null
-  check?: keyof typeof CHECK_LABELS
+  check?: CheckId
 }
 
 export type MainWindowNavigationSnapshot = {
@@ -413,7 +412,6 @@ export class MainWindowNavigationSession {
       this.targetRevision = request.revision
       this.snapshot = { ...this.snapshot, requests: this.snapshot.requests + 1 }
       this.navigate(this.destinationForRequest(request))
-      if (request.destination.overviewStep) openProgressStep(request.destination.overviewStep)
     }
     const generation = this.rendererGeneration()
     if (generation === null) return

@@ -11,6 +11,7 @@ const MODEL_PREFIXES = [
 
 export interface PresentableModelRun {
   model: string
+  nativeVariant?: string | undefined
   thinkingMode?: string | undefined
 }
 

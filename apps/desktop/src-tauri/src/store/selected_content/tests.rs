@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::store::{AnalysisRecord, EvidenceCompletion, PublishedEvidence};
 use antiburn_local::analysis::jev_evidence::{
     JevAnswerSelection, JevNativeFieldContainer, JevNativeFieldRange, JevPlanContentStatus,
     JevPlanReference, JevPlanStatus, JevQuestionOption, JevScopeEvidenceProvenance,
@@ -9,7 +10,7 @@ use antiburn_local::analysis::jev_evidence::{
 };
 use antiburn_local::analysis::{
     ContentKind, ContentPart, JevInputField, JevInputSelection, MAX_CONTENT_PART_BYTES,
-    SelectedContentCursor, SourceFormat, TurnRow, TurnRowStore, TurnScope,
+    SelectedContentCursor, SourceFormat, TurnRow, TurnScope, insert_turn_rows,
 };
 
 use super::*;
@@ -17,53 +18,6 @@ use super::*;
 fn fixture() -> (Store, SessionKey) {
     let store = Store::open_in_memory(Path::new("/tmp/antiburn-keyset-tests")).unwrap();
     fixture_in(store)
-}
-
-#[test]
-fn nearby_identity_probe_uses_the_source_position_index_without_sorting_history() {
-    let (store, key) = fixture();
-    let connection = store.lock();
-    for (sql, range) in [
-        (NEARBY_CONTENT_IDENTITIES_SQL, "turn_index<?"),
-        (FOLLOWING_CONTENT_IDENTITIES_SQL, "turn_index>?"),
-    ] {
-        let plan = connection
-            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
-            .unwrap()
-            .query_map(
-                params![
-                    key.environment_key,
-                    key.agent,
-                    key.session_id,
-                    11,
-                    "a",
-                    70,
-                    1
-                ],
-                |row| row.get::<_, String>(3),
-            )
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        assert!(
-            plan.iter().any(|line| line
-                .contains("SEARCH turn USING INDEX turn_content_source_page")
-                && line.contains("source_key=?")
-                && line.contains(range)),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter()
-                .any(|line| line.contains("SEARCH content USING PRIMARY KEY (turn_rowid=?)")),
-            "{plan:?}"
-        );
-        assert!(
-            !plan.iter().any(|line| line.starts_with("SCAN turn")
-                || line.starts_with("SCAN content")
-                || line.contains("USE TEMP B-TREE")),
-            "{plan:?}"
-        );
-    }
 }
 
 fn fixture_in(store: Store) -> (Store, SessionKey) {
@@ -75,6 +29,11 @@ fn fixture_in(store: Store) -> (Store, SessionKey) {
                 first_seen_at, last_seen_at, source_generation, source_fingerprint)
              VALUES ('native', 'claude-code', 'keyset', 'file', 'synthetic', 'now', 'now', 7, 'source');",
         ).unwrap();
+        conn.execute(
+            "UPDATE evidence_claim_fence_seq SET value = 11 WHERE id = 1",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO session_evidence (environment_key, agent, session_id, status,
                 analyzed_generation, processed_fingerprint, parser_revision, analyzer_revision,
@@ -216,11 +175,11 @@ fn scope_part() -> ContentPart {
         .unwrap()
 }
 
-fn write_scope_parts(store: &Store, key: &SessionKey, fence: i64, source: &str, count: usize) {
-    write_parts(store, key, fence, source, vec![scope_part(); count]);
+fn seed_scope_parts(store: &Store, key: &SessionKey, fence: i64, source: &str, count: usize) {
+    seed_parts(store, key, fence, source, vec![scope_part(); count]);
 }
 
-fn write_parts(
+fn seed_parts(
     store: &Store,
     key: &SessionKey,
     fence: i64,
@@ -228,6 +187,7 @@ fn write_parts(
     content: Vec<ContentPart>,
 ) {
     let row = TurnRow {
+        accounting: None,
         source_key: source.into(),
         thread_id: format!("branch-{source}"),
         turn_index: 0,
@@ -257,9 +217,7 @@ fn write_parts(
         subagent_launches: 0,
         content,
     };
-    super::super::FencedTurnRowStore::new(store.clone(), key.clone(), fence)
-        .write_turn_rows(&[row])
-        .unwrap();
+    insert_turn_rows(&store.lock(), &turn_session_key(key), fence, &[row]).unwrap();
 }
 
 fn read_scope(
@@ -289,8 +247,8 @@ fn persisted_scope_metadata_reload_preserves_typed_records_and_explicit_opt_in()
     let dir = tempfile::tempdir().unwrap();
     let (store, key) = fixture_in(Store::open(dir.path()).unwrap());
     store.lock().execute("DELETE FROM turn", []).unwrap();
-    write_scope_parts(&store, &key, 11, "scope", 1);
-    write_parts(
+    seed_scope_parts(&store, &key, 11, "scope", 1);
+    seed_parts(
         &store,
         &key,
         11,
@@ -311,8 +269,8 @@ fn persisted_scope_metadata_reload_preserves_typed_records_and_explicit_opt_in()
         })
         .collect(),
     );
-    let ignored = antiburn_local::checks::ignored_instructions::INPUT_SELECTION;
-    let baseline = read_scope(&store, &key, ignored, None).unwrap().unwrap();
+    let text_only = JevInputSelection::from_fields(&[JevInputField::AssistantMessage]);
+    let baseline = read_scope(&store, &key, text_only, None).unwrap().unwrap();
     assert_eq!(baseline.content.parts.len(), 1);
     assert_eq!(baseline.content.parts[0].source_key, "scope");
     assert_eq!(
@@ -357,7 +315,7 @@ fn persisted_scope_metadata_reload_preserves_typed_records_and_explicit_opt_in()
         assert_eq!(page.content.parts[0].source_key, "scope");
         assert_eq!(page.content.parts[0].thread_id, "branch-scope");
     }
-    for selection in [JevInputSelection::ALL, ignored] {
+    for selection in [JevInputSelection::ALL, text_only] {
         let page = read_scope(&store, &key, selection, None).unwrap().unwrap();
         assert!(
             page.content
@@ -377,7 +335,7 @@ fn persisted_scope_metadata_reload_preserves_typed_records_and_explicit_opt_in()
         )
         .unwrap();
     assert_eq!(
-        read_scope(&store, &key, ignored, None).unwrap().unwrap(),
+        read_scope(&store, &key, text_only, None).unwrap().unwrap(),
         baseline
     );
     let prepare = |content| {
@@ -385,21 +343,20 @@ fn persisted_scope_metadata_reload_preserves_typed_records_and_explicit_opt_in()
             "keyset",
             SourceFormat::ClaudeJsonl,
             content,
-            Vec::new(),
         )
     };
     let selected_before = antiburn_local::analysis::jev_evidence::select_session_content(
         &prepare(baseline.content),
-        ignored,
+        text_only,
     );
     let selected_after = antiburn_local::analysis::jev_evidence::select_session_content(
         &prepare(
-            read_scope(&store, &key, ignored, None)
+            read_scope(&store, &key, text_only, None)
                 .unwrap()
                 .unwrap()
                 .content,
         ),
-        ignored,
+        text_only,
     );
     assert_eq!(selected_after, selected_before);
     assert_ne!(
@@ -414,9 +371,9 @@ fn persisted_scope_metadata_reload_preserves_typed_records_and_explicit_opt_in()
 fn persisted_scope_cursor_restart_preserves_order_and_excludes_other_sessions_and_fences() {
     let dir = tempfile::tempdir().unwrap();
     let (store, key) = fixture_in(Store::open(dir.path()).unwrap());
-    write_scope_parts(&store, &key, 11, "scope-a", 135);
-    write_scope_parts(&store, &key, 11, "scope-b", 135);
-    write_scope_parts(&store, &key, 12, "unpublished", 1);
+    seed_scope_parts(&store, &key, 11, "scope-a", 135);
+    seed_scope_parts(&store, &key, 11, "scope-b", 135);
+    seed_scope_parts(&store, &key, 12, "unpublished", 1);
     for other in [
         SessionKey::new("remote", "claude-code", "keyset"),
         SessionKey::new("native", "opencode", "keyset"),
@@ -441,7 +398,7 @@ fn persisted_scope_cursor_restart_preserves_order_and_excludes_other_sessions_an
                 params![other.environment_key, other.agent, other.session_id],
             ).unwrap();
         }
-        write_scope_parts(&store, &other, 11, "other-session", 1);
+        seed_scope_parts(&store, &other, 11, "other-session", 1);
     }
     let first = read_scope(&store, &key, scope_selection(), None)
         .unwrap()
@@ -455,19 +412,14 @@ fn persisted_scope_cursor_restart_preserves_order_and_excludes_other_sessions_an
         .unwrap();
     store.set_internal_value(
         "internal:scopeProgress",
-        &serde_json::to_string(&SelectedContentProgress {
-            revision: SELECTED_CONTENT_PROGRESS_REVISION,
-            cursor: Some(cursor.clone()),
-        })
-        .unwrap(),
+        &serde_json::to_string(cursor).unwrap(),
     );
     drop(store);
 
     let store = Store::open(dir.path()).unwrap();
-    let progress: SelectedContentProgress =
+    let cursor: SelectedContentCursor =
         serde_json::from_str(&store.internal_value("internal:scopeProgress").unwrap()).unwrap();
-    assert_eq!(progress.revision, SELECTED_CONTENT_PROGRESS_REVISION);
-    let resumed = read_scope(&store, &key, scope_selection(), progress.cursor.as_ref())
+    let resumed = read_scope(&store, &key, scope_selection(), Some(&cursor))
         .unwrap()
         .unwrap();
     assert_eq!(resumed, expected);
@@ -486,7 +438,7 @@ fn persisted_scope_cursor_restart_preserves_order_and_excludes_other_sessions_an
             1
         );
         assert!(matches!(
-            read_scope(&store, &other, scope_selection(), progress.cursor.as_ref()),
+            read_scope(&store, &other, scope_selection(), Some(&cursor)),
             Err(SelectedContentQueryError::StaleCursor)
         ));
     }
@@ -574,23 +526,19 @@ fn persisted_scope_cursor_restart_preserves_order_and_excludes_other_sessions_an
 fn persisted_scope_cursor_restart_rejects_changed_inputs_and_stale_publications() {
     let dir = tempfile::tempdir().unwrap();
     let (store, key) = fixture_in(Store::open(dir.path()).unwrap());
-    write_scope_parts(&store, &key, 11, "scope", 270);
+    seed_scope_parts(&store, &key, 11, "scope", 270);
     let first = read_scope(&store, &key, scope_selection(), None)
         .unwrap()
         .unwrap();
     store.set_internal_value(
         "internal:scopeProgress",
-        &serde_json::to_string(&SelectedContentProgress {
-            revision: SELECTED_CONTENT_PROGRESS_REVISION,
-            cursor: first.next_cursor,
-        })
-        .unwrap(),
+        &serde_json::to_string(first.next_cursor.as_ref().unwrap()).unwrap(),
     );
     drop(store);
     let store = Store::open(dir.path()).unwrap();
-    let progress: SelectedContentProgress =
+    let cursor: SelectedContentCursor =
         serde_json::from_str(&store.internal_value("internal:scopeProgress").unwrap()).unwrap();
-    let cursor = progress.cursor.as_ref().unwrap();
+    let cursor = &cursor;
     for selection in [
         JevInputSelection::ALL,
         JevInputSelection::from_fields(&[JevInputField::UserAnswer]),
@@ -639,7 +587,7 @@ fn persisted_scope_cursor_restart_rejects_changed_inputs_and_stale_publications(
     ] {
         let changed_dir = tempfile::tempdir().unwrap();
         let (changed_store, changed_key) = fixture_in(Store::open(changed_dir.path()).unwrap());
-        write_scope_parts(&changed_store, &changed_key, 11, "scope", 270);
+        seed_scope_parts(&changed_store, &changed_key, 11, "scope", 270);
         let saved_cursor = read_scope(&changed_store, &changed_key, scope_selection(), None)
             .unwrap()
             .unwrap()
@@ -734,19 +682,14 @@ fn selected_pages_resume_json_with_source_turn_and_part_ties() {
                 );
             }
             let Some(next) = page.next_cursor else { break };
-            let saved = SelectedContentProgress {
-                revision: SELECTED_CONTENT_PROGRESS_REVISION,
-                cursor: Some(next),
-            };
             store.set_internal_value(
                 "internal:keysetTest",
-                &serde_json::to_string(&saved).unwrap(),
+                &serde_json::to_string(&next).unwrap(),
             );
-            let restored: SelectedContentProgress =
+            let restored: SelectedContentCursor =
                 serde_json::from_str(&store.internal_value("internal:keysetTest").unwrap())
                     .unwrap();
-            assert_eq!(restored.revision, SELECTED_CONTENT_PROGRESS_REVISION);
-            cursor = restored.cursor;
+            cursor = Some(restored);
         }
         assert_eq!(seen.len(), 1080);
     }
@@ -959,12 +902,18 @@ fn store_native_fixture(
             self.rows.flush();
         }
     }
+    store.requeue_session_evidence(key).unwrap();
+    let claim = store
+        .claim_next_evidence(&[key.agent.as_str()], 100, 60)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claim.key, *key);
     let mut sink = Sink {
         rows: TurnRowSink::new(
             std::sync::Arc::new(super::super::FencedTurnRowStore::new(
                 store.clone(),
                 key.clone(),
-                11,
+                claim.claim_fence,
             )),
             "native-fixture",
             None,
@@ -985,6 +934,33 @@ fn store_native_fixture(
         .unwrap();
     sink.rows.flush();
     assert!(!sink.rows.has_error());
+    let revisions = crate::analysis::projection_revisions();
+    let record = AnalysisRecord {
+        key: key.clone(),
+        model_breakdown_json: "{}".into(),
+        pricing_breakdown_json: "{}".into(),
+        inclusive_models_json: "[]".into(),
+        initial_context_json: None,
+        source_summaries_json: None,
+        provider_hints_json: None,
+        source_fingerprint: "source".into(),
+        pricing_generation: 1,
+        analyzed_generation: claim.source_generation,
+        parser_revision: revisions.parser_revision,
+        analyzer_revision: revisions.analyzer_revision,
+        metrics_schema_revision: revisions.metrics_schema_revision,
+    };
+    let completion = EvidenceCompletion {
+        claim_fence: claim.claim_fence,
+        status: PublishedEvidence::Ready,
+        evidence_schema_revision: revisions.evidence_schema_revision,
+        evidence_json: crate::store::test_support::evidence_json(key),
+    };
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
     sink.parts
 }
 
@@ -1178,7 +1154,6 @@ fn native_human_read_and_output_proofs_survive_parse_store_selected_query() {
             session_id,
             format,
             page.content,
-            vec![],
         );
         assert_eq!(
             prepared
@@ -1262,7 +1237,7 @@ fn metadata_only_native_read_request_and_result_use_selected_byte_limits() {
         recorded_file_version: None,
         extent_contract: None,
     });
-    write_parts(
+    seed_parts(
         &store,
         &key,
         11,
@@ -1368,7 +1343,7 @@ fn selected_skill_only_metadata_reloads_with_exact_ranges_and_explicit_user_sele
     assert!(part.metadata.bindings.is_empty());
     let mut thinking = ContentPart::new(ContentKind::Thinking, "excluded thinking body");
     thinking.metadata.selected_skill = Some(proof.clone());
-    write_parts(&store, &key, 11, "selected-skill", vec![part, thinking]);
+    seed_parts(&store, &key, 11, "selected-skill", vec![part, thinking]);
     let user = JevInputSelection::from_fields(&[JevInputField::UserMessage]);
     let selected = read_scope(&store, &key, user, None).unwrap().unwrap();
     assert_eq!(selected.content.parts.len(), 1);
@@ -1478,7 +1453,7 @@ fn codex_environment_context_survives_published_reload_and_shared_preparation() 
             .as_ref()),
         Some(&proof)
     );
-    let prepared = prepare_session_content(session_id, source, reloaded.content, vec![]);
+    let prepared = prepare_session_content(session_id, source, reloaded.content);
     let environment = prepared
         .actions
         .iter()
@@ -1522,7 +1497,7 @@ fn codex_environment_context_survives_published_reload_and_shared_preparation() 
             .non_authorizing_context_proof
             .is_none())
     );
-    let prepared = prepare_session_content(session_id, source, reloaded.content, vec![]);
+    let prepared = prepare_session_content(session_id, source, reloaded.content);
     let environment = prepared
         .actions
         .iter()
@@ -1562,7 +1537,7 @@ fn codex_environment_context_survives_published_reload_and_shared_preparation() 
     proof_only.metadata.non_authorizing_context_proof = Some(proof.clone());
     let mut context_only = ContentPart::new(ContentKind::AssistantText, "");
     context_only.metadata.non_authorizing_context = Some(context.clone());
-    write_parts(
+    seed_parts(
         &store,
         &key,
         11,

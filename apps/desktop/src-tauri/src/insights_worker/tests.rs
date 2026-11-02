@@ -13,6 +13,30 @@ use crate::store::EvidenceStatus;
 use crate::store::{Remediation, RemediationEvidenceGuard, RemediationState};
 
 mod resume_tests;
+mod supervision_tests;
+
+#[tokio::test]
+async fn reserved_live_turns_alternate_source_families_without_projection_work() {
+    let journal_turns = AtomicUsize::new(0);
+    let file_turns = AtomicUsize::new(0);
+    let journal = || async {
+        journal_turns.fetch_add(1, Ordering::SeqCst);
+        Ok(true)
+    };
+    let file = || async {
+        file_turns.fetch_add(1, Ordering::SeqCst);
+        Ok(true)
+    };
+    let mut next = 0;
+    for _ in 0..20 {
+        assert!(process_next_live(&mut next, &journal, &file).await.unwrap());
+    }
+    assert_eq!(journal_turns.load(Ordering::SeqCst), 10);
+    assert_eq!(file_turns.load(Ordering::SeqCst), 10);
+    let idle = || async { Ok(false) };
+    assert!(process_next_live(&mut next, &idle, &file).await.unwrap());
+    assert_eq!(file_turns.load(Ordering::SeqCst), 11);
+}
 
 fn store() -> Store {
     Store::open_in_memory(std::path::Path::new("/tmp/antiburn-worker-test")).unwrap()
@@ -176,6 +200,69 @@ async fn evidence_and_remediation_work_alternate_when_both_stay_ready() {
     assert_eq!(passes.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn live_journal_delivery_runs_while_evidence_and_verification_stay_ready() {
+    let store = store();
+    seed_dirty_remediation(&store);
+    let mut source = journal::tests::SyntheticJournal::new(16);
+    source.index(&store, "/synthetic");
+    journal::tests::SyntheticJournal::enable_live(&store, "/synthetic");
+    assert!(journal::tests::run_page(&store, source.source(), 99).await);
+    source.result(0);
+    source.index(&store, "/synthetic");
+    let mut evidence = record("fair-evidence");
+    evidence.updated_at_epoch = Some(unix_now() + 1);
+    store
+        .upsert_sessions(&[evidence], &crate::agents::evidence_cohort())
+        .unwrap();
+    let journal_source = source.source();
+    let passes = AtomicUsize::new(0);
+    let runner = |record: &SessionRecord, _: PassSignal, _: i64| {
+        passes.fetch_add(1, Ordering::SeqCst);
+        let pass = published_pass(record);
+        Box::pin(async move { pass }) as PassFuture
+    };
+    for _ in 0..3 {
+        store
+            .lock()
+            .execute(
+                "UPDATE remediation SET dirty_revision = dirty_revision + 1
+             WHERE remediation_id = 'worker-remediation'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            process_next_work_with_journal(
+                &store,
+                &|| 100,
+                &runner,
+                &|_| {},
+                &|_, _| {},
+                &WorkProgress {
+                    claimed: &|| {},
+                    published: &|| {},
+                    authorities: Arc::new(tokio::sync::Mutex::new(None)),
+                },
+                &|| async {
+                    Ok(journal::tests::run_page(&store, journal_source.clone(), 100).await)
+                },
+            )
+            .await
+            .unwrap()
+        );
+    }
+    assert_eq!(passes.load(Ordering::SeqCst), 1);
+    assert!(store.next_dirty_remediation().unwrap().is_some());
+    let publications = store
+        .native_tool_result_publications_after(0, 10)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.session.agent == "opencode" && event.payload.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(publications.len(), 1);
+    assert_eq!(publications[0].live_eligible, Some(true));
+}
+
 fn failed_pass(outcome: PassOutcome) -> EvidencePass {
     EvidencePass {
         analysis: analysis::SessionAnalysis::unavailable(),
@@ -183,7 +270,21 @@ fn failed_pass(outcome: PassOutcome) -> EvidencePass {
         evidence: None,
         outcome,
         source_outcomes: Vec::new(),
+        tool_result_observations: Vec::new(),
+        tool_result_observations_complete: false,
+        native_tool_result_source_format: None,
     }
+}
+
+#[test]
+fn a_source_changed_pass_requests_a_fresh_scan_for_its_agent() {
+    let pass = failed_pass(PassOutcome::SourceChanged);
+    assert!(matches!(
+        source_refresh_agent_for_outcome(&pass.outcome, "opencode"),
+        Some(AgentKind::OpenCode)
+    ));
+    assert!(source_refresh_agent_for_outcome(&PassOutcome::Published, "opencode").is_none());
+    assert!(source_refresh_agent_for_outcome(&pass.outcome, "unknown-agent").is_none());
 }
 
 fn published_pass(record: &SessionRecord) -> EvidencePass {
@@ -210,6 +311,82 @@ fn published_pass(record: &SessionRecord) -> EvidencePass {
         .clone()
         .unwrap_or_else(|| analysis::MISSING_FINGERPRINT.into());
     pass
+}
+
+#[test]
+fn projection_publication_leaves_native_file_results_to_delivery() {
+    let store = store();
+    let claim = claim(&store, "native-result-publication", 100);
+    let record = store.session(&claim.key).unwrap().unwrap();
+    let mut pass = published_pass(&record);
+    pass.analysis.analyzed_generation = claim.source_generation;
+    pass.native_tool_result_source_format =
+        Some(antiburn_local::analysis::SourceFormat::ClaudeJsonl);
+    pass.tool_result_observations = vec![antiburn_local::analysis::ToolResultObservation {
+        facts: None,
+        outcome: None,
+        provider_executed: None,
+        context: None,
+        source_format: antiburn_local::analysis::SourceFormat::ClaudeJsonl,
+        session_id: claim.key.session_id.clone(),
+        record_id: Some("assistant-message".into()),
+        call_id: Some("tool-call".into()),
+        result_id: Some("tool-result".into()),
+        position: antiburn_local::analysis::ToolResultPosition::Jsonl {
+            record_index: 1,
+            item_index: 0,
+        },
+        revision: 1,
+        change: antiburn_local::analysis::ToolResultChange::Update,
+        tool_name: Some("Bash".into()),
+        tool_category: Some(antiburn_local::analysis::ToolCategory::Bash),
+        arguments: Some(serde_json::json!({"command": "false"})),
+        content: Some("command failed".into()),
+        status: antiburn_local::analysis::ToolResultStatus::Error,
+        finality: true,
+        completeness: antiburn_local::analysis::ToolResultCompleteness::Complete,
+    }];
+
+    assert!(apply_outcome(&store, &claim, &pass, 100).unwrap().applied);
+    let publications = store.native_tool_result_publications_after(0, 10).unwrap();
+    assert!(publications.is_empty());
+    assert!(
+        store
+            .native_tool_results_current(&claim.key)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store.evidence(&claim.key).unwrap().unwrap().status,
+        EvidenceStatus::Ready
+    );
+}
+
+#[test]
+fn publication_keeps_the_configuration_attribution_prepared_by_the_worker() {
+    let store = store();
+    let claim = claim(&store, "prepared-attribution", 100);
+    let record = store.session(&claim.key).unwrap().unwrap();
+    let mut pass = published_pass(&record);
+    pass.analysis.analyzed_generation = claim.source_generation;
+    let attribution = crate::remediation::PublicationConfigAttribution {
+        model: Some((
+            "synthetic-target".into(),
+            "project".into(),
+            "prepared-model".into(),
+        )),
+        ..Default::default()
+    };
+    assert!(
+        apply_outcome_with_attribution(&store, &claim, &pass, 100, Some(&attribution))
+            .unwrap()
+            .applied
+    );
+    let model: String = store.lock().query_row(
+        "SELECT effective_model FROM session_evidence WHERE session_id = 'prepared-attribution'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(model, "prepared-model");
 }
 
 /// Like [`published_pass`], but for a generic-JSONL agent (Copilot):
@@ -320,15 +497,19 @@ async fn unknown_store_slug_is_rejected_instead_of_routing_to_claude() {
 }
 
 #[test]
-fn published_status_classifies_capability_sets_against_detector_prerequisites() {
-    assert_eq!(
-        published_status(&evidence_with(SourceCapabilities::claude())),
-        PublishedEvidence::Ready
-    );
-    assert_eq!(
-        published_status(&evidence_with(SourceCapabilities::pi())),
-        PublishedEvidence::Ready
-    );
+fn published_status_requires_a_surviving_detector_prerequisite() {
+    for capabilities in [
+        SourceCapabilities::claude(),
+        SourceCapabilities::codex(),
+        SourceCapabilities::opencode(),
+        SourceCapabilities::opencode_v2(),
+        SourceCapabilities::pi(),
+    ] {
+        assert_eq!(
+            published_status(&evidence_with(capabilities)),
+            PublishedEvidence::Ready
+        );
+    }
     assert_eq!(
         published_status(&evidence_with(no_capabilities())),
         PublishedEvidence::Unsupported
@@ -336,7 +517,7 @@ fn published_status_classifies_capability_sets_against_detector_prerequisites() 
     for source_format in [
         antiburn_local::analysis::SourceFormat::ClaudeJsonl,
         antiburn_local::analysis::SourceFormat::CodexRolloutJsonl,
-        antiburn_local::analysis::SourceFormat::OpenCodeSqliteV2,
+        antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
         antiburn_local::analysis::SourceFormat::PiV3Jsonl,
         antiburn_local::analysis::SourceFormat::CursorCliAgentJsonl,
         antiburn_local::analysis::SourceFormat::CursorCliStoreDb,
@@ -351,8 +532,8 @@ fn published_status_classifies_capability_sets_against_detector_prerequisites() 
         };
         assert_eq!(
             published_status(&evidence_with(capabilities)),
-            PublishedEvidence::Ready,
-            "{source_format:?} must reach its check-owned evidence path"
+            PublishedEvidence::Unsupported,
+            "{source_format:?} cannot replace missing detector prerequisites"
         );
     }
 }
@@ -494,7 +675,7 @@ fn source_changed_leaves_both_stored_projections_untouched() {
     assert_eq!(evidence_after.retry_count, 1);
     assert_eq!(
         evidence_after.next_attempt_at_epoch,
-        Some(101 + BACKOFF_BASE_SECS)
+        Some(101 + crate::scan::TICK.as_secs() as i64)
     );
 }
 
@@ -1133,12 +1314,11 @@ fn backlog_transitions_report_once_per_busy_stretch() {
     // One worker going idle while the other is still busy reports nothing.
     assert_eq!(handle.note_backlog_idle(), None);
     let drained = handle.note_backlog_idle();
-    assert!(matches!(drained, Some((2, _))));
+    assert!(matches!(drained, Some((2, _, false))));
 
-    // The stretch reset when it drained: a later stretch that processes
-    // nothing reports nothing when it goes idle.
+    // A failed first item must also announce that the pool is idle.
     assert_eq!(handle.note_backlog_busy(&store), Some(2));
-    assert_eq!(handle.note_backlog_idle(), None);
+    assert!(matches!(handle.note_backlog_idle(), Some((0, _, false))));
 }
 
 #[test]
@@ -1486,7 +1666,10 @@ async fn a_changed_source_backs_off_through_the_worker() {
     let row = store.evidence(&key).unwrap().unwrap();
     assert_eq!(row.status, EvidenceStatus::Pending);
     assert_eq!(row.retry_count, 1);
-    assert_eq!(row.next_attempt_at_epoch, Some(100 + BACKOFF_BASE_SECS));
+    assert_eq!(
+        row.next_attempt_at_epoch,
+        Some(100 + crate::scan::TICK.as_secs() as i64)
+    );
 }
 
 #[tokio::test]
@@ -1647,7 +1830,7 @@ async fn a_published_pass_leaves_the_expected_turn_rows_under_its_claim_fence() 
 }
 
 #[tokio::test]
-async fn file_source_identity_survives_real_publication_and_enters_history_candidates() {
+async fn file_source_identity_survives_real_publication_and_revision_reconciliation() {
     use std::io::Read as _;
 
     let store = store();
@@ -1723,9 +1906,6 @@ async fn file_source_identity_survives_real_publication_and_enters_history_candi
             .await
         }) as PassFuture
     };
-    store
-        .capture_burn_check_boundaries(&["ignored_instructions"], 1_767_225_600)
-        .unwrap();
     assert!(
         process_next(
             &store,
@@ -1761,14 +1941,6 @@ async fn file_source_identity_survives_real_publication_and_enters_history_candi
     assert!(aggregate.starts_with("v2:"));
     assert_ne!(aggregate, discovered_fingerprint);
 
-    assert_eq!(store.enqueue_burn_checks(1_767_225_800, 7).unwrap(), 1);
-    assert_eq!(
-        store
-            .burn_check_candidates("ignored_instructions", 1_767_225_800, 180, 16)
-            .unwrap()
-            .len(),
-        1
-    );
     store
         .lock()
         .execute(
@@ -1782,19 +1954,6 @@ async fn file_source_identity_survives_real_publication_and_enters_history_candi
             ],
         )
         .unwrap();
-    assert!(
-        store
-            .burn_check_candidates("ignored_instructions", 1_767_225_800, 180, 16)
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        store
-            .historical_burn_check_status(1_767_225_800, 180)
-            .unwrap()
-            .waiting_for_data,
-        1
-    );
     assert_eq!(
         store
             .reconcile_evidence_revisions(
@@ -1803,6 +1962,10 @@ async fn file_source_identity_survives_real_publication_and_enters_history_candi
             )
             .unwrap(),
         1
+    );
+    assert_eq!(
+        store.evidence(&session.key).unwrap().unwrap().status,
+        EvidenceStatus::Pending
     );
 }
 

@@ -3,6 +3,13 @@ use serde::{Deserialize, Serialize};
 /// Measured heuristic, not a verified tokenizer or a universal token upper bound.
 pub const ASCII_WEIGHTED_ESTIMATOR: &str = "ascii-weighted-utf8-v1";
 
+/// Pins the prompt projection as well as the text estimate. This is not an exact tokenizer.
+pub const OLLAMA_TEV1_ESTIMATOR: &str = "ollama-0.40.1-tev1-ascii-weighted-utf8-v1";
+pub const OLLAMA_GENERIC_ESTIMATOR: &str = "ollama-0.40.1-generic-ascii-weighted-utf8-v1";
+pub const TEV1_SCORING_HEADROOM: u64 = 2;
+/// Extra allowance for tokenizer boundaries; the weighted text estimate keeps its own margin.
+pub const TEV1_ACCOUNTING_MARGIN: u64 = 32;
+
 /// Count ASCII letters at 0.75 tokens per byte and all other UTF-8 bytes at one.
 /// The ASCII allowance includes a 50% margin over two letters per token.
 /// Keep a separate rendering reserve for the unknown provider prompt template.
@@ -18,14 +25,6 @@ impl TokenEstimate {
                 .units
                 .saturating_add(if byte.is_ascii_alphabetic() { 3 } else { 4 });
         }
-    }
-
-    pub(crate) fn units(self) -> u64 {
-        self.units
-    }
-
-    pub(crate) fn from_units(units: u64) -> Self {
-        Self { units }
     }
 
     pub(crate) fn tokens(self) -> u64 {
@@ -75,9 +74,50 @@ pub enum TokenizerIdentity {
     ConservativeEstimator(String),
 }
 
+/// Output fields verified for a categorical question in the selected adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemOneCategoricalOutputCapabilities {
+    pub probabilities: bool,
+    pub confidence: bool,
+    pub minimum_criteria: u32,
+    pub maximum_criteria: u32,
+}
+
+/// Verified output support, independent of manual limits and token estimates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemOneOutputCapabilities {
+    pub choice: Option<SystemOneCategoricalOutputCapabilities>,
+    pub score: Option<SystemOneCategoricalOutputCapabilities>,
+    pub noul: bool,
+}
+
+impl SystemOneOutputCapabilities {
+    /// Declare the strict typed adapter contract, not model accuracy or capacity.
+    pub const fn typed_adapter() -> Self {
+        Self {
+            choice: Some(SystemOneCategoricalOutputCapabilities {
+                probabilities: true,
+                confidence: true,
+                minimum_criteria: 2,
+                maximum_criteria: 26,
+            }),
+            score: Some(SystemOneCategoricalOutputCapabilities {
+                probabilities: true,
+                confidence: true,
+                minimum_criteria: 2,
+                maximum_criteria: 10,
+            }),
+            noul: true,
+        }
+    }
+}
+
 /// Effective System One limits, kept separate from local queue and memory caps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCapabilities {
+    /// Missing metadata does not establish output support.
+    #[serde(default)]
+    pub output: SystemOneOutputCapabilities,
     /// Maximum evaluated input tokens across the request.
     pub total_input_tokens: CapabilityLimit<u64>,
     /// Maximum state plus the longest question, when the provider defines one.
@@ -113,9 +153,66 @@ pub struct ModelLimitOverride {
 }
 
 impl ModelCapabilities {
+    /// Enable this only after discovery verifies the server and chat renderer.
+    /// Count the chat envelope and system text at one token per UTF-8 byte.
+    /// The payload estimate already includes JSON separators, options, and escaping.
+    pub fn use_ollama_tev1_accounting(&mut self, chat_envelope: &str, system: &str) {
+        self.tokenizer = Some(TokenizerIdentity::ConservativeEstimator(
+            OLLAMA_TEV1_ESTIMATOR.to_owned(),
+        ));
+        self.rendering_reserve_tokens = (chat_envelope.len() as u64)
+            .saturating_add(system.len() as u64)
+            .saturating_add(TEV1_SCORING_HEADROOM)
+            .saturating_add(TEV1_ACCOUNTING_MARGIN);
+        self.criteria_per_question = CapabilityLimit::known(24, CapabilitySource::ProviderMetadata);
+    }
+
+    pub fn uses_ollama_tev1_accounting(&self) -> bool {
+        matches!(&self.tokenizer, Some(TokenizerIdentity::ConservativeEstimator(name))
+            if name == OLLAMA_TEV1_ESTIMATOR)
+    }
+
+    pub fn use_ollama_generic_accounting(&mut self, chat_envelope: &str, system: &str) {
+        self.use_ollama_tev1_accounting(chat_envelope, system);
+        self.tokenizer = Some(TokenizerIdentity::ConservativeEstimator(
+            OLLAMA_GENERIC_ESTIMATOR.to_owned(),
+        ));
+        self.criteria_per_question = CapabilityLimit::known(26, CapabilitySource::ProviderMetadata);
+    }
+
+    pub fn uses_ollama_generic_accounting(&self) -> bool {
+        matches!(&self.tokenizer, Some(TokenizerIdentity::ConservativeEstimator(name))
+            if name == OLLAMA_GENERIC_ESTIMATOR)
+    }
+
+    pub fn uses_ollama_rendered_accounting(&self) -> bool {
+        self.uses_ollama_tev1_accounting() || self.uses_ollama_generic_accounting()
+    }
+
+    /// Select compact wrappers from available capacity, independent of the model name.
+    pub fn uses_compact_requests(&self) -> bool {
+        self.usable_state_tokens()
+            .is_some_and(|tokens| tokens <= 4096)
+    }
+
     /// Documented Jev token limits with a separate local request-memory guard.
     pub fn jev_default() -> Self {
         Self {
+            output: SystemOneOutputCapabilities {
+                choice: Some(SystemOneCategoricalOutputCapabilities {
+                    probabilities: true,
+                    confidence: true,
+                    minimum_criteria: 1,
+                    maximum_criteria: 26,
+                }),
+                score: Some(SystemOneCategoricalOutputCapabilities {
+                    probabilities: true,
+                    confidence: true,
+                    minimum_criteria: 1,
+                    maximum_criteria: 10,
+                }),
+                noul: true,
+            },
             total_input_tokens: CapabilityLimit::known(
                 super::MAX_REQUEST_TOKENS,
                 CapabilitySource::DocumentedDefault,
@@ -135,13 +232,30 @@ impl ModelCapabilities {
                 super::MAX_QUESTIONS_PER_REQUEST as u32,
                 CapabilitySource::DocumentedDefault,
             ),
-            criteria_per_question: CapabilityLimit::known(26, CapabilitySource::DocumentedDefault),
+            criteria_per_question: CapabilityLimit::known(26, CapabilitySource::Manual),
             rendering_reserve_tokens: 4 * 1024,
             tokenizer: Some(TokenizerIdentity::ConservativeEstimator(
                 ASCII_WEIGHTED_ESTIMATOR.to_owned(),
             )),
             model: super::PINNED_MODEL.to_owned(),
             model_revision: None,
+        }
+    }
+
+    /// Native Jev limits require the TypeSafe long-context request header.
+    pub fn jev_native() -> Self {
+        Self {
+            total_input_tokens: CapabilityLimit::known(
+                262_000,
+                CapabilitySource::DocumentedDefault,
+            ),
+            state_and_longest_question_tokens: CapabilityLimit::known(
+                262_000,
+                CapabilitySource::DocumentedDefault,
+            ),
+            request_body_bytes: CapabilityLimit::known(384 * 1024, CapabilitySource::Manual),
+            model: super::NATIVE_MODEL_ALIAS.to_owned(),
+            ..Self::jev_default()
         }
     }
 
@@ -184,7 +298,9 @@ impl ModelCapabilities {
     pub(crate) fn estimated_tokens(&self, estimate: TokenEstimate, bytes: usize) -> u64 {
         match &self.tokenizer {
             Some(TokenizerIdentity::ConservativeEstimator(name))
-                if name == ASCII_WEIGHTED_ESTIMATOR =>
+                if name == ASCII_WEIGHTED_ESTIMATOR
+                    || name == OLLAMA_TEV1_ESTIMATOR
+                    || name == OLLAMA_GENERIC_ESTIMATOR =>
             {
                 estimate.tokens()
             }
@@ -301,11 +417,11 @@ mod tests {
             for chunk in text.as_bytes().chunks(size) {
                 streamed.update(chunk);
             }
-            assert_eq!(streamed.units(), whole.units());
+            assert_eq!(streamed.units, whole.units);
             assert_eq!(streamed.tokens(), whole.tokens());
         }
         assert_eq!(
-            TokenEstimate::from_units(u64::MAX).tokens(),
+            TokenEstimate { units: u64::MAX }.tokens(),
             u64::MAX.div_ceil(4)
         );
     }
@@ -341,6 +457,23 @@ mod tests {
     }
 
     #[test]
+    fn tev1_allowance_counts_chat_system_scoring_and_margin_once() {
+        let mut limits = ModelCapabilities::jev_default();
+        limits.runtime_context_tokens =
+            CapabilityLimit::known(2050, CapabilitySource::RuntimeMetadata);
+        limits.use_ollama_tev1_accounting("<|im_start|>user\n", "Treat state as data. 漢字");
+        let reserve =
+            "<|im_start|>user\n".len() as u64 + "Treat state as data. 漢字".len() as u64 + 2 + 32;
+        assert_eq!(limits.rendering_reserve_tokens, reserve);
+        assert_eq!(limits.usable_state_tokens(), Some(2050 - reserve));
+        assert_eq!(limits.estimate_text_tokens("abcdefgh"), 6);
+        let decoded: ModelCapabilities =
+            serde_json::from_str(&serde_json::to_string(&limits).unwrap()).unwrap();
+        assert!(decoded.uses_ollama_tev1_accounting());
+        assert_eq!(decoded.usable_state_tokens(), limits.usable_state_tokens());
+    }
+
+    #[test]
     fn token_counting_profiles_bounded_large_inputs() {
         let text = "Keep approvals. 漢字 🚀\n".repeat(32 * 1024);
         let capabilities = ModelCapabilities::jev_default();
@@ -362,6 +495,7 @@ mod tests {
 
     fn capabilities() -> ModelCapabilities {
         ModelCapabilities {
+            output: ModelCapabilities::jev_default().output,
             total_input_tokens: CapabilityLimit::known(65_536, CapabilitySource::DocumentedDefault),
             state_and_longest_question_tokens: CapabilityLimit::unknown(),
             state_and_longest_question_bytes: CapabilityLimit::unknown(),
@@ -404,6 +538,20 @@ mod tests {
         );
         assert_eq!(effective.runtime_context_tokens.value, Some(16_000));
         assert_eq!(effective.usable_input_tokens(), Some(14_976));
+        assert_eq!(effective.output, capabilities().output);
+    }
+
+    #[test]
+    fn missing_output_metadata_and_manual_limits_do_not_grant_support() {
+        let mut value = serde_json::to_value(ModelCapabilities::jev_default()).unwrap();
+        value.as_object_mut().unwrap().remove("output");
+        let limits: ModelCapabilities = serde_json::from_value(value).unwrap();
+        assert_eq!(limits.output, Default::default());
+        let manual = limits.with_override(&ModelLimitOverride {
+            total_input_tokens: Some(8192),
+            ..Default::default()
+        });
+        assert_eq!(manual.output, Default::default());
     }
 
     #[test]
@@ -430,5 +578,51 @@ mod tests {
         assert_eq!(capabilities.usable_state_tokens(), Some(28 * 1024));
         assert_eq!(capabilities.questions_per_request.value, Some(128));
         assert_eq!(capabilities.usable_input_tokens(), Some(60 * 1024));
+    }
+
+    #[test]
+    fn native_jev_changes_only_model_input_and_request_body_limits() {
+        let standard = ModelCapabilities::jev_default();
+        let native = ModelCapabilities::jev_native();
+        assert_eq!(native.model, super::super::NATIVE_MODEL_ALIAS);
+        assert_eq!(native.model_revision, None);
+        assert_eq!(native.total_input_tokens.value, Some(262_000));
+        assert_eq!(
+            native.state_and_longest_question_tokens.value,
+            Some(262_000)
+        );
+        assert_eq!(native.rendering_reserve_tokens, 4_096);
+        assert_eq!(native.usable_input_tokens(), Some(257_904));
+        assert_eq!(native.usable_state_tokens(), Some(257_904));
+        assert_eq!(native.request_body_bytes.value, Some(393_216));
+        assert_eq!(native.response_body_bytes.value, Some(65_536));
+
+        let mut expected = standard;
+        expected.model = super::super::NATIVE_MODEL_ALIAS.to_owned();
+        expected.total_input_tokens.value = Some(262_000);
+        expected.state_and_longest_question_tokens.value = Some(262_000);
+        expected.request_body_bytes.value = Some(393_216);
+        assert_eq!(native, expected);
+    }
+
+    #[test]
+    fn native_manual_overrides_still_lower_capacity() {
+        let native = ModelCapabilities::jev_native();
+        let lower = native.with_override(&ModelLimitOverride {
+            total_input_tokens: Some(100_000),
+            state_and_longest_question_tokens: Some(90_000),
+            runtime_context_tokens: Some(80_000),
+        });
+        assert_eq!(lower.usable_input_tokens(), Some(75_904));
+        assert_eq!(lower.usable_state_tokens(), Some(75_904));
+        assert_eq!(lower.model, native.model);
+        assert_eq!(lower.output, native.output);
+        assert_eq!(lower.request_body_bytes, native.request_body_bytes);
+        let higher = native.with_override(&ModelLimitOverride {
+            total_input_tokens: Some(300_000),
+            state_and_longest_question_tokens: Some(300_000),
+            runtime_context_tokens: None,
+        });
+        assert_eq!(higher, native);
     }
 }

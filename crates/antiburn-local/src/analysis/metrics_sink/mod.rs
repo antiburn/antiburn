@@ -3,6 +3,8 @@ mod cache_miss;
 mod slots;
 mod tally;
 
+pub(crate) use tally::MAX_MODEL_RUNS;
+
 #[cfg(test)]
 mod reference;
 #[cfg(test)]
@@ -22,9 +24,8 @@ use slots::{
 };
 use tally::{
     IdentityKey, Interner, LateToolCandidate, MAX_BUILTIN_LATE_CANDIDATES, MAX_LATE_CANDIDATES,
-    MAX_MCP_SERVERS, MAX_MODEL_RUNS, MAX_MODELS, MAX_SKILL_NAMES, MAX_SKILL_USES, MAX_SPEEDS,
-    MAX_THINKING_MODES, MAX_TOOL_NAMES, NameId, SkillMark, SkillNameInterner, add_model_tokens,
-    add_usage,
+    MAX_MCP_SERVERS, MAX_MODELS, MAX_SKILL_NAMES, MAX_SKILL_USES, MAX_SPEEDS, MAX_THINKING_MODES,
+    MAX_TOOL_NAMES, NameId, SkillMark, SkillNameInterner, add_model_tokens, add_usage,
 };
 
 use crate::analysis::efficiency::{EfficiencyInput, EfficiencyReducer};
@@ -100,6 +101,8 @@ impl OnlineTallies {
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 struct StoredSummary {
+    #[serde(default)]
+    accounting: Option<super::SourceAccounting>,
     context_window: Option<u64>,
     context_window_source: ContextWindowSource,
     model: Option<String>,
@@ -108,12 +111,13 @@ struct StoredSummary {
     skill_descriptions: Vec<(String, String)>,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ModelRunMark {
     effective_ts: i64,
     ordinal: u64,
     model: Option<NameId>,
     thinking_mode: Option<NameId>,
+    native_variant: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -144,6 +148,7 @@ pub struct SessionMetricsAccumulator {
     skill_match_counts: Vec<(String, u32)>,
     model_breakdown: Vec<(NameId, ModelTokens)>,
     unattributed_model_tokens: ModelTokens,
+    unpriced_native_tokens: ModelTokens,
     pricing_breakdown: Vec<((NameId, bool), ModelTokens)>,
     unattributed_pricing_tokens: [ModelTokens; 2],
     model_runs: Vec<ModelRunMark>,
@@ -193,6 +198,7 @@ impl SessionMetricsAccumulator {
             skill_match_counts: Vec::new(),
             model_breakdown: Vec::new(),
             unattributed_model_tokens: ModelTokens::default(),
+            unpriced_native_tokens: ModelTokens::default(),
             pricing_breakdown: Vec::new(),
             unattributed_pricing_tokens: std::array::from_fn(|_| ModelTokens::default()),
             model_runs: Vec::new(),
@@ -331,6 +337,12 @@ impl SessionMetricsAccumulator {
                     .saturating_mul(size_of::<ModelRunMark>()),
             )
             .saturating_add(self.summary_retained_bytes())
+            .saturating_add(
+                self.model_runs
+                    .iter()
+                    .map(|run| run.native_variant.as_ref().map_or(0, String::capacity))
+                    .sum::<usize>(),
+            )
     }
 
     fn summary_retained_bytes(&self) -> usize {
@@ -593,13 +605,7 @@ impl SessionMetricsAccumulator {
                 .intern(&tool.name)
                 .map(|name| StampedName { ordinal, name })
         });
-        slot.subagent_launches = event
-            .tools
-            .iter()
-            .filter(|tool| is_subagent_launch_tool(&tool.name))
-            .count()
-            .try_into()
-            .unwrap_or(u32::MAX);
+        slot.subagent_launches = event.subagent_launch_count();
         if event.is_compaction_boundary {
             let mark = CompactionMark {
                 effective_ts: slot.first_ts,
@@ -733,6 +739,15 @@ impl SessionMetricsAccumulator {
         if !has_tokens {
             return None;
         }
+        if event.accounting.is_some()
+            && event
+                .model
+                .as_deref()
+                .is_none_or(|model| model.trim().is_empty())
+        {
+            add_usage(&mut self.unpriced_native_tokens, usage);
+            return Some((PricedModel::Excluded, false));
+        }
         let fast = event
             .speed
             .as_deref()
@@ -763,12 +778,18 @@ impl SessionMetricsAccumulator {
             ordinal,
             model,
             thinking_mode,
+            native_variant: event
+                .accounting
+                .as_ref()
+                .and_then(|accounting| accounting.native_variant.as_ref())
+                .filter(|variant| variant.len() <= super::EVIDENCE_STRING_CAP)
+                .cloned(),
         };
-        if !self
-            .model_runs
-            .iter()
-            .any(|current| current.model == run.model && current.thinking_mode == run.thinking_mode)
-        {
+        if !self.model_runs.iter().any(|current| {
+            current.model == run.model
+                && current.thinking_mode == run.thinking_mode
+                && current.native_variant == run.native_variant
+        }) {
             if self.model_runs.len() < MAX_MODEL_RUNS {
                 self.model_runs.push(run);
             } else {
@@ -937,6 +958,7 @@ impl SessionMetricsAccumulator {
         let observed_mcp_names = count_map(&self.mcp_tool_calls, &self.mcp_interner);
         let observed_tool_names = string_count_map(&self.tool_match_counts);
         self.summary = Some(StoredSummary {
+            accounting: summary.accounting,
             context_window: summary.context_window,
             context_window_source: summary.context_window_source,
             model: summary.model.map(|model| tally::truncate_name(&model)),
@@ -1110,6 +1132,13 @@ impl SessionMetricsAccumulator {
         }
 
         SessionMetrics {
+            accounting: summary.accounting,
+            token_reconciliation: summary
+                .accounting
+                .map(super::SourceAccounting::token_reconciliation),
+            cost_reconciliation: summary
+                .accounting
+                .map(super::SourceAccounting::cost_reconciliation),
             agent: self.identity.agent.clone(),
             session_id: self.identity.session_id.clone(),
             duration_secs: axis.duration_secs(),
@@ -1144,6 +1173,10 @@ impl SessionMetricsAccumulator {
 
     fn model_breakdown_map(&self, fallback: Option<&str>) -> HashMap<String, ModelTokens> {
         let mut result = HashMap::new();
+        if has_model_tokens(&self.unpriced_native_tokens) {
+            // An empty key retains unknown-model counts without assigning a model.
+            result.insert(String::new(), self.unpriced_native_tokens.clone());
+        }
         for (model, tokens) in &self.model_breakdown {
             result.insert(self.model_interner.get(*model).to_string(), tokens.clone());
         }
@@ -1163,6 +1196,9 @@ impl SessionMetricsAccumulator {
 
     fn pricing_breakdown_map(&self, fallback: Option<&str>) -> HashMap<String, ModelTokens> {
         let mut result = HashMap::new();
+        if has_model_tokens(&self.unpriced_native_tokens) {
+            result.insert(String::new(), self.unpriced_native_tokens.clone());
+        }
         for ((model, fast), tokens) in &self.pricing_breakdown {
             let model = self.model_interner.get(*model);
             if let Some(key) = pricing_key_for(Some(model), *fast, fallback) {
@@ -1759,6 +1795,7 @@ fn resolved_model_run(
         .filter(|model| !model.is_empty())?;
     Some(ModelRun {
         model: model.to_string(),
+        native_variant: mark.native_variant.clone(),
         thinking_mode: mark
             .thinking_mode
             .map(|id| thinking_modes.get(id).trim().to_string()),
@@ -1837,6 +1874,10 @@ pub fn merge_metrics(
     merged.active_secs = (active_ms / 1_000).max(0) as u64;
     for (stream_index, subagent) in subagents.iter().enumerate() {
         let subagent_metrics = subagent.metrics();
+        merged.accounting = merged
+            .accounting
+            .zip(subagent_metrics.accounting)
+            .map(|(parent, child)| parent.checked_merge(child));
         collect_merged_runs(
             &mut merged_runs,
             subagent,
@@ -1955,6 +1996,12 @@ pub fn merge_metrics(
             }
         }
     }
+    merged.token_reconciliation = merged
+        .accounting
+        .map(super::SourceAccounting::token_reconciliation);
+    merged.cost_reconciliation = merged
+        .accounting
+        .map(super::SourceAccounting::cost_reconciliation);
     merged
         .skill_uses
         .sort_by(|left, right| left.progress.total_cmp(&right.progress));

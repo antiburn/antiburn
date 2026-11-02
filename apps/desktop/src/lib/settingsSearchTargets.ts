@@ -3,6 +3,11 @@ import { isSettingsPane, type SettingsPane } from "./settingsPanes"
 
 /** Stable targets keep navigation independent of translated or edited labels. */
 export const SETTINGS_SEARCH_TARGETS = {
+  cliCommand: {
+    pane: "cli",
+    label: "Antiburn CLI",
+    aliases: ["CLI", "antiburn-cli", "internal runtime", "test CLI", "repair CLI"],
+  },
   trayIcon: {
     pane: "general",
     label: "Show in menubar",
@@ -20,6 +25,199 @@ export const SETTINGS_SEARCH_TARGETS = {
     platform: "macos",
   },
   startAtLogin: { pane: "general", label: "Start at login", aliases: ["startup", "launch"] },
+  monitoring: {
+    pane: "sessions",
+    label: "Keep looking for new sessions",
+    aliases: ["automatic scan", "watch"],
+  },
+  sourceScanning: {
+    pane: "sessions",
+    label: "Recent sessions",
+    aliases: ["scanning", "discovery", "rescan"],
+  },
+  sourceAgents: {
+    pane: "agents",
+    label: "Coding agents",
+    aliases: [
+      "harnesses",
+      "enabled agents",
+      "integrations",
+      "connections",
+      "hooks",
+      "plugins",
+      "extensions",
+    ],
+  },
+  sourceRemoteHosts: {
+    pane: "sessions",
+    label: "Remote hosts",
+    aliases: ["ssh", "remote sessions", "other computers"],
+  },
+  sourceAutomaticSync: {
+    pane: "sessions",
+    label: "Sync frequency",
+    aliases: ["automatic sync", "remote schedule", "sync interval"],
+  },
+  sourceFolders: {
+    pane: "sessions",
+    label: "Scan folders",
+    aliases: ["directories", "folder access", "paths"],
+  },
+  sourceRepositories: {
+    pane: "sessions",
+    label: "Repositories",
+    aliases: ["projects", "repo", "enabled repositories"],
+  },
+  sourceNonRepoFolders: {
+    pane: "sessions",
+    label: "Include folders without git",
+    aliases: ["non-repo folders", "missing sessions", "not a repository"],
+  },
+  historicalScan: {
+    pane: "sessions",
+    label: "Older sessions",
+    aliases: ["historical scan", "history", "import", "rescan"],
+  },
+  recentDays: {
+    pane: "sessions",
+    label: "Show the last",
+    aliases: ["days", "recent sessions", "date range"],
+  },
+  indexedSessions: {
+    pane: "sessions",
+    label: "Indexed sessions",
+    aliases: ["storage", "database size"],
+  },
+  retention: {
+    pane: "sessions",
+    label: "Keep session data",
+    aliases: ["retention", "storage", "history"],
+  },
+  sessionsOverDepthCheck: {
+    pane: "checks",
+    label: "Session overdepth",
+    aliases: ["long sessions", "context depth", "enable check"],
+  },
+  modelOverthinkingCheck: {
+    pane: "checks",
+    label: "Model overthinking",
+    aliases: ["reasoning effort", "thinking budget", "enable check"],
+  },
+  overpoweredSubagentsCheck: {
+    pane: "checks",
+    label: "Overpowered subagents",
+    aliases: ["expensive subagents", "model routing", "enable check"],
+  },
+  unusedMcpServersCheck: {
+    pane: "checks",
+    label: "Unused MCP servers",
+    aliases: ["unused servers", "MCP tools", "enable check"],
+  },
+  unusedBuiltInToolsCheck: {
+    pane: "checks",
+    label: "Unused built-in tools",
+    aliases: ["tool definitions", "built in tools", "enable check"],
+  },
+  unusedSkillsCheck: {
+    pane: "checks",
+    label: "Unused skills",
+    aliases: ["skill instructions", "enable check"],
+  },
+  oldModelUsageCheck: {
+    pane: "checks",
+    label: "Old model usage",
+    aliases: ["outdated models", "model versions", "enable check"],
+  },
+  overuseOfFastModeCheck: {
+    pane: "checks",
+    label: "Fast mode overuse",
+    aliases: ["fast mode", "priority", "enable check"],
+  },
+  cacheChurnCheck: {
+    pane: "checks",
+    label: "Excess cache rehydration",
+    aliases: ["prompt cache", "cache misses", "enable check"],
+  },
+  typeSafeApiKey: {
+    pane: "checks",
+    label: "Jev API key",
+    aliases: ["TypeSafe API key", "Jev", "enable checks", "usage charges"],
+  },
+  decisionProvider: {
+    pane: "checks",
+    label: "Provider",
+    aliases: ["decision model", "Jev", "Ollama", "Cloudflare", "Custom"],
+  },
+  decisionConnection: {
+    pane: "checks",
+    label: "Connections",
+    aliases: [
+      "saved connections",
+      "profiles",
+      "active connection",
+      "switch provider",
+      "add connection",
+      "remove connection",
+    ],
+  },
+  ollamaUrl: { pane: "checks", label: "Ollama URL", aliases: ["Ollama base URL", "server"] },
+  ollamaModel: { pane: "checks", label: "Ollama model", aliases: ["local decision model"] },
+  ollamaApiKey: {
+    pane: "checks",
+    label: "Ollama API key (optional)",
+    aliases: ["Ollama authentication"],
+  },
+  cloudflareAccountId: {
+    pane: "checks",
+    label: "Cloudflare account ID",
+    aliases: ["Workers AI account"],
+  },
+  cloudflareApiToken: {
+    pane: "checks",
+    label: "Cloudflare API token",
+    aliases: ["Cloudflare credential"],
+  },
+  cloudflareModel: {
+    pane: "checks",
+    label: "Cloudflare model",
+    aliases: ["clef", "clef-flash"],
+  },
+  customUrl: {
+    pane: "checks",
+    label: "Exact inference URL",
+    aliases: ["Custom endpoint", "Custom URL"],
+  },
+  customModel: { pane: "checks", label: "Custom model", aliases: ["Custom decision model"] },
+  customApiKey: {
+    pane: "checks",
+    label: "Custom API key (optional)",
+    aliases: ["Custom authentication"],
+  },
+  customResponseMode: {
+    pane: "checks",
+    label: "Response mode",
+    aliases: ["Custom response", "direct", "Cloudflare envelope"],
+  },
+  checkDirectories: {
+    pane: "checks",
+    label: "Check files",
+    aliases: ["check folders", "check directories", "discovery", "YAML files"],
+  },
+  checkModelUsage: {
+    pane: "checks",
+    label: "Model usage",
+    aliases: ["check requests", "check cost", "usage details"],
+  },
+  smartChecksEnabled: {
+    pane: "checks",
+    label: "Run checks",
+    aliases: [
+      "model-based checks",
+      "enable model-based checks",
+      "pause model-based checks",
+      "Jev checks",
+    ],
+  },
   theme: {
     pane: "appearance",
     label: "Appearance",

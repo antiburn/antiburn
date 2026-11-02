@@ -42,13 +42,6 @@ export function scopeLabel(scope: BurnCheckTargetPayload["display"]["scopeKind"]
 }
 
 export function targetTitle(target: BurnCheckTargetPayload): string {
-  if (target.finding.detector === "ignoredInstructions") {
-    const heading = target.display.instructionTitle?.trim()
-    if (heading) return heading
-    const source = target.display.resourceIdentity
-    const path = source?.startsWith("home:") ? `~/${source.slice("home:".length)}` : source
-    return path?.split(/[\\/]/).at(-1) || "Instruction file"
-  }
   return (
     target.display.resourceIdentity ??
     CHECK_LABELS[target.finding.detector] ??
@@ -59,25 +52,27 @@ export function targetTitle(target: BurnCheckTargetPayload): string {
 export function watchStatus(target: BurnCheckTargetPayload): string | null {
   const watch = target.watch
   if (watch?.lifecycle === "waitingForPromptUse") {
-    return "The prompt is ready. Verification starts after you use it."
+    return null
   }
   const verification = watch?.verification
   if (!verification) return null
   switch (verification.status) {
     case "reserved":
-      return "Verification has not started."
+      return "The check has not started looking for this change yet."
     case "watching":
-      return "Waiting for a later complete session."
+      return "The check will look for this change in a later complete session."
     case "fixed":
-      return watch.origin === "passive" ? "Verified improvement." : "Verified after your fix."
+      return watch.origin === "passive"
+        ? "A later session confirmed the improvement."
+        : "A later session confirmed your fix."
     case "stillUnresolved":
-      return "A later session still has this finding."
+      return "A later session still shows this issue."
     case "recurred":
       return "This finding returned."
     case "recoveryNeeded":
       return null
     case "verificationUnavailable":
-      return null
+      return "The check cannot verify this change automatically."
   }
 }
 
@@ -105,10 +100,12 @@ export function FailedSessions({
   samples,
   total,
   label = "Failed sessions",
+  active = true,
 }: {
   samples: BurnCheckSamplePayload[]
   total?: number
   label?: string
+  active?: boolean
 }) {
   const [status, setStatus] = useState<string | null>(null)
   const [busyHandle, setBusyHandle] = useState<string | null>(null)
@@ -123,6 +120,7 @@ export function FailedSessions({
       {samples.map((sample) => (
         <SessionRow
           key={sample.navigationHandle}
+          active={active}
           entry={toActivityEntry(sample)}
           hygiene={sample.hygiene}
           snoozedDetectors={snoozedDetectors}

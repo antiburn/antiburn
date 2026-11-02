@@ -17,6 +17,12 @@
     "composite": true,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo"
   },
-  "include": ["vite.config.ts", "tests/**/*.ts"],
+  "include": [
+    "vite.config.ts",
+    "scripts/**/*.ts",
+    "src/promotions/**/*.ts",
+    "src/lib/presentation/agents.ts",
+    "tests/**/*.ts"
+  ],
   "exclude": ["tests/visual/**"]
 }

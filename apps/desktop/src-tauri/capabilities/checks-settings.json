@@ -1,20 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "checks-settings",
-  "description": "Only Settings and the main window's Checks step may manage Smart Burn Checks, connections, and credentials.",
+  "description": "Only Settings and the main window's Checks step may manage model-based checks, connections, and credentials.",
   "windows": ["main", "settings"],
   "permissions": [
     "allow-set-typesafe-api-key",
     "allow-remove-typesafe-api-key",
     "allow-get-system-one-settings",
+    "allow-list-ollama-models",
     "allow-test-system-one-connection",
     "allow-save-system-one-connection",
     "allow-switch-system-one-connection",
     "allow-refresh-system-one-limits",
     "allow-remove-system-one-credential",
-    "allow-set-check-history-days",
+    "allow-remove-system-one-connection",
+    "allow-retry-system-one-connection-operation",
     "allow-set-check-enabled",
-    "allow-set-smart-burn-checks-enabled",
-    "allow-run-check-backfill"
+    "allow-list-installed-check-directories",
+    "allow-open-installed-check-directory",
+    "allow-set-smart-burn-checks-enabled"
   ]
 }

@@ -1,6 +1,7 @@
 import { Info, Sparkles } from "lucide-react"
 import { useId, useState } from "react"
 
+import { pluralize } from "../../../lib/presentation/text"
 import { Tooltip } from "../../../components/presentation/Tooltip"
 import type {
   AggregateWinPayload,
@@ -11,9 +12,9 @@ import { CHECK_LABELS } from "../../../lib/presentation/checkReport"
 import { DisclosureChevron } from "./BurnCheckTargetPresentation"
 
 const ESTIMATED_SAVINGS_TOOLTIP =
-  "Pre-remediation opportunity estimated from evidence observed before the fix. Actual results can vary."
+  "Potential savings estimated from evidence recorded before the fix. Actual results can vary."
 const CONFIRMED_SAVINGS_TOOLTIP =
-  "Savings observed across sessions that passed after remediation. This is still an estimate and may not match provider billing exactly."
+  "Savings observed in sessions that passed after the fix. This is still an estimate and may not match provider billing exactly."
 
 type SavingsGroup = {
   detector: BurnCheckDetectorId
@@ -47,7 +48,8 @@ function costTotal(value: number): string {
 function opportunityLabel({ value, unit }: BurnCheckEstimatedValuePayload): string {
   const rounded = Math.round(value).toLocaleString()
   if (unit === "apiEquivalentUsd") return costTotal(value)
-  if (unit === "improvements") return `~${rounded} improvement${value === 1 ? "" : "s"}`
+  if (unit === "improvements")
+    return `~${rounded} ${pluralize(value, "improvement", "improvements")}`
   if (unit === "assumedOutputTokens") return `~${rounded} output tokens`
   if (unit === "cacheClassTokens") return `~${rounded} cache tokens`
   return `~${rounded} input tokens`
@@ -156,7 +158,7 @@ export function BurnChecksSavings({
             </h2>
             <p className="type-callout text-label-tertiary">
               {supported.length} verified remediation{" "}
-              {supported.length === 1 ? "cycle" : "cycles"}
+              {pluralize(supported.length, "cycle", "cycles")}
             </p>
           </div>
           <button

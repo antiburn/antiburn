@@ -601,6 +601,52 @@ fn an_empty_model_blocks_summary_model_attribution() {
 }
 
 #[test]
+fn merged_reconciliations_follow_source_accounting() {
+    use crate::analysis::{CalculatedCost, SourceAccounting, TokenClasses};
+
+    let accounting = |aggregate, retained| SourceAccounting {
+        aggregate_tokens: Some(TokenClasses {
+            input_tokens: aggregate,
+            ..TokenClasses::default()
+        }),
+        retained_tokens: Some(TokenClasses {
+            input_tokens: retained,
+            ..TokenClasses::default()
+        }),
+        aggregate_calculated_cost: CalculatedCost::producer_calculated(aggregate as f64),
+        retained_calculated_cost: CalculatedCost::producer_calculated(retained as f64),
+        ..SourceAccounting::default()
+    };
+    for child_accounting in [Some(accounting(10, 12)), Some(accounting(12, 10)), None] {
+        let parent = finished(
+            Vec::new(),
+            SessionSummary {
+                accounting: Some(accounting(12, 10)),
+                ..SessionSummary::default()
+            },
+        );
+        let child = finished(
+            Vec::new(),
+            SessionSummary {
+                accounting: child_accounting,
+                ..SessionSummary::default()
+            },
+        );
+        let merged = merge_metrics(&parent, &[child]);
+        assert_eq!(
+            merged.token_reconciliation,
+            merged
+                .accounting
+                .map(SourceAccounting::token_reconciliation)
+        );
+        assert_eq!(
+            merged.cost_reconciliation,
+            merged.accounting.map(SourceAccounting::cost_reconciliation)
+        );
+    }
+}
+
+#[test]
 fn bounded_merge_matches_reference_chronology_for_small_streams() {
     let make_event = |timestamp, model: &str| {
         let mut current = event(Some(timestamp), Role::Assistant, 10, 2);

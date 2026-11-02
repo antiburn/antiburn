@@ -1,0 +1,65 @@
+schema_version: 1
+id: claude-mod
+revision: 1
+analytics:
+  campaign: claude_mod
+title: antiburn Claude Mod
+
+sidebar:
+  title: Claude Mod
+  description: Usage, resets, and pace above your prompt.
+  link_label: Find out more
+  badge: NEW
+  icon: claude-code
+  priority: 0
+  audience:
+    type: detected_agents
+    agents: [claude-code]
+
+screens:
+  announcement:
+    eyebrow: Now available
+    title: antiburn Claude Mod
+    description: Pace your Claude Code usage across sessions.
+    media:
+      kind: video
+      src: ./assets/claude-mod-desktop-dark-no-label-800.mp4
+      poster: ./assets/claude-mod-desktop-dark-no-label-poster.png
+      alt: Claude Mod showing usage and reset times.
+      light:
+        kind: video
+        src: ./assets/claude-mod-desktop-light-no-label-800.mp4
+        poster: ./assets/claude-mod-desktop-light-no-label-poster.png
+    features:
+      - icon: gauge
+        title: Your limits, in view
+        description: Five-hour and weekly usage, right above your prompt.
+      - icon: clock
+        title: Know when to pace yourself
+        description: See reset times at a glance and pace your usage when you need to.
+    primary_action:
+      label: Set up
+      type: screen
+      target: setup
+    secondary_action:
+      label: Learn more
+      type: external
+      url: https://github.com/antiburn/antiburn/blob/main/plugins/antiburn/README.md
+  setup:
+    title: Set up Claude Mod
+    description: Run these two commands in your terminal.
+    steps:
+      - title: Add the antiburn marketplace
+        command: >-
+          claude plugin marketplace add https://github.com/antiburn/antiburn.git
+      - title: Install Claude Mod
+        command: >-
+          claude plugin install antiburn@antiburn --scope user
+      - title: Open Claude Code
+        description: >-
+          Run claude in terminal or desktop – antiburn should now appear above
+          the prompt.
+    secondary_action:
+      label: Learn more
+      type: external
+      url: https://github.com/antiburn/antiburn/blob/main/plugins/antiburn/README.md

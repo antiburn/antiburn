@@ -361,6 +361,7 @@ pub const fn verification_evidence_supported(
             SourceFormat::ClaudeJsonl
                 | SourceFormat::CodexRolloutJsonl
                 | SourceFormat::OpenCodeJsonl
+                | SourceFormat::OpenCodeSqliteV1
                 | SourceFormat::OpenCodeSqliteV2
                 | SourceFormat::PiV3Jsonl
         ),

@@ -1,30 +1,39 @@
 import { Search, X } from "lucide-react"
 import { useCallback, useId, useRef, useState } from "react"
 import { groupAppResults, type AppSearchResult } from "../../lib/appSearch"
-import { getCheckAvailability, onCheckAvailabilityChanged } from "../../lib/checkAvailability"
+import {
+  AppSearchCheckAvailability,
+  type AppSearchCheckAvailabilityState,
+} from "./AppSearchCheckAvailability"
 
 export function AppSearch({
   onChoose,
   onClose,
-  stepSettingsAvailable = true,
 }: {
   onChoose: (result: AppSearchResult) => Promise<void>
   onClose: () => void
-  /** False while the first run's step modals are unreachable, so a step
-   *  setting cannot appear with nowhere to open. */
-  stepSettingsAvailable?: boolean
 }) {
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [error, setError] = useState(false)
   const [pending, setPending] = useState(false)
-  const [checksAvailable, setChecksAvailable] = useState(false)
+  const [availability, setAvailability] = useState<AppSearchCheckAvailabilityState>({
+    snapshot: null,
+    loading: true,
+    error: false,
+  })
+  const retryAvailability = useRef<(() => Promise<void>) | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const choosing = useRef(false)
   const live = useRef(false)
   const id = useId()
-  const groups = groupAppResults(query, undefined, checksAvailable, stepSettingsAvailable)
+  const groups = groupAppResults(
+    query,
+    undefined,
+    availability.snapshot?.configured ?? false,
+    availability.snapshot?.installedChecks ?? [],
+  )
   const results = groups.flatMap((group) => group.results)
   const active = results.find((result) => result.id === selectedId) ?? results[0]
 
@@ -51,28 +60,16 @@ export function AppSearch({
   const mountDialog = useCallback((node: HTMLDialogElement | null) => {
     if (!node) return
     dialog.current = node
-    let mountedHere = true
     live.current = true
-    void getCheckAvailability()
-      .then((value) => {
-        if (mountedHere) setChecksAvailable(value.configured)
-      })
-      .catch(() => undefined)
-    let stop: (() => void) | undefined
-    void onCheckAvailabilityChanged((event) => {
-      if (mountedHere && event.status === "updated") {
-        setChecksAvailable(event.snapshot.configured)
-      }
-    }).then((unlisten) => {
-      if (mountedHere) stop = unlisten
-      else unlisten()
-    })
+    const checks = new AppSearchCheckAvailability(setAvailability)
+    retryAvailability.current = checks.refresh
+    void checks.refresh()
     node.showModal()
     input.current?.focus()
     return () => {
-      mountedHere = false
       live.current = false
-      stop?.()
+      checks.dispose()
+      retryAvailability.current = null
       node.close()
       if (!choosing.current) {
         const target = document.querySelector<HTMLButtonElement>("[data-app-search-trigger]")
@@ -156,11 +153,26 @@ export function AppSearch({
           Could not open this destination. Try again.
         </p>
       )}
+      {availability.error && (
+        <div className="flex items-center gap-3 px-4 py-2">
+          <p role="alert" className="type-body text-system-red-text">
+            Could not load checks.
+          </p>
+          <button
+            type="button"
+            className="ui-push-button"
+            disabled={availability.loading}
+            onClick={() => void retryAvailability.current?.()}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <div
         id={`${id}-results`}
         role="listbox"
         aria-label="Search results"
-        aria-busy={pending}
+        aria-busy={pending || availability.loading}
         className="app-search-results p-2"
       >
         {groups.map((group, index) => (

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "routes": [
+    {
+      "vendor": "claude",
+      "version": "2.1.309",
+      "os": "macos",
+      "arch": "aarch64",
+      "surface": "cli",
+      "route": "user_settings_hooks",
+      "nativeValidated": false,
+      "reason": "Direct user settings lifecycle and coexistence acceptance pending; plugin-dir evidence is separate."
+    },
+    {
+      "vendor": "codex",
+      "version": "0.163.0",
+      "os": "macos",
+      "arch": "aarch64",
+      "surface": "cli",
+      "route": "user_hooks",
+      "nativeValidated": false,
+      "reason": "UserPromptSubmit transport validated in PR 772; automatic installation lifecycle acceptance pending."
+    },
+    {
+      "vendor": "cursor",
+      "version": "2026.05.24-dda726e",
+      "os": "macos",
+      "arch": "aarch64",
+      "surface": "cli",
+      "route": "user_hooks",
+      "nativeValidated": false,
+      "reason": "Only project hooks validated; user route remains pending."
+    },
+    {
+      "vendor": "open_code",
+      "version": "1.19.3",
+      "os": "macos",
+      "arch": "aarch64",
+      "surface": "cli",
+      "route": "user_plugin_reference",
+      "nativeValidated": false,
+      "reason": "Transform transport validated in PR 772; user config lifecycle acceptance pending."
+    },
+    {
+      "vendor": "pi",
+      "version": "1.3.0",
+      "os": "macos",
+      "arch": "aarch64",
+      "surface": "cli",
+      "route": "user_package_manager",
+      "nativeValidated": false,
+      "reason": "Extension transport validated in PR 772; package manager lifecycle acceptance pending."
+    }
+  ]
+}

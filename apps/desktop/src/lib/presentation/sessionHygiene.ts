@@ -1,3 +1,4 @@
+import { pluralize } from "./text"
 import type {
   InsightsNotAssessedReason,
   SessionHygieneBadgeId,
@@ -6,7 +7,6 @@ import type {
   SessionHygienePayload,
 } from "../insightsIpc"
 import { modelShortName } from "./models"
-import { overExploringDetail } from "./checkDefinitions"
 
 type SessionHygieneInk = "system-green" | "system-red-text" | "label-tertiary"
 
@@ -14,7 +14,6 @@ export interface SessionHygieneCheck {
   id: SessionHygieneBadgeId
   status: SessionHygieneBadgePayload["status"]
   notAssessedReason: InsightsNotAssessedReason | null
-  checkReason?: string
   findingEvidence?: SessionHygieneBadgePayload["findingEvidence"]
   title: string
   /**
@@ -33,7 +32,6 @@ export interface SessionHygieneCheck {
 
 interface HygieneCheckDefinition {
   id: SessionHygieneBadgeId
-  serverOnly?: boolean
   /** The check name alone, with no verdict. Feeds `SessionHygieneCheck.name`. */
   name: string
   cleanTitle: string
@@ -58,7 +56,6 @@ function defineHygieneCheck(
   summary: string,
   guidance: readonly string[],
   explainer: string,
-  serverOnly = false,
 ): HygieneCheckDefinition {
   return {
     id,
@@ -69,22 +66,10 @@ function defineHygieneCheck(
     summary,
     guidance,
     explainer,
-    ...(serverOnly ? { serverOnly } : {}),
   }
 }
 
 const CHECKS: readonly HygieneCheckDefinition[] = [
-  defineHygieneCheck(
-    "scopeCreep",
-    "Scope creep",
-    "No scope creep in assessed work",
-    "Scope creep found",
-    "Scope creep not assessed",
-    "Some assessed work went outside the agreed task.",
-    ["Keep future work within the agreed task. Ask for approval before adding work."],
-    "Finds extra work outside the agreed task using recorded scope and approval evidence from accepted OpenCode, Codex, Claude Code, and Pi sessions. Incomplete or unproven scope cannot establish approval.",
-    true,
-  ),
   defineHygieneCheck(
     "sessionOverdepth",
     "Session overdepth",
@@ -155,39 +140,6 @@ const CHECKS: readonly HygieneCheckDefinition[] = [
     ],
     "This estimates paid context beyond context growth. Cache expiry, context changes, and provider evictions can contribute; the estimate does not establish the cause.",
   ),
-  defineHygieneCheck(
-    "ignoredInstructions",
-    "Ignored instructions",
-    "Instructions followed",
-    "Instructions ignored",
-    "Instructions not assessed",
-    "Instructions were ignored in this session.",
-    ["Follow the cited instruction and correct the affected work."],
-    "Some sessions didn't follow your agent instruction files properly.",
-    true,
-  ),
-  defineHygieneCheck(
-    "skillOpportunities",
-    "Skill opportunities",
-    "No skill opportunity in assessed work",
-    "Skill opportunity found",
-    "Skill opportunities not assessed",
-    "Assessed work matches a skill in your current inventory.",
-    ["Use this current skill for similar future work."],
-    "Compares selected work with current skills. Current inventory does not prove past availability.",
-    true,
-  ),
-  defineHygieneCheck(
-    "overExploring",
-    "Over-exploring",
-    "No over-exploring in assessed work",
-    "Over-exploring found",
-    "Over-exploring not assessed",
-    "Some assessed reads went beyond what the work needed.",
-    ["Read only the files and sections needed for future work."],
-    "Checks selected reads for unrelated files, excess file breadth, and excess reading within a file.",
-    true,
-  ),
 ]
 
 export interface SessionHygieneDocumentation {
@@ -213,7 +165,7 @@ const ACCOUNTING_DETAIL: Record<
 }
 
 export const INITIAL_SESSION_HYGIENE: SessionHygienePayload = {
-  badges: CHECKS.filter((check) => !check.serverOnly).map((check) => ({
+  badges: CHECKS.map((check) => ({
     ...NOT_ASSESSED,
     id: check.id,
   })),
@@ -232,10 +184,7 @@ export function sessionHygieneExplainers(): Array<{
 
 /** Add reader copy and semantic ink to the engine badge identifiers. */
 export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHygieneCheck[] {
-  return CHECKS.filter(
-    (definition) =>
-      !definition.serverOnly || payload.badges.some((badge) => badge.id === definition.id),
-  ).map((definition) => {
+  return CHECKS.map((definition) => {
     const badge = payload.badges.find((candidate) => candidate.id === definition.id) ?? {
       ...NOT_ASSESSED,
       id: definition.id,
@@ -262,30 +211,9 @@ export function sessionHygieneChecks(payload: SessionHygienePayload): SessionHyg
         ink: "system-green" as const,
       }
     }
-    if (badge.status === "checking" || badge.status === "couldntCheck") {
-      return {
-        ...badge,
-        title:
-          badge.status === "checking"
-            ? definition.id === "ignoredInstructions"
-              ? "Checking instructions"
-              : `Checking ${definition.name.toLowerCase()}`
-            : definition.id === "scopeCreep" && badge.checkReason === "scope_context_too_large"
-              ? "Scope creep · Task context exceeds the model limit."
-              : definition.id === "ignoredInstructions"
-                ? "Couldn't check instructions"
-                : `Couldn't check ${definition.name.toLowerCase()}`,
-        name: definition.name,
-        detail,
-        ink: "label-tertiary" as const,
-      }
-    }
     return {
       ...badge,
-      title:
-        definition.id === "scopeCreep" && badge.checkReason === "scope_context_too_large"
-          ? "Scope creep · Task context exceeds the model limit."
-          : definition.notAssessedTitle,
+      title: definition.notAssessedTitle,
       name: definition.name,
       detail,
       ink: "label-tertiary" as const,
@@ -307,7 +235,7 @@ export function sessionHygieneDocumentation(
 }
 
 function readableCount(value: number, noun: string): string {
-  return `${value.toLocaleString()} ${value === 1 ? noun : `${noun}s`}`
+  return `${value.toLocaleString()} ${pluralize(value, noun, `${noun}s`)}`
 }
 
 function readableModels(models: readonly string[]): string {
@@ -319,10 +247,6 @@ function readableModels(models: readonly string[]): string {
 
 /** Describe the stored facts that caused one finding. */
 function sessionHygieneFindingDetails(check: SessionHygieneCheck): string[] {
-  if (check.status === "finding" && check.id === "overExploring") {
-    const detail = overExploringDetail(check.checkReason)
-    return detail ? [detail] : []
-  }
   const evidence = check.findingEvidence
   if (check.status !== "finding" || !evidence) return []
 

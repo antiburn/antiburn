@@ -1,12 +1,15 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "./tauriEvents"
 
-import { createExternalStore } from "./externalStore"
 import { hasShell } from "./ipc"
-import type { BurnCheckDetectorId } from "./insightsIpc"
+import type {
+  BurnCheckDetectorId,
+  InstalledCheckAvailability,
+  InstalledCheckId,
+} from "./insightsIpc"
 import { CHECK_DEFINITIONS } from "./presentation/checkDefinitions"
 
-type CheckUsageSummary = {
+export type CheckUsageSummary = {
   inputTokens: number
   outputTokens: number
   confirmedCalls: number
@@ -16,25 +19,22 @@ type CheckUsageSummary = {
   lastUsedAtEpoch: number | null
 }
 
+export interface InstalledCheckAvailabilityPayload {
+  effectiveId: InstalledCheckId
+  name: string
+  aliases: string[]
+  availability: InstalledCheckAvailability
+}
+
 export type CheckAvailability = {
   revision: number
+  yamlEnabled: boolean
   checks: Array<{ id: BurnCheckDetectorId; enabled: boolean }>
+  installedChecks?: InstalledCheckAvailabilityPayload[]
   configured: boolean
   savedKey: boolean
   error: string | null
   usage: CheckUsageSummary
-  historyDays: 0 | 7 | 30
-  backfill: {
-    total: number
-    waitingForData: number
-    waitingForIdle: number
-    ready: number
-    queued: number
-    running: number
-    completed: number
-    skipped: number
-    failed: number
-  }
 }
 
 export type CheckAvailabilityEvent =
@@ -52,6 +52,8 @@ const emptyUsage: CheckUsageSummary = {
 
 export const emptyCheckAvailability: CheckAvailability = {
   revision: 0,
+  yamlEnabled: true,
+  installedChecks: [],
   checks: Object.keys(CHECK_DEFINITIONS).map((id) => ({
     id: id as BurnCheckDetectorId,
     enabled: false,
@@ -60,18 +62,6 @@ export const emptyCheckAvailability: CheckAvailability = {
   savedKey: false,
   error: null,
   usage: emptyUsage,
-  historyDays: 0,
-  backfill: {
-    total: 0,
-    waitingForData: 0,
-    waitingForIdle: 0,
-    ready: 0,
-    queued: 0,
-    running: 0,
-    completed: 0,
-    skipped: 0,
-    failed: 0,
-  },
 }
 
 export async function getCheckAvailability(): Promise<CheckAvailability> {
@@ -80,6 +70,7 @@ export async function getCheckAvailability(): Promise<CheckAvailability> {
   if (
     !value ||
     typeof value.configured !== "boolean" ||
+    typeof value.yamlEnabled !== "boolean" ||
     typeof value.revision !== "number" ||
     !Array.isArray(value.checks)
   ) {
@@ -102,34 +93,6 @@ export async function setCheckEnabled(
 export async function removeTypeSafeApiKey(): Promise<CheckAvailability> {
   return invoke<CheckAvailability>("remove_typesafe_api_key")
 }
-
-export async function setCheckHistoryDays(days: 0 | 7 | 30): Promise<CheckAvailability> {
-  return invoke<CheckAvailability>("set_check_history_days", { days })
-}
-
-export async function runCheckBackfill(): Promise<{
-  queued: number
-  availability: CheckAvailability
-}> {
-  return invoke<{ queued: number; availability: CheckAvailability }>("run_check_backfill")
-}
-
-/** The complete availability snapshot for consumers such as Overview counts.
- * Events and mutation responses carry a backend revision so older snapshots
- * cannot undo a newer preference on screen. */
-export const checkAvailabilityStore = createExternalStore<CheckAvailability>({
-  initial: emptyCheckAvailability,
-  load: getCheckAvailability,
-  subscribe: (set) =>
-    onCheckAvailabilityChanged((event) => {
-      if (
-        event.status === "updated" &&
-        event.snapshot.revision >= checkAvailabilityStore.getSnapshot().revision
-      ) {
-        set(event.snapshot)
-      }
-    }),
-})
 
 export function onCheckAvailabilityChanged(
   callback: (event: CheckAvailabilityEvent) => void,

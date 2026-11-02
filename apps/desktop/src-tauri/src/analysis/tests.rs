@@ -1,6 +1,21 @@
 use super::*;
+use antiburn_local::discovery::SessionLog;
+use antiburn_local::platform::environment::DiscoveryEnvironment;
 
 mod claude_parent_child;
+
+#[tokio::test]
+async fn parser_panic_before_progress_returns_adapter_failed() {
+    let signal = PassSignal::new();
+    let task = signal.spawn_parser(|| {
+        panic!("synthetic parser panic before progress");
+    });
+
+    let computed = await_computed_analysis(task, &signal).await;
+
+    assert_eq!(signal.progress(), 0);
+    assert!(matches!(computed, Err(UnreadableReason::AdapterFailed)));
+}
 
 #[tokio::test]
 async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
@@ -55,6 +70,7 @@ fn cursor_chat_database_uses_its_own_source_format() {
         agent: AgentKind::Cursor,
         db_path: std::path::PathBuf::from("/tmp/.cursor/chats/workspace/session/store.db"),
         session_id: "session".to_owned(),
+        source_format: None,
     };
 
     assert_eq!(
@@ -64,17 +80,81 @@ fn cursor_chat_database_uses_its_own_source_format() {
 }
 
 #[test]
+fn opencode_database_source_identity_is_explicit_and_fences_v2_state() {
+    let source = |source_format| SessionSource::ProviderDb {
+        agent: AgentKind::OpenCode,
+        db_path: std::path::PathBuf::from("/home/tester/.local/share/opencode/opencode.db"),
+        session_id: "ses_test".to_owned(),
+        source_format,
+    };
+    let v1 = source(Some(SourceFormat::OpenCodeSqliteV1));
+    let v2 = source(Some(SourceFormat::OpenCodeSqliteV2));
+    let unknown = source(None);
+
+    assert_eq!(
+        source_format(AgentKind::OpenCode, &v1),
+        SourceFormat::OpenCodeSqliteV1
+    );
+    assert_eq!(
+        source_format(AgentKind::OpenCode, &v2),
+        SourceFormat::OpenCodeSqliteV2
+    );
+    assert_eq!(
+        source_format(AgentKind::OpenCode, &unknown),
+        SourceFormat::Uncharacterized
+    );
+
+    let log = |source| SessionLog {
+        agent_type: AgentKind::OpenCode,
+        source,
+        updated_at: Some(1),
+        environment: DiscoveryEnvironment::Native,
+    };
+    assert_eq!(log(v1).source_label(), "opencode:ses_test");
+    assert_eq!(
+        log(v2).source_label(),
+        "opencode:ses_test:open_code_v2_sqlite"
+    );
+}
+
+#[tokio::test]
+async fn true_v2_source_cannot_call_the_v1_journal_reader() {
+    let source = SessionSource::ProviderDb {
+        agent: AgentKind::OpenCode,
+        db_path: std::path::PathBuf::from("/unused/opencode.db"),
+        session_id: "ses_test".to_owned(),
+        source_format: Some(SourceFormat::OpenCodeSqliteV2),
+    };
+
+    assert!(
+        read_opencode_journal_page(
+            source,
+            "ses_test".to_owned(),
+            None,
+            None,
+            true,
+            PassSignal::new(),
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[test]
 fn cursor_discovery_labels_keep_their_source_formats() {
     let desktop = SessionSource::Inline {
         label: "cursor-desktop:workspace:composer".to_owned(),
+        source_format: None,
         content: String::new(),
     };
     let chat_store = SessionSource::Inline {
         label: "cursor-store:/tmp/.cursor/chats/workspace/session/store.db".to_owned(),
+        source_format: None,
         content: String::new(),
     };
     let cli_store = SessionSource::Inline {
         label: "cursor-store:/tmp/.cursor/projects/workspace/store.db".to_owned(),
+        source_format: None,
         content: String::new(),
     };
 
@@ -93,12 +173,37 @@ fn cursor_discovery_labels_keep_their_source_formats() {
 }
 
 #[test]
+fn inline_format_uses_typed_metadata_not_the_display_label() {
+    for label in ["renamed export", "opencode-v2-export:legacy-label"] {
+        let source = SessionSource::Inline {
+            label: label.to_owned(),
+            content: String::new(),
+            source_format: Some(SourceFormat::OpenCodeV2SessionExport),
+        };
+        assert_eq!(
+            source_format(AgentKind::OpenCode, &source),
+            SourceFormat::OpenCodeV2SessionExport
+        );
+    }
+    let untyped = SessionSource::Inline {
+        label: "opencode-v2-export:not-a-format".to_owned(),
+        content: String::new(),
+        source_format: None,
+    };
+    assert_eq!(
+        source_format(AgentKind::OpenCode, &untyped),
+        SourceFormat::OpenCodeJsonl
+    );
+}
+
+#[test]
 fn cursor_routing_rejects_unrelated_path_and_label_markers() {
     let unrelated_json = SessionSource::File(std::path::PathBuf::from(
         "/tmp/.cursor/projects/project/session.json",
     ));
     let incidental_label = SessionSource::Inline {
         label: "cursor-agent:/tmp/state.vscdb-copy.jsonl".to_owned(),
+        source_format: None,
         content: String::new(),
     };
 
@@ -296,6 +401,7 @@ fn windsurf_routes_workspace_cascade_and_mirror_sources() {
     ));
     let mirror = SessionSource::Inline {
         label: "windsurf-mirror:synthetic.json".to_owned(),
+        source_format: None,
         content: String::new(),
     };
     let configured_mirror = SessionSource::File(std::path::PathBuf::from(
@@ -363,11 +469,13 @@ fn devin_database_routing_does_not_capture_other_windsurf_databases() {
         agent: AgentKind::Windsurf,
         db_path: std::path::PathBuf::from("C:\\Users\\tester\\Devin\\session.db"),
         session_id: "session".to_owned(),
+        source_format: None,
     };
     let windsurf = SessionSource::ProviderDb {
         agent: AgentKind::Windsurf,
         db_path: std::path::PathBuf::from("C:\\Users\\tester\\Windsurf\\session.db"),
         session_id: "session".to_owned(),
+        source_format: None,
     };
 
     assert_eq!(
@@ -598,6 +706,7 @@ async fn an_opencode_provider_database_stays_native() {
         agent: AgentKind::OpenCode,
         db_path: path.clone(),
         session_id: "root".to_owned(),
+        source_format: Some(SourceFormat::OpenCodeSqliteV1),
     };
 
     assert_eq!(
@@ -613,6 +722,7 @@ async fn a_claimed_antigravity_database_stays_native_and_publishes() {
         agent: AgentKind::Antigravity,
         db_path: path.clone(),
         session_id: "root".to_owned(),
+        source_format: None,
     };
     assert_eq!(
         raw_source(AgentKind::Antigravity, &source).await,
@@ -673,7 +783,7 @@ async fn a_claimed_opencode_database_publishes_from_the_validated_snapshot() {
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: SourceFormat::OpenCodeSqliteV1,
     };
 
     let outcome = stream_vendor_with_hooks(
@@ -763,7 +873,7 @@ fn an_opencode_completed_task_links_as_a_delegated_thread() {
         session_id: "root".to_owned(),
         source: RawSource::Sqlite(path),
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: SourceFormat::OpenCodeSqliteV1,
     };
 
     let pass = evidence_pass_with_turn_rows(
@@ -1840,24 +1950,29 @@ fn a_session_written_moments_ago_reads_as_active() {
 fn inclusive_model_runs_put_parent_modes_before_subagent_modes() {
     let parent = vec![
         ModelRun {
+            native_variant: None,
             model: "claude-opus-4-6".to_string(),
             thinking_mode: Some("high".to_string()),
         },
         ModelRun {
+            native_variant: None,
             model: "gpt-5.6-sol".to_string(),
             thinking_mode: Some("xhigh".to_string()),
         },
     ];
     let child = vec![
         ModelRun {
+            native_variant: None,
             model: "claude-fable-5".to_string(),
             thinking_mode: Some("high".to_string()),
         },
         ModelRun {
+            native_variant: None,
             model: "claude-haiku-4-5".to_string(),
             thinking_mode: Some("low".to_string()),
         },
         ModelRun {
+            native_variant: None,
             model: "gpt-5.6-sol".to_string(),
             thinking_mode: Some("xhigh".to_string()),
         },
@@ -1878,10 +1993,12 @@ fn inclusive_model_runs_put_parent_modes_before_subagent_modes() {
 fn model_runs_are_trimmed_without_losing_the_thinking_mode() {
     assert_eq!(
         normalize_model_run(&ModelRun {
+            native_variant: None,
             model: " gpt-5.6-sol ".to_string(),
             thinking_mode: Some(" xhigh ".to_string()),
         }),
         Some(ModelRun {
+            native_variant: None,
             model: "gpt-5.6-sol".to_string(),
             thinking_mode: Some("xhigh".to_string()),
         })
@@ -1896,6 +2013,7 @@ fn cached_inclusive_model_runs_reject_invalid_json_and_normalize_values() {
             r#"[{"model":" model-b ","thinkingMode":" high "},{"model":"model-b","thinkingMode":"high"},{"model":""}]"#,
         ),
         vec![ModelRun {
+            native_variant: None,
             model: "model-b".to_string(),
             thinking_mode: Some("high".to_string()),
         }]
@@ -1913,6 +2031,7 @@ fn a_missing_transcript_fingerprints_as_missing() {
 
     let inline = SessionSource::Inline {
         label: "opencode:abc".into(),
+        source_format: None,
         content: "{}".into(),
     };
     assert_eq!(fingerprint_of(&inline), MISSING_FINGERPRINT);

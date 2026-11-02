@@ -1,7 +1,18 @@
 use super::*;
-use antiburn_local::analysis::ignored_instructions::InstructionScope;
 
 pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
+    let passive_operation = (vendor_policy(target.agent).is_some_and(|policy| {
+        policy.model_watch_evidence(target.finding().source_format)
+            == vendors::ModelWatchEvidence::ConfigAttribution
+    }) && target.physical_target_key.is_some()
+        && target.finding().detector == DetectorId::OldModelUsage)
+        .then(|| reviewed_config_operation(target.agent, target.finding().cause()))
+        .flatten();
+    let operation = target
+        .config
+        .as_ref()
+        .map(|config| &config.operation)
+        .or(passive_operation.as_ref());
     let (provider, api, old_model, replacement) = match target.finding().cause() {
         FindingCause::OldModelUsage {
             provider,
@@ -58,18 +69,10 @@ pub(super) fn watch_definition(target: &CachedTarget) -> WatchDefinition {
             _ => None,
         },
         physical_target_key: target.physical_target_key.clone(),
-        config_setting: target
-            .config
-            .as_ref()
-            .map(|config| config_setting_name(config.operation.setting).to_owned()),
-        config_expected_value: target
-            .config
-            .as_ref()
-            .map(|config| config.operation.expected_value.display_value()),
-        config_proposed_value: target
-            .config
-            .as_ref()
-            .map(|config| config.operation.proposed_value.display_value()),
+        config_setting: operation
+            .map(|operation| config_setting_name(operation.setting).to_owned()),
+        config_expected_value: operation.map(|operation| operation.expected_value.display_value()),
+        config_proposed_value: operation.map(|operation| operation.proposed_value.display_value()),
         verification_method_revision: VERIFICATION_METHOD_REVISION,
         remediation_policy_revision: Some(REMEDIATION_POLICY_REVISION),
         savings_method_revision: SAVINGS_METHOD_REVISION,
@@ -105,11 +108,22 @@ pub(super) fn target_identity(
         workspace_key.as_deref(),
     );
     let mut physical_target_key = None;
+    let attribution_supported = |setting| {
+        vendor_policy(agent).is_some_and(|policy| {
+            policy.action_support(
+                RemediationAction::PublicationAttribution(setting),
+                finding.finding.source_format,
+            ) == ActionSupport::Supported
+        })
+    };
     let attributed = match finding.finding.cause() {
         FindingCause::OldModelUsage { .. }
-            if reviewed_config_operation(agent, finding.finding.cause()).is_some_and(
-                |operation| finding.effective_model.as_deref() == operation.expected_value.scalar(),
-            ) =>
+            if attribution_supported(ConfigSetting::Model)
+                && reviewed_config_operation(agent, finding.finding.cause()).is_some_and(
+                    |operation| {
+                        finding.effective_model.as_deref() == operation.expected_value.scalar()
+                    },
+                ) =>
         {
             Some((
                 finding.effective_model_target_hash.as_ref(),
@@ -117,7 +131,8 @@ pub(super) fn target_identity(
             ))
         }
         FindingCause::ModelOverthinking { reasoning, .. }
-            if finding.effective_reasoning.as_deref() == Some(reasoning) =>
+            if attribution_supported(ConfigSetting::Reasoning)
+                && finding.effective_reasoning.as_deref() == Some(reasoning) =>
         {
             Some((
                 finding.effective_reasoning_target_hash.as_ref(),
@@ -233,30 +248,10 @@ pub(super) fn finding_scope(
     workspace_key: Option<&str>,
 ) -> (String, String) {
     match cause {
-        FindingCause::CacheChurn { .. }
-        | FindingCause::OverExploring(_)
-        | FindingCause::ScopeCreep(_)
-        | FindingCause::SkillOpportunity { .. } => (
+        FindingCause::CacheChurn { .. } => (
             "session".to_owned(),
             session_scope_key(secret, agent, session_id),
         ),
-        FindingCause::IgnoredInstructionConflict(evidence) => {
-            let source = &evidence.source;
-            let instruction_scope = &evidence.instruction_scope;
-            if source.starts_with("home:") || *instruction_scope == InstructionScope::Global {
-                (
-                    "global".to_owned(),
-                    hashed_parts_with_secret(secret, b"instruction-source", &[agent, source]),
-                )
-            } else if let Some(workspace_key) = workspace_key {
-                ("project".to_owned(), workspace_key.to_owned())
-            } else {
-                (
-                    "session".to_owned(),
-                    session_scope_key(secret, agent, session_id),
-                )
-            }
-        }
         _ => workspace_key.map_or_else(
             || {
                 (
@@ -408,7 +403,11 @@ pub(super) fn reviewed_config_operation(
     cause: &FindingCause,
 ) -> Option<ConfigOperation> {
     match cause {
-        FindingCause::OverpoweredSubagents { worker_model, .. } => {
+        FindingCause::OverpoweredSubagents {
+            worker_model,
+            config_binding,
+            ..
+        } => {
             let replacement = if worker_model.starts_with("claude-") {
                 "claude-sonnet-5"
             } else if worker_model.starts_with("gpt-") {
@@ -418,10 +417,18 @@ pub(super) fn reviewed_config_operation(
             } else {
                 return None;
             };
+            let config_value = |model: &str| {
+                vendor_policy(agent).map_or_else(
+                    || Some(model.to_owned()),
+                    |policy| {
+                        policy.subagent_config_value(worker_model, model, config_binding.as_ref())
+                    },
+                )
+            };
             Some(ConfigOperation {
                 setting: ConfigSetting::SubagentModel,
-                expected_value: worker_model.clone().into(),
-                proposed_value: replacement.into(),
+                expected_value: config_value(worker_model)?.into(),
+                proposed_value: config_value(replacement)?.into(),
             })
         }
         FindingCause::UnusedMcpServer { server, .. } => Some(ConfigOperation {
@@ -635,78 +642,4 @@ pub(super) fn public_watch(
         verification: result.verification,
         savings: result.savings,
     }))
-}
-
-#[cfg(test)]
-mod instruction_scope_tests {
-    use super::*;
-    use antiburn_local::analysis::ignored_instructions::{FindingCertainty, InstructionProvenance};
-
-    fn cause(source: &str, instruction_scope: InstructionScope) -> FindingCause {
-        FindingCause::IgnoredInstructionConflict(Box::new(
-            antiburn_local::remediation::IgnoredInstructionConflictEvidence {
-                decision: None,
-                assessment_revision: "revision".to_owned(),
-                assessment_finding_id: "finding".to_owned(),
-                instruction_id: "instruction".to_owned(),
-                instruction_digest: "digest".to_owned(),
-                instruction_excerpt: "Use the reviewed workflow.".to_owned(),
-                instruction_excerpt_truncated: false,
-                rule_id: "rule".to_owned(),
-                rule_heading: "Rules".to_owned(),
-                start_line: 1,
-                end_line: 1,
-                source: source.to_owned(),
-                provenance: InstructionProvenance::CurrentFileComparison,
-                instruction_scope,
-                action_id: "action".to_owned(),
-                action_digest: "action-digest".to_owned(),
-                action_excerpt: "git push --force".to_owned(),
-                action_excerpt_truncated: false,
-                action_timestamp_ms: Some(1),
-                nearby_context_ids: Vec::new(),
-                counterevidence_ids: Vec::new(),
-                certainty: FindingCertainty::Possible,
-                limitations: Box::default(),
-            },
-        ))
-    }
-
-    #[test]
-    fn global_instruction_source_groups_across_sessions_but_projects_stay_scoped() {
-        let secret = [7; 32];
-        let global = cause("home:.config/opencode/AGENTS.md", InstructionScope::Global);
-        let (global_kind, global_a) =
-            finding_scope(&secret, "opencode", "session-a", &global, None);
-        let (same_kind, global_b) = finding_scope(&secret, "opencode", "session-b", &global, None);
-        assert_eq!(global_kind, "global");
-        assert_eq!(same_kind, "global");
-        assert_eq!(global_a, global_b);
-
-        let project = cause("project:AGENTS.md", InstructionScope::Project);
-        let (project_kind, project_a) = finding_scope(
-            &secret,
-            "opencode",
-            "session-a",
-            &project,
-            Some("workspace-a"),
-        );
-        let (_, same_project) = finding_scope(
-            &secret,
-            "opencode",
-            "session-b",
-            &project,
-            Some("workspace-a"),
-        );
-        let (_, other_project) = finding_scope(
-            &secret,
-            "opencode",
-            "session-c",
-            &project,
-            Some("workspace-b"),
-        );
-        assert_eq!(project_kind, "project");
-        assert_eq!(project_a, same_project);
-        assert_ne!(project_a, other_project);
-    }
 }

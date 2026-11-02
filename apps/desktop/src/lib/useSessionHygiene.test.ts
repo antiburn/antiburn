@@ -184,7 +184,7 @@ describe("useSessionHygiene", () => {
         ...payload("clean"),
         badges: [
           ...payload("clean").badges,
-          { id: "ignoredInstructions", status: "finding", notAssessedReason: null },
+          { id: "modelOverthinking", status: "finding", notAssessedReason: null },
         ],
       },
     ])

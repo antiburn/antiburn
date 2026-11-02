@@ -2,10 +2,6 @@ import { useCallback, useRef, useState } from "react"
 
 import { prefersReducedMotion, slowAnimationDurationMs } from "../../lib/popoverHeight"
 
-function fmt(value: number): string {
-  return value.toLocaleString()
-}
-
 /**
  * A whole number that animates to its new value in `--duration-slow` when it
  * changes. A new value during a count continues from the number on screen.
@@ -51,9 +47,9 @@ export function CountUp({ value }: { value: number }) {
   return (
     <span ref={count}>
       <span className="sr-only" data-count-up-value="">
-        {fmt(value)}
+        {value.toLocaleString()}
       </span>
-      <span aria-hidden="true">{fmt(shown)}</span>
+      <span aria-hidden="true">{shown.toLocaleString()}</span>
     </span>
   )
 }

@@ -1,0 +1,9 @@
+{
+  "name": "antiburn-live",
+  "version": "0.1.0",
+  "description": "Native account usage above the prompt, with opt-in live token-burn checks. Local only.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "antiburn"
+  }
+}

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::checks::ignored_instructions::sha256_hex;
+use crate::digest::sha256_hex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -37,6 +37,42 @@ pub(super) struct CompletedState {
 }
 
 impl CompletedState {
+    pub(super) fn live_seam(&mut self, ordinal: Option<u64>) {
+        self.ordinal = ordinal.and_then(|ordinal| ordinal.checked_sub(1));
+    }
+
+    pub(super) fn compact_live_identities(&mut self) {
+        self.items.clear();
+        self.messages.clear();
+    }
+
+    pub(super) fn retire_live_replacement(&mut self, record: &Value) {
+        let payload = &record["payload"];
+        if record["type"] == "response_item"
+            && matches!(
+                payload["type"].as_str(),
+                Some("custom_tool_call_output" | "function_call_output")
+            )
+            && let Some(id) = payload["call_id"]
+                .as_str()
+                .or_else(|| payload["callId"].as_str())
+        {
+            self.replaced_calls.remove(id);
+        }
+    }
+
+    pub(super) fn admits(&self, session_id: &str) -> bool {
+        self.root && self.native_header && self.session_id.as_deref() == Some(session_id)
+    }
+
+    pub(super) fn ordinal_regresses(&self, record: &Value) -> bool {
+        self.paginated
+            && self
+                .ordinal
+                .zip(record["ordinal"].as_u64())
+                .is_some_and(|(previous, ordinal)| ordinal <= previous)
+    }
+
     pub(super) fn observe(
         &mut self,
         record: &Value,
@@ -312,28 +348,14 @@ impl CompletedState {
     }
 
     pub(super) fn replaces_exec_content(&self, record: &Value) -> bool {
-        self.paginated
-            && record["type"] == "response_item"
-            && (matches!(
-                record["payload"]["type"].as_str(),
-                Some("custom_tool_call_output" | "function_call_output")
-            ) && record["payload"]["call_id"]
-                .as_str()
-                .is_some_and(|id| self.replaced_calls.contains(id))
-                || record["payload"]["type"] == "custom_tool_call"
-                    && record["payload"]["name"] == "exec"
-                || record["payload"]["type"] == "function_call"
-                    && matches!(
-                        record["payload"]["name"].as_str(),
-                        Some("exec_command" | "apply_patch")
-                    ))
+        replaces_exec_content(record, self.paginated, |id| {
+            self.replaced_calls.contains(id)
+        })
     }
 
     pub(super) fn finish(&self, sink: &mut dyn RecordSink) {
         if self.agent_projection.is_some() {
-            sink.record(NormalizedRecord::Unusable(
-                PartialReason::AttributionIncomplete,
-            ));
+            sink.pending_native_content(PartialReason::AttributionIncomplete);
         }
     }
 
@@ -520,6 +542,29 @@ impl CompletedState {
             part.metadata.selected_skill = Some(proof);
         }
     }
+}
+
+pub(super) fn replaces_exec_content(
+    record: &Value,
+    paginated: bool,
+    contains_call: impl Fn(&str) -> bool,
+) -> bool {
+    let payload = &record["payload"];
+    paginated
+        && record["type"] == "response_item"
+        && (matches!(
+            payload["type"].as_str(),
+            Some("custom_tool_call_output" | "function_call_output")
+        ) && payload["call_id"]
+            .as_str()
+            .or_else(|| payload["callId"].as_str())
+            .is_some_and(contains_call)
+            || payload["type"] == "custom_tool_call" && payload["name"] == "exec"
+            || payload["type"] == "function_call"
+                && matches!(
+                    payload["name"].as_str(),
+                    Some("exec_command" | "apply_patch")
+                ))
 }
 
 #[derive(Default)]
@@ -818,8 +863,50 @@ fn file_parts(item: &Value) -> Option<Vec<ContentPart>> {
 
 #[cfg(test)]
 mod tests {
-    use super::clipped;
+    use super::{CompletedState, MAX_ITEMS, MetricsSink, clipped};
     use crate::analysis::interface::MAX_CONTENT_PART_BYTES;
+    use serde_json::json;
+
+    #[test]
+    fn live_replacement_proofs_retain_only_bounded_pending_calls() {
+        let mut state = CompletedState::default();
+        let mut sink = MetricsSink::default();
+        state.observe(
+            &json!({"ordinal":0,"type":"session_meta","payload":{"id":"facts","cli_version":"0.160.1","thread_source":"user","history_mode":"paginated"}}),
+            true,
+            &mut sink,
+        );
+        for ordinal in 1..=MAX_ITEMS + 1 {
+            state.observe(
+                &json!({"timestamp":"2026-10-07T10:00:01Z","ordinal":ordinal,"type":"response_item","payload":{"type":"custom_tool_call","call_id":format!("call-{ordinal}"),"name":"exec","input":"text(1);"}}),
+                true,
+                &mut sink,
+            );
+            state.compact_live_identities();
+            assert_eq!(state.replaced_calls.len(), ordinal.min(MAX_ITEMS));
+        }
+        let output = json!({"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call-1","output":"ok"}});
+        assert!(state.replaces_exec_content(&output));
+        let mut unrelated = output.clone();
+        unrelated["payload"]["call_id"] = json!("unrelated-call");
+        state.retire_live_replacement(&unrelated);
+        assert!(state.replaces_exec_content(&output));
+        state.retire_live_replacement(&output);
+        assert!(!state.replaces_exec_content(&output));
+        assert_eq!(state.replaced_calls.len(), MAX_ITEMS - 1);
+        state.observe(
+            &json!({"timestamp":"2026-10-07T10:00:01Z","ordinal":MAX_ITEMS + 2,"type":"response_item","payload":{"type":"custom_tool_call","call_id":"later-call","name":"exec","input":"text(1);"}}),
+            true,
+            &mut sink,
+        );
+        assert_eq!(state.replaced_calls.len(), MAX_ITEMS);
+        assert!(state.replaced_calls.contains("later-call"));
+        assert!(
+            !state
+                .replaced_calls
+                .contains(&format!("call-{}", MAX_ITEMS + 1))
+        );
+    }
 
     #[test]
     fn ordinary_output_text_is_not_truncation_framing() {

@@ -7,7 +7,7 @@ use rusqlite::{Connection, params};
 
 use super::{
     AppSettings, DisabledAgents, DiskSpaceDisplay, HiddenMeters, Milestones, NudgePlacement,
-    SessionBadgeMetric, Store, ThemePreference, WorkingWeek,
+    SessionBadgeMetric, Store, ThemePreference, WorkingWeek, bump_repository_policy_generation_in,
 };
 
 impl Store {
@@ -69,9 +69,10 @@ impl Store {
         let tx = connection.transaction()?;
         let previous = read_settings(&tx)?;
         let saved = settings.clone().normalized();
-        write_settings(&tx, &saved)?;
+        write_settings(&tx, &previous, &saved)?;
         let result = apply(&tx, &previous, &saved)?;
         tx.commit()?;
+        self.fence_folder_policy_change(&previous, &saved);
         self.update_settings_snapshot(&saved);
         Ok((previous, saved, result))
     }
@@ -88,9 +89,10 @@ impl Store {
         let mut saved = settings.clone();
         saved.interface_scale_percent = previous.interface_scale_percent;
         let saved = saved.normalized();
-        write_settings(&tx, &saved)?;
+        write_settings(&tx, &previous, &saved)?;
         let result = apply(&tx, &previous, &saved)?;
         tx.commit()?;
+        self.fence_folder_policy_change(&previous, &saved);
         self.update_settings_snapshot(&saved);
         Ok((previous, saved, result))
     }
@@ -118,10 +120,18 @@ impl Store {
         let mut saved = previous.clone();
         let result = update(&mut saved)?;
         let saved = saved.normalized();
-        write_settings(&tx, &saved)?;
+        write_settings(&tx, &previous, &saved)?;
         tx.commit()?;
+        self.fence_folder_policy_change(&previous, &saved);
         self.update_settings_snapshot(&saved);
         Ok((previous, saved, result))
+    }
+
+    fn fence_folder_policy_change(&self, previous: &AppSettings, saved: &AppSettings) {
+        if previous.include_non_repo_folders != saved.include_non_repo_folders {
+            self.destructive_write_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
     }
 
     /// Replace every preference, returning what was actually stored (clamped).
@@ -302,9 +312,16 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
     .normalized())
 }
 
-/// Write every normalized preference through one transaction.
-fn write_settings(connection: &Connection, settings: &AppSettings) -> Result<()> {
-    let mut put = connection.prepare(
+/// Write normalized preferences and fence folder policy changes in the same transaction.
+fn write_settings(
+    transaction: &rusqlite::Transaction<'_>,
+    previous: &AppSettings,
+    settings: &AppSettings,
+) -> Result<()> {
+    if previous.include_non_repo_folders != settings.include_non_repo_folders {
+        bump_repository_policy_generation_in(transaction)?;
+    }
+    let mut put = transaction.prepare(
         "INSERT INTO setting (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )?;

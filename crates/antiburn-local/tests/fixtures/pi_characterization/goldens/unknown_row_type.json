@@ -90,9 +90,7 @@
       "recordsUnrecognizedInert": 0,
       "recordsUnusable": 1,
       "truncatedStrings": [],
-      "unrecognizedTypes": [
-        "future_row"
-      ],
+      "unrecognizedTypes": ["future_row"],
       "unusableReasons": {
         "unrecognized_record_type": 1
       }
@@ -147,7 +145,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 53,
+      "parserRevision": 67,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4188,7 +4186,5 @@
     "model": null,
     "sessionId": "unknown_row_type"
   },
-  "partialReasons": [
-    "UnrecognizedRecordType"
-  ]
+  "partialReasons": ["UnrecognizedRecordType"]
 }

@@ -102,25 +102,14 @@ fn denominator_partitions_non_cohort_rows_by_reason() {
         assert_eq!(counts.eligible, 0, "{detector:?}");
         assert_eq!(counts.not_applicable, 1, "{detector:?}");
     }
-    for detector in [
-        DetectorId::IgnoredInstructions,
-        DetectorId::SkillOpportunities,
-        DetectorId::OverExploring,
-        DetectorId::ScopeCreep,
-    ] {
-        let counts = &report.detectors[detector.index()];
-        assert_eq!(counts.eligible, 1, "{detector:?}");
-        assert_eq!(counts.assessed, 0, "{detector:?}");
-        assert_eq!(counts.unavailable, 1, "{detector:?}");
-    }
-    // Six metric checks and four content checks admit this native source.
+    // Six metric checks admit this native source.
     assert_eq!(
         report
             .detectors
             .iter()
             .map(|counts| counts.eligible)
             .sum::<u64>(),
-        10
+        6
     );
     // Missing effort and speed signals are unavailable outcomes,
     // not assessed results.

@@ -1,0 +1,229 @@
+{
+  "completed": [
+    {
+      "arguments": {
+        "cmd": "synthetic test"
+      },
+      "call_id": "call-0",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "ok",
+      "context": {
+        "complete_through_event": true,
+        "main_session": true,
+        "result_position": {
+          "FileBytes": {
+            "item_index": 0,
+            "record_end": 410,
+            "record_start": 273
+          }
+        },
+        "user_messages": []
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "FileBytes": {
+          "item_index": 0,
+          "record_end": 410,
+          "record_start": 273
+        }
+      },
+      "provider_executed": null,
+      "record_id": "result-0",
+      "result_id": "result-0",
+      "revision": 1,
+      "session_id": "synthetic-root",
+      "source_format": "codex_rollout_jsonl",
+      "status": "Success",
+      "tool_category": "bash",
+      "tool_name": "exec_command"
+    }
+  ],
+  "cursor": {
+    "adapter": {
+      "Codex": {
+        "completed_ids": {
+          "fixture_sparse_u64_array": {
+            "len": 131072,
+            "nonzero": []
+          }
+        },
+        "ordinal": null,
+        "paginated": false,
+        "parser": {
+          "agent_path": null,
+          "cache_write_tokens_available": false,
+          "completed": {
+            "agent_projection": null,
+            "items": {},
+            "messages": {},
+            "native_header": true,
+            "ordinal": null,
+            "paginated": false,
+            "replaced_calls": [],
+            "root": true,
+            "session_id": "synthetic-root",
+            "user_projection": null
+          },
+          "context": {
+            "cli_version": null,
+            "cwd": null,
+            "model": null,
+            "skill_descriptions": {},
+            "source_rows": []
+          },
+          "context_window": null,
+          "current_model": null,
+          "current_provider": null,
+          "current_speed": null,
+          "current_thinking_mode": null,
+          "effort_seen": false,
+          "fork_attribution_incomplete": false,
+          "fork_parent_id": null,
+          "fork_parent_seen": false,
+          "fork_replay_timestamp": null,
+          "model": null,
+          "native_call_bytes": 42,
+          "native_calls": "{\"call-1\":{\"name\":\"exec_command\",\"arguments\":{\"cmd\":\"synthetic test\"},\"retained_bytes\":36}}",
+          "owned_usage_seen": false,
+          "ownership": "TopLevel",
+          "pending_bytes": 0,
+          "pending_owned_start": null,
+          "pending_rows": "[]",
+          "previous_boundary_ts": null,
+          "previous_event_was_boundary": false,
+          "previous_usage_key": "null",
+          "recent_cross_format_usage": "null",
+          "record_offset": 0,
+          "scope": {
+            "bytes": 0,
+            "calls": {},
+            "turn_id": null
+          },
+          "session_id": "synthetic-root",
+          "source_format": "codex_rollout_jsonl",
+          "started_at_ms": null,
+          "tool_identities": {
+            "calls": {}
+          }
+        },
+        "replaced_calls": {
+          "fixture_sparse_u64_array": {
+            "len": 131072,
+            "nonzero": []
+          }
+        },
+        "retired_calls": {
+          "fixture_sparse_u64_array": {
+            "len": 131072,
+            "nonzero": [
+              [
+                11838,
+                16
+              ],
+              [
+                18881,
+                1
+              ],
+              [
+                21758,
+                32
+              ],
+              [
+                28459,
+                32
+              ],
+              [
+                53304,
+                8
+              ],
+              [
+                63206,
+                32
+              ],
+              [
+                78088,
+                2
+              ],
+              [
+                82132,
+                2
+              ],
+              [
+                103820,
+                4
+              ],
+              [
+                108213,
+                2
+              ],
+              [
+                112082,
+                4
+              ],
+              [
+                119754,
+                4
+              ],
+              [
+                121142,
+                128
+              ],
+              [
+                126165,
+                2
+              ],
+              [
+                126508,
+                16
+              ],
+              [
+                129564,
+                16
+              ]
+            ]
+          }
+        },
+        "root": true,
+        "suffix_only": false
+      }
+    },
+    "agent": "codex",
+    "anchor": {
+      "boundary": 622,
+      "head": {
+        "offset": 129,
+        "tail_hash": 4889758616183782917,
+        "tail_len": 129
+      },
+      "identity": "16777234:306699074",
+      "tail": {
+        "offset": 622,
+        "tail_hash": 10122300815715379063,
+        "tail_len": 622
+      }
+    },
+    "baseline_offset": 129,
+    "framer": "RHsicGF5bG9hZCI6eyJjYWxsX2lkIjoiY2FsbC0xIiwiaWQiOiJyZXN1bHQtMSIsIm91dHB1dCI6Im9rIiwic3RhdHVzAACqBA==",
+    "history_complete": true,
+    "next_record_index": 4,
+    "pending_results": null,
+    "request_bytes": 0,
+    "request_ids": {
+      "fixture_sparse_u64_array": {
+        "len": 131072,
+        "nonzero": []
+      }
+    },
+    "requests": [],
+    "revision": 1,
+    "session_id": "synthetic-root",
+    "source_format": "codex_rollout_jsonl",
+    "start_offset": 0
+  },
+  "cursor_sha256": "61714e4d10016844d6b96d788b4e13f19d669ce459ec1c0206ef40d221bfd8fb",
+  "parser_revision": 64,
+  "source_prefix": "{\"payload\":{\"cli_version\":\"0.160.1\",\"history_mode\":\"legacy\",\"id\":\"synthetic-root\",\"thread_source\":\"user\"},\"type\":\"session_meta\"}\n{\"payload\":{\"arguments\":\"{\\\"cmd\\\":\\\"synthetic test\\\"}\",\"call_id\":\"call-0\",\"name\":\"exec_command\",\"type\":\"function_call\"},\"type\":\"response_item\"}\n{\"payload\":{\"call_id\":\"call-0\",\"id\":\"result-0\",\"output\":\"ok\",\"status\":\"completed\",\"type\":\"function_call_output\"},\"type\":\"response_item\"}\n{\"payload\":{\"arguments\":\"{\\\"cmd\\\":\\\"synthetic test\\\"}\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"type\":\"function_call\"},\"type\":\"response_item\"}\n{\"payload\":{\"call_id\":\"call-1\",\"id\":\"result-1\",\"output\":\"ok\",\"status",
+  "source_suffix": "\":\"completed\",\"type\":\"function_call_output\"},\"type\":\"response_item\"}\n"
+}

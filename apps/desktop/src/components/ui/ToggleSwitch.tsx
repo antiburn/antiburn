@@ -5,6 +5,7 @@ export type ToggleSwitchProps = {
   onCheckedChange: (next: boolean) => void
   /** Required: the switch renders no visible label of its own. */
   "aria-label": string
+  "aria-describedby"?: string | undefined
   /** `| undefined` so a wrapper can forward its own optional value under
    *  `exactOptionalPropertyTypes`. */
   disabled?: boolean | undefined
@@ -20,6 +21,7 @@ export function ToggleSwitch({
   onCheckedChange,
   disabled = false,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
 }: ToggleSwitchProps) {
   return (
     <Switch.Root
@@ -27,6 +29,7 @@ export function ToggleSwitch({
       checked={checked}
       onCheckedChange={onCheckedChange}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       disabled={disabled}
     >
       <Switch.Thumb className="ui-switch-thumb" />

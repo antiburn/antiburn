@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=../../docs/burn-check/schemas/burn-check.schema.json
+# This example judges selected results, not all exploration.
+name: Over-exploring
+description: Detect read and search work that is unrelated to the user's task.
+on:
+  tool_result:
+    tools: [read, search]
+    status: [completed]
+  window:
+    size: 20
+    min: 10
+  cooldown: 120s
+decisions:
+  review:
+    input:
+      requests: ${{ session.requests }}
+      request_history_complete: ${{ session.requests_complete }}
+      source_coverage: ${{ session.source_coverage }}
+      activity: ${{ window.messages }}
+    # Preserve task context and result records; reject if these cannot fit.
+    fit:
+      "activity[*].tool.result.content": truncate
+    output:
+      assessment:
+        type: choice
+        question: >-
+          Do the selected reads and searches clearly serve a separate purpose
+          from the user's task, without a plausible supporting relationship?
+          Dependencies, tests, and verification can be useful. A path, import,
+          read count, or unexplained connection alone does not prove waste.
+          Choose uncertain when the purpose or relevance is unclear. Judge only
+          the selected results and requests. Requests and arguments stay intact.
+          A partial history, source gap, or fitted omission can hide useful context.
+          Do not infer what omitted text contains or treat missing context as proof
+          of unrelated work. Choose uncertain if the retained evidence cannot
+          establish the separate purpose and lack of a plausible task connection.
+        criteria:
+          likely_excess: The selected records show a separate purpose without a useful task connection.
+          justified_or_minor: The investigation plausibly supports the task or adds little work.
+          uncertain: The selected records do not establish purpose or relevance.
+actions:
+  - type: status
+    if: decisions.review.outputs.assessment == 'likely_excess' && decisions.review.details.assessment.probabilities.likely_excess >= 0.95
+    input:
+      result: failure
+      message: The selected activity may include investigation unrelated to your task.
+  - type: status
+    if: "!(decisions.review.outputs.assessment == 'likely_excess' && decisions.review.details.assessment.probabilities.likely_excess >= 0.95)"
+    input:
+      result: success

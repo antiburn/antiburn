@@ -1,0 +1,104 @@
+name: Installer tests
+
+# CI and the application release workflow call this workflow. It tests and
+# lints the POSIX and PowerShell installers and the Windows signing scripts.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  installers:
+    name: installer scripts (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: POSIX
+            os: ubuntu-24.04
+          - name: Windows
+            os: windows-latest
+          - name: Windows ARM64
+            os: windows-11-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Node
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Test the POSIX installer
+        if: runner.os == 'Linux'
+        run: node --test scripts/install-sh.test.mjs
+
+      - name: Check the POSIX installer
+        if: runner.os == 'Linux'
+        run: shellcheck --shell=sh install.sh
+
+      - name: Install PowerShell test tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+
+      - name: Test the PowerShell installer with PowerShell 7
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester -Path scripts/install-ps1.test.ps1,scripts/windows-signing.test.ps1 -CI
+
+      - name: Install the Windows PowerShell test tool
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+
+      - name: Test the PowerShell installer with Windows PowerShell 5.1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1
+          Invoke-Pester -Path scripts/install-ps1.test.ps1,scripts/windows-signing.test.ps1 -CI
+
+      - name: Check the PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0
+          $findings = @(foreach ($path in 'install.ps1', 'scripts/windows-signing.ps1', 'scripts/setup-windows-signing.ps1') {
+            Invoke-ScriptAnalyzer -Path $path -Severity Error,Warning
+          })
+          if ($findings.Count -gt 0) {
+            $findings | Format-Table -AutoSize
+            throw "PSScriptAnalyzer found $($findings.Count) issue(s)."
+          }
+
+      - name: Check x64 signing tools on both Windows architectures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . ./scripts/setup-windows-signing.ps1
+          Install-WindowsSigningToolchain -Directory (Join-Path $env:RUNNER_TEMP 'windows-signing') | Out-Host
+
+      - name: Verify native Windows installer selection
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./install.ps1
+          $expected = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $actual = Get-WindowsArchitecture
+          if ($actual -ne $expected) {
+            throw "Expected $expected installer on this runner, got $actual."
+          }

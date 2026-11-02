@@ -1,28 +1,21 @@
 import {
   Bot,
   BookOpen,
-  BookOpenCheck,
   Brain,
   Database,
   Gauge,
   History,
   Layers3,
-  Search,
   Server,
-  Sparkles,
-  Target,
   Wrench,
+  CircleCheck,
   type LucideIcon,
 } from "lucide-react"
 
-import type {
-  BurnCheckDetectorId,
-  BurnCheckTargetPayload,
-  ChecksCategoryPayload,
-} from "../../lib/insightsIpc"
-import { checkHasProvisionalResult } from "../../lib/presentation/checkStatus"
+import type { BurnCheckDetectorId, BurnCheckTargetPayload } from "../../lib/insightsIpc"
+import { isInstalledCheck, checkLabel, type CheckRow } from "../../lib/presentation/checkRows"
+import { checkRowStatus, checkStatusFacts } from "../../lib/presentation/checkRowStatus"
 import {
-  CHECK_LABELS,
   formatApiEquivalentUsd,
   formatTokenBurnPercent,
   tokenBurnTone,
@@ -47,51 +40,32 @@ export const CHECK_UI: Record<BurnCheckDetectorId, CheckUiMetadata> = {
   overpoweredSubagents: {
     icon: Bot,
     recommendation:
-      "Assign bounded work to a reviewed lighter worker model to reduce avoidable model cost.",
+      "Give helper models smaller tasks and use a lower-cost model when it can do the work.",
   },
   unusedMcpServers: {
     icon: Server,
-    recommendation: "Disable this server where it is not needed to avoid loading unused tools.",
+    recommendation: "Turn off this tool server where you do not need it.",
   },
   unusedBuiltInTools: {
     icon: Wrench,
-    recommendation:
-      "Load only the built-in tools needed for this work to avoid repeated unused definitions.",
+    recommendation: "Load only the built-in tools needed for the task.",
   },
   unusedSkills: {
     icon: BookOpen,
     recommendation: "Load this skill only when the request needs it to avoid unused context.",
   },
-  skillOpportunities: {
-    icon: Sparkles,
-    recommendation: "Use this current skill for similar future work.",
-  },
-  overExploring: {
-    icon: Search,
-    recommendation: "Read only the files and sections needed for future work.",
-  },
-  scopeCreep: {
-    icon: Target,
-    recommendation:
-      "Keep future work within the agreed task. Ask for approval before adding work.",
-  },
   oldModelUsage: {
     icon: History,
     recommendation:
-      "Use the reviewed replacement for new sessions to support the same work at a lower API-equivalent cost.",
+      "Use the reviewed replacement for new sessions to do similar work at a lower estimated API cost.",
   },
   overuseOfFastMode: {
     icon: Gauge,
-    recommendation:
-      "Use the standard tier unless the task needs faster results to avoid the fast-tier price premium.",
+    recommendation: "Use standard mode unless the task needs speed. Fast mode costs more.",
   },
   cacheChurn: {
     icon: Database,
     recommendation: "Keep stable context reusable to avoid paid cache rehydration.",
-  },
-  ignoredInstructions: {
-    icon: BookOpenCheck,
-    recommendation: "Follow the cited instruction and correct the affected work.",
   },
 }
 
@@ -102,25 +76,12 @@ const CHECK_ICONS: Record<BurnCheckDetectorId, LucideIcon> = {
   unusedMcpServers: CHECK_UI.unusedMcpServers.icon,
   unusedBuiltInTools: CHECK_UI.unusedBuiltInTools.icon,
   unusedSkills: CHECK_UI.unusedSkills.icon,
-  skillOpportunities: CHECK_UI.skillOpportunities.icon,
-  overExploring: CHECK_UI.overExploring.icon,
-  scopeCreep: CHECK_UI.scopeCreep.icon,
   oldModelUsage: CHECK_UI.oldModelUsage.icon,
   overuseOfFastMode: CHECK_UI.overuseOfFastMode.icon,
   cacheChurn: CHECK_UI.cacheChurn.icon,
-  ignoredInstructions: CHECK_UI.ignoredInstructions.icon,
 }
 
-function failedSessionSummary(category: ChecksCategoryPayload): string {
-  if (category.lifecycle === "awaitingVerification") return "Awaiting verification"
-  if (category.lifecycle === "passing") return "Passed"
-  const assessed = category.finding + category.clean
-  return assessed > 0
-    ? `${category.finding}/${assessed} session${assessed === 1 ? "" : "s"} failed`
-    : "Check failed"
-}
-
-function tokenBurnLabel(category: ChecksCategoryPayload): string | null {
+function tokenBurnLabel(category: CheckRow): string | null {
   return category.estimatedTokenBurnBasisPoints == null
     ? null
     : `${formatTokenBurnPercent(category.estimatedTokenBurnBasisPoints)} estimated burn`
@@ -142,67 +103,23 @@ function summedCostLine(targets: readonly BurnCheckTargetPayload[] | undefined):
 }
 
 export function checkRowPresentation(
-  category: ChecksCategoryPayload,
+  category: CheckRow,
   targets?: readonly BurnCheckTargetPayload[],
 ) {
   const failed = category.lifecycle === "failing"
-  const provisional = checkHasProvisionalResult(category)
-  const metric =
-    failed && category.id !== "ignoredInstructions" ? tokenBurnLabel(category) : null
+  const status = checkStatusFacts(category)
+  const metric = failed ? tokenBurnLabel(category) : null
   return {
-    Icon: CHECK_ICONS[category.id],
-    label: CHECK_LABELS[category.id],
-    provisional,
-    checking: category.checking === true && category.lifecycle !== "awaitingVerification",
-    coverage: category.reviewCoverage
-      ? [
-          category.reviewCoverage.total == null
-            ? `${category.reviewCoverage.reviewed} reviewed`
-            : `${category.reviewCoverage.reviewed} of ${category.reviewCoverage.total} reviewed`,
-          `${category.reviewCoverage.uncertain} uncertain`,
-          `${category.reviewCoverage.pending} pending`,
-        ].join(" · ")
-      : null,
-    evidenceLimits: [
-      ...(category.sampled
-        ? [
-            {
-              label: "This check has been sampled",
-              details: [
-                "This check assesses selected evidence. No finding in a sample does not establish that all work has been assessed.",
-                ...(category.checking && category.reviewCoverage?.continuing
-                  ? ["Review is continuing."]
-                  : []),
-              ],
-            },
-          ]
-        : []),
-      ...(category.partialContext
-        ? [
-            {
-              label: "This check used partial context",
-              details: [
-                "This check used incomplete context. Missing context can limit the assessment.",
-              ],
-            },
-          ]
-        : []),
-    ],
-    summary: provisional
-      ? "No issues found yet"
-      : failed
-        ? failedSessionSummary(category)
-        : category.lifecycle === "passing"
-          ? "Passed"
-          : category.lifecycle === "awaitingVerification"
-            ? "Awaiting verification"
-            : "Not assessed",
+    Icon: isInstalledCheck(category) ? CircleCheck : CHECK_ICONS[category.id],
+    label: checkLabel(category),
+    checking: status.checking === true,
+    summary: checkRowStatus(category).text,
     metric,
     costLine: failed ? summedCostLine(targets) : null,
     iconTone:
       category.lifecycle === "failing"
         ? "bg-system-red/10 text-system-red-text"
-        : category.lifecycle === "passing" || provisional
+        : status.lifecycle === "passing"
           ? "bg-system-green/10 text-system-green"
           : "bg-surface-card text-label-secondary",
     metricTone:

@@ -436,7 +436,7 @@ fn malformed_record_breaks_pending_joins() {
 }
 
 #[test]
-fn stored_scope_fields_are_explicit_and_do_not_widen_ignored_instructions() {
+fn stored_scope_fields_are_explicit_and_do_not_widen_text_selection() {
     use antiburn_local::analysis::jev::JevInputSelection;
     use antiburn_local::analysis::jev_evidence::{prepare_session_content, select_session_content};
     use antiburn_local::analysis::{
@@ -497,12 +497,7 @@ fn stored_scope_fields_are_explicit_and_do_not_widen_ignored_instructions() {
             5
         );
         let selected = select_session_content(
-            &prepare_session_content(
-                "scope-store",
-                SourceFormat::ClaudeJsonl,
-                content,
-                Vec::new(),
-            ),
+            &prepare_session_content("scope-store", SourceFormat::ClaudeJsonl, content),
             fields,
         );
         assert!(
@@ -519,7 +514,16 @@ fn stored_scope_fields_are_explicit_and_do_not_widen_ignored_instructions() {
         );
         for selection in [
             JevInputSelection::ALL,
-            antiburn_local::checks::ignored_instructions::INPUT_SELECTION,
+            JevInputSelection::from_fields(&[
+                JevInputField::UserMessage,
+                JevInputField::AssistantMessage,
+                JevInputField::BashCommandInput,
+                JevInputField::BashCommandOutput,
+                JevInputField::FileEditPath,
+                JevInputField::ReadFilePath,
+                JevInputField::SearchFilesQuery,
+                JevInputField::OtherToolInput,
+            ]),
         ] {
             let content = query(selection);
             assert!(
@@ -628,6 +632,15 @@ fn resumed_parts(values: &[Value], boundaries: &[usize]) -> Vec<ContentPart> {
             resume: Default::default(),
         },
         next_turn_index: 0,
+        tool_result_observations_json: Vec::new(),
+        native_tool_result_conflicts: Vec::new(),
+        tool_result_observations_complete: true,
+        user_messages_json: Vec::new(),
+        user_message_conflicts: Vec::new(),
+        user_messages_complete: true,
+        native_evidence_json: Vec::new(),
+        native_evidence_complete: true,
+        native_admission_failure_json: None,
     };
     let mut sink = ClaudeContentSink::default();
     assert_eq!(boundaries.last(), Some(&values.len()));
@@ -1240,7 +1253,7 @@ fn native_content_cap_denies_extent_and_digests_only_retained_output() {
     assert_eq!(result.status, JevReadStatus::Unknown);
     assert!(result.returned_extent.is_none());
     assert_eq!(result.recorded_output_bytes, part.text.len() as u64);
-    use antiburn_local::checks::ignored_instructions::sha256_hex;
+    use antiburn_local::digest::sha256_hex;
     assert_eq!(
         result.recorded_output_digest,
         sha256_hex(part.text.as_bytes())

@@ -69,6 +69,12 @@
      fails the contrast a reader needs. */
   --color-brand: var(--color-brand-val);
   --color-brand-tint: var(--color-brand-tint-val);
+  --color-brand-hover: var(--color-brand-hover-val);
+  --color-brand-ink: var(--color-brand-ink-val);
+  --color-brand-action: var(--color-brand-action-val);
+  --color-brand-action-hover: var(--color-brand-action-hover-val);
+  --color-brand-action-pressed: var(--color-brand-action-pressed-val);
+  --color-brand-action-ink: var(--color-brand-action-ink-val);
   --color-system-green: var(--color-system-green-val);
   --color-system-orange: var(--color-system-orange-val);
   --color-system-orange-tint: var(--color-system-orange-tint-val);
@@ -134,11 +140,14 @@
   /* Corner radii */
   --radius-control: 5px;
   --radius-popover: 10px;
+  --radius-promotion: 16px;
   --radius-small: 4px;
 
   /* The design contract's shadow.raised, for a segment or thumb that sits on
      a recessed track. Consume as `shadow-raised`. */
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.15), 0 0 0 0.5px rgb(0 0 0 / 0.04);
+  --shadow-popover: 0 4px 12px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.08);
+  --shadow-promotion: var(--shadow-promotion-val);
   --shadow-stats-card: inset 0 0 0 1px var(--color-stats-edge);
 
   /* A strong ease-out for a control that must feel like it settles rather than
@@ -149,6 +158,7 @@
 
 /* --- Light (default) --- */
 :root {
+  --shadow-promotion-val: var(--shadow-popover);
   color-scheme: light dark;
 
   /* Backgrounds */
@@ -194,6 +204,12 @@
      themes. On a light surface it measures 2.9:1, so text and small glyphs
      take the darkened value, which clears 4.5:1. */
   --color-brand-tint-val: hsl(17.6 100% 54%);
+  --color-brand-hover-val: hsl(17.6 100% 64%);
+  --color-brand-ink-val: hsl(0 0% 0% / 0.85);
+  --color-brand-action-val: hsl(17.6 100% 42%);
+  --color-brand-action-hover-val: hsl(17.6 100% 40%);
+  --color-brand-action-pressed-val: hsl(17.6 100% 38%);
+  --color-brand-action-ink-val: hsl(0 0% 100%);
   --color-brand-unlit-val: hsl(17.7 75% 54%);
   --color-brand-val: hsl(18 92% 39%);
 
@@ -291,6 +307,7 @@
 /* --- Dark --- */
 @media (prefers-color-scheme: dark) {
   :root {
+    --shadow-promotion-val: 6px 0 18px rgb(0 0 0 / 0.32), 0 2px 6px rgb(0 0 0 / 0.18);
     /* Matches the explicit dark theme. At 0.40 the popover surface let a light
        desktop behind the window through, and the secondary label fell to
        1.93:1 on it. The surface has to set the tone, not the desktop. */
@@ -319,6 +336,12 @@
     --color-selected-ink-val: hsl(240 4% 12%);
     /* The mark measures 7.4:1 on a dark surface, so text keeps it too. */
     --color-brand-tint-val: hsl(17.6 100% 54%);
+    --color-brand-hover-val: hsl(17.6 100% 64%);
+    --color-brand-ink-val: hsl(0 0% 0% / 0.85);
+    --color-brand-action-val: hsl(17.6 100% 42%);
+    --color-brand-action-hover-val: hsl(17.6 100% 40%);
+    --color-brand-action-pressed-val: hsl(17.6 100% 38%);
+    --color-brand-action-ink-val: hsl(0 0% 100%);
     --color-brand-unlit-val: hsl(17.7 75% 54%);
     --color-brand-val: hsl(17.6 100% 54%);
     --color-system-green-val: hsl(135 70% 52.3%);
@@ -373,6 +396,7 @@
 
 /* --- Explicit theme override, for platforms with no live system tokens --- */
 :root[data-theme="light"] {
+  --shadow-promotion-val: var(--shadow-popover);
   --color-stats-edge-val: hsl(0 0% 0% / 0.04);
   --color-bg-primary: hsl(0 0% 100% / 0.85);
   --color-bg-secondary: hsl(0 0% 0% / 0.08);
@@ -400,6 +424,12 @@
   --color-selected-fill-val: hsl(240 6% 26%);
   --color-selected-ink-val: hsl(0 0% 100%);
   --color-brand-tint-val: hsl(17.6 100% 54%);
+  --color-brand-hover-val: hsl(17.6 100% 64%);
+  --color-brand-ink-val: hsl(0 0% 0% / 0.85);
+  --color-brand-action-val: hsl(17.6 100% 42%);
+  --color-brand-action-hover-val: hsl(17.6 100% 40%);
+  --color-brand-action-pressed-val: hsl(17.6 100% 38%);
+  --color-brand-action-ink-val: hsl(0 0% 100%);
   --color-brand-unlit-val: hsl(17.7 75% 54%);
   --color-brand-val: hsl(18 92% 39%);
   --color-system-green-val: hsl(135 59% 34%);
@@ -463,6 +493,7 @@
 }
 
 :root[data-theme="dark"] {
+  --shadow-promotion-val: 6px 0 18px rgb(0 0 0 / 0.32), 0 2px 6px rgb(0 0 0 / 0.18);
   --color-stats-edge-val: hsl(0 0% 100% / 0.05);
   --color-bg-primary: hsl(0 0% 11.7% / 0.92);
   --color-bg-secondary: hsl(0 0% 100% / 0.12);
@@ -488,6 +519,12 @@
   --color-selected-fill-val: hsl(240 6% 84%);
   --color-selected-ink-val: hsl(240 4% 12%);
   --color-brand-tint-val: hsl(17.6 100% 54%);
+  --color-brand-hover-val: hsl(17.6 100% 64%);
+  --color-brand-ink-val: hsl(0 0% 0% / 0.85);
+  --color-brand-action-val: hsl(17.6 100% 42%);
+  --color-brand-action-hover-val: hsl(17.6 100% 40%);
+  --color-brand-action-pressed-val: hsl(17.6 100% 38%);
+  --color-brand-action-ink-val: hsl(0 0% 100%);
   --color-brand-unlit-val: hsl(17.7 75% 54%);
   --color-brand-val: hsl(17.6 100% 54%);
   --color-system-green-val: hsl(135 70% 52.3%);

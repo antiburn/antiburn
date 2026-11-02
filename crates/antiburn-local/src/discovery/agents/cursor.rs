@@ -375,6 +375,7 @@ async fn discover_agent_transcripts(
                     });
                 let source = SessionSource::Inline {
                     label,
+                    source_format: None,
                     content: prepend_cursor_metadata_line(
                         &content,
                         session_id,
@@ -782,6 +783,7 @@ fn query_cursor_desktop_sessions(
                             composer.composer_id
                         ),
                         content,
+                        source_format: None,
                     },
                     updated_at: Some(composer.last_updated_at / 1000),
                 },
@@ -997,6 +999,8 @@ fn build_desktop_cursor_session_content(
     cwd: Option<&str>,
     fork_observation: Option<&ForkObservation>,
 ) -> Option<String> {
+    let snapshot = global.unchecked_transaction().ok()?;
+    let global = &*snapshot;
     let composer_raw = sqlite_query_string(
         global,
         "SELECT value FROM cursorDiskKV WHERE key = ?1",
@@ -1034,8 +1038,12 @@ fn build_desktop_cursor_session_content(
                 })
                 && header_ids.iter().collect::<HashSet<_>>().len() == header_ids.len()
         })
-        && composer.get("conversation").is_none()
-        && composer.get("conversationMap").is_none();
+        && composer
+            .get("conversation")
+            .is_none_or(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty))
+        && composer.get("conversationMap").is_none_or(|value| {
+            value.is_null() || value.as_object().is_some_and(serde_json::Map::is_empty)
+        });
 
     header_ids.extend(extract_bubble_ids_from_value(
         composer.get("conversation").unwrap_or(&Value::Null),
@@ -1089,9 +1097,19 @@ fn build_desktop_cursor_session_content(
             continue;
         };
         let Some(role) = cursor_role_for_value(&bubble) else {
+            lines.push(json!({"type":"__unknown_bubble_role__","bubbleId":bubble_id}).to_string());
             continue;
         };
-        let Some(content) = extract_cursor_bubble_text(&bubble) else {
+        if role == "assistant"
+            && bubble.get("toolFormerData").is_some()
+            && bubble.get("bubbleId").and_then(Value::as_str) != Some(bubble_id.as_str())
+        {
+            lines
+                .push(json!({"type":"__invalid_tool_identity__","bubbleId":bubble_id}).to_string());
+            continue;
+        }
+        let content = extract_cursor_bubble_text(&bubble);
+        if content.is_none() && (role == "user" || bubble.get("toolFormerData").is_none()) {
             if role == "user" {
                 lines.push(
                     json!({"type":"__unavailable_user_content__","bubbleId":bubble_id}).to_string(),
@@ -1102,7 +1120,8 @@ fn build_desktop_cursor_session_content(
         lines.push(
             json!({
                 "role": role,
-                "content": content,
+                "content": content.unwrap_or_default(),
+                "cursor_tool_result": cursor_native_tool_fields(&bubble),
                 "timestamp": bubble.get("createdAt").and_then(Value::as_str),
                 "model": bubble.pointer("/modelInfo/modelName").and_then(Value::as_str).or(model),
                 "bubbleId": bubble_id,
@@ -1116,6 +1135,29 @@ fn build_desktop_cursor_session_content(
     } else {
         Some(lines.join("\n"))
     }
+}
+
+fn cursor_native_tool_fields(bubble: &Value) -> Value {
+    let Some(tool) = bubble.get("toolFormerData").and_then(Value::as_object) else {
+        return Value::Null;
+    };
+    let mut fields = serde_json::Map::new();
+    for key in ["name", "toolCallId", "status", "params", "result"] {
+        if let Some(value) = tool.get(key).and_then(Value::as_str)
+            && value.len() <= crate::analysis::MAX_CONTENT_PART_BYTES
+        {
+            fields.insert(key.into(), Value::String(value.into()));
+        }
+    }
+    if let Some(status) = tool
+        .get("additionalData")
+        .and_then(|value| value.get("status"))
+        .and_then(Value::as_str)
+        .filter(|status| matches!(*status, "success" | "error"))
+    {
+        fields.insert("native_status".into(), Value::String(status.into()));
+    }
+    Value::Object(fields)
 }
 
 fn query_cursor_bubbles(global: &Connection, composer_id: &str) -> BTreeMap<String, Value> {
@@ -1133,7 +1175,8 @@ fn query_cursor_bubbles(global: &Connection, composer_id: &str) -> BTreeMap<Stri
     };
 
     for row in rows.flatten() {
-        let Some(bubble_id) = row.0.rsplit(':').next() else {
+        let prefix = format!("bubbleId:{composer_id}:");
+        let Some(bubble_id) = row.0.strip_prefix(&prefix) else {
             continue;
         };
         let Ok(value) = serde_json::from_str::<Value>(&row.1) else {
@@ -1565,6 +1608,7 @@ impl CursorStoreDbSnapshot {
                 source: SessionSource::Inline {
                     label: format!("cursor-store:{}", self.path.display()),
                     content,
+                    source_format: None,
                 },
                 updated_at: Some(updated_at),
             },
@@ -2204,6 +2248,42 @@ mod tests {
             Some("approved")
         );
         assert_eq!(cursor_role_for_value(&bubbles[3]), Some("assistant"));
+    }
+
+    #[test]
+    fn desktop_native_tool_bubbles_keep_full_ids_and_bounded_result_fields() {
+        let temp = TempDir::new().unwrap();
+        let db = create_cursor_db(&temp.path().join("state.vscdb"));
+        let bubble_id = "bubble/t:call\nresult";
+        db.execute("INSERT INTO cursorDiskKV VALUES ('composerData:synthetic', ?1)", params![json!({"fullConversationHeadersOnly":[{"bubbleId":bubble_id}], "conversationMap":{}}).to_string()]).unwrap();
+        let tool = json!({"name":"run_terminal_command_v2", "toolCallId":"call\nresult", "status":"completed", "params":json!({"command":"cargo test parser"}).to_string(), "result":json!({"output":"Parser failed", "exitCode":1}).to_string(), "toolCallBinary":"excluded"});
+        db.execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            params![
+                format!("bubbleId:synthetic:{bubble_id}"),
+                json!({"type":2,"bubbleId":bubble_id,"toolFormerData":tool}).to_string()
+            ],
+        )
+        .unwrap();
+        let content = build_desktop_cursor_session_content(&db, "synthetic", None, None).unwrap();
+        let records = content
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records[0]["cursor_scope_ordering"], "recorded_headers");
+        assert_eq!(records[1]["bubbleId"], bubble_id);
+        assert_eq!(records[1]["cursor_tool_result"]["result"], tool["result"]);
+        assert!(
+            records[1]["cursor_tool_result"]
+                .get("toolCallBinary")
+                .is_none()
+        );
+        let oversized = json!({"toolFormerData":{"result":"x".repeat(crate::analysis::MAX_CONTENT_PART_BYTES+1)}});
+        assert!(
+            cursor_native_tool_fields(&oversized)
+                .get("result")
+                .is_none()
+        );
     }
 
     #[test]

@@ -57,20 +57,8 @@ impl Store {
     }
 
     /// Change one choice against the latest stored document.
-    ///
-    /// The transaction preserves unrelated and unknown detector IDs. The bool
-    /// reports an actual saved transition so callers can avoid duplicate events.
+    /// The result identifies a saved transition, not a repeated request.
     pub fn set_check_enabled(&self, detector: DetectorId, enabled: bool) -> Result<bool> {
-        self.set_check_enabled_with_smart_transition(detector, enabled, false, 0)
-    }
-
-    pub fn set_check_enabled_with_smart_transition(
-        &self,
-        detector: DetectorId,
-        enabled: bool,
-        smart: bool,
-        now_epoch: i64,
-    ) -> Result<bool> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         let mut preferences = read_or_migrate(&transaction)?;
@@ -84,18 +72,6 @@ impl Store {
             transaction.commit()?;
             return Ok(false);
         }
-        if smart {
-            if enabled {
-                super::burn_check::capture_burn_check_boundaries_in(
-                    &transaction,
-                    &[detector.key()],
-                    now_epoch,
-                    false,
-                )?;
-            } else {
-                super::burn_check::cancel_burn_check_in(&transaction, detector.key())?;
-            }
-        }
         preferences
             .checks
             .insert(detector.key().to_owned(), enabled);
@@ -103,12 +79,14 @@ impl Store {
         write_preferences(&transaction, &preferences)?;
         if enabled {
             transaction.execute(
-                "UPDATE remediation
-                    SET dirty_revision = dirty_revision + 1,
-                        updated_at_epoch = MAX(updated_at_epoch, ?2)
-                  WHERE state IN ('watching', 'fixed', 'recurred')
-                    AND json_extract(definition_json, '$.detector') = ?1",
-                params![detector.key(), now_epoch.max(0)],
+                "UPDATE remediation SET dirty_revision = dirty_revision + 1,
+                     updated_at_epoch = MAX(updated_at_epoch, ?2)
+                 WHERE state IN ('watching', 'fixed', 'recurred')
+                   AND json_extract(definition_json, '$.detector') = ?1",
+                params![
+                    detector.key(),
+                    time::OffsetDateTime::now_utc().unix_timestamp().max(0)
+                ],
             )?;
         }
         transaction.commit()?;
@@ -148,15 +126,12 @@ fn read_or_migrate(connection: &Connection) -> Result<CheckPreferences> {
     if let Some(stored) = stored {
         return serde_json::from_str(&stored).context("invalid check preferences");
     }
-
-    let mut checks = LEGACY_LOCAL_CHECKS
-        .into_iter()
-        .map(|detector| (detector.key().to_owned(), true))
-        .collect::<BTreeMap<_, _>>();
-    checks.insert(DetectorId::IgnoredInstructions.key().to_owned(), true);
     let preferences = CheckPreferences {
         revision: 0,
-        checks,
+        checks: LEGACY_LOCAL_CHECKS
+            .into_iter()
+            .map(|detector| (detector.key().to_owned(), true))
+            .collect(),
     };
     write_preferences(connection, &preferences)?;
     Ok(preferences)
@@ -173,24 +148,19 @@ fn write_preferences(connection: &Connection, preferences: &CheckPreferences) ->
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn store() -> Store {
-        Store::open_in_memory(Path::new("/tmp/antiburn-check-preferences-test"))
-            .expect("in-memory store")
+        Store::open_in_memory(std::path::Path::new("check-preferences-test")).unwrap()
     }
 
     #[test]
-    fn migration_keeps_every_existing_check_on() {
+    fn migration_keeps_every_deterministic_check_on() {
         let store = store();
-        let enabled = store.enabled_checks().unwrap();
-        let expected = LEGACY_LOCAL_CHECKS
-            .into_iter()
-            .chain([DetectorId::IgnoredInstructions])
-            .collect::<BTreeSet<_>>();
-        assert_eq!(enabled, expected);
+        assert_eq!(
+            store.enabled_checks().unwrap(),
+            LEGACY_LOCAL_CHECKS.into_iter().collect()
+        );
         assert_eq!(store.check_preferences_revision().unwrap(), 0);
     }
 
@@ -201,7 +171,6 @@ mod tests {
             PREFERENCES_KEY,
             r#"{"revision":7,"checks":{"future_check":true,"cache_churn":true}}"#,
         );
-
         assert!(
             store
                 .set_check_enabled(DetectorId::CacheChurn, false)
@@ -214,8 +183,7 @@ mod tests {
         );
         assert_eq!(store.check_preferences_revision().unwrap(), 8);
         let stored: CheckPreferences =
-            serde_json::from_str(&store.internal_value(PREFERENCES_KEY).expect("preferences"))
-                .unwrap();
+            serde_json::from_str(&store.internal_value(PREFERENCES_KEY).unwrap()).unwrap();
         assert_eq!(stored.checks.get("future_check"), Some(&true));
         assert_eq!(stored.checks.get("cache_churn"), Some(&false));
     }
@@ -223,212 +191,23 @@ mod tests {
     #[test]
     fn repeated_choice_is_a_no_op_without_a_revision_change() {
         let store = store();
-
+        assert!(
+            !store
+                .set_check_enabled(DetectorId::UnusedSkills, true)
+                .unwrap()
+        );
         assert_eq!(store.check_preferences_revision().unwrap(), 0);
         assert!(
-            !store
-                .set_check_enabled(DetectorId::IgnoredInstructions, true)
-                .unwrap()
-        );
-        assert_eq!(store.check_preferences_revision().unwrap(), 0);
-
-        assert!(
             store
-                .set_check_enabled(DetectorId::IgnoredInstructions, false)
+                .set_check_enabled(DetectorId::UnusedSkills, false)
                 .unwrap()
         );
         assert_eq!(store.check_preferences_revision().unwrap(), 1);
         assert!(
             !store
-                .set_check_enabled(DetectorId::IgnoredInstructions, false)
+                .set_check_enabled(DetectorId::UnusedSkills, false)
                 .unwrap()
         );
         assert_eq!(store.check_preferences_revision().unwrap(), 1);
-    }
-
-    #[test]
-    fn unknown_check_ids_fail_closed_at_execution_boundaries() {
-        let store = store();
-        assert!(
-            store
-                .burn_check_candidates("future_unregistered_check", 10_000, 180, 10)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            store
-                .capture_burn_check_boundaries(&["future_unregistered_check"], 10_000)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn smart_disable_cancels_only_the_selected_checks_active_assessments() {
-        let store = store();
-        let connection = store.lock();
-        for (check_id, status) in [
-            ("ignored_instructions", "queued"),
-            ("ignored_instructions", "running"),
-            ("cache_churn", "queued"),
-            ("cache_churn", "running"),
-        ] {
-            let session_id = format!("session-{check_id}-{status}");
-            connection
-                .execute(
-                    "INSERT INTO session (
-                         environment_key, agent, session_id, source_kind, source_label,
-                         first_seen_at, last_seen_at)
-                     VALUES ('native', 'claude-code', ?1, 'file', ?2,
-                             '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
-                    rusqlite::params![session_id, format!("/tmp/{check_id}-{status}.jsonl")],
-                )
-                .unwrap();
-            connection
-                .execute(
-                    "INSERT INTO burn_check_assessment (
-                         environment_key, agent, session_id, check_id, incarnation,
-                         status, created_at_epoch, updated_at_epoch)
-                     VALUES ('native', 'claude-code', ?1, ?2, 0, ?3, 1, 1)",
-                    rusqlite::params![session_id, check_id, status],
-                )
-                .unwrap();
-        }
-        drop(connection);
-
-        assert!(
-            store
-                .set_check_enabled_with_smart_transition(
-                    DetectorId::IgnoredInstructions,
-                    false,
-                    true,
-                    10,
-                )
-                .unwrap()
-        );
-
-        let connection = store.lock();
-        let statuses = connection
-            .prepare(
-                "SELECT check_id, status FROM burn_check_assessment
-                 ORDER BY check_id, status",
-            )
-            .unwrap()
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        assert_eq!(
-            statuses,
-            vec![
-                ("cache_churn".to_owned(), "queued".to_owned()),
-                ("cache_churn".to_owned(), "running".to_owned()),
-                ("ignored_instructions".to_owned(), "superseded".to_owned()),
-                ("ignored_instructions".to_owned(), "superseded".to_owned()),
-            ]
-        );
-        drop(connection);
-        assert!(
-            !store
-                .check_enabled(DetectorId::IgnoredInstructions)
-                .unwrap()
-        );
-        assert_eq!(store.check_preferences_revision().unwrap(), 1);
-    }
-
-    #[test]
-    fn enabling_a_smart_check_while_paused_refreshes_its_future_boundary() {
-        let store = store();
-        store
-            .lock()
-            .execute(
-                "INSERT INTO session (
-                     environment_key, agent, session_id, source_kind, source_label,
-                     first_seen_at, last_seen_at, source_generation, activity_cursor)
-                 VALUES ('native', 'claude-code', 'paused-enable', 'file', '/tmp/session.jsonl',
-                         '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 1, 'before')",
-                [],
-            )
-            .unwrap();
-        store
-            .capture_burn_check_boundaries(&[DetectorId::IgnoredInstructions.key()], 10)
-            .unwrap();
-        store
-            .lock()
-            .execute(
-                "UPDATE burn_check_assessment
-                    SET status = 'running', input_revision = 'old-input'
-                  WHERE session_id = 'paused-enable'",
-                [],
-            )
-            .unwrap();
-        assert!(
-            store
-                .set_check_enabled_with_smart_transition(
-                    DetectorId::IgnoredInstructions,
-                    false,
-                    true,
-                    20,
-                )
-                .unwrap()
-        );
-        store.disable_burn_checks().unwrap();
-        store
-            .lock()
-            .execute(
-                "UPDATE session SET source_generation = 2, activity_cursor = 'while-paused'
-                  WHERE session_id = 'paused-enable'",
-                [],
-            )
-            .unwrap();
-
-        assert!(
-            store
-                .set_check_enabled_with_smart_transition(
-                    DetectorId::IgnoredInstructions,
-                    true,
-                    true,
-                    30,
-                )
-                .unwrap()
-        );
-        assert!(
-            store
-                .internal_value("internal:burnChecksEnabledAtEpochV1")
-                .is_none()
-        );
-        let paused_boundary: (i64, String, String, Option<String>) = store
-            .lock()
-            .query_row(
-                "SELECT boundary_generation, boundary_activity_cursor, status, input_revision
-                   FROM burn_check_assessment WHERE session_id = 'paused-enable'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            paused_boundary,
-            (2, "while-paused".to_owned(), "idle".to_owned(), None)
-        );
-
-        store
-            .capture_burn_check_boundaries(&[DetectorId::IgnoredInstructions.key()], 40)
-            .unwrap();
-        assert!(
-            store
-                .internal_value("internal:burnChecksEnabledAtEpochV1")
-                .is_some()
-        );
-        let resumed_boundary: i64 = store
-            .lock()
-            .query_row(
-                "SELECT boundary_at_epoch FROM burn_check_assessment
-                  WHERE session_id = 'paused-enable'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(resumed_boundary, 40);
     }
 }

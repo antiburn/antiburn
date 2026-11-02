@@ -291,6 +291,31 @@
   box-shadow: none;
 }
 
+/* The primary variant uses the brand fill of the first run's main actions. */
+.burn-check-action-primary {
+  padding-inline: var(--space-md);
+  color: white;
+}
+
+.burn-check-action-primary svg {
+  color: currentColor;
+}
+
+.burn-check-action-primary::before,
+.burn-check-action-primary:enabled:hover::before,
+.burn-check-action-primary:enabled:active::before {
+  background-color: var(--color-brand-tint);
+  box-shadow: var(--shadow-raised);
+}
+
+.burn-check-action-primary:enabled:hover::before {
+  filter: brightness(1.1);
+}
+
+.burn-check-action-primary:enabled:active::before {
+  filter: brightness(0.95);
+}
+
 @media (pointer: coarse) {
   .burn-check-action {
     min-block-size: 44px;

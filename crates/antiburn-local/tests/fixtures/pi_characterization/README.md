@@ -35,6 +35,11 @@ compaction, and unsupported context-changing entries block retained-root scope.
 No extension or branch recovery is required. This proves only retained linear
 ancestry; it cannot detect arbitrary external deletion and relinking.
 
+`antiburn_advisory_continuation.jsonl` records an inert Antiburn `custom_message`
+between a failed tool result and the next assistant message. The message advances
+the V3 parent chain only when Pi's shared parser classifies the full row as
+inert. A row with native analysis signals still blocks retained scope.
+
 The retained-scope contract requires explicit `SourceFormat::PiV3Jsonl` input.
 Legacy metric callers with `Uncharacterized` input retain their existing metric,
 cache, fork-ownership, and lineage behavior. They receive no native history,

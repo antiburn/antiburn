@@ -1,0 +1,165 @@
+diff --git a/crates/antiburn-local/src/analysis/file_live/tests.rs b/crates/antiburn-local/src/analysis/file_live/tests.rs
+index 7c0d8a3a..2b575fc5 100644
+--- a/crates/antiburn-local/src/analysis/file_live/tests.rs
++++ b/crates/antiburn-local/src/analysis/file_live/tests.rs
+@@ -3,6 +3,78 @@ use std::fs::OpenOptions;
+ use std::io::Write;
+ use tempfile::TempDir;
+
++fn fixture_digest(value: &Value) -> String {
++    use sha2::Digest;
++    sha2::Sha256::digest(serde_json::to_vec(value).unwrap()).iter()
++        .map(|byte| format!("{byte:02x}")).collect()
++}
++
++fn sparse_fixture(value: &mut Value) {
++    match value {
++        Value::Array(items) if items.len() >= 1024 && items.iter().all(|item| item.as_u64().is_some()) => {
++            let nonzero = items.iter().enumerate().filter(|(_, item)| item.as_u64() != Some(0))
++                .map(|(index, item)| serde_json::json!([index, item])).collect::<Vec<_>>();
++            *value = serde_json::json!({"fixture_sparse_u64_array":{"len":items.len(),"nonzero":nonzero}});
++        }
++        Value::Array(items) => items.iter_mut().for_each(sparse_fixture),
++        Value::Object(fields) => fields.values_mut().for_each(sparse_fixture),
++        _ => {}
++    }
++}
++
++#[test]
++fn capture_main_64_file_receipts() {
++    let output = std::path::PathBuf::from(std::env::var("ANTIBURN_RECEIPT_FIXTURE_OUTPUT").unwrap());
++    for agent in ["claude", "codex", "pi"] {
++        let directory = TempDir::new().unwrap();
++        let (header, suffix, session, format) = ongoing_source(agent, 2);
++        let lines = suffix.split_inclusive('\n').collect::<Vec<_>>();
++        let split = lines[3].len() / 2;
++        let prefix = format!("{}{}", lines[..3].concat(), &lines[3][..split]);
++        let input = input(&directory, agent, session, format, &header);
++        let initial = read_native_file_page(&input, None, &|| false).unwrap();
++        append(&input, &prefix);
++        let page = read_native_file_page(&input, Some(&initial.cursor), &|| false).unwrap();
++        assert_eq!(page.results.len(), 1);
++        assert!(page.pending_tail);
++        let mut fixture = serde_json::json!({
++            "parser_revision":64,"source_prefix":format!("{header}{prefix}"),
++            "source_suffix":&lines[3][split..],"cursor":page.cursor,
++            "completed":page.results.iter().map(|result| &result.observation).collect::<Vec<_>>()
++        });
++        fixture["cursor_sha256"] = serde_json::json!(fixture_digest(&fixture["cursor"]));
++        sparse_fixture(&mut fixture["cursor"]);
++        std::fs::write(output.join(format!("file-{agent}.json")), serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
++    }
++    let directory = TempDir::new().unwrap();
++    let (header, suffix, session, format) = ongoing_source("claude", 1);
++    let lines = suffix.lines().collect::<Vec<_>>();
++    let mut call: Value = serde_json::from_str(lines[0]).unwrap();
++    let mut result: Value = serde_json::from_str(lines[1]).unwrap();
++    call["uuid"] = serde_json::json!("queued-call-row");
++    call["parentUuid"] = serde_json::json!("result-0");
++    result["uuid"] = serde_json::json!("queued-result-row");
++    result["parentUuid"] = serde_json::json!("queued-call-row");
++    call["message"]["content"] = serde_json::json!((0..256).map(|index| serde_json::json!({
++        "type":"tool_use","id":format!("queued-{index}"),"name":"Bash","input":{"command":"synthetic"}
++    })).collect::<Vec<_>>());
++    result["message"]["content"] = serde_json::json!((0..256).map(|index| serde_json::json!({
++        "type":"tool_result","tool_use_id":format!("queued-{index}"),"content":"ok","is_error":false
++    })).collect::<Vec<_>>());
++    let source = format!("{header}{suffix}{call}\n{result}\n");
++    let input = input(&directory, "claude", session, format, &header);
++    let initial = read_native_file_page(&input, None, &|| false).unwrap();
++    append(&input, &format!("{suffix}{call}\n{result}\n"));
++    let page = read_native_file_page(&input, Some(&initial.cursor), &|| false).unwrap();
++    assert!(page.cursor.pending_results.is_some());
++    assert_eq!(page.results.len(), 256);
++    let mut fixture = serde_json::json!({"parser_revision":64,"source_prefix":source,
++        "source_suffix":"","cursor":page.cursor,"completed_count":page.results.len()});
++    fixture["cursor_sha256"] = serde_json::json!(fixture_digest(&fixture["cursor"]));
++    sparse_fixture(&mut fixture["cursor"]);
++    std::fs::write(output.join("file-claude-pending.json"), serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
++}
++
+ fn input(
+     directory: &TempDir,
+     agent: &str,
+diff --git a/crates/antiburn-local/tests/opencode_characterization.rs b/crates/antiburn-local/tests/opencode_characterization.rs
+index e7805acb..fd8ce054 100644
+--- a/crates/antiburn-local/tests/opencode_characterization.rs
++++ b/crates/antiburn-local/tests/opencode_characterization.rs
+@@ -4599,6 +4599,77 @@ fn live_journal_keeps_pending_and_terminal_context_across_restart_and_correction
+     );
+ }
+
++#[test]
++fn capture_main_64_journal_receipt() {
++    use antiburn_local::analysis::read_opencode_live_tool_result_page;
++    let (_directory, path) = create_database();
++    let connection = Connection::open(&path).unwrap();
++    delivery_journal(&connection, 16);
++    insert_journal_event(&connection, 4, "message.part.updated.1", delivery_result(0));
++    let mut pending = delivery_result(1);
++    pending["part"]["state"]["status"] = json!("running");
++    insert_journal_event(&connection, 5, "message.part.updated.1", pending);
++    let page = read_opencode_live_tool_result_page(&path, "root", None, None, &|| false).unwrap();
++    assert_eq!(page.results.len(), 1);
++    let mut statement = connection.prepare("SELECT id,seq,type,data FROM event ORDER BY seq").unwrap();
++    let events = statement.query_map([], |row| Ok(json!({"id":row.get::<_,String>(0)?,
++        "seq":row.get::<_,u64>(1)?,"type":row.get::<_,String>(2)?,
++        "data":serde_json::from_str::<Value>(&row.get::<_,String>(3)?).unwrap()}))).unwrap()
++        .collect::<rusqlite::Result<Vec<_>>>().unwrap();
++    let fixture = json!({"parser_revision":64,"cursor":page.cursor,"events":events,
++        "completed":page.results,"completion":delivery_result(1)});
++    let output = std::path::PathBuf::from(std::env::var("ANTIBURN_RECEIPT_FIXTURE_OUTPUT").unwrap());
++    std::fs::write(output.join("journal-v1.json"), serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
++}
++
++#[test]
++fn capture_main_64_journal_eviction_receipt() {
++    use antiburn_local::analysis::read_opencode_live_tool_result_page;
++    let (_directory, path) = create_database();
++    let connection = Connection::open(&path).unwrap();
++    delivery_journal(&connection, 16);
++    let request_text = |index| json!({"sessionID":"root","part":{
++        "id":"request-text","messageID":"request","type":"text",
++        "text":format!("synthetic request {index}")}});
++    for index in 0..17 {
++        insert_journal_event(&connection, 4 + index * 2, "message.part.updated.1", request_text(index));
++        insert_journal_event(&connection, 5 + index * 2, "message.part.updated.1", delivery_result(index as usize));
++    }
++    let mut pending = delivery_result(17);
++    pending["part"]["state"]["status"] = json!("running");
++    insert_journal_event(&connection, 38, "message.part.updated.1", pending);
++    let page = read_opencode_live_tool_result_page(&path, "root", None, None, &|| false).unwrap();
++    assert_eq!(page.results.len(), 17);
++    let cursor = serde_json::to_value(&page.cursor).unwrap();
++    assert_eq!(cursor["live"]["contexts"].as_array().unwrap().len(), 16);
++    assert_eq!(cursor["live"]["next_context"], 17);
++    assert_eq!(cursor["live"]["parts"]["part-0"]["context"], 0);
++    assert_eq!(cursor["live"]["contexts"][0][0], 1);
++    let mut statement = connection.prepare("SELECT id,seq,type,data FROM event ORDER BY seq").unwrap();
++    let events = statement.query_map([], |row| Ok(json!({"id":row.get::<_,String>(0)?,
++        "seq":row.get::<_,u64>(1)?,"type":row.get::<_,String>(2)?,
++        "data":serde_json::from_str::<Value>(&row.get::<_,String>(3)?).unwrap()}))).unwrap()
++        .collect::<rusqlite::Result<Vec<_>>>().unwrap();
++    let mut evicted_correction = delivery_result(0);
++    evicted_correction["part"]["state"]["error"] = json!("synthetic corrected evicted result");
++    let mut retained_correction = delivery_result(16);
++    retained_correction["part"]["state"]["error"] = json!("synthetic corrected retained result");
++    let continuation_events = [evicted_correction, retained_correction, request_text(17), delivery_result(17)]
++        .into_iter().enumerate().map(|(index, data)| {
++            let sequence = 39 + index as i64;
++            insert_journal_event(&connection, sequence, "message.part.updated.1", data.clone());
++            json!({"id":format!("event-{sequence}"),"seq":sequence,"type":"message.part.updated.1","data":data})
++        }).collect::<Vec<_>>();
++    let continued = read_opencode_live_tool_result_page(&path, "root", Some(&page.cursor), None, &|| false).unwrap();
++    assert_eq!(continued.results.len(), 3);
++    assert!(continued.results[0].context.as_ref().unwrap().user_messages.is_empty());
++    let fixture = json!({"parser_revision":64,"cursor":cursor,"events":events,
++        "completed":page.results,"continuation_events":continuation_events,
++        "continued":continued.results});
++    let output = std::path::PathBuf::from(std::env::var("ANTIBURN_RECEIPT_FIXTURE_OUTPUT").unwrap());
++    std::fs::write(output.join("journal-v1-evicted-context.json"), serde_json::to_vec_pretty(&fixture).unwrap()).unwrap();
++}
++
+ #[test]
+ fn live_journal_cold_corrections_keep_first_terminal_context_under_cache_pressure() {
+     use antiburn_local::analysis::{

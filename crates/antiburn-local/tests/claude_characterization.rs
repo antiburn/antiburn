@@ -216,6 +216,109 @@ impl antiburn_local::analysis::RecordSink for ClaudeContentSink {
     fn finish(&mut self, _summary: antiburn_local::analysis::SessionSummary) {}
 }
 
+#[derive(Default)]
+struct ClaudeNativeResultSink {
+    results: Vec<antiburn_local::analysis::ToolResultObservation>,
+}
+
+impl antiburn_local::analysis::RecordSink for ClaudeNativeResultSink {
+    fn record(&mut self, record: antiburn_local::analysis::NormalizedRecord) {
+        if let antiburn_local::analysis::NormalizedRecord::ToolResult(result) = record {
+            self.results.push(*result);
+        }
+    }
+
+    fn finish(&mut self, _summary: antiburn_local::analysis::SessionSummary) {}
+}
+
+#[test]
+fn native_results_preserve_source_identity_order_status_and_incomplete_joins() {
+    use antiburn_local::analysis::{
+        SourceFormat, ToolResultCompleteness as Completeness, ToolResultPosition as Position,
+        ToolResultStatus as Status,
+    };
+
+    let input = input("native_tool_shapes");
+    let mut sink = ClaudeNativeResultSink::default();
+    reader_for("claude")
+        .visit(&input, &mut sink)
+        .expect("native tool fixture must stream");
+
+    assert_eq!(sink.results.len(), 4);
+    let first = &sink.results[0];
+    assert_eq!(first.source_format, SourceFormat::ClaudeJsonl);
+    assert_eq!(first.session_id, "native_tool_shapes");
+    assert_eq!(
+        first.record_id.as_deref(),
+        Some("00000000-0000-4000-8000-000000000003")
+    );
+    assert_eq!(first.call_id.as_deref(), Some("call-bash"));
+    assert_eq!(first.result_id, None);
+    assert_eq!(first.tool_name.as_deref(), Some("Bash"));
+    assert!(first.tool_category.is_some());
+    assert_eq!(
+        first.arguments,
+        Some(json!({"command":"printf 'hello'","timeout":1000}))
+    );
+    assert_eq!(first.content.as_deref(), Some("hello"));
+    assert_eq!(first.status, Status::Success);
+    assert!(first.finality);
+    assert_eq!(first.completeness, Completeness::Complete);
+    assert_eq!(
+        first.position,
+        Position::Jsonl {
+            record_index: 2,
+            item_index: 1
+        }
+    );
+
+    let failed = &sink.results[1];
+    assert_eq!(failed.call_id.as_deref(), Some("call-error"));
+    assert_eq!(failed.content.as_deref(), Some("exit status 1"));
+    assert_eq!(failed.status, Status::Error);
+    assert_eq!(
+        failed.position,
+        Position::Jsonl {
+            record_index: 4,
+            item_index: 0
+        }
+    );
+    assert_eq!(failed.completeness, Completeness::Complete);
+
+    let partial = &sink.results[2];
+    assert_eq!(partial.call_id.as_deref(), Some("call-array"));
+    assert_eq!(
+        partial.content.as_deref(),
+        Some("synthetic first synthetic second")
+    );
+    assert_eq!(partial.status, Status::Success);
+    assert_eq!(partial.completeness, Completeness::Incomplete);
+    assert_eq!(
+        partial.position,
+        Position::Jsonl {
+            record_index: 6,
+            item_index: 0
+        }
+    );
+
+    let unmatched = &sink.results[3];
+    assert_eq!(unmatched.call_id.as_deref(), Some("unmatched-call"));
+    assert_eq!(
+        unmatched.content.as_deref(),
+        Some("synthetic unmatched result")
+    );
+    assert_eq!(unmatched.status, Status::Error);
+    assert_eq!(unmatched.arguments, None);
+    assert_eq!(unmatched.completeness, Completeness::Incomplete);
+    assert_eq!(
+        unmatched.position,
+        Position::Jsonl {
+            record_index: 6,
+            item_index: 1
+        }
+    );
+}
+
 #[test]
 fn mixed_user_text_and_tool_results_keep_authority_and_exact_native_ids() {
     use antiburn_local::analysis::{ContentAuthority, ContentKind};

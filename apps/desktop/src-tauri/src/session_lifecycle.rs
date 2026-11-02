@@ -133,6 +133,7 @@ impl From<&SessionRef> for SessionKey {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateFacets {
     pub metadata: bool,
+    pub project_scope: bool,
     pub title: bool,
     pub analysis: bool,
     pub usage: bool,
@@ -144,6 +145,7 @@ impl UpdateFacets {
     /// Fold another report's facets into this one.
     pub fn merge(&mut self, other: UpdateFacets) {
         self.metadata |= other.metadata;
+        self.project_scope |= other.project_scope;
         self.title |= other.title;
         self.analysis |= other.analysis;
         self.usage |= other.usage;
@@ -1680,11 +1682,44 @@ impl SessionEvents {
     }
 
     /// Send one observation, waiting for inbox capacity. The scan caller must hold no
-    /// Store guard while it waits.
-    pub async fn report_async(&self, observation: Observation) {
-        if self.inbox.send(observation).await.is_err() {
-            ::tracing::debug!(event = "session_lifecycle_inbox_closed");
+    /// Store guard while it waits. A failed handoff records reconciliation and returns false.
+    pub async fn report_async(&self, observation: Observation) -> bool {
+        let Err(error) = self.inbox.send(observation).await else {
+            return true;
+        };
+        ::tracing::debug!(event = "session_lifecycle_inbox_closed");
+        // The actor has stopped. Retain recovery work without reporting delivery.
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let since = crate::scan::unix_now() - ACTIVE_SESSION_WINDOW_SECS;
+        let since = registry
+            .reconcile
+            .recovery
+            .as_ref()
+            .map_or(since, |recovery| recovery.since.min(since));
+        registry.reconcile.recovery = Some(SeedRecovery {
+            since,
+            cursor: None,
+            page: None,
+        });
+        if let Observation::Removed {
+            reason, revision, ..
+        } = error.0
+        {
+            match registry.reconcile.needs {
+                Some((_, through)) if through >= revision => {}
+                _ => registry.reconcile.needs = Some((reason, revision)),
+            }
         }
+        drop(registry);
+        self.spill
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .index_changed
+            .insert(IndexChangeReason::Invalidated);
+        false
     }
 
     /// Send one sync observation without waiting for inbox capacity. Spill access can

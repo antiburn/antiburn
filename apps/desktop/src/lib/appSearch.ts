@@ -1,6 +1,7 @@
 import { AGENT_SLUGS, agentSessionFilterLabel } from "./presentation/agents"
 import { CHECK_DEFINITIONS, isCheckAvailable } from "./presentation/checkDefinitions"
-import type { BurnCheckDetectorId } from "./insightsIpc"
+import type { BurnCheckDetectorId, InstalledCheckId } from "./insightsIpc"
+import type { CheckAvailability } from "./checkAvailability"
 import { detectPlatform, type Platform } from "./platform"
 import { MAIN_VIEWS, type MainViewId } from "./navigation/mainViews"
 
@@ -11,12 +12,6 @@ import {
   SETTINGS_SEARCH_TARGETS,
   type SettingsControlId,
 } from "./settingsSearchTargets"
-import {
-  STEP_SETTINGS_STEP_LABELS,
-  STEP_SETTINGS_TARGETS,
-  type StepSettingsControlId,
-  type StepSettingsSearchStep,
-} from "./stepSettingsTargets"
 
 export type SettingsSearchTarget =
   | { kind: "setting"; pane: SettingsPane; control?: never }
@@ -26,8 +21,8 @@ export type AppSearchTarget =
   | { kind: "view"; section: Exclude<MainViewId, "activity">; filters?: never }
   | { kind: "view"; section: "activity"; filters?: SessionFilters }
   | SettingsSearchTarget
-  | { kind: "stepSetting"; control: StepSettingsControlId }
   | { kind: "check"; check: BurnCheckDetectorId }
+  | { kind: "installedCheck"; check: InstalledCheckId }
 
 export function resolveSettingsSearchTarget(target: SettingsSearchTarget): {
   pane: SettingsPane
@@ -36,15 +31,6 @@ export function resolveSettingsSearchTarget(target: SettingsSearchTarget): {
   return target.control
     ? { pane: SETTINGS_SEARCH_TARGETS[target.control].pane, control: target.control }
     : { pane: target.pane, control: undefined }
-}
-
-/** The Overview step a `stepSetting` target opens, and the control to focus
- *  inside it. */
-export function resolveStepSettingsSearchTarget(target: { control: StepSettingsControlId }): {
-  step: StepSettingsSearchStep
-  control: StepSettingsControlId
-} {
-  return { step: STEP_SETTINGS_TARGETS[target.control].step, control: target.control }
 }
 
 function viewTarget(section: MainViewId): AppSearchTarget {
@@ -100,18 +86,6 @@ export const APP_SEARCH_CATALOG: readonly AppSearchResult[] = [
     },
     ...("platform" in entry ? { platform: entry.platform } : {}),
   })),
-  ...Object.entries(STEP_SETTINGS_TARGETS).map(([control, value]) => {
-    return {
-      id: `step:${value.step}:${control}`,
-      label: value.label,
-      detail: `Overview · ${STEP_SETTINGS_STEP_LABELS[value.step]}`,
-      aliases: value.aliases,
-      target: {
-        kind: "stepSetting" as const,
-        control: control as StepSettingsControlId,
-      },
-    }
-  }),
   ...Object.entries(CHECK_DEFINITIONS).map(([check, { label, aliases }]) => ({
     id: `check:${check}`,
     label,
@@ -125,17 +99,27 @@ export function searchApp(
   query: string,
   platform: Platform = detectPlatform(),
   checksAvailable = true,
-  stepSettingsAvailable = true,
+  installedChecks: CheckAvailability["installedChecks"] = [],
 ): AppSearchResult[] {
   const normalized = query.trim().toLocaleLowerCase().slice(0, 200)
   const words = normalized.split(/\s+/).filter(Boolean)
-  return APP_SEARCH_CATALOG.filter(
-    (result) =>
-      (!result.platform || result.platform === platform) &&
-      (result.target.kind !== "check" ||
-        isCheckAvailable(result.target.check, checksAvailable)) &&
-      (stepSettingsAvailable || result.target.kind !== "stepSetting"),
-  )
+  const catalog = [
+    ...APP_SEARCH_CATALOG,
+    ...installedChecks.map((check) => ({
+      id: `installed-check:${check.effectiveId}`,
+      label: check.name,
+      detail: "Checks",
+      aliases: [check.effectiveId, ...check.aliases],
+      target: { kind: "installedCheck" as const, check: check.effectiveId },
+    })),
+  ]
+  return catalog
+    .filter(
+      (result) =>
+        (!("platform" in result) || !result.platform || result.platform === platform) &&
+        (result.target.kind !== "check" ||
+          isCheckAvailable(result.target.check, checksAvailable)),
+    )
     .map((result) => {
       if (result.target.kind !== "setting" || !result.target.control) return result
       const label = settingsControlLabel(result.target.control, platform)
@@ -165,19 +149,24 @@ export function groupAppResults(
   query: string,
   platform?: Platform,
   checksAvailable = true,
-  stepSettingsAvailable = true,
+  installedChecks: CheckAvailability["installedChecks"] = [],
 ): AppSearchGroup[] {
-  const results = searchApp(query, platform, checksAvailable, stepSettingsAvailable)
+  const results = searchApp(query, platform, checksAvailable, installedChecks)
   const best = query.trim() ? results[0] : undefined
   const remaining = results.filter((result) => result !== best)
   const groups: AppSearchGroup[] = best ? [{ label: "Best match", results: [best] }] : []
   for (const [kind, label] of [
     ["view", "Features"],
     ["setting", "Settings"],
-    ["stepSetting", "Overview"],
     ["check", "Checks"],
   ] as const) {
-    const matches = remaining.filter((result) => result.target.kind === kind).slice(0, 5)
+    const matches = remaining
+      .filter(
+        (result) =>
+          result.target.kind === kind ||
+          (kind === "check" && result.target.kind === "installedCheck"),
+      )
+      .slice(0, 5)
     if (matches.length) groups.push({ label, results: matches })
   }
   return groups

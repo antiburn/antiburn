@@ -1,5 +1,6 @@
 import { useState, useSyncExternalStore } from "react"
 
+import { pluralize } from "../../../../lib/presentation/text"
 import { LimitsDocsLink } from "../../../../components/providerUsage/LimitsDocsLink"
 import { Card } from "../../../../components/ui/Card"
 import { Row } from "../../../../components/ui/Row"
@@ -285,7 +286,7 @@ function meterNote({
   // figure and its own check time, and adds why the latest check failed.
   if (reading) {
     const count = liveWindows(reading).length
-    const line = `Signed in · ${count} limit${count === 1 ? "" : "s"} tracked ${liveSourceAge(reading)}`
+    const line = `Signed in · ${count} ${pluralize(count, "limit", "limits")} tracked ${liveSourceAge(reading)}`
     return failure
       ? `${line} · ${liveUnavailableReason(failure.category, failure.detail)}`
       : line

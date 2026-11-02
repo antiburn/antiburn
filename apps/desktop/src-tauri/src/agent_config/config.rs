@@ -3,6 +3,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use antiburn_local::analysis::SourceFormat;
 use antiburn_local::model::AgentKind;
 
 #[cfg(not(windows))]
@@ -138,6 +139,8 @@ pub enum PhysicalSelector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigContext {
     pub agent: AgentKind,
+    /// This identifies session evidence, not the process that loads current config.
+    pub source_format: Option<SourceFormat>,
     pub home_root: PathBuf,
     pub workspace_cwd: Option<PathBuf>,
     pub trusted_workspace_root: Option<PathBuf>,
@@ -154,6 +157,7 @@ impl ConfigContext {
     ) -> Self {
         Self {
             agent,
+            source_format: None,
             home_root: home_root.into(),
             workspace_cwd: workspace_root.clone(),
             trusted_workspace_root: workspace_root,
@@ -171,6 +175,7 @@ impl ConfigContext {
     ) -> Self {
         Self {
             agent,
+            source_format: None,
             home_root: home_root.into(),
             workspace_cwd: Some(workspace_cwd.into()),
             trusted_workspace_root: Some(trusted_workspace_root.into()),
@@ -178,6 +183,21 @@ impl ConfigContext {
             runtime_override_present: false,
             managed_configuration_present: false,
         }
+    }
+
+    pub(super) fn validate_source_format(&self) -> Result<(), ConfigUnavailableReason> {
+        // The V1 resolver cannot prove V2 server options or config precedence.
+        if self.agent == AgentKind::OpenCode
+            && self.source_format.is_some_and(|source| {
+                !matches!(
+                    source,
+                    SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1
+                )
+            })
+        {
+            return Err(ConfigUnavailableReason::UnsupportedSetting);
+        }
+        Ok(())
     }
 }
 

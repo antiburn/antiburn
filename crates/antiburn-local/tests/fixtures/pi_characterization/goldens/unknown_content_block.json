@@ -165,7 +165,7 @@
         "state": "unsupported"
       },
       "ordering": "monotonic",
-      "parserRevision": 53,
+      "parserRevision": 67,
       "sourceAcceptance": "unvalidated",
       "sourceKind": "jsonl"
     },
@@ -4251,7 +4251,5 @@
     "model": "model-a",
     "sessionId": "unknown_content_block"
   },
-  "partialReasons": [
-    "UnrecognizedRecordType"
-  ]
+  "partialReasons": ["UnrecognizedRecordType"]
 }

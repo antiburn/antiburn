@@ -1,6 +1,15 @@
 import type { ReactNode } from "react"
 
 import { ScrollPane } from "../../../components/ui/ScrollPane"
+import { CheckDetailPanel } from "./CheckDetailPanel"
+
+export function PassedCheckDetail({ children }: { children: ReactNode }) {
+  return (
+    <CheckDetailPanel variant="success">
+      <p>{children}</p>
+    </CheckDetailPanel>
+  )
+}
 
 function observeSpace(node: HTMLDivElement | null) {
   if (!node || typeof ResizeObserver === "undefined") return

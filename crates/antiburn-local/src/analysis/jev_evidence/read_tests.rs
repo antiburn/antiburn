@@ -34,14 +34,14 @@ fn request_ranges_keep_native_values_and_unknown_semantics() {
     for (source, tool, expected) in [
         (SourceFormat::ClaudeJsonl, "Read", JevReadUnit::Lines),
         (SourceFormat::PiV3Jsonl, "read", JevReadUnit::Lines),
-        (SourceFormat::OpenCodeSqliteV2, "read", JevReadUnit::Lines),
+        (SourceFormat::OpenCodeSqliteV1, "read", JevReadUnit::Lines),
         (
             SourceFormat::CodexRolloutJsonl,
             "read_file",
             JevReadUnit::Unknown,
         ),
         (
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             "mcp__custom__read",
             JevReadUnit::Unknown,
         ),
@@ -134,7 +134,7 @@ fn unqualified_native_metadata_and_nonread_facts_are_discarded() {
         status: JevReadStatus::Success,
         kind: JevReadResultKind::File,
         recorded_output_bytes: 8,
-        recorded_output_digest: crate::checks::ignored_instructions::sha256_hex(b"observed"),
+        recorded_output_digest: crate::digest::sha256_hex(b"observed"),
         returned_extent: Some(JevReadExtent {
             unit: JevReadUnit::Lines,
             offset: Some(1),
@@ -177,16 +177,16 @@ fn result_extent_requires_the_accepted_producer_shape() {
         (SourceFormat::ClaudeJsonl, complete.to_owned(), false),
         (SourceFormat::PiV3Jsonl, complete.to_owned(), false),
         (
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             complete.replace("4: four", "6: six"),
             false,
         ),
         (
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
             complete.replace("total 4", "total 400"),
             false,
         ),
-        (SourceFormat::OpenCodeSqliteV2, complete.to_owned(), true),
+        (SourceFormat::OpenCodeSqliteV1, complete.to_owned(), true),
     ] {
         let mut result = action("result", "tool_result", "read", &text);
         result.truncated = truncated;
@@ -208,7 +208,7 @@ fn result_extent_requires_the_accepted_producer_shape() {
         "read",
         "<path>/project/empty</path>\n<type>file</type>\n<content>\n\n\n(End of file - total 0 lines)\n</content>",
     )];
-    normalize_read_evidence(SourceFormat::OpenCodeSqliteV2, &mut actions);
+    normalize_read_evidence(SourceFormat::OpenCodeSqliteV1, &mut actions);
     let result = actions[0].metadata.read_result.as_ref().unwrap();
     assert_eq!(result.kind, JevReadResultKind::File);
     assert_eq!(result.returned_extent, None);
@@ -225,14 +225,13 @@ fn selected_read_metadata_changes_evidence_identity_only_when_opted_in() {
         "read",
         r#"{"filePath":"a.rs","offset":1,"limit":2}"#,
     )];
-    normalize_read_evidence(SourceFormat::OpenCodeSqliteV2, &mut actions);
+    normalize_read_evidence(SourceFormat::OpenCodeSqliteV1, &mut actions);
     let mut evidence = SessionContentEvidence {
         session_identity_digest: "session".into(),
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         publication_fence: 1,
         selected_input_digest: String::new(),
         actions,
-        instructions: vec![],
         complete: true,
         limitations: vec![],
         excluded_thinking_parts: 0,
@@ -240,13 +239,8 @@ fn selected_read_metadata_changes_evidence_identity_only_when_opted_in() {
     };
     let selection = JevInputSelection::from_fields(&[JevInputField::ReadFileRequest]);
     let before = select_session_content(&evidence, selection);
-    let store =
-        crate::analysis::jev_evidence::selected_evidence_store(&before.actions, selection, 1)
-            .unwrap();
-    let retrieved: JevReadRequest = serde_json::from_str(
-        store
-            .get("request", JevInputField::ReadFileRequest)
-            .unwrap(),
+    let retrieved: JevReadRequest = serde_json::from_value(
+        serde_json::to_value(&before.actions[0].metadata.read_request).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -255,7 +249,7 @@ fn selected_read_metadata_changes_evidence_identity_only_when_opted_in() {
     );
     let legacy = select_session_content(
         &evidence,
-        crate::checks::ignored_instructions::INPUT_SELECTION,
+        JevInputSelection::from_fields(&[JevInputField::OtherToolInput]),
     );
     evidence.actions[0]
         .metadata
@@ -272,7 +266,7 @@ fn selected_read_metadata_changes_evidence_identity_only_when_opted_in() {
         legacy,
         select_session_content(
             &evidence,
-            crate::checks::ignored_instructions::INPUT_SELECTION
+            JevInputSelection::from_fields(&[JevInputField::OtherToolInput])
         )
     );
 }

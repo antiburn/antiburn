@@ -29,6 +29,7 @@ rounded:
   popover: 10px
   full: 9999px
 shadow:
+  promotion: "var(--shadow-promotion)"
   popover: "0 4px 12px rgb(0 0 0 / 0.15)"
   tooltip: "0 2px 8px rgb(0 0 0 / 0.12)"
   raised: "0 1px 2px rgb(0 0 0 / 0.15)"
@@ -90,6 +91,10 @@ body {
 
 .ui-push-button {
   height: 22px;
+}
+
+.promotion-panel {
+  box-shadow: var(--shadow-promotion);
 }
 
 .ui-menu {

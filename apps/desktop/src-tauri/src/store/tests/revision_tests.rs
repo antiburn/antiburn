@@ -306,7 +306,7 @@ fn a_clear_keeps_the_incarnation_counter() {
 fn pre_migration_rows_have_incarnation_zero_and_a_recreate_exceeds_it() {
     let store = v48_store_with_row("upgraded");
     let key = SessionKey::new("native", "claude-code", "upgraded");
-    assert_eq!(store.schema_version().unwrap(), 75);
+    assert_eq!(store.schema_version().unwrap(), 92);
     assert_eq!(stored_incarnation(&store, &key), Some(0));
     assert_eq!(counter(&store), 0);
 
@@ -629,9 +629,11 @@ fn the_app_database_has_one_writing_connection() {
         );
     }
     assert_eq!(
-        store_source.matches(".total_changes()").count(),
+        include_str!("../session_persistence.rs")
+            .matches(".total_changes()")
+            .count(),
         1,
-        "store/mod.rs reads total_changes in revision_of only"
+        "store/session_persistence.rs reads total_changes in revision_of only"
     );
 
     let directory = tempfile::tempdir().unwrap();
@@ -655,6 +657,10 @@ fn the_app_database_has_one_writing_connection() {
 fn every_session_insert_assigns_an_incarnation_and_no_update_touches_it() {
     let sources = [
         ("store/mod.rs", include_str!("../mod.rs")),
+        (
+            "store/session_persistence.rs",
+            include_str!("../session_persistence.rs"),
+        ),
         ("store/remediation.rs", include_str!("../remediation.rs")),
         (
             "store/provider_limit.rs",
@@ -720,8 +726,9 @@ fn every_session_insert_assigns_an_incarnation_and_no_update_touches_it() {
             .chain(production.match_indices("UPDATE session "))
         {
             let statement = &production[offset..offset + 400.min(production.len() - offset)];
+            let assignments = statement.split("WHERE").next().unwrap_or(statement);
             assert!(
-                !statement.contains("incarnation"),
+                !assignments.contains("incarnation"),
                 "{name}: an UPDATE names incarnation:\n{statement}"
             );
         }
@@ -730,7 +737,7 @@ fn every_session_insert_assigns_an_incarnation_and_no_update_touches_it() {
         inserts, 1,
         "one production session insert: upsert_session_in"
     );
-    let store_source = include_str!("../mod.rs");
+    let store_source = include_str!("../session_persistence.rs");
     assert_eq!(
         store_source
             .matches("session_incarnation_seq SET value")

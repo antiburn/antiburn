@@ -1,0 +1,538 @@
+{
+  "description": "Synthetic YAML sources shared by restricted YAML, structural schema, and compiler tests. yaml_valid defaults to true and identifies parser rejection separately. compile_valid states compiler admission only, not runtime evidence availability, provider capability, or value validity. The schema does not parse expressions or impose aggregate runtime budgets.",
+  "cases": [
+    {
+      "id": "pure-functions",
+      "feature": "functions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic functions\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input:\n      equal: ${{ strictEquals(message.kind, 'tool_result') }}\n      member: ${{ contains(session.requests.*.kind, 'user_message') }}\n      prefix: ${{ startsWith(message.kind, 'tool') }}\n      suffix: ${{ endsWith(message.kind, 'result') }}\n      joined: ${{ join(session.requests.*.text, '; ') }}\n      formatted: \"${{ format('Kind: {0}', message.kind) }}\"\n      serialized: ${{ toJSON(message.tool.result) }}\n      parsed: ${{ fromJSON('null') }}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "unknown-function-needs-compiler",
+      "feature": "functions",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic unknown function\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: \"${{ unknownFunction(message.kind) }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "function-in-fixed-question",
+      "feature": "functions",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic fixed question\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: \"${{ format('Kind: {0}', message.kind) }}\", criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "dynamic-open-json-key",
+      "feature": "dynamic_brackets",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic dynamic key\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: \"${{ message.tool.arguments[message.kind] }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "dynamic-normalized-array-index",
+      "feature": "dynamic_brackets",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic dynamic index\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input: {value: \"${{ window.messages[fromJSON('0')].tool.result.status }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "dynamic-closed-record-key-needs-compiler",
+      "feature": "dynamic_brackets",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic closed record key\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: \"${{ message[message.kind] }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "dynamic-outcome-record-key-needs-compiler",
+      "feature": "dynamic_brackets",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic closed outcome key\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: \"${{ message.tool.result.outcome[message.kind] }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "dynamic-index-unknown-field-needs-compiler",
+      "feature": "dynamic_brackets",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic indexed closed record\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input: {value: \"${{ window.messages[fromJSON('0')].unknown_field }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "dynamic-bracket-input-name",
+      "feature": "dynamic_brackets",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic dynamic input name\non: {tool_result: null}\ndecisions:\n  review:\n    input: {\"${{ message.kind }}\": true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "nested-projection",
+      "feature": "nested_projections",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic nested projection\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input: {value: \"${{ window.messages.*.tool.arguments.groups.*.name }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "projection-unknown-field-needs-compiler",
+      "feature": "nested_projections",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic closed projection\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input: {value: \"${{ window.messages.*.unknown_field }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "projection-in-fixed-criterion",
+      "feature": "nested_projections",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic fixed criterion\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: \"${{ window.messages.*.kind }}\", no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "embedded-recursive-input",
+      "feature": "embedded_templates",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic embedded input\non: {tool_result: null}\ndecisions:\n  review:\n    input:\n      value: {nested: [\"Kind: ${{ message.kind }}\", \"${{ format('Status: {0}', message.tool.result.status) }}\"]}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "embedded-malformed-expression-needs-compiler",
+      "feature": "embedded_templates",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic malformed template\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: \"Kind: ${{ message.kind + }}\"}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "embedded-object-key",
+      "feature": "embedded_templates",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic embedded key\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: {\"kind_${{ message.kind }}\": true}}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "nested-map-outer-alias",
+      "feature": "nested_map_aliases",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic nested map\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input:\n      value:\n        map: ${{ window.messages }}\n        as: record\n        if: record.tool.result.status == 'completed'\n        value:\n          map: ${{ session.requests }}\n          as: request\n          value: \"${{ record.id }}: ${{ request.text }}\"\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "map-enclosing-alias-shadow-needs-compiler",
+      "feature": "nested_map_aliases",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic shadowed alias\non: {tool_result: null, window: 2}\ndecisions:\n  review:\n    input:\n      value:\n        map: ${{ window.messages }}\n        as: item\n        value: {map: '${{ session.requests }}', as: item, value: '${{ item.text }}'}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "map-public-root-shadow-needs-compiler",
+      "feature": "nested_map_aliases",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic root alias\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: {map: '${{ session.requests }}', as: turn, value: '${{ turn.text }}'}}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "map-missing-nested-value",
+      "feature": "nested_map_aliases",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic missing map value\non: {tool_result: null}\ndecisions:\n  review:\n    input:\n      value: {map: '${{ session.requests }}', as: outer, value: {map: '${{ session.requests }}', as: inner}}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "map-extra-key",
+      "feature": "nested_map_aliases",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic extra map key\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: {map: '${{ session.requests }}', as: item, value: '${{ item.text }}', extra: true}}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "map-invalid-alias-identifier",
+      "feature": "nested_map_aliases",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic invalid alias\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: {map: '${{ session.requests }}', as: Invalid, value: true}}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "map-collection-requires-whole-expression",
+      "feature": "nested_map_aliases",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic map collection wrapper\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: {map: 'Items: ${{ session.requests }}', as: item, value: true}}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "dynamic-status-and-message",
+      "feature": "dynamic_status",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic dynamic status\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: '${{ message.kind }}'}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions:\n  - type: status\n    input:\n      result: ${{ decisions.review.outputs.verdict == 'yes' && 'success' || 'failure' }}\n      message: \"Selected: ${{ decisions.review.outputs.verdict }}\"\n"
+    },
+    {
+      "id": "whole-status-message",
+      "feature": "dynamic_status",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic whole message\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions:\n  - type: status\n    input: {result: success, message: \"${{ format('Selected: {0}', decisions.review.outputs.verdict) }}\"}\n"
+    },
+    {
+      "id": "embedded-status-result-rejected",
+      "feature": "dynamic_status",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic embedded status\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: \"Result: ${{ 'success' }}\"}}]\n"
+    },
+    {
+      "id": "nonstring-status-message-rejected",
+      "feature": "dynamic_status",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic message type\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success, message: {text: example}}}]\n"
+    },
+    {
+      "id": "blank-status-message-rejected",
+      "feature": "dynamic_status",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic blank message\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success, message: '   '}}]\n"
+    },
+    {
+      "id": "blank-status-expression-needs-compiler",
+      "feature": "dynamic_status",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic blank expression\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: '${{ }}'}}]\n"
+    },
+    {
+      "id": "shared-budget-not-root-configuration",
+      "feature": "shared_budgets",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic root budget\nbudget: {steps: 10000}\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "shared-budget-not-decision-configuration",
+      "feature": "shared_budgets",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic decision budget\non: {tool_result: null}\ndecisions:\n  review:\n    budget: {steps: 10000}\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "local-check-omitted-decisions",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic local check\non: {tool_result: null}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "local-dynamic-result-and-function-message",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic local dynamic status\non:\n  tool_result:\n    tools: [shell]\nif: strictEquals(message.kind, 'tool_result')\nactions:\n  - type: status\n    input:\n      result: ${{ message.tool.result.status == 'error' && 'failure' || 'success' }}\n      message: \"${{ format('Recorded status: {0}', message.tool.result.status) }}\"\n"
+    },
+    {
+      "id": "local-embedded-message-and-authored-cooldown",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic local cooldown\non: {tool_result: null, cooldown: 5s}\nactions:\n  - type: status\n    if: startsWith(message.tool.result.status, 'error')\n    input:\n      result: failure\n      message: \"Recorded: ${{ toJSON(message.tool.result) }}\"\n"
+    },
+    {
+      "id": "local-false-action-condition",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic local no write\non: {tool_result: null}\nactions: [{type: status, if: false, input: {result: success}}]\n"
+    },
+    {
+      "id": "local-empty-decisions-rejected",
+      "feature": "local_checks",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic empty decisions\non: {tool_result: null}\ndecisions: {}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "local-null-decisions-rejected",
+      "feature": "local_checks",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic null decisions\non: {tool_result: null}\ndecisions: null\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "local-undeclared-decision-condition-needs-compiler",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic undeclared local decision condition\non: {tool_result: null}\nactions:\n  - type: status\n    if: false && decisions.review.outputs.verdict == 'yes'\n    input: {result: success}\n"
+    },
+    {
+      "id": "local-undeclared-decision-result-behind-false",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic undeclared local decision result\non: {tool_result: null}\nif: false\nactions:\n  - type: status\n    if: false\n    input: {result: '${{ decisions.review.outputs.verdict }}'}\n"
+    },
+    {
+      "id": "local-undeclared-decision-message-behind-false",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic undeclared local decision message\non: {tool_result: null}\nactions:\n  - type: status\n    if: false\n    input: {result: success, message: 'Selected: ${{ decisions.review.outputs.verdict }}'}\n"
+    },
+    {
+      "id": "local-message-action-behind-false-still-unsupported",
+      "feature": "local_checks",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic local message action\non: {tool_result: null}\nif: false\nactions: [{type: message, if: false, input: {message: Recorded result.}}]\n"
+    },
+    {
+      "id": "multiple-independent-decisions",
+      "feature": "typed_decisions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic multiple decisions\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\n  other:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "multiple-questions-one-block",
+      "feature": "typed_decisions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic multiple questions\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\n      other: {type: choice, question: Is this clear?, criteria: {yes: Clear., no: Not clear.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "score-ordered-criteria",
+      "feature": "typed_decisions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic Score\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: score, question: Is this useful?, criteria: [Weak., Strong.]}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "noul-question-only",
+      "feature": "typed_decisions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic Noul\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: noul, question: Is this useful?}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "mixed-choice-score-noul-one-block",
+      "feature": "typed_decisions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic mixed questions\non: {tool_result: null}\ndecisions:\n  review:\n    input: {result: '${{ message.tool.result }}'}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\n      severity: {type: score, question: How severe is the result?, criteria: [Low., Medium., High.]}\n      applies: {type: noul, question: Does this result need review?}\nactions:\n  - type: status\n    if: decisions.review.outputs.verdict == 'yes' && decisions.review.outputs.severity >= 1 && decisions.review.outputs.applies >= 0.95\n    input: {result: failure}\n"
+    },
+    {
+      "id": "eight-questions-one-block",
+      "feature": "typed_decisions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic eight questions\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      a: {type: noul, question: Is A present?}\n      b: {type: noul, question: Is B present?}\n      c: {type: noul, question: Is C present?}\n      d: {type: noul, question: Is D present?}\n      e: {type: noul, question: Is E present?}\n      f: {type: noul, question: Is F present?}\n      g: {type: noul, question: Is G present?}\n      h: {type: noul, question: Is H present?}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "nine-questions-one-block-rejected",
+      "feature": "typed_decisions",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic nine questions\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      a: {type: noul, question: Is A present?}\n      b: {type: noul, question: Is B present?}\n      c: {type: noul, question: Is C present?}\n      d: {type: noul, question: Is D present?}\n      e: {type: noul, question: Is E present?}\n      f: {type: noul, question: Is F present?}\n      g: {type: noul, question: Is G present?}\n      h: {type: noul, question: Is H present?}\n      i: {type: noul, question: Is I present?}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "nine-independent-blocks-runtime-bounded",
+      "feature": "typed_decisions",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic nine independent blocks\non: {tool_result: null}\ndecisions:\n  a: {input: {value: true}, output: {answer: {type: noul, question: Is A present?}}}\n  b: {input: {value: true}, output: {answer: {type: noul, question: Is B present?}}}\n  c: {input: {value: true}, output: {answer: {type: noul, question: Is C present?}}}\n  d: {input: {value: true}, output: {answer: {type: noul, question: Is D present?}}}\n  e: {input: {value: true}, output: {answer: {type: noul, question: Is E present?}}}\n  f: {input: {value: true}, output: {answer: {type: noul, question: Is F present?}}}\n  g: {input: {value: true}, output: {answer: {type: noul, question: Is G present?}}}\n  h: {input: {value: true}, output: {answer: {type: noul, question: Is H present?}}}\n  i: {input: {value: true}, output: {answer: {type: noul, question: Is I present?}}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "score-array-index-and-confidence",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic Score details\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      severity: {type: score, question: How severe is the result?, criteria: [Low., Medium., High.]}\nactions:\n  - type: status\n    if: decisions.review.details.severity.probabilities[0] >= 0.5 && decisions.review.details.severity.confidence >= 0.8\n    input: {result: success}\n"
+    },
+    {
+      "id": "choice-label-map-and-confidence",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic Choice details\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: Useful., no: Not useful.}}\nactions:\n  - type: status\n    if: decisions.review.details.verdict.probabilities.yes >= 0.95 && decisions.review.details.verdict.confidence >= 0.8\n    input: {result: success}\n"
+    },
+    {
+      "id": "whole-details-indirect-capabilities",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic whole details\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      severity: {type: score, question: How severe is the result?, criteria: [Low., High.]}\nactions:\n  - type: status\n    input: {result: success, message: '${{ toJSON(decisions.review.details) }}'}\n"
+    },
+    {
+      "id": "noul-closed-empty-details",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic Noul empty details\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      applies: {type: noul, question: Does this apply?}\nactions:\n  - type: status\n    input: {result: success, message: '${{ toJSON(decisions.review.details.applies) }}'}\n"
+    },
+    {
+      "id": "noul-confidence-rejected-behind-false",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic invalid Noul confidence\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      applies: {type: noul, question: Does this apply?}\nactions:\n  - type: status\n    if: false && decisions.review.details.applies.confidence >= 0.9\n    input: {result: success}\n"
+    },
+    {
+      "id": "noul-probabilities-rejected",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic invalid Noul probabilities\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      applies: {type: noul, question: Does this apply?}\nactions:\n  - type: status\n    input: {result: success, message: '${{ toJSON(decisions.review.details.applies.probabilities) }}'}\n"
+    },
+    {
+      "id": "score-probabilities-label-key-rejected",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic invalid Score label key\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      severity: {type: score, question: How severe is the result?, criteria: [Low., High.]}\nactions:\n  - type: status\n    if: decisions.review.details.severity.probabilities.low >= 0.9\n    input: {result: success}\n"
+    },
+    {
+      "id": "score-wire-legend-not-language-detail",
+      "feature": "typed_details",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic invalid Score legend\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      severity: {type: score, question: How severe is the result?, criteria: [Low., High.]}\nactions:\n  - type: status\n    input: {result: success, message: '${{ toJSON(decisions.review.details.severity.legend) }}'}\n"
+    },
+    {
+      "id": "duplicate-output-name-yaml-rejected",
+      "feature": "typed_decisions",
+      "yaml_valid": false,
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic duplicate output\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      answer: {type: noul, question: Is A present?}\n      answer: {type: noul, question: Is B present?}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "noul-authored-criteria-rejected",
+      "feature": "typed_decisions",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic Noul criteria\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      applies: {type: noul, question: Does this apply?, criteria: [No., Yes.]}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "choice-nonstring-criterion-rejected",
+      "feature": "typed_decisions",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic nonstring Choice criterion\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      verdict: {type: choice, question: Is this useful?, criteria: {yes: true, no: Not useful.}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "score-nonstring-criterion-rejected",
+      "feature": "typed_decisions",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic nonstring Score criterion\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      severity: {type: score, question: How severe is the result?, criteria: [Low., 1]}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "score-single-criterion-rejected",
+      "feature": "typed_decisions",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic one Score criterion\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: true}\n    output:\n      severity: {type: score, question: How severe is the result?, criteria: [Low.]}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "decision-input-self-dependency-rejected",
+      "feature": "decision_independence",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic self dependency\non: {tool_result: null}\ndecisions:\n  review:\n    input: {value: '${{ decisions.review.outputs.applies }}'}\n    output:\n      applies: {type: noul, question: Does this apply?}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "decision-input-sibling-dependency-rejected",
+      "feature": "decision_independence",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic sibling dependency\non: {tool_result: null}\ndecisions:\n  first:\n    input: {value: true}\n    output: {applies: {type: noul, question: Does this apply?}}\n  second:\n    input: {value: '${{ toJSON(decisions.first) }}'}\n    output: {applies: {type: noul, question: Does this still apply?}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "typed-decision-current-inventory-behind-false",
+      "feature": "current_inventories",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic unsupported inventory\non: {tool_result: null}\nif: false\ndecisions:\n  review:\n    input: {value: '${{ repo.instructions }}'}\n    output: {applies: {type: noul, question: Does this apply?}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "typed-decision-message-action-still-unsupported-behind-false",
+      "feature": "unsupported_subset",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic unsupported message action\non: {tool_result: null}\nif: false\ndecisions:\n  review:\n    input: {value: true}\n    output: {applies: {type: noul, question: Does this apply?}}\nactions: [{type: message, if: false, input: {message: Review this result.}}]\n"
+    },
+    {
+      "id": "typed-decision-observed-model-filter-behind-false",
+      "feature": "source_filters",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic unsupported model filter\non: {tool_result: {models: [provider/observed-model]}}\nif: false\ndecisions:\n  review:\n    input: {value: true}\n    output: {applies: {type: noul, question: Does this apply?}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "message-model-filter-interpolation-rejected",
+      "feature": "source_filters",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic model filter interpolation\non: {tool_result: {models: ['provider/${{session.model}}']}}\nif: false\nactions: [{type: status, input: {result: failure}}]\n"
+    },
+    {
+      "id": "cycle-model-filter-interpolation-rejected",
+      "feature": "source_filters",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic cycle model filter interpolation\non: {turn_end: {models: ['${{session.model}}/model']}}\nif: false\nactions: [{type: status, input: {result: failure}}]\n"
+    },
+    {
+      "id": "session-model-filter-interpolation-rejected",
+      "feature": "source_filters",
+      "schema_valid": false,
+      "compile_valid": false,
+      "source": "name: Synthetic session model filter interpolation\non: {session_idle: {models: ['provider/vendor/${{session.model}}']}}\nif: false\nactions: [{type: status, input: {result: failure}}]\n"
+    },
+    {
+      "id": "tool-result-source-filters",
+      "feature": "source_filters",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic recorded filters\non:\n  tool_result:\n    tools: [shell, read, search, edit, write, delegate, skill, mcp, other]\n    models: [provider/vendor/model]\n    fast_mode: true\n    paths: ['src/**']\n    paths-ignore: ['**/vendor/**']\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "path-pattern-partial-double-star-needs-compiler",
+      "feature": "source_filters",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic invalid path glob\non: {tool_result: {paths: ['src/pre**fix']}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "path-pattern-outside-repository-needs-compiler",
+      "feature": "source_filters",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic parent path glob\non: {tool_result: {paths: ['../outside/**']}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "requester-attribution-and-operation-paths",
+      "feature": "source_filters",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic recorded requester\non: {tool_result: null}\ndecisions:\n  review:\n    input:\n      model: ${{ message.model }}\n      fast_mode: ${{ message.fast_mode }}\n      paths: ${{ message.tool.paths }}\n    output: {applies: {type: noul, question: Does this apply?}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "current-configured-skill-descriptions",
+      "feature": "current_inventories",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic configured descriptions\non: {tool_result: null}\ndecisions:\n  review:\n    input:\n      descriptions: ${{ repo.skills.*.description }}\n      global_paths: ${{ global.skills.*.path }}\n    output: {applies: {type: noul, question: Does this apply?}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "measured-activity-partition-is-not-context",
+      "feature": "unsupported_subset",
+      "schema_valid": true,
+      "compile_valid": false,
+      "source": "name: Synthetic unsupported activity partition\non: {tool_result: null}\nif: false\ndecisions:\n  review:\n    input: {value: '${{ session.last_activity_period }}'}\n    output: {applies: {type: noul, question: Does this apply?}}\nactions: [{type: status, input: {result: success}}]\n"
+    },
+    {
+      "id": "typed-decision-trigger-still-unsupported-behind-false",
+      "feature": "unsupported_subset",
+      "schema_valid": true,
+      "compile_valid": true,
+      "source": "name: Synthetic unsupported trigger\non: {session_idle: null}\nif: false\ndecisions:\n  review:\n    input: {value: true}\n    output: {applies: {type: noul, question: Does this apply?}}\nactions: [{type: status, input: {result: success}}]\n"
+    }
+  ]
+}

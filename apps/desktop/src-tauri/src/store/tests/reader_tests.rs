@@ -16,6 +16,29 @@ fn file_backed_store() -> (tempfile::TempDir, Store) {
     (directory, store)
 }
 
+#[cfg(unix)]
+#[test]
+fn app_data_creation_is_private_and_preserves_existing_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path().join("new-parent/app-data");
+    drop(Store::open(&data).unwrap());
+    for path in [&data, &data.parent().unwrap().to_path_buf()] {
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    std::fs::set_permissions(&data, std::fs::Permissions::from_mode(0o775)).unwrap();
+    drop(Store::open(&data).unwrap());
+    assert_eq!(
+        std::fs::metadata(&data).unwrap().permissions().mode() & 0o777,
+        0o775
+    );
+}
+
 #[test]
 fn open_reader_sees_rows_the_writer_committed() {
     let (_directory, writer) = file_backed_store();

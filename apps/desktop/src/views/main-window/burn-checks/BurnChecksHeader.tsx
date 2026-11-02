@@ -1,3 +1,4 @@
+import { pluralize } from "../../../lib/presentation/text"
 import { CountPill } from "../../../components/ui/CountPill"
 import { CollectionHeader } from "../../../components/ui/CollectionHeader"
 import { Tooltip } from "../../../components/presentation/Tooltip"
@@ -6,14 +7,16 @@ import { BURN_CHECK_MARKS } from "../../../components/burn-checks/burnCheckMarks
 
 import type { ChecksReportPayload } from "../../../lib/insightsIpc"
 import { checksPresentation } from "../../../lib/presentation/checkReport"
-import { snoozedDetectorIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
+import { snoozedCheckIds, useSnoozedBurnChecks } from "../../../lib/snoozedBurnChecks"
+import { checkRows } from "../../../lib/presentation/checkRows"
 
 export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
   const snoozes = useSnoozedBurnChecks()
   const failures =
     report && snoozes.status === "ready"
-      ? checksPresentation(report, false, snoozedDetectorIds(snoozes.records)).failures.length
+      ? checksPresentation(report, false, snoozedCheckIds(snoozes.records)).failures.length
       : 0
+  const total = report ? checkRows(report).length : 0
   const FailureIcon = BURN_CHECK_MARKS.finding.Icon
   return (
     <div className="burn-checks-collection-header">
@@ -22,11 +25,11 @@ export function BurnChecksHeader({ report }: { report?: ChecksReportPayload }) {
         summary={
           report ? (
             <CountPill
-              count={report.categories.length}
+              count={total}
               size="regular"
               aria-live="polite"
               aria-atomic="true"
-              aria-label={`${report.categories.length} ${report.categories.length === 1 ? "check type" : "check types"} in total, including snoozed checks`}
+              aria-label={`${total} ${pluralize(total, "check type", "check types")} in total, including snoozed checks`}
             />
           ) : null
         }

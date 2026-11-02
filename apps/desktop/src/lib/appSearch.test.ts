@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
   APP_SEARCH_CATALOG,
   groupAppResults,
-  resolveStepSettingsSearchTarget,
+  resolveSettingsSearchTarget,
   searchApp,
 } from "./appSearch"
 import { SETTINGS_PANES } from "./settingsPanes"
@@ -21,43 +21,58 @@ import {
   parseSettingsSearchRequest,
   settingsSearchRequest,
 } from "./settingsSearchTargets"
-import { STEP_SETTINGS_TARGETS } from "./stepSettingsTargets"
 
 describe("static app search", () => {
   it.each([
-    "ignoredInstructions",
-    "skillOpportunities",
-    "overExploring",
-    "scopeCreep",
-  ] as const)("hides unavailable smart check %s from search", (check) => {
+    "sessionsOverDepth",
+    "unusedSkills",
+    "overuseOfFastMode",
+    "modelOverthinking",
+  ] as const)("keeps local check %s available without a decision connection", (check) => {
     expect(
       searchApp("", "macos", false).some(
         (result) => result.target.kind === "check" && result.target.check === check,
       ),
-    ).toBe(false)
+    ).toBe(true)
     expect(
       searchApp("", "macos", true).some(
         (result) => result.target.kind === "check" && result.target.check === check,
       ),
     ).toBe(true)
   })
-  it("resolves the backend Over-exploring key", () => {
-    expect(searchApp("over_exploring")[0]?.target).toEqual({
+  it("resolves a local check key", () => {
+    expect(searchApp("sessionsOverDepth")[0]?.target).toEqual({
       kind: "check",
-      check: "overExploring",
+      check: "sessionsOverDepth",
     })
   })
-  it.each(["Scope Creep", "scopeCreep", "scope_creep"])("resolves %s", (query) => {
-    expect(searchApp(query)[0]?.target).toEqual({ kind: "check", check: "scopeCreep" })
+  it("searches installed check names and routes to their effective identity", () => {
+    const result = searchApp("repeated failures", "macos", true, [
+      {
+        effectiveId: "installed:failed-retry-loop",
+        name: "Failed retry loop",
+        aliases: ["repeated failures"],
+        availability: { status: "invalid", reason: "Invalid YAML" },
+      },
+    ])[0]
+    expect(result).toMatchObject({
+      id: "installed-check:installed:failed-retry-loop",
+      label: "Failed retry loop",
+      detail: "Checks",
+      target: { kind: "installedCheck", check: "installed:failed-retry-loop" },
+    })
+  })
+  it.each(["sessionsOverDepth", "sessionsoverdepth"])("resolves %s", (query) => {
+    expect(searchApp(query)[0]?.target).toEqual({ kind: "check", check: "sessionsOverDepth" })
   })
   it.each(["macos", "windows", "linux"] as const)(
-    "opens and focuses unassessed Skill Opportunities on %s without changing values",
+    "opens and focuses unassessed local checks on %s without changing values",
     async (platform) => {
       HTMLElement.prototype.scrollIntoView = vi.fn()
-      const result = searchApp("Skill Opportunities", platform)[0]!
+      const result = searchApp("sessionsOverDepth", platform)[0]!
       expect(result).toMatchObject({
-        label: "Skill opportunities",
-        target: { kind: "check", check: "skillOpportunities" },
+        label: "Session overdepth",
+        target: { kind: "check", check: "sessionsOverDepth" },
       })
       if (result.target.kind !== "check") throw new Error("Expected a check destination")
       const categories = [
@@ -78,7 +93,7 @@ describe("static app search", () => {
       })
       await screen.findByRole("button", { name: /Not assessed \(1\)/ })
       expect(
-        screen.queryByRole("button", { name: /Skill opportunities/ }),
+        screen.queryByRole("button", { name: /Session overdepth/ }),
       ).not.toBeInTheDocument()
       view.rerender(
         createElement(BurnChecksView, {
@@ -89,7 +104,7 @@ describe("static app search", () => {
         }),
       )
       const row = await screen.findByRole("button", {
-        name: /Skill opportunities.*Not assessed/,
+        name: /Session overdepth.*Not assessed/,
       })
       await waitFor(() => expect(row).toHaveFocus())
       expect(row).toHaveAttribute("aria-pressed", "true")
@@ -153,12 +168,12 @@ describe("static app search", () => {
     })
     expect(searchApp("MCP").filter(({ id }) => id === "check:unusedMcpServers")).toHaveLength(1)
     expect(searchApp("cache misses")[0]?.target).toEqual({
-      kind: "stepSetting",
+      kind: "setting",
       control: "cacheChurnCheck",
     })
-    expect(searchApp("skill improvements")[0]?.target).toEqual({
+    expect(searchApp("unusedSkills")[0]?.target).toEqual({
       kind: "check",
-      check: "skillOpportunities",
+      check: "unusedSkills",
     })
     expect(searchApp("  SOuNd  ")[0]?.label).toBe("Sound")
   })
@@ -197,13 +212,6 @@ describe("static app search", () => {
       expect(searchApp(entry.label, "macos")).toContainEqual(
         expect.objectContaining({
           target: { kind: "setting", control },
-        }),
-      )
-    }
-    for (const [control, entry] of Object.entries(STEP_SETTINGS_TARGETS)) {
-      expect(searchApp(entry.label, "macos")).toContainEqual(
-        expect.objectContaining({
-          target: { kind: "stepSetting", control },
         }),
       )
     }
@@ -252,31 +260,34 @@ describe("static app search", () => {
     ])
       expect(parseSettingsSearchRequest(invalid)).toBeNull()
   })
-  it("resolves a step-settings target to its owning step and control", () => {
-    for (const [control, target] of Object.entries(STEP_SETTINGS_TARGETS)) {
-      const key = control as keyof typeof STEP_SETTINGS_TARGETS
-      expect(resolveStepSettingsSearchTarget({ control: key })).toEqual({
-        step: target.step,
+  it("opens the Agents, Sessions, and Checks controls in their Settings panes", () => {
+    for (const [control, pane] of [
+      ["sourceAgents", "agents"],
+      ["sourceFolders", "sessions"],
+      ["recentDays", "sessions"],
+      ["typeSafeApiKey", "checks"],
+    ] as const) {
+      expect(resolveSettingsSearchTarget({ kind: "setting", control })).toEqual({
+        pane,
         control,
       })
+      expect(searchApp(SETTINGS_SEARCH_TARGETS[control].label, "macos")).toContainEqual(
+        expect.objectContaining({ id: `settings:${pane}:${control}` }),
+      )
     }
+    const groups = groupAppResults("scan folders", "macos")
+    expect(groups.map((group) => group.label)).toEqual(["Best match"])
+    expect(groups[0]!.results[0]!.detail).toBe("Settings · Sessions")
   })
-  it("excludes step-settings results while the first run has no modal to open", () => {
-    const [sample] = Object.keys(STEP_SETTINGS_TARGETS)
-    const label = STEP_SETTINGS_TARGETS[sample as keyof typeof STEP_SETTINGS_TARGETS].label
+})
 
-    expect(searchApp(label, "macos", true, false)).toEqual([])
+it("routes connection management aliases to Agents settings", () => {
+  for (const query of ["integrations", "connections", "hooks", "plugins", "extensions"]) {
     expect(
-      searchApp(label, "macos", true, true).some(
-        (result) => result.target.kind === "stepSetting",
+      searchApp(query).some(
+        (result) =>
+          result.target.kind === "setting" && result.target.control === "sourceAgents",
       ),
     ).toBe(true)
-
-    expect(groupAppResults(label, "macos", true, false)).toEqual([])
-    expect(
-      groupAppResults(label, "macos", true, true).some((group) =>
-        group.results.some((result) => result.target.kind === "stepSetting"),
-      ),
-    ).toBe(true)
-  })
+  }
 })

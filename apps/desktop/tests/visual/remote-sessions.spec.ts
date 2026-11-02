@@ -5,9 +5,16 @@ for (const theme of ["light", "dark"] as const) {
     await page.clock.setFixedTime(new Date("2026-09-15T00:00:00Z"))
     await page.emulateMedia({ colorScheme: theme })
     await page.goto(`/tests/visual/?surface=settings&remote=1&theme=${theme}`)
-    await page.getByRole("tab", { name: "Sources", exact: true }).click()
-    await expect(page.getByText("Remote hosts", { exact: true })).toBeVisible()
-    await expect(page.getByRole("heading", { level: 2 }).first()).toHaveText("Remote hosts")
+    await page.getByRole("tab", { name: "Sessions", exact: true }).click()
+    const sessions = page.getByRole("tabpanel", { name: "Sessions", exact: true })
+    await expect(sessions).toBeVisible()
+    const remoteHosts = sessions.getByRole("heading", {
+      name: "Remote hosts",
+      exact: true,
+      level: 2,
+    })
+    await expect(remoteHosts).toBeVisible()
+    await remoteHosts.scrollIntoViewIfNeeded()
     const hostsCard = page.locator(".remote-hosts-card")
     const syncBlock = hostsCard.locator(":scope > *").first()
     await expect(
@@ -119,7 +126,7 @@ for (const theme of ["light", "dark"] as const) {
   }, testInfo) => {
     await page.clock.setFixedTime(new Date("2026-09-15T00:00:00Z"))
     await page.emulateMedia({ colorScheme: theme })
-    await page.goto(`/tests/visual/?surface=main&remote=1&theme=${theme}`)
+    await page.goto(`/tests/visual/?surface=main&onboarding=complete&remote=1&theme=${theme}`)
     await page.getByRole("tab", { name: "Sessions", exact: true }).click()
     const rows = page
       .getByRole("tabpanel", { name: "Sessions", exact: true })
@@ -203,7 +210,12 @@ for (const theme of ["light", "dark"] as const) {
         await expect(page.getByRole("tabpanel", { name: "General" })).toBeVisible()
         const navigation = page.getByRole("button", { name: "Open Settings navigation" })
         if (await navigation.isVisible()) await navigation.click()
-        await page.getByRole("tab", { name: "Sources", exact: true }).click()
+        await page.getByRole("tab", { name: "Sessions", exact: true }).click()
+        const sessions = page.getByRole("tabpanel", { name: "Sessions", exact: true })
+        await expect(sessions).toBeVisible()
+        await sessions
+          .getByRole("heading", { name: "Remote hosts", exact: true, level: 2 })
+          .scrollIntoViewIfNeeded()
         await page.screenshot({
           path: testInfo.outputPath(`remote-settings-${theme}-${scale}.png`),
           animations: "disabled",

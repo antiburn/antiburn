@@ -93,9 +93,9 @@ describe("BurnChecksController", () => {
     const { adapter, session, changed } = setup()
     sessions.push(session)
     await vi.waitFor(() => expect(session.getSnapshot().aggregate).not.toBeNull())
-    session.setTargetsVisible("ignoredInstructions", true)
+    session.setTargetsVisible("sessionsOverDepth", true)
     await vi.waitFor(() =>
-      expect(session.getSnapshot().targets.ignoredInstructions?.loading).toBe(false),
+      expect(session.getSnapshot().targets.sessionsOverDepth?.loading).toBe(false),
     )
     const previous = session.getSnapshot()
     const nextReport = deferred<ChecksReportPayload | null>()
@@ -109,16 +109,16 @@ describe("BurnChecksController", () => {
     expect(session.getSnapshot()).toMatchObject({ loading: false, refreshing: true })
     expect(session.getSnapshot().report).toBe(previous.report)
     expect(session.getSnapshot().aggregate).toBe(previous.aggregate)
-    expect(session.getSnapshot().targets.ignoredInstructions?.data).toBe(
-      previous.targets.ignoredInstructions?.data,
+    expect(session.getSnapshot().targets.sessionsOverDepth?.data).toBe(
+      previous.targets.sessionsOverDepth?.data,
     )
 
     nextReport.resolve(report(200))
     await vi.waitFor(() => expect(adapter.getTargets).toHaveBeenCalledTimes(2))
     expect(session.getSnapshot().aggregate).toBe(previous.aggregate)
-    expect(session.getSnapshot().targets.ignoredInstructions).toMatchObject({ loading: true })
-    expect(session.getSnapshot().targets.ignoredInstructions?.data).toBe(
-      previous.targets.ignoredInstructions?.data,
+    expect(session.getSnapshot().targets.sessionsOverDepth).toMatchObject({ loading: true })
+    expect(session.getSnapshot().targets.sessionsOverDepth?.data).toBe(
+      previous.targets.sessionsOverDepth?.data,
     )
 
     const empty = { targets: [], samples: [], truncated: false }
@@ -126,7 +126,7 @@ describe("BurnChecksController", () => {
     const emptyAggregate = { wins: [] }
     nextAggregate.resolve(emptyAggregate)
     await vi.waitFor(() =>
-      expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+      expect(session.getSnapshot().targets.sessionsOverDepth).toEqual({
         data: empty,
         loading: false,
         error: false,
@@ -169,7 +169,7 @@ describe("BurnChecksController", () => {
       .mockReturnValueOnce(older.promise)
       .mockReturnValueOnce(newer.promise)
       .mockReturnValueOnce(final.promise)
-    session.setTargetsVisible("ignoredInstructions", true)
+    session.setTargetsVisible("sessionsOverDepth", true)
     setVisible(false)
     setVisible(true)
     await vi.waitFor(() => expect(adapter.getReport).toHaveBeenCalledTimes(2))
@@ -178,7 +178,7 @@ describe("BurnChecksController", () => {
     older.resolve({ targets: [], samples: [], truncated: true })
     await older.promise
     await Promise.resolve()
-    expect(session.getSnapshot().targets.ignoredInstructions?.data).toBeNull()
+    expect(session.getSnapshot().targets.sessionsOverDepth?.data).toBeNull()
     expect(adapter.getTargets).toHaveBeenCalledTimes(2)
 
     newer.resolve({ targets: [], samples: [], truncated: true })
@@ -186,9 +186,9 @@ describe("BurnChecksController", () => {
     const empty = { targets: [], samples: [], truncated: false }
     final.resolve(empty)
     await vi.waitFor(() =>
-      expect(session.getSnapshot().targets.ignoredInstructions?.data).toBe(empty),
+      expect(session.getSnapshot().targets.sessionsOverDepth?.data).toBe(empty),
     )
-    expect(session.getSnapshot().targets.ignoredInstructions?.loading).toBe(false)
+    expect(session.getSnapshot().targets.sessionsOverDepth?.loading).toBe(false)
   })
 
   it("resumes report reads without waiting for hidden work and ignores its cleanup", async () => {
@@ -228,9 +228,9 @@ describe("BurnChecksController", () => {
     })
     sessions.push(session)
     await vi.waitFor(() => expect(session.getSnapshot().report).not.toBeNull())
-    session.setTargetsVisible("ignoredInstructions", true)
+    session.setTargetsVisible("sessionsOverDepth", true)
     await vi.waitFor(() =>
-      expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+      expect(session.getSnapshot().targets.sessionsOverDepth).toEqual({
         data: null,
         loading: false,
         error: true,
@@ -238,8 +238,8 @@ describe("BurnChecksController", () => {
     )
     const pending = deferred<BurnCheckTargetListPayload | null>()
     vi.mocked(adapter.getTargets).mockReturnValueOnce(pending.promise)
-    session.loadTargets("ignoredInstructions", true)
-    expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+    session.loadTargets("sessionsOverDepth", true)
+    expect(session.getSnapshot().targets.sessionsOverDepth).toEqual({
       data: null,
       loading: true,
       error: false,
@@ -247,7 +247,7 @@ describe("BurnChecksController", () => {
     const empty = { targets: [], samples: [], truncated: false }
     pending.resolve(empty)
     await vi.waitFor(() =>
-      expect(session.getSnapshot().targets.ignoredInstructions).toEqual({
+      expect(session.getSnapshot().targets.sessionsOverDepth).toEqual({
         data: empty,
         loading: false,
         error: false,

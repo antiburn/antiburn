@@ -2,8 +2,7 @@ import {
   cancelChecksReport,
   getChecksReport,
   onChecksReportChanged,
-  type BurnCheckDetectorId,
-  type ChecksCategoryPayload,
+  type CheckId,
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
 import {
@@ -24,7 +23,11 @@ import {
 } from "../../../lib/ipc"
 import { getMainWindowVisible, onMainWindowVisibilityChanged } from "../../../lib/mainWindowIpc"
 import { agentDisplayName } from "../../../lib/presentation/agents"
-import { CHECK_LABELS } from "../../../lib/presentation/checkDefinitions"
+import { checkRows, checkLabel, type CheckRow } from "../../../lib/presentation/checkRows"
+import {
+  checkStatusFacts,
+  type CheckStatusFacts,
+} from "../../../lib/presentation/checkRowStatus"
 import { scanStatusStore } from "../../../lib/scanStatusStore"
 import type { DeferredPermissionDir } from "../../../lib/types/repository"
 import { withViewTransition } from "../../../lib/viewTransition"
@@ -79,12 +82,27 @@ interface ChecksStep {
   deferredEvidence: number
 }
 
-export type FixStatus = "needsFix" | "awaitingVerification" | "passing" | "notChecked"
+export type FixStatus =
+  | "needsFix"
+  | "awaitingVerification"
+  | "passing"
+  | "checking"
+  | "error"
+  | "waiting"
+  | "notChecked"
+  | "snoozed"
 
-export interface FixCategory {
-  id: BurnCheckDetectorId
+export interface FixCategory extends CheckStatusFacts {
+  id: CheckId
   label: string
   status: FixStatus
+  /** Hundredths of one percent; null when the check has no estimate. */
+  estimatedBurnBasisPoints: number | null
+  /** Assessed sessions with and without a finding. */
+  finding: number
+  clean: number
+  /** Discovery slugs of the agents whose sessions the check read. */
+  agents: string[]
 }
 
 /** History has no total until discovery finishes. */
@@ -103,7 +121,7 @@ export interface HistoryProgress {
 export type FlowStep =
   "welcome" | "agents" | "limits" | "sessions" | "checks" | "fixes" | "done"
 
-/** Limits docks into the provider pane instead of a nav row. */
+/** Steps with scan progress. */
 export type ProgressStepKey = "agents" | "sessions" | "checks" | "fixes"
 
 const FLOW_ORDER: readonly FlowStep[] = [
@@ -127,14 +145,6 @@ const STEP_DOCKED_AT: Record<ProgressStepKey, FlowStep> = {
   fixes: "done",
 }
 
-export function fixesFound(progress: OverviewProgress): boolean {
-  return progress.checks.windowSessions > 0 && progress.failingCount > 0
-}
-
-export function firstFailingCheck(progress: OverviewProgress): BurnCheckDetectorId | undefined {
-  return progress.categories.find((category) => category.status === "needsFix")?.id
-}
-
 // Skip Limits on a revisit if live usage is already active.
 function nextFlow(from: ProgressStepKey, liveUsageOn: boolean): FlowStep {
   if (from === "agents" && liveUsageOn) return "sessions"
@@ -145,7 +155,7 @@ export function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
   return flowIndex(flow) >= flowIndex(STEP_DOCKED_AT[step])
 }
 
-// Reuse the name when a card moves between the takeover, nav and modal.
+// Move the name from the completed card to its sidebar row.
 export function progressStepTransitionName(step: ProgressStepKey): string {
   return `progress-step-${step}`
 }
@@ -166,15 +176,6 @@ export interface OverviewProgress {
   mode: "pending" | "firstRun" | "steady"
   /** The takeover's current stage. `"done"` in every mode but `firstRun`. */
   flow: FlowStep
-  /** The step whose modal is open, if any. */
-  openStep: ProgressStepKey | null
-  /** A control to reveal and focus inside the open step's settings, from a
-   *  search result. Null when the modal opened without one — a nav-row
-   *  click, say — and the modal shows no particular control. */
-  openStepControl: string | null
-  /** Bumped on every `openProgressStep` call that names a control, so
-   *  choosing the same control twice still re-reveals it. */
-  openStepControlRevision: number
   /**
    * Whether the takeover shows the card for `flow`. False while the previous
    * card moves to its place, so the next card appears only after it lands.
@@ -221,16 +222,30 @@ export function advanceLastPass(previous: LastPass, status: ScanStatus | null): 
   return { lastFound, lastRead }
 }
 
-function toFixCategory(category: ChecksCategoryPayload): FixCategory {
+function toFixCategory(category: CheckRow): FixCategory {
+  const facts = checkStatusFacts(category)
   const status: FixStatus =
-    category.lifecycle === "failing"
+    facts.lifecycle === "failing"
       ? "needsFix"
-      : category.lifecycle === "awaitingVerification"
+      : facts.lifecycle === "awaitingVerification"
         ? "awaitingVerification"
-        : category.lifecycle === "passing"
+        : facts.lifecycle === "passing"
           ? "passing"
-          : "notChecked"
-  return { id: category.id, label: CHECK_LABELS[category.id], status }
+          : facts.checking
+            ? "checking"
+            : (facts.reviewFailed ?? 0) > 0
+              ? "error"
+              : (facts.waitingForDataCount ?? 0) > 0 || (facts.waitingForResultsCount ?? 0) > 0
+                ? "waiting"
+                : "notChecked"
+  return {
+    ...facts,
+    id: category.id,
+    label: checkLabel(category),
+    status,
+    estimatedBurnBasisPoints: category.estimatedTokenBurnBasisPoints ?? null,
+    agents: category.agents ?? [],
+  }
 }
 
 function deriveHistory(
@@ -257,11 +272,8 @@ export function deriveOverviewProgress(
   latch: FirstRunLatch,
   inputs: ProgressInputs,
   flow: FlowStep,
-  openStep: ProgressStepKey | null,
   stepShown: boolean,
   lastPass: LastPass,
-  openStepControl: string | null = null,
-  openStepControlRevision = 0,
 ): OverviewProgress {
   const mode = deriveMode(latch)
   // Steady behaves as "done": every step reads as docked, so the row always
@@ -332,15 +344,14 @@ export function deriveOverviewProgress(
           deferredEvidence: inputs.checksReport?.deferredEvidence ?? 0,
         }
 
-  const categories = (inputs.checksReport?.categories ?? []).map(toFixCategory)
+  const categories = inputs.checksReport
+    ? checkRows(inputs.checksReport).map(toFixCategory)
+    : []
   const failingCount = categories.filter((category) => category.status === "needsFix").length
 
   return {
     mode,
     flow: exposedFlow,
-    openStep,
-    openStepControl,
-    openStepControlRevision,
     stepShown,
     actionPending: false,
     actionError: null,
@@ -355,9 +366,6 @@ export function deriveOverviewProgress(
 
 let latch: FirstRunLatch = INITIAL_FIRST_RUN_LATCH
 let flow: FlowStep = "welcome"
-let openStep: ProgressStepKey | null = null
-let openStepControl: string | null = null
-let openStepControlRevision = 0
 let stepShown = true
 let actionPending = false
 let actionError: string | null = null
@@ -397,35 +405,28 @@ let snapshot: OverviewProgress = deriveOverviewProgress(
   latch,
   currentInputs(),
   flow,
-  openStep,
   stepShown,
   lastPass,
-  openStepControl,
-  openStepControlRevision,
 )
 const listeners = new Set<() => void>()
 
 function recompute(): void {
-  snapshot = deriveOverviewProgress(
-    latch,
-    currentInputs(),
-    flow,
-    openStep,
-    stepShown,
-    lastPass,
-    openStepControl,
-    openStepControlRevision,
-  )
+  snapshot = deriveOverviewProgress(latch, currentInputs(), flow, stepShown, lastPass)
   snapshot = { ...snapshot, actionPending, actionError }
   for (const listener of listeners) listener()
   maybeReportFirstRunSteps()
 }
 
 /** Which result the finished check step shows, for `first_run_step_reached`. */
-function firstRunResult(progress: OverviewProgress): FirstRunResult {
+export function firstRunResult(progress: OverviewProgress): FirstRunResult {
   if (progress.checks.windowSessions === 0) return "empty"
   if (progress.categories.length === 0) return "checks_disabled"
-  return progress.failingCount === 0 ? "clean" : "fixes_found"
+  if (progress.categories.some((category) => category.finding > 0)) return "fixes_found"
+  return progress.categories.some(
+    (category) => category.status === "passing" && category.clean > 0,
+  )
+    ? "clean"
+    : "not_assessed"
 }
 
 // Report completed work once. Report the result only when its step opens.
@@ -487,8 +488,6 @@ function onReset(): void {
   actionError = null
   latch = resetFirstRunLatch()
   flow = "welcome"
-  openStep = null
-  openStepControl = null
   stepShown = true
   // The wipe clears `onboardingCompleted`, so this device is a first run
   // again until the pass the reset triggers finishes it.
@@ -547,7 +546,6 @@ async function moveTo(to: FlowStep): Promise<boolean> {
     await withViewTransition(() => {
       if (revision !== flowRevision) return
       flow = to
-      openStep = null
       stepShown = false
       recompute()
     })
@@ -598,48 +596,27 @@ export async function nextStep(): Promise<void> {
   await moveTo(nextFlow(from, liveUsageOn))
 }
 
-export async function enhanceFixes(): Promise<boolean> {
-  if (flow !== "fixes" || !stepShown || actionPending) return false
-  const finished = await moveTo("done")
-  if (finished) noteInteraction({ kind: "firstRunAction", action: "enhance_opened" })
-  return finished
-}
-
-// Rewinding does not lower the backend gate or restart completed work.
-export function rewindTo(step: ProgressStepKey): void {
+// Back changes the visible step without restarting completed work.
+export async function previousStep(): Promise<void> {
   if (snapshot.mode !== "firstRun" || flow === "done" || !stepShown || actionPending) return
-  if (!stepDocked(flow, step)) return
-  void withViewTransition(() => {
-    flow = step
-    openStep = null
-    recompute()
-  })
-}
-
-/** A control target reveals and focuses its row without changing its value. */
-export function openProgressStep(key: ProgressStepKey, control?: string): void {
-  void withViewTransition(() => {
-    openStep = key
-    if (control) {
-      openStepControl = control
-      openStepControlRevision += 1
-    } else {
-      openStepControl = null
+  const previous = FLOW_ORDER[flowIndex(flow) - 1]
+  if (!previous) return
+  actionError = null
+  actionPending = true
+  const revision = flowRevision
+  recompute()
+  try {
+    await withViewTransition(() => {
+      if (revision !== flowRevision) return
+      flow = previous
+      recompute()
+    })
+  } finally {
+    if (revision === flowRevision) {
+      actionPending = false
+      recompute()
     }
-    recompute()
-  })
-  // `fixes` has no settings — `StepSettings` renders nothing for it — so
-  // opening its modal reports no exposure.
-  if (key !== "fixes") {
-    noteInteraction({ kind: "stepSettingsViewed", label: key, detail: "modal" })
   }
-}
-
-export function closeProgressStep(): void {
-  void withViewTransition(() => {
-    openStep = null
-    recompute()
-  })
 }
 
 /* ---- Ref-counted subscriptions: start on the first listener, stop on the

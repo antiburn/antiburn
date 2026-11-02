@@ -17,6 +17,7 @@ updates:
   - package-ecosystem: "cargo"
     directories:
       - "/crates/antiburn-local"
+      - "/crates/antiburn-checks"
       - "/crates/antiburn-remote"
       - "/apps/desktop/src-tauri"
       - "/apps/desktop/src-tauri/crates/nudge"

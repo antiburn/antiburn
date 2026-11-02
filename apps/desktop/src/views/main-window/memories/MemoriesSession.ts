@@ -10,6 +10,7 @@ import {
   type MemoryEntry,
   type MemoryProject,
 } from "../../../lib/memoriesIpc"
+import { memoryCountStore } from "../../../lib/memoryCountStore"
 import { SurfaceExposureTracker } from "../../../lib/surfaceExposure"
 import { readCollapsedProjects, writeCollapsedProjects } from "./memoriesViewPrefs"
 
@@ -190,10 +191,12 @@ export class MemoriesSession {
 
   private async load(): Promise<void> {
     const version = ++this.loadVersion
+    const countRevision = memoryCountStore.getRevision()
     this.update({ loading: true, error: false })
     try {
       const report = await this.adapter.listMemories()
       if (version !== this.loadVersion) return
+      memoryCountStore.acceptReport(report, countRevision)
       // Line numbers and paths in the new report are fresh. The old edits
       // and errors no longer match them.
       this.update({
@@ -294,6 +297,7 @@ export class MemoriesSession {
     const sameVisit = activity === this.activity
     if (outcome && succeeded(outcome)) {
       if (sameVisit) apply(outcome)
+      if (action === "archive" || action === "restore") memoryCountStore.invalidate()
       this.noteAction(action, "succeeded")
       return
     }

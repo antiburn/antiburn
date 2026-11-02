@@ -34,10 +34,11 @@ const HOME_BIN_DIRS: [&str; 4] = [".volta/bin", ".bun/bin", ".npm-global/bin", "
 /// installs use.
 const FIXED_BIN_DIRS: [&str; 2] = ["/usr/local/bin", "/opt/homebrew/bin"];
 
-/// A limit on how many nvm version directories to search. A reader with more
-/// node versions gets the newest ones. The limit prevents a very large
-/// directory from slowing every search.
+/// Maximum number of nvm version directories returned by a search.
 const MAX_NVM_VERSIONS: usize = 16;
+
+/// Skip larger roots instead of selecting from an unordered partial scan.
+const MAX_VERSION_ENTRIES: usize = 4096;
 
 /// The home-relative directories that only one CLI installs into. The
 /// legacy Claude Code "local" install keeps its launcher in `~/.claude/local`.
@@ -142,7 +143,7 @@ fn file_names(binary: &str, windows: bool) -> Vec<String> {
 /// Whether `path` is a file that the spawn can run. On Unix, a file without
 /// an execute bit fails to spawn, so the search continues past it to the next
 /// directory, like a shell `PATH` lookup. A symlink is followed.
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && has_execute_bit(&metadata))
 }
 
@@ -177,30 +178,53 @@ pub(super) fn child_path(binary: &Path, dirs: &[PathBuf]) -> Option<OsString> {
 /// The per-version `bin` directories under an nvm-style root, newest version
 /// first. The sort is numeric, because a text sort puts `v9` after `v20`.
 pub(super) fn nvm_bin_dirs(root: &Path) -> Vec<PathBuf> {
+    version_bin_dirs(root, MAX_NVM_VERSIONS)
+}
+
+/// Return numeric version directories, with or without a `v` prefix, newest first.
+/// Roots with more than 4096 entries contribute no directories.
+pub(crate) fn version_bin_dirs(root: &Path, limit: usize) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
     };
-    let mut versions: Vec<(Vec<u64>, PathBuf)> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            let key = version_key(&name.to_string_lossy())?;
-            Some((key, entry.path().join("bin")))
-        })
-        .collect();
-    versions.sort_by(|left, right| right.0.cmp(&left.0));
-    versions.truncate(MAX_NVM_VERSIONS);
+    let mut versions = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_VERSION_ENTRIES {
+            return Vec::new();
+        }
+        let Ok(entry) = entry else {
+            return Vec::new();
+        };
+        let name = entry.file_name();
+        let Some(key) = name.to_str().and_then(version_key) else {
+            continue;
+        };
+        let bin = entry.path().join("bin");
+        if bin.is_dir() {
+            versions.push((key, bin));
+        }
+    }
+    versions.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    versions.truncate(limit);
     versions.into_iter().map(|(_, dir)| dir).collect()
 }
 
-/// The numeric sort key of a `vMAJOR.MINOR.PATCH` directory name, or `None`
-/// for other names, such as nvm's `node` alias symlink.
-fn version_key(name: &str) -> Option<Vec<u64>> {
-    let digits = name.strip_prefix('v')?;
-    digits
-        .split('.')
-        .map(|part| part.parse::<u64>().ok())
-        .collect()
+/// Parse a stable numeric release directory name.
+fn version_key(name: &str) -> Option<[u64; 3]> {
+    if name.len() >= 32 {
+        return None;
+    }
+    let digits = name.strip_prefix('v').unwrap_or(name);
+    let mut parts = digits.split('.');
+    let mut key = [0; 3];
+    for value in &mut key {
+        let part = parts.next()?;
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        *value = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(key)
 }
 
 #[cfg(test)]
@@ -402,6 +426,69 @@ mod tests {
             .collect();
 
         assert_eq!(names, ["v20.11.1", "v18.20.3", "v9.1.0"]);
+    }
+
+    #[test]
+    fn version_directories_filter_before_limiting_and_break_numeric_ties_by_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for index in 0..24 {
+            fs::create_dir_all(dir.path().join(format!("alias-{index}"))).unwrap();
+            fs::create_dir_all(dir.path().join(format!("v9.0.{index}/bin"))).unwrap();
+        }
+        for version in ["v22.0.0", "22.0.0", "v22.1.0", "v22.0.0-nightly"] {
+            fs::create_dir_all(dir.path().join(version).join("bin")).unwrap();
+        }
+        fs::write(dir.path().join("v99.0.0"), b"not a directory").unwrap();
+
+        assert_eq!(
+            version_bin_dirs(dir.path(), 3),
+            ["v22.1.0/bin", "22.0.0/bin", "v22.0.0/bin"].map(|path| dir.path().join(path))
+        );
+        assert_eq!(nvm_bin_dirs(dir.path()).len(), MAX_NVM_VERSIONS);
+    }
+
+    #[test]
+    fn oversized_version_roots_are_skipped_instead_of_partially_searched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(dir.path().join("v22.0.0/bin")).unwrap();
+        for index in 0..MAX_VERSION_ENTRIES {
+            fs::write(dir.path().join(format!("entry-{index}")), b"").unwrap();
+        }
+
+        assert!(version_bin_dirs(dir.path(), 8).is_empty());
+    }
+
+    #[test]
+    fn only_stable_numeric_version_names_have_sort_keys() {
+        for good in ["v22.0.0", "22.0.0"] {
+            assert_eq!(version_key(good), Some([22, 0, 0]));
+        }
+        for bad in [
+            "alias",
+            "v22",
+            "v22.0",
+            "v22.0.0.1",
+            "v22.0.0-rc.1",
+            "v+22.0.0",
+        ] {
+            assert_eq!(version_key(bad), None, "{bad}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_lookup_follows_symlinks_with_the_shared_predicate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("native");
+        let launcher = dir.path().join(CLAUDE_FILE);
+        touch_executable(&target);
+        std::os::unix::fs::symlink(&target, &launcher).unwrap();
+
+        assert!(is_executable(&launcher));
+        assert_eq!(
+            locate_in("claude", &[dir.path().to_path_buf()]),
+            Some(launcher)
+        );
     }
 
     #[test]

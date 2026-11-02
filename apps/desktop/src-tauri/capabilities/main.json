@@ -48,7 +48,7 @@
     "allow-get-checks-report",
     "allow-get-allowance-usage",
     "allow-get-burn-check-aggregate-wins",
-    "allow-get-burn-check-target-evidence",
+    "allow-get-installed-check-evidence",
     "allow-get-burn-check-remediation-progress",
     "allow-get-main-window-visible",
     "allow-get-scan-status",
@@ -59,6 +59,7 @@
     "allow-get-settings",
     "allow-get-subagent-analysis",
     "allow-list-agent-memories",
+    "allow-count-agent-memories",
     "allow-archive-agent-memory",
     "allow-restore-agent-memory",
     "allow-remove-agent-memory-index-line",
@@ -93,6 +94,7 @@
     "allow-request-main-window-recovery",
     "allow-reveal-source",
     "allow-open-project-folder",
+    "allow-open-installed-check-definition",
     "allow-scan-now",
     "allow-scan-history",
     "allow-scan-remote-host",
@@ -102,6 +104,14 @@
     "allow-set-repository-enabled",
     "allow-set-settings",
     "allow-start-live-usage",
-    "allow-update-remote-host"
+    "allow-update-remote-host",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://github.com/antiburn/antiburn/*"
+        }
+      ]
+    }
   ]
 }

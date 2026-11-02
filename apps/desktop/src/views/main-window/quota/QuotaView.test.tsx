@@ -252,7 +252,21 @@ describe("QuotaView", () => {
   it("shows a loading state before the first accounts load resolves", () => {
     const { session } = setup()
     sessions.push(session)
-    expect(screen.getByRole("status")).toHaveTextContent("Loading Limits.")
+    expect(screen.getByRole("status")).toHaveTextContent("Loading limits")
+  })
+
+  it("keeps loading visible after accounts arrive until usage resolves", async () => {
+    const pending = deferred<QuotaUsagePayload>()
+    const getUsage = vi.fn(() => pending.promise)
+    const { session } = setup({ getUsage })
+    sessions.push(session)
+    await vi.waitFor(() => expect(getUsage).toHaveBeenCalled())
+    expect(session.getSnapshot().accounts?.length).toBeGreaterThan(0)
+    expect(screen.getByRole("status")).toHaveTextContent("Loading limits")
+    expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true")
+    pending.resolve(usage())
+    await loaded()
+    expect(screen.queryByText("Loading limits")).toBeNull()
   })
 
   it("shows the empty copy when there are no accounts", async () => {

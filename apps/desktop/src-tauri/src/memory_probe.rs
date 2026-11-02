@@ -138,6 +138,7 @@ fn generate_sessions(
                 total_tokens: 1_000 + (shape % 200_000) as u64,
                 models: vec![model.to_string()],
                 model_runs: vec![ModelRun {
+                    native_variant: None,
                     model: model.to_string(),
                     thinking_mode: shape.is_multiple_of(5).then(|| "high".to_string()),
                 }],

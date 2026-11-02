@@ -425,7 +425,7 @@ const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, ch
         cache_write_tokens, output_tokens, is_compaction_boundary, message_id,
         uuid, parent_uuid, compaction_trigger, compaction_pre_tokens,
         compaction_post_tokens, has_thinking, last_tool, subagent_launches, provider, api,
-        cache_write_1h_tokens
+        cache_write_1h_tokens, accounting_json
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
   ORDER BY source_key, turn_index";
@@ -474,7 +474,29 @@ pub fn query_turn_rows(
             let compaction_post_tokens: Option<i64> = row.get(20)?;
             let compaction_trigger: Option<String> = row.get(18)?;
             let has_thinking: i64 = row.get(21)?;
+            let accounting = row
+                .get::<_, Option<String>>(27)?
+                .map(|json| {
+                    let value: super::StepAccounting =
+                        serde_json::from_str(&json).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                27,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    if !value.is_valid() {
+                        return Err(rusqlite::Error::FromSqlConversionFailure(
+                            27,
+                            rusqlite::types::Type::Text,
+                            "invalid native accounting".into(),
+                        ));
+                    }
+                    Ok(value)
+                })
+                .transpose()?;
             Ok(TurnRow {
+                accounting,
                 source_key: row.get(0)?,
                 thread_id: row.get(1)?,
                 turn_index: as_u64(row.get(2)?),
@@ -661,20 +683,19 @@ fn add_model_tokens(
  * (`apps/desktop/src-tauri/src/analysis.rs`). They read the same `turn`
  * rows as `query_by_model` above, but with the `pricing`/`model` shapes
  * the desktop layer expects, and with no `MAX_MODELS`/`MAX_MODEL_RUNS`
- * cap: the accumulator caps each source file's own tally at that
- * constant, a limit no characterization fixture approaches, so this
- * reads every distinct row instead of replicating the cap.
+ * cap for legacy rows. Native model runs keep the accumulator's 32-run
+ * source limit and the reader's 256-source cluster limit.
  * ----------------------------------------------------------------- */
 
-const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
-        cache_read_tokens, cache_write_tokens, cache_write_1h_tokens
+const MODEL_BREAKDOWN_SQL: &str = "SELECT COALESCE(model, ''), input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting_json IS NOT NULL
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
-    AND role = 'assistant' AND model IS NOT NULL
+    AND (role = 'assistant' OR accounting_json IS NOT NULL) AND (model IS NOT NULL OR accounting_json IS NOT NULL)
     AND (input_tokens != 0 OR output_tokens != 0
          OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
 
-/// Per-model billable token totals over every assistant row with a model,
+/// Per-model billable token totals over assistant and native accounting rows,
 /// at both scopes — the row-derived equivalent of
 /// `SessionMetricsAccumulator::model_breakdown_map`, merged across the
 /// parent transcript and every sub-agent the same way
@@ -683,8 +704,8 @@ const MODEL_BREAKDOWN_SQL: &str = "SELECT model, input_tokens, output_tokens,
 ///
 /// A row's `model` is stripped of its window tag and trimmed the same way
 /// `SessionMetricsAccumulator::observe_model_usage` does before it is used
-/// as a map key; a row whose model is blank after that is dropped, since
-/// the accumulator drops it too instead of folding it in unattributed.
+/// as a map key. Native usage without a model keeps an empty key and stays
+/// unpriced. Other blank model rows remain excluded.
 ///
 /// `cache_creation_1h_tokens` sums the row's own `cache_write_1h_tokens`
 /// column, the same subset `add_usage`
@@ -710,7 +731,7 @@ pub fn query_model_breakdown(
     while let Some(row) = rows.next()? {
         let model: String = row.get(0)?;
         let model = strip_window_tag(&model).trim();
-        if model.is_empty() {
+        if model.is_empty() && !row.get::<_, bool>(6)? {
             continue;
         }
         let input: i64 = row.get(1)?;
@@ -732,11 +753,11 @@ pub fn query_model_breakdown(
     Ok(breakdown)
 }
 
-const PRICING_BREAKDOWN_SQL: &str = "SELECT model, speed, input_tokens, output_tokens,
-        cache_read_tokens, cache_write_tokens, cache_write_1h_tokens
+const PRICING_BREAKDOWN_SQL: &str = "SELECT COALESCE(model, ''), speed, input_tokens, output_tokens,
+        cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting_json IS NOT NULL
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
-    AND role = 'assistant' AND model IS NOT NULL
+    AND (role = 'assistant' OR accounting_json IS NOT NULL) AND (model IS NOT NULL OR accounting_json IS NOT NULL)
     AND (input_tokens != 0 OR output_tokens != 0
          OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
 
@@ -761,7 +782,7 @@ pub fn query_pricing_breakdown(
         let model: String = row.get(0)?;
         let speed: Option<String> = row.get(1)?;
         let model = strip_window_tag(&model).trim();
-        if model.is_empty() {
+        if model.is_empty() && !row.get::<_, bool>(7)? {
             continue;
         }
         let key = crate::analysis::pricing::turn_pricing_key(model, speed.as_deref());
@@ -779,20 +800,23 @@ pub fn query_pricing_breakdown(
     Ok(breakdown)
 }
 
-const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort
+const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort, json_extract(accounting_json, '$.nativeVariant'), accounting_json IS NOT NULL
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
-    AND role = 'assistant' AND model IS NOT NULL
+    AND (role = 'assistant' OR accounting_json IS NOT NULL) AND model IS NOT NULL
     AND (input_tokens != 0 OR output_tokens != 0
-         OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
+         OR cache_read_tokens != 0 OR cache_write_tokens != 0)
+   ORDER BY source_key, turn_index";
 
-/// Distinct `(model, effort)` pairs that produced billable tokens, parent
+const MAX_NATIVE_MODEL_RUN_SOURCES: usize = 256;
+
+/// Distinct model, effort, and native variant values with recorded tokens, parent
 /// runs first — the row-derived equivalent of
 /// `apps/desktop/src-tauri/src/analysis.rs`'s `model_runs_parent_first`.
 ///
 /// A row qualifies the same way a turn qualifies for
 /// `SessionMetricsAccumulator::observe_model_usage`'s `ModelRunMark`: an
-/// assistant row with a model and at least one billable token field set.
+/// assistant or native accounting row with a model and recorded tokens.
 /// The row's own `effort` column already holds `event.thinking_mode`
 /// verbatim (`turn_row_from_event`), so no further mapping is needed there.
 ///
@@ -824,6 +848,9 @@ pub fn query_model_runs(
     ])?;
     let mut parent_runs: BTreeSet<ModelRun> = BTreeSet::new();
     let mut child_runs: BTreeSet<ModelRun> = BTreeSet::new();
+    let mut native_source = None;
+    let mut native_source_count = 0_usize;
+    let mut native_runs = BTreeSet::new();
     while let Some(row) = rows.next()? {
         let source_key: String = row.get(0)?;
         let model: String = row.get(1)?;
@@ -839,8 +866,29 @@ pub fn query_model_runs(
             .map(str::to_string);
         let run = ModelRun {
             model: model.to_string(),
+            native_variant: row.get(3)?,
             thinking_mode,
         };
+        if row.get::<_, bool>(4)? {
+            if native_source.as_ref() != Some(&source_key) {
+                native_source = Some(source_key.clone());
+                native_source_count += 1;
+                native_runs.clear();
+                if native_source_count > MAX_NATIVE_MODEL_RUN_SOURCES {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        "native model-run source limit exceeded".into(),
+                    ));
+                }
+            }
+            if !native_runs.contains(&run)
+                && native_runs.len() >= super::metrics_sink::MAX_MODEL_RUNS
+            {
+                continue;
+            }
+            native_runs.insert(run.clone());
+        }
         if source_key == key.session_id {
             parent_runs.insert(run);
         } else {
@@ -2034,6 +2082,7 @@ mod tests {
 
     pub(super) fn base_row(thread_id: &str, turn_index: u64) -> TurnRow {
         TurnRow {
+            accounting: None,
             source_key: thread_id.to_owned(),
             thread_id: thread_id.to_owned(),
             turn_index,
@@ -2203,13 +2252,12 @@ mod tests {
             ]),
         )
         .unwrap();
-        let prepared = crate::checks::ignored_instructions::prepare_session_content(
+        let prepared = crate::analysis::jev_evidence::prepare_session_content(
             "selected-query",
             crate::analysis::SourceFormat::ClaudeJsonl,
             command,
-            Vec::new(),
         );
-        let selected = crate::checks::ignored_instructions::select_session_content(
+        let selected = crate::analysis::jev_evidence::select_session_content(
             &prepared,
             JevInputSelection::from_fields(&[
                 crate::analysis::jev::JevInputField::BashCommandInput,
@@ -2396,26 +2444,11 @@ mod tests {
                 .all(|part| part.part.metadata.user_answers.is_empty()
                     && part.part.metadata.plan_references.is_empty())
         );
-        let evidence =
-            prepare_session_content("s1", SourceFormat::ClaudeJsonl, content, Vec::new());
+        let evidence = prepare_session_content("s1", SourceFormat::ClaudeJsonl, content);
         let selected = select_session_content(&evidence, selection);
-        let store = selected_evidence_store(&selected.actions, selection, 1).unwrap();
-        let id = &selected.actions[0].reference.id;
-        assert_eq!(
-            serde_json::from_str::<Vec<JevUserAnswer>>(
-                store.get(id, JevInputField::UserAnswer).unwrap()
-            )
-            .unwrap(),
-            answers
-        );
-        assert_eq!(
-            serde_json::from_str::<Vec<JevPlanReference>>(
-                store.get(id, JevInputField::PlanReference).unwrap()
-            )
-            .unwrap(),
-            plans
-        );
-        assert!(store.get(id, JevInputField::OtherToolOutput).is_none());
+        assert_eq!(selected.actions[0].metadata.user_answers, answers);
+        assert_eq!(selected.actions[0].metadata.plan_references, plans);
+        assert!(selected.actions[0].text.is_empty());
         let wrong_fence = query_turn_content_offset_selected(
             &conn,
             &KEY,
@@ -2549,12 +2582,11 @@ mod tests {
         assert_eq!(content.parts.len(), 20);
         assert!(!content.coverage.bytes_capped);
         assert!(!content.coverage.more_parts);
-        let selected = crate::checks::ignored_instructions::select_session_content(
-            &crate::checks::ignored_instructions::prepare_session_content(
+        let selected = crate::analysis::jev_evidence::select_session_content(
+            &crate::analysis::jev_evidence::prepare_session_content(
                 "s1",
                 crate::analysis::SourceFormat::ClaudeJsonl,
                 content,
-                Vec::new(),
             ),
             selection,
         );

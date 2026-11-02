@@ -10,8 +10,6 @@
 //! the only way the frontend raises it; nothing lowers it except the
 //! debug-only [`FirstRunGate::reset`].
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -44,11 +42,14 @@ const CANCEL_POLL: Duration = Duration::from_millis(250);
 /// [`crate::store::Store`] shares its connection.
 #[derive(Clone)]
 pub struct FirstRunGate {
-    stage: watch::Sender<FirstRunStage>,
-    /// Set when the evidence backlog first drains at or after
-    /// [`FirstRunStage::Checks`]. Before that, the first run has no
-    /// published turn rows.
-    turns_published: Arc<AtomicBool>,
+    stage: watch::Sender<GateState>,
+}
+
+#[derive(Clone, Copy)]
+struct GateState {
+    stage: FirstRunStage,
+    generation: u64,
+    turns_published: bool,
 }
 
 impl FirstRunGate {
@@ -63,24 +64,30 @@ impl FirstRunGate {
         } else {
             FirstRunStage::Welcome
         };
-        let (stage, _receiver) = watch::channel(initial);
-        Self {
-            stage,
-            turns_published: Arc::new(AtomicBool::new(false)),
-        }
+        let (stage, _receiver) = watch::channel(GateState {
+            stage: initial,
+            generation: 0,
+            turns_published: false,
+        });
+        Self { stage }
     }
 
     /// The stage right now.
     pub fn stage(&self) -> FirstRunStage {
-        *self.stage.borrow()
+        self.stage.borrow().stage
+    }
+
+    /// Identify this first run. A reset invalidates earlier publication callbacks.
+    pub fn generation(&self) -> u64 {
+        self.stage.borrow().generation
     }
 
     /// Raise the stage to `max(current, stage)`.
     pub fn advance(&self, stage: FirstRunStage) {
         self.stage.send_if_modified(|current| {
-            let raised = stage > *current;
+            let raised = stage > current.stage;
             if raised {
-                *current = stage;
+                current.stage = stage;
             }
             raised
         });
@@ -89,14 +96,26 @@ impl FirstRunGate {
     /// Debug-only: return the gate to [`FirstRunStage::Welcome`], for the
     /// "return to a new install" debug tool.
     pub fn reset(&self) {
-        self.stage.send_replace(FirstRunStage::Welcome);
-        self.turns_published.store(false, Ordering::SeqCst);
+        self.stage.send_modify(|current| {
+            current.stage = FirstRunStage::Welcome;
+            current.generation += 1;
+            current.turns_published = false;
+        });
     }
 
-    /// Record that the evidence backlog drained. Returns `true` only for the
-    /// first drain at or after [`FirstRunStage::Checks`].
-    pub fn mark_turns_published(&self) -> bool {
-        self.stage() >= FirstRunStage::Checks && !self.turns_published.swap(true, Ordering::SeqCst)
+    /// Record an accepted publication batch from this first run. Returns `true`
+    /// only for the first batch at or after [`FirstRunStage::Checks`].
+    pub fn mark_turns_published(&self, generation: u64) -> bool {
+        self.stage.send_if_modified(|current| {
+            if current.generation != generation
+                || current.stage < FirstRunStage::Checks
+                || current.turns_published
+            {
+                return false;
+            }
+            current.turns_published = true;
+            true
+        })
     }
 
     /// Whether limit factor learning can price turns now.
@@ -107,13 +126,15 @@ impl FirstRunGate {
     /// that way. So during the first run, learning waits for
     /// [`FirstRunGate::mark_turns_published`].
     pub fn limit_learning_ready(&self) -> bool {
-        self.stage() == FirstRunStage::Done || self.turns_published.load(Ordering::SeqCst)
+        let current = self.stage.borrow();
+        current.stage == FirstRunStage::Done || current.turns_published
     }
 
     /// Mark the first run finished. [`crate::commands::finish_first_run`]
     /// calls this once its save actually turns onboarding on.
     pub fn finish(&self) {
-        self.stage.send_replace(FirstRunStage::Done);
+        self.stage
+            .send_modify(|current| current.stage = FirstRunStage::Done);
     }
 
     /// Wait until the stage reaches `stage`, or `cancelled()` turns true.
@@ -126,7 +147,7 @@ impl FirstRunGate {
     pub async fn wait_until(&self, stage: FirstRunStage, cancelled: impl Fn() -> bool) -> bool {
         let mut receiver = self.stage.subscribe();
         loop {
-            if *receiver.borrow() >= stage {
+            if receiver.borrow().stage >= stage {
                 return true;
             }
             if cancelled() {
@@ -148,6 +169,7 @@ impl FirstRunGate {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -177,13 +199,13 @@ mod tests {
         assert!(!gate.limit_learning_ready());
         // A drain before the checks step does not count: the evidence worker
         // has not published the first run's turns yet.
-        assert!(!gate.mark_turns_published());
+        assert!(!gate.mark_turns_published(gate.generation()));
         gate.advance(FirstRunStage::Checks);
         assert!(!gate.limit_learning_ready());
-        assert!(gate.mark_turns_published());
+        assert!(gate.mark_turns_published(gate.generation()));
         assert!(gate.limit_learning_ready());
         // Only the first drain reports true.
-        assert!(!gate.mark_turns_published());
+        assert!(!gate.mark_turns_published(gate.generation()));
         gate.reset();
         assert!(!gate.limit_learning_ready());
         assert!(FirstRunGate::new(true).limit_learning_ready());
@@ -197,6 +219,21 @@ mod tests {
         assert_eq!(gate.stage(), FirstRunStage::Done);
         gate.reset();
         assert_eq!(gate.stage(), FirstRunStage::Welcome);
+    }
+
+    #[test]
+    fn a_reset_rejects_publication_from_an_earlier_first_run() {
+        let gate = FirstRunGate::new(false);
+        gate.advance(FirstRunStage::Checks);
+        let generation = gate.generation();
+        assert!(gate.mark_turns_published(generation));
+
+        gate.reset();
+        gate.advance(FirstRunStage::Checks);
+        assert!(!gate.mark_turns_published(generation));
+        assert!(!gate.limit_learning_ready());
+        assert!(gate.mark_turns_published(gate.generation()));
+        assert!(gate.limit_learning_ready());
     }
 
     #[tokio::test]

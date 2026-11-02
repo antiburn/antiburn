@@ -35,8 +35,8 @@ mod evidence;
 mod evidence_query;
 mod evidence_replay;
 mod evidence_sink;
+pub mod file_live;
 mod framing;
-pub use crate::checks::ignored_instructions;
 mod initial_context;
 mod interface;
 pub mod jev;
@@ -45,17 +45,33 @@ mod merge;
 mod metrics_sink;
 mod model;
 mod modes;
+mod native_accounting;
+mod native_tool_facts;
+mod native_tool_outcome;
+pub mod opencode_v2_capture;
+pub mod opencode_v2_events;
+pub(crate) mod opencode_v2_schema;
 mod pricing;
+mod public_events;
 pub(crate) mod records;
 mod replay;
 mod resume;
 mod rows;
-pub mod session_scope;
 mod source_validity;
 pub(crate) mod threads;
 pub mod tool_catalog;
 mod tool_identity;
 mod vendors;
+
+pub use native_accounting::{
+    CalculatedCost, CostProvenance, SourceAccounting, StepAccounting, TokenClasses,
+    UsageReconciliation,
+};
+pub use native_tool_facts::{
+    CheckToolCategory, NativeOperationPaths, NativeRequestAttribution, NativeToolFacts,
+};
+pub use native_tool_outcome::{NativeToolOutcome, ShellState, WorkState};
+pub use opencode_v2_schema::OpenCodeV2SnapshotError;
 
 pub use efficiency::{EfficiencyTotals, thread_efficiency};
 pub use engine::{
@@ -72,8 +88,8 @@ pub use evidence::{
     RepeatedContextAccounting, SessionCoverageRecord, SessionEvidence, SessionEvidenceIdentity,
     SessionProvenance, SessionProviderEvidence, SessionQuotaEvidence, SessionTimeRange,
     SignalCoverage, SourceAcceptance, SourceCapabilities, SourceFormat, SourceKind, SubagentChild,
-    SubagentEvidence, SubagentExample, ToolClass, ToolDefinition, ToolEvidence, ToolUse,
-    TurnCounts,
+    SubagentConfigBinding, SubagentEvidence, SubagentExample, ToolClass, ToolDefinition,
+    ToolEvidence, ToolUse, TurnCounts,
 };
 pub use evidence_query::{
     ContentQueryCoverage, FenceScope, MAX_CONTENT_QUERY_BYTES, MAX_CONTENT_QUERY_PARTS,
@@ -89,7 +105,10 @@ pub use evidence_query::{
 };
 pub use evidence_replay::evidence_from_facts;
 pub use evidence_sink::{
-    CompositeSink, EvidenceResumeState, RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator,
+    CompositeSink, EvidenceResumeState, MAX_NATIVE_EVIDENCE_BYTES,
+    MAX_NATIVE_EVIDENCE_OBSERVATIONS, MAX_TOOL_RESULT_BYTES, MAX_TOOL_RESULT_OBSERVATIONS,
+    MAX_USER_MESSAGE_COLLECTION_BYTES, MAX_USER_MESSAGE_OBSERVATIONS,
+    RETAINED_EVIDENCE_BYTES_BOUND, SessionEvidenceAccumulator,
 };
 pub use framing::{
     BoundedJsonlReader, FramedRecord, MAX_RECORD_BYTES, PartialReason, RecordSkip,
@@ -100,26 +119,23 @@ pub use initial_context::{
 };
 pub use interface::{
     ContentAuthority, ContentKind, ContentPart, ContextSourceKind, ContextWindowSource,
-    EvidenceObservation, MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, NormalizedRecord,
-    ProviderHint, RawSource, RecordCoverage, RecordSink, RelationProvenance, ResumedVisit,
-    SessionCollector, SessionInput, SessionReader, SessionSummary, SourceChangedReason,
-    TurnContent, VisitOutcome,
+    EvidenceObservation, MAX_CONTENT_PART_BYTES, MAX_PROVIDER_HINTS, MAX_USER_MESSAGE_BYTES,
+    MAX_USER_MESSAGE_PARTS, NormalizedRecord, ProviderHint, RawSource, RecordCoverage, RecordSink,
+    RelationProvenance, ResumedVisit, SessionCollector, SessionInput, SessionReader,
+    SessionSummary, SourceChangedReason, ToolResultAdmission, ToolResultChange,
+    ToolResultCompleteness, ToolResultContext, ToolResultObservation, ToolResultPosition,
+    ToolResultStatus, TurnContent, UserMessage, UserMessageChange, UserMessageCompleteness,
+    UserMessageOrigin, UserMessagePart, UserMessagePosition, UserMessageScope, UserTextOrigin,
+    VisitOutcome,
 };
 pub use jev::capabilities::{
     CapabilityLimit, CapabilitySource, ModelCapabilities, ModelLimitOverride, TokenizerIdentity,
 };
 pub use jev::{
-    JevAnswer, JevCheck, JevCheckPlan, JevCheckRevisions, JevCoverage, JevError,
-    JevEvidenceReference, JevEvidenceRequirements, JevEvidenceRole, JevEvidenceStore,
-    JevExecutionOutcome, JevFieldAvailability, JevFieldAvailabilityState, JevFieldCapability,
-    JevInputField, JevInputSelection, JevInputWindow, JevNormalizedCategory, JevNormalizedFields,
-    JevOrchestrationPermit, JevQuestion, JevReferenceSnapshot, JevRequest, JevRequestBatch,
-    JevResponse, JevRunProgress, JevSessionContext, JevSharedRequestContext, JevUsage, JevWorkItem,
-    JevWorkItemResult, MAX_QUESTIONS_PER_REQUEST, MAX_REQUEST_BYTES, MAX_REQUEST_TOKENS,
-    MAX_RESPONSE_BYTES, MAX_STATE_AND_LONGEST_QUESTION_BYTES, PINNED_MODEL,
-    admit_jev_orchestration, pack_work_items, pack_work_items_with_capabilities,
-    pack_work_items_with_shared_context, run_jev_check, run_jev_check_prepared,
-    run_jev_check_with_capabilities, unpack_jev_response, unpack_jev_response_with_capabilities,
+    JevAnswer, JevError, JevFieldAvailability, JevFieldAvailabilityState, JevFieldCapability,
+    JevInputField, JevInputSelection, JevNormalizedCategory, JevNormalizedFields, JevQuestion,
+    JevRequest, JevResponse, JevUsage, MAX_QUESTIONS_PER_REQUEST, MAX_REQUEST_BYTES,
+    MAX_REQUEST_TOKENS, MAX_RESPONSE_BYTES, MAX_STATE_AND_LONGEST_QUESTION_BYTES, PINNED_MODEL,
     validate_jev_request, validate_jev_request_with_capabilities, validate_jev_response,
     validate_jev_response_with_capabilities,
 };
@@ -133,25 +149,42 @@ pub use pricing::{
     install_runtime_pricing, lookup_pricing, lookup_turn_pricing, price_breakdown,
     pricing_generation, strip_window_tag, turn_pricing_key,
 };
-pub use replay::{MissingParentRows, metrics_by_source, metrics_from_rows};
+pub use public_events::{
+    NativeActivityObservation, NativeAdmissionFailure, NativeCycleKey, NativeEventContext,
+    NativeEvidenceBatch, NativeEvidenceEvent, NativeEvidenceFact, NativeEvidencePosition,
+    NativeMessageObservation, NativeMessageRemoval, NativeSessionSelectionObservation,
+    NativeToolInput, PublicMessageObservation, PublicMessagePayload, PublicTextPart,
+    ResponseCycleObservation, ResponseCycleStatus, UserMessageObservation,
+};
+pub use replay::{
+    MissingParentRows, metrics_by_source, metrics_by_source_with_summaries, metrics_from_rows,
+    metrics_from_rows_with_summaries,
+};
 pub use resume::{AdapterResume, AdapterSnapshot, EvidenceSnapshot, StreamSnapshot};
 pub use rows::{
     MemoryTurnRowStore, ResumeRevisions, SESSION_COVERAGE_SCHEMA_SQL, SOURCE_RESUME_SCHEMA_SQL,
     StoredResume, TURN_MIGRATIONS, TURN_ROW_BATCH_SIZE, TURN_SCHEMA_SQL, TURN_SCHEMA_V2_SQL,
     TURN_SCHEMA_V3_SQL, TURN_SCHEMA_V4_SQL, TURN_SCHEMA_V5_SQL, TURN_SCHEMA_V6_SQL,
     TURN_SCHEMA_V7_SQL, TURN_SCHEMA_V8_SQL, TURN_SCHEMA_V9_SQL, TURN_SCHEMA_V10_SQL,
-    TURN_SCHEMA_V11_SQL, TurnExecution, TurnRow, TurnRowError, TurnRowSink, TurnRowStore,
-    TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows, delete_source_resume,
-    delete_source_rows_at_fence, delete_stale_source_resume, delete_turn_rows,
-    delete_turn_rows_except_fence, delete_turn_rows_for_fence, insert_coverage_record,
-    insert_source_resume, insert_turn_rows, latest_turn_execution, query_coverage_record,
-    query_source_resume, restamp_source_rows, turn_row_from_event,
+    TURN_SCHEMA_V11_SQL, TURN_SCHEMA_V12_SQL, TurnExecution, TurnRow, TurnRowError, TurnRowSink,
+    TurnRowStore, TurnScope, TurnSessionKey, count_turn_content_rows, count_turn_rows,
+    delete_source_resume, delete_source_rows_at_fence, delete_stale_source_resume,
+    delete_turn_rows, delete_turn_rows_except_fence, delete_turn_rows_for_fence,
+    insert_coverage_record, insert_source_resume, insert_turn_rows, latest_turn_execution,
+    query_coverage_record, query_source_resume, restamp_source_rows, turn_row_from_event,
 };
 pub use source_validity::{
     AppendOnlyGuarantee, PinnedOpen, PinnedReader, PinnedSource, RESUME_TAIL_BYTES, ResumePoint,
     SourceClaim, append_only_guarantee,
 };
 pub use vendors::claude::ClaudeSessionReader;
+pub use vendors::opencode::journal::{
+    OpenCodeJournalCursor, OpenCodeJournalReadError, OpenCodeMessageRemoval,
+    OpenCodeToolResultPage, opencode_journal_has_new_events, read_opencode_live_tool_result_page,
+    read_opencode_tool_result_page,
+};
+pub use vendors::opencode_v2_snapshot::{CaptureBaseline, read_capture_baseline_for_scope};
+pub(crate) use vendors::opencode_v2_tool_category;
 pub use vendors::pi::PiSessionReader;
 pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 
@@ -248,18 +281,18 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // Reparse native retained roots, selected skills, and observed result bindings.
 // +1 for OMP housekeeping and `custom` rows, `session_init` startup skills, and
 // `skill://` reads. Reparse completed OMP sessions to collect them.
-pub const PARSER_REVISION: i64 = 53;
+// Reparse bounded native call joins and chained OpenCode journal prefixes.
+// Refresh native delivery bindings and exclude generated OpenCode request text.
+// Reparse V2 child source groups, usage, native tool facts, and proven launches.
+// Saved sessions must re-ingest for corrected V2 result limits and attribution.
+// Public messages, complete cycles, and native activity change accepted evidence.
+// Reparse corrected read extents, native skill links, and V2 user-text authority.
+// Reparse the combined public-event and parser safety contracts.
+// Reparse corrected native compaction, generated text, and lifecycle records.
+// Reparse Claude and Pi sessions after native delivery lineage changes.
+// Reparse Codex cycles and request history after inert-record handling changes.
+pub const PARSER_REVISION: i64 = 67;
 
-/// Source admission still requires a validated retained-root snapshot.
-pub fn smart_check_source_supported(agent: &str, format: SourceFormat) -> bool {
-    matches!(
-        (agent, format),
-        ("opencode", SourceFormat::OpenCodeSqliteV2)
-            | ("codex", SourceFormat::CodexRolloutJsonl)
-            | ("claude" | "claude-code", SourceFormat::ClaudeJsonl)
-            | ("pi", SourceFormat::PiV3Jsonl)
-    )
-}
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns
 // (`rows::turn_row_from_event`), so every session must reparse to
@@ -324,7 +357,8 @@ pub const ANALYZER_REVISION: i64 = 25;
 // and the new field says whether the window is reported, tagged,
 // catalogued, or inferred. Stored analyses must rerun to populate it.
 // +1 for per-bucket estimated cost (Bucket::cost). Stored analyses must rerun to populate it.
-pub const METRICS_SCHEMA_REVISION: i64 = 9;
+// Native accounting keeps producer-calculated cost separate from catalog pricing.
+pub const METRICS_SCHEMA_REVISION: i64 = 10;
 // +1 for `RepeatedContext` (`evidence::CacheEvidence::repeated_context`).
 // +1 more for `RepeatedContext::paid_tokens` (part F).
 // +1 more for `SourceCapabilities::linear_record_order`.
@@ -364,10 +398,8 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 6;
 /// invalidates every persisted snapshot: a snapshot's adapter and sink
 /// state was built under the old rules, and resuming it would keep
 /// producing rows, metrics, or evidence the new rules never agreed to.
-/// Phase 3b's persistence layer enforces this by checking every revision
-/// before it restores a snapshot; this constant and the rule are
-/// documented here so a future revision bump remembers to bump this one
-/// too, when the change touches resumable state.
+/// The persistence layer checks every revision before it restores a
+/// snapshot. Bump this value when a change touches resumable state.
 // +1 because PiStreamState gained its source-admission state.
 // +1 because `ClaudeStreamState` gained a `context_window_source` field.
 // +1 because parent evidence now includes delegated model control observations.
@@ -379,7 +411,14 @@ pub const COVERAGE_SCHEMA_REVISION: i64 = 6;
 // +1 because a merged slot keeps one priced entry per pricing key.
 // +1 for bounded Claude, Codex, and Pi scope state and cross-record native bindings.
 // +1 because the Pi-family stream state now keeps OMP startup context.
-pub const RESUME_SNAPSHOT_REVISION: i64 = 14;
+// +1 because snapshots now retain bounded native tool-result observations.
+// +1 because snapshots now retain bounded native human-request observations.
+// Pi snapshots retain typed native results; Claude and Codex bound call joins.
+// Pi snapshots exclude results that the parser has already emitted.
+// Native accounting and tool outcomes change retained postcard state.
+// Requester and operation facts change retained adapter state.
+// Public evidence and Codex task intervals add JSON-backed retained state.
+pub const RESUME_SNAPSHOT_REVISION: i64 = 25;
 
 /// Normalize and analyze a batch of live sessions into one averaged summary.
 ///

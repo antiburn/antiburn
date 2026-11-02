@@ -12,6 +12,7 @@
  * none in the input to invent one from.
  */
 
+import { pluralize } from "./text"
 import type {
   ProviderUsagePayload,
   ProviderUsageState,
@@ -219,7 +220,7 @@ export function rankByWindow(
 
 /** `"1 session"` / `"4 sessions"`. */
 export function sessionCountLabel(count: number): string {
-  return `${count} ${count === 1 ? "session" : "sessions"}`
+  return `${count} ${pluralize(count, "session", "sessions")}`
 }
 
 /* -------------------------------------------------------------------------

@@ -2024,3 +2024,330 @@ fn timed_pricing_keeps_model_specific_provider_routes_before_period_clipping() {
             * 400_000.0
     );
 }
+
+#[test]
+fn history_reads_skip_unpublished_turn_generations() {
+    let store = memory_store();
+    let key = insert_session(&store, "published-history");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &key, 100_123, 200_000);
+    let connection = store.lock();
+    let queries: [(&str, Vec<rusqlite::types::Value>); 3] = [
+        (
+            ATTRIBUTED_TURN_SQL,
+            vec![
+                1.into(),
+                200_000.into(),
+                100.into(),
+                PROVIDER.to_owned().into(),
+            ],
+        ),
+        (
+            ATTRIBUTED_TURN_BUCKET_SQL,
+            vec![1.into(), 200_000.into(), 100.into(), 100.into()],
+        ),
+        (ATTRIBUTED_TURN_MINUTES_SQL, vec![1.into(), 200_000.into()]),
+    ];
+    let read = |sql: &str, values: &[rusqlite::types::Value]| {
+        let mut statement = connection.prepare(sql).unwrap();
+        let columns = statement.column_count();
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(values), |row| {
+                (0..columns)
+                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        (
+            rows,
+            statement.get_status(rusqlite::StatementStatus::VmStep),
+        )
+    };
+    let before: Vec<_> = queries
+        .iter()
+        .map(|(sql, values)| read(sql, values))
+        .collect();
+    connection
+        .execute_batch(
+            "WITH RECURSIVE n(value) AS (
+             VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value < 10000
+         )
+         INSERT INTO turn (environment_key, agent, session_id, claim_fence, source_key,
+             thread_id, turn_index, scope, role, ts_ms, model, input_tokens,
+             cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary)
+         SELECT 'native', 'claude-code', 'published-history', 2, 'stale', 'stale',
+                value, 'main', 'assistant', 100123, 'claude-opus-4-6', 999999, 0, 0, 0, 0 FROM n;",
+        )
+        .unwrap();
+    for ((sql, values), (rows, steps)) in queries.iter().zip(before) {
+        let (after_rows, after_steps) = read(sql, values);
+        assert_eq!(after_rows, rows);
+        assert!(
+            after_steps < steps + 200,
+            "unpublished generations increase history work: {steps} -> {after_steps}"
+        );
+    }
+}
+
+#[test]
+fn narrow_learning_reads_do_not_scan_unrelated_sessions() {
+    let store = memory_store();
+    let key = insert_session(&store, "recent");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &key, 100_123, 200_000);
+    let connection = store.lock();
+    let steps = || {
+        let sql = history_scan_sql(
+            &connection,
+            90_000,
+            110_000,
+            ATTRIBUTED_TURN_SQL,
+            ATTRIBUTED_TURN_TIMESTAMP_SQL,
+        )
+        .expect("selects the narrow access path");
+        assert_eq!(sql, ATTRIBUTED_TURN_TIMESTAMP_SQL);
+        let mut statement = connection.prepare(sql).expect("prepares narrow history");
+        let mut rows = statement
+            .query(params![
+                90_000,
+                110_000,
+                MAX_ATTRIBUTION_GROUPS as i64 + 1,
+                PROVIDER
+            ])
+            .expect("reads narrow history");
+        assert!(rows.next().unwrap().is_some());
+        assert!(rows.next().unwrap().is_none());
+        drop(rows);
+        statement.get_status(rusqlite::StatementStatus::VmStep)
+    };
+    let before = steps();
+    connection
+        .execute_batch(
+            "WITH RECURSIVE n(value) AS (
+             VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value < 2000
+         )
+         INSERT INTO session (
+             environment_key, agent, session_id, source_kind, source_label,
+             first_seen_at, last_seen_at
+         )
+         SELECT 'native', 'claude-code', 'archived-' || value, 'inline', 'synthetic',
+                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z' FROM n;
+         INSERT INTO session_evidence (
+             environment_key, agent, session_id, status, published_fence
+         )
+         SELECT environment_key, agent, session_id, 'ready', 1 FROM session
+          WHERE session_id LIKE 'archived-%';",
+        )
+        .expect("adds unrelated session evidence");
+    let after = steps();
+    assert!(
+        after < before + 100,
+        "unrelated sessions increase narrow work: {before} -> {after}"
+    );
+    drop(connection);
+    let dollars = store
+        .attributed_turn_dollars_between(PROVIDER, &account('a'), 90, 110, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(dollars.len(), 1);
+    assert_eq!(dollars[0].turn_count, 1);
+    assert!((dollars[0].input_usd - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn all_history_paths_compare_range_size_with_a_large_catalog() {
+    let store = memory_store();
+    let key = insert_session(&store, "crossover");
+    observe_account(&store, &account('a'));
+    insert_turn(&store, &key, 100_123, 200_000);
+    let connection = store.lock();
+    connection
+        .execute_batch(
+            "WITH RECURSIVE n(value) AS (
+             VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value < 2000
+         )
+         INSERT INTO session (
+             environment_key, agent, session_id, source_kind, source_label,
+             first_seen_at, last_seen_at
+         )
+         SELECT 'native', 'claude-code', 'archived-' || value, 'inline', 'synthetic',
+                '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z' FROM n;
+         INSERT INTO session_evidence (
+             environment_key, agent, session_id, status, published_fence
+         )
+         SELECT environment_key, agent, session_id, 'ready', 1 FROM session
+          WHERE session_id LIKE 'archived-%';",
+        )
+        .unwrap();
+    let insert_stale = |count| {
+        connection
+            .execute(
+                "WITH RECURSIVE n(value) AS (
+                 VALUES(1) UNION ALL SELECT value + 1 FROM n WHERE value < ?1
+             )
+             INSERT INTO turn (
+                 environment_key, agent, session_id, claim_fence, source_key,
+                 thread_id, turn_index, scope, role, ts_ms, input_tokens,
+                 cache_read_tokens, cache_write_tokens, output_tokens, is_compaction_boundary
+             )
+             SELECT 'native', 'claude-code', 'crossover', 2, 'stale',
+                    'stale', value, 'main', 'assistant', 100123, 999999, 0, 0, 0, 0 FROM n",
+                [count],
+            )
+            .unwrap();
+    };
+    insert_stale(TIMESTAMP_SCAN_TURN_LIMIT);
+    let queries: [(&str, &str, Vec<rusqlite::types::Value>); 3] = [
+        (
+            ATTRIBUTED_TURN_MINUTES_SQL,
+            ATTRIBUTED_TURN_MINUTES_TIMESTAMP_SQL,
+            vec![90_000.into(), 110_000.into()],
+        ),
+        (
+            ATTRIBUTED_TURN_BUCKET_SQL,
+            ATTRIBUTED_TURN_BUCKET_TIMESTAMP_SQL,
+            vec![
+                90_000.into(),
+                110_000.into(),
+                20001.into(),
+                (MAX_QUOTA_TURNS as i64 + 1).into(),
+            ],
+        ),
+        (
+            ATTRIBUTED_TURN_SQL,
+            ATTRIBUTED_TURN_TIMESTAMP_SQL,
+            vec![
+                90_000.into(),
+                110_000.into(),
+                20001.into(),
+                PROVIDER.to_string().into(),
+            ],
+        ),
+    ];
+    for (published, timestamp, values) in &queries {
+        let chosen = history_scan_sql(&connection, 90_000, 110_000, published, timestamp).unwrap();
+        assert_eq!(chosen, *timestamp);
+        let read = |sql: &str| {
+            let mut statement = connection.prepare(sql).unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map(rusqlite::params_from_iter(values), |row| {
+                    (0..columns)
+                        .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(read(chosen), read(published));
+        assert_eq!(read(chosen).len(), 1);
+    }
+    insert_stale(2001);
+    for (published, timestamp, _) in &queries {
+        assert_eq!(
+            history_scan_sql(&connection, 90_000, 110_000, published, timestamp).unwrap(),
+            *published
+        );
+        for (start, end) in [(100_123, 100_124), (90_000, 100_122)] {
+            assert_eq!(
+                history_scan_sql(&connection, start, end, published, timestamp).unwrap(),
+                *timestamp
+            );
+        }
+    }
+    drop(connection);
+    assert_eq!(
+        store
+            .attributed_turn_epochs(PROVIDER, &account('a'), 90, 110)
+            .unwrap(),
+        vec![60]
+    );
+    let buckets = store
+        .attributed_turn_dollars_by_bucket(PROVIDER, &account('a'), None, 90, 110)
+        .unwrap()
+        .unwrap();
+    assert_eq!(buckets.len(), 1);
+    assert_eq!(buckets[0].turn_count, 1);
+    assert!((buckets[0].usd - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn quota_history_index_upgrade_preserves_timed_usage() {
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    for migration in &crate::store::schema::MIGRATIONS[..80] {
+        connection.execute_batch(migration).unwrap();
+    }
+    connection.pragma_update(None, "user_version", 80).unwrap();
+    connection
+        .execute(
+            "INSERT INTO session (environment_key, agent, session_id, source_kind,
+                 source_label, first_seen_at, last_seen_at)
+             VALUES ('native', ?1, 'index-upgrade', 'inline', 'synthetic',
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [AGENT],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO session_evidence (environment_key, agent, session_id,
+                 status, published_fence)
+             VALUES ('native', ?1, 'index-upgrade', 'ready', 1)",
+            [AGENT],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO turn (environment_key, agent, session_id, claim_fence,
+                 source_key, thread_id, turn_index, scope, role, ts_ms, model,
+                 input_tokens, cache_read_tokens, cache_write_tokens, output_tokens,
+                 is_compaction_boundary)
+             VALUES ('native', ?1, 'index-upgrade', 1, 'synthetic', 'synthetic', 0,
+                 'main', 'assistant', 100123, ?2, 200000, 0, 0, 0, 0)",
+            params![AGENT, MODEL],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO provider_account_seen (agent, provider, account_key,
+                 first_seen_epoch, last_seen_epoch) VALUES (?1, ?2, ?3, 1, 1)",
+            params![AGENT, PROVIDER, account('a')],
+        )
+        .unwrap();
+    let before = read_quota_turn_input(&connection, 0, 1_000, MAX_QUOTA_TURNS)
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.rows.len(), 1);
+    assert!(!before.rows[0].timed_tokens.is_empty());
+    let store = Store::from_connection(
+        connection,
+        Path::new("/tmp/antiburn-provider-limit-test").into(),
+    )
+    .unwrap();
+    store.migrate().unwrap();
+    assert_eq!(
+        store.schema_version().unwrap(),
+        crate::store::schema::MIGRATIONS.len() as i64
+    );
+    let index_exists: bool = store
+        .lock()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema
+                 WHERE type = 'index' AND name = 'turn_quota_published')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(index_exists);
+    let after = store.quota_turn_input(0, 1_000).unwrap().unwrap();
+    assert_eq!(after.rows.len(), before.rows.len());
+    assert_eq!(after.known_accounts, before.known_accounts);
+    for (after, before) in after.rows.iter().zip(&before.rows) {
+        assert_eq!(after.turn_count, before.turn_count);
+        assert_eq!(after.timed_tokens, before.timed_tokens);
+        assert_eq!(after.input_tokens, before.input_tokens);
+        assert_eq!(after.accounts_json, before.accounts_json);
+    }
+}

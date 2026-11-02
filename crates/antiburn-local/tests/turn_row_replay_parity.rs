@@ -34,9 +34,9 @@ use std::sync::Arc;
 use antiburn_local::analysis::{
     Bucket, CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, NormalizedRecord,
     RawSource, RecordSink, SessionEvidenceAccumulator, SessionInput, SessionMetrics,
-    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceKind, TurnRowSink,
-    TurnRowStore, TurnScope, TurnSessionKey, merge_metrics, metrics_by_source, metrics_from_rows,
-    query_turn_rows, reader_for,
+    SessionMetricsAccumulator, SessionSummary, SourceCapabilities, SourceFormat, SourceKind,
+    TurnRowSink, TurnRowStore, TurnScope, TurnSessionKey, merge_metrics, metrics_by_source,
+    metrics_from_rows, query_turn_rows, reader_for,
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
@@ -753,7 +753,7 @@ fn opencode_sqlite_input(path: &Path, session_id: &str) -> SessionInput {
         session_id: session_id.to_owned(),
         source: RawSource::Sqlite(path.to_owned()),
         fork_parent_session_id: None,
-        source_format: Default::default(),
+        source_format: SourceFormat::OpenCodeSqliteV1,
     }
 }
 

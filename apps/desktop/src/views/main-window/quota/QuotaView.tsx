@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
-import { Check, ChevronDown, Gauge } from "lucide-react"
+import { Check, ChevronDown, Gauge, LoaderCircle } from "lucide-react"
 import {
   type CSSProperties,
   Profiler,
@@ -12,6 +12,7 @@ import {
   useSyncExternalStore,
 } from "react"
 
+import { capitalize, pluralize } from "../../../lib/presentation/text"
 import { UnavailableNote } from "../../../components/providerUsage/UnavailableNote"
 import { useStableAccountNumbers } from "../../../components/providerUsage/useStableAccountNumbers"
 import { HeroFigures, type HeroFigureCell } from "../../../components/ui/HeroFigures"
@@ -82,7 +83,7 @@ function accountId(account: Pick<QuotaAccountPayload, "provider" | "accountKey">
  *  windows are "weeks"; every other lane's are "windows". */
 function windowWord(lane: QuotaLanePayload | null, count: number): string {
   const singular = lane != null && isWeeklyLane(lane.lane) ? "week" : "window"
-  return count === 1 ? singular : `${singular}s`
+  return pluralize(count, singular, `${singular}s`)
 }
 
 /** A range preset's label in the lane's own words: "Last 3 weeks" on a
@@ -440,7 +441,9 @@ export function QuotaView({
   const selectedLane: QuotaLanePayload | null =
     selectedAccount?.lanes.find((lane) => lane.lane === state.selection?.lane) ?? null
 
-  const loading = state.accounts == null && !state.accountsError
+  const loading =
+    (state.accounts == null && !state.accountsError) ||
+    (state.loading && state.usage == null && !state.usageError)
   const accountsEmpty = state.accounts != null && state.accounts.length === 0
   // Providers that can never have readings here, such as Claude Desktop with
   // no Claude Code sign-in. "Turn on live usage" does not help these readers.
@@ -538,7 +541,7 @@ export function QuotaView({
     const word = windowWord(selectedLane, 1)
     figureCells.push({
       key: "only",
-      label: word.charAt(0).toUpperCase() + word.slice(1),
+      label: capitalize(word),
       figure: percentFigure(endValues[0] ?? null),
       caption: `reset ${relativeTime(new Date(only.resetsAtEpoch * 1000).toISOString())}`,
     })
@@ -635,9 +638,19 @@ export function QuotaView({
     >
       <h1 className="sr-only">Limits</h1>
       {loading ? (
-        <p role="status" aria-busy="true" className="p-8 type-body text-label-secondary">
-          Loading Limits.
-        </p>
+        <div
+          role="status"
+          aria-busy="true"
+          className="flex flex-1 flex-col items-center justify-center px-8 py-12 text-center"
+        >
+          <LoaderCircle
+            size={28}
+            strokeWidth={2}
+            aria-hidden="true"
+            className="mb-3 animate-spin text-label-tertiary"
+          />
+          <p className="type-body text-label-secondary">Loading limits</p>
+        </div>
       ) : fullPageError ? (
         <div className="flex flex-1 items-center justify-center text-center">
           <div>

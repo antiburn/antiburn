@@ -7,19 +7,15 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use antiburn_local::discovery::{Explorers, SessionLog, SessionSource, WatchRoot};
 use antiburn_local::model::AgentKind;
-use antiburn_local::paths::{home_dir, ignored_paths};
 use antiburn_local::platform::environment::DiscoveryEnvironment;
 use tauri::{AppHandle, Manager};
 use tokio::time::Instant;
 
-use crate::agents;
-use crate::storage_health::checked;
-use crate::store::{SessionActivityKey, SessionKey, SessionRecord, Store};
+use crate::store::{SessionActivityKey, SessionRecord, Store};
 
 use super::ScanController;
 
@@ -34,11 +30,10 @@ pub const AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(20);
 /// agent's root looks like a new session to the classifier.
 pub const DB_AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(30);
 
+const OPENCODE_DB_AGENT_REDISCOVER_MIN_INTERVAL: Duration = Duration::from_secs(2);
+
 /// An indexed-title refresh runs at most this often for each agent.
 pub const TITLE_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(10);
-
-/// Stored sessions loaded at once during an indexed-title refresh.
-const TITLE_REFRESH_PAGE_SIZE: usize = 256;
 
 /// T7: how long the scheduler waits before retrying admitted work that found
 /// a command's pass already holding the running flag.
@@ -84,6 +79,15 @@ pub type ActivityKeysBySourceLabel = HashMap<String, BTreeSet<SessionActivityKey
 
 /// Resolves one batch of candidate source labels.
 pub type SourceLabelLookup<'a> = dyn Fn(&BTreeSet<String>) -> ActivityKeysBySourceLabel + 'a;
+
+#[cfg(test)]
+pub fn has_opencode_database_change(paths: &[PathBuf]) -> bool {
+    paths.iter().any(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "opencode.db" | "opencode.db-wal"))
+    })
+}
 
 impl ScopedWork {
     pub fn is_empty(&self) -> bool {
@@ -287,6 +291,45 @@ fn all_agent_roots(home: &Path) -> Vec<(AgentKind, WatchRoot)> {
         .collect()
 }
 
+/// Read new native JSONL transcripts without waiting for agent discovery.
+pub(super) fn direct_live_logs(
+    paths: &[PathBuf],
+    home: &Path,
+    known: &BTreeSet<SessionActivityKey>,
+) -> Vec<SessionLog> {
+    let roots = all_agent_roots(home);
+    paths
+        .iter()
+        .filter_map(|path| {
+            if source_label_candidates(path, &roots)
+                .iter()
+                .any(|label| known.iter().any(|key| &key.source_label == label))
+            {
+                return None;
+            }
+            if path
+                .extension()
+                .is_none_or(|extension| extension != "jsonl")
+            {
+                return None;
+            }
+            let agent = owning_agent(path, &roots)?;
+            if !matches!(
+                agent,
+                AgentKind::Claude | AgentKind::Codex | AgentKind::Pi | AgentKind::OpenCode
+            ) {
+                return None;
+            }
+            Some(SessionLog {
+                agent_type: agent,
+                source: SessionSource::File(path.clone()),
+                updated_at: None,
+                environment: DiscoveryEnvironment::Native,
+            })
+        })
+        .collect()
+}
+
 /// Tracks the last admitted run per session and per agent, so the scheduler
 /// can enforce T2, T4, and T5's floors without dropping the work a floor
 /// defers (T7).
@@ -340,12 +383,17 @@ impl Floors {
         }
         for agent in work.db_agents {
             let last_run = self.agents.get(&agent).copied();
+            let min_interval = if agent == AgentKind::OpenCode {
+                OPENCODE_DB_AGENT_REDISCOVER_MIN_INTERVAL
+            } else {
+                DB_AGENT_REDISCOVER_MIN_INTERVAL
+            };
             let mut outcome = Admission {
                 run_now: &mut run_now.db_agents,
                 deferred: &mut deferred.db_agents,
                 earliest_due: &mut earliest_due,
             };
-            outcome.admit(agent, last_run, DB_AGENT_REDISCOVER_MIN_INTERVAL, now);
+            outcome.admit(agent, last_run, min_interval, now);
         }
         for agent in work.quiet_agents {
             let last_run = self.agents.get(&agent).copied();
@@ -437,9 +485,9 @@ pub(super) async fn refresh_sessions(
         return Ok(None);
     }
     let started_at = std::time::Instant::now();
+    let mut ownership = super::ScanOwnership::new(app.state::<ScanController>());
     let outcome = refresh_sessions_locked(app, keys).await;
-    controller.running.store(false, Ordering::SeqCst);
-    controller.cancel.store(false, Ordering::SeqCst);
+    ownership.release();
     let summary = outcome?;
     ::tracing::debug!(
         event = "scan_targeted_finished",
@@ -466,9 +514,9 @@ pub(super) async fn refresh_indexed_titles(
         return Ok(None);
     }
     let started_at = std::time::Instant::now();
+    let mut ownership = super::ScanOwnership::new(app.state::<ScanController>());
     let outcome = refresh_indexed_titles_locked(app, agents).await;
-    controller.running.store(false, Ordering::SeqCst);
-    controller.cancel.store(false, Ordering::SeqCst);
+    ownership.release();
     let summary = outcome?;
     ::tracing::debug!(
         event = "scan_titles_finished",
@@ -484,77 +532,7 @@ async fn refresh_indexed_titles_locked(
     app: &AppHandle,
     agents: &BTreeSet<AgentKind>,
 ) -> anyhow::Result<ScopedSummary> {
-    let store = app.state::<Store>();
-    let now = super::unix_now();
-    let mut session_count = 0;
-    let mut changed_count = 0;
-
-    for agent in agents {
-        // Keep only IDs while the external index resolves once. Full cached
-        // records remain bounded to each page of titles that the index found.
-        let session_ids = store.native_session_ids_for_agent(agent.slug())?;
-        session_count += session_ids.len();
-        let titles = Explorers::DISK
-            .indexed_session_titles_for(agent, &session_ids)
-            .await;
-        drop(session_ids);
-
-        let mut title_entries = titles.into_iter();
-        loop {
-            let mut page_titles = title_entries
-                .by_ref()
-                .take(TITLE_REFRESH_PAGE_SIZE)
-                .collect::<HashMap<_, _>>();
-            if page_titles.is_empty() {
-                break;
-            }
-            let page_keys = page_titles
-                .keys()
-                .map(|session_id| SessionKey::new("native", agent.slug(), session_id))
-                .collect::<Vec<_>>();
-            let mut records = store.session_records_for_session_keys(&page_keys)?;
-            let previous_map = records
-                .iter()
-                .map(|record| {
-                    (
-                        SessionActivityKey::new(
-                            record.key.environment_key.clone(),
-                            record.key.agent.clone(),
-                            record.source_label.clone(),
-                        ),
-                        record.clone(),
-                    )
-                })
-                .collect::<HashMap<_, _>>();
-            let mut changed = Vec::new();
-            for record in &mut records {
-                let Some(resolved) = page_titles.remove(&record.key.session_id) else {
-                    continue;
-                };
-                if super::apply_indexed_title(record, agent, resolved) {
-                    changed.push(record.key.clone());
-                }
-            }
-
-            let changed_records = super::records_to_persist(&records, &changed, &[]);
-            if !changed_records.is_empty() {
-                checked(
-                    app,
-                    "The session index",
-                    store.upsert_sessions(&changed_records, &agents::evidence_cohort()),
-                )?;
-            }
-            // A title-store refresh changes titles only, so the diff below
-            // reports `title` facets without a metadata reload.
-            super::report_row_changes(app, &records, &changed, &previous_map, now).await;
-            changed_count += changed.len();
-        }
-    }
-
-    Ok(ScopedSummary {
-        sessions: session_count,
-        re_described: changed_count,
-    })
+    super::owner::refresh_titles(app, agents).await
 }
 
 async fn refresh_sessions_locked(
@@ -562,9 +540,7 @@ async fn refresh_sessions_locked(
     keys: &BTreeSet<SessionActivityKey>,
 ) -> anyhow::Result<ScopedSummary> {
     let store = app.state::<Store>();
-    let now = super::unix_now();
-    let home = home_dir().unwrap_or_default();
-    let ignored = ignored_paths::load_ignored(store.state_dir(), super::IGNORE_SCOPE);
+    let write_fence = store.capture_destructive_write_epoch();
 
     let mut previous_map: HashMap<SessionActivityKey, SessionRecord> = HashMap::new();
     let mut logs = Vec::new();
@@ -574,7 +550,7 @@ async fn refresh_sessions_locked(
         };
         // Only a native file source can be reused this way; a provider-database
         // or inline session has no path to re-describe from.
-        if record.source_kind != "file" {
+        if record.source_kind != "file" || record.key.environment_key != "native" {
             continue;
         }
         let Some(agent) = AgentKind::from_slug(&record.key.agent) else {
@@ -595,65 +571,18 @@ async fn refresh_sessions_locked(
         });
         previous_map.insert(key.clone(), record);
     }
-
-    // A watcher lane re-describes a known session on its own file change, so
-    // it is just as exposed to a housekeeping-only append as a full pass —
-    // the same filter keeps a stale touch from reading as current here too.
-    let (logs, precomputed) = super::current_window_candidates(logs, &previous_map, now).await;
-    let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
-    // A targeted refresh covers a handful of sessions a watcher burst named;
-    // it is not the surface the first-run progress reads, so it reports no
-    // read progress.
-    let described = super::describe_with_gate(
-        logs,
-        &home,
-        &ignored,
-        &previous_map,
-        &precomputed,
-        include_non_repo_folders,
-        &mut |_, _, _| {},
-    )
-    .await;
-    let record_keys = described
-        .records
-        .iter()
-        .map(|record| record.key.clone())
-        .collect::<Vec<_>>();
-    let returned = store.sessions_with_missing_source_for(&record_keys)?;
-    let persisted = checked(
-        app,
-        "The session index",
-        super::persist_changed_records(
-            &described.records,
-            &described.changed,
-            &returned,
-            |records| store.upsert_sessions(records, &agents::evidence_cohort()),
-        ),
-    )?;
-    if let Some((incarnations, revision)) = persisted {
-        super::wake_session_workers(app);
-        super::report_discovery(
-            app,
-            now,
-            &described.records,
-            &described.changed,
-            &previous_map,
-            &incarnations,
-            revision,
-        )
-        .await;
-    }
-    for key in &described.rejected {
-        let removed = checked(app, "The session index", store.delete_session(key))?;
-        if let Some((incarnation, revision)) = removed {
-            super::wake_session_workers(app);
-            super::report_rejected(app, &described, key, incarnation, revision).await;
-        }
-    }
-    // A targeted refresh can still change list membership: a reused source
-    // label can carry a new session identity, and a rejection evicts a
-    // row. The full pass reports the same fact from `scan/mod.rs::pass`.
-    super::report_membership_changed(app, &described).await;
+    let mut incremental = super::IncrementalAdmission {
+        io: super::AdmissionIo::App(app.clone()),
+        store: &store,
+        previous_records: previous_map.clone(),
+        evidence_agents: Vec::new(),
+        write_fence,
+        error: None,
+        outcomes: HashMap::new(),
+        list_changed: false,
+    };
+    let described = super::owner::refresh_logs(app, logs, &mut incremental).await?;
+    incremental.finish()?;
 
     Ok(ScopedSummary {
         sessions: described.records.len(),
@@ -676,6 +605,16 @@ mod tests {
 
     fn key(source_label: &str) -> SessionActivityKey {
         SessionActivityKey::new("native", "claude-code", source_label)
+    }
+
+    #[test]
+    fn opencode_database_watcher_paths_are_recognized() {
+        assert!(has_opencode_database_change(&[PathBuf::from(
+            "/home/user/.local/share/opencode/opencode.db-wal"
+        ),]));
+        assert!(!has_opencode_database_change(&[PathBuf::from(
+            "/home/user/.local/share/opencode/storage/session.json"
+        ),]));
     }
 
     fn lookup_for(
@@ -1097,6 +1036,35 @@ mod tests {
             .await;
         let (run_now, _deferred, _due) = floors.admit(work, Instant::now());
         assert_eq!(run_now.db_agents, BTreeSet::from([AgentKind::Cursor]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn opencode_database_work_uses_a_two_second_floor() {
+        let mut floors = Floors::default();
+        let mut work = ScopedWork::default();
+        work.db_agents
+            .extend([AgentKind::OpenCode, AgentKind::Cursor]);
+
+        let t0 = Instant::now();
+        floors.admit(work.clone(), t0);
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let (run_now, deferred, due) = floors.admit(work.clone(), Instant::now());
+        assert_eq!(run_now.db_agents, BTreeSet::from([AgentKind::OpenCode]));
+        assert_eq!(deferred.db_agents, BTreeSet::from([AgentKind::Cursor]));
+        assert_eq!(due, Some(t0 + DB_AGENT_REDISCOVER_MIN_INTERVAL));
+
+        let mut cursor_work = ScopedWork::default();
+        cursor_work.db_agents.insert(AgentKind::Cursor);
+        tokio::time::advance(DB_AGENT_REDISCOVER_MIN_INTERVAL - Duration::from_secs(3)).await;
+        let (run_now, deferred, _due) = floors.admit(cursor_work.clone(), Instant::now());
+        assert!(run_now.db_agents.is_empty());
+        assert_eq!(deferred.db_agents, BTreeSet::from([AgentKind::Cursor]));
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let (run_now, deferred, _due) = floors.admit(cursor_work, Instant::now());
+        assert_eq!(run_now.db_agents, BTreeSet::from([AgentKind::Cursor]));
+        assert!(deferred.db_agents.is_empty());
     }
 
     #[tokio::test(start_paused = true)]

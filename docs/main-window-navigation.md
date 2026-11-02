@@ -1,11 +1,9 @@
 # Main-window navigation and local search
 
 The retained main renderer owns a bounded history of 100 destinations. A destination is
-Overview, Limits, Memories, Sessions with its contextual filters and optional session identity, or Checks with an
+Overview, Agents, Limits, Memories, Sessions with its contextual filters and optional session identity, or Checks with an
 optional check ID. Explicit navigation appends; Back and Forward restore; automatic initial
 selection replaces. Selecting the same destination can reveal it again without appending.
-Opening one of the Agents, Sessions, or Checks progress steps' settings modals on top of
-Overview is not a separate history entry.
 New navigation after Back removes the forward branch. Deleted session targets are pruned.
 History lives for the renderer lifetime. The sidebar stays visible above the 720 CSS pixel
 navigation breakpoint and becomes a modal drawer below it;
@@ -57,40 +55,80 @@ Activity destination with a validated remote host ID. The renderer opens that
 host’s list with other facets cleared and no selected session. The link explicitly
 retains the user’s Sessions date range; the count represents all cached sessions.
 
-The same native route also carries an optional Overview step: the popover's
-attention banners open the main window on Overview and straight into the
-Agents, Sessions, or Checks step's settings modal, rather than a Settings pane
-that no longer exists. The Rust `NavigationDestination` gained an
-`overview_step: Option<OverviewStep>` field (`OverviewStep` is `Agents`,
-`Sessions`, or `Checks`), valid only alongside the Overview section; the
-`open_main_window_section` command and its caller-scoping gate it the same
-way. `mainWindowIpc.ts` exposes it as `openMainWindowSection(section,
-overviewStep?)`, and `MainWindowNavigationSession.ts` opens the named step
-(calling the Overview store's `openProgressStep`) once it applies a request
-that carries one. This is the one native route a new local view does not
-need: adding a native route still requires an explicit TypeScript/Rust
-contract change, as above.
+The popover's attention banners do not use this route. A banner action names a
+Settings pane (`openSettingsPane`), and the popover opens the Settings window on
+that pane, for example Settings → Sessions for a blocked repository.
+
+### Sidebar summaries
+
+Agents and Sessions show scan counts. Checks shows the unsnoozed number of checks
+that need a fix. Limits shows the same rounded subscription utilization percentages
+as Overview, in account order; missing figures are omitted. Counts and transitions
+belong to the renderer, not the navigation registry. The Agents page lists local
+agent discovery results and links to agent-filtered Sessions and Agent settings.
+
+First-run cards dock into their sidebar destinations. The sidebar remains disabled
+until setup finishes. Each step after Welcome has an explicit Back button, which
+changes only the visible step and does not lower the backend scan gate.
 
 ### Feature-owned search metadata
 
 Settings panes, Settings controls, agent session filters, and checks own their
 descriptors. Search combines these descriptors without maintaining independent
 label or alias lists. Settings panes share sidebar order and require exhaustive
-icon and renderer bindings. Check descriptors use the existing detector IDs.
+icon and renderer bindings. The nine deterministic native check descriptors
+retain their existing detector IDs. The four retired model-based built-ins have
+no fixed search entries or Settings controls. YAML definitions supply their runtime names, aliases, and
+availability to the same local search experience. See
+[Burn Checks authoring](burn-check/authoring.md) for the current draft and support.
 
-The Agents, Sessions, and Checks progress steps own a parallel set of search
-descriptors in `stepSettingsTargets.ts`, for the controls that moved out of
-Settings into their step's modal. These targets carry a
-`step` rather than a `pane`, reuse the same label, alias, and platform shape,
-and resolve through `resolveStepSettingsSearchTarget` to the step and control
-to open. Choosing one navigates to Overview and opens that step's modal with
-the control revealed and focused, never changing its value — the same
-reveal mechanism Settings controls use (`SettingsTargetFocus`), attached to
-the step modal instead of a Settings pane. Limits has no modal of its own, so
-its settings stay searchable through `settingsSearchTargets.ts` under Usage
-instead. During the first run, before the step modals are reachable, search
-excludes every `stepSetting` result; `AppSearch`'s `stepSettingsAvailable`
-prop carries that gate, and it does not apply to any other result kind.
+Burn Checks use the lowercase filename stem as logical identity. The temporary
+internal `installed:<filename-stem>` namespace keeps it distinct from native
+detector IDs; it is not a product label or an extension to `DetectorId`. Resolve
+global/project overrides within each scope, then aggregate collection/search
+rows by that logical ID. Multiple project activations of one global definition
+must not create ambiguous duplicate destinations. Keep scope, generation,
+branch, and evidence ownership on the underlying targets.
+
+The existing Checks collection owns one selection and keyboard inventory for
+both native checks and discovered definitions. They share groups, header totals,
+the right detail pane, source details, and session navigation. The header counts
+logical check types, including snoozed rows. The sidebar and active summaries
+exclude snoozed failures. Search reveals the target's existing group and focuses
+its ordinary row; it does not create an inline detail or history view.
+
+Whole-check snoozes use the same one-week, one-month, Forever, and Unsnooze
+actions. Dynamic identities remain separate at the persistence boundary, so
+native snooze preferences and detector masks stay compatible. Snooze changes
+presentation, not runtime enablement or activation. Discovered definitions do
+not acquire native fix prompts, Auto Fix, verification watches, burn estimates,
+or savings through navigation or row reuse.
+
+The Agents, Sessions, and Checks Settings panes render the same components as
+the first run's "Show settings" disclosure. Their controls are ordinary
+Settings targets in `settingsSearchTargets.ts`, with the pane `agents`,
+`sessions`, or `checks`. Search opens them in the Settings window and
+`SettingsTargetFocus` reveals and focuses the row, as for every other pane.
+The first-run disclosure renders the same rows, with the same
+`data-settings-control` IDs, but search does not target it. Search is not
+available while the first run takes over the main window.
+
+Decision-provider controls belong to the Checks Settings metadata. Search can
+reveal the Jev, Ollama, Cloudflare, and Custom setup fields in the connection
+dialog, the connection list, Custom response mode, Check files, and Model usage.
+There are no manual model-limit targets. Revealing a provider-specific target can
+open its draft for editing, but it must not save or activate that draft or test
+the connection. Search for a folder reveals its disclosure, not the native open
+action. **Use** explicitly changes selection. Saving the first connection selects
+it without enabling checks; other saves preserve selection. Saving changes to
+the selected connection updates its configuration. Removing the selected
+connection turns **Run checks** off and clears selection. Search focus preserves
+field values and the confirmed selection, including a valid empty selection.
+Search must not focus Remove as the primary target of a connection row.
+
+When Model usage has no current recorded information to show, its search result
+focuses the Model-based checks group itself. It does not add an empty usage row
+or focus the Run checks switch. Search never changes enablement or routing.
 
 The contextual filter menu owns result and spend choices, while live session state
 supplies counts. Fixed filters are excluded from search. The top-level Sessions
@@ -122,16 +160,23 @@ and controller dependencies; generic rows cannot import Settings metadata.
 
 ### Search behavior
 
-`appSearch.ts` ranks a local catalog of views, agent filters, Settings targets, step-settings
-targets, and checks. Names rank before aliases; category groups are bounded. Settings
-controls use stable IDs from `settingsSearchTargets.ts`, shared with their visible labels;
-step-settings controls use the parallel stable IDs in `stepSettingsTargets.ts`. The existing
+`appSearch.ts` ranks a local catalog of views, agent filters, Settings targets, and
+checks. Names rank before aliases; category groups are bounded. Settings controls use
+stable IDs from `settingsSearchTargets.ts`, shared with their visible labels. The existing
 Settings request accepts `pane#control`; old pane-only requests keep working, and a request
-naming a pane that no longer exists — `sources` or `checks` — falls back to General rather
-than failing. The Settings renderer reveals an arriving control once and can wait for a
-delayed row without a React effect; the Overview step modal reveals a step-settings control
-the same way.
+naming a pane that no longer exists, such as `sources`, falls back to General rather than
+failing. The Settings renderer reveals an arriving control once and can wait for a delayed
+row without a React effect.
 
 Search only navigates. It does not toggle controls, scan, fix, export, or delete data.
 Queries are transient and local. Analytics carries only explicit actions and fixed result
 categories, described in `docs/analytics-measurement.md`.
+
+The Memories sidebar count uses a separate directory-only read of local Claude Code
+memory files. It uses the report's file exclusions and 500-file per-project limit.
+It loads when the main window becomes visible after onboarding completes, then refreshes on focus or
+reopening if the last attempt is at least one minute old. Successful full reports
+supply the count, and archive/restore actions invalidate it immediately. Reads are
+coalesced; older results cannot replace a report or a count invalidated by an edit.
+The count is held only in memory. Failures retain the last known value; before a
+successful read the sidebar shows no number. No timer or filesystem watcher runs.

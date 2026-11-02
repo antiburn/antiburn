@@ -10,8 +10,8 @@
 //! the distro's OpenCode CLI for one bounded metadata query and per-cluster
 //! exports. Some CLI builds truncate otherwise successful exports, so malformed
 //! in-limit output is reconstructed with bounded 16 KiB read-only DB chunks.
-//! Legacy fragments are the final fallback. Every path normalizes a root and
-//! its descendants into the same synthetic JSONL consumed downstream.
+//! Legacy fragments are the final fallback. V1 paths use synthetic JSONL.
+//! V2 reads bounded session transfers from the registered, running service.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -20,20 +20,46 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use std::time::UNIX_EPOCH;
 
-use crate::discovery::scanner::{AgentKind, TitleSource};
+use crate::discovery::scanner::AgentKind;
+#[cfg(test)]
+use crate::discovery::scanner::TitleSource;
 use crate::discovery::{
     AgentExplorer, DesktopPlatform, DirectSessionSource, FORK_OBSERVATION_KEY, ForkObservation,
     ResolvedTitle, SessionLog, SessionSource, SurfacePaths, TitleLookupKind, WatchRoot,
     current_desktop_platform, env_path_when_real_home, home_dir,
 };
 use async_trait::async_trait;
-use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, params, params_from_iter};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 
 use crate::platform::environment::{DiscoveryEnvironment, WslEnvironmentInfo};
+
+mod native_database;
+mod wsl_v2;
+
+use wsl_v2::discover_recent_v2_api;
+
+#[cfg(test)]
+use native_database::{
+    MAX_V2_CLUSTER_SESSIONS, OpenCodeSqliteSchema, db_fork_parent_blocking,
+    db_session_metadata_blocking, db_session_source_format, fetch_db_activity_by_session,
+    opencode_sqlite_schema, query_db_records_for_root_connection, query_recent_db_session_sources,
+    query_session_title_by_id,
+};
+pub(crate) use native_database::{
+    database_identity_at_path, db_session_fingerprint_cancellable_with_identity,
+    db_session_has_parent_id, valid_opencode_v2_session_id, verify_database_identity,
+};
+pub use native_database::{
+    db_fork_parent, db_session_admission_revision_connection_with_identity,
+    db_session_fingerprint_snapshot, db_session_fingerprint_snapshot_with_identity,
+    db_session_metadata, db_session_source_format_connection, render_db_session,
+};
+use native_database::{
+    db_session_fingerprint_blocking, prefer_v2_session_sources, read_recent_db_session_sources,
+};
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
 const CLI_METADATA_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -168,6 +194,18 @@ impl AgentExplorer for OpenCodeExplorer {
         discover_recent_in(&roots, now, since_secs).await
     }
 
+    /// Select one source per session and send database metadata before fragments.
+    async fn discover_recent_batches(
+        &self,
+        agent: AgentKind,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        sender: tokio::sync::mpsc::Sender<crate::discovery::DiscoveryBatch>,
+    ) {
+        discover_recent_batches_in(&data_roots(), agent, now, since_secs, batch_size, sender).await;
+    }
+
     async fn direct_session_source(&self, session_id: &str) -> DirectSessionSource {
         locate_db_session_source(session_id.to_string()).await
     }
@@ -186,60 +224,22 @@ impl AgentExplorer for OpenCodeExplorer {
 
     /// Point-query lookup against `opencode.db#session.title` keyed by id,
     /// without opening transcript content. OpenCode has no rename concept, so
-    /// every hit is tagged [`TitleSource::Explicit`].
+    /// every hit is tagged [`crate::discovery::scanner::TitleSource::Explicit`].
     async fn indexed_session_title(&self, agent_session_id: &str) -> Option<ResolvedTitle> {
-        for root in data_roots() {
-            let db_path = root.join("opencode.db");
-            if !tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
-                continue;
-            }
-            let session_id = agent_session_id.to_string();
-            let title = tokio::task::spawn_blocking(move || {
-                query_session_title_by_id(&db_path, &session_id)
-            })
+        self.indexed_session_titles(&[agent_session_id.to_owned()])
             .await
-            .ok()
-            .flatten();
-            if let Some(text) = title {
-                return Some(ResolvedTitle::new(text, TitleSource::Explicit));
-            }
-        }
-        None
+            .remove(agent_session_id)
     }
 
     async fn indexed_session_titles(
         &self,
         agent_session_ids: &[String],
     ) -> HashMap<String, ResolvedTitle> {
-        let wanted: HashSet<String> = agent_session_ids.iter().cloned().collect();
-        let mut resolved = HashMap::new();
-        for root in data_roots() {
-            let db_path = root.join("opencode.db");
-            if !tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
-                continue;
-            }
-            let rows =
-                tokio::task::spawn_blocking(move || query_all_session_titles_from_db(&db_path))
-                    .await
-                    .unwrap_or_default();
-            for (session_id, title) in rows {
-                if !wanted.contains(&session_id) {
-                    continue;
-                }
-                if let Some(text) = title {
-                    resolved
-                        .entry(session_id)
-                        .or_insert_with(|| ResolvedTitle::new(text, TitleSource::Explicit));
-                }
-            }
-        }
-        resolved
+        native_database::read_selected_session_titles(agent_session_ids.to_vec()).await
     }
 
-    /// Owns the per-platform OpenCode data dir (XDG `share/opencode/`, macOS
-    /// `Application Support/opencode/`, Windows `AppData/Roaming/opencode/`)
-    /// plus the SQLite store `opencode.db`. Single-surface — CLI+TUI share
-    /// one tree.
+    /// Use the XDG data root on every native platform. Keep the older macOS
+    /// and Windows data roots for V1 stores. CLI and TUI share one surface.
     ///
     /// Substring → `surface_paths` bucket: *(all → `cli`)*
     /// - `/.local/share/opencode/`                 (Linux XDG)
@@ -271,13 +271,25 @@ impl AgentExplorer for OpenCodeExplorer {
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         let appdata = env_path_when_real_home(home, "APPDATA");
         let xdg_data_home = env_path_when_real_home(home, "XDG_DATA_HOME");
-        SurfacePaths {
-            cli: data_roots_for_platform(
+        let mut cli = match env_path_when_real_home(home, "OPENCODE_DATA_DIR") {
+            Some(root) => vec![root],
+            None => data_roots_for_platform(
                 home,
                 current_desktop_platform(),
                 appdata.as_deref(),
                 xdg_data_home.as_deref(),
             ),
+        };
+        if let Some(configured) = env_path_when_real_home(home, "OPENCODE_DB")
+            && let Some(root) = cli.first()
+            && let Some(path) = database_path_for_root_config(root, Some(&configured))
+            && let Some(parent) = path.parent()
+            && !cli.iter().any(|root| root == parent)
+        {
+            cli.push(parent.to_path_buf());
+        }
+        SurfacePaths {
+            cli,
             ide_desktop: Vec::new(),
             mirror: Vec::new(),
         }
@@ -305,74 +317,124 @@ pub(crate) fn sample_log_path(home: &Path) -> PathBuf {
         .join("ses_abc.json")
 }
 
-/// Read every `(id, title)` row from the OpenCode `session` table. Used by
-/// the batched title+surface path to fill the activity-list cache in one
-/// trip rather than O(N) per-session queries. Empty / whitespace-only
-/// titles are returned as `None` so the frontend's existing "no title"
-/// rendering still applies.
-/// Point-query for a single session's title. Returns `None` when the DB
-/// can't be opened, the row is missing, or the title is blank/whitespace.
-fn query_session_title_by_id(path: &Path, session_id: &str) -> Option<String> {
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    let title: String = conn
-        .query_row(
-            "SELECT title FROM session WHERE id = ?1 LIMIT 1",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .ok()?;
-    let trimmed = title.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn query_all_session_titles_from_db(path: &Path) -> Vec<(String, Option<String>)> {
-    let Ok(conn) = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) else {
-        return Vec::new();
-    };
-    let Ok(mut stmt) = conn.prepare("SELECT id, title FROM session") else {
-        return Vec::new();
-    };
-    let rows_iter = match stmt.query_map([], |row| {
-        let id: String = row.get(0)?;
-        let title: Option<String> = row.get(1)?;
-        Ok((id, title))
-    }) {
-        Ok(iter) => iter,
-        Err(_) => return Vec::new(),
-    };
-    rows_iter
-        .filter_map(|row| row.ok())
-        .map(|(id, title)| {
-            let trimmed = title
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty());
-            (id, trimmed)
-        })
-        .collect()
-}
-
 pub fn data_roots() -> Vec<PathBuf> {
-    if let Ok(override_dir) = std::env::var("OPENCODE_DATA_DIR") {
-        return vec![PathBuf::from(override_dir)];
-    }
-
-    let home = match home_dir() {
-        Some(h) => h,
-        None => return Vec::new(),
+    let roots = if let Some(override_dir) = std::env::var_os("OPENCODE_DATA_DIR") {
+        vec![PathBuf::from(override_dir)]
+    } else {
+        let Some(home) = home_dir() else {
+            return Vec::new();
+        };
+        data_roots_for_home(&home)
     };
+    if std::env::var_os("OPENCODE_DB").is_some() {
+        roots.into_iter().take(1).collect()
+    } else {
+        roots
+    }
+}
 
-    data_roots_for_home(&home)
+fn database_path_for_root_config(root: &Path, configured: Option<&Path>) -> Option<PathBuf> {
+    let Some(configured) = configured else {
+        return Some(root.join("opencode.db"));
+    };
+    if configured == Path::new(":memory:") {
+        return None;
+    }
+    let path = if configured.is_absolute() {
+        configured.to_path_buf()
+    } else {
+        root.join(configured)
+    };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let mut resolved = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            _ => resolved.push(component.as_os_str()),
+        }
+    }
+    Some(resolved)
+}
+
+const MAX_DB_DIRECTORY_ENTRIES: usize = 256;
+const MAX_CHANNEL_DATABASES: usize = 32;
+
+fn database_paths_for_root_config(
+    root: &Path,
+    configured: Option<&Path>,
+) -> Result<Vec<PathBuf>, &'static str> {
+    if configured.is_some() {
+        return Ok(database_path_for_root_config(root, configured)
+            .into_iter()
+            .collect());
+    }
+    let mut paths = vec![root.join("opencode.db")];
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(paths),
+        Err(_) => return Err("directory"),
+    };
+    let mut channels = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_DB_DIRECTORY_ENTRIES {
+            return Err("directory_limit");
+        }
+        let entry = entry.map_err(|_| "directory")?;
+        let name = entry.file_name();
+        let Some(channel) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("opencode-"))
+            .and_then(|name| name.strip_suffix(".db"))
+        else {
+            continue;
+        };
+        if channel.is_empty()
+            || !channel
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        {
+            continue;
+        }
+        channels.push(entry.path());
+        if channels.len() > MAX_CHANNEL_DATABASES {
+            return Err("channel_limit");
+        }
+    }
+    channels.sort();
+    paths.extend(channels);
+    Ok(paths)
+}
+
+fn database_paths_for_root(root: &Path) -> Result<Vec<PathBuf>, &'static str> {
+    let configured = std::env::var_os("OPENCODE_DB");
+    database_paths_for_root_config(root, configured.as_deref().map(Path::new))
+}
+
+/// Enumerate native stores. Call this blocking filesystem API off async workers.
+pub fn native_database_paths() -> Vec<PathBuf> {
+    native_database_paths_with_failures().0
+}
+
+fn native_database_paths_with_failures() -> (Vec<PathBuf>, bool) {
+    let mut paths = Vec::new();
+    let mut failed = false;
+    for root in data_roots() {
+        match database_paths_for_root(&root) {
+            Ok(found) => paths.extend(found),
+            Err(stage) => {
+                tracing::warn!(event = "opencode_sqlite_paths_failed", stage);
+                failed = true;
+            }
+        }
+    }
+    (paths, failed)
 }
 
 /// Read recent assistant-message records straight from the OpenCode store,
@@ -383,8 +445,18 @@ pub fn data_roots() -> Vec<PathBuf> {
 pub async fn recent_assistant_message_records(cutoff: i64, limit: usize) -> Vec<String> {
     let mut records = Vec::new();
     for root in data_roots() {
-        let db_path = root.join("opencode.db");
-        if tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
+        let path_root = root.clone();
+        let Ok(Ok(paths)) =
+            tokio::task::spawn_blocking(move || database_paths_for_root(&path_root)).await
+        else {
+            continue;
+        };
+        let mut saw_db = false;
+        for db_path in paths {
+            if !tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
+                continue;
+            }
+            saw_db = true;
             let remaining = limit.saturating_sub(records.len());
             if remaining == 0 {
                 break;
@@ -395,6 +467,8 @@ pub async fn recent_assistant_message_records(cutoff: i64, limit: usize) -> Vec<
             .await
             .unwrap_or_default();
             records.extend(rows);
+        }
+        if saw_db {
             continue;
         }
 
@@ -449,30 +523,7 @@ fn query_recent_assistant_messages_from_db(path: &Path, cutoff: i64, limit: usiz
 }
 
 pub async fn locate_db_session_source(root_session_id: String) -> DirectSessionSource {
-    let mut saw_db = false;
-    for root in data_roots() {
-        let db_path = root.join("opencode.db");
-        if !tokio::fs::try_exists(&db_path).await.unwrap_or(false) {
-            continue;
-        }
-        saw_db = true;
-        let session_id = root_session_id.clone();
-        let exists = tokio::task::spawn_blocking(move || db_session_exists(&db_path, &session_id))
-            .await
-            .unwrap_or(false);
-        if exists {
-            return DirectSessionSource::Found(SessionSource::ProviderDb {
-                agent: AgentKind::OpenCode,
-                db_path: root.join("opencode.db"),
-                session_id: root_session_id,
-            });
-        }
-    }
-    if saw_db {
-        DirectSessionSource::Missing
-    } else {
-        DirectSessionSource::Unsupported
-    }
+    native_database::locate_session_source(root_session_id).await
 }
 
 /// Discover OpenCode sessions in one mounted WSL distribution. The CLI owns
@@ -483,7 +534,19 @@ pub async fn discover_recent_in_wsl(
     now: i64,
     since_secs: i64,
 ) -> Vec<SessionLog> {
-    match discover_recent_via_cli(info, now - since_secs).await {
+    let mut logs = match discover_recent_v2_api(info, now - since_secs).await {
+        Ok(logs) => logs,
+        Err(error) => {
+            tracing::debug!(
+                event = "opencode_wsl_v2_api_unavailable",
+                distro = info.distribution,
+                error = %error,
+                "OpenCode WSL V2 API discovery failed; trying the V1 bridge"
+            );
+            Vec::new()
+        }
+    };
+    let legacy_logs = match discover_recent_via_cli(info, now - since_secs).await {
         Ok(logs) => logs,
         Err(error) => {
             tracing::warn!(
@@ -499,7 +562,30 @@ pub async fn discover_recent_in_wsl(
             }
             logs
         }
-    }
+    };
+    merge_wsl_session_sources(&mut logs, legacy_logs);
+    logs
+}
+
+fn merge_wsl_session_sources(logs: &mut Vec<SessionLog>, legacy: Vec<SessionLog>) {
+    let v2_ids: HashSet<_> = logs
+        .iter()
+        .filter_map(|log| match &log.source {
+            SessionSource::Inline { label, .. } => {
+                label.strip_prefix("opencode-v2-export:").map(str::to_owned)
+            }
+            _ => None,
+        })
+        .collect();
+    logs.extend(legacy.into_iter().filter(|log| {
+        match &log.source {
+            SessionSource::Inline { label, .. } => label
+                .strip_prefix("opencode:")
+                .is_none_or(|id| !v2_ids.contains(id)),
+            _ => true,
+        }
+    }));
+    crate::discovery::dedupe_environment_sessions(logs);
 }
 
 /// Resolves requested WSL OpenCode titles with one metadata query and no
@@ -640,8 +726,9 @@ async fn opencode_executable(info: &WslEnvironmentInfo) -> String {
 }
 
 fn parse_cli_session_rows(output: &[u8]) -> Result<Vec<CliSessionRow>, CliBridgeError> {
-    let rows: Vec<CliSessionRow> = serde_json::from_slice(output)
-        .map_err(|error| CliBridgeError::InvalidOutput(error.to_string()))?;
+    let rows: Vec<CliSessionRow> = serde_json::from_slice(output).map_err(|_| {
+        CliBridgeError::InvalidOutput("OpenCode session metadata was invalid".into())
+    })?;
     if rows.iter().any(|row| !valid_session_id(&row.id)) {
         return Err(CliBridgeError::InvalidOutput(
             "OpenCode metadata contained an invalid session id".to_string(),
@@ -658,8 +745,26 @@ async fn render_cli_clusters(
 ) -> Result<Vec<SessionLog>, CliBridgeError> {
     let sessions = session_records_from_cli_rows(environment, rows);
     let wanted = recent_cli_clusters(&sessions, cutoff);
-    let exports = spawn_cli_exports(environment, executable, &sessions, &wanted);
-    let exported = collect_cli_exports(exports).await?;
+    let export_sessions: Vec<_> = wanted
+        .iter()
+        .flat_map(|cluster| &cluster.session_ids)
+        .map(|session_id| {
+            let updated_at = sessions
+                .get(session_id)
+                .and_then(|record| record.updated_at.or(record.created_at))
+                .unwrap_or_default();
+            (session_id.clone(), updated_at)
+        })
+        .collect();
+    let jobs = export_sessions.into_iter().map(|(session_id, updated_at)| {
+        load_cli_export(
+            environment.clone(),
+            executable.to_string(),
+            session_id,
+            updated_at,
+        )
+    });
+    let exported = collect_cli_exports(jobs).await?;
     render_exported_cli_clusters(environment, cutoff, sessions, &wanted, &exported)
 }
 
@@ -717,41 +822,12 @@ fn recent_cli_clusters(
 
 type CliExportTask = Result<(String, i64, String, String), CliBridgeError>;
 
-fn spawn_cli_exports(
-    environment: &DiscoveryEnvironment,
-    executable: &str,
-    sessions: &HashMap<String, SessionRecord>,
-    wanted: &[OpenCodeSessionCluster],
-) -> tokio::task::JoinSet<CliExportTask> {
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(CLI_EXPORT_CONCURRENCY));
-    let mut exports = tokio::task::JoinSet::new();
-    for cluster in wanted {
-        for session_id in &cluster.session_ids {
-            spawn_cli_export(
-                &mut exports,
-                environment,
-                executable,
-                sessions,
-                session_id,
-                semaphore.clone(),
-            );
-        }
-    }
-    exports
-}
-
-fn spawn_cli_export(
-    exports: &mut tokio::task::JoinSet<CliExportTask>,
-    environment: &DiscoveryEnvironment,
-    executable: &str,
-    sessions: &HashMap<String, SessionRecord>,
-    session_id: &str,
-    semaphore: std::sync::Arc<tokio::sync::Semaphore>,
-) {
-    let updated_at = sessions
-        .get(session_id)
-        .and_then(|record| record.updated_at.or(record.created_at))
-        .unwrap_or_default();
+async fn load_cli_export(
+    environment: DiscoveryEnvironment,
+    executable: String,
+    session_id: String,
+    updated_at: i64,
+) -> CliExportTask {
     let cache_key = format!("{}:{session_id}", environment.key());
     let cached = CLI_EXPORT_CACHE
         .get_or_init(|| Mutex::new(CliExportCache::default()))
@@ -759,20 +835,10 @@ fn spawn_cli_export(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(&cache_key, updated_at);
     if let Some(content) = cached {
-        let session_id = session_id.to_string();
-        exports.spawn(async move { Ok((session_id, updated_at, content, cache_key)) });
-        return;
+        return Ok((session_id, updated_at, content, cache_key));
     }
-    let environment = environment.clone();
-    let executable = executable.to_string();
-    let session_id = session_id.to_string();
-    exports.spawn(async move {
-        let _permit = semaphore.acquire_owned().await.map_err(|error| {
-            CliBridgeError::Unavailable(format!("export semaphore closed: {error}"))
-        })?;
-        let content = load_cli_export_content(&environment, &executable, &session_id).await?;
-        Ok((session_id, updated_at, content, cache_key))
-    });
+    let content = load_cli_export_content(&environment, &executable, &session_id).await?;
+    Ok((session_id, updated_at, content, cache_key))
 }
 
 async fn load_cli_export_content(
@@ -796,12 +862,24 @@ async fn load_cli_export_content(
     }
 }
 
-async fn collect_cli_exports(
-    mut exports: tokio::task::JoinSet<CliExportTask>,
-) -> Result<HashMap<String, String>, CliBridgeError> {
+async fn collect_cli_exports<F>(
+    jobs: impl IntoIterator<Item = F>,
+) -> Result<HashMap<String, String>, CliBridgeError>
+where
+    F: std::future::Future<Output = CliExportTask> + Send + 'static,
+{
+    let mut jobs = jobs.into_iter();
+    let mut exports = tokio::task::JoinSet::new();
     let mut exported = HashMap::new();
     let mut first_error = None;
-    while let Some(result) = exports.join_next().await {
+    loop {
+        while exports.len() < CLI_EXPORT_CONCURRENCY {
+            let Some(job) = jobs.next() else { break };
+            exports.spawn(job);
+        }
+        let Some(result) = exports.join_next().await else {
+            break;
+        };
         if let Err(error) = accept_cli_export(result, &mut exported) {
             tracing::warn!(
                 target: "opencode_wsl_cli",
@@ -887,8 +965,9 @@ async fn export_session_via_db(
         CLI_METADATA_MAX_BYTES,
     )
     .await?;
-    let rows: Vec<CliRecordRow> = serde_json::from_slice(&output)
-        .map_err(|error| CliBridgeError::InvalidOutput(error.to_string()))?;
+    let rows: Vec<CliRecordRow> = serde_json::from_slice(&output).map_err(|_| {
+        CliBridgeError::InvalidOutput("OpenCode record metadata was invalid".into())
+    })?;
     validate_cli_record_rows(&rows, session_id)?;
     let records = read_cli_records(environment, executable, rows).await?;
     assemble_reconstructed_export(session_id, records)
@@ -1310,10 +1389,10 @@ fn data_roots_for_platform(
 ) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
-    // OpenCode's CLI resolves data storage through xdg-basedir, so the primary
+    // OpenCode's CLI resolves data storage through global-roots.ts, so the primary
     // session root is `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`
     // across platforms. Keep older native app roots as fallbacks.
-    if let Some(xdg_data_home) = xdg_data_home {
+    if let Some(xdg_data_home) = xdg_data_home.filter(|path| !path.as_os_str().is_empty()) {
         roots.push(xdg_data_home.join("opencode"));
     } else {
         roots.push(home.join(".local").join("share").join("opencode"));
@@ -1333,8 +1412,8 @@ fn data_roots_for_platform(
         }
     }
 
-    roots.sort();
-    roots.dedup();
+    let mut seen = HashSet::new();
+    roots.retain(|root| seen.insert(root.clone()));
     roots
 }
 
@@ -1377,13 +1456,123 @@ async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec
     discover_recent_in_impl(roots, now, since_secs, true).await
 }
 
+enum DbSourceRead {
+    NotPresent,
+    Ready(Vec<SessionLog>),
+    UnsupportedSchema,
+    Failed(&'static str),
+}
+
+async fn discover_recent_batches_in(
+    roots: &[PathBuf],
+    agent: AgentKind,
+    now: i64,
+    since_secs: i64,
+    batch_size: usize,
+    sender: tokio::sync::mpsc::Sender<crate::discovery::DiscoveryBatch>,
+) {
+    discover_recent_batches_with_fragments(
+        roots,
+        agent,
+        now,
+        since_secs,
+        batch_size,
+        sender,
+        |roots| async move { discover_recent_in_impl(&roots, now, since_secs, false).await },
+    )
+    .await;
+}
+
+async fn discover_recent_batches_with_fragments<
+    F: std::future::Future<Output = Vec<SessionLog>>,
+>(
+    roots: &[PathBuf],
+    agent: AgentKind,
+    now: i64,
+    since_secs: i64,
+    batch_size: usize,
+    sender: tokio::sync::mpsc::Sender<crate::discovery::DiscoveryBatch>,
+    read_fragments: impl FnOnce(Vec<PathBuf>) -> F,
+) {
+    let cutoff = now.saturating_sub(since_secs.max(0));
+    let mut database_logs = Vec::new();
+    let mut legacy_roots = Vec::new();
+    for root in roots {
+        let result = tokio::select! {
+            biased;
+            _ = sender.closed() => return,
+            result = read_recent_db_session_sources(root.clone(), cutoff) => result,
+        };
+        match db_source_logs(result) {
+            Some(logs) => database_logs.extend(logs),
+            None => legacy_roots.push(root.clone()),
+        }
+    }
+    tokio::select! {
+        biased;
+        _ = sender.closed() => return,
+        _ = prefer_v2_session_sources(roots, &mut database_logs) => {}
+    }
+    crate::discovery::dedupe_environment_sessions(&mut database_logs);
+    let database_keys: HashSet<_> = database_logs.iter().map(SessionLog::dedupe_key).collect();
+    if !crate::discovery::send_discovery_batches(
+        agent,
+        &mut database_logs,
+        batch_size,
+        false,
+        &sender,
+    )
+    .await
+    {
+        return;
+    }
+    if sender.is_closed() {
+        return;
+    }
+    let mut fragment_logs = tokio::select! {
+        biased;
+        _ = sender.closed() => return,
+        logs = read_fragments(legacy_roots) => logs,
+    };
+    tokio::select! {
+        biased;
+        _ = sender.closed() => return,
+        _ = prefer_v2_session_sources(roots, &mut fragment_logs) => {}
+    }
+    crate::discovery::dedupe_environment_sessions(&mut fragment_logs);
+    fragment_logs.retain(|log| !database_keys.contains(&log.dedupe_key()));
+    crate::discovery::send_discovery_batches(agent, &mut fragment_logs, batch_size, true, &sender)
+        .await;
+}
+
+fn db_source_logs(result: Result<DbSourceRead, tokio::task::JoinError>) -> Option<Vec<SessionLog>> {
+    match result {
+        Ok(DbSourceRead::Ready(logs)) => return Some(logs),
+        Ok(DbSourceRead::NotPresent) => return None,
+        Ok(DbSourceRead::UnsupportedSchema) => tracing::warn!(
+            event = "opencode_sqlite_schema_unsupported",
+            "OpenCode database schema is unsupported; fragmented storage fallback is disabled"
+        ),
+        Ok(DbSourceRead::Failed(stage)) => tracing::warn!(
+            event = "opencode_sqlite_discovery_failed",
+            stage,
+            "OpenCode database discovery failed; fragmented storage fallback is disabled"
+        ),
+        Err(_) => tracing::warn!(
+            event = "opencode_sqlite_discovery_worker_failed",
+            "OpenCode database discovery worker failed; fragmented storage fallback is disabled"
+        ),
+    }
+    Some(Vec::new())
+}
+
 async fn discover_recent_in_impl(
     roots: &[PathBuf],
     now: i64,
     since_secs: i64,
     allow_sqlite: bool,
 ) -> Vec<SessionLog> {
-    let cutoff = now - since_secs;
+    let cutoff = now.saturating_sub(since_secs.max(0));
     let mut output = Vec::new();
 
     let mut sessions: HashMap<String, SessionRecord> = HashMap::new();
@@ -1392,15 +1581,12 @@ async fn discover_recent_in_impl(
     let mut message_to_session: HashMap<String, String> = HashMap::new();
 
     for root in roots {
-        if allow_sqlite
-            && let Ok(Some(logs)) = tokio::task::spawn_blocking({
-                let root = root.clone();
-                move || query_recent_db_session_sources(&root, cutoff)
-            })
-            .await
-        {
-            output.extend(logs);
-            continue;
+        if allow_sqlite {
+            let result = read_recent_db_session_sources(root.clone(), cutoff).await;
+            if let Some(logs) = db_source_logs(result) {
+                output.extend(logs);
+                continue;
+            }
         }
 
         let session_dir = root.join("storage").join("session");
@@ -1512,6 +1698,10 @@ async fn discover_recent_in_impl(
     .await
     .unwrap_or_default();
     output.extend(file_logs);
+    if allow_sqlite {
+        prefer_v2_session_sources(roots, &mut output).await;
+    }
+    crate::discovery::dedupe_environment_sessions(&mut output);
     output
 }
 
@@ -1840,6 +2030,7 @@ fn render_session_logs(
             source: SessionSource::Inline {
                 label: format!("opencode:{}", cluster.root_session_id),
                 content: lines.join("\n"),
+                source_format: None,
             },
             updated_at: Some(max_updated),
         });
@@ -2081,482 +2272,6 @@ fn merge_session_records(
     }
 }
 
-#[derive(Debug, Default)]
-struct DbRecords {
-    sessions: Vec<(String, SessionRecord)>,
-    messages: Vec<MessageRecord>,
-    parts: Vec<PartRecord>,
-}
-
-struct DbSessionRowData {
-    session_id: String,
-    parent_session_id: Option<String>,
-    directory: Option<String>,
-    title: Option<String>,
-    time_created: Option<i64>,
-    time_updated: Option<i64>,
-    raw_json: Option<String>,
-}
-
-struct DbSessionMetadataRow {
-    session_id: String,
-    directory: Option<String>,
-    title: Option<String>,
-}
-
-fn query_recent_db_session_sources(root: &Path, cutoff: i64) -> Option<Vec<SessionLog>> {
-    let db_path = root.join("opencode.db");
-    if !db_path.exists() {
-        return None;
-    }
-
-    let conn = Connection::open_with_flags(
-        &db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    let recent_session_ids = recent_db_session_ids(&conn, cutoff);
-    if recent_session_ids.is_empty() {
-        return Some(Vec::new());
-    }
-    let cluster_session_ids = db_session_ids_with_ancestors(&conn, &recent_session_ids);
-    let sessions: HashMap<String, SessionRecord> =
-        fetch_db_sessions_light(&conn, &db_path, &cluster_session_ids)
-            .into_iter()
-            .collect();
-    let activity_by_session = fetch_db_activity_by_session(&conn, &cluster_session_ids);
-    let clusters = build_session_clusters(&sessions, &BTreeMap::new(), &BTreeMap::new());
-
-    let mut out = Vec::new();
-    for cluster in clusters {
-        let mut max_updated = 0i64;
-        for session_id in &cluster.session_ids {
-            if let Some(record) = sessions.get(session_id)
-                && let Some(ts) = record
-                    .updated_at
-                    .or(record.created_at)
-                    .or(record.file_mtime)
-            {
-                max_updated = max_updated.max(ts);
-            }
-            if let Some(ts) = activity_by_session.get(session_id) {
-                max_updated = max_updated.max(*ts);
-            }
-        }
-        if max_updated == 0 || max_updated < cutoff {
-            continue;
-        }
-        out.push(SessionLog {
-            environment: Default::default(),
-            agent_type: AgentKind::OpenCode,
-            source: SessionSource::ProviderDb {
-                agent: AgentKind::OpenCode,
-                db_path: db_path.clone(),
-                session_id: cluster.root_session_id,
-            },
-            updated_at: Some(max_updated),
-        });
-    }
-    out.sort_by(|a, b| {
-        a.updated_at
-            .unwrap_or_default()
-            .cmp(&b.updated_at.unwrap_or_default())
-            .then(a.source_label().cmp(&b.source_label()))
-    });
-    Some(out)
-}
-
-pub async fn render_db_session(db_path: PathBuf, root_session_id: String) -> Option<String> {
-    tokio::task::spawn_blocking(move || render_db_session_blocking(&db_path, &root_session_id))
-        .await
-        .ok()
-        .flatten()
-}
-
-/// Find a database-backed fork parent without rendering the session transcript.
-pub async fn db_fork_parent(db_path: PathBuf, session_id: String) -> Option<String> {
-    tokio::task::spawn_blocking(move || db_fork_parent_blocking(&db_path, &session_id))
-        .await
-        .ok()
-        .flatten()
-}
-
-pub async fn db_session_metadata(
-    db_path: PathBuf,
-    root_session_id: String,
-) -> Option<crate::discovery::scanner::SessionMetadata> {
-    tokio::task::spawn_blocking(move || db_session_metadata_blocking(&db_path, &root_session_id))
-        .await
-        .ok()
-        .flatten()
-}
-
-fn render_db_session_blocking(db_path: &Path, root_session_id: &str) -> Option<String> {
-    let mut records = query_db_records_for_root(db_path, root_session_id)?;
-    if let Some(observation) = infer_db_fork_observation(db_path, root_session_id, &records)
-        && let Some((_, session)) = records
-            .sessions
-            .iter_mut()
-            .find(|(session_id, _)| session_id == root_session_id)
-    {
-        session.raw[FORK_OBSERVATION_KEY] =
-            serde_json::to_value(observation).unwrap_or(Value::Null);
-    }
-    let logs = render_session_logs(
-        0,
-        records.sessions.into_iter().collect(),
-        group_messages_by_session(records.messages),
-        group_parts_by_session(records.parts),
-    );
-    let expected_label = format!("opencode:{root_session_id}");
-    logs.into_iter().find_map(|log| {
-        if log.source_label() != expected_label {
-            return None;
-        }
-        match log.source {
-            SessionSource::Inline { content, .. } => Some(content),
-            SessionSource::File(_) | SessionSource::ProviderDb { .. } => None,
-        }
-    })
-}
-
-fn db_fork_parent_blocking(db_path: &Path, session_id: &str) -> Option<String> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    conn.execute_batch("BEGIN").ok()?;
-    let (directory, title, child_created) = conn
-        .query_row(
-            "SELECT directory, title, time_created FROM session WHERE id = ?1 LIMIT 1",
-            params![session_id],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<i64>>(2).ok().flatten(),
-                ))
-            },
-        )
-        .ok()?;
-    let parent_title = opencode_fork_parent_title(&title)?;
-    let candidate_count = conn
-        .query_row(
-            "SELECT COUNT(*) FROM session
-              WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL",
-            params![session_id, directory, parent_title],
-            |row| row.get::<_, i64>(0),
-        )
-        .ok()?;
-    if candidate_count == 0 || candidate_count > MAX_DB_FORK_CANDIDATES {
-        return None;
-    }
-
-    let visible_sql = "WITH bounded AS (
-             SELECT CASE WHEN length(CAST(message.data AS BLOB)) <= ?2
-                               AND json_valid(message.data)
-                         THEN message.data END AS message_data,
-                     length(CAST(message.data AS BLOB)) AS message_bytes,
-                     json_valid(message.data) AS message_valid,
-                     CASE WHEN length(CAST(part.data AS BLOB)) <= ?2
-                               AND json_valid(part.data)
-                         THEN part.data END AS part_data,
-                     length(CAST(part.data AS BLOB)) AS part_bytes,
-                     json_valid(part.data) AS part_valid,
-                    message.time_created AS message_created,
-                    message.time_updated AS message_updated,
-                    message.id AS message_id,
-                    part.time_created AS part_created,
-                    part.time_updated AS part_updated,
-                    part.id AS part_id
-               FROM message JOIN part ON part.message_id = message.id
-              WHERE message.session_id = ?1
-         )
-         SELECT CASE WHEN json_type(message_data, '$.role') = 'text'
-                     THEN json_extract(message_data, '$.role') END,
-                 message_bytes,
-                 message_valid,
-                 CASE WHEN json_type(part_data, '$.type') = 'text'
-                      THEN json_extract(part_data, '$.type') END,
-                 CASE WHEN json_extract(part_data, '$.type') = 'text'
-                            AND json_type(part_data, '$.text') = 'text'
-                      THEN json_extract(part_data, '$.text') END,
-                 part_bytes,
-                 part_valid
-           FROM bounded
-          ORDER BY COALESCE(message_created, message_updated, 0), message_id,
-                   COALESCE(part_created, part_updated, 0), part_id";
-    let mut parent_items = conn.prepare(visible_sql).ok()?;
-    let mut child_items = conn.prepare(visible_sql).ok()?;
-    let mut candidates = conn
-        .prepare(
-            "SELECT id, time_created FROM session
-              WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL",
-        )
-        .ok()?;
-    let rows = candidates
-        .query_map(params![session_id, directory, parent_title], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<i64>>(1).ok().flatten(),
-            ))
-        })
-        .ok()?;
-
-    let mut best: Option<(String, usize)> = None;
-    let mut best_is_tied = false;
-    for (parent_session_id, parent_created) in rows.flatten() {
-        if parent_created
-            .zip(child_created)
-            .is_some_and(|(parent, child)| parent > child)
-        {
-            continue;
-        }
-        let Some(inherited) = db_visible_prefix_len(
-            &mut parent_items,
-            &parent_session_id,
-            &mut child_items,
-            session_id,
-            MAX_DB_FORK_RECORD_BYTES,
-        ) else {
-            continue;
-        };
-        match &best {
-            Some((_, best_inherited)) if inherited < *best_inherited => {}
-            Some((_, best_inherited)) if inherited == *best_inherited => best_is_tied = true,
-            _ => {
-                best = Some((parent_session_id, inherited));
-                best_is_tied = false;
-            }
-        }
-    }
-
-    if best_is_tied {
-        return None;
-    }
-    best.map(|(parent_session_id, _)| parent_session_id)
-}
-
-fn db_visible_prefix_len(
-    parent_statement: &mut rusqlite::Statement<'_>,
-    parent_session_id: &str,
-    child_statement: &mut rusqlite::Statement<'_>,
-    child_session_id: &str,
-    max_record_bytes: i64,
-) -> Option<usize> {
-    let mut parent_rows = parent_statement
-        .query(params![parent_session_id, max_record_bytes])
-        .ok()?;
-    let mut child_rows = child_statement
-        .query(params![child_session_id, max_record_bytes])
-        .ok()?;
-    let mut inherited = 0;
-
-    while let Some(parent) = next_db_visible_item(&mut parent_rows)? {
-        if next_db_visible_item(&mut child_rows)? != Some(parent) {
-            return None;
-        }
-        inherited += 1;
-    }
-    (inherited >= 2 && next_db_visible_item(&mut child_rows)?.is_some()).then_some(inherited)
-}
-
-fn next_db_visible_item(rows: &mut rusqlite::Rows<'_>) -> Option<Option<(String, String)>> {
-    while let Some(row) = rows.next().ok()? {
-        let message_bytes = row.get::<_, Option<i64>>(1).ok().flatten().unwrap_or(0);
-        let message_valid = row.get::<_, bool>(2).ok()?;
-        let part_bytes = row.get::<_, Option<i64>>(5).ok().flatten().unwrap_or(0);
-        let part_valid = row.get::<_, bool>(6).ok()?;
-        if message_bytes > MAX_DB_FORK_RECORD_BYTES || part_bytes > MAX_DB_FORK_RECORD_BYTES {
-            return None;
-        }
-        if !message_valid || !part_valid {
-            return None;
-        }
-        let role = row.get::<_, Option<String>>(0).ok().flatten();
-        let part_type = row.get::<_, Option<String>>(3).ok().flatten();
-        let text = row.get::<_, Option<String>>(4).ok().flatten();
-        if let (Some(role), Some("text"), Some(text)) = (role, part_type.as_deref(), text)
-            && matches!(role.as_str(), "user" | "assistant")
-        {
-            let text = normalize_opencode_visible_text(&text);
-            if !text.is_empty() {
-                return Some(Some((role, text)));
-            }
-        }
-    }
-    Some(None)
-}
-
-fn db_session_metadata_blocking(
-    db_path: &Path,
-    root_session_id: &str,
-) -> Option<crate::discovery::scanner::SessionMetadata> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    let row = query_db_session_metadata_row(&conn, root_session_id)?;
-    let title_source = row.title.as_ref().map(|_| TitleSource::Explicit);
-    Some(crate::discovery::scanner::SessionMetadata {
-        session_id: Some(row.session_id),
-        cwd: row.directory,
-        agent_type: Some(AgentKind::OpenCode),
-        title: row.title,
-        title_source,
-    })
-}
-
-fn query_db_records_for_root(db_path: &Path, root_session_id: &str) -> Option<DbRecords> {
-    if !db_path.exists() {
-        return None;
-    }
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    query_db_records_for_root_connection(&conn, db_path, root_session_id)
-}
-
-fn query_db_records_for_root_connection(
-    conn: &Connection,
-    db_path: &Path,
-    root_session_id: &str,
-) -> Option<DbRecords> {
-    let cluster_session_ids = db_session_ids_for_root(conn, root_session_id);
-    if cluster_session_ids.is_empty() {
-        return None;
-    }
-    Some(DbRecords {
-        sessions: fetch_db_sessions(conn, db_path, &cluster_session_ids),
-        messages: fetch_db_messages(conn, db_path, &cluster_session_ids),
-        parts: fetch_db_parts(conn, db_path, &cluster_session_ids),
-    })
-}
-
-fn infer_db_fork_observation(
-    db_path: &Path,
-    child_session_id: &str,
-    child_records: &DbRecords,
-) -> Option<ForkObservation> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    infer_db_fork_observation_connection(&conn, db_path, child_session_id, child_records)
-}
-
-fn infer_db_fork_observation_connection(
-    conn: &Connection,
-    db_path: &Path,
-    child_session_id: &str,
-    child_records: &DbRecords,
-) -> Option<ForkObservation> {
-    let (_, child_session) = child_records
-        .sessions
-        .iter()
-        .find(|(session_id, _)| session_id == child_session_id)?;
-    let parent_title = child_session
-        .title
-        .as_deref()
-        .and_then(opencode_fork_parent_title)?;
-    let child_items = opencode_record_visible_items(child_records, child_session_id);
-    if child_items.len() < 3 {
-        return None;
-    }
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT id FROM session WHERE id != ?1 AND directory = ?2 AND title = ?3 AND parent_id IS NULL LIMIT 101",
-        )
-        .ok()?;
-    let rows = stmt
-        .query_map(
-            params![child_session_id, child_session.directory, parent_title],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()?;
-    let mut matches = rows
-        .flatten()
-        .filter_map(|parent_session_id| {
-            let records = query_db_records_for_root_connection(conn, db_path, &parent_session_id)?;
-            let (_, parent_session) = records
-                .sessions
-                .iter()
-                .find(|(session_id, _)| session_id == &parent_session_id)?;
-            if parent_session
-                .created_at
-                .zip(child_session.created_at)
-                .is_some_and(|(parent, child)| parent > child)
-            {
-                return None;
-            }
-            let items = opencode_record_visible_items(&records, &parent_session_id);
-            strict_opencode_visible_prefix(&items, &child_items)
-                .then_some((parent_session_id, items.len()))
-        })
-        .collect::<Vec<_>>();
-    matches.sort_by_key(|(_, inherited)| std::cmp::Reverse(*inherited));
-    let (parent_session_id, inherited) = matches.first()?;
-    if matches.get(1).is_some_and(|(_, other)| other == inherited) {
-        return None;
-    }
-    Some(opencode_fork_observation(parent_session_id, *inherited))
-}
-
-fn opencode_record_visible_items(
-    records: &DbRecords,
-    root_session_id: &str,
-) -> Vec<(String, String)> {
-    let mut messages = records
-        .messages
-        .iter()
-        .filter(|message| message.session_id == root_session_id)
-        .collect::<Vec<_>>();
-    messages.sort_by(|a, b| {
-        a.created_at
-            .unwrap_or_default()
-            .cmp(&b.created_at.unwrap_or_default())
-            .then(a.id.cmp(&b.id))
-    });
-    let mut out = Vec::new();
-    for message in messages {
-        let Some(role) = message
-            .role
-            .as_deref()
-            .filter(|role| matches!(*role, "user" | "assistant"))
-        else {
-            continue;
-        };
-        let mut parts = records
-            .parts
-            .iter()
-            .filter(|part| part.message_id.as_deref() == Some(message.id.as_str()))
-            .filter(|part| part.part_type.as_deref() == Some("text"))
-            .collect::<Vec<_>>();
-        parts.sort_by(|a, b| {
-            a.created_at
-                .unwrap_or_default()
-                .cmp(&b.created_at.unwrap_or_default())
-                .then(a.id.cmp(&b.id))
-        });
-        for part in parts {
-            let Some(text) = part.raw.get("text").and_then(Value::as_str) else {
-                continue;
-            };
-            let text = normalize_opencode_visible_text(text);
-            if !text.is_empty() {
-                out.push((role.to_string(), text));
-            }
-        }
-    }
-    out
-}
-
 fn annotate_opencode_inline_forks(logs: &mut [SessionLog]) {
     let snapshots = logs
         .iter()
@@ -2700,200 +2415,6 @@ fn set_opencode_fork_observation(content: &mut String, observation: &ForkObserva
     *content = format!("{metadata}\n{rest}");
 }
 
-fn db_session_exists(db_path: &Path, root_session_id: &str) -> bool {
-    if !db_path.exists() {
-        return false;
-    }
-    let Ok(conn) = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    ) else {
-        return false;
-    };
-    conn.query_row(
-        "SELECT 1 FROM session WHERE id = ?1 LIMIT 1",
-        params![root_session_id],
-        |_| Ok(()),
-    )
-    .is_ok()
-}
-
-fn db_session_fingerprint_blocking(db_path: &Path, root_session_id: &str) -> Option<(u64, u64)> {
-    if !db_path.exists() {
-        return None;
-    }
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    db_session_fingerprint_connection(&conn, root_session_id)
-}
-
-/// Computes the provider fingerprint without loading cluster records into memory.
-pub(crate) fn db_session_fingerprint_connection(
-    conn: &Connection,
-    root_session_id: &str,
-) -> Option<(u64, u64)> {
-    let cluster = if db_session_has_parent_id(conn) {
-        "WITH RECURSIVE cluster(id) AS (
-             SELECT id FROM session WHERE id = ?1
-             UNION
-             SELECT session.id FROM session JOIN cluster ON session.parent_id = cluster.id
-         )"
-    } else {
-        "WITH cluster(id) AS (SELECT id FROM session WHERE id = ?1)"
-    };
-    let mut hash = DbFingerprintHash::new();
-    hash.write_bytes(root_session_id.as_bytes());
-    let mut rows = 0_u64;
-    for (table, join, columns) in [
-        (
-            "session",
-            "session.id = cluster.id",
-            &[
-                "id",
-                "parent_id",
-                "directory",
-                "title",
-                "time_created",
-                "time_updated",
-                "data",
-            ][..],
-        ),
-        (
-            "message",
-            "message.session_id = cluster.id",
-            &["id", "session_id", "time_created", "time_updated", "data"][..],
-        ),
-        (
-            "part",
-            "part.session_id = cluster.id",
-            &[
-                "id",
-                "message_id",
-                "session_id",
-                "time_created",
-                "time_updated",
-                "data",
-            ][..],
-        ),
-    ] {
-        hash.write_bytes(table.as_bytes());
-        let selected = columns
-            .iter()
-            .map(|column| {
-                if db_table_has_column(conn, table, column) {
-                    format!("{table}.{column}")
-                } else {
-                    "NULL".to_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let order = if db_table_has_column(conn, table, "id") {
-            format!("{table}.id")
-        } else {
-            format!("{table}.rowid")
-        };
-        let sql = format!(
-            "{cluster} SELECT {selected} FROM {table} JOIN cluster ON {join} ORDER BY {order}"
-        );
-        let mut statement = conn.prepare(&sql).ok()?;
-        let mut query = statement.query(params![root_session_id]).ok()?;
-        while let Some(row) = query.next().ok()? {
-            rows = rows.saturating_add(1);
-            for index in 0..columns.len() {
-                hash.write_value(row.get_ref(index).ok()?);
-            }
-        }
-    }
-    (rows > 0).then(|| (hash.finish(), rows))
-}
-
-fn db_table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
-        params![table, column],
-        |row| row.get(0),
-    )
-    .unwrap_or(false)
-}
-
-struct DbFingerprintHash(u64);
-
-impl DbFingerprintHash {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x100_0000_01b3;
-
-    fn new() -> Self {
-        Self(Self::OFFSET_BASIS)
-    }
-
-    fn write_value(&mut self, value: ValueRef<'_>) {
-        match value {
-            ValueRef::Null => self.write_bytes(&[0]),
-            ValueRef::Integer(value) => {
-                self.write_bytes(&[1]);
-                self.write_bytes(&value.to_le_bytes());
-            }
-            ValueRef::Real(value) => {
-                self.write_bytes(&[2]);
-                self.write_bytes(&value.to_bits().to_le_bytes());
-            }
-            ValueRef::Text(value) => {
-                self.write_bytes(&[3]);
-                self.write_bytes(value);
-            }
-            ValueRef::Blob(value) => {
-                self.write_bytes(&[4]);
-                self.write_bytes(value);
-            }
-        }
-    }
-
-    fn write_bytes(&mut self, bytes: &[u8]) {
-        for byte in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {
-            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(Self::PRIME);
-        }
-    }
-
-    fn finish(self) -> u64 {
-        self.0
-    }
-}
-
-pub(crate) fn db_session_has_parent_id(conn: &Connection) -> bool {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('session') WHERE name = 'parent_id')",
-        [],
-        |row| row.get(0),
-    )
-    .unwrap_or(false)
-}
-
-fn recent_db_session_ids(conn: &Connection, cutoff: i64) -> HashSet<String> {
-    let mut ids = HashSet::new();
-
-    for query in [
-        "SELECT id FROM session WHERE COALESCE(time_updated, time_created) >= ?1",
-        "SELECT DISTINCT session_id FROM message WHERE COALESCE(time_updated, time_created) >= ?1",
-        "SELECT DISTINCT session_id FROM part WHERE COALESCE(time_updated, time_created) >= ?1",
-    ] {
-        let Ok(mut stmt) = conn.prepare(query) else {
-            continue;
-        };
-        let Ok(rows) = stmt.query_map(params![cutoff * 1000], |row| row.get::<_, String>(0)) else {
-            continue;
-        };
-        for id in rows.flatten() {
-            ids.insert(id);
-        }
-    }
-
-    ids
-}
-
 fn group_messages_by_session(messages: Vec<MessageRecord>) -> BTreeMap<String, Vec<MessageRecord>> {
     let mut grouped: BTreeMap<String, Vec<MessageRecord>> = BTreeMap::new();
     for message in messages {
@@ -2913,555 +2434,6 @@ fn group_parts_by_session(parts: Vec<PartRecord>) -> BTreeMap<String, Vec<PartRe
         }
     }
     grouped
-}
-
-fn db_session_ids_with_ancestors(
-    conn: &Connection,
-    session_ids: &HashSet<String>,
-) -> HashSet<String> {
-    let mut all_ids = session_ids.clone();
-    let mut frontier = session_ids.clone();
-
-    while !frontier.is_empty() {
-        let placeholders = sql_in_placeholders(frontier.len());
-        let Ok(mut stmt) = conn.prepare(&format!(
-            "SELECT id, parent_id FROM session WHERE id IN ({placeholders})"
-        )) else {
-            break;
-        };
-
-        let Ok(rows) = stmt.query_map(params_from_iter(frontier.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1).ok().flatten(),
-            ))
-        }) else {
-            break;
-        };
-
-        let mut next_frontier = HashSet::new();
-        for (_, parent_id) in rows.flatten() {
-            if let Some(parent_id) = parent_id
-                && all_ids.insert(parent_id.clone())
-            {
-                next_frontier.insert(parent_id);
-            }
-        }
-        frontier = next_frontier;
-    }
-
-    all_ids
-}
-
-fn db_session_ids_for_root(conn: &Connection, root_session_id: &str) -> HashSet<String> {
-    let mut all_ids = HashSet::from([root_session_id.to_string()]);
-    let mut frontier = HashSet::from([root_session_id.to_string()]);
-
-    while !frontier.is_empty() {
-        let placeholders = sql_in_placeholders(frontier.len());
-        let Ok(mut stmt) = conn.prepare(&format!(
-            "SELECT id FROM session WHERE parent_id IN ({placeholders})"
-        )) else {
-            break;
-        };
-
-        let Ok(rows) = stmt.query_map(params_from_iter(frontier.iter()), |row| {
-            row.get::<_, String>(0)
-        }) else {
-            break;
-        };
-
-        let mut next_frontier = HashSet::new();
-        for child_id in rows.flatten() {
-            if all_ids.insert(child_id.clone()) {
-                next_frontier.insert(child_id);
-            }
-        }
-        frontier = next_frontier;
-    }
-
-    all_ids
-}
-
-fn fetch_db_sessions(
-    conn: &Connection,
-    db_path: &Path,
-    session_ids: &HashSet<String>,
-) -> Vec<(String, SessionRecord)> {
-    if session_ids.is_empty() {
-        return Vec::new();
-    }
-
-    let placeholders = sql_in_placeholders(session_ids.len());
-
-    if let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, parent_id, directory, title, time_created, time_updated, data FROM session WHERE id IN ({placeholders})"
-    )) {
-        let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1).ok().flatten(),
-                row.get::<_, String>(2).ok(),
-                row.get::<_, String>(3).ok(),
-                row.get::<_, i64>(4).ok(),
-                row.get::<_, i64>(5).ok(),
-                row.get::<_, String>(6).ok(),
-            ))
-        }) else {
-            return Vec::new();
-        };
-
-        return rows
-            .flatten()
-            .map(
-                |(session_id, parent_session_id, directory, title, time_created, time_updated, raw_json)| {
-                    build_db_session_record(
-                        db_path,
-                        DbSessionRowData {
-                            session_id,
-                            parent_session_id,
-                            directory,
-                            title,
-                            time_created,
-                            time_updated,
-                            raw_json,
-                        },
-                    )
-                },
-            )
-            .collect();
-    }
-
-    if let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, directory, title, time_created, time_updated, data FROM session WHERE id IN ({placeholders})"
-    )) {
-        let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1).ok(),
-                row.get::<_, String>(2).ok(),
-                row.get::<_, i64>(3).ok(),
-                row.get::<_, i64>(4).ok(),
-                row.get::<_, String>(5).ok(),
-            ))
-        }) else {
-            return Vec::new();
-        };
-
-        return rows
-            .flatten()
-            .map(
-                |(session_id, directory, title, time_created, time_updated, raw_json)| {
-                    build_db_session_record(
-                        db_path,
-                        DbSessionRowData {
-                            session_id,
-                            parent_session_id: None,
-                            directory,
-                            title,
-                            time_created,
-                            time_updated,
-                            raw_json,
-                        },
-                    )
-                },
-            )
-            .collect();
-    }
-
-    if let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, parent_id, directory, title, time_created, time_updated FROM session WHERE id IN ({placeholders})"
-    )) {
-        let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1).ok().flatten(),
-                row.get::<_, String>(2).ok(),
-                row.get::<_, String>(3).ok(),
-                row.get::<_, i64>(4).ok(),
-                row.get::<_, i64>(5).ok(),
-            ))
-        }) else {
-            return Vec::new();
-        };
-
-        return rows
-            .flatten()
-            .map(
-                |(session_id, parent_session_id, directory, title, time_created, time_updated)| {
-                    build_db_session_record(
-                        db_path,
-                        DbSessionRowData {
-                            session_id,
-                            parent_session_id,
-                            directory,
-                            title,
-                            time_created,
-                            time_updated,
-                            raw_json: None,
-                        },
-                    )
-                },
-            )
-            .collect();
-    }
-
-    let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, directory, title, time_created, time_updated FROM session WHERE id IN ({placeholders})"
-    )) else {
-        return Vec::new();
-    };
-
-    let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1).ok(),
-            row.get::<_, String>(2).ok(),
-            row.get::<_, i64>(3).ok(),
-            row.get::<_, i64>(4).ok(),
-        ))
-    }) else {
-        return Vec::new();
-    };
-
-    rows.flatten()
-        .map(
-            |(session_id, directory, title, time_created, time_updated)| {
-                build_db_session_record(
-                    db_path,
-                    DbSessionRowData {
-                        session_id,
-                        parent_session_id: None,
-                        directory,
-                        title,
-                        time_created,
-                        time_updated,
-                        raw_json: None,
-                    },
-                )
-            },
-        )
-        .collect()
-}
-
-fn fetch_db_sessions_light(
-    conn: &Connection,
-    db_path: &Path,
-    session_ids: &HashSet<String>,
-) -> Vec<(String, SessionRecord)> {
-    if session_ids.is_empty() {
-        return Vec::new();
-    }
-
-    let placeholders = sql_in_placeholders(session_ids.len());
-
-    if let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, parent_id, directory, title, time_created, time_updated FROM session WHERE id IN ({placeholders})"
-    )) {
-        let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1).ok().flatten(),
-                row.get::<_, String>(2).ok(),
-                row.get::<_, String>(3).ok(),
-                row.get::<_, i64>(4).ok(),
-                row.get::<_, i64>(5).ok(),
-            ))
-        }) else {
-            return Vec::new();
-        };
-
-        return rows
-            .flatten()
-            .map(
-                |(session_id, parent_session_id, directory, title, time_created, time_updated)| {
-                    build_db_session_record(
-                        db_path,
-                        DbSessionRowData {
-                            session_id,
-                            parent_session_id,
-                            directory,
-                            title,
-                            time_created,
-                            time_updated,
-                            raw_json: None,
-                        },
-                    )
-                },
-            )
-            .collect();
-    }
-
-    let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, directory, title, time_created, time_updated FROM session WHERE id IN ({placeholders})"
-    )) else {
-        return Vec::new();
-    };
-
-    let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1).ok(),
-            row.get::<_, String>(2).ok(),
-            row.get::<_, i64>(3).ok(),
-            row.get::<_, i64>(4).ok(),
-        ))
-    }) else {
-        return Vec::new();
-    };
-
-    rows.flatten()
-        .map(
-            |(session_id, directory, title, time_created, time_updated)| {
-                build_db_session_record(
-                    db_path,
-                    DbSessionRowData {
-                        session_id,
-                        parent_session_id: None,
-                        directory,
-                        title,
-                        time_created,
-                        time_updated,
-                        raw_json: None,
-                    },
-                )
-            },
-        )
-        .collect()
-}
-
-fn fetch_db_activity_by_session(
-    conn: &Connection,
-    session_ids: &HashSet<String>,
-) -> HashMap<String, i64> {
-    let mut out = HashMap::new();
-    if session_ids.is_empty() {
-        return out;
-    }
-    let placeholders = sql_in_placeholders(session_ids.len());
-    for table in ["message", "part"] {
-        let Ok(mut stmt) = conn.prepare(&format!(
-            "SELECT session_id, time_created, time_updated FROM {table} WHERE session_id IN ({placeholders})"
-        )) else {
-            continue;
-        };
-        let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1).ok(),
-                row.get::<_, i64>(2).ok(),
-            ))
-        }) else {
-            continue;
-        };
-        for (session_id, time_created, time_updated) in rows.flatten() {
-            if let Some(ts) =
-                normalize_db_epoch(time_created).or_else(|| normalize_db_epoch(time_updated))
-            {
-                out.entry(session_id)
-                    .and_modify(|current| *current = (*current).max(ts))
-                    .or_insert(ts);
-            }
-        }
-    }
-    out
-}
-
-fn query_db_session_metadata_row(
-    conn: &Connection,
-    session_id: &str,
-) -> Option<DbSessionMetadataRow> {
-    if let Ok(mut stmt) =
-        conn.prepare("SELECT id, directory, title FROM session WHERE id = ?1 LIMIT 1")
-    {
-        return stmt
-            .query_row(params![session_id], |row| {
-                Ok(DbSessionMetadataRow {
-                    session_id: row.get::<_, String>(0)?,
-                    directory: row.get::<_, String>(1).ok(),
-                    title: row.get::<_, String>(2).ok().and_then(|t| {
-                        let trimmed = t.trim().to_string();
-                        (!trimmed.is_empty()).then_some(trimmed)
-                    }),
-                })
-            })
-            .ok();
-    }
-    None
-}
-
-fn build_db_session_record(db_path: &Path, row: DbSessionRowData) -> (String, SessionRecord) {
-    let DbSessionRowData {
-        session_id,
-        parent_session_id,
-        directory,
-        title,
-        time_created,
-        time_updated,
-        raw_json,
-    } = row;
-
-    let raw = raw_json
-        .as_deref()
-        .and_then(parse_json)
-        .unwrap_or_else(|| json!({}));
-    let raw = merge_json_object(
-        raw,
-        json!({
-            "id": session_id.clone(),
-            "parentID": parent_session_id.clone(),
-            "directory": directory.clone(),
-            "title": title.clone(),
-            "time": {
-                "created": normalize_db_epoch(time_created),
-                "updated": normalize_db_epoch(time_updated),
-            }
-        }),
-    );
-    let record = SessionRecord {
-        directory,
-        title,
-        parent_session_id,
-        source_file: format!("{}#session/{}", db_path.display(), session_id),
-        created_at: normalize_db_epoch(time_created),
-        updated_at: normalize_db_epoch(time_updated),
-        file_mtime: None,
-        raw,
-    };
-    (session_id, record)
-}
-
-fn fetch_db_messages(
-    conn: &Connection,
-    db_path: &Path,
-    session_ids: &HashSet<String>,
-) -> Vec<MessageRecord> {
-    if session_ids.is_empty() {
-        return Vec::new();
-    }
-
-    let placeholders = sql_in_placeholders(session_ids.len());
-    let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, session_id, time_created, time_updated, data FROM message WHERE session_id IN ({placeholders})"
-    ))
-    else {
-        return Vec::new();
-    };
-
-    let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, i64>(2).ok(),
-            row.get::<_, i64>(3).ok(),
-            row.get::<_, String>(4).ok(),
-        ))
-    }) else {
-        return Vec::new();
-    };
-
-    rows.flatten()
-        .map(|(id, session_id, time_created, time_updated, raw_json)| {
-            let raw = raw_json
-                .as_deref()
-                .and_then(parse_json)
-                .unwrap_or_else(|| json!({}));
-            let raw = merge_json_object(
-                raw,
-                json!({
-                    "id": id,
-                    "sessionID": session_id,
-                    "time": {
-                        "created": normalize_db_epoch(time_created),
-                        "updated": normalize_db_epoch(time_updated),
-                    }
-                }),
-            );
-
-            MessageRecord {
-                id: id.clone(),
-                session_id: session_id.clone(),
-                role: raw.get("role").and_then(Value::as_str).map(str::to_string),
-                source_file: format!("{}#message/{}", db_path.display(), id),
-                created_at: raw
-                    .pointer("/time/created")
-                    .and_then(parse_epoch_from_json_value)
-                    .or_else(|| normalize_db_epoch(time_created))
-                    .or_else(|| normalize_db_epoch(time_updated)),
-                file_mtime: None,
-                raw,
-            }
-        })
-        .collect()
-}
-
-fn fetch_db_parts(
-    conn: &Connection,
-    db_path: &Path,
-    session_ids: &HashSet<String>,
-) -> Vec<PartRecord> {
-    if session_ids.is_empty() {
-        return Vec::new();
-    }
-
-    let placeholders = sql_in_placeholders(session_ids.len());
-    let Ok(mut stmt) = conn.prepare(&format!(
-        "SELECT id, message_id, session_id, time_created, time_updated, data FROM part WHERE session_id IN ({placeholders})"
-    ))
-    else {
-        return Vec::new();
-    };
-
-    let Ok(rows) = stmt.query_map(params_from_iter(session_ids.iter()), |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i64>(3).ok(),
-            row.get::<_, i64>(4).ok(),
-            row.get::<_, String>(5).ok(),
-        ))
-    }) else {
-        return Vec::new();
-    };
-
-    rows.flatten()
-        .map(
-            |(id, message_id, session_id, time_created, time_updated, raw_json)| {
-                let raw = raw_json
-                    .as_deref()
-                    .and_then(parse_json)
-                    .unwrap_or_else(|| json!({}));
-                let raw = merge_json_object(
-                    raw,
-                    json!({
-                        "id": id,
-                        "messageID": message_id,
-                        "sessionID": session_id,
-                        "time": {
-                            "created": normalize_db_epoch(time_created),
-                            "updated": normalize_db_epoch(time_updated),
-                        }
-                    }),
-                );
-
-                PartRecord {
-                    id: id.clone(),
-                    message_id: Some(message_id),
-                    session_id: Some(session_id),
-                    part_type: raw.get("type").and_then(Value::as_str).map(str::to_string),
-                    source_file: format!("{}#part/{}", db_path.display(), id),
-                    created_at: raw
-                        .pointer("/time/created")
-                        .and_then(parse_epoch_from_json_value)
-                        .or_else(|| normalize_db_epoch(time_created))
-                        .or_else(|| normalize_db_epoch(time_updated)),
-                    file_mtime: None,
-                    raw,
-                }
-            },
-        )
-        .collect()
 }
 
 fn parse_json(raw_json: &str) -> Option<Value> {

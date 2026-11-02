@@ -1,0 +1,311 @@
+use super::*;
+
+fn cursor_transcript(session_id: &str, count: usize) -> String {
+    let mut records = vec![
+        json!({"cursor_source":"desktop_state_vscdb","cursor_scope_ordering":"recorded_headers","session_id":session_id,"local_fork_observation":null}),
+        json!({"role":"user","bubbleId":"user","content":"Fix the parser tests.","timestamp":"2026-01-01T00:00:00Z"}),
+    ];
+    for index in 0..count {
+        records.push(json!({"role":"assistant","bubbleId":format!("bubble/t:call-{index}\nresult"),"content":"","timestamp":"2026-01-01T00:00:01Z","model":"synthetic","cursor_tool_result":{"name":"run_terminal_command_v2","toolCallId":format!("call-{index}\nresult"),"status":"completed","params":json!({"command":"cargo test parser"}).to_string(),"result":json!({"output":"test parser::parse_empty FAILED: expected an empty list, got null; src/parser.rs:42","exitCode":101,"notInterrupted":true,"rejected":false}).to_string()}}));
+    }
+    records
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn publish_cursor(fixture: &Fixture, count: usize) {
+    let environment = "native";
+    let session_id = "cursor-main";
+    let cwd = &fixture.project;
+    fixture
+        .store
+        .upsert_sessions(
+            &[SessionRecord {
+                key: SessionKey::new(environment, "cursor", session_id),
+                source_kind: "inline".into(),
+                source_label: format!("cursor-desktop:{session_id}"),
+                wsl_distro: None,
+                title: Some("Parser tests".into()),
+                title_source: Some("explicit".into()),
+                cwd: Some(cwd.to_string_lossy().into_owned()),
+                surface: "desktop".into(),
+                updated_at_epoch: Some(time::OffsetDateTime::now_utc().unix_timestamp()),
+                activity_cursor: String::new(),
+                activity_source: "event".into(),
+                subagent_count: 0,
+                fork_parent_session_id: None,
+                source_fingerprint: Some(format!("{session_id}-{count}")),
+            }],
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    let key = SessionKey::new(environment, "cursor", session_id);
+    let input = SessionInput {
+        agent: "cursor".into(),
+        session_id: session_id.into(),
+        source: RawSource::Jsonl(cursor_transcript(session_id, count)),
+        source_format: SourceFormat::CursorIdeComposer,
+        fork_parent_session_id: None,
+    };
+    let mut sink = CompositeSink::new(
+        SessionMetricsAccumulator::new("cursor", session_id),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "cursor".into(),
+            session_id: session_id.into(),
+            kind: SourceKind::Jsonl,
+            capabilities: SourceCapabilities {
+                source_format: SourceFormat::CursorIdeComposer,
+                ..SourceCapabilities::cursor()
+            },
+        }),
+    );
+    reader_for("cursor").visit(&input, &mut sink).unwrap();
+    let results = sink.tool_result_observations();
+    assert_eq!(results.len(), count);
+    assert!(
+        results
+            .iter()
+            .all(|result| result.context.as_ref().unwrap().main_session)
+    );
+    let claim = fixture
+        .store
+        .claim_next_evidence_by_recency(&["cursor"], 10_000, 60)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claim.key, key);
+    let revisions = crate::analysis::projection_revisions();
+    let fingerprint = format!("{session_id}-{count}");
+    assert!(
+        fixture
+            .store
+            .publish_projections_with_native_tool_results(
+                &AnalysisRecord {
+                    key: key.clone(),
+                    model_breakdown_json: "{}".into(),
+                    pricing_breakdown_json: "{}".into(),
+                    inclusive_models_json: "[]".into(),
+                    initial_context_json: None,
+                    source_summaries_json: None,
+                    provider_hints_json: None,
+                    source_fingerprint: fingerprint.clone(),
+                    pricing_generation: 1,
+                    analyzed_generation: claim.source_generation,
+                    parser_revision: revisions.parser_revision,
+                    analyzer_revision: revisions.analyzer_revision,
+                    metrics_schema_revision: revisions.metrics_schema_revision,
+                },
+                None,
+                &EvidenceCompletion {
+                    claim_fence: claim.claim_fence,
+                    status: PublishedEvidence::Ready,
+                    evidence_schema_revision: antiburn_local::analysis::EVIDENCE_SCHEMA_REVISION,
+                    evidence_json: crate::store::test_support::evidence_json(&key),
+                },
+                &[],
+                &[],
+                ToolResultPublishOptions {
+                    source_fingerprint: Some(&fingerprint),
+                    batch: Some(&ToolResultBatch {
+                        source_format: SourceFormat::CursorIdeComposer,
+                        results: results.to_vec(),
+                        complete: true
+                    }),
+                },
+            )
+            .unwrap()
+    );
+}
+
+fn assert_snapshot_attachment(store: &Store) {
+    let (attachments, observers): (i64, i64) = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(observer_epoch IS NOT NULL), 0)
+         FROM burn_check_session_attachment
+         WHERE json_extract(branch_key, '$[1]') = 'cursor'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((attachments, observers), (1, 0));
+    for table in ["native_file_delivery", "opencode_journal_delivery"] {
+        assert_eq!(
+            store
+                .lock()
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE agent = 'cursor'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[tokio::test]
+async fn cursor_desktop_startup_and_live_results_reach_one_assessment_without_replay() {
+    for source_first in [false, true] {
+        let fixture = Fixture::new();
+        fixture
+            .store
+            .delete_session(&SessionKey::new("native", "pi", "main"))
+            .unwrap();
+        publish_cursor(&fixture, if source_first { 3 } else { 0 });
+        let mut host = fixture.host();
+        host.reconcile(&Admission::Ready).unwrap();
+        drain(&mut host);
+        if !source_first {
+            publish_cursor(&fixture, 3);
+            drain(&mut host);
+        }
+        assert_snapshot_attachment(&fixture.store);
+        fixture.evaluator.answer("stuck");
+        assert_eq!(
+            host.evaluation_jobs(1)
+                .pop()
+                .unwrap()
+                .run()
+                .await
+                .unwrap()
+                .unwrap()
+                .outcome,
+            RunOutcome::Accepted
+        );
+        {
+            let inputs = fixture.evaluator.inputs.lock().unwrap();
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0]["activity"].as_array().unwrap().len(), 3);
+            assert_eq!(inputs[0]["request_history_complete"], true);
+            assert_eq!(inputs[0]["requests"][0]["text"], "Fix the parser tests.");
+        }
+        let report = read_installed_checks(&fixture.store, &host.definitions).unwrap();
+        assert_eq!(report[0].finding, 1);
+        let checks = antiburn_checks_store::read_session_checks(
+            &fixture.store.lock(),
+            "native",
+            "cursor",
+            "cursor-main",
+        )
+        .unwrap();
+        assert_eq!(
+            checks[0].status,
+            Some(antiburn_checks_store::CheckStatus::Failure)
+        );
+        drop(host);
+        let mut restarted = fixture.host();
+        restarted.reconcile(&Admission::Ready).unwrap();
+        drain(&mut restarted);
+        assert_snapshot_attachment(&fixture.store);
+        assert!(
+            restarted
+                .evaluation_jobs(1)
+                .pop()
+                .unwrap()
+                .run()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(fixture.evaluator.inputs.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn cursor_report_counts_only_the_native_desktop_root_route() {
+    let fixture = Fixture::new();
+    fixture
+        .store
+        .delete_session(&SessionKey::new("native", "pi", "main"))
+        .unwrap();
+    publish_cursor(&fixture, 0);
+    let mut host = fixture.host();
+    host.reconcile(&Admission::Ready).unwrap();
+    drain(&mut host);
+    assert_snapshot_attachment(&fixture.store);
+    let report = read_installed_checks(&fixture.store, &host.definitions).unwrap();
+    assert_eq!(report[0].waiting_for_results_count, 1);
+    for sql in [
+        "UPDATE session SET source_label = 'cursor-cli:cursor-main' WHERE agent = 'cursor'",
+        "UPDATE session SET source_label = 'cursor-desktop:cursor-main', source_kind = 'file' WHERE agent = 'cursor'",
+        "UPDATE session SET source_kind = 'inline', wsl_distro = 'synthetic' WHERE agent = 'cursor'",
+        "UPDATE session SET wsl_distro = NULL WHERE agent = 'cursor';
+         INSERT INTO session_relation (environment_key, agent, session_id, kind, related_id)
+         VALUES ('native', 'cursor', 'cursor-main', 'forkParent', 'parent')",
+        "DELETE FROM session_relation;
+         INSERT INTO session_relation (environment_key, agent, session_id, kind, related_id)
+         VALUES ('native', 'cursor', 'parent', 'subagent', 'cursor-main')",
+    ] {
+        fixture.store.lock().execute_batch(sql).unwrap();
+        let report = read_installed_checks(&fixture.store, &host.definitions).unwrap();
+        assert_eq!(report[0].waiting_for_results_count, 0, "{sql}");
+        assert_eq!(report[0].waiting_for_data_count, 0, "{sql}");
+        assert!(
+            antiburn_checks_store::read_session_checks(
+                &fixture.store.lock(),
+                "native",
+                "cursor",
+                "cursor-main",
+            )
+            .unwrap()
+            .is_empty(),
+            "{sql}"
+        );
+    }
+}
+
+fn drain(host: &mut InstalledCheckHost<ScriptedEvaluator>) {
+    for _ in 0..32 {
+        if !host.catch_up().unwrap().1 {
+            return;
+        }
+    }
+    panic!("Cursor publications did not drain");
+}
+
+#[test]
+fn cursor_attachment_rejects_stale_snapshot() {
+    let fixture = Fixture::new();
+    publish_cursor(&fixture, 3);
+    let mut host = fixture.host();
+    host.reconcile(&Admission::Ready).unwrap();
+    let project = host.projects.values().next().unwrap();
+    let activation = project.active[0].clone();
+    let adapter = project.store.clone();
+    let sessions = adapter
+        .startup_sessions(&activation, active_since())
+        .unwrap();
+    let cursor = sessions
+        .iter()
+        .find(|session| session.key.agent == "cursor")
+        .unwrap();
+    publish_cursor(&fixture, 4);
+    assert!(
+        adapter
+            .initialize_recent(&activation, cursor, &[])
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cursor_attachment_rejects_paused_activation() {
+    let fixture = Fixture::new();
+    publish_cursor(&fixture, 3);
+    let mut host = fixture.host();
+    host.reconcile(&Admission::Ready).unwrap();
+    let project = host.projects.values().next().unwrap();
+    let activation = project.active[0].clone();
+    let adapter = project.store.clone();
+    let sessions = adapter
+        .startup_sessions(&activation, active_since())
+        .unwrap();
+    let cursor = sessions
+        .iter()
+        .find(|session| session.key.agent == "cursor")
+        .unwrap();
+    host.deactivate_active().unwrap();
+    assert!(adapter.initialize_recent(&activation, cursor, &[]).is_err());
+}

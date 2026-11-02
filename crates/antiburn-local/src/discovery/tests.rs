@@ -37,6 +37,7 @@ async fn a_non_consuming_inline_source_does_not_clone_content() {
         source: SessionSource::Inline {
             label: "cursor-inline".to_string(),
             content: "full inline transcript".to_string(),
+            source_format: None,
         },
         updated_at: None,
         environment: Default::default(),
@@ -210,6 +211,7 @@ fn live_session_index_matches_provider_db_ids_directly() {
             agent: AgentKind::Cursor,
             db_path: PathBuf::from("/home/u/cursor/state.db"),
             session_id: "composer-1".to_string(),
+            source_format: None,
         },
         updated_at: Some(now - 30),
     }];
@@ -451,6 +453,7 @@ fn sample_session(agent_type: AgentKind, label: &str) -> SessionLog {
         source: SessionSource::Inline {
             label: label.to_string(),
             content: "{}".to_string(),
+            source_format: None,
         },
         updated_at: Some(1),
     }
@@ -468,6 +471,192 @@ fn collect_discovered_sessions_concatenates_per_agent_logs() {
         .map(|log| log.agent_type)
         .collect::<Vec<_>>();
     assert_eq!(agent_types, vec![AgentKind::Codex, AgentKind::Cursor]);
+}
+
+struct BatchTestExplorer;
+
+#[async_trait]
+impl AgentExplorer for BatchTestExplorer {
+    async fn discover_recent(&self, _now: i64, _since_secs: i64) -> Vec<SessionLog> {
+        vec![
+            timed_session(AgentKind::Codex, "old", 10),
+            timed_session(AgentKind::Codex, "new", 30),
+            timed_session(AgentKind::Codex, "middle", 20),
+        ]
+    }
+
+    fn owns_path(&self, _path_lower: &str) -> bool {
+        false
+    }
+}
+
+fn timed_session(agent: AgentKind, label: &str, updated_at: i64) -> SessionLog {
+    SessionLog {
+        environment: Default::default(),
+        agent_type: agent,
+        source: SessionSource::Inline {
+            label: label.to_string(),
+            content: String::new(),
+            source_format: None,
+        },
+        updated_at: Some(updated_at),
+    }
+}
+
+#[tokio::test]
+async fn discovery_batches_are_bounded_activity_ordered_and_complete() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let discover = BatchTestExplorer.discover_recent_batches(AgentKind::Codex, 100, 60, 2, sender);
+    let collect = async {
+        let mut batches = Vec::new();
+        while let Some(batch) = receiver.recv().await {
+            batches.push(batch);
+        }
+        batches
+    };
+    let (_, batches) = tokio::join!(discover, collect);
+
+    assert_eq!(batches.len(), 2);
+    assert!(batches.iter().all(|batch| batch.candidates.len() <= 2));
+    assert_eq!(
+        batches
+            .iter()
+            .flat_map(|batch| batch.candidates.iter().map(|log| log.updated_at.unwrap()))
+            .collect::<Vec<_>>(),
+        vec![30, 20, 10]
+    );
+    assert_eq!(batches.last().map(|batch| batch.complete), Some(true));
+}
+
+#[tokio::test]
+async fn discovery_batches_wait_for_capacity_and_stop_when_receiver_closes() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let discover = BatchTestExplorer.discover_recent_batches(AgentKind::Codex, 100, 60, 1, sender);
+    tokio::pin!(discover);
+    let state = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(discover.as_mut(), cx))
+    })
+    .await;
+    assert!(state.is_pending());
+    assert_eq!(receiver.len(), 1);
+    let first = receiver.recv().await.unwrap();
+    assert_eq!(first.candidates[0].updated_at, Some(30));
+    assert!(!first.complete);
+    drop(receiver);
+    tokio::time::timeout(std::time::Duration::from_secs(1), discover)
+        .await
+        .unwrap();
+}
+
+struct BlockedBatchExplorer {
+    started: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+static BLOCKED_BATCH_EXPLORER: BlockedBatchExplorer = BlockedBatchExplorer {
+    started: tokio::sync::Notify::const_new(),
+    release: tokio::sync::Notify::const_new(),
+};
+
+#[async_trait]
+impl AgentExplorer for BlockedBatchExplorer {
+    async fn discover_recent(&self, _now: i64, _since_secs: i64) -> Vec<SessionLog> {
+        self.started.notify_one();
+        self.release.notified().await;
+        vec![sample_session(AgentKind::Claude, "released")]
+    }
+
+    fn owns_path(&self, _path_lower: &str) -> bool {
+        false
+    }
+}
+
+fn batch_barrier_lookup(agent: &AgentKind) -> &'static dyn AgentExplorer {
+    match agent {
+        AgentKind::Claude => &BLOCKED_BATCH_EXPLORER,
+        AgentKind::Codex => &BatchTestExplorer,
+        _ => panic!("scoped discovery looked up an ineligible agent"),
+    }
+}
+
+#[tokio::test]
+async fn scoped_discovery_delivers_another_agent_before_a_blocked_agent_finishes() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let task = tokio::spawn(async move {
+        Explorers::new(batch_barrier_lookup)
+            .discover_recent_batches_for_agents(
+                &[AgentKind::Claude, AgentKind::Codex, AgentKind::Codex],
+                100,
+                60,
+                1,
+                sender,
+            )
+            .await;
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        BLOCKED_BATCH_EXPLORER.started.notified(),
+    )
+    .await
+    .unwrap();
+    for index in 0..3 {
+        let batch = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch.agent, AgentKind::Codex);
+        assert_eq!(batch.candidates.len(), 1);
+        assert_eq!(batch.complete, index == 2);
+    }
+    assert!(!task.is_finished());
+    BLOCKED_BATCH_EXPLORER.release.notify_one();
+    let batch = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.agent, AgentKind::Claude);
+    assert!(batch.complete);
+    task.await.unwrap();
+    assert!(receiver.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn empty_scoped_discovery_closes_without_looking_up_any_agent() {
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    Explorers::new(|_| panic!("empty scope looked up an agent"))
+        .discover_recent_batches_for_agents(&[], 100, 60, 0, sender)
+        .await;
+    assert!(receiver.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn native_batches_arrive_while_wsl_discovery_is_blocked_and_receiver_close_cancels_it() {
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let wsl_started = started.clone();
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let task = tokio::spawn(async move {
+        Explorers::new(|_| &BatchTestExplorer)
+            .discover_recent_batches_with_wsl(100, 60, 1, sender, async move {
+                wsl_started.notify_one();
+                std::future::pending::<Vec<WslEnvironmentInfo>>().await
+            })
+            .await;
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(1), started.notified())
+        .await
+        .unwrap();
+    let batch = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.candidates.len(), 1);
+    assert!(batch.candidates[0].environment.is_native());
+    assert!(!task.is_finished());
+    drop(receiver);
+    tokio::time::timeout(std::time::Duration::from_secs(1), task)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 fn file_log(agent_type: AgentKind, path: &str) -> SessionLog {
@@ -495,6 +684,7 @@ fn inline_log(agent_type: AgentKind, label: &str) -> SessionLog {
         source: SessionSource::Inline {
             label: label.to_string(),
             content: "{}".to_string(),
+            source_format: None,
         },
         updated_at: Some(0),
     }
@@ -509,6 +699,69 @@ fn inline_session_keeps_explicit_wsl_environment_in_dedupe_key() {
     };
     assert_eq!(log.environment.wsl_distro(), Some("Ubuntu"));
     assert!(log.dedupe_key().starts_with("wsl:ubuntu|"));
+}
+
+fn opencode_db_log(session_id: &str, source_format: crate::analysis::SourceFormat) -> SessionLog {
+    SessionLog {
+        environment: Default::default(),
+        agent_type: AgentKind::OpenCode,
+        source: SessionSource::ProviderDb {
+            agent: AgentKind::OpenCode,
+            db_path: PathBuf::from("/home/tester/.local/share/opencode/opencode.db"),
+            session_id: session_id.to_owned(),
+            source_format: Some(source_format),
+        },
+        updated_at: Some(0),
+    }
+}
+
+#[test]
+fn duplicate_opencode_session_ids_prefer_v2_without_dropping_v1_only_sessions() {
+    let mut logs = vec![
+        opencode_db_log(
+            "ses_migrated",
+            crate::analysis::SourceFormat::OpenCodeSqliteV1,
+        ),
+        opencode_db_log(
+            "ses_v1_only",
+            crate::analysis::SourceFormat::OpenCodeSqliteV1,
+        ),
+        opencode_db_log(
+            "ses_migrated",
+            crate::analysis::SourceFormat::OpenCodeSqliteV2,
+        ),
+    ];
+
+    dedupe_environment_sessions(&mut logs);
+
+    assert_eq!(logs.len(), 2);
+    assert_eq!(
+        logs[0].source_label(),
+        "opencode:ses_migrated:open_code_v2_sqlite"
+    );
+    assert_eq!(logs[1].source_label(), "opencode:ses_v1_only");
+}
+
+#[test]
+fn opencode_duplicate_selection_keeps_wsl_environments_separate() {
+    let mut native = opencode_db_log("ses_same", crate::analysis::SourceFormat::OpenCodeSqliteV1);
+    let mut wsl = opencode_db_log("ses_same", crate::analysis::SourceFormat::OpenCodeSqliteV2);
+    wsl.environment = DiscoveryEnvironment::Wsl {
+        distribution: "Ubuntu".to_owned(),
+        user: "dev".to_owned(),
+    };
+    let mut logs = vec![native.clone(), wsl];
+
+    dedupe_environment_sessions(&mut logs);
+
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0].source_label(), native.source_label());
+    assert_eq!(logs[1].environment.wsl_distro(), Some("Ubuntu"));
+    native.environment = DiscoveryEnvironment::Wsl {
+        distribution: "Ubuntu".to_owned(),
+        user: "dev".to_owned(),
+    };
+    assert_eq!(native.dedupe_key(), logs[1].dedupe_key());
 }
 
 /// Synthetic home that anchors the `/Users/x/...` paths used by these

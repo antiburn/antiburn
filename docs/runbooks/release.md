@@ -309,8 +309,9 @@ gh workflow run release-app.yml --ref main -f version=0.9.0
 The version input is required and can be an existing version or a supported
 prerelease such as `0.10.0-rc.1`. The workflow applies it only in runner checkouts
 to all application and helper manifests and lockfile entries. It runs all six
-desktop targets, both remote helpers, SBOMs, updater signing, platform signature
-checks, checksum assembly, and provenance. Artifact and installer names are the
+desktop targets, both remote helpers, SBOMs, dependency and advisory checks,
+installer tests, updater signing, platform signature checks, checksum assembly,
+and provenance. Artifact and installer names are the
 same as tag builds. Download individual platform artifacts or the assembled
 `release` artifact from the Actions run.
 
@@ -445,12 +446,21 @@ tag only after the commit is on `main`.
 5. **remote-helper** — builds static Linux x64 and ARM64 helpers on native
    runners, runs their tests, checks static linkage, and verifies archive
    extraction. It has no signing or repository-write credentials.
-6. **assemble** — requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
+6. **dependency-checks** and **installer-tests** — run in parallel with the
+   builds and have no signing credentials. `dependency-checks` runs
+   `cargo deny` bans, licenses, and advisories for the engine, the remote
+   helper, and the desktop app, then `pnpm notices:check`. Main CI checks
+   advisories nightly and when a `Cargo.lock` changes. A new advisory needs
+   no code change, so the release checks them again. `installer-tests` tests and
+   lints `install.sh`, `install.ps1`, and the Windows signing scripts.
+7. **assemble** — waits for the two checks above, so a failed check
+   stops the release before anything is hashed, attested, or uploaded. It
+   requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
    fragments into `latest.json` with immutable
    tag-specific URLs; verifies all six platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
     every asset; and uploads the assembled `release` Actions artifact.
-7. **draft** — runs only for tag pushes and creates or updates the draft from
+8. **draft** — runs only for tag pushes and creates or updates the draft from
    the assembled assets.
 
 The main run and its cache warming finish before the exact-SHA gate opens, so
@@ -586,14 +596,19 @@ application release.
    If `cargo update` also moves unrelated entries in either lockfile, edit
    only the `antiburn-local` version line by hand instead.
 2. Review, merge, then tag `antiburn-local-v<version>` and push the tag.
-3. The workflow requires the successful main push run for the exact tag SHA,
-   then packages a deterministic source tarball with `LICENSE`, `NOTICE`,
+3. The workflow requires the successful main push run for the exact tag SHA
+   and passing `cargo deny` bans, licenses, and advisories checks for the
+   engine and the remote helper plus `pnpm notices:check` (the shared
+   `dependency-checks` workflow with `desktop: false`; the desktop app
+   checks run only for app releases). It then
+   packages a deterministic source tarball with `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES`, and the three coverage-test inputs under `docs/`
    (`check-coverage.md`, `session-coverage.md`, and `support.md`). It extracts
    the archive into an isolated directory and requires `cargo test --locked`
    to pass before it inventories the dependency tree, verifies its checksums,
-   attests provenance, and drafts the release. The engine release does not
-   repeat the desktop platform matrix.
+   attests provenance, and drafts the release. Main CI tests the repository
+   tree; this step proves that the tarball is complete on its own. The engine
+   release does not repeat the desktop platform matrix.
 4. Review the draft: verify its checksum and provenance, inspect its contents,
    and read the release notes. The workflow already tests the extracted archive.
    To reproduce that gate locally, extract into an empty directory, enter
@@ -732,6 +747,8 @@ unpublish the product release to repair the tap.
 | `verify` rejects the tag             | A manifest, the lockfile, or the changelog disagrees with the tag | Fix on `main`, delete the _unpublished_ tag, re-tag. Deleting a tag that was never published is fine; deleting a published one is not. Deleting any release tag requires an admin to temporarily disable the tag-immutability ruleset (Settings → Rules → Rulesets), then re-enable it immediately after re-tagging — that friction is deliberate. |
 | `trusted-main-ci` fails or times out | The exact tag SHA has no successful main push run                 | For a transient failure, re-run CI for that exact SHA, wait for success, then re-run the release workflow. For a code failure, fix it on `main` and cut a new version and tag; never move the failed tag to the corrected commit. Do not substitute a PR run.                                                                                      |
 | A `build` job fails                  | Usually a credential or a platform toolchain                      | Fix, then re-run the failed jobs. The draft is rebuilt idempotently.                                                                                                                                                                                                                                                                               |
+| `dependency-checks` fails            | A banned crate, a license, a new RustSec advisory, or stale notices | Read the `cargo deny` output. Fix on `main` (update or replace the crate, or record a reviewed exception in `deny.toml`), then cut a new version and tag. Do not move the tag. |
+| `installer-tests` fails              | An installer script or a test runner image changed                | For a runner problem, re-run the failed job. For a script defect, fix it on `main`, then cut a new version and tag.                                                                                                                                                                              |
 | `draft` refuses: "already published" | The tag has a published release                                   | Stop. This is the immutability rule doing its job — go to [`rollback.md`](rollback.md).                                                                                                                                                                                                                                                            |
 
 Re-running the workflow on an existing **draft** re-uploads every asset with

@@ -129,7 +129,7 @@ fn native_adapters_preserve_observed_reads_and_rebind_final_references() {
                     item.part.metadata.read_request = None;
                 }
             }
-            let selected = prepare_session_content(session, source, selected, vec![]);
+            let selected = prepare_session_content(session, source, selected);
             let result = selected
                 .actions
                 .iter()
@@ -149,7 +149,7 @@ fn native_adapters_preserve_observed_reads_and_rebind_final_references() {
                 Some(request.reference_id.as_str())
             );
         }
-        let evidence = prepare_session_content(session, source, published, vec![]);
+        let evidence = prepare_session_content(session, source, published);
         let output = evidence
             .actions
             .iter()
@@ -270,7 +270,7 @@ fn native_read_facts_require_source_pin_binding_digest_and_observed_extent() {
             } else {
                 source
             };
-            let evidence = prepare_session_content(session, source, published, vec![]);
+            let evidence = prepare_session_content(session, source, published);
             let result = evidence
                 .actions
                 .iter()
@@ -350,7 +350,7 @@ fn native_failed_clipped_and_nonread_records_do_not_claim_returned_extents() {
                 record.to_string()
             }).collect::<Vec<_>>().join("\n") + "\n";
             let published = native_content(agent, &records);
-            let evidence = prepare_session_content(session, source, published, vec![]);
+            let evidence = prepare_session_content(session, source, published);
             let results: Vec<_> = evidence
                 .actions
                 .iter()
@@ -419,7 +419,7 @@ fn fixture_store_for(records: &str) -> (tempfile::TempDir, Arc<MemoryTurnRowStor
         session_id: "root".into(),
         source: RawSource::Sqlite(path),
         fork_parent_session_id: None,
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
     };
     (directory, input_store(&input))
 }
@@ -443,7 +443,7 @@ fn input_store(input: &SessionInput) -> Arc<MemoryTurnRowStore> {
 }
 
 fn query(store: &MemoryTurnRowStore, selection: JevInputSelection) -> SessionContentEvidence {
-    query_source(store, "opencode", SourceFormat::OpenCodeSqliteV2, selection)
+    query_source(store, "opencode", SourceFormat::OpenCodeSqliteV1, selection)
 }
 
 fn query_source(
@@ -467,10 +467,7 @@ fn query_source(
             selection,
         )
         .unwrap();
-        select_session_content(
-            &prepare_session_content("root", source, content, vec![]),
-            selection,
-        )
+        select_session_content(&prepare_session_content("root", source, content), selection)
     })
 }
 
@@ -610,12 +607,21 @@ fn native_reads_survive_selected_storage_without_expanding_legacy_input_selectio
 }
 
 #[test]
-fn ignored_instructions_selects_command_output_without_selecting_read_results() {
+fn command_output_selection_does_not_select_read_results() {
     let (_directory, store) = fixture_store();
     let legacy = query(&store, LEGACY_INPUT_SELECTION);
     let ignored = query(
         &store,
-        antiburn_local::checks::ignored_instructions::INPUT_SELECTION,
+        JevInputSelection::from_fields(&[
+            JevInputField::UserMessage,
+            JevInputField::AssistantMessage,
+            JevInputField::BashCommandInput,
+            JevInputField::BashCommandOutput,
+            JevInputField::FileEditPath,
+            JevInputField::ReadFilePath,
+            JevInputField::SearchFilesQuery,
+            JevInputField::OtherToolInput,
+        ]),
     );
     let outputs: Vec<_> = ignored
         .actions
@@ -735,7 +741,7 @@ fn reparsing_legacy_path_only_rows_restores_ranges_without_changing_selected_ins
         session_id: "root".into(),
         source: RawSource::Sqlite(directory.path().join("opencode.db")),
         fork_parent_session_id: None,
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
     };
     let reparsed = input_store(&input);
     let restored = query(
@@ -747,6 +753,6 @@ fn reparsing_legacy_path_only_rows_restores_ranges_without_changing_selected_ins
     assert_eq!(request.extent.offset, Some(2));
     assert_eq!(request.extent.limit, Some(2));
     assert_eq!(legacy, query(&reparsed, ignored_selection));
-    assert_eq!(PARSER_REVISION, 53);
+    assert_eq!(PARSER_REVISION, 67);
     assert_eq!(EVIDENCE_SCHEMA_REVISION, 22);
 }

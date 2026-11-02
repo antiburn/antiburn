@@ -1,0 +1,447 @@
+{
+  "completed": [
+    {
+      "arguments": {
+        "command": "synthetic test"
+      },
+      "call_id": "call-0",
+      "change": "Update",
+      "completeness": "Complete",
+      "content": "ok",
+      "context": {
+        "complete_through_event": true,
+        "main_session": true,
+        "result_position": {
+          "FileBytes": {
+            "item_index": 0,
+            "record_end": 899,
+            "record_start": 640
+          }
+        },
+        "user_messages": [
+          {
+            "change": "Present",
+            "completeness": "Complete",
+            "message_id": "00000000-0000-0000-0000-000000000001",
+            "origin": "ClaudeUserContent",
+            "parts": [
+              {
+                "item_index": 0,
+                "native_part_id": null,
+                "text": "Read three lines and run the API tests. Keep billing unchanged."
+              }
+            ],
+            "position": {
+              "FileBytes": {
+                "record_end": 336,
+                "record_start": 0
+              }
+            },
+            "proof_revision": 2,
+            "scope": "MainSession",
+            "session_id": "scope-test",
+            "source_format": "claude_jsonl"
+          }
+        ]
+      },
+      "finality": true,
+      "outcome": null,
+      "position": {
+        "FileBytes": {
+          "item_index": 0,
+          "record_end": 899,
+          "record_start": 640
+        }
+      },
+      "provider_executed": null,
+      "record_id": "result-0",
+      "result_id": null,
+      "revision": 1,
+      "session_id": "scope-test",
+      "source_format": "claude_jsonl",
+      "status": "Success",
+      "tool_category": "bash",
+      "tool_name": "Bash"
+    }
+  ],
+  "cursor": {
+    "adapter": {
+      "Claude": {
+        "last": "request-1",
+        "parser": {
+          "best_priceable": null,
+          "context": {
+            "cwd": null,
+            "deferred_tools": [],
+            "harness_version": null,
+            "model_frequency": [],
+            "skill_descriptions": {},
+            "skill_origin_evidence": {},
+            "source_rows": []
+          },
+          "context_window": null,
+          "context_window_source": null,
+          "first_model": null,
+          "last_seen_model": null,
+          "max_usage_by_message_id": {},
+          "native_call_bytes": 47,
+          "native_calls": {
+            "call-1": {
+              "arguments": "{\"command\":\"synthetic test\"}",
+              "name": "Bash",
+              "record_id": "request-1",
+              "retained_bytes": 41
+            }
+          },
+          "ordinal": 0,
+          "pending_commands": [],
+          "record_offset": 0,
+          "retained_root": {
+            "characterized": false,
+            "fingerprints": {},
+            "invalid": false,
+            "last": null,
+            "session": null,
+            "user_slot": false
+          },
+          "scope": {
+            "ancestry": {
+              "bytes": 0,
+              "capped": false,
+              "records": {}
+            },
+            "bytes": 0,
+            "calls": {}
+          },
+          "seen_uuids": [],
+          "session_id": "scope-test",
+          "skill_base_names": [],
+          "source_format": "claude_jsonl",
+          "threads": {
+            "capped": false,
+            "current": null,
+            "thread_by_uuid": {}
+          },
+          "tool_identities": {
+            "calls": {}
+          },
+          "user_message_root": {
+            "characterized": false,
+            "fingerprints": {},
+            "invalid": false,
+            "last": null,
+            "session": null,
+            "user_slot": true
+          }
+        },
+        "records": {
+          "fixture_sparse_u64_array": {
+            "len": 131072,
+            "nonzero": [
+              [
+                2711,
+                1
+              ],
+              [
+                4747,
+                16
+              ],
+              [
+                5474,
+                2
+              ],
+              [
+                6238,
+                64
+              ],
+              [
+                16877,
+                64
+              ],
+              [
+                19940,
+                4
+              ],
+              [
+                30516,
+                32
+              ],
+              [
+                34759,
+                4
+              ],
+              [
+                40385,
+                8
+              ],
+              [
+                47596,
+                32
+              ],
+              [
+                49215,
+                2
+              ],
+              [
+                49504,
+                2
+              ],
+              [
+                52813,
+                16
+              ],
+              [
+                56867,
+                2
+              ],
+              [
+                58244,
+                64
+              ],
+              [
+                58562,
+                2
+              ],
+              [
+                58994,
+                8
+              ],
+              [
+                63583,
+                16
+              ],
+              [
+                71536,
+                1
+              ],
+              [
+                71727,
+                4
+              ],
+              [
+                78764,
+                2
+              ],
+              [
+                78979,
+                8
+              ],
+              [
+                86602,
+                8
+              ],
+              [
+                91495,
+                1
+              ],
+              [
+                91667,
+                4
+              ],
+              [
+                98366,
+                64
+              ],
+              [
+                99612,
+                16
+              ],
+              [
+                108206,
+                1
+              ],
+              [
+                110134,
+                32
+              ],
+              [
+                123672,
+                2
+              ],
+              [
+                124905,
+                64
+              ],
+              [
+                125759,
+                16
+              ]
+            ]
+          }
+        },
+        "retired_calls": {
+          "fixture_sparse_u64_array": {
+            "len": 131072,
+            "nonzero": [
+              [
+                11838,
+                16
+              ],
+              [
+                18881,
+                1
+              ],
+              [
+                21758,
+                32
+              ],
+              [
+                28459,
+                32
+              ],
+              [
+                53304,
+                8
+              ],
+              [
+                63206,
+                32
+              ],
+              [
+                78088,
+                2
+              ],
+              [
+                82132,
+                2
+              ],
+              [
+                103820,
+                4
+              ],
+              [
+                108213,
+                2
+              ],
+              [
+                112082,
+                4
+              ],
+              [
+                119754,
+                4
+              ],
+              [
+                121142,
+                128
+              ],
+              [
+                126165,
+                2
+              ],
+              [
+                126508,
+                16
+              ],
+              [
+                129564,
+                16
+              ]
+            ]
+          }
+        },
+        "root": true
+      }
+    },
+    "agent": "claude",
+    "anchor": {
+      "boundary": 1304,
+      "head": {
+        "offset": 336,
+        "tail_hash": 8479503456310239442,
+        "tail_len": 336
+      },
+      "identity": "16777234:306699072",
+      "tail": {
+        "offset": 1304,
+        "tail_hash": 10159357717033614604,
+        "tail_len": 1304
+      }
+    },
+    "baseline_offset": 336,
+    "framer": "gQF7ImVudHJ5cG9pbnQiOiJjbGkiLCJpc1NpZGVjaGFpbiI6ZmFsc2UsIm1lc3NhZ2UiOnsiY29udGVudCI6W3siY29udGVudCI6Im9rIiwiaXNfZXJyb3IiOmZhbHNlLCJ0b29sX3VzZV9pZCI6ImNhbGwtMSIsInR5cGUiOiJ0b28AAJcJ",
+    "history_complete": true,
+    "next_record_index": 4,
+    "pending_results": null,
+    "request_bytes": 63,
+    "request_ids": {
+      "fixture_sparse_u64_array": {
+        "len": 131072,
+        "nonzero": [
+          [
+            5474,
+            2
+          ],
+          [
+            34759,
+            4
+          ],
+          [
+            49215,
+            2
+          ],
+          [
+            49504,
+            2
+          ],
+          [
+            58994,
+            8
+          ],
+          [
+            71536,
+            1
+          ],
+          [
+            71727,
+            4
+          ],
+          [
+            99612,
+            16
+          ]
+        ]
+      }
+    },
+    "requests": [
+      {
+        "message": {
+          "change": "Present",
+          "completeness": "Complete",
+          "message_id": "00000000-0000-0000-0000-000000000001",
+          "origin": "ClaudeUserContent",
+          "parts": [
+            {
+              "item_index": 0,
+              "native_part_id": null,
+              "text": "Read three lines and run the API tests. Keep billing unchanged."
+            }
+          ],
+          "position": {
+            "FileBytes": {
+              "record_end": 336,
+              "record_start": 0
+            }
+          },
+          "proof_revision": 2,
+          "scope": "MainSession",
+          "session_id": "scope-test",
+          "source_format": "claude_jsonl"
+        },
+        "position": {
+          "item_index": 0,
+          "record_end": 336,
+          "record_start": 0
+        }
+      }
+    ],
+    "revision": 1,
+    "session_id": "scope-test",
+    "source_format": "claude_jsonl",
+    "start_offset": 0
+  },
+  "cursor_sha256": "a018140ae0e310b1e71a418d35cc207093e6b179f19fd5d2b8041f91b9203143",
+  "parser_revision": 64,
+  "source_prefix": "{\"type\":\"user\",\"uuid\":\"00000000-0000-0000-0000-000000000001\",\"parentUuid\":null,\"sessionId\":\"scope-test\",\"version\":\"2.1.278\",\"entrypoint\":\"cli\",\"isSidechain\":false,\"origin\":{\"kind\":\"human\"},\"promptSource\":\"typed\",\"turnOrigin\":\"human\",\"message\":{\"role\":\"user\",\"content\":\"Read three lines and run the API tests. Keep billing unchanged.\"}}\n{\"entrypoint\":\"cli\",\"isSidechain\":false,\"message\":{\"content\":[{\"id\":\"call-0\",\"input\":{\"command\":\"synthetic test\"},\"name\":\"Bash\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},\"parentUuid\":\"00000000-0000-0000-0000-000000000001\",\"sessionId\":\"scope-test\",\"type\":\"assistant\",\"uuid\":\"request-0\",\"version\":\"2.1.278\"}\n{\"entrypoint\":\"cli\",\"isSidechain\":false,\"message\":{\"content\":[{\"content\":\"ok\",\"is_error\":false,\"tool_use_id\":\"call-0\",\"type\":\"tool_result\"}],\"role\":\"user\"},\"parentUuid\":\"request-0\",\"sessionId\":\"scope-test\",\"type\":\"user\",\"uuid\":\"result-0\",\"version\":\"2.1.278\"}\n{\"entrypoint\":\"cli\",\"isSidechain\":false,\"message\":{\"content\":[{\"id\":\"call-1\",\"input\":{\"command\":\"synthetic test\"},\"name\":\"Bash\",\"type\":\"tool_use\"}],\"role\":\"assistant\"},\"parentUuid\":\"result-0\",\"sessionId\":\"scope-test\",\"type\":\"assistant\",\"uuid\":\"request-1\",\"version\":\"2.1.278\"}\n{\"entrypoint\":\"cli\",\"isSidechain\":false,\"message\":{\"content\":[{\"content\":\"ok\",\"is_error\":false,\"tool_use_id\":\"call-1\",\"type\":\"too",
+  "source_suffix": "l_result\"}],\"role\":\"user\"},\"parentUuid\":\"request-1\",\"sessionId\":\"scope-test\",\"type\":\"user\",\"uuid\":\"result-1\",\"version\":\"2.1.278\"}\n"
+}

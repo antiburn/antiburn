@@ -325,12 +325,24 @@ export async function openPrivacyPolicy(): Promise<void> {
 export type Interaction =
   | { kind: "navigationHistoryMoved"; direction: "back" | "forward" }
   | { kind: "appSearchOpened" }
-  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "stepSetting" | "check" }
+  | { kind: "appSearchResultOpened"; category: "view" | "setting" | "check" }
   | { kind: "projectFolderAction"; action: "open" | "copy"; outcome: "succeeded" | "failed" }
   | {
       kind: "memoryAction"
       action: "reveal" | "archive" | "restore" | "remove_index_line" | "open_from_session"
       outcome: "succeeded" | "failed" | "changed_on_disk" | "unsupported"
+    }
+  | {
+      kind: "promotionInteraction"
+      campaign: "claude_mod"
+      action:
+        | "announcement_viewed"
+        | "setup_viewed"
+        | "primary_activated"
+        | "learn_more_activated"
+        | "command_copied"
+        | "dismissed"
+      origin: SurfaceOrigin
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
@@ -353,20 +365,8 @@ export type Interaction =
   | {
       kind: "burnCheckPromptPrepared"
       outcome: PromptPreparationAnalyticsOutcome
-      check?: SmartCheck
     }
-  | { kind: "burnCheckPromptCopied"; check?: SmartCheck }
-  | {
-      kind: "smartCheckObserved"
-      check: SmartCheck
-      observation:
-        "finding_visible" | "evidence_available" | "evidence_unavailable" | "evidence_failed"
-    }
-  | {
-      kind: "ignoredInstructionObserved"
-      stage: "finding" | "evidence" | "prompt"
-      outcome: "visible" | "available" | "unavailable" | "failed" | "copied"
-    }
+  | { kind: "burnCheckPromptCopied" }
   | {
       kind: "burnCheckOutcomeObserved"
       outcome: "verified" | "recurred"
@@ -404,25 +404,8 @@ export type Interaction =
       detail: StepSettingsDetail
     }
 
-export type SmartCheck =
-  "ignored_instructions" | "scope_creep" | "over_exploring" | "skill_opportunities"
-
-export function smartCheckForDetector(detector: string): SmartCheck | undefined {
-  switch (detector) {
-    case "ignoredInstructions":
-      return "ignored_instructions"
-    case "scopeCreep":
-      return "scope_creep"
-    case "overExploring":
-      return "over_exploring"
-    case "skillOpportunities":
-      return "skill_opportunities"
-    default:
-      return undefined
-  }
-}
-
 export type Surface =
+  | "agents"
   | "activity"
   | "session_detail"
   | "provider_preview"
@@ -478,7 +461,8 @@ export type SessionFilterAction =
 /** A fixed step in the first-run Overview's funnel. */
 type FirstRunStep = "started" | "found" | "read" | "checked" | "result"
 /** Which result the first-run Overview showed. Only with `FirstRunStep` `"result"`. */
-export type FirstRunResult = "empty" | "clean" | "fixes_found" | "checks_disabled"
+export type FirstRunResult =
+  "empty" | "clean" | "fixes_found" | "checks_disabled" | "not_assessed"
 /** A deliberate action the first-run Overview can report. */
 type FirstRunActionKind =
   | "folder_access_requested"
@@ -492,8 +476,9 @@ type FirstRunActionKind =
  *  `StepSettingsStep` (the Overview's own type): `"fixes"` has no settings
  *  and never reaches this event. */
 type StepSettingsAnalyticsLabel = "agents" | "limits" | "sessions" | "checks"
-/** Which surface showed the step's settings. */
-type StepSettingsDetail = "first_run" | "modal"
+/** Which surface showed the step's settings. Settings → Agents, Sessions,
+ *  and Checks report `settingsPaneViewed` instead. */
+type StepSettingsDetail = "first_run"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {

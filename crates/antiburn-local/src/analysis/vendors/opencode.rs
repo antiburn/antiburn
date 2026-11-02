@@ -22,7 +22,9 @@ use crate::analysis::framing::{
 use crate::analysis::interface::{
     ContentAuthority, ContentKind, ContentPart, ContextWindowSource, EvidenceObservation,
     NormalizedRecord, ProviderHint, RawSource, RecordSink, RelationProvenance, SessionCollector,
-    SessionInput, SessionReader, SessionSummary, TurnContent, VisitOutcome, push_provider_hint,
+    SessionInput, SessionReader, SessionSummary, TurnContent, UserMessage, UserMessageChange,
+    UserMessageCompleteness, UserMessageOrigin, UserMessagePart, UserMessagePosition,
+    UserMessageScope, VisitOutcome, push_provider_hint,
 };
 use crate::analysis::model::{
     CompactionTrigger, EventSource, NormalizedEvent, NormalizedSession, Role, ToolCall,
@@ -30,10 +32,14 @@ use crate::analysis::model::{
 };
 use crate::analysis::records::{compact_json_text, parse_ts, tool_call_from_input};
 use crate::discovery::agents::opencode::{
-    db_session_fingerprint_connection, db_session_has_parent_id, opencode_fork_parent_title,
+    database_identity_at_path, db_session_fingerprint_cancellable_with_identity,
+    db_session_has_parent_id, db_session_source_format_connection, opencode_fork_parent_title,
+    verify_database_identity,
 };
 use crate::discovery::source_version::provider_db_fingerprint;
 
+pub(crate) mod journal;
+mod request_context;
 mod scope;
 
 const MAX_MESSAGE_PART_BYTES: usize = MAX_RECORD_BYTES;
@@ -51,14 +57,22 @@ impl SessionReader for OpenCodeSessionReader {
     }
 
     fn capabilities(&self, input: &SessionInput) -> crate::analysis::SourceCapabilities {
-        let mut capabilities = crate::analysis::SourceCapabilities::opencode();
-        capabilities.source_format = match input.source_format {
+        let source_format = match input.source_format {
             crate::analysis::SourceFormat::Uncharacterized => match &input.source {
-                RawSource::Sqlite(_) => crate::analysis::SourceFormat::OpenCodeSqliteV2,
+                RawSource::Sqlite(_) => crate::analysis::SourceFormat::Uncharacterized,
                 _ => crate::analysis::SourceFormat::OpenCodeJsonl,
             },
             format => format,
         };
+        if matches!(
+            source_format,
+            crate::analysis::SourceFormat::Uncharacterized
+                | crate::analysis::SourceFormat::OpenCodeSqliteV2
+        ) {
+            return crate::analysis::SourceCapabilities::uncharacterized(source_format);
+        }
+        let mut capabilities = crate::analysis::SourceCapabilities::opencode();
+        capabilities.source_format = source_format;
         capabilities
     }
 
@@ -83,9 +97,13 @@ impl SessionReader for OpenCodeSessionReader {
                 let source = Cursor::new(content.as_bytes()).chain(suffix);
                 self.visit_reader(BufReader::new(source), &|| false, sink)?
             }
-            RawSource::Sqlite(path) => {
-                self.visit_database(path, &input.session_id, &|| false, sink)?
-            }
+            RawSource::Sqlite(path) => self.visit_database(
+                path,
+                &input.session_id,
+                input.source_format,
+                &|| false,
+                sink,
+            )?,
             RawSource::ClineBundle { .. } => {
                 anyhow::bail!("Cline bundle is not an OpenCode source")
             }
@@ -119,35 +137,366 @@ impl SessionReader for OpenCodeSessionReader {
             anyhow::bail!("a claimed OpenCode database source must be SQLite");
         };
         validate_input(input)?;
+        if cancel() {
+            anyhow::bail!("OpenCode database read was cancelled");
+        }
+        let database_identity =
+            database_identity_at_path(path).context("OpenCode database identity is unavailable")?;
         let conn = open_database(path)?;
         conn.execute_batch("BEGIN")?;
         validate_database_schema(&conn)?;
-        let actual = db_session_fingerprint_connection(&conn, &input.session_id)
-            .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
+        let source_format = database_source_format(&conn, &input.session_id, input.source_format)?;
+        let actual = db_session_fingerprint_cancellable_with_identity(
+            &conn,
+            &input.session_id,
+            &database_identity,
+            cancel,
+        )
+        .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
+        if cancel() {
+            anyhow::bail!("OpenCode database read was cancelled");
+        }
         if actual.as_deref() != Some(claimed_fingerprint) {
             return Ok(VisitOutcome::SourceChanged(
                 SourceChangedReason::FingerprintMismatch,
             ));
         }
-        let mut summary = visit_database_connection(&conn, &input.session_id, cancel, sink)?;
+        let mut summary = visit_database_connection(
+            &conn,
+            &input.session_id,
+            source_format,
+            cancel,
+            false,
+            sink,
+        )?;
+        if sink.tool_results_requested()
+            && !visit_native_tool_results(
+                &conn,
+                &input.session_id,
+                input.fork_parent_session_id.is_none(),
+                cancel,
+                sink,
+            )?
+        {
+            sink.tool_result_gap();
+        }
         if input.fork_parent_session_id.is_some() {
             summary
                 .coverage_gaps
                 .push(PartialReason::AttributionIncomplete);
         }
-        conn.execute_batch("COMMIT")?;
-        // Reopen after the transaction. A writer can commit after the initial
-        // fingerprint but before this read completes, including through WAL.
-        let verification = open_database(path)?;
-        let observed = db_session_fingerprint_connection(&verification, &input.session_id)
-            .map(|(latest, rows)| provider_db_fingerprint(latest, rows));
-        if observed.as_deref() != Some(claimed_fingerprint) {
+        if cancel() {
+            anyhow::bail!("OpenCode database read was cancelled");
+        }
+        if verify_database_identity(&conn, &database_identity).is_none() {
             return Ok(VisitOutcome::SourceChanged(
                 SourceChangedReason::FingerprintMismatch,
             ));
         }
+        conn.execute_batch("COMMIT")?;
         sink.finish(summary);
         Ok(VisitOutcome::AcceptedFull)
+    }
+}
+
+#[cfg(test)]
+mod claimed_database_tests {
+    use super::*;
+    use crate::analysis::interface::SessionCollector;
+    use crate::analysis::{SessionInput, SourceFormat, VisitOutcome};
+    use crate::discovery::source_version::provider_db_fingerprint;
+    use rusqlite::params;
+    use tempfile::tempdir;
+
+    fn database_input(path: &Path) -> SessionInput {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session (id TEXT PRIMARY KEY, time_created INTEGER);
+                 CREATE TABLE message (
+                     id TEXT PRIMARY KEY, session_id TEXT, data TEXT,
+                     time_created INTEGER, time_updated INTEGER
+                 );
+                 CREATE TABLE part (message_id TEXT, session_id TEXT, data TEXT);
+                 CREATE TABLE event_sequence (aggregate_id TEXT, seq INTEGER, owner_id TEXT);
+                 CREATE TABLE event (
+                     id TEXT, aggregate_id TEXT, seq INTEGER, type TEXT, data TEXT
+                 );
+                 INSERT INTO session (id, time_created) VALUES ('session', 1);
+                 INSERT INTO event_sequence (aggregate_id, seq) VALUES ('session', 0);",
+            )
+            .unwrap();
+        SessionInput {
+            agent: "opencode".to_owned(),
+            session_id: "session".to_owned(),
+            source: RawSource::Sqlite(path.to_owned()),
+            source_format: SourceFormat::OpenCodeSqliteV1,
+            fork_parent_session_id: None,
+        }
+    }
+
+    fn fingerprint(input: &SessionInput) -> String {
+        let RawSource::Sqlite(path) = &input.source else {
+            unreachable!();
+        };
+        let connection = open_database(path).unwrap();
+        let identity = database_identity_at_path(path).unwrap();
+        let (latest, rows) = db_session_fingerprint_cancellable_with_identity(
+            &connection,
+            &input.session_id,
+            &identity,
+            &|| false,
+        )
+        .unwrap();
+        provider_db_fingerprint(latest, rows)
+    }
+
+    #[test]
+    fn claimed_database_accepts_appends_only_with_the_matching_prefix_fingerprint() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("opencode.db");
+        let input = database_input(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO event (id, aggregate_id, seq, type, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["event-0", "session", 0, "session.created.1", "{}"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE event_sequence SET seq = 0 WHERE aggregate_id = 'session'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let previous_prefix = fingerprint(&input);
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO event (id, aggregate_id, seq, type, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["event-1", "session", 1, "session.updated.1", "{}"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE event_sequence SET seq = 1 WHERE aggregate_id = 'session'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut stale_collector = SessionCollector::new(&input.agent, &input.session_id);
+        let stale_outcome = OpenCodeSessionReader
+            .visit_db_claimed(&input, &previous_prefix, &|| false, &mut stale_collector)
+            .unwrap();
+        assert_eq!(
+            stale_outcome,
+            VisitOutcome::SourceChanged(SourceChangedReason::FingerprintMismatch)
+        );
+
+        let current_prefix = fingerprint(&input);
+
+        let mut collector = SessionCollector::new(&input.agent, &input.session_id);
+        let outcome = OpenCodeSessionReader
+            .visit_db_claimed(&input, &current_prefix, &|| false, &mut collector)
+            .unwrap();
+
+        assert_eq!(outcome, VisitOutcome::AcceptedFull);
+    }
+
+    #[test]
+    fn claimed_database_rejects_projection_edits_even_with_journal_schema() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("opencode.db");
+        let input = database_input(&path);
+        let claimed = fingerprint(&input);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO event (id, aggregate_id, seq, type, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params!["event-0", "session", 0, "session.created.1", "{}"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO message (id, session_id, data) VALUES ('message', 'session', '{}')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut collector = SessionCollector::new(&input.agent, &input.session_id);
+        let outcome = OpenCodeSessionReader
+            .visit_db_claimed(&input, &claimed, &|| false, &mut collector)
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            VisitOutcome::SourceChanged(SourceChangedReason::FingerprintMismatch)
+        );
+    }
+
+    #[test]
+    fn uncharacterized_sqlite_keeps_the_legacy_v1_route() {
+        let directory = tempdir().unwrap();
+        let mut input = database_input(&directory.path().join("opencode.db"));
+        input.source_format = SourceFormat::Uncharacterized;
+        let mut collector = SessionCollector::new(&input.agent, &input.session_id);
+        assert_eq!(
+            OpenCodeSessionReader.visit(&input, &mut collector).unwrap(),
+            VisitOutcome::Unvalidated
+        );
+        let mut collector = SessionCollector::new(&input.agent, &input.session_id);
+        assert_eq!(
+            OpenCodeSessionReader
+                .visit_db_claimed(&input, &fingerprint(&input), &|| false, &mut collector)
+                .unwrap(),
+            VisitOutcome::AcceptedFull
+        );
+    }
+
+    #[test]
+    fn uncharacterized_sqlite_does_not_fall_back_past_a_v2_marker() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("opencode.db");
+        let mut input = database_input(&path);
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("CREATE TABLE session_v2 (id TEXT PRIMARY KEY);")
+            .unwrap();
+        input.source_format = SourceFormat::Uncharacterized;
+        let mut collector = SessionCollector::new(&input.agent, &input.session_id);
+        assert!(OpenCodeSessionReader.visit(&input, &mut collector).is_err());
+    }
+
+    #[test]
+    fn cancellation_before_or_during_fingerprinting_is_not_a_source_change() {
+        use std::cell::Cell;
+
+        let directory = tempdir().unwrap();
+        let input = database_input(&directory.path().join("opencode.db"));
+        let claimed = fingerprint(&input);
+        for checks_before_cancel in [0, 1] {
+            let checks = Cell::new(0);
+            let cancel = || {
+                let check = checks.get();
+                checks.set(check + 1);
+                check >= checks_before_cancel
+            };
+            let mut collector = SessionCollector::new(&input.agent, &input.session_id);
+            let error = OpenCodeSessionReader
+                .visit_db_claimed(&input, &claimed, &cancel, &mut collector)
+                .unwrap_err();
+            assert!(error.to_string().contains("cancelled"));
+        }
+    }
+
+    struct HookSink<F: FnMut()> {
+        on_record: F,
+        finished: bool,
+    }
+
+    impl<F: FnMut()> RecordSink for HookSink<F> {
+        fn record(&mut self, _: NormalizedRecord) {
+            (self.on_record)();
+        }
+
+        fn finish(&mut self, _: SessionSummary) {
+            self.finished = true;
+        }
+    }
+
+    #[test]
+    fn cancellation_after_reading_is_not_a_source_change() {
+        use std::cell::Cell;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("opencode.db");
+        let input = database_input(&path);
+        Connection::open(&path).unwrap().execute_batch(
+            "INSERT INTO message (id, session_id, data) VALUES ('message','session','{\"role\":\"user\"}');"
+        ).unwrap();
+        let claimed = fingerprint(&input);
+        let cancelled = Cell::new(false);
+        let mut sink = HookSink {
+            on_record: || cancelled.set(true),
+            finished: false,
+        };
+        let error = OpenCodeSessionReader
+            .visit_db_claimed(&input, &claimed, &|| cancelled.get(), &mut sink)
+            .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert!(!sink.finished);
+    }
+
+    #[test]
+    fn claimed_read_keeps_one_wal_snapshot_while_the_writer_changes_rows() {
+        use std::cell::Cell;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("opencode.db");
+        let input = database_input(&path);
+        let writer = Connection::open(&path).unwrap();
+        writer.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             INSERT INTO message (id, session_id, data) VALUES ('message','session','{\"role\":\"user\"}');"
+        ).unwrap();
+        let claimed = fingerprint(&input);
+        let written = Cell::new(false);
+        let mut sink = HookSink {
+            on_record: || {
+                if !written.replace(true) {
+                    writer
+                        .execute("UPDATE message SET data = '{}'", [])
+                        .unwrap();
+                }
+            },
+            finished: false,
+        };
+        assert_eq!(
+            OpenCodeSessionReader
+                .visit_db_claimed(&input, &claimed, &|| false, &mut sink)
+                .unwrap(),
+            VisitOutcome::AcceptedFull
+        );
+        assert!(written.get());
+        assert!(sink.finished);
+        assert_ne!(fingerprint(&input), claimed);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn claimed_read_rejects_a_replaced_database_path() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("opencode.db");
+        let input = database_input(&path);
+        Connection::open(&path).unwrap().execute_batch(
+            "INSERT INTO message (id, session_id, data) VALUES ('message','session','{\"role\":\"user\"}');"
+        ).unwrap();
+        let claimed = fingerprint(&input);
+        let mut replaced = false;
+        let mut sink = HookSink {
+            on_record: || {
+                if !replaced {
+                    std::fs::rename(&path, directory.path().join("previous.db")).unwrap();
+                    database_input(&path);
+                    replaced = true;
+                }
+            },
+            finished: false,
+        };
+        assert_eq!(
+            OpenCodeSessionReader
+                .visit_db_claimed(&input, &claimed, &|| false, &mut sink)
+                .unwrap(),
+            VisitOutcome::SourceChanged(SourceChangedReason::FingerprintMismatch)
+        );
+        assert!(!sink.finished);
     }
 }
 
@@ -192,13 +541,16 @@ impl OpenCodeSessionReader {
         &self,
         path: &Path,
         session_id: &str,
+        source_format: crate::analysis::SourceFormat,
         cancel: &dyn Fn() -> bool,
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<SessionSummary> {
         let conn = open_database(path)?;
         conn.execute_batch("BEGIN")?;
         validate_database_schema(&conn)?;
-        let summary = visit_database_connection(&conn, session_id, cancel, sink)?;
+        let source_format = database_source_format(&conn, session_id, source_format)?;
+        let summary =
+            visit_database_connection(&conn, session_id, source_format, cancel, true, sink)?;
         conn.execute_batch("COMMIT")?;
         Ok(summary)
     }
@@ -212,15 +564,64 @@ fn open_database(path: &Path) -> anyhow::Result<Connection> {
     .with_context(|| format!("opening OpenCode database {}", path.display()))
 }
 
+fn visit_native_tool_results(
+    connection: &Connection,
+    session_id: &str,
+    main_session: bool,
+    cancel: &dyn Fn() -> bool,
+    sink: &mut dyn RecordSink,
+) -> anyhow::Result<bool> {
+    let Some(page) = journal::read(
+        connection,
+        session_id,
+        None,
+        journal::ReadMode::Tail,
+        cancel,
+    )?
+    else {
+        return Ok(false);
+    };
+    for mut result in page.results {
+        if !main_session {
+            result.completeness = crate::analysis::ToolResultCompleteness::UnsafeOwnership;
+            if let Some(context) = &mut result.context {
+                context.main_session = false;
+            }
+        }
+        sink.record(NormalizedRecord::ToolResult(Box::new(result)));
+    }
+    Ok(page.complete)
+}
+
 fn validate_input(input: &SessionInput) -> anyhow::Result<()> {
     use crate::analysis::SourceFormat;
 
     match (input.source_format, &input.source) {
-        (SourceFormat::OpenCodeSqliteV2, RawSource::Sqlite(_))
+        (SourceFormat::OpenCodeSqliteV1 | SourceFormat::Uncharacterized, RawSource::Sqlite(_))
         | (SourceFormat::OpenCodeJsonl, RawSource::File(_) | RawSource::Jsonl(_))
-        | (SourceFormat::Uncharacterized, _) => Ok(()),
+        | (SourceFormat::Uncharacterized, RawSource::File(_) | RawSource::Jsonl(_)) => Ok(()),
         (format, _) => anyhow::bail!("OpenCode source format {format:?} does not match its source"),
     }
+}
+
+fn database_source_format(
+    connection: &Connection,
+    session_id: &str,
+    source_format: crate::analysis::SourceFormat,
+) -> anyhow::Result<crate::analysis::SourceFormat> {
+    use crate::analysis::SourceFormat;
+
+    let format = if source_format == SourceFormat::Uncharacterized {
+        db_session_source_format_connection(connection, session_id)
+            .context("OpenCode SQLite source format is unavailable")?
+    } else {
+        source_format
+    };
+    anyhow::ensure!(
+        format == SourceFormat::OpenCodeSqliteV1,
+        "OpenCode V1 reader cannot read source format {format:?}"
+    );
+    Ok(format)
 }
 
 fn validate_database_schema(connection: &Connection) -> anyhow::Result<()> {
@@ -295,7 +696,9 @@ fn query_root_timestamp(
 fn visit_database_connection(
     conn: &Connection,
     root_session_id: &str,
+    source_format: crate::analysis::SourceFormat,
     cancel: &dyn Fn() -> bool,
+    snapshot_requests: bool,
     sink: &mut dyn RecordSink,
 ) -> anyhow::Result<SessionSummary> {
     let session_columns = table_columns(conn, "session")?;
@@ -392,7 +795,8 @@ fn visit_database_connection(
             task_incomplete: false,
             sqlite_v2: true,
         };
-        let text_complete = visit_db_parts(&mut parts, &mut pending, cancel, sink)?;
+        let (text_complete, user_content_complete) =
+            visit_db_parts(&mut parts, &mut pending, cancel, sink)?;
         if standalone_root
             && session_id == root_session_id
             && root_session_id.len() <= EVIDENCE_STRING_CAP
@@ -409,11 +813,82 @@ fn visit_database_connection(
             for part in &mut pending.content {
                 part.metadata.user_text_history =
                     Some(crate::analysis::jev_evidence::UserTextHistoryProof {
-                        source_format: crate::analysis::SourceFormat::OpenCodeSqliteV2,
+                        source_format: crate::analysis::SourceFormat::OpenCodeSqliteV1,
                         session_id: root_session_id.to_owned(),
                         message_id: pending.id.clone(),
                         revision: 1,
                     });
+            }
+        }
+        if snapshot_requests {
+            let created_ms = created.and_then(parse_db_ts);
+            let unchanged_time = updated.is_none_or(|updated| Some(updated) == created);
+            let user_message = source_format == crate::analysis::SourceFormat::OpenCodeSqliteV1
+                && standalone_root
+                && session_id == root_session_id
+                && created_ms.is_some()
+                && unchanged_time
+                && pending.event.role == Role::User
+                && user_content_complete
+                && pending
+                    .content
+                    .iter()
+                    .any(|part| part.authority == ContentAuthority::User)
+                && pending
+                    .content
+                    .iter()
+                    .all(|part| part.kind == ContentKind::UserText && !part.truncated);
+            if user_message {
+                let parts = pending
+                    .content
+                    .iter()
+                    .filter(|part| part.authority == ContentAuthority::User)
+                    .enumerate()
+                    .map(|(index, part)| {
+                        Some(UserMessagePart {
+                            item_index: u32::try_from(index).ok()?,
+                            native_part_id: None,
+                            text: part.text.clone(),
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let (Some(created_at_ms), Some(parts)) = (created_ms, parts) {
+                    let request = UserMessage {
+                        source_format,
+                        session_id: root_session_id.to_owned(),
+                        message_id: pending.id.clone(),
+                        position: UserMessagePosition::OpenCodeSqlite { created_at_ms },
+                        origin: UserMessageOrigin::OpenCodeUserText,
+                        scope: UserMessageScope::MainSession,
+                        change: UserMessageChange::Present,
+                        completeness: UserMessageCompleteness::Complete,
+                        parts,
+                        proof_revision: 1,
+                    };
+                    if request.is_bounded() {
+                        sink.user_message(request);
+                    } else {
+                        sink.tool_result_gap();
+                    }
+                } else {
+                    sink.tool_result_gap();
+                }
+            } else if standalone_root
+                && session_id == root_session_id
+                && pending.event.role == Role::User
+                && (updated.is_some_and(|updated| Some(updated) != created)
+                    || pending.content.iter().any(|part| {
+                        part.kind == ContentKind::UserText
+                            && part.authority == ContentAuthority::Unknown
+                    })
+                    || text_complete
+                        && pending.content.iter().any(|part| {
+                            part.kind == ContentKind::UserText
+                                && part.authority == ContentAuthority::User
+                                && part.metadata.user_text_history.is_some()
+                        }))
+            {
+                sink.tool_result_gap();
             }
         }
         state.pending = Some(pending);
@@ -496,8 +971,9 @@ fn visit_db_parts(
     pending: &mut PendingMessage,
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<(bool, bool)> {
     let mut text_complete = true;
+    let mut user_content_complete = true;
     let mut rows = statement.query(params![pending.id, MAX_RECORD_BYTES as i64])?;
     while let Some(row) = rows.next()? {
         if cancel() {
@@ -510,6 +986,7 @@ fn visit_db_parts(
         pending.part_bytes = row.get::<_, Option<i64>>(5)?.unwrap_or(0).max(0) as usize;
         if data_len > MAX_RECORD_BYTES || pending.part_bytes > MAX_MESSAGE_PART_BYTES {
             text_complete = false;
+            user_content_complete = false;
             if !pending.parts_oversized {
                 sink.record(NormalizedRecord::Unusable(PartialReason::Oversized));
                 pending.parts_oversized = true;
@@ -518,11 +995,13 @@ fn visit_db_parts(
         }
         let Some(data) = data else {
             text_complete = false;
+            user_content_complete = false;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             continue;
         };
         let Ok(mut value) = serde_json::from_str::<Value>(&data) else {
             text_complete = false;
+            user_content_complete = false;
             sink.record(NormalizedRecord::Unusable(PartialReason::MalformedRecord));
             continue;
         };
@@ -536,7 +1015,7 @@ fn visit_db_parts(
             }
         }
         let content_start = pending.content.len();
-        text_complete &= value.get("type").and_then(Value::as_str) == Some("text")
+        let complete = value.get("type").and_then(Value::as_str) == Some("text")
             && value
                 .get("messageID")
                 .is_none_or(|id| id.as_str() == Some(&pending.id))
@@ -548,11 +1027,10 @@ fn visit_db_parts(
                 .and_then(Value::as_str)
                 .is_some_and(|text| !text.is_empty())
             && value
-                .get("synthetic")
-                .is_none_or(|value| value == &Value::Bool(false))
-            && value
                 .get("ignored")
                 .is_none_or(|value| value == &Value::Bool(false));
+        user_content_complete &= complete;
+        text_complete &= complete && value.get("synthetic").is_none_or(|value| value == false);
         apply_part(
             &value,
             created.or(updated).and_then(parse_db_ts),
@@ -562,14 +1040,14 @@ fn visit_db_parts(
         bind_sqlite_content(&value, pending, content_start);
         for content in &mut pending.content[content_start..] {
             for answer in &mut content.metadata.user_answers {
-                answer.source.source_format = crate::analysis::SourceFormat::OpenCodeSqliteV2;
+                answer.source.source_format = crate::analysis::SourceFormat::OpenCodeSqliteV1;
             }
             for plan in &mut content.metadata.plan_references {
-                plan.source.source_format = crate::analysis::SourceFormat::OpenCodeSqliteV2;
+                plan.source.source_format = crate::analysis::SourceFormat::OpenCodeSqliteV1;
             }
         }
     }
-    Ok(text_complete)
+    Ok((text_complete, user_content_complete))
 }
 
 fn bind_sqlite_content(value: &Value, pending: &mut PendingMessage, start: usize) {
@@ -938,6 +1416,7 @@ impl OpenCodeStreamState {
                 parent_call_id: None,
                 child_model: Some(task.child_model.clone()),
                 provenance: RelationProvenance::TaskToolUse,
+                config_binding: None,
             },
         )));
     }
@@ -993,6 +1472,7 @@ impl OpenCodeStreamState {
             coverage_gaps.push(PartialReason::AttributionIncomplete);
         }
         SessionSummary {
+            accounting: None,
             cache_write_tokens_available: true,
             context_window: None,
             context_window_source: ContextWindowSource::Inferred,
@@ -1326,7 +1806,7 @@ fn opencode_skill_proof(
         location: Some(format!("{}/SKILL.md", directory.trim_end_matches('/'))),
         state: JevOperationState::Completed,
         status: JevRecordedSkillStatus::DocumentSelected,
-        source_format: SourceFormat::OpenCodeSqliteV2,
+        source_format: SourceFormat::OpenCodeSqliteV1,
         session_id: Some(session_id.to_owned()),
         message_id: Some(pending.id.clone()),
         part_index: pending.content.len().saturating_add(1).try_into().ok()?,
@@ -1345,6 +1825,7 @@ fn opencode_skill_proof(
         text_digest: skill_text_digest(output),
         complete: true,
         truncated: false,
+        native_skill: None,
     })
 }
 
@@ -1555,7 +2036,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_admission_requires_the_v2_table_contract() {
+    fn sqlite_admission_requires_the_v1_table_contract() {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -1577,6 +2058,18 @@ mod tests {
             agent: "opencode".to_owned(),
             session_id: "synthetic".to_owned(),
             source: RawSource::Jsonl(String::new()),
+            source_format: crate::analysis::SourceFormat::OpenCodeSqliteV1,
+            fork_parent_session_id: None,
+        };
+        assert!(validate_input(&input).is_err());
+    }
+
+    #[test]
+    fn true_v2_format_cannot_enter_the_v1_sqlite_reader() {
+        let input = SessionInput {
+            agent: "opencode".to_owned(),
+            session_id: "synthetic".to_owned(),
+            source: RawSource::Sqlite("/tmp/opencode-v2.db".into()),
             source_format: crate::analysis::SourceFormat::OpenCodeSqliteV2,
             fork_parent_session_id: None,
         };

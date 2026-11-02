@@ -6,156 +6,6 @@ fn detector_keys_are_stable_and_unique() {
     assert_eq!(keys.len(), DetectorId::ALL.len());
     assert_eq!(DetectorId::SessionsOverDepth.key(), "sessions_over_depth");
     assert_eq!(DetectorId::CacheChurn.key(), "cache_churn");
-    assert_eq!(
-        DetectorId::IgnoredInstructions.key(),
-        "ignored_instructions"
-    );
-}
-
-#[test]
-fn skill_opportunity_uses_its_exact_detector() {
-    let cause = FindingCause::SkillOpportunity {
-        evidence: None,
-        skill_name: "review".to_owned(),
-        skill_description: "Review changes.".to_owned(),
-        cited_work_context: "Reviewed a patch.".to_owned(),
-        work_provenance: "Selected session work".to_owned(),
-        selected_window_limit: "Selected window only".to_owned(),
-    };
-    assert_eq!(cause.detector(), DetectorId::SkillOpportunities);
-}
-
-#[test]
-fn skill_opportunity_identity_distinguishes_work_episodes() {
-    let evidence = crate::checks::test_support::claude_evidence("session-private");
-    let make = |work: &str| {
-        finding(
-            &evidence,
-            FindingCause::SkillOpportunity {
-                evidence: None,
-                skill_name: "review".to_owned(),
-                skill_description: "Review changes.".to_owned(),
-                cited_work_context: work.to_owned(),
-                work_provenance: "Selected session work".to_owned(),
-                selected_window_limit: "Selected window only".to_owned(),
-            },
-        )
-        .canonical_identity("scope")
-    };
-    assert_ne!(make("Reviewed patch A"), make("Reviewed patch B"));
-}
-
-#[test]
-fn ignored_instruction_findings_require_supported_scoped_citations() {
-    use crate::checks::ignored_instructions::{
-        AssessmentFinding, FindingCertainty, InstructionProvenance, InstructionScope, RuleActionRef,
-    };
-
-    let mut evidence = crate::checks::test_support::claude_evidence("session-private");
-    evidence.capabilities.source_format = SourceFormat::ClaudeJsonl;
-    let assessment_finding = AssessmentFinding {
-        decision: None,
-        id: "finding-id".to_owned(),
-        reference: RuleActionRef {
-            instruction_id: "instruction-id".to_owned(),
-            instruction_digest: "digest".to_owned(),
-            rule_id: "rule-id".to_owned(),
-            rule_heading: "Workflow".to_owned(),
-            start_line: 4,
-            end_line: 6,
-            source: "project:AGENTS.md".to_owned(),
-            provenance: InstructionProvenance::RecordedInjection,
-            scope: InstructionScope::Project,
-            action_id: "action-id".to_owned(),
-            action_digest: "action-digest".to_owned(),
-            action_timestamp_ms: Some(1000),
-            action_stable: true,
-        },
-        instruction_excerpt: "Use the verified format.".to_owned(),
-        instruction_excerpt_truncated: false,
-        action_excerpt: "git push --force".to_owned(),
-        action_excerpt_truncated: false,
-        nearby_context_ids: Vec::new(),
-        counterevidence_ids: Vec::new(),
-        certainty: FindingCertainty::Possible,
-        composite_probability: 0.9,
-        limitations: Vec::new(),
-    };
-    let finding = Finding::ignored_instruction(&evidence, "revision", &assessment_finding)
-        .expect("valid supported finding");
-    assert_eq!(finding.detector, DetectorId::IgnoredInstructions);
-    assert_eq!(finding.session_id(), "session-private");
-    assert_eq!(
-        finding.display().unwrap().certainty,
-        Some(FindingCertainty::Possible)
-    );
-
-    let mut invalid = assessment_finding;
-    for probability in [0.749, f64::NAN, f64::INFINITY, 1.001] {
-        invalid.composite_probability = probability;
-        assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_none());
-    }
-    for probability in [0.75, 1.0] {
-        invalid.composite_probability = probability;
-        assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_some());
-    }
-    invalid.reference.action_id.clear();
-    assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_none());
-    evidence.capabilities.source_format = SourceFormat::OpenCodeJsonl;
-    assert!(Finding::ignored_instruction(&evidence, "revision", &invalid).is_none());
-}
-
-#[test]
-fn ignored_instruction_target_identity_groups_rules_in_same_section() {
-    use crate::checks::ignored_instructions::{
-        AssessmentFinding, FindingCertainty, InstructionProvenance, InstructionScope, RuleActionRef,
-    };
-
-    let make_finding = |session: &str, action: &str, rule: &str, heading: &str| {
-        let mut evidence = crate::checks::test_support::claude_evidence(session);
-        evidence.capabilities.source_format = SourceFormat::ClaudeJsonl;
-        let assessment = AssessmentFinding {
-            decision: None,
-            id: format!("finding-{action}"),
-            reference: RuleActionRef {
-                instruction_id: "instruction".to_owned(),
-                instruction_digest: "digest".to_owned(),
-                rule_id: rule.to_owned(),
-                rule_heading: heading.to_owned(),
-                start_line: 12,
-                end_line: 13,
-                source: "home:.config/opencode/AGENTS.md".to_owned(),
-                provenance: InstructionProvenance::CurrentFileComparison,
-                scope: InstructionScope::Global,
-                action_id: action.to_owned(),
-                action_digest: format!("digest-{action}"),
-                action_timestamp_ms: Some(100),
-                action_stable: true,
-            },
-            instruction_excerpt: "Run the required check.".to_owned(),
-            instruction_excerpt_truncated: false,
-            action_excerpt: format!("action {action}"),
-            action_excerpt_truncated: false,
-            nearby_context_ids: Vec::new(),
-            counterevidence_ids: Vec::new(),
-            certainty: FindingCertainty::Possible,
-            composite_probability: 0.9,
-            limitations: Vec::new(),
-        };
-        Finding::ignored_instruction(&evidence, "revision", &assessment).unwrap()
-    };
-
-    let first = make_finding("session-one", "action-one", "rule-one", "Code discovery");
-    let second = make_finding("session-two", "action-two", "rule-two", " Code discovery ");
-    let other_section = make_finding("session-three", "action-three", "rule-three", "Testing");
-    assert_eq!(
-        first.canonical_identity("global-source-scope"),
-        second.canonical_identity("global-source-scope")
-    );
-    assert_ne!(
-        first.canonical_identity("global-source-scope"),
-        other_section.canonical_identity("global-source-scope")
-    );
 }
 
 #[test]
@@ -175,6 +25,7 @@ fn exact_backend_identities_do_not_enter_display_data() {
         worker_model: "claude-opus-worker".to_owned(),
         worker_ordinal: 4,
         parent_call_id: Some("call-private-identity".to_owned()),
+        config_binding: None,
     };
     let finding = finding(&evidence, cause.clone());
     assert_eq!(finding.session_id(), "session-private-identity");
@@ -264,18 +115,21 @@ fn all_checks_group_only_matching_target_policies() {
                 worker_model: "worker-a".to_owned(),
                 worker_ordinal: 1,
                 parent_call_id: Some("call-a".to_owned()),
+                config_binding: None,
             },
             FindingCause::OverpoweredSubagents {
                 parent_model: "parent-a".to_owned(),
                 worker_model: "worker-a".to_owned(),
                 worker_ordinal: 9,
                 parent_call_id: Some("call-b".to_owned()),
+                config_binding: None,
             },
             FindingCause::OverpoweredSubagents {
                 parent_model: "parent-a".to_owned(),
                 worker_model: "worker-b".to_owned(),
                 worker_ordinal: 1,
                 parent_call_id: Some("call-a".to_owned()),
+                config_binding: None,
             },
         ),
         (

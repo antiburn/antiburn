@@ -1,0 +1,39 @@
+# Synthetic input for engine and replay tests. This is not a canonical check.
+name: Synthetic retry review
+description: Exercise bounded inputs and probability-gated status writes.
+on:
+  tool_result:
+  window: {size: 5, min: 3}
+  cooldown: 60s
+decisions:
+  review:
+    input:
+      requests: ${{ session.requests }}
+      request_history_complete: ${{ session.requests_complete }}
+      source_coverage: ${{ session.source_coverage }}
+      activity: ${{ window.messages }}
+    fit:
+      "activity[*].tool.result.content": truncate
+    output:
+      verdict:
+        type: choice
+        question: >-
+          Do at least three selected attempts repeat the same unresolved failure
+          at the end of the window? Choose clear for relevant recovery or retries
+          that the user requests. Choose uncertain when the failure, current
+          outcome, or request context is not established. Do not infer missing
+          or omitted evidence.
+        criteria:
+          stuck: At least three attempts repeat the same unresolved failure without requested retries.
+          clear: Relevant recovery or requested retries explain the selected work.
+          uncertain: The retained results or request context do not establish the outcome.
+actions:
+  - type: status
+    if: decisions.review.outputs.verdict == 'stuck' && decisions.review.details.verdict.probabilities.stuck >= 0.95
+    input:
+      result: failure
+      message: Review the selected repeated failure.
+  - type: status
+    if: "!(decisions.review.outputs.verdict == 'stuck' && decisions.review.details.verdict.probabilities.stuck >= 0.95)"
+    input:
+      result: success

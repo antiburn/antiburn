@@ -326,6 +326,320 @@ fn settings_snapshot_ignores_failed_scale_preserving_write() {
 }
 
 #[test]
+fn settings_replace_wrappers_fence_only_folder_policy_changes() {
+    let store = store();
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    let (_, mut settings) = store.replace_settings(&AppSettings::default()).unwrap();
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation
+    );
+
+    settings.theme = ThemePreference::Dark;
+    store.replace_settings(&settings).unwrap();
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation
+    );
+
+    settings.include_non_repo_folders = true;
+    store.replace_settings(&settings).unwrap();
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation + 1
+    );
+    store.save_settings(&settings).unwrap();
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation + 1
+    );
+
+    settings.include_non_repo_folders = false;
+    store.save_settings(&settings).unwrap();
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation + 2
+    );
+    assert_eq!(store.settings().unwrap(), settings);
+    assert_eq!(store.settings_snapshot(), settings);
+}
+
+#[test]
+fn settings_replace_with_fences_folder_policy_before_callback() {
+    let store = store();
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+
+    for (include_non_repo_folders, expected_generation) in [
+        (true, generation + 1),
+        (true, generation + 1),
+        (false, generation + 2),
+    ] {
+        let (_, saved, observed_generation) = store
+            .replace_settings_with(
+                &AppSettings {
+                    include_non_repo_folders,
+                    ..AppSettings::default()
+                },
+                |transaction, saved| {
+                    assert_eq!(super::settings::read_settings(transaction)?, *saved);
+                    let observed_generation = read_repository_policy_generation(transaction)?;
+                    assert_eq!(observed_generation, expected_generation);
+                    Ok(observed_generation)
+                },
+            )
+            .unwrap();
+        assert_eq!(saved.include_non_repo_folders, include_non_repo_folders);
+        assert_eq!(observed_generation, expected_generation);
+        assert_eq!(
+            store.repository_policy_snapshot().unwrap().generation,
+            expected_generation
+        );
+    }
+}
+
+#[test]
+fn settings_transition_fences_folder_policy_before_callback() {
+    let store = store();
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    let (previous, saved, ()) = store
+        .replace_settings_with_transition(
+            &AppSettings {
+                include_non_repo_folders: true,
+                ..AppSettings::default()
+            },
+            |transaction, previous, saved| {
+                assert!(!previous.include_non_repo_folders);
+                assert!(saved.include_non_repo_folders);
+                assert_eq!(super::settings::read_settings(transaction)?, *saved);
+                assert_eq!(
+                    read_repository_policy_generation(transaction)?,
+                    generation + 1
+                );
+                Ok(())
+            },
+        )
+        .unwrap();
+
+    assert!(!previous.include_non_repo_folders);
+    assert!(saved.include_non_repo_folders);
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation + 1
+    );
+    assert_eq!(store.settings_snapshot(), saved);
+}
+
+#[test]
+fn settings_scale_preserving_writes_fence_only_folder_policy_changes() {
+    let store = store();
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    store
+        .update_settings(|settings| settings.interface_scale_percent = 175)
+        .unwrap();
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation
+    );
+
+    for (include_non_repo_folders, expected_generation) in [
+        (true, generation + 1),
+        (true, generation + 1),
+        (false, generation + 2),
+    ] {
+        let (_, saved, ()) = store
+            .replace_settings_preserving_interface_scale(
+                &AppSettings {
+                    include_non_repo_folders,
+                    interface_scale_percent: 100,
+                    ..AppSettings::default()
+                },
+                |transaction, previous, saved| {
+                    assert_eq!(previous.interface_scale_percent, 175);
+                    assert_eq!(saved.interface_scale_percent, 175);
+                    assert_eq!(super::settings::read_settings(transaction)?, *saved);
+                    assert_eq!(
+                        read_repository_policy_generation(transaction)?,
+                        expected_generation
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(saved.include_non_repo_folders, include_non_repo_folders);
+        assert_eq!(saved.interface_scale_percent, 175);
+        assert_eq!(store.settings_snapshot(), saved);
+        assert_eq!(
+            store.repository_policy_snapshot().unwrap().generation,
+            expected_generation
+        );
+    }
+}
+
+#[test]
+fn settings_update_wrappers_fence_only_folder_policy_changes() {
+    let store = store();
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+
+    for (include_non_repo_folders, expected_generation) in [
+        (true, generation + 1),
+        (true, generation + 1),
+        (false, generation + 2),
+    ] {
+        let (_, saved, result) = store
+            .update_settings_with(|settings| {
+                settings.include_non_repo_folders = include_non_repo_folders;
+                settings.theme = ThemePreference::Dark;
+                Ok("updated")
+            })
+            .unwrap();
+        assert_eq!(result, "updated");
+        assert_eq!(saved.include_non_repo_folders, include_non_repo_folders);
+        assert_eq!(store.settings().unwrap(), saved);
+        assert_eq!(
+            store.repository_policy_snapshot().unwrap().generation,
+            expected_generation
+        );
+    }
+    for (include_non_repo_folders, expected_generation) in [
+        (true, generation + 3),
+        (true, generation + 3),
+        (false, generation + 4),
+    ] {
+        store
+            .update_settings(|settings| {
+                settings.include_non_repo_folders = include_non_repo_folders
+            })
+            .unwrap();
+        assert_eq!(
+            store.repository_policy_snapshot().unwrap().generation,
+            expected_generation
+        );
+    }
+
+    let before = store.settings().unwrap();
+    let result = store.update_settings_with(|settings| -> anyhow::Result<()> {
+        settings.include_non_repo_folders = true;
+        anyhow::bail!("invalid settings")
+    });
+    assert_eq!(result.unwrap_err().to_string(), "invalid settings");
+    assert_eq!(store.settings().unwrap(), before);
+    assert_eq!(store.settings_snapshot(), before);
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation + 4
+    );
+}
+
+#[test]
+fn settings_folder_policy_generation_rolls_back_with_transaction_callbacks() {
+    for preserve_interface_scale in [false, true] {
+        let store = store();
+        store
+            .update_settings(|settings| {
+                settings.interface_scale_percent = 175;
+                settings.include_non_repo_folders = true;
+            })
+            .unwrap();
+        let before = store.settings().unwrap();
+        let generation = store.repository_policy_snapshot().unwrap().generation;
+        let requested = AppSettings {
+            include_non_repo_folders: false,
+            ..before.clone()
+        };
+        let apply = |transaction: &rusqlite::Transaction<'_>,
+                     previous: &AppSettings,
+                     saved: &AppSettings|
+         -> anyhow::Result<()> {
+            assert_eq!(*previous, before);
+            assert!(!saved.include_non_repo_folders);
+            assert_eq!(super::settings::read_settings(transaction)?, *saved);
+            assert_eq!(
+                read_repository_policy_generation(transaction)?,
+                generation + 1
+            );
+            anyhow::bail!("rollback folder policy")
+        };
+        let result = if preserve_interface_scale {
+            store.replace_settings_preserving_interface_scale(&requested, apply)
+        } else {
+            store.replace_settings_with_transition(&requested, apply)
+        };
+
+        assert_eq!(result.unwrap_err().to_string(), "rollback folder policy");
+        assert_eq!(store.settings().unwrap(), before);
+        assert_eq!(store.settings_snapshot(), before);
+        assert_eq!(
+            store.repository_policy_snapshot().unwrap().generation,
+            generation
+        );
+    }
+}
+
+#[test]
+fn settings_write_failure_rolls_back_folder_policy_generation() {
+    let store = store();
+    let before = store.settings().unwrap();
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TRIGGER reject_settings_write BEFORE INSERT ON setting
+             WHEN NEW.key = 'workingWeek'
+             BEGIN SELECT RAISE(ABORT, 'settings write failure'); END;",
+        )
+        .unwrap();
+
+    let result = store.update_settings_with(|settings| {
+        settings.include_non_repo_folders = true;
+        settings.theme = ThemePreference::Dark;
+        Ok(())
+    });
+
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("settings write failure")
+    );
+    assert_eq!(store.settings().unwrap(), before);
+    assert_eq!(store.settings_snapshot(), before);
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation
+    );
+}
+
+#[test]
+fn settings_policy_generation_failure_rolls_back_preferences() {
+    let store = store();
+    let before = store.settings().unwrap();
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    store
+        .lock()
+        .execute_batch(&format!(
+            "CREATE TRIGGER reject_policy_generation BEFORE INSERT ON setting
+             WHEN NEW.key = '{REPOSITORY_POLICY_GENERATION_KEY}'
+             BEGIN SELECT RAISE(ABORT, 'policy generation failure'); END;"
+        ))
+        .unwrap();
+
+    let result = store.update_settings(|settings| settings.include_non_repo_folders = true);
+
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("policy generation failure")
+    );
+    assert_eq!(store.settings().unwrap(), before);
+    assert_eq!(store.settings_snapshot(), before);
+    assert_eq!(
+        store.repository_policy_snapshot().unwrap().generation,
+        generation
+    );
+}
+
+#[test]
 fn settings_repair_malformed_stored_presence_values() {
     let store = store();
     {
@@ -429,7 +743,7 @@ fn v72_keeps_only_disabled_agents_that_have_sessions() {
          VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
     ));
 
-    assert_eq!(store.schema_version().unwrap(), 75);
+    assert_eq!(store.schema_version().unwrap(), 92);
     assert_eq!(
         store.settings().unwrap().disabled_agents.as_str(),
         "codex,cursor"
@@ -442,7 +756,7 @@ fn v72_clears_a_disabled_list_with_no_session_agents() {
         "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
     );
 
-    assert_eq!(store.schema_version().unwrap(), 75);
+    assert_eq!(store.schema_version().unwrap(), 92);
     assert!(!store.settings().unwrap().disabled_agents.any());
 }
 

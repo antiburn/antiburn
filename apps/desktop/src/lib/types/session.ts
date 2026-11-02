@@ -174,6 +174,9 @@ interface ModelTokens {
 
 /** Metrics for a single analyzed session. Mirrors engine `SessionMetrics`. */
 export interface SessionMetrics {
+  accounting?: NativeSourceAccounting | null
+  tokenReconciliation?: NativeUsageReconciliation<NativeTokenClasses> | null
+  costReconciliation?: NativeUsageReconciliation<NativeCalculatedCost> | null
   agent: string
   sessionId: string
   durationSecs: number
@@ -208,6 +211,29 @@ export interface SessionMetrics {
   cost?: SessionCostComponents | null
   efficiency?: SessionEfficiency
 }
+
+export interface NativeTokenClasses {
+  inputTokens: number
+  visibleOutputTokens: number
+  reasoningTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+}
+
+export interface NativeCalculatedCost {
+  usd: number
+  provenance: "producerCalculated"
+}
+
+export interface NativeSourceAccounting {
+  aggregateTokens: NativeTokenClasses | null
+  retainedTokens: NativeTokenClasses | null
+  aggregateCalculatedCost: NativeCalculatedCost | null
+  retainedCalculatedCost: NativeCalculatedCost | null
+}
+
+export type NativeUsageReconciliation<T> =
+  { status: "unknown" | "matched" | "inconsistent" } | { status: "unallocated"; value: T }
 
 /**
  * Averaged view across the analyzed sessions. A single-session view uses
@@ -259,6 +285,7 @@ export interface SubagentMember {
 /** One model/thinking-mode pair. Mirrors engine `ModelRun`. */
 interface SubagentModelRun {
   model: string
+  nativeVariant?: string
   thinkingMode?: string
 }
 

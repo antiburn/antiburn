@@ -74,28 +74,64 @@ retain its own permission and historical login-item records after removal.
 
 ## Agents
 
-antiburn reads session data that a coding agent has already written to disk.
+antiburn reads existing session data from supported local stores and registered
+OpenCode services.
 Plan limits are separate: antiburn can ask a provider for those figures as
 described in [Network](#network).
 
-| Agent          | Discovery                | Detailed session analysis             | Burn Check               | WSL           | Notes                                                                                                                                                                                                                                |
-| -------------- | ------------------------ | ------------------------------------- | ------------------------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Claude Code    | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                      |
-| Codex          | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                      |
-| OpenCode       | Supported                | Supported                             | Supported                | Supported     | WSL discovery uses bounded OpenCode CLI export. It is not disk-only access.                                                                                                                                                          |
-| Cursor         | Supported                | Supported on characterized surfaces   | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                                                                                                                                          |
-| GitHub Copilot | Supported                | Supported for accepted CLI v1 bundles | Supported for S/O        | Not supported | Requires the strict event and schema-v7 request-store bundle. D is unavailable because request depth is not retained. IDE chat remains fail closed. Prompts, content, and tool arguments are not read.                               |
-| Cline          | Supported                | Partial                               | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                                                                                                                                  |
-| Kiro           | Supported                | Safe V2 CLI facts only                | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed.                                                                                                                  |
-| Amp            | Supported                | Partial                               | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                                                                                                                                              |
-| Pi             | macOS and Linux only     | Supported for Pi V1-V3 CLI sessions   | Supported                | Not supported | Includes `PI_AGENT_DIR`; documented V1/V2 migrations are normalized into the V3 reader; excluded on native Windows and WSL.                                                                                                          |
-| Oh My Pi       | macOS and Linux only     | Supported for the OMP v3 CLI core     | Finding-only D/T/O       | Not supported | Discovers `~/.omp/agent/sessions`, and `PI_CONFIG_DIR` or `PI_CODING_AGENT_DIR` when they resolve to an OMP tree. Named profiles and XDG redirects are not discovered. Extra journal types fail closed, so there is no clean result. |
-| Antigravity    | Supported, **disk-only** | Supported on characterized surfaces   | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                                                                                                                                           |
-| Devin          | Supported, **disk-only** | Finding-only S                        | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional.                                                                                             |
+| Agent          | Discovery                | Detailed session analysis             | Burn Check               | WSL           | Notes                                                                                                                                                                                                                                                       |
+| -------------- | ------------------------ | ------------------------------------- | ------------------------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code    | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                                             |
+| Codex          | Supported                | Supported                             | Supported                | Supported     |                                                                                                                                                                                                                                                             |
+| OpenCode       | Supported                | Supported                             | Supported                | Supported     | WSL V1 uses the existing CLI export bridge. Bounded V2 stored reads require Linux curl and the default running `2.0.32` service. They have no native live-check eligibility; see [source limits](session-coverage.md). Real WSL runtime remains unverified. |
+| Cursor         | Supported                | Supported on characterized surfaces   | Finding-only O support   | Not supported | Other surfaces fail closed.                                                                                                                                                                                                                                 |
+| GitHub Copilot | Supported                | Supported for accepted CLI v1 bundles | Supported for S/O        | Not supported | Requires the strict event and schema-v7 request-store bundle. D is unavailable because request depth is not retained. IDE chat remains fail closed. Prompts, content, and tool arguments are not read.                                                      |
+| Cline          | Supported                | Partial                               | Finding-only S/O         | Not supported | Terminal messages-contract-v1 bundles support model and child findings; legacy sources fail closed.                                                                                                                                                         |
+| Kiro           | Supported                | Safe V2 CLI facts only                | Unavailable              | Not supported | V2 requires exact local `.json` and `.jsonl` siblings. V3, IDE stores, and manual `/chat save` exports fail closed.                                                                                                                                         |
+| Amp            | Supported                | Partial                               | Finding-only D/O         | Not supported | Thread JSON supports bounded depth and model findings; file-change records fail closed.                                                                                                                                                                     |
+| Pi             | macOS and Linux only     | Supported for Pi V1-V3 CLI sessions   | Supported                | Not supported | Includes `PI_AGENT_DIR`; documented V1/V2 migrations are normalized into the V3 reader; excluded on native Windows and WSL.                                                                                                                                 |
+| Oh My Pi       | macOS and Linux only     | Supported for the OMP v3 CLI core     | Finding-only D/T/O       | Not supported | Discovers `~/.omp/agent/sessions`, and `PI_CONFIG_DIR` or `PI_CODING_AGENT_DIR` when they resolve to an OMP tree. Named profiles and XDG redirects are not discovered. Extra journal types fail closed, so there is no clean result.                        |
+| Antigravity    | Supported, **disk-only** | Supported on characterized surfaces   | Finding-only D/O support | Not supported | Native `agy`/IDE SQLite usage plus brain JSONL and saved cascade analysis.                                                                                                                                                                                  |
+| Devin          | Supported, **disk-only** | Finding-only S                        | Finding-only S           | Not supported | Uses Devin Local migration-17 SQLite; legacy Windsurf roots keep the stable `windsurf` identity. Desktop ACP is child-only and optional.                                                                                                                    |
 
 **Disk-only** means sessions come from the agent's own documented local files; the
 live language-server APIs those two editors expose aren't read, so a session that
 exists only in memory will not appear.
+
+### OpenCode V2 live connection
+
+Stored sessions do not need a running OpenCode service. Live YAML checks need the
+supported registered local service and proof that its process has the selected
+database open. Antiburn does not start or replace that service.
+
+Burn checks shows a local diagnostic when the service is unavailable, rejects its
+credential, uses a different source, has an unsupported version, or exceeds a
+capture limit. These states do not count as a passed check. A capture gap records
+unobserved history; it does not prove that an event was lost. After reconnect,
+safe future results can run without an alert about the older gap. Missed results
+do not replay. Earlier assessments keep the input they actually checked.
+
+Connection diagnostics contain closed error codes and safe action text. They do
+not include credentials, raw event bodies, or database paths. Connection outcomes
+stay local; shared OpenCode surface events do not measure V2 connection success.
+
+### YAML source limits
+
+The five native live routes supply only the public events their source contracts
+can prove. Claude's characterized CLI 2.1.278/2.1.309 lineage does not supply
+public assistant completion or response cycles. Pi's inert Antiburn advisory can
+preserve native continuity but does not become a user request or native activity.
+
+Cursor Desktop has a separate ordered snapshot tool-result route for its
+characterized native inline main-session source. Recorded header order, exact
+bubble/call identities, and current ready cached evidence are required. Cursor
+CLI and generic stores do not inherit it. It does not supply separate public
+message/call, cycle, or host-session events. See
+[source coverage](session-coverage.md#cursor-desktop-yaml-tool-evidence).
+
+YAML status checks do not grant the native remediation features below. Burn
+Checks use the experimental `v1-alpha` draft, without backward compatibility.
+Missing features are unassigned future work; beta and stable scope are not set.
 
 ## Burn Check remediation
 
@@ -117,7 +153,7 @@ exact binding limits. The same document has the exhaustive prompt matrix.
 | Codex       | Supported         | D/T/S/M/K/O/F               | Prompts for all nine checks                                 |
 | OpenCode    | Supported         | D/S/M/K/O                   | Prompts for D, S, M, B, K, O, and C                         |
 | Cursor      | Finding-only O    | None                        | Current M/K inventory; prompts for characterized O findings |
-| Pi          | Supported         | D/T/O/C                     | Prompts for D, T, S, M, K, O, and C; B unavailable          |
+| Pi          | Supported         | D/T/O                       | Prompts for D, T, S, M, K, O, and C; B unavailable          |
 | Antigravity | Finding-only D/O  | None                        | Current M/K inventory; prompts for D and O                  |
 
 ### Second-tier product coverage
@@ -142,11 +178,17 @@ optional built-in tool. Claude project scope requires the exact bare tool name
 in `permissions.allow`. Model and reasoning edits remain pinned to their saved
 attribution, and Claude fast mode writes `false`. A controller-reported runtime
 or managed override can prevent an immediate behavior change; the review shows
-this warning. Check-level Copy can provide bounded generic text only when it can
-select at least one current target. Every returned prompt has a durable attempt
-reference. Native Windows can read supported setting attribution but
-cannot apply a change. Pi and Oh My Pi session discovery remains unavailable on
-native Windows. WSL is separate and cannot edit native host config. See the
+this warning. Each explicit Copy prepares fresh prompt text, including retries
+after clipboard failure. Check-level Copy queries current targets. Incomplete
+queries and missing selected identities can
+receive bounded inspection text without a current finding claim. Matched
+unsupported targets remain unavailable. Existing watch
+state and full watch capacity do not block valid prompt text. Copy preserves
+existing attempts and adds references only for selected waiting attempts. It does
+not prove verification or savings. Native Windows can read supported setting
+attribution but cannot apply a change. Pi and Oh My Pi session discovery remains
+unavailable on native Windows. WSL is separate and cannot edit native host config.
+See the
 [implementation guide](remediation.md) for precedence, verification, savings,
 privacy, and exact unavailable cases.
 
@@ -263,6 +305,36 @@ the next time it looks.
 
 ## Network
 
+**Model-based checks** can send an authored YAML check's selected tool results,
+arguments, and available user-slot text to the selected System One connection.
+In **Settings → Checks → Model-based checks**, turn **Run checks** off during
+setup. Choose **Add connection**, select Jev, Ollama, Cloudflare, or Custom, enter
+its fields, and select **Add connection** in the dialog. The first connection
+becomes selected without enabling checks. Choose **Use** for another saved
+connection, then enable **Run checks** when ready. **Edit** and **Save** update a
+connection without selecting another one. **Remove** can delete any connection;
+removing the selected connection turns checks off and clears selection. Saved
+results and usage remain. **Test connection** in the dialog is optional, sends synthetic input,
+and can incur provider charges. Ollama requires an endpoint that supports System
+One. Compatible models and output capabilities are required; an arbitrary chat
+endpoint is not supported. Custom supports direct System One and
+Cloudflare-envelope responses, but unknown limits block execution.
+The app manages supported limits without manual overrides. See
+[decision connections](burn-check/authoring.md#decision-connections) for the
+provider-specific fields and limits. The selected Settings connection owns
+routing; decision-level YAML `model` is rejected as an unknown field.
+Local status checks send no model request. They still require **Run checks** to
+be on and a configured connection to be selected. The connection's credential
+and authentication rules, and the source and runtime requirements, still apply.
+With **Run checks** off, the app still reads and parses bounded local YAML
+definitions and watches their directories, including at cold startup. This
+supplies names, diagnostics, paused cards, and file counts. It does not restore provider
+configuration, discover model capabilities, catch up session sources, or run
+assessments.
+Partial history and fields are identified; missing images are not analyzed.
+Provider usage charges can apply. See
+[Burn Checks](burn-check/README.md) and the [privacy policy](privacy-policy.md).
+
 antiburn needs no account or backend for its main work. The connections it makes
 beyond analytics and updates are yours, not ours: reading
 a provider's own figures with your own credentials is traffic between this machine
@@ -312,11 +384,11 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   with a rejected name replaced by a fixed placeholder instead of being sent;
   the app version; and the operating system. The payload has no
   field able to carry anything else. The analytics-session identifier changes
-  after 30 minutes without a captured analytics event, when the app restarts,
+  after 30 minutes without a user-oriented analytics event, when the app restarts,
   or when the installation identifier rotates.
   Its generator is memory-only, but each queued event stores the value on disk
-  until that event is sent or removed. Background events can keep it active, so
-  it does not measure a user visit or time spent. Because each event is
+  until that event is sent or removed. Background events do not extend its
+  inactivity timeout. It does not measure a user visit or time spent. Because each event is
   timestamped and the installation identifier lasts up to 30 days, the events
   do show roughly when events were captured within that window; they do not show
   the content or identity of what the app was used on. Resource ranges can

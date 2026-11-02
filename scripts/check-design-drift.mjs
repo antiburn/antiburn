@@ -40,6 +40,7 @@ const WINDOW_CORNER_SOURCES = [
 // Each shadow token names one selector that must carry that exact box-shadow.
 const SHADOW_SELECTORS = {
   popover: 'ui-menu',
+  promotion: 'promotion-panel',
   tooltip: 'ui-tooltip',
   raised: 'ui-switch-thumb',
 };

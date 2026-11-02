@@ -16,6 +16,9 @@ use antiburn_local::analysis::{
 use super::model::PublishedEvidence;
 use super::*;
 
+#[path = "evidence_cleanup_tests.rs"]
+mod evidence_cleanup_tests;
+
 fn store() -> Store {
     Store::open_in_memory(Path::new("/tmp/antiburn-publish-test-state")).expect("in-memory store")
 }
@@ -98,6 +101,7 @@ fn evidence_completion(
 
 fn turn_row(turn_index: u64) -> TurnRow {
     TurnRow {
+        accounting: None,
         source_key: "s1".into(),
         thread_id: "s1".into(),
         turn_index,
@@ -160,7 +164,7 @@ fn user_turn_with_content(turn_index: u64, content: &str) -> TurnRow {
 }
 
 #[test]
-fn instruction_epoch_survives_appends_and_resets_for_source_replacement() {
+fn source_resumes_survive_appends_and_follow_source_replacement() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "instruction-epoch-publication", 100, 60);
     let key = record.key.clone();
@@ -185,11 +189,17 @@ fn instruction_epoch_survives_appends_and_resets_for_source_replacement() {
             .publish_projections(&record, None, &completion, &[], &initial_sources)
             .unwrap()
     );
-    let (initial_positions, initial_at) = store
-        .observe_burn_check_instruction_epoch(&key, 1, claim.source_generation, "rules-v1", 10_000)
-        .unwrap();
-    assert_eq!(initial_positions.get("s1"), Some(&1));
-    assert_eq!(initial_positions.get("second"), Some(&0));
+    let source_names = || {
+        store
+            .lock()
+            .prepare("SELECT source_key FROM source_resume ORDER BY source_key")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    assert_eq!(source_names(), ["s1", "second"]);
 
     let mut appended_session = session("instruction-epoch-publication", 1_000);
     appended_session.source_fingerprint = Some("sv1:instruction-epoch-append".into());
@@ -244,19 +254,7 @@ fn instruction_epoch_survives_appends_and_resets_for_source_replacement() {
             )
             .unwrap()
     );
-    let (appended_positions, appended_at) = store
-        .observe_burn_check_instruction_epoch(
-            &key,
-            1,
-            append_claim.source_generation,
-            "rules-v1",
-            20_000,
-        )
-        .unwrap();
-    assert_eq!(appended_at, initial_at);
-    assert_eq!(appended_positions.get("s1"), Some(&1));
-    assert_eq!(appended_positions.get("second"), Some(&0));
-    assert_eq!(appended_positions.get("new-source"), Some(&0));
+    assert_eq!(source_names(), ["new-source", "s1", "second"]);
 
     let mut replaced_session = appended_session;
     replaced_session.source_fingerprint = Some("sv1:instruction-epoch-rewrite".into());
@@ -311,17 +309,7 @@ fn instruction_epoch_survives_appends_and_resets_for_source_replacement() {
             )
             .unwrap()
     );
-    let (replacement_positions, replacement_at) = store
-        .observe_burn_check_instruction_epoch(
-            &key,
-            1,
-            replacement_claim.source_generation,
-            "rules-v1",
-            30_000,
-        )
-        .unwrap();
-    assert!(replacement_at > initial_at);
-    assert_eq!(replacement_positions.get("s1"), Some(&3));
+    assert_eq!(source_names(), ["new-source", "s1", "second"]);
 
     let mut removed_session = replaced_session;
     removed_session.source_fingerprint = Some("sv1:instruction-epoch-source-removed".into());
@@ -361,18 +349,7 @@ fn instruction_epoch_survives_appends_and_resets_for_source_replacement() {
             )
             .unwrap()
     );
-    let (remaining_positions, removed_at) = store
-        .observe_burn_check_instruction_epoch(
-            &key,
-            1,
-            removal_claim.source_generation,
-            "rules-v1",
-            40_000,
-        )
-        .unwrap();
-    assert!(removed_at > replacement_at);
-    assert_eq!(remaining_positions.len(), 1);
-    assert_eq!(remaining_positions.get("s1"), Some(&3));
+    assert_eq!(source_names(), ["s1"]);
 }
 
 fn insert_waiting_prompt(store: &Store, remediation_id: &str, target_key: &str) {
@@ -676,6 +653,146 @@ fn published_turn_rows_serves_the_last_published_fence_while_a_newer_claim_is_in
 }
 
 #[test]
+fn published_replay_requires_a_publication_and_an_analysis_record() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "replay-admission", 100, 60);
+    let key = &record.key;
+    assert!(store.published_replay(key).unwrap().is_none());
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Unsupported,
+        crate::store::test_support::evidence_json(key),
+    );
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    let snapshot = store.published_replay(key).unwrap().unwrap();
+    assert!(snapshot.rows.is_empty());
+    assert_eq!(snapshot.record, record);
+    assert!(snapshot.relations.is_empty());
+    store
+        .lock()
+        .execute("DELETE FROM session_analysis", [])
+        .unwrap();
+    assert!(store.published_replay(key).unwrap().is_none());
+}
+
+#[test]
+fn published_replay_keeps_rows_summaries_and_relations_in_one_publication() {
+    use std::sync::Barrier;
+
+    let store = store();
+    let (mut record, mut claim) = claimed_projection(&store, "replay-snapshot", 100, 60);
+    let key = record.key.clone();
+    let publish = |record: &mut AnalysisRecord, claim: &EvidenceClaim, index: u64| {
+        let source_key = format!("source-{index}");
+        record.source_summaries_json = Some(
+            serde_json::to_string(&std::collections::BTreeMap::from([(
+                source_key.clone(),
+                antiburn_local::analysis::SessionSummary::default(),
+            )]))
+            .unwrap(),
+        );
+        let completion = evidence_completion(
+            claim,
+            PublishedEvidence::Unsupported,
+            crate::store::test_support::evidence_json(&key),
+        );
+        assert!(
+            store
+                .publish_projections(
+                    record,
+                    None,
+                    &completion,
+                    &[RelationRecord {
+                        kind: RelationKind::Subagent,
+                        related_id: source_key.clone(),
+                        label: Some(source_key),
+                    }],
+                    &[],
+                )
+                .unwrap()
+        );
+    };
+    FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence)
+        .write_turn_rows(&[turn_row_for("source-0", 0)])
+        .unwrap();
+    publish(&mut record, &claim, 0);
+    let check_snapshot = |snapshot: PublishedReplay| {
+        let summaries: std::collections::BTreeMap<
+            String,
+            antiburn_local::analysis::SessionSummary,
+        > = serde_json::from_str(snapshot.record.source_summaries_json.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(snapshot.rows.len(), 1);
+        let row = &snapshot.rows[0];
+        assert_eq!(row.source_key, format!("source-{}", row.turn_index));
+        assert_eq!(summaries.keys().collect::<Vec<_>>(), [&row.source_key]);
+        assert_eq!(snapshot.relations.len(), 1);
+        assert_eq!(snapshot.relations[0].related_id, row.source_key);
+        assert_eq!(
+            snapshot.relations[0].label.as_deref(),
+            Some(row.source_key.as_str())
+        );
+    };
+    check_snapshot(store.published_replay(&key).unwrap().unwrap());
+
+    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+    claim = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .unwrap();
+    FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence)
+        .write_turn_rows(&[turn_row_for("source-1", 1)])
+        .unwrap();
+    check_snapshot(store.published_replay(&key).unwrap().unwrap());
+
+    let barrier = Barrier::new(2);
+    let snapshots = std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            for index in 1..=32 {
+                barrier.wait();
+                publish(&mut record, &claim, index);
+                barrier.wait();
+                if index < 32 {
+                    mark_evidence_pending_in(&store.lock(), &key).unwrap();
+                    claim = store
+                        .claim_next_evidence(&["claude-code"], 200 + index as i64, 60)
+                        .unwrap()
+                        .unwrap();
+                    FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence)
+                        .write_turn_rows(&[turn_row_for(
+                            &format!("source-{}", index + 1),
+                            index + 1,
+                        )])
+                        .unwrap();
+                }
+            }
+        });
+        let mut snapshots = Vec::new();
+        for _ in 1..=32 {
+            barrier.wait();
+            for _ in 0..4 {
+                snapshots.push(store.published_replay(&key).unwrap().unwrap());
+            }
+            barrier.wait();
+        }
+        writer.join().unwrap();
+        snapshots
+    });
+    for snapshot in snapshots {
+        check_snapshot(snapshot);
+    }
+    check_snapshot(store.published_replay(&key).unwrap().unwrap());
+    assert_eq!(
+        store.published_replay(&key).unwrap().unwrap().rows[0].turn_index,
+        32
+    );
+}
+
+#[test]
 fn published_turn_content_requires_a_fresh_winning_fence() {
     let store = store();
     let (mut record, claim) = claimed_projection(&store, "published-content", 100, 60);
@@ -943,6 +1060,138 @@ fn a_winning_ready_publication_activates_only_exact_markers_from_new_user_conten
 }
 
 #[test]
+fn prompt_marker_enrollment_rejects_synthetic_parts_and_keeps_real_text_in_mixed_turns() {
+    use antiburn_local::analysis::ContentAuthority;
+
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "prompt-marker-authority", 100, 60);
+    for id in ["synthetic", "mixed-synthetic", "mixed-user", "api-user"] {
+        insert_waiting_prompt(&store, id, &format!("target-{id}"));
+    }
+    let synthetic = |id: &str| {
+        ContentPart::new(
+            ContentKind::UserText,
+            format!("Remediation reference: ABR-{id}"),
+        )
+        .with_authority(ContentAuthority::Unknown)
+    };
+    FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
+        .write_turn_rows(&[
+            TurnRow {
+                role: "user",
+                content: vec![synthetic("synthetic")],
+                ..turn_row(0)
+            },
+            TurnRow {
+                role: "user",
+                content: vec![
+                    synthetic("mixed-synthetic"),
+                    ContentPart::new(
+                        ContentKind::UserText,
+                        "Remediation reference: ABR-mixed-user",
+                    ),
+                ],
+                ..turn_row(1)
+            },
+            user_turn_with_content(2, "Remediation reference: ABR-api-user"),
+        ])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    for id in ["synthetic", "mixed-synthetic"] {
+        assert_eq!(
+            store.remediation(id).unwrap().unwrap().state,
+            RemediationState::WaitingForPromptUse,
+            "synthetic part {id} must not activate a copied prompt"
+        );
+    }
+    for id in ["mixed-user", "api-user"] {
+        assert_eq!(
+            store.remediation(id).unwrap().unwrap().state,
+            RemediationState::Watching,
+            "accepted user text {id} does not need separate human-approval metadata"
+        );
+    }
+}
+
+#[test]
+fn prompt_marker_enrollment_does_not_promote_unknown_authority_from_form_answers() {
+    use antiburn_local::analysis::ContentAuthority;
+    use antiburn_local::analysis::jev_evidence::{
+        JevScopeEvidenceProvenance, JevScopeEvidenceRole, JevScopeEvidenceSource, JevUserAnswer,
+        JevUserAnswerOrigin, JevUserAnswerStatus,
+    };
+
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "prompt-form-answer", 100, 60);
+    insert_waiting_prompt(&store, "form-answer", "form-target");
+    let marker = "Remediation reference: ABR-form-answer";
+    let answer = JevUserAnswer {
+        source: JevScopeEvidenceSource {
+            source_format: antiburn_local::analysis::SourceFormat::OpenCodeSqliteV1,
+            role: JevScopeEvidenceRole::Tool,
+            native_record_id: Some("form-result".into()),
+            call_id: Some("question-call".into()),
+            question_id: Some("question".into()),
+            order: 0,
+            acceptance_order: Some(1),
+            provenance: JevScopeEvidenceProvenance::RecognizedQuestionWorkflow,
+            producer_revision: "test-producer".into(),
+            normalization_revision: 1,
+            bindings: Vec::new(),
+            truncated: false,
+        },
+        prompt: "What should happen next?".into(),
+        header: None,
+        context: None,
+        comment: None,
+        options: Vec::new(),
+        multi_select: Some(false),
+        selections: Vec::new(),
+        free_text: Some(marker.into()),
+        status: JevUserAnswerStatus::Submitted,
+        origin: JevUserAnswerOrigin::User,
+    };
+    assert!(answer.is_authoritative_user_response());
+    let user_part = ContentPart::new(ContentKind::UserText, marker)
+        .with_authority(ContentAuthority::Unknown)
+        .with_scope_evidence(vec![answer.clone()], Vec::new())
+        .unwrap();
+    let tool_part = ContentPart::new(ContentKind::ToolResult, marker)
+        .with_scope_evidence(vec![answer], Vec::new())
+        .unwrap();
+    FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
+        .write_turn_rows(&[TurnRow {
+            role: "user",
+            content: vec![user_part, tool_part],
+            ..turn_row(0)
+        }])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    assert_eq!(
+        store.remediation("form-answer").unwrap().unwrap().state,
+        RemediationState::WaitingForPromptUse
+    );
+}
+
+#[test]
 fn a_prompt_group_marker_activates_every_selected_action_without_using_other_content() {
     let store = store();
     let (record, claim) = claimed_projection(&store, "prompt-group-marker", 100, 60);
@@ -989,6 +1238,52 @@ fn a_prompt_group_marker_activates_every_selected_action_without_using_other_con
         store.remediation("group-extended").unwrap().unwrap().state,
         RemediationState::WaitingForPromptUse
     );
+}
+
+#[test]
+fn per_attempt_markers_activate_only_selected_rows_from_legacy_prompt_groups() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "selected-attempt-markers", 100, 60);
+    for (id, group) in [
+        ("selected-one", "old-group"),
+        ("unselected-one", "old-group"),
+        ("selected-two", "other-group"),
+        ("unselected-two", "other-group"),
+    ] {
+        insert_waiting_prompt_group(&store, id, &format!("target-{id}"), group);
+    }
+    insert_waiting_prompt(&store, "new-selected", "new-selected-target");
+    insert_waiting_prompt(&store, "new-unselected", "new-unselected-target");
+    FencedTurnRowStore::new(store.clone(), record.key.clone(), claim.claim_fence)
+        .write_turn_rows(&[user_turn_with_content(
+            0,
+            "Remediation reference: ABR-selected-one\n\
+             Remediation reference: ABR-selected-two\n\
+             Remediation reference: ABR-new-selected",
+        )])
+        .unwrap();
+    let completion = evidence_completion(
+        &claim,
+        PublishedEvidence::Ready,
+        crate::store::test_support::evidence_json(&claim.key),
+    );
+    assert!(
+        store
+            .publish_projections(&record, None, &completion, &[], &[])
+            .unwrap()
+    );
+    for id in ["selected-one", "selected-two", "new-selected"] {
+        assert_eq!(
+            store.remediation(id).unwrap().unwrap().state,
+            RemediationState::Watching
+        );
+    }
+    for id in ["unselected-one", "unselected-two", "new-unselected"] {
+        assert_eq!(
+            store.remediation(id).unwrap().unwrap().state,
+            RemediationState::WaitingForPromptUse
+        );
+    }
 }
 
 #[test]

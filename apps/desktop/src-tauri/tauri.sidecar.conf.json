@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "resources": { "cli-payload/": "cli-payload/" }
+  }
+}

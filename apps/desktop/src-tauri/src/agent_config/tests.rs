@@ -58,6 +58,16 @@ fn named_subagent_model_requires_one_matching_current_worker_and_reads_back() {
         };
         let editor = AgentConfigEditor::new();
         let context = ConfigContext::native(agent, &home, Some(project));
+        if agent == AgentKind::OpenCode {
+            assert!(matches!(
+                editor.prepare_operation(
+                    &context,
+                    &operation(ConfigSetting::SubagentModel, expected, replacement)
+                ),
+                Err(ConfigUnavailableReason::RuntimeOverride)
+            ));
+            continue;
+        }
         let prepared = editor
             .prepare_operation(
                 &context,
@@ -151,6 +161,13 @@ fn named_mcp_server_requires_one_enabled_definition_and_reads_back() {
         };
         let editor = AgentConfigEditor::new();
         let context = ConfigContext::native(agent, &home, Some(project));
+        if agent == AgentKind::OpenCode {
+            assert!(matches!(
+                editor.prepare_operation(&context, &operation),
+                Err(ConfigUnavailableReason::RuntimeOverride)
+            ));
+            continue;
+        }
         let prepared = editor.prepare_operation(&context, &operation).unwrap();
         editor.apply(&prepared).unwrap();
         assert!(fs::read_to_string(path).unwrap().contains(expected_text));
@@ -276,6 +293,16 @@ fn named_skill_edits_only_the_current_standard_definition_control() {
             },
         };
         let editor = AgentConfigEditor::new();
+        if agent == AgentKind::OpenCode {
+            assert!(matches!(
+                editor.prepare_operation(
+                    &ConfigContext::native(agent, &home, Some(project)),
+                    &operation
+                ),
+                Err(ConfigUnavailableReason::RuntimeOverride)
+            ));
+            continue;
+        }
         let prepared = editor
             .prepare_operation(
                 &ConfigContext::native(agent, &home, Some(project)),
@@ -362,6 +389,16 @@ fn built_in_tool_edits_are_exact_and_preserve_unrelated_permissions() {
             },
         };
         let editor = AgentConfigEditor::new();
+        if agent == AgentKind::OpenCode {
+            assert!(matches!(
+                editor.prepare_operation(
+                    &ConfigContext::native(agent, &home, Some(project)),
+                    &operation
+                ),
+                Err(ConfigUnavailableReason::RuntimeOverride)
+            ));
+            continue;
+        }
         let prepared = editor
             .prepare_operation(
                 &ConfigContext::native(agent, &home, Some(project)),
@@ -446,6 +483,16 @@ fn built_in_tool_edits_follow_explicit_project_provenance() {
                 },
             };
             let editor = AgentConfigEditor::new();
+            if case.agent == AgentKind::OpenCode {
+                assert!(matches!(
+                    editor.prepare_operation(
+                        &ConfigContext::native(case.agent, &home, Some(project)),
+                        &operation
+                    ),
+                    Err(ConfigUnavailableReason::RuntimeOverride)
+                ));
+                continue;
+            }
             let prepared = editor
                 .prepare_operation(
                     &ConfigContext::native(case.agent, &home, Some(project)),
@@ -767,6 +814,17 @@ fn vendor_setting_scope_cases_prepare_apply_and_read_back() {
         assert_eq!(effective.value, case.expected, "{:?}", case.agent);
         assert_eq!(effective.physical_identity().1, case.selector);
 
+        if case.agent == AgentKind::OpenCode {
+            assert!(matches!(
+                editor.prepare_operation(
+                    &context,
+                    &operation(case.setting, case.expected, case.proposed)
+                ),
+                Err(ConfigUnavailableReason::RuntimeOverride)
+            ));
+            continue;
+        }
+
         let prepared = editor
             .prepare_operation(
                 &context,
@@ -911,6 +969,19 @@ fn model_edits_mutate_only_the_winning_target() {
             let original_global = fs::read(&global_path).unwrap();
             let original_project = fs::read(&project_path).unwrap();
             let editor = AgentConfigEditor::new();
+            if case.agent == AgentKind::OpenCode {
+                assert!(matches!(
+                    editor.prepare(
+                        &ConfigContext::native(case.agent, &home, Some(project)),
+                        &ConfigChange {
+                            expected_value: case.expected.into(),
+                            proposed_value: case.proposed.into()
+                        }
+                    ),
+                    Err(ConfigUnavailableReason::RuntimeOverride)
+                ));
+                continue;
+            }
             let prepared = editor
                 .prepare(
                     &ConfigContext::native(case.agent, &home, Some(project)),
@@ -982,6 +1053,13 @@ fn missing_global_model_configs_are_not_created() {
                 proposed_value: proposed.into(),
             },
         );
+        if agent == AgentKind::OpenCode {
+            assert!(matches!(
+                result,
+                Err(ConfigUnavailableReason::RuntimeOverride)
+            ));
+            continue;
+        }
         assert!(
             matches!(
                 result,
@@ -1431,6 +1509,19 @@ fn apply_rejects_new_nested_precedence_for_cwd_local_vendors() {
         write(&home.join(global_path), global);
         let context = ConfigContext::native_workspace(agent, &home, &nested, &root);
         let editor = AgentConfigEditor::new();
+        if agent == AgentKind::OpenCode {
+            assert!(matches!(
+                editor.prepare(
+                    &context,
+                    &ConfigChange {
+                        expected_value: expected.into(),
+                        proposed_value: proposed.into()
+                    }
+                ),
+                Err(ConfigUnavailableReason::RuntimeOverride)
+            ));
+            continue;
+        }
         let prepared = editor
             .prepare(
                 &context,

@@ -16,7 +16,7 @@ fn first_tier_matrix_matches_reachable_desktop_capabilities() {
         (
             "OpenCode",
             AgentKind::OpenCode,
-            SourceFormat::OpenCodeSqliteV2,
+            SourceFormat::OpenCodeSqliteV1,
         ),
         ("Pi", AgentKind::Pi, SourceFormat::PiV3Jsonl),
         ("Cursor", AgentKind::Cursor, SourceFormat::CursorJsonl),
@@ -130,11 +130,7 @@ fn auto_fix_setting(agent: AgentKind, detector: DetectorId) -> Option<ConfigSett
         DetectorId::UnusedSkills => ConfigSetting::Skill,
         DetectorId::OldModelUsage => ConfigSetting::Model,
         DetectorId::OveruseOfFastMode => ConfigSetting::FastMode,
-        DetectorId::CacheChurn
-        | DetectorId::IgnoredInstructions
-        | DetectorId::SkillOpportunities
-        | DetectorId::OverExploring
-        | DetectorId::ScopeCreep => return None,
+        DetectorId::CacheChurn => return None,
     };
     if detector == DetectorId::UnusedBuiltInTools && optional_tool(agent).is_none() {
         None
@@ -174,10 +170,6 @@ fn detector_from_code(value: &str) -> Option<DetectorId> {
         "O" => Some(DetectorId::OldModelUsage),
         "F" => Some(DetectorId::OveruseOfFastMode),
         "C" => Some(DetectorId::CacheChurn),
-        "I" => Some(DetectorId::IgnoredInstructions),
-        "SkillOpportunities" => Some(DetectorId::SkillOpportunities),
-        "OverExploring" => Some(DetectorId::OverExploring),
-        "ScopeCreep" => Some(DetectorId::ScopeCreep),
         _ => None,
     }
 }

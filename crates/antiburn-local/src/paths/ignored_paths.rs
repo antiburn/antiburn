@@ -61,8 +61,16 @@ struct IgnoredState {
 /// Callers that build a comparable set of tracked roots must normalize through
 /// this function too, so both sides of the comparison agree.
 pub fn normalize(path: &str) -> String {
-    // Trim a trailing separator of either kind so `/a/b` and `/a/b/` (and, on
-    // Windows, `C:\a\b\`) compare equal.
+    let path = match path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+    {
+        Some(rest) if rest.starts_with("UNC\\") => format!(r"\\{}", &rest[4..]),
+        Some(rest) if rest.starts_with("UNC/") => format!("//{}", &rest[4..]),
+        Some(rest) => rest.to_owned(),
+        None => path.to_owned(),
+    };
+    // Trim trailing separators so equivalent Windows and Unix paths match.
     let trimmed = path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         "/".to_string()
@@ -77,9 +85,28 @@ pub fn normalize(path: &str) -> String {
 /// the supplied paths, so descendant matching works on Windows (where paths
 /// arrive with `\`) as well as on Unix.
 fn is_under(target: &str, ignored: &str) -> bool {
+    is_under_normalized(&normalize_for_match(target), &normalize_for_match(ignored))
+}
+
+fn is_under_normalized(target: &str, ignored: &str) -> bool {
     let target = target.replace('\\', "/");
     let ignored = ignored.replace('\\', "/");
     target == ignored || target.starts_with(&format!("{ignored}/"))
+}
+
+fn normalize_for_match(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        // Git can report a short alias for a folder selected with its long name.
+        let path = std::fs::canonicalize(path)
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_owned());
+        normalize(&path)
+    }
+    #[cfg(not(windows))]
+    {
+        normalize(path)
+    }
 }
 
 fn load_state(state_dir: &Path) -> IgnoredState {
@@ -119,8 +146,9 @@ pub fn set_contains(set: &HashSet<String>, path: &str) -> bool {
     if set.is_empty() {
         return false;
     }
-    let target = normalize(path);
-    set.iter().any(|ignored| is_under(&target, ignored))
+    let target = normalize_for_match(path);
+    set.iter()
+        .any(|ignored| is_under_normalized(&target, &normalize_for_match(ignored)))
 }
 
 /// Path-segment count of a path, treating both `/` and `\` as separators so the
@@ -228,6 +256,14 @@ mod tests {
         assert_eq!(normalize("/a/b/"), "/a/b");
         assert_eq!(normalize("/a/b"), "/a/b");
         assert_eq!(normalize("/"), "/");
+        assert_eq!(
+            normalize(r"\\?\C:\Users\avery\repo"),
+            r"C:\Users\avery\repo"
+        );
+        assert_eq!(
+            normalize(r"\\?\UNC\server\share\repo"),
+            r"\\server\share\repo"
+        );
     }
 
     #[test]

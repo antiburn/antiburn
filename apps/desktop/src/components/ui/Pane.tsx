@@ -15,12 +15,15 @@ import { cn } from "../../lib/cn"
  *  weight — the rest of the pane is regular weight throughout. */
 export function PaneHeader({
   title,
+  description,
   leading,
   trailing,
   headingRef,
   className = "",
 }: {
   title: string
+  /** One line under the title that says what the pane controls. */
+  description?: string
   leading?: ReactNode
   trailing?: ReactNode
   /** Set by a pane that pushes a subview, so it can move focus to the new
@@ -32,17 +35,20 @@ export function PaneHeader({
   className?: string
 }) {
   return (
-    <div className={cn("mb-6 flex items-center gap-2", className)}>
-      {leading}
-      <h1
-        ref={headingRef}
-        data-view-heading={headingRef ? "" : undefined}
-        tabIndex={headingRef ? -1 : undefined}
-        className="type-title-2 min-w-0 flex-1 text-balance text-label outline-none"
-      >
-        {title}
-      </h1>
-      {trailing}
+    <div className={cn("mb-6 flex flex-col gap-(--space-xs)", className)}>
+      <div className="flex items-center gap-2">
+        {leading}
+        <h1
+          ref={headingRef}
+          data-view-heading={headingRef ? "" : undefined}
+          tabIndex={headingRef ? -1 : undefined}
+          className="type-title-2 min-w-0 flex-1 text-balance text-label outline-none"
+        >
+          {title}
+        </h1>
+        {trailing}
+      </div>
+      {description && <p className="type-callout text-label-secondary">{description}</p>}
     </div>
   )
 }
@@ -56,18 +62,20 @@ export function PaneHeader({
  *  directly instead. */
 export function Pane({
   title,
+  description,
   trailing,
   children,
   className = "",
 }: {
   title: string
+  description?: string
   trailing?: ReactNode
   children: ReactNode
   className?: string
 }) {
   return (
     <>
-      <PaneHeader title={title} trailing={trailing} />
+      <PaneHeader title={title} {...(description ? { description } : {})} trailing={trailing} />
       <div className={cn("space-y-6", className)}>{children}</div>
     </>
   )

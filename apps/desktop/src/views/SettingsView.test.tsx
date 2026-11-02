@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { NOTICE_TEXT, THIRD_PARTY_NOTICES_TEXT } from "../lib/legalNotices"
 import { SettingsView } from "./SettingsView"
 import { searchApp, resolveSettingsSearchTarget } from "../lib/appSearch"
+import { SETTINGS_PANES } from "../lib/settingsPanes"
 import { defaultConnection } from "../lib/smartCheckProviders"
 
 /**
@@ -99,6 +100,16 @@ const INFO = {
 
 let updateRevision = 0
 
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
+    this.querySelector<HTMLElement>("input, select, button")?.focus()
+  }
+  HTMLDialogElement.prototype.close = function () {
+    this.open = false
+  }
+})
+
 function updateStatus(
   kind:
     | "unsupported"
@@ -146,7 +157,12 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       case "get_settings":
         return Promise.resolve(SETTINGS)
       case "get_system_one_settings":
-        return Promise.resolve({ activeId: "jev", profiles: { jev: defaultConnection("jev") } })
+        return Promise.resolve({
+          activeId: "jev",
+          profiles: { jev: defaultConnection("jev") },
+          pendingOperation: null,
+          displayNumbers: { jev: 1 },
+        })
       case "set_settings":
         // The store answers with what it actually stored, and that is what the
         // panes must then render.
@@ -165,6 +181,7 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       case "list_repositories":
       case "list_scan_roots":
       case "refresh_repositories":
+      case "get_agent_integrations":
         return Promise.resolve([])
       default:
         return Promise.resolve(null)
@@ -731,9 +748,7 @@ describe("SettingsView", () => {
       await screen.findByText(/may keep session content and derived analysis/i),
     ).toBeInTheDocument()
     expect(
-      screen.getByText(
-        /optional Ignored Instructions assessment sends selected instruction text/i,
-      ),
+      screen.getByText(/optional Model-based Checks send selected public messages/i),
     ).toBeInTheDocument()
     // Deleting a provider's own files is named as a non-feature rather than
     // left as a silence a reader would have to test for.
@@ -1070,9 +1085,13 @@ describe("SettingsView", () => {
     expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
   })
 
-  it.each(["macos", "windows", "linux"] as const)(
-    "connects every rendered Settings destination to search on %s",
-    async (os) => {
+  it.each(
+    (["macos", "windows", "linux"] as const).flatMap((os) =>
+      SETTINGS_PANES.map((pane) => ({ os, ...pane })),
+    ),
+  )(
+    "connects rendered $label Settings destinations to search on $os",
+    async ({ os, id: expectedPane, label }) => {
       platform.mac = os === "macos"
       platform.other = os === "linux" ? "linux" : "windows"
       HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -1081,35 +1100,44 @@ describe("SettingsView", () => {
       await screen.findByRole("switch", { name: "Start at login" })
       const catalog = searchApp("", os)
       const seen = new Set<string>()
-      for (const tab of screen.getAllByRole("tab")) {
-        const label = tab.textContent!.trim()
-        const result = searchApp(`${label} settings`, os)[0]!
-        expect(result.target.kind, label).toBe("setting")
-        if (result.target.kind !== "setting") throw new Error("Missing Settings destination")
-        const { pane } = resolveSettingsSearchTarget(result.target)
-        fireEvent.click(tab)
-        expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `${pane}-panel`)
-        emit("settings:pane", pane)
-        await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"))
-        for (const row of container.querySelectorAll<HTMLElement>("[data-settings-control]")) {
-          const control = row.dataset.settingsControl!
-          expect(seen.has(control), control).toBe(false)
-          seen.add(control)
-          const matches = catalog.filter(
-            ({ target }) => target.kind === "setting" && target.control === control,
-          )
-          expect(matches, control).toHaveLength(1)
-          const match = matches[0]!
-          const visibleLabel = row.querySelector(":scope > p, :scope > div > h2")?.textContent
-          expect(match.label, control).toBe(visibleLabel)
-          expect(searchApp(visibleLabel!, os).some(({ id }) => id === match.id)).toBe(true)
-        }
+      expect(screen.getAllByRole("tab").map((tab) => tab.textContent!.trim())).toEqual(
+        SETTINGS_PANES.map((pane) => pane.label),
+      )
+      const tab = screen.getByRole("tab", { name: label })
+      const result = searchApp(`${label} settings`, os)[0]!
+      expect(result.target.kind, label).toBe("setting")
+      if (result.target.kind !== "setting") throw new Error("Missing Settings destination")
+      const { pane } = resolveSettingsSearchTarget(result.target)
+      expect(pane).toBe(expectedPane)
+      fireEvent.click(tab)
+      expect(screen.getByRole("tabpanel")).toHaveAttribute("id", `${pane}-panel`)
+      emit("settings:pane", pane)
+      await waitFor(() => expect(tab).toHaveAttribute("aria-selected", "true"))
+      for (const row of container.querySelectorAll<HTMLElement>("[data-settings-control]")) {
+        const control = row.dataset.settingsControl!
+        expect(seen.has(control), control).toBe(false)
+        seen.add(control)
+        const matches = catalog.filter(
+          ({ target }) => target.kind === "setting" && target.control === control,
+        )
+        expect(matches, control).toHaveLength(1)
+        const match = matches[0]!
+        const visibleLabel =
+          row.querySelector(":scope > button[aria-expanded]")?.getAttribute("aria-label") ??
+          row.querySelector(
+            ":scope > label, :scope > p, :scope > span, :scope > div > h2, :scope > div > h3, :scope > div > button[aria-expanded] > span",
+          )?.textContent
+        expect(match.label, control).toBe(visibleLabel)
+        expect(searchApp(visibleLabel!, os).some(({ id }) => id === match.id)).toBe(true)
       }
       const controls = catalog.filter(
-        ({ target }) => target.kind === "setting" && target.control,
+        ({ target }) =>
+          target.kind === "setting" &&
+          target.control &&
+          resolveSettingsSearchTarget(target).pane === expectedPane,
       )
-      expect([...seen].sort()).toEqual(
-        controls.map(({ target }) => (target.kind === "setting" ? target.control! : "")).sort(),
+      fireEvent.click(
+        screen.getByRole("tab", { name: expectedPane === "general" ? "About" : "General" }),
       )
       for (const { target } of controls) {
         if (target.kind !== "setting") throw new Error("Unexpected target")
@@ -1120,8 +1148,48 @@ describe("SettingsView", () => {
           expect(row, control).not.toBeNull()
           expect(row!.contains(document.activeElement), control).toBe(true)
         })
+        const row = container.querySelector<HTMLElement>(
+          `[data-settings-control="${control}"]`,
+        )!
+        const visibleLabel =
+          row.querySelector(":scope > button[aria-expanded]")?.getAttribute("aria-label") ??
+          row.querySelector(
+            ":scope > label, :scope > p, :scope > span, :scope > div > h2, :scope > div > h3, :scope > div > button[aria-expanded] > span",
+          )?.textContent
+        const match = catalog.find(
+          ({ target }) => target.kind === "setting" && target.control === control,
+        )!
+        if (row.hasAttribute("data-settings-focus-self")) {
+          expect(control).toBe("checkModelUsage")
+          expect(match.label).toBe("Model usage")
+          expect(visibleLabel).toBe("Model-based checks")
+          expect(row).toHaveFocus()
+          expect(
+            within(row).queryByRole("button", { name: "Model usage" }),
+          ).not.toBeInTheDocument()
+        } else expect(match.label, control).toBe(visibleLabel)
+        seen.add(control!)
+        const dialog = screen.queryByRole("dialog")
+        if (dialog) {
+          fireEvent.click(within(dialog).getByRole("button", { name: /^Cancel$/ }))
+          await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+        }
       }
+      expect([...seen].sort()).toEqual(
+        controls.map(({ target }) => (target.kind === "setting" ? target.control! : "")).sort(),
+      )
       expect(invoke).not.toHaveBeenCalledWith("set_settings", expect.anything())
+      for (const command of [
+        "save_system_one_connection",
+        "switch_system_one_connection",
+        "test_system_one_connection",
+        "refresh_system_one_limits",
+        "remove_system_one_credential",
+        "remove_system_one_connection",
+        "retry_system_one_connection_operation",
+        "list_ollama_models",
+      ])
+        expect(invoke).not.toHaveBeenCalledWith(command, expect.anything())
       platform.other = "windows"
     },
   )
@@ -1239,15 +1307,37 @@ describe("SettingsView — window chrome", () => {
     expect(closeWindow).not.toHaveBeenCalled()
   })
 
+  it("keeps CLI in its own release-visible pane and routes search to Details", async () => {
+    render(<SettingsView />)
+    await screen.findByRole("switch", { name: "Start at login" })
+    expect(screen.queryByText("Antiburn CLI")).not.toBeInTheDocument()
+    expect(INFO.debugBuild).toBe(false)
+    fireEvent.click(screen.getByRole("tab", { name: "CLI" }))
+    expect(await screen.findByRole("heading", { name: "CLI" })).toBeInTheDocument()
+    expect(screen.getByText("Antiburn CLI")).toBeInTheDocument()
+    expect(screen.queryByRole("switch", { name: "Start at login" })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("tab", { name: "General" }))
+    emit("settings:pane", "cli#cliCommand")
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Technical details" })).toHaveFocus(),
+    )
+    expect(invoke).not.toHaveBeenCalledWith("test_cli_installation")
+    expect(invoke).not.toHaveBeenCalledWith("repair_cli_installation")
+  })
+
   it("orders the sidebar with setup first and the explanatory panes last", async () => {
     render(<SettingsView />)
     await screen.findByRole("switch", { name: "Start at login" })
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "General",
+      "Agents",
+      "Sessions",
+      "Checks",
       "Notifications",
       "Usage",
       "Appearance",
+      "CLI",
       "Privacy",
       "About",
     ])

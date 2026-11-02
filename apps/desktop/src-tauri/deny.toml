@@ -7,13 +7,14 @@
 # analytics, or crash-reporting SDK.
 
 [advisories]
-# These dependencies are unavoidable transitive parts of the current Tauri
-# desktop stack. Each advisory is ignored by its exact RustSec ID (rather than
-# by crate or advisory class), so a new advisory still fails CI. GTK3 has no
-# safe upgrade and is pulled by Tauri's Linux webview/tray stack; migration to
-# GTK4 requires an upstream Tauri/wry/tray-icon transition. proc-macro-error is
-# pulled by the GTK3 macro stack and also has no safe upgrade. The unic-* crates
-# are pulled by Tauri's urlpattern dependency and likewise have no safe upgrade.
+# These dependencies are unavoidable parts of the current Tauri desktop stack.
+# Each exception names exact RustSec IDs, so new advisories still fail CI.
+# GTK3 is pulled by Tauri's Linux webview/tray stack; migration to GTK4 needs an
+# upstream Tauri/wry/tray-icon transition. proc-macro-error is pulled by the
+# GTK3 macro stack. The unic-* crates are pulled by Tauri's urlpattern dependency.
+# The current Tauri updater still requires zip 4, and zbus 5 still requires the
+# standalone zbus_names and zvariant crates. No compatible upstream upgrade is
+# available for these advisories yet.
 ignore = [
     # GTK3 bindings (Tauri/wry/tray-icon/libappindicator transitive chain).
     "RUSTSEC-2024-0411", # gdkwayland-sys
@@ -36,6 +37,18 @@ ignore = [
     "RUSTSEC-2025-0081", # unic-char-property
     "RUSTSEC-2025-0098", # unic-ucd-version
     "RUSTSEC-2025-0100", # unic-ucd-ident
+
+    # tauri-plugin-updater 2.14.0 still requires zip ^4. The fix requires an
+    # upstream updater release that accepts zip >=9.
+    "RUSTSEC-2026-0367", # zip
+    "RUSTSEC-2026-0368", # zip
+    "RUSTSEC-2026-0369", # zip
+
+    # Tauri plugins still depend on zbus 5, which requires these crates. The
+    # upstream migration to zbus 6 is not yet compatible with this dependency tree.
+    "RUSTSEC-2026-0370", # zvariant
+    "RUSTSEC-2026-0371", # zbus_names
+    "RUSTSEC-2026-0372", # zvariant_derive
 
     # serde_yaml_ng parses skill front matter. It uses unsafe-libyaml, which is
     # unmaintained. No vulnerability is known and no safe upgrade is available.

@@ -11,8 +11,9 @@
 
 use std::sync::Arc;
 
-use antiburn_local::analysis::ignored_instructions::{
-    INPUT_SELECTION, prepare_session_content, select_session_content,
+use antiburn_local::analysis::jev::{JevInputField, JevInputSelection};
+use antiburn_local::analysis::jev_evidence::{
+    prepare_session_content, select_session_content, source_supported,
 };
 use antiburn_local::analysis::{
     CompositeSink, EvidenceSource, FenceScope, MemoryTurnRowStore, RawSource,
@@ -22,6 +23,17 @@ use antiburn_local::analysis::{
 };
 use rusqlite::Connection;
 use rusqlite::types::Value as SqlValue;
+
+const INPUT_SELECTION: JevInputSelection = JevInputSelection::from_fields(&[
+    JevInputField::UserMessage,
+    JevInputField::AssistantMessage,
+    JevInputField::BashCommandInput,
+    JevInputField::BashCommandOutput,
+    JevInputField::FileEditPath,
+    JevInputField::ReadFilePath,
+    JevInputField::SearchFilesQuery,
+    JevInputField::OtherToolInput,
+]);
 
 /// Every `(table, column, text)` value across a connection's tables.
 ///
@@ -118,7 +130,7 @@ fn run_pipeline(
     let source_format = match (agent, &source) {
         ("claude", _) => SourceFormat::ClaudeJsonl,
         ("codex", _) => SourceFormat::CodexRolloutJsonl,
-        ("opencode", RawSource::Sqlite(_)) => SourceFormat::OpenCodeSqliteV2,
+        ("opencode", RawSource::Sqlite(_)) => SourceFormat::OpenCodeSqliteV1,
         ("opencode", _) => SourceFormat::OpenCodeJsonl,
         ("pi", _) => SourceFormat::PiV3Jsonl,
         ("cursor", _) => SourceFormat::CursorCliAgentJsonl,
@@ -233,7 +245,7 @@ fn assert_vendor_privacy(
         }
     });
 
-    if antiburn_local::analysis::ignored_instructions::source_supported(run.source_format) {
+    if source_supported(run.source_format) {
         let key = turn_key(agent, session_id);
         let published = run.store.with_connection(|connection| {
             query_turn_content_offset_selected(
@@ -247,7 +259,7 @@ fn assert_vendor_privacy(
             )
             .expect("query selected source content")
         });
-        let content = prepare_session_content(session_id, run.source_format, published, Vec::new());
+        let content = prepare_session_content(session_id, run.source_format, published);
         let selected = select_session_content(&content, INPUT_SELECTION);
         assert!(
             !selected.actions.is_empty(),
@@ -756,12 +768,7 @@ fn native_field_sentinels_remain_isolated_in_fenced_queries_and_projection() {
             .unwrap();
             assert_eq!(published.parts.len(), 1, "{field:?}");
             let selected = select_session_content(
-                &prepare_session_content(
-                    "selection-isolation",
-                    run.source_format,
-                    published,
-                    Vec::new(),
-                ),
+                &prepare_session_content("selection-isolation", run.source_format, published),
                 selection,
             );
             let serialized = serde_json::to_string(&selected).unwrap();
@@ -853,12 +860,7 @@ fn native_empty_text_is_observed_but_non_text_results_remain_unavailable() {
             )
             .unwrap();
             let selected = select_session_content(
-                &prepare_session_content(
-                    "empty-native-fields",
-                    run.source_format,
-                    published,
-                    Vec::new(),
-                ),
+                &prepare_session_content("empty-native-fields", run.source_format, published),
                 selection,
             );
             let availability = selected
@@ -1074,7 +1076,7 @@ fn equivalent_native_requests_have_the_same_selected_meaning_for_all_six_formats
             )
             .unwrap();
             let selected = select_session_content(
-                &prepare_session_content("equivalent", run.source_format, published, Vec::new()),
+                &prepare_session_content("equivalent", run.source_format, published),
                 INPUT_SELECTION,
             );
             assert_eq!(selected.actions.len(), 6, "{agent}: {selected:?}");
@@ -1214,12 +1216,7 @@ fn antigravity_recorded_content_truncation_survives_without_marking_tool_argumen
         )
         .unwrap();
         let selected = select_session_content(
-            &prepare_session_content(
-                "truncated-content",
-                run.source_format,
-                published,
-                Vec::new(),
-            ),
+            &prepare_session_content("truncated-content", run.source_format, published),
             selection,
         );
         let response = selected

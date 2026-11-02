@@ -15,6 +15,8 @@ use crate::analysis::model::{NormalizedSession, Role, ToolCall};
 use crate::analysis::records::{RecordShape, parse_record, parse_ts};
 use crate::analysis::source_validity::{AppendOnlyGuarantee, PinnedSource, SourceClaim};
 
+mod desktop;
+
 pub struct CursorSessionReader;
 
 impl SessionReader for CursorSessionReader {
@@ -38,13 +40,17 @@ impl SessionReader for CursorSessionReader {
         sink: &mut dyn RecordSink,
     ) -> anyhow::Result<VisitOutcome> {
         let summary = match &input.source {
-            RawSource::File(path) => {
-                visit_cursor_reader(BufReader::new(std::fs::File::open(path)?), &|| false, sink)?
-            }
+            RawSource::File(path) => visit_cursor_reader(
+                BufReader::new(std::fs::File::open(path)?),
+                input,
+                &|| false,
+                sink,
+            )?,
             RawSource::Jsonl(content) => {
                 let suffix: &[u8] = if content.ends_with('\n') { b"" } else { b"\n" };
                 visit_cursor_reader(
                     BufReader::new(content.as_bytes().chain(suffix)),
+                    input,
                     &|| false,
                     sink,
                 )?
@@ -86,7 +92,8 @@ impl SessionReader for CursorSessionReader {
             AppendOnlyGuarantee::Evidenced => claim.boundary,
             AppendOnlyGuarantee::Absent => u64::MAX,
         };
-        let summary = visit_cursor_reader(BufReader::new(pinned.reader(limit)), cancel, sink)?;
+        let summary =
+            visit_cursor_reader(BufReader::new(pinned.reader(limit)), input, cancel, sink)?;
         let outcome = match guarantee {
             AppendOnlyGuarantee::Evidenced => pinned.recheck_prefix()?.map_or(
                 VisitOutcome::AcceptedPrefix {
@@ -121,18 +128,23 @@ fn cursor_capabilities(input: &SessionInput) -> crate::analysis::SourceCapabilit
 
 fn visit_cursor_reader(
     reader: impl std::io::BufRead,
+    input: &SessionInput,
     cancel: &dyn Fn() -> bool,
     sink: &mut dyn RecordSink,
 ) -> anyhow::Result<SessionSummary> {
     let mut reader = BoundedJsonlReader::new(reader);
+    let mut desktop = desktop::DesktopEvidence::new(input);
     let mut session_model = None;
     let mut header_model = None;
     let mut attribution_incomplete = false;
     while let Some(record) = reader.next_record(cancel) {
         match record {
-            FramedRecord::Complete { bytes, .. } => {
+            FramedRecord::Complete { bytes, index } => {
                 let record = std::str::from_utf8(bytes).context("Cursor record is not UTF-8")?;
                 let Ok(value) = serde_json::from_str::<Value>(record) else {
+                    if input.source_format == crate::analysis::SourceFormat::CursorIdeComposer {
+                        sink.tool_result_gap();
+                    }
                     sink.record(NormalizedRecord::Unusable(
                         crate::analysis::PartialReason::MalformedRecord,
                     ));
@@ -142,6 +154,7 @@ fn visit_cursor_reader(
                     session_model = model_from(&value).map(str::to_owned);
                 }
                 if is_cursor_metadata(&value) {
+                    desktop.metadata(&value, index, sink);
                     header_model = model_from(&value).map(str::to_owned);
                     if value.get("cursor_scope_ordering").and_then(Value::as_str)
                         == Some("unproven")
@@ -152,7 +165,11 @@ fn visit_cursor_reader(
                     }
                     continue;
                 }
+                desktop.observe(&value, index, sink);
                 let Some(mut event) = parse_record(&value, RecordShape::Cursor) else {
+                    if input.source_format == crate::analysis::SourceFormat::CursorIdeComposer {
+                        sink.tool_result_gap();
+                    }
                     sink.record(NormalizedRecord::Unusable(
                         crate::analysis::PartialReason::UnrecognizedRecordType,
                     ));
@@ -189,10 +206,14 @@ fn visit_cursor_reader(
                 anyhow::bail!("Cursor record {index} read was cancelled");
             }
             FramedRecord::Skipped(skip) => {
+                if input.source_format == crate::analysis::SourceFormat::CursorIdeComposer {
+                    sink.tool_result_gap();
+                }
                 sink.record(NormalizedRecord::Unusable(skip.partial_reason()));
             }
         }
     }
+    desktop.finish(sink);
     Ok(SessionSummary {
         model: session_model,
         coverage_gaps: attribution_incomplete

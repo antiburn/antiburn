@@ -314,22 +314,128 @@ impl Store {
         remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
         detector: DetectorId,
         expected_revision: u64,
-        expected_smart_master_generation: Option<&str>,
     ) -> Result<Option<Vec<RemediationRecord>>> {
         self.create_or_reuse_remediations_at_check_revision(
             remediations,
-            Some((
-                detector,
-                expected_revision,
-                expected_smart_master_generation,
-            )),
+            Some((detector, expected_revision)),
         )
+    }
+
+    /// Resolves prompt references without changing existing attempts or pruning history.
+    /// Runs `finish` before commit. The callback must not access the store.
+    /// A missing record means the batch cannot enroll all new attempts within capacity.
+    pub(crate) fn enroll_prompt_remediations_for_enabled_check<T>(
+        &self,
+        remediations: &[(Remediation, Vec<RemediationEvidenceGuard>, String)],
+        detector: DetectorId,
+        expected_revision: u64,
+        finish: impl FnOnce(&[Option<RemediationRecord>]) -> Result<T>,
+    ) -> Result<Option<T>> {
+        ensure!(
+            !remediations.is_empty(),
+            "a remediation batch requires watches"
+        );
+        for (remediation, _, snapshot) in remediations {
+            ensure!(
+                is_prompt_action_without_guards(remediation),
+                "prompt enrollment requires a waiting action"
+            );
+            ensure!(
+                remediation.prompt_group_id.is_none(),
+                "prompt enrollment uses per-attempt references"
+            );
+            validate_json("definition_json", &remediation.definition_json)?;
+            validate_json("result_json", &remediation.result_json)?;
+            ensure!(
+                serde_json::from_str::<serde_json::Value>(&remediation.result_json)?
+                    .get("promptText")
+                    .is_none(),
+                "prompt enrollment does not store prompt text"
+            );
+            validate_safe_json("display_snapshot_json", snapshot)?;
+        }
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        if !Self::remediation_policy_is_current(&transaction, detector, expected_revision)? {
+            return Ok(None);
+        }
+        for (_, guards, _) in remediations {
+            for guard in guards {
+                if !Self::remediation_guard_is_current(&transaction, guard)? {
+                    return Ok(None);
+                }
+            }
+        }
+        let mut records = remediations
+            .iter()
+            .map(|(remediation, _, _)| Self::active_remediation_in(&transaction, remediation))
+            .collect::<Result<Vec<_>>>()?;
+        let missing = remediations
+            .iter()
+            .zip(&records)
+            .filter(|(_, record)| record.is_none())
+            .map(|((remediation, _, _), _)| {
+                (
+                    &remediation.environment_key,
+                    &remediation.agent,
+                    &remediation.scope_kind,
+                    &remediation.scope_key,
+                    &remediation.target_key,
+                )
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        let active: usize = transaction.query_row(
+            "SELECT COUNT(*) FROM remediation WHERE state != 'recurred'",
+            [],
+            |row| row.get(0),
+        )?;
+        if missing <= MAX_DURABLE_REMEDIATIONS.saturating_sub(active) {
+            for ((remediation, _, snapshot), record) in remediations.iter().zip(&mut records) {
+                if record.is_some() {
+                    continue;
+                }
+                // A repeated target in this batch uses the first inserted attempt.
+                *record = Self::active_remediation_in(&transaction, remediation)?;
+                if record.is_none() {
+                    *record = Some(transaction.query_row(
+                        &format!(
+                            "INSERT INTO remediation (
+                                remediation_id, target_key, environment_key, agent,
+                                scope_kind, scope_key, state, definition_json, result_json,
+                                created_at_epoch, updated_at_epoch, effective_boundary_ms,
+                                origin, display_snapshot_json)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'waitingForPromptUse', ?7, ?8,
+                                     ?9, ?9, ?10, 'action', ?11)
+                             RETURNING {REMEDIATION_COLUMNS}"
+                        ),
+                        params![
+                            remediation.remediation_id,
+                            remediation.target_key,
+                            remediation.environment_key,
+                            remediation.agent,
+                            remediation.scope_kind,
+                            remediation.scope_key,
+                            remediation.definition_json,
+                            remediation.result_json,
+                            remediation.created_at_epoch,
+                            remediation.effective_boundary_ms,
+                            snapshot,
+                        ],
+                        remediation_from_row,
+                    )?);
+                }
+            }
+        }
+        let result = finish(&records)?;
+        transaction.commit()?;
+        Ok(Some(result))
     }
 
     fn create_or_reuse_remediations_at_check_revision(
         &self,
         remediations: &[(Remediation, Vec<RemediationEvidenceGuard>)],
-        check_policy: Option<(DetectorId, u64, Option<&str>)>,
+        check_policy: Option<(DetectorId, u64)>,
     ) -> Result<Option<Vec<RemediationRecord>>> {
         ensure!(
             !remediations.is_empty(),
@@ -354,25 +460,10 @@ impl Store {
         }
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        if let Some((detector, expected_revision, expected_smart_master_generation)) = check_policy
+        if let Some((detector, expected_revision)) = check_policy
+            && !Self::remediation_policy_is_current(&transaction, detector, expected_revision)?
         {
-            let (enabled, current_revision) = check_preferences_snapshot_in(&transaction)?;
-            if current_revision != expected_revision || !enabled.contains(&detector) {
-                return Ok(None);
-            }
-            if let Some(expected_generation) = expected_smart_master_generation {
-                let current_generation = transaction
-                    .query_row(
-                        "SELECT value FROM setting
-                          WHERE key = 'internal:burnChecksEnabledAtEpochV1'",
-                        [],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                if current_generation.as_deref() != Some(expected_generation) {
-                    return Ok(None);
-                }
-            }
+            return Ok(None);
         }
         for (_, guards) in remediations {
             for guard in guards {
@@ -385,27 +476,6 @@ impl Store {
             .iter()
             .map(|(remediation, _)| Self::create_or_reuse_remediation_in(&transaction, remediation))
             .collect::<Result<Vec<_>>>()?;
-        if remediations.iter().all(|(remediation, _)| {
-            remediation.state == RemediationState::WaitingForPromptUse
-                && serde_json::from_str::<serde_json::Value>(&remediation.result_json)
-                    .ok()
-                    .and_then(|value| value.get("promptText").cloned())
-                    .is_some_and(|value| value.is_string())
-        }) {
-            let ids_json = serde_json::to_string(&remediation_ids)?;
-            let prompt_count: i64 = transaction.query_row(
-                "SELECT COUNT(DISTINCT json_extract(result_json, '$.promptText'))
-                   FROM remediation
-                  WHERE remediation_id IN (SELECT value FROM json_each(?1))
-                    AND json_type(result_json, '$.promptText') = 'text'",
-                [ids_json],
-                |row| row.get(0),
-            )?;
-            ensure!(
-                prompt_count == 1,
-                "a prompt batch must reuse one stored prompt"
-            );
-        }
         transaction.commit()?;
         drop(connection);
         remediation_ids
@@ -417,6 +487,16 @@ impl Store {
             .collect::<Result<Vec<_>>>()
             .map(Some)
     }
+
+    fn remediation_policy_is_current(
+        transaction: &rusqlite::Transaction<'_>,
+        detector: DetectorId,
+        expected_revision: u64,
+    ) -> Result<bool> {
+        let (enabled, current_revision) = check_preferences_snapshot_in(transaction)?;
+        Ok(current_revision == expected_revision && enabled.contains(&detector))
+    }
+
     fn remediation_guard_is_current(
         transaction: &rusqlite::Transaction<'_>,
         guard: &RemediationEvidenceGuard,
@@ -447,11 +527,11 @@ impl Store {
     .map_err(Into::into)
     }
 
-    fn create_or_reuse_remediation_in(
+    fn active_remediation_in(
         transaction: &rusqlite::Transaction<'_>,
         remediation: &Remediation,
-    ) -> Result<String> {
-        let existing = transaction.query_row(
+    ) -> Result<Option<RemediationRecord>> {
+        transaction.query_row(
             &format!("SELECT {REMEDIATION_COLUMNS} FROM remediation
                 WHERE environment_key = ?1 AND agent = ?2 AND scope_kind = ?3
                   AND scope_key = ?4 AND target_key = ?5 AND state != 'recurred'
@@ -462,21 +542,19 @@ impl Store {
             params![remediation.environment_key, remediation.agent, remediation.scope_kind,
                 remediation.scope_key, remediation.target_key, remediation.origin],
             remediation_from_row,
-        ).optional()?;
-        if let Some(existing) = existing {
+        ).optional().map_err(Into::into)
+    }
+
+    fn create_or_reuse_remediation_in(
+        transaction: &rusqlite::Transaction<'_>,
+        remediation: &Remediation,
+    ) -> Result<String> {
+        if let Some(existing) = Self::active_remediation_in(transaction, remediation)? {
             if remediation.state == RemediationState::WaitingForPromptUse {
                 ensure!(
                     existing.state == RemediationState::WaitingForPromptUse,
                     "only a waiting prompt action can reuse a prompt"
                 );
-                transaction.execute(
-                    "UPDATE remediation
-                        SET result_json = json_set(result_json, '$.promptText',
-                            json_extract(?2, '$.promptText'))
-                      WHERE remediation_id = ?1 AND state = 'waitingForPromptUse'
-                        AND json_type(result_json, '$.promptText') IS NULL",
-                    params![existing.remediation_id, remediation.result_json],
-                )?;
             }
             return Ok(existing.remediation_id);
         }
@@ -770,17 +848,7 @@ impl Store {
 
     pub fn next_dirty_remediation(&self) -> Result<Option<RemediationRecord>> {
         let connection = self.lock();
-        let mut enabled = enabled_checks_in(&connection)?;
-        let smart_checks_enabled = connection.query_row(
-            "SELECT EXISTS (
-                    SELECT 1 FROM setting
-                     WHERE key = 'internal:burnChecksEnabledAtEpochV1')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !smart_checks_enabled {
-            enabled.remove(&DetectorId::IgnoredInstructions);
-        }
+        let enabled = enabled_checks_in(&connection)?;
         let enabled = enabled
             .into_iter()
             .map(|detector| detector.key())
@@ -1069,7 +1137,7 @@ pub(super) fn mark_remediations_dirty_in(
     )?)
 }
 
-/// Activates copied prompts only when their full marker appears in this pass's new user text.
+/// Activates copied prompts only from new text with accepted user authority.
 pub(super) fn activate_waiting_prompt_remediations_in(
     connection: &rusqlite::Connection,
     environment: &str,
@@ -1096,7 +1164,8 @@ pub(super) fn activate_waiting_prompt_remediations_in(
         "SELECT CAST(content.content AS TEXT) FROM turn
           JOIN turn_content AS content ON content.turn_rowid = turn.rowid
          WHERE turn.environment_key = ?1 AND turn.agent = ?2 AND turn.session_id = ?3
-            AND turn.claim_fence = ?4 AND turn.role = 'user' AND content.kind = 'user'",
+            AND turn.claim_fence = ?4 AND turn.role = 'user' AND content.kind = 'user'
+            AND content.authority = 'user'",
     )?;
     let content = statement
         .query_map(

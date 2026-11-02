@@ -1,6 +1,10 @@
-import { BookOpen, type LucideIcon } from "lucide-react"
+import { BookOpen, CircleCheck, type LucideIcon } from "lucide-react"
 
-import type { BurnCheckDetectorId } from "../../../lib/insightsIpc"
+import {
+  isInstalledCheckId,
+  type BurnCheckDetectorId,
+  type CheckId,
+} from "../../../lib/insightsIpc"
 import { CHECK_UI } from "../../checks/checkPresentation"
 
 interface CheckCategoryAppearance {
@@ -16,12 +20,6 @@ const CHECK_CATEGORY_APPEARANCE: Record<BurnCheckDetectorId, CheckCategoryAppear
     className: "text-check-overthinking",
   },
   unusedSkills: { Icon: BookOpen, className: "text-check-skills" },
-  skillOpportunities: {
-    Icon: CHECK_UI.skillOpportunities.icon,
-    className: "text-check-skills",
-  },
-  overExploring: { Icon: CHECK_UI.overExploring.icon, className: "text-check-tools" },
-  scopeCreep: { Icon: CHECK_UI.scopeCreep.icon, className: "text-check-depth" },
   overpoweredSubagents: {
     Icon: CHECK_UI.overpoweredSubagents.icon,
     className: "text-check-subagents",
@@ -33,18 +31,33 @@ const CHECK_CATEGORY_APPEARANCE: Record<BurnCheckDetectorId, CheckCategoryAppear
   },
   cacheChurn: { Icon: CHECK_UI.cacheChurn.icon, className: "text-check-cache" },
   sessionsOverDepth: { Icon: CHECK_UI.sessionsOverDepth.icon, className: "text-check-depth" },
-  ignoredInstructions: {
-    Icon: CHECK_UI.ignoredInstructions.icon,
-    className: "text-check-instructions",
-  },
 }
 
-export function BurnCheckCategoryIcon({ detector }: { detector: BurnCheckDetectorId }) {
-  const { Icon, className } = CHECK_CATEGORY_APPEARANCE[detector]
+/** The check's colour as a CSS value, for a tint that matches its icon. */
+export function burnCheckCategoryColor(detector: CheckId): string {
+  if (isInstalledCheckId(detector)) return "var(--color-label-secondary)"
+  return `var(--color-${CHECK_CATEGORY_APPEARANCE[detector].className.replace(/^text-/, "")})`
+}
+
+/** `bare` draws the glyph alone, with no tinted circle behind it. */
+export function BurnCheckCategoryIcon({
+  detector,
+  bare = false,
+}: {
+  detector: CheckId
+  bare?: boolean
+}) {
+  const { Icon, className } = isInstalledCheckId(detector)
+    ? { Icon: CircleCheck, className: "text-label-secondary" }
+    : CHECK_CATEGORY_APPEARANCE[detector]
 
   return (
     <span
-      className={`burn-check-category-icon relative z-10 grid shrink-0 place-items-center justify-self-center rounded-full ${className}`}
+      className={
+        bare
+          ? `relative z-10 grid h-lh shrink-0 place-items-center type-body ${className}`
+          : `burn-check-category-icon relative z-10 grid shrink-0 place-items-center justify-self-center rounded-full ${className}`
+      }
       aria-hidden="true"
     >
       <Icon size={16} strokeWidth={1.9} />

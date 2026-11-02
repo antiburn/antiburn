@@ -1,7 +1,7 @@
 use super::content::query_content_range_keyset_scoped;
 use super::content::{ContentQueryRange, content_query_sql, fence_predicate, order_fragment};
 use super::*;
-use crate::checks::ignored_instructions::sha256_hex;
+use crate::digest::sha256_hex;
 use serde::{Deserialize, Serialize};
 
 const CURSOR_REVISION: u32 = 1;

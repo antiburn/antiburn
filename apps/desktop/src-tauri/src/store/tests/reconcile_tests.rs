@@ -64,7 +64,7 @@ fn parser_50_requeues_legacy_path_only_reads_and_rejects_their_resume_state() {
     }
     let before = store.session_source_state(&record.key).unwrap().unwrap();
     let revisions = projection_revisions();
-    assert_eq!(revisions.parser_revision, 53);
+    assert_eq!(revisions.parser_revision, 67);
     assert_eq!(revisions.evidence_schema_revision, 22);
     assert_eq!(
         store
@@ -107,7 +107,7 @@ fn parser_53_requeues_completed_omp_sessions() {
         )
         .unwrap();
     let revisions = crate::analysis::projection_revisions();
-    assert_eq!(revisions.parser_revision, 53);
+    assert_eq!(revisions.parser_revision, 67);
     store
         .lock()
         .execute(
@@ -146,6 +146,57 @@ fn parser_53_requeues_completed_omp_sessions() {
 }
 
 #[test]
+fn parser_65_requeues_parser_64_evidence_without_changing_source_progress() {
+    prior_parser_evidence_requeues_without_changing_source_progress(64);
+}
+
+#[test]
+fn parser_67_requeues_parser_66_evidence_without_changing_source_progress() {
+    prior_parser_evidence_requeues_without_changing_source_progress(66);
+}
+
+fn prior_parser_evidence_requeues_without_changing_source_progress(parser_revision: i64) {
+    let store = store();
+    let record = seed_current_session_evidence(&store, "parser-65-requeue");
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence SET parser_revision = ?1",
+            [parser_revision],
+        )
+        .unwrap();
+    store
+        .lock()
+        .execute(
+            "UPDATE session_analysis SET parser_revision = ?1",
+            [parser_revision],
+        )
+        .unwrap();
+    let before = store.session_source_state(&record.key).unwrap().unwrap();
+    let revisions = projection_revisions();
+    assert_eq!(revisions.parser_revision, 67);
+    assert_eq!(
+        store
+            .reconcile_evidence_revisions(&["claude-code"], revisions)
+            .unwrap(),
+        1
+    );
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Pending);
+    assert_eq!(evidence.evidence_json.as_deref(), Some("{\"groups\":[]}"));
+    assert_eq!(
+        store.session_source_state(&record.key).unwrap().unwrap(),
+        before
+    );
+    assert!(
+        store
+            .claim_next_evidence(&["claude-code"], 1000, 60)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
 fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
     let store = store();
     let mut pi = session("pi-upgrade-enrollment", 1_000);
@@ -175,7 +226,7 @@ fn reconciling_backfills_existing_pi_sessions_with_current_revisions() {
         ProjectionRevisions {
             parser_revision: crate::analysis::projection_revisions().parser_revision,
             analyzer_revision: 25,
-            metrics_schema_revision: 9,
+            metrics_schema_revision: antiburn_local::analysis::METRICS_SCHEMA_REVISION,
             evidence_schema_revision: 22,
         }
     );

@@ -9,8 +9,8 @@ use antiburn_local::analysis::{
     MAX_RECORD_BYTES, MemoryTurnRowStore, NormalizedRecord, NormalizedSession, PartialReason,
     PiSessionReader, RawSource, RecordCoverage, RecordSink, SessionCollector, SessionEvidence,
     SessionEvidenceAccumulator, SessionInput, SessionMetricsAccumulator, SessionReader,
-    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, TurnFacts, TurnRowSink,
-    TurnRowStore, VisitOutcome, analyze_session, append_only_guarantee, reader_for,
+    SessionSummary, SourceCapabilities, SourceClaim, SourceKind, ToolResultObservation, TurnFacts,
+    TurnRowSink, TurnRowStore, VisitOutcome, analyze_session, append_only_guarantee, reader_for,
 };
 use antiburn_local::discovery::source_version::{
     FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
@@ -140,11 +140,14 @@ fn fixture(name: &str) -> &'static str {
         "official_entry_families" => {
             include_str!("fixtures/pi_characterization/official_entry_families.jsonl")
         }
+        "antiburn_advisory_continuation" => {
+            include_str!("fixtures/pi_characterization/antiburn_advisory_continuation.jsonl")
+        }
         _ => panic!("unknown Pi characterization fixture: {name}"),
     }
 }
 
-fn fixture_names() -> [&'static str; 44] {
+fn fixture_names() -> [&'static str; 45] {
     [
         "minimal_session",
         "role_ordering",
@@ -190,6 +193,7 @@ fn fixture_names() -> [&'static str; 44] {
         "v1_migrated",
         "v2_migrated",
         "official_entry_families",
+        "antiburn_advisory_continuation",
     ]
 }
 
@@ -353,6 +357,128 @@ impl RecordSink for SummarySink {
     fn finish(&mut self, summary: SessionSummary) {
         self.summary = Some(summary);
     }
+}
+
+#[derive(Default)]
+struct NativeResultSink {
+    results: Vec<ToolResultObservation>,
+}
+
+impl RecordSink for NativeResultSink {
+    fn record(&mut self, record: NormalizedRecord) {
+        if let NormalizedRecord::ToolResult(result) = record {
+            self.results.push(*result);
+        }
+    }
+
+    fn finish(&mut self, _summary: SessionSummary) {}
+}
+
+#[test]
+fn pi_v3_tool_results_use_physical_records_and_explicit_error_status() {
+    use antiburn_local::analysis::{
+        SourceFormat, ToolResultCompleteness, ToolResultPosition, ToolResultStatus,
+    };
+
+    let source = concat!(
+        r#"{"type":"session","version":3,"id":"s","timestamp":100}"#,
+        "\n",
+        r#"{"type":"message","id":"call-row","parentId":null,"timestamp":300,"message":{"role":"assistant","content":[{"type":"toolCall","id":"call","name":"bash","arguments":{"command":"false"}}]}}"#,
+        "\n",
+        r#"{"type":"message","id":"result-row","parentId":"call-row","timestamp":200,"message":{"role":"toolResult","toolCallId":"call","toolName":"bash","isError":true,"content":[{"type":"text","text":"failed"}]}}"#,
+        "\n"
+    );
+    let input = SessionInput {
+        source: RawSource::Jsonl(source.to_owned()),
+        source_format: SourceFormat::PiV3Jsonl,
+        ..input("minimal_session")
+    };
+    let mut sink = NativeResultSink::default();
+    PiSessionReader.visit(&input, &mut sink).unwrap();
+    assert_eq!(sink.results.len(), 1);
+    let result = &sink.results[0];
+    assert_eq!(result.session_id, "s");
+    assert_eq!(result.record_id.as_deref(), Some("result-row"));
+    assert_eq!(result.call_id.as_deref(), Some("call"));
+    assert_eq!(result.tool_name.as_deref(), Some("bash"));
+    assert_eq!(result.content.as_deref(), Some("failed"));
+    assert_eq!(result.status, ToolResultStatus::Error);
+    assert!(result.finality);
+    assert_eq!(result.completeness, ToolResultCompleteness::Complete);
+    assert_eq!(
+        result.position,
+        ToolResultPosition::Jsonl {
+            record_index: 2,
+            item_index: 0
+        }
+    );
+}
+
+#[test]
+fn pi_v3_branch_and_partial_tail_make_results_incomplete() {
+    use antiburn_local::analysis::{SourceFormat, ToolResultCompleteness};
+
+    let header = r#"{"type":"session","version":3,"id":"s","timestamp":100}"#;
+    let call = r#"{"type":"message","id":"call-row","parentId":null,"timestamp":200,"message":{"role":"assistant","content":[{"type":"toolCall","id":"call","name":"bash","arguments":{"command":"false"}}]}}"#;
+    let result = r#"{"type":"message","id":"result-row","parentId":"call-row","timestamp":300,"message":{"role":"toolResult","toolCallId":"call","toolName":"bash","isError":false,"content":[{"type":"text","text":"done"}]}}"#;
+    for source in [
+        format!(
+            "{header}\n{call}\n{result}\n{{\"type\":\"label\",\"id\":\"sibling\",\"parentId\":\"call-row\",\"timestamp\":400}}\n"
+        ),
+        format!("{header}\n{call}\n{result}\n{{\"partial\":"),
+    ] {
+        let input = SessionInput {
+            source: RawSource::Jsonl(source),
+            source_format: SourceFormat::PiV3Jsonl,
+            ..input("minimal_session")
+        };
+        let mut sink = NativeResultSink::default();
+        PiSessionReader.visit(&input, &mut sink).unwrap();
+        assert_eq!(sink.results.len(), 1);
+        assert_eq!(
+            sink.results[0].completeness,
+            ToolResultCompleteness::UnsafeOrder
+        );
+        assert_eq!(
+            sink.results[0].admission(),
+            antiburn_local::analysis::ToolResultAdmission::UnsafeOrder
+        );
+    }
+}
+
+#[test]
+fn pi_parsed_partial_result_content_does_not_make_linear_source_order_unsafe() {
+    use antiburn_local::analysis::{SourceFormat, ToolResultAdmission, ToolResultCompleteness};
+    let source = concat!(
+        "{\"type\":\"session\",\"version\":3,\"id\":\"s\",\"timestamp\":100}\n",
+        "{\"type\":\"message\",\"id\":\"call\",\"parentId\":null,\"timestamp\":200,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"id\":\"tool\",\"name\":\"bash\",\"arguments\":{\"command\":\"false\"}}]}}\n",
+        "{\"type\":\"message\",\"id\":\"result\",\"parentId\":\"call\",\"timestamp\":300,\"incomplete\":true,\"message\":{\"role\":\"toolResult\",\"toolCallId\":\"tool\",\"toolName\":\"bash\",\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":\"partial failure\"}]}}\n",
+    );
+    let input = SessionInput {
+        source: RawSource::Jsonl(source.to_owned()),
+        source_format: SourceFormat::PiV3Jsonl,
+        ..input("minimal_session")
+    };
+    let mut sink = NativeResultSink::default();
+    PiSessionReader.visit(&input, &mut sink).unwrap();
+    assert_eq!(sink.results.len(), 1);
+    assert_eq!(
+        sink.results[0].completeness,
+        ToolResultCompleteness::Incomplete
+    );
+    assert_eq!(sink.results[0].admission(), ToolResultAdmission::Admitted);
+    let wrong_identity = SessionInput {
+        source: RawSource::Jsonl(source.replace("\"toolName\":\"bash\"", "\"toolName\":\"read\"")),
+        ..input
+    };
+    let mut unsafe_sink = NativeResultSink::default();
+    PiSessionReader
+        .visit(&wrong_identity, &mut unsafe_sink)
+        .unwrap();
+    assert_eq!(
+        unsafe_sink.results[0].admission(),
+        ToolResultAdmission::UnsafeIdentity
+    );
 }
 
 fn summary(name: &str) -> SessionSummary {
@@ -533,6 +659,41 @@ fn models_thinking_levels_and_compaction_preserve_transitions() {
     assert_eq!(compacted.events[0].compaction_pre_tokens, Some(100));
     assert_eq!(compacted.events[0].compaction_post_tokens, None);
     assert_eq!(compacted.events[0].compaction_trigger, None);
+}
+
+#[test]
+fn antiburn_custom_message_preserves_pi_v3_native_continuation() {
+    use antiburn_local::analysis::SourceFormat;
+
+    let mut input = input("antiburn_advisory_continuation");
+    input.source_format = SourceFormat::PiV3Jsonl;
+    let (coverage, reasons, session) = collect(&input);
+
+    assert_eq!(coverage, RecordCoverage::Partial);
+    assert_eq!(
+        reasons,
+        BTreeSet::from([PartialReason::AttributionIncomplete])
+    );
+    assert!(session.events.iter().any(|event| !event.tools.is_empty()));
+}
+
+#[test]
+fn custom_message_with_native_signals_still_breaks_pi_retained_order() {
+    use antiburn_local::analysis::SourceFormat;
+
+    let source = format!(
+        "{}{{\"type\":\"custom_message\",\"id\":\"signal-row\",\"parentId\":\"assistant-row\",\"timestamp\":\"2026-01-01T00:00:07Z\",\"usage\":{{\"input\":1}},\"customType\":\"antiburn-session-checks\",\"content\":\"Synthetic advisory.\"}}\n",
+        fixture("antiburn_advisory_continuation")
+    );
+    let input = SessionInput {
+        source: RawSource::Jsonl(source),
+        source_format: SourceFormat::PiV3Jsonl,
+        ..input("antiburn_advisory_continuation")
+    };
+    let (coverage, reasons, _) = collect(&input);
+
+    assert_eq!(coverage, RecordCoverage::Partial);
+    assert!(reasons.contains(&PartialReason::AttributionIncomplete));
 }
 
 #[test]

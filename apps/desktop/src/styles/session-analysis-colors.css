@@ -73,6 +73,13 @@
   --color-cost-cache-read: var(--color-cost-cache-read-val);
   --color-cost-cache-write: var(--color-cost-cache-write-val);
 
+  /* One colour for each coding agent in the Overview usage charts: the
+     context blue for Claude Code, a mid grey for Codex, and a faint neutral
+     for any other agent. Each agent keeps its colour on every chart. */
+  --color-agent-claude-code: var(--color-agent-claude-code-val);
+  --color-agent-codex: var(--color-agent-codex-val);
+  --color-agent-other: var(--color-agent-other-val);
+
   /* The lit color of each mark drawn over the plot. A rehydration takes a
      yellow, a routing miss a pink, and a compaction the brand orange. Each
      event has its own hue, like the series, so the key can name it. */
@@ -133,6 +140,9 @@
   --color-token-subagent-val: hsl(240 5.5% 25% / 0.45); /* label-family neutral */
   --color-cost-cache-read-val: hsl(165 45% 40%); /* muted blue-green */
   --color-cost-cache-write-val: hsl(140 40% 38%); /* muted green */
+  --color-agent-claude-code-val: hsl(221.2 83% 53.3%); /* the context blue */
+  --color-agent-codex-val: hsl(240 4% 66%); /* mid grey */
+  --color-agent-other-val: hsl(240 5.5% 25% / 0.45); /* neutral */
   --color-chart-label-pill-val: hsl(0 0% 100% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
   --color-mark-rehydration-val: hsl(45.5 96% 56.2%); /* yellow */
@@ -170,6 +180,9 @@
     --color-token-subagent-val: hsl(240 33% 94% / 0.4); /* label-family neutral */
     --color-cost-cache-read-val: hsl(165 50% 62%); /* blue-green, lifted for dark */
     --color-cost-cache-write-val: hsl(140 45% 64%); /* green, lifted for dark */
+    --color-agent-claude-code-val: hsl(221 89% 59.8%); /* the context blue */
+    --color-agent-codex-val: hsl(240 5% 52%); /* mid grey */
+    --color-agent-other-val: hsl(240 33% 94% / 0.4); /* neutral */
     --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
     --color-context-rewrite-val: hsl(0 0% 100%);
     --color-mark-rehydration-val: hsl(45.2 96% 60.1%); /* yellow */
@@ -203,6 +216,9 @@
   --color-token-subagent-val: hsl(240 33% 94% / 0.4);
   --color-cost-cache-read-val: hsl(165 50% 62%);
   --color-cost-cache-write-val: hsl(140 45% 64%);
+  --color-agent-claude-code-val: hsl(221 89% 59.8%);
+  --color-agent-codex-val: hsl(240 5% 52%);
+  --color-agent-other-val: hsl(240 33% 94% / 0.4);
   --color-chart-label-pill-val: hsl(0 0% 0% / 0.5);
   --color-context-rewrite-val: hsl(0 0% 100%);
   --color-mark-rehydration-val: hsl(45.2 96% 60.1%);

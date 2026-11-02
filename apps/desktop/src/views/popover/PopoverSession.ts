@@ -37,12 +37,6 @@ import {
   type SessionLimitAllocationSummaryPayload,
   type StorageHealthPayload,
 } from "../../lib/ipc"
-import {
-  cancelChecksReport,
-  getChecksReport,
-  onChecksReportChanged,
-  type ChecksReportPayload,
-} from "../../lib/insightsIpc"
 import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import {
   isLive,
@@ -89,10 +83,6 @@ export interface PopoverSnapshot {
   sessionLimitAllocations: SessionLimitAllocationSummaryPayload
   /** Whether a `refreshUsage` call is in flight, for the limits section's spinner. */
   usageRefreshing: boolean
-  /** The real local report rendered by the Activity summary and anchored preview. */
-  checksReport: ChecksReportPayload | null
-  /** True when the latest Checks report request fails. */
-  checksUnavailable: boolean
   storage: StorageHealthPayload
   /** Banners the reader has waved away this run. */
   dismissed: readonly AttentionKind[]
@@ -168,11 +158,6 @@ export class PopoverSession {
   private analyticsVisibilityRevision = 0
   private analyticsVisible = false
   private readonly exposure = new SurfaceExposureTracker()
-  private checksToken = 0
-  private checksConsumerId: string | null = null
-  private checksRefresh: Promise<void> | null = null
-  private checksRefreshQueued = false
-  private checksRefreshDirty = false
   /**
    * How many `refreshUsage` calls are currently in flight.
    *
@@ -224,7 +209,6 @@ export class PopoverSession {
   private stopSessionUpdatedListening: (() => void) | null = null
   private stopSessionLifecycleListening: (() => void) | null = null
   private stopLiveSessionsListening: (() => void) | null = null
-  private stopChecksReportChangedListening: (() => void) | null = null
   private stopStorageHealthListening: (() => void) | null = null
   private stopPopoverShownListening: (() => void) | null = null
   private stopPopoverHiddenListening: (() => void) | null = null
@@ -242,8 +226,6 @@ export class PopoverSession {
     liveModels: {},
     sessionLimitAllocations: EMPTY_SESSION_LIMIT_ALLOCATIONS,
     usageRefreshing: false,
-    checksReport: null,
-    checksUnavailable: false,
     storage: HEALTHY_STORAGE,
     dismissed: [],
     now: Date.now(),
@@ -305,7 +287,6 @@ export class PopoverSession {
   private start(): void {
     this.started = true
     const generation = ++this.generation
-    this.checksConsumerId = crypto.randomUUID()
     this.initialContentReady = false
 
     void this.loadInitial(generation)
@@ -313,7 +294,6 @@ export class PopoverSession {
     void this.listenSessionIndexChanged(generation)
     void this.listenSessionUpdated(generation)
     void this.listenSessionLifecycle(generation)
-    void this.startChecks(generation)
     void this.listenStorageHealth(generation)
     void this.startPopoverVisibility(generation)
     void this.listenLiveUsage(generation)
@@ -368,8 +348,6 @@ export class PopoverSession {
     this.stopLiveSessionsListening?.()
     this.stopLiveSessionsListening = null
     liveSessions.clearInterest(this)
-    this.stopChecksReportChangedListening?.()
-    this.stopChecksReportChangedListening = null
     this.stopStorageHealthListening?.()
     this.stopStorageHealthListening = null
     this.stopPopoverShownListening?.()
@@ -381,11 +359,6 @@ export class PopoverSession {
     this.stopNowTicking()
     this.stopUsagePolling()
     this.cancelSessionLimitAllocationRefresh()
-    this.checksRefreshQueued = false
-    this.checksRefreshDirty = false
-    const checksConsumerId = this.checksConsumerId
-    this.checksConsumerId = null
-    if (checksConsumerId) void cancelChecksReport(checksConsumerId)
     window.removeEventListener("keydown", this.onWindowKeyDown)
   }
 
@@ -463,7 +436,6 @@ export class PopoverSession {
       if (generation !== this.generation) return
       this.requestEntriesRefresh()
       void this.refreshRepositoryList()
-      void this.refreshChecks()
       this.requestSessionLimitAllocationRefresh(false, true)
       if (change.cause !== "resync" && this.visible) {
         this.lastUsageRefreshAt = Date.now()
@@ -496,7 +468,6 @@ export class PopoverSession {
   private applySessionUpdate(update: SessionUpdatedPayload): void {
     this.patchOrRefetchEntry(update.entry)
     const facets = update.facets
-    if (facets.checks || facets.analysis) void this.refreshChecks()
     if (facets.metadata || facets.analysis || facets.usage || facets.limits) {
       this.requestSessionLimitAllocationRefresh(false, true)
     }
@@ -520,24 +491,6 @@ export class PopoverSession {
       return
     }
     this.stopSessionLifecycleListening = unlisten
-  }
-
-  private listenChecksReportChanged = async (generation: number): Promise<void> => {
-    const unlisten = await onChecksReportChanged(() => {
-      if (generation !== this.generation) return
-      void this.refreshChecks()
-    })
-    if (generation !== this.generation) {
-      unlisten()
-      return
-    }
-    this.stopChecksReportChangedListening = unlisten
-  }
-
-  private startChecks = async (generation: number): Promise<void> => {
-    await this.listenChecksReportChanged(generation)
-    if (generation !== this.generation) return
-    await this.refreshChecks()
   }
 
   /**
@@ -640,10 +593,6 @@ export class PopoverSession {
       this.update({ now: Date.now() })
       this.syncNowTicking()
       this.startUsagePolling()
-      if (this.checksRefreshDirty) {
-        this.checksRefreshDirty = false
-        void this.refreshChecks()
-      }
       this.requestSessionLimitAllocationRefresh(true, true)
       if (this.initialContentReady) this.reportContentReady(true)
       void this.restoreFloatingHud(generation)
@@ -667,10 +616,6 @@ export class PopoverSession {
       this.analyticsVisible = false
       this.exposure.conceal()
       this.visible = false
-      if (this.checksRefreshQueued) {
-        this.checksRefreshQueued = false
-        this.checksRefreshDirty = true
-      }
       this.sessionLimitAllocationResultRevision += 1
       this.syncNowTicking()
       this.stopUsagePolling()
@@ -980,50 +925,6 @@ export class PopoverSession {
     if (this.usagePollTimer === null) return
     clearInterval(this.usagePollTimer)
     this.usagePollTimer = null
-  }
-
-  private refreshChecks = (): Promise<void> => {
-    if (!this.visible) {
-      this.checksRefreshDirty = true
-      return Promise.resolve()
-    }
-    if (this.checksRefresh) {
-      this.checksRefreshQueued = true
-      return this.checksRefresh
-    }
-    this.checksRefresh = this.loadChecks().finally(() => {
-      this.checksRefresh = null
-      if (this.checksRefreshQueued) {
-        this.checksRefreshQueued = false
-        if (this.visible) {
-          void this.refreshChecks()
-        } else {
-          this.checksRefreshDirty = true
-        }
-      }
-    })
-    return this.checksRefresh
-  }
-
-  private loadChecks = async (): Promise<void> => {
-    const generation = this.generation
-    const token = ++this.checksToken
-    const consumerId = this.checksConsumerId
-    if (!consumerId) return
-    try {
-      const checksReport = await getChecksReport(consumerId)
-      if (generation !== this.generation || token !== this.checksToken) return
-      if (!checksReport) {
-        this.update({ checksUnavailable: true })
-        return
-      }
-      this.update({ checksReport, checksUnavailable: false })
-    } catch {
-      if (generation === this.generation && token === this.checksToken) {
-        this.update({ checksUnavailable: true })
-      }
-      return
-    }
   }
 
   /* -----------------------------------------------------------------------

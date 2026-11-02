@@ -945,6 +945,10 @@ fn strip_file_uri_prefix(path: &str) -> &str {
 }
 
 fn is_windows_drive_path(path: &str) -> bool {
+    let path = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix(r"\\.\"))
+        .unwrap_or(path);
     let bytes = path.as_bytes();
     bytes.len() >= 3
         && bytes[0].is_ascii_alphabetic()
@@ -2699,6 +2703,13 @@ also not json {{{{
         assert!(candidates.contains(&"/Users/foo/code/my-repo/src".to_string()));
         assert!(candidates.contains(&"/Users/foo/code/my-repo".to_string()));
         assert!(candidates.contains(&"/Users/foo/code/other-repo".to_string()));
+    }
+
+    #[test]
+    fn windows_drive_paths_accept_extended_path_prefixes() {
+        assert!(is_windows_drive_path(r"C:\Users\avery\repo"));
+        assert!(is_windows_drive_path(r"\\?\C:\Users\avery\repo"));
+        assert!(is_windows_drive_path(r"\\.\C:\Users\avery\repo"));
     }
 
     #[test]

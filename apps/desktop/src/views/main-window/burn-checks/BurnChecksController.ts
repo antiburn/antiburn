@@ -4,8 +4,10 @@ import {
   getChecksReport,
   listBurnCheckTargets,
   onChecksReportChanged,
+  isInstalledCheckId,
   type AggregateWinsPayload,
   type BurnCheckDetectorId,
+  type CheckId,
   type BurnCheckTargetListPayload,
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
@@ -17,6 +19,7 @@ import {
   onMainWindowVisibilityChanged,
 } from "../../../lib/ipc"
 import { SurfaceExposureTracker } from "../../../lib/surfaceExposure"
+import { checkRows } from "../../../lib/presentation/checkRows"
 
 export interface BurnChecksControllerAdapter {
   getReport(consumerId: string): Promise<ChecksReportPayload | null>
@@ -39,10 +42,10 @@ const productionAdapter: BurnChecksControllerAdapter = {
   onVisible: (handler) => onMainWindowVisibilityChanged(handler),
   onChanged: (handler) => onChecksReportChanged(handler),
   getSnoozedDetectors: async () => {
-    const snoozes = await invoke<Array<{ detector: BurnCheckDetectorId }>>(
-      "list_burn_check_snoozes",
+    const snoozes = await invoke<Array<{ detector: CheckId }>>("list_burn_check_snoozes")
+    return new Set(
+      snoozes.map((snooze) => snooze.detector).filter((id) => !isInstalledCheckId(id)),
     )
-    return new Set(snoozes.map((snooze) => snooze.detector))
   },
   onSnoozesChanged: (handler) => listen("checks:snoozes-changed", handler),
 }
@@ -60,7 +63,7 @@ export interface BurnChecksControllerSnapshot {
   loading: boolean
   refreshing: boolean
   error: boolean
-  targets: Partial<Record<BurnCheckDetectorId, BurnCheckTargetState>>
+  targets: Partial<Record<CheckId, BurnCheckTargetState>>
 }
 
 let nextConsumer = 0
@@ -411,13 +414,17 @@ export class BurnChecksController {
     const consumerId = this.consumerId
     this.consumerId = null
     if (consumerId) void this.adapter.cancelReport(consumerId).catch(() => undefined)
-    this.update({ active: false, loading: false, refreshing: false })
+    this.update({
+      active: false,
+      loading: false,
+      refreshing: false,
+    })
   }
 
   private reportState(): "ready" | "empty" | null {
     const report = this.snapshot.report
     if (!report) return null
-    return report.categories.some((category) => category.finding > 0 || category.clean > 0)
+    return checkRows(report).some((category) => category.finding > 0 || category.clean > 0)
       ? "ready"
       : "empty"
   }

@@ -7,7 +7,7 @@ Install Chromium once, or after a Playwright version change:
 
 ```sh
 pnpm --dir apps/desktop exec playwright install chromium
-pnpm --dir apps/desktop node scripts/test-interface-scale.mjs
+pnpm --dir apps/desktop exec node scripts/test-interface-scale.mjs
 ```
 
 The runner checks the fixture's TypeScript before starting Playwright. Append
@@ -73,9 +73,9 @@ open and dismiss navigation, scroll to lower controls, change and reset the
 scale, and return from detail with Back. Check focus restoration, including a
 repeated external request for the same session.
 
-The targeted journeys cover the seven current Settings panes: General, Privacy,
-Notifications, Usage, Sources, Appearance, and About. At 200% in both themes,
-these journeys generate 14 pane captures. Update this inventory when the
+The targeted journeys cover the nine current Settings panes: General, Agents,
+Sessions, Checks, Notifications, Usage, Appearance, Privacy, and About. At 200%
+in both themes, these journeys generate 18 pane captures. Update this inventory when the
 navigation changes; historical capture counts are not current coverage.
 
 ## Native desktop release checks
@@ -125,6 +125,28 @@ at 90% and 200%, in light and dark where appearance matters:
   Change scale while the first run is showing; verify that both the window and
   content adapt, navigation stays reachable, and long lists scroll. Confirm
   that main-window resizing remains user-controlled.
+- In Checks settings, confirm that Add connection and Use stay visible. Each row
+  has one actions menu for Edit and Remove. Test menu keyboard navigation, Escape,
+  and focus restoration to the row trigger after dialog dismissal.
+  Verify that Use, not keyboard focus,
+  selects a connection. Edit and save an inactive connection without changing
+  selection. Remove an inactive, selected, and last connection in separate cases.
+  Selected removal must pause checks, preserve results, and show a valid empty
+  selection without choosing another provider. Test stale edits from another
+  window and retry after save, removal, or readback failure.
+  Include a removal that commits before credential cleanup fails: its row is gone,
+  but Retry must remain visible and work after Settings reopens. Include a Save
+  with committed metadata and failed cleanup, and a failed Use. Check that retry
+  preserves typed secrets from another window's draft and never turns checks on
+  after the user paused them. Concurrent Adds must have distinct stable labels.
+- Review the normal, empty, Add, and Edit Checks states for clear grouping, not
+  only absence of overflow. Dialog fields must have labels above full-width
+  controls, readable saved-key states, and one clear primary action. Check files
+  and Model usage must expand inside the same card. Check files must omit disabled,
+  empty, missing, and uncounted folders. Revisit Checks and verify a fresh list
+  without a Refresh folders button. Usage must omit unknown values and absent
+  estimates without replacing them with zero. At 200%, inspect both the fields and footer by
+  scrolling; test Cancel, Escape, Tab containment, and opener focus restoration.
 - Drag Settings smaller at each scale. Verify that its scale-aware minimum keeps
   sidebar navigation visible when the display has room. Check the smaller-display
   fallback, then move back to a larger display and verify that the minimum updates.

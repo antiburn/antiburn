@@ -21,9 +21,7 @@ pub(super) fn bind_read(value: &Value, arguments: &str, part: &mut ContentPart) 
         status,
         kind: JevReadResultKind::Unknown,
         recorded_output_bytes: part.text.len() as u64,
-        recorded_output_digest: crate::checks::ignored_instructions::sha256_hex(
-            part.text.as_bytes(),
-        ),
+        recorded_output_digest: crate::digest::sha256_hex(part.text.as_bytes()),
         returned_extent: None,
         truncated: part.truncated,
         recorded_file_version: None,

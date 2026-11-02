@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 /// A session identity includes the execution environment, agent, and session ID. IDs
 /// can repeat across agents or environments. `Ord` supplies deterministic full-identity
 /// ordering.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SessionKey {
     pub environment_key: String,
     pub agent: String,
@@ -182,6 +184,12 @@ pub struct RemediationResult {
 }
 
 impl SessionKey {
+    /// Encodes exact session ownership for branch IDs, persistence, and deletion.
+    pub(crate) fn to_identity_json(&self) -> String {
+        serde_json::to_string(&(&self.environment_key, &self.agent, &self.session_id))
+            .expect("session identity serializes")
+    }
+
     pub fn for_origin(
         agent: &str,
         session_id: &str,

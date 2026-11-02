@@ -4,9 +4,11 @@ import { useSyncExternalStore } from "react"
 
 import type {
   BurnCheckDetectorId,
+  CheckId,
   ChecksCategoryPayload,
   ChecksReportPayload,
 } from "./insightsIpc"
+import { isInstalledCheckId } from "./insightsIpc"
 import { hasShell } from "./ipc"
 import type { SessionHygieneCheck } from "./presentation/sessionHygiene"
 import type { UnusedContextRow } from "./presentation/unusedContext"
@@ -16,7 +18,7 @@ const SNOOZES_CHANGED_EVENT = "checks:snoozes-changed"
 export type SnoozeDuration = "week" | "month" | "forever"
 
 export interface SnoozedBurnCheck {
-  detector: BurnCheckDetectorId
+  detector: CheckId
   scope: "check"
   until: number | null
 }
@@ -33,10 +35,6 @@ const sessionDetectorIds: Partial<Record<SessionHygieneCheck["id"], BurnCheckDet
   obsoleteModel: "oldModelUsage",
   fastModeOveruse: "overuseOfFastMode",
   excessCacheRehydration: "cacheChurn",
-  ignoredInstructions: "ignoredInstructions",
-  skillOpportunities: "skillOpportunities",
-  overExploring: "overExploring",
-  scopeCreep: "scopeCreep",
 }
 
 const detectorIds: readonly BurnCheckDetectorId[] = [
@@ -49,10 +47,6 @@ const detectorIds: readonly BurnCheckDetectorId[] = [
   "oldModelUsage",
   "overuseOfFastMode",
   "cacheChurn",
-  "ignoredInstructions",
-  "skillOpportunities",
-  "overExploring",
-  "scopeCreep",
 ]
 
 export function snoozeUntil(duration: SnoozeDuration, from = new Date()): number | null {
@@ -157,54 +151,59 @@ function stopListening(): void {
 }
 
 export async function snoozeBurnCheck(
-  detector: BurnCheckDetectorId,
+  detector: CheckId,
   duration: SnoozeDuration,
 ): Promise<void> {
   const record: SnoozedBurnCheck = { detector, scope: "check", until: snoozeUntil(duration) }
   if (!hasShell()) return
   const requestRevision = ++revision
-  try {
-    const records = await invoke<SnoozedBurnCheck[]>("set_burn_check_snooze", {
-      snooze: record,
-    })
-    if (requestRevision === revision) publish(records)
-  } catch {
-    if (requestRevision === revision) publishError()
-  }
+  const records = await invoke<SnoozedBurnCheck[]>("set_burn_check_snooze", {
+    snooze: record,
+  })
+  if (requestRevision === revision) publish(records)
 }
 
-export async function unsnoozeBurnCheck(detector: BurnCheckDetectorId): Promise<void> {
+export async function unsnoozeBurnCheck(detector: CheckId): Promise<void> {
   if (!hasShell()) return
   const requestRevision = ++revision
-  try {
-    const records = await invoke<SnoozedBurnCheck[]>("clear_burn_check_snooze", { detector })
-    if (requestRevision === revision) publish(records)
-  } catch {
-    if (requestRevision === revision) publishError()
-  }
+  const records = await invoke<SnoozedBurnCheck[]>("clear_burn_check_snooze", { detector })
+  if (requestRevision === revision) publish(records)
 }
 
 export function snoozedDetectorIds(
   records: readonly SnoozedBurnCheck[] | null | undefined,
 ): ReadonlySet<BurnCheckDetectorId> {
-  return new Set((records ?? []).map((record) => record.detector))
+  return new Set(
+    (records ?? []).map((record) => record.detector).filter((id) => !isInstalledCheckId(id)),
+  )
+}
+
+export function snoozedCheckIds(records: readonly SnoozedBurnCheck[]): ReadonlySet<CheckId> {
+  return new Set(records.map((record) => record.detector))
 }
 
 /** Remove detector-level snoozes before deriving any report state. */
 export function visibleCheckCategories(
   categories: readonly ChecksCategoryPayload[],
-  snoozed: ReadonlySet<BurnCheckDetectorId>,
+  snoozed: ReadonlySet<CheckId>,
 ): ChecksCategoryPayload[] {
   return categories.filter((category) => !snoozed.has(category.id))
 }
 
 export function activeChecksReport(
   report: ChecksReportPayload,
-  snoozed: ReadonlySet<BurnCheckDetectorId>,
+  snoozed: ReadonlySet<CheckId>,
 ): ChecksReportPayload {
   if (snoozed.size === 0) return report
   const categories = visibleCheckCategories(report.categories, snoozed)
-  if (categories.length === report.categories.length) return report
+  const installedChecks = report.installedChecks?.filter(
+    (check) => !snoozed.has(check.effectiveId),
+  )
+  if (
+    categories.length === report.categories.length &&
+    installedChecks?.length === report.installedChecks?.length
+  )
+    return report
   const activeDetectorIds = new Set(categories.map((category) => category.id))
   const mask = detectorIds.reduce(
     (value, detector, index) => value | (activeDetectorIds.has(detector) ? 1 << index : 0),
@@ -213,8 +212,11 @@ export function activeChecksReport(
   return {
     ...report,
     categories,
+    ...(installedChecks ? { installedChecks } : {}),
     estimatedTokenBurnBasisPoints:
-      report.estimatedTokenBurnBasisPointsByDetectorMask?.[mask] ?? null,
+      categories.length === report.categories.length
+        ? report.estimatedTokenBurnBasisPoints
+        : (report.estimatedTokenBurnBasisPointsByDetectorMask?.[mask] ?? null),
   }
 }
 

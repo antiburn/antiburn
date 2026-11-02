@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react"
+import { useId, type ComponentProps, type ReactNode } from "react"
 import { Row } from "../../components/ui/Row"
 import { ToggleRow } from "../../components/ui/ToggleRow"
 import { SectionGroup } from "../../components/ui/SectionGroup"
@@ -7,11 +7,30 @@ import { settingsControlLabel, type SettingsControlId } from "../../lib/settings
 
 type SearchRowProps = { searchId: SettingsControlId; label?: string }
 
+export function SettingsField({
+  searchId,
+  children,
+}: {
+  searchId: SettingsControlId
+  children: (id: string) => ReactNode
+}) {
+  const id = useId()
+  return (
+    <div data-settings-control={searchId} tabIndex={-1} className="min-w-0 space-y-2">
+      <label htmlFor={id} className="block type-body text-label">
+        {settingsControlLabel(searchId, detectPlatform())}
+      </label>
+      {children(id)}
+    </div>
+  )
+}
+
 export function SettingsRow({
   searchId,
   label,
   ...props
-}: Omit<ComponentProps<typeof Row>, "label"> & SearchRowProps) {
+}: Omit<ComponentProps<typeof Row>, "label"> &
+  Omit<SearchRowProps, "label"> & { label?: ReactNode }) {
   return (
     <Row
       {...props}
@@ -38,15 +57,23 @@ export function SettingsToggleRow({
 }
 
 export function SettingsSectionGroup({
+  hideTitle = false,
   searchId,
   ...props
-}: Omit<ComponentProps<typeof SectionGroup>, "title"> & { searchId: SettingsControlId }) {
+}: Omit<ComponentProps<typeof SectionGroup>, "title"> & {
+  hideTitle?: boolean
+  searchId: SettingsControlId
+}) {
   return (
     <SectionGroup
       {...props}
-      title={settingsControlLabel(searchId, detectPlatform())}
+      {...(hideTitle ? {} : { title: settingsControlLabel(searchId, detectPlatform()) })}
       data-settings-control={searchId}
       tabIndex={-1}
     />
   )
+}
+
+export function SettingsFocusTarget(props: ComponentProps<"div">) {
+  return <div {...props} data-settings-focus />
 }

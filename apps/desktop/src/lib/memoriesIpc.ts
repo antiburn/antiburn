@@ -71,6 +71,11 @@ interface MemoryFacts {
   hasHistory: boolean
 }
 
+export async function countAgentMemories(): Promise<number> {
+  if (!hasShell()) return 0
+  return invoke<number>("count_agent_memories")
+}
+
 /** Every Claude Code auto-memory project. Empty outside the desktop shell. */
 export async function listAgentMemories(): Promise<AgentMemoriesReport> {
   if (!hasShell()) return { generatedAtMs: Date.now(), writesSupported: false, projects: [] }

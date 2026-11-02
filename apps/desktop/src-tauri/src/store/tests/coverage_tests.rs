@@ -18,29 +18,30 @@ fn coverage_record(session_id: &str) -> SessionCoverageRecord {
 #[test]
 fn a_fenced_coverage_writer_writes_a_record_the_store_can_read() {
     let store = store();
-    let mut record = session("coverage-writer", 1_000);
-    record.source_fingerprint = Some("sv1:coverage-writer".into());
-    store
-        .upsert_sessions(
-            std::slice::from_ref(&record),
-            &crate::agents::evidence_cohort(),
-        )
-        .unwrap();
+    let (record, claim) = claimed_projection(&store, "coverage-writer", 100, 60);
     let key = record.key.clone();
 
-    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), 7);
+    let writer = FencedTurnRowStore::new(store.clone(), key.clone(), claim.claim_fence);
     let written = coverage_record("coverage-writer");
     writer.write_coverage_record(&written).unwrap();
 
     let connection = store.lock();
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), &FenceScope::single(7))
-            .unwrap(),
+        query_coverage_record(
+            &connection,
+            &turn_session_key(&key),
+            &FenceScope::single(claim.claim_fence)
+        )
+        .unwrap(),
         Some(written)
     );
     assert_eq!(
-        query_coverage_record(&connection, &turn_session_key(&key), &FenceScope::single(8))
-            .unwrap(),
+        query_coverage_record(
+            &connection,
+            &turn_session_key(&key),
+            &FenceScope::single(claim.claim_fence + 1)
+        )
+        .unwrap(),
         None
     );
 }

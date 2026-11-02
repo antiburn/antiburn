@@ -1,0 +1,26 @@
+{
+  "name": "antiburn",
+  "owner": {
+    "name": "Antiburn"
+  },
+  "metadata": {
+    "description": "antiburn plugins for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "antiburn",
+      "description": "● ● ● ○ │ ○ ○ · Stop hitting your limits! Pace your Claude Code usage for five-hour and weekly limits across sessions. See usage and reset times at a glance, above your prompt in both desktop and terminal.",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/antiburn/antiburn.git",
+        "path": "plugins/antiburn",
+        "sha": "f9dabe20b7dac6d33a4e8fecad88e93f1fff87d5"
+      },
+      "author": {
+        "name": "Antiburn"
+      },
+      "category": "developer-tools",
+      "homepage": "https://antiburn.com/plugin"
+    }
+  ]
+}
