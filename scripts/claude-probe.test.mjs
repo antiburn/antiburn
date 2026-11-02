@@ -184,7 +184,7 @@ printf '%s\\n' "$PROBE_STUB_HEX"
 test(
   "the full probe decodes hex Keychain output and reports a denied read",
   {
-    skip: process.platform !== "darwin" && "the full probe runs on macOS only",
+    skip: process.platform === "win32" && "the probe test needs POSIX tools",
   },
   () => {
     const home = mkdtempSync(join(tmpdir(), "antiburn-claude-probe-home-"));
@@ -194,7 +194,11 @@ test(
     // Keep the run fast and independent of the host's brew and npm.
     writeFileSync(join(bin, "brew"), "#!/bin/sh\nexit 0\n");
     writeFileSync(join(bin, "npm"), "#!/bin/sh\nexit 0\n");
-    for (const name of ["security", "brew", "npm"]) {
+    // Simulate macOS so Linux CI also checks the Keychain pipeline.
+    writeFileSync(join(bin, "uname"), "#!/bin/sh\necho Darwin\n");
+    writeFileSync(join(bin, "sw_vers"), "#!/bin/sh\necho 26.0\n");
+    writeFileSync(join(bin, "zsh"), "#!/bin/sh\nexit 0\n");
+    for (const name of ["security", "brew", "npm", "uname", "sw_vers", "zsh"]) {
       chmodSync(join(bin, name), 0o755);
     }
     const out = join(home, "out");
