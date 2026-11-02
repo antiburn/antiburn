@@ -767,6 +767,8 @@ impl ClaudeDirectFetch {
     /// credentials file. Each one reads its secret on a changed marker or
     /// after a failed-read backoff. Background checks can reread a known item.
     fn read_native_carriers(&self, user: bool) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = user;
         let mut carriers = Vec::new();
         let mut error = None;
         #[cfg(target_os = "macos")]
