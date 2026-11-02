@@ -163,28 +163,29 @@ validator and native opener scope together. Arbitrary app routes are not support
 
 ### Media
 
-`media` requires `kind`, `src`, and `alt`. `kind` is `image` or `video`; videos
-also require `poster`. An optional `light` mapping has its own `kind`, `src`, and
-optional `poster` (required for video), and shares the base `alt` text.
+`media` requires `kind`, `src`, and `alt`. `kind` must be `image`. An optional
+`light` mapping has its own `kind`, `src`, and optional `poster`, and shares the
+base `alt` text.
 
-- Images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.svg`. Animated WebP and GIF
-  are images, not videos.
-- Videos: `.mp4`, `.webm`, `.mov`. These are accepted extensions, not a guarantee
-  that every codec works in each platform's webview. Prefer an animated image for
-  a motion asset. On Linux, WebKitGTK sends `<video>` to the host GStreamer, which
-  needs an audio sink and a matching decoder. Both are optional system packages,
-  so a video can fail to play on a supported system. WebKit decodes an animated
-  image in its own pipeline, which every build includes.
+- Images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.svg`. Use an animated WebP
+  for a motion asset.
+- A `.webp` or a `.gif` also requires `poster`. The name does not show if the
+  file holds an animation, so both always supply the still frame that reduced
+  motion and a load failure need.
+- **Video is not supported.** The schema rejects `kind: video`. On Linux,
+  WebKitGTK sends `<video>` to the host GStreamer, which needs an audio sink and
+  a matching decoder. Both are optional system packages, so a video can crash
+  the web process or silently never play. WebKit decodes an animated image in
+  its own pipeline, which every build includes.
 - Paths start with `./` and stay inside the definition folder. Remote URLs,
   parent traversal, backslashes, query strings, fragments, missing files, and
   symlinks escaping the folder are rejected.
 
 The base media is the dark-mode and legacy fallback. Light mode selects `light`
 when present. Theme changes replace the source and poster together and clear any
-previous playback failure. Videos are muted and loop inline. Window focus changes
-do not reset playback. Reduced motion pauses video at the start and shows its
-poster. Images with a poster also use it for reduced motion. Media load failures
-fall back to the supplied poster.
+previous load failure. Window focus changes do not change the source. Reduced
+motion shows the poster. A load failure also shows the poster, and a poster that
+fails has no further fallback.
 
 An animated image loops through its own file metadata, so the host sets no loop
 or playback attribute on it. The element shows one of two sources: the animation,

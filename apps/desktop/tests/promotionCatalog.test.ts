@@ -117,7 +117,7 @@ describe("promotion YAML definitions", () => {
       })
     expect(() =>
       validatePromotionDefinition(withLight({ kind: "video", src: "./light.mp4" })),
-    ).toThrow("video requires a static poster")
+    ).toThrow("expected image")
     expect(() =>
       validatePromotionDefinition(withLight({ kind: "image", src: "../outside.png" })),
     ).toThrow("expected a relative local asset path")
@@ -202,7 +202,7 @@ it("accepts registered YAML analytics enrollment and rejects arbitrary tracking 
   }
 })
 
-it("requires a static video poster for reduced motion and loading failures", () => {
+it("rejects video media, which the Linux webview cannot play safely", () => {
   const definition = baseDefinition({
     screens: {
       announcement: {
@@ -212,9 +212,27 @@ it("requires a static video poster for reduced motion and loading failures", () 
       },
     },
   })
-  expect(() => validatePromotionDefinition(definition)).toThrow(
-    "video requires a static poster",
-  )
+  expect(() => validatePromotionDefinition(definition)).toThrow("expected image")
+})
+
+it("requires a static poster for an animated image", () => {
+  const animated = (src: string) =>
+    baseDefinition({
+      screens: {
+        announcement: {
+          title: "Animated",
+          description: "Example",
+          media: { kind: "image", src, alt: "Example" },
+        },
+      },
+    })
+  for (const src of ["./assets/demo.webp", "./assets/demo.gif"]) {
+    expect(() => validatePromotionDefinition(animated(src))).toThrow(
+      "an animated image requires a static poster",
+    )
+  }
+  // A still format carries no motion, so it needs no poster.
+  expect(() => validatePromotionDefinition(animated("./assets/demo.png"))).not.toThrow()
 })
 
 it("keeps unknown HTTPS destinations outside the native opener scope", () => {
@@ -341,3 +359,54 @@ describe("promotion sidebar schema", () => {
     )
   })
 })
+
+/**
+ * Read the animation facts out of a WebP file.
+ *
+ * A WebP is RIFF: a 12-byte header, then chunks of a 4-byte name, a 4-byte
+ * little-endian length, and a payload padded to an even length. `VP8X` holds
+ * the flags and the canvas size, `ANIM` holds the loop count, and each `ANMF`
+ * holds one frame and its duration.
+ */
+function readWebpAnimation(bytes: Buffer) {
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP")
+    throw new Error("not a WebP file")
+  let animated = false
+  let loops: number | null = null
+  let width = 0
+  let height = 0
+  const durations: number[] = []
+  for (let at = 12; at + 8 <= bytes.length;) {
+    const name = bytes.toString("ascii", at, at + 4)
+    const size = bytes.readUInt32LE(at + 4)
+    const body = at + 8
+    if (name === "VP8X") {
+      animated = (bytes[body] & 0x02) !== 0
+      width = bytes.readUIntLE(body + 4, 3) + 1
+      height = bytes.readUIntLE(body + 7, 3) + 1
+    }
+    if (name === "ANIM") loops = bytes.readUInt16LE(body + 4)
+    if (name === "ANMF") durations.push(bytes.readUIntLE(body + 12, 3))
+    at = body + size + (size % 2)
+  }
+  return { animated, loops, width, height, durations }
+}
+
+it.each(["dark", "light"])(
+  "ships the %s Claude Mod media as a looping animation, not a still frame",
+  async (variant) => {
+    const name = `claude-mod-desktop-${variant}-no-label-800`
+    const media = readWebpAnimation(
+      await readFile(path.join(claudeDirectory, `assets/${name}.webp`)),
+    )
+    expect(media.animated).toBe(true)
+    expect(media.durations.length).toBeGreaterThan(1)
+    // `0` means the animation repeats forever.
+    expect(media.loops).toBe(0)
+    // The encoder merges equal neighbouring frames and adds their durations,
+    // so the frame count moves between encodes but the total length does not.
+    expect(media.durations.reduce((whole, each) => whole + each, 0)).toBe(12_800)
+    // A size change against the poster would move the panel layout.
+    expect([media.width, media.height]).toEqual([800, 416])
+  },
+)

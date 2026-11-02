@@ -92,7 +92,17 @@ function action(value: unknown, location: string): PromotionAction {
   return fail(`${location}.type`, "expected screen, external, or app")
 }
 
-function mediaSource(value: unknown, kind: "image" | "video", location: string): string {
+const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"]
+
+// A `.webp` or a `.gif` can hold an animation. The reader cannot tell from the
+// name, so both always need a still poster for the reduced-motion fallback.
+const ANIMATED_EXTENSIONS = [".webp", ".gif"]
+
+function extensionOf(source: string): string {
+  return source.slice(source.lastIndexOf(".")).toLowerCase()
+}
+
+function mediaSource(value: unknown, location: string): string {
   const source = text(value, location)
   if (
     !source.startsWith("./") ||
@@ -104,13 +114,8 @@ function mediaSource(value: unknown, kind: "image" | "video", location: string):
   ) {
     return fail(location, "expected a relative local asset path")
   }
-  const extension = source.slice(source.lastIndexOf(".")).toLowerCase()
-  const supported =
-    kind === "image"
-      ? [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"]
-      : [".mp4", ".webm", ".mov"]
-  if (!supported.includes(extension))
-    fail(location, `unsupported ${kind} asset extension "${extension}"`)
+  if (!IMAGE_EXTENSIONS.includes(extensionOf(source)))
+    fail(location, `unsupported image asset extension "${extensionOf(source)}"`)
   return source
 }
 
@@ -121,16 +126,13 @@ function parseMedia(value: unknown, location: string): PromotionMedia {
     ["kind", "src", "poster", "alt", "light"],
     ["kind", "src", "alt"],
   )
-  if (entry.kind !== "image" && entry.kind !== "video")
-    fail(`${location}.kind`, "expected image or video")
+  if (entry.kind !== "image") fail(`${location}.kind`, "expected image")
   const kind = entry.kind
-  const src = mediaSource(entry.src, kind, `${location}.src`)
+  const src = mediaSource(entry.src, `${location}.src`)
   const poster =
-    entry.poster === undefined
-      ? undefined
-      : mediaSource(entry.poster, "image", `${location}.poster`)
-  if (kind === "video" && poster === undefined)
-    fail(`${location}.poster`, "video requires a static poster")
+    entry.poster === undefined ? undefined : mediaSource(entry.poster, `${location}.poster`)
+  if (ANIMATED_EXTENSIONS.includes(extensionOf(src)) && poster === undefined)
+    fail(`${location}.poster`, "an animated image requires a static poster")
   return {
     kind,
     src,
