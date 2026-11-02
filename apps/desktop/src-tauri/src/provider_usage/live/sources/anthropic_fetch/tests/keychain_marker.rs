@@ -1,4 +1,4 @@
-//! Keychain failures keep usable credentials; background reads never prompt.
+//! Keychain failures keep usable credentials; background reads recover known items.
 use super::*;
 use std::cell::Cell;
 
@@ -334,66 +334,61 @@ fn unreadable_secret_without_live_cache_is_not_signed_out() {
 }
 
 #[test]
-fn skipped_background_secret_read_without_live_cache_is_pending() {
-    for body in [
-        None,
-        Some(BLANK_LOGIN.into()),
-        Some(MCP_ONLY.into()),
-        Some(credentials_file(1, "max")),
-    ] {
-        let source = source();
-        if let Some(body) = body {
-            seed(&source, body);
-        }
-        let error = source
-            .read_keychain_login(found(ATTRIBUTES_B), no_secret_read, &|_| {}, false)
-            .err()
-            .unwrap();
-        assert_eq!(error.detail, Some(SourceErrorDetail::RefreshPending));
-        assert!(lock(&source.logins.keychain_secret_failed).is_none());
-        let login = source
-            .read_keychain_login(
-                found(ATTRIBUTES_B),
-                secret(credentials_file(i64::MAX, "pro")),
-                &|_| {},
-                true,
-            )
-            .unwrap()
-            .unwrap();
-        assert!(login.is_live(OffsetDateTime::now_utc()));
-        assert_eq!(login.subscription_type.as_deref(), Some("pro"));
-    }
+fn background_only_discovers_a_previously_read_keychain_item() {
+    let source = source();
+    let error = source
+        .read_keychain_login(found(ATTRIBUTES_A), no_secret_read, &|_| {}, false)
+        .err()
+        .expect("unknown item waits for a user check");
+    assert_eq!(error.detail, Some(SourceErrorDetail::RefreshPending));
+    assert!(lock(&source.logins.keychain_secret_failed).is_none());
+    seed(&source, credentials_file(1, "max"));
+    let login = source
+        .read_keychain_login(
+            found(ATTRIBUTES_B),
+            secret(credentials_file(i64::MAX, "pro")),
+            &|_| {},
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    assert!(login.is_live(OffsetDateTime::now_utc()));
+    assert_eq!(login.subscription_type.as_deref(), Some("pro"));
+    source
+        .read_keychain_login(found(ATTRIBUTES_B), no_secret_read, &|_| {}, false)
+        .unwrap();
 }
 
 #[test]
-fn background_never_reads_a_new_secret_even_after_backoff() {
+fn background_secret_failures_respect_backoff_and_recover() {
     let source = source();
-    assert!(
-        source
-            .read_keychain_login(found(ATTRIBUTES_A), no_secret_read, &|_| {}, false)
-            .is_err()
-    );
-    seed(&source, credentials_file(i64::MAX, "max"));
-    let kept = source
-        .read_keychain_login(found(ATTRIBUTES_B), no_secret_read, &|_| {}, false)
-        .unwrap()
-        .unwrap();
-    assert!(kept.is_live(OffsetDateTime::now_utc()));
-    source
+    seed(&source, credentials_file(1, "max"));
+    let failure = source
         .read_keychain_login(
             found(ATTRIBUTES_B),
             || macos_keychain::KeychainRead::Unreadable,
             &|_| {},
-            true,
+            false,
         )
-        .unwrap();
-    backdate_secret_failure(&source);
+        .err()
+        .expect("failed Keychain read");
+    assert_eq!(failure.detail, Some(SourceErrorDetail::KeychainUnreadable));
     assert!(
         source
             .read_keychain_login(found(ATTRIBUTES_B), no_secret_read, &|_| {}, false)
-            .unwrap()
-            .is_some()
+            .is_err()
     );
+    backdate_secret_failure(&source);
+    let recovered = source
+        .read_keychain_login(
+            found(ATTRIBUTES_B),
+            secret(credentials_file(i64::MAX, "pro")),
+            &|_| {},
+            false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered.subscription_type.as_deref(), Some("pro"));
 }
 
 #[test]

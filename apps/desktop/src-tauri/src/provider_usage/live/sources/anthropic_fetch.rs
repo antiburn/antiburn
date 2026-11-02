@@ -764,9 +764,9 @@ impl ClaudeDirectFetch {
     }
 
     /// Read the native carriers: the Keychain item on macOS, then the
-    /// credentials file. Each one reads its secret only when its change
-    /// marker changed. `user` is true for a check that the reader started.
-    fn read_native_carriers(&self, _user: bool) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
+    /// credentials file. Each one reads its secret on a changed marker or
+    /// after a failed-read backoff. Background checks can reread a known item.
+    fn read_native_carriers(&self, user: bool) -> (Vec<ClaudeCredentials>, Option<FetchFailure>) {
         let mut carriers = Vec::new();
         let mut error = None;
         #[cfg(target_os = "macos")]
@@ -776,7 +776,7 @@ impl ClaudeDirectFetch {
                 || claude_touch::keychain_metadata(deadline),
                 macos_keychain::read,
                 &|delay| std::thread::sleep(delay),
-                _user,
+                user,
             ) {
                 Ok(Some(credentials)) => carriers.push(credentials),
                 Ok(None) => {}
@@ -835,12 +835,13 @@ impl ClaudeDirectFetch {
     /// Read the Keychain login through its change marker.
     ///
     /// `metadata` reads the attributes (no prompt), `secret` reads the
-    /// secret, and `sleep` waits between attribute retries. The secret is
-    /// read only when the marker changed. When the attribute read fails
+    /// secret, and `sleep` waits between attribute retries. A changed marker
+    /// or an elapsed failed-read backoff allows a read. If attributes fail
     /// after every retry, the cached login stays and the secret is not read.
     ///
-    /// A failed secret read retries after [`SECRET_RETRY_BACKOFF`], even
-    /// without a marker change. A denied prompt does not recur on every check.
+    /// Background checks can read a changed item only after an earlier
+    /// successful read. A failed secret read retries after
+    /// [`SECRET_RETRY_BACKOFF`], even without a marker change.
     #[cfg(target_os = "macos")]
     fn read_keychain_login(
         &self,
@@ -877,9 +878,10 @@ impl ClaudeDirectFetch {
         {
             return Ok(cached.login.clone());
         }
-        // A background refresh must not raise a new Keychain prompt.
-        if !user {
-            return fallback().map_err(|_| auth_failure(SourceErrorDetail::RefreshPending));
+        // A background check does not discover a Keychain secret for the
+        // first time. It can pick up a changed item that it already read.
+        if !user && lock(&self.logins.keychain).is_none() {
+            return Err(auth_failure(SourceErrorDetail::RefreshPending));
         }
         if let Some((failed, at)) = lock(&self.logins.keychain_secret_failed).as_ref()
             && *failed == marker
@@ -933,7 +935,7 @@ impl ClaudeDirectFetch {
     }
 
     /// The worker only asks the owner to refresh. A later collection reads
-    /// changed credentials; only a user check may read a new Keychain secret.
+    /// changed credentials; a known Keychain item can be reread in background.
     fn schedule_refresh(&self, user: bool, trigger: RefreshTrigger) {
         if let Some(env) = &self.touch_env {
             let logins = self.logins.clone();
@@ -1632,6 +1634,9 @@ fn with_carrier_error(
     match fetched {
         Ok(Some(snapshot)) => Ok(Some(snapshot)),
         Ok(None) => carrier_error.map_or(Ok(None), Err),
+        // A server rate limit takes precedence over a pending carrier read.
+        // Keep its Retry-After so the cooldown can honor it.
+        Err(failure) if failure.error == ProviderUsageError::RateLimited => Err(failure),
         Err(failure) => Err(match carrier_error {
             Some(carrier) if preferred_error(carrier.error, failure.error) == carrier.error => {
                 carrier
@@ -2991,6 +2996,24 @@ mod tests {
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.detail, None);
         assert_eq!(outcome.snapshots.len(), 1);
+    }
+
+    #[test]
+    fn pending_keychain_read_does_not_mask_another_carriers_rate_limit() {
+        let pending = auth_failure(SourceErrorDetail::RefreshPending);
+        let limited = FetchFailure {
+            error: ProviderUsageError::RateLimited,
+            retry_after: Some(Duration::from_secs(600)),
+            ..ProviderUsageError::RateLimited.into()
+        };
+        let failure = with_carrier_error(Err(limited), Some(pending)).unwrap_err();
+        assert_eq!(failure.error, ProviderUsageError::RateLimited);
+        assert_eq!(failure.detail, None);
+        assert_eq!(failure.retry_after, Some(Duration::from_secs(600)));
+        let cooldown = Cooldown::new();
+        let outcome = cooldown.poll(now(), Duration::ZERO, || Err(failure));
+        assert_eq!(outcome.error, Some(ProviderUsageError::RateLimited));
+        assert!(cooldown.backoff_left_for_test().unwrap() > Duration::from_secs(590));
     }
 
     #[cfg(target_os = "macos")]

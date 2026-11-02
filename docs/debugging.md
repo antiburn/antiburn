@@ -197,9 +197,12 @@ for Claude and Codex, and logs `pi_auth_ignored`. Release builds ignore the
 variable.
 
 Each Claude check first reads the Keychain item's attributes, which raises no
-prompt. The secret is read only when the item's change marker (`mdat` and an
-attribute hash) changed since the last read. The `claude_keychain_read` debug
-event records each secret read as `absent`, `unreadable`, `found`, or
+prompt. The secret is read when the item's change marker (an attribute hash)
+changes or a failed-read backoff expires. Background checks reread a changed
+item after an earlier successful secret read, so macOS can ask for Keychain
+access again. A first secret read waits for a reader-started check. The
+`claude_keychain_read` debug event records each secret read as `absent`,
+`unreadable`, `found`, or
 `found_without_login`, with the `security` exit code when the process reports
 one. The `warn` event `claude_keychain_metadata_failed` means that the
 attribute read failed after all retries (`attempts` is the count); the check
