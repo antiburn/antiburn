@@ -22,13 +22,13 @@ screens:
     title: antiburn Claude Mod
     description: Pace your Claude Code usage across sessions.
     media:
-      kind: video
-      src: ./assets/claude-mod-desktop-dark-no-label-800.mp4
+      kind: image
+      src: ./assets/claude-mod-desktop-dark-no-label-800.webp
       poster: ./assets/claude-mod-desktop-dark-no-label-poster.png
       alt: Claude Mod showing usage and reset times.
       light:
-        kind: video
-        src: ./assets/claude-mod-desktop-light-no-label-800.mp4
+        kind: image
+        src: ./assets/claude-mod-desktop-light-no-label-800.webp
         poster: ./assets/claude-mod-desktop-light-no-label-poster.png
     features:
       - icon: gauge

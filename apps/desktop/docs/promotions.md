@@ -34,13 +34,13 @@ screens:
     title: antiburn Claude Mod
     description: Pace your Claude Code usage across sessions.
     media:
-      kind: video
-      src: ./assets/claude-mod-desktop-dark-no-label-800.mp4
+      kind: image
+      src: ./assets/claude-mod-desktop-dark-no-label-800.webp
       poster: ./assets/claude-mod-desktop-dark-no-label-poster.png
       alt: Claude Mod showing usage and reset times.
       light:
-        kind: video
-        src: ./assets/claude-mod-desktop-light-no-label-800.mp4
+        kind: image
+        src: ./assets/claude-mod-desktop-light-no-label-800.webp
         poster: ./assets/claude-mod-desktop-light-no-label-poster.png
     features:
       - icon: gauge
@@ -167,9 +167,14 @@ validator and native opener scope together. Arbitrary app routes are not support
 also require `poster`. An optional `light` mapping has its own `kind`, `src`, and
 optional `poster` (required for video), and shares the base `alt` text.
 
-- Images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.svg`.
+- Images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.svg`. Animated WebP and GIF
+  are images, not videos.
 - Videos: `.mp4`, `.webm`, `.mov`. These are accepted extensions, not a guarantee
-  that every codec works in each platform's webview.
+  that every codec works in each platform's webview. Prefer an animated image for
+  a motion asset. On Linux, WebKitGTK sends `<video>` to the host GStreamer, which
+  needs an audio sink and a matching decoder. Both are optional system packages,
+  so a video can fail to play on a supported system. WebKit decodes an animated
+  image in its own pipeline, which every build includes.
 - Paths start with `./` and stay inside the definition folder. Remote URLs,
   parent traversal, backslashes, query strings, fragments, missing files, and
   symlinks escaping the folder are rejected.
@@ -181,8 +186,16 @@ do not reset playback. Reduced motion pauses video at the start and shows its
 poster. Images with a poster also use it for reduced motion. Media load failures
 fall back to the supplied poster.
 
-Claude Mod uses label-free H.264 MP4s and matching PNG posters for both themes:
-800 × 416, 50 fps, 12.8 seconds, no audio, with fast-start metadata.
+An animated image loops through its own file metadata, so the host sets no loop
+or playback attribute on it. The element shows one of two sources: the animation,
+or the poster for reduced motion and for a load failure. A static poster stays
+necessary for an animated image, because it supplies both fallbacks.
+
+Claude Mod uses label-free animated WebPs and matching PNG posters for both
+themes: 800 × 416, 12.5 fps, 160 frames, 12.8 seconds, looping forever. The
+encoder drops a frame that repeats the one before it, so a reader reports fewer
+stored frames than 160 while the total duration stays 12800 ms. The source
+recordings are 50 fps, so every fourth frame is kept.
 
 ## Build and runtime flow
 

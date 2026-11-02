@@ -98,15 +98,15 @@ describe("promotion YAML definitions", () => {
     const source = await readFile(path.join(claudeDirectory, "promo.yaml"), "utf8")
     const definition = parsePromotionYaml(source, "claude-mod/promo.yaml")
     expect(definition.screens.announcement.media?.light).toEqual({
-      kind: "video",
-      src: "./assets/claude-mod-desktop-light-no-label-800.mp4",
+      kind: "image",
+      src: "./assets/claude-mod-desktop-light-no-label-800.webp",
       poster: "./assets/claude-mod-desktop-light-no-label-poster.png",
     })
     const module = await generatePromotionModule({ production: true })
     expect(module.code).toContain("media.light.src = __promotionAsset")
     expect(module.code).toContain("media.light.poster = __promotionAsset")
     expect(module.watchFiles).toContain(
-      path.join(claudeDirectory, "assets/claude-mod-desktop-light-no-label-800.mp4"),
+      path.join(claudeDirectory, "assets/claude-mod-desktop-light-no-label-800.webp"),
     )
     const base = { kind: "image", src: "./dark.png", alt: "Preview" }
     const withLight = (light: unknown) =>
@@ -168,7 +168,7 @@ describe("promotion catalog module", () => {
     expect(module.ids).toEqual(["claude-mod"])
     expect(module.code).toContain("Pace your Claude Code usage across sessions.")
     expect(module.code).toContain("__promotionAsset0")
-    expect(module.code).toContain("claude-mod-desktop-dark-no-label-800.mp4?no-inline")
+    expect(module.code).toContain("claude-mod-desktop-dark-no-label-800.webp?no-inline")
     expect(module.code).not.toContain("dummy-promo")
     expect(module.code).not.toContain("Different content")
     expect(module.code).not.toContain("dummy-promo.svg")
