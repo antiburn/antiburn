@@ -171,7 +171,8 @@ base `alt` text.
   for a motion asset.
 - A `.webp` or a `.gif` also requires `poster`. The name does not show if the
   file holds an animation, so both always supply the still frame that reduced
-  motion and a load failure need.
+  motion and a load failure need. Posters must be still PNG, JPEG, GIF, or WebP
+  files; the catalog rejects animated or unsupported poster content.
 - **Video is not supported.** The schema rejects `kind: video`. On Linux,
   WebKitGTK sends `<video>` to the host GStreamer, which needs an audio sink and
   a matching decoder. Both are optional system packages, so a video can crash

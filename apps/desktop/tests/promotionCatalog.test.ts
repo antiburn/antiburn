@@ -143,6 +143,82 @@ describe("promotion YAML definitions", () => {
     }
   })
 
+  it("accepts still posters and rejects animated posters for both themes", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "promotion-poster-"))
+    try {
+      const folder = path.join(directory, "sample")
+      await mkdir(folder)
+      const webp = Buffer.from(
+        "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA",
+        "base64",
+      )
+      const gif = Buffer.from(
+        "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+        "base64",
+      )
+      const frame = gif.subarray(gif.indexOf(Buffer.from([0x2c])), gif.length - 1)
+      const animatedGif = Buffer.concat([
+        gif.subarray(0, gif.length - 1),
+        frame,
+        Buffer.from([0x3b]),
+      ])
+      const animatedWebp = await readFile(
+        path.join(claudeDirectory, "assets/claude-mod-desktop-dark-no-label-800.webp"),
+      )
+      const png = await readFile(
+        path.join(claudeDirectory, "assets/claude-mod-desktop-dark-no-label-poster.png"),
+      )
+      const animatedPng = Buffer.concat([
+        png.subarray(0, 33),
+        Buffer.from([0, 0, 0, 8, 97, 99, 84, 76, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0]),
+        png.subarray(33),
+      ])
+      await writeFile(path.join(folder, "source.png"), png)
+      const yaml = (poster: string, light: boolean) => `schema_version: 1
+id: sample
+revision: 1
+title: Sample
+screens:
+  announcement:
+    title: Sample
+    description: Example
+    media:
+      kind: image
+      src: ./source.png
+      alt: Example
+${
+  light
+    ? `      light:
+        kind: image
+        src: ./source.png
+        poster: ./${poster}
+`
+    : `      poster: ./${poster}
+`
+}`
+      for (const [name, bytes, valid] of [
+        ["still.gif", gif, true],
+        ["still.webp", webp, true],
+        ["still.png", png, true],
+        ["animated.gif", animatedGif, false],
+        ["animated.webp", animatedWebp, false],
+        ["disguised.png", animatedWebp, false],
+        ["disguised.jpg", animatedGif, false],
+        ["animated.png", animatedPng, false],
+      ] as const) {
+        await writeFile(path.join(folder, name), bytes)
+        for (const light of [false, true]) {
+          await writeFile(path.join(folder, "promo.yaml"), yaml(name, light))
+          const result = generatePromotionModule({ directory, production: true })
+          if (valid) await expect(result).resolves.toBeDefined()
+          else await expect(result).rejects.toThrow("must be a still")
+        }
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it("rejects duplicate IDs across the catalog", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "promotion-catalog-"))
     try {
