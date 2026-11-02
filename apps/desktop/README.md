@@ -534,18 +534,16 @@ opening bypasses the automatic cooldown; automatic display retains its existing 
 folder. The Vite catalog validates the YAML and imports media as hashed assets.
 The Claude Mod definition provides announcement and setup examples.
 
-Definitions support plain-text content, gauge/clock feature icons, image/GIF
-or video media, copyable commands, screen navigation, HTTPS links, and the
-Settings Usage destination. Videos require a poster; image/GIF definitions can
-also supply one. GIFs with a poster show it for reduced motion or an image load failure.
-Videos and GIFs keep looping across window focus changes; focus does not swap
-the image source, pause playback, or reset its position. The optional `media.light` object overrides
-`kind`, `src`, and `poster` in light mode; the base media remains the dark-mode
-and legacy fallback. Video variants require their own poster. Explicit theme
-changes and system appearance changes select the source and poster together,
-resetting playback failure state without changing the display policy.
-Both Claude Mod themes use label-free H.264 MP4s at 800 × 416, 50fps,
-with no audio and fast-start metadata, plus matching PNG posters. No command executes.
+Definitions support plain-text content, gauge/clock feature icons, image media,
+copyable commands, screen navigation, HTTPS links, and the Settings Usage destination.
+WebP and GIF sources require still posters. Posters must be still PNG, JPEG, GIF,
+or WebP files; they appear for reduced motion or an image load failure. Animated
+images keep looping across window focus changes. The optional `media.light` object
+overrides `kind`, `src`, and `poster` in light mode; the base media remains the
+dark-mode and legacy fallback. Each WebP or GIF variant requires its own poster.
+Theme changes select the source and poster together and reset media failure state.
+Both Claude Mod themes use label-free animated WebPs at 800 × 416 with matching
+PNG posters. No command executes.
 
 Automatic display waits for onboarding and foreground visibility. New users never
 receive a promo during the MAIN-window FTUE or in the same app session. Completion

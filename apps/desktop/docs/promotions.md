@@ -34,13 +34,13 @@ screens:
     title: antiburn Claude Mod
     description: Pace your Claude Code usage across sessions.
     media:
-      kind: video
-      src: ./assets/claude-mod-desktop-dark-no-label-800.mp4
+      kind: image
+      src: ./assets/claude-mod-desktop-dark-no-label-800.webp
       poster: ./assets/claude-mod-desktop-dark-no-label-poster.png
       alt: Claude Mod showing usage and reset times.
       light:
-        kind: video
-        src: ./assets/claude-mod-desktop-light-no-label-800.mp4
+        kind: image
+        src: ./assets/claude-mod-desktop-light-no-label-800.webp
         poster: ./assets/claude-mod-desktop-light-no-label-poster.png
     features:
       - icon: gauge
@@ -163,26 +163,41 @@ validator and native opener scope together. Arbitrary app routes are not support
 
 ### Media
 
-`media` requires `kind`, `src`, and `alt`. `kind` is `image` or `video`; videos
-also require `poster`. An optional `light` mapping has its own `kind`, `src`, and
-optional `poster` (required for video), and shares the base `alt` text.
+`media` requires `kind`, `src`, and `alt`. `kind` must be `image`. An optional
+`light` mapping has its own `kind`, `src`, and optional `poster`, and shares the
+base `alt` text.
 
-- Images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.svg`.
-- Videos: `.mp4`, `.webm`, `.mov`. These are accepted extensions, not a guarantee
-  that every codec works in each platform's webview.
+- Images: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.svg`. Use an animated WebP
+  for a motion asset.
+- A `.webp` or a `.gif` also requires `poster`. The name does not show if the
+  file holds an animation, so both always supply the still frame that reduced
+  motion and a load failure need. Posters must be still PNG, JPEG, GIF, or WebP
+  files; the catalog rejects animated or unsupported poster content.
+- **Video is not supported.** The schema rejects `kind: video`. On Linux,
+  WebKitGTK sends `<video>` to the host GStreamer, which needs an audio sink and
+  a matching decoder. Both are optional system packages, so a video can crash
+  the web process or silently never play. WebKit decodes an animated image in
+  its own pipeline, which every build includes.
 - Paths start with `./` and stay inside the definition folder. Remote URLs,
   parent traversal, backslashes, query strings, fragments, missing files, and
   symlinks escaping the folder are rejected.
 
 The base media is the dark-mode and legacy fallback. Light mode selects `light`
 when present. Theme changes replace the source and poster together and clear any
-previous playback failure. Videos are muted and loop inline. Window focus changes
-do not reset playback. Reduced motion pauses video at the start and shows its
-poster. Images with a poster also use it for reduced motion. Media load failures
-fall back to the supplied poster.
+previous load failure. Window focus changes do not change the source. Reduced
+motion shows the poster. A load failure also shows the poster, and a poster that
+fails has no further fallback.
 
-Claude Mod uses label-free H.264 MP4s and matching PNG posters for both themes:
-800 × 416, 50 fps, 12.8 seconds, no audio, with fast-start metadata.
+An animated image loops through its own file metadata, so the host sets no loop
+or playback attribute on it. The element shows one of two sources: the animation,
+or the poster for reduced motion and for a load failure. A static poster stays
+necessary for an animated image, because it supplies both fallbacks.
+
+Claude Mod uses label-free animated WebPs and matching PNG posters for both
+themes: 800 × 416, 12.5 fps, 160 frames, 12.8 seconds, looping forever. The
+encoder drops a frame that repeats the one before it, so a reader reports fewer
+stored frames than 160 while the total duration stays 12800 ms. The source
+recordings are 50 fps, so every fourth frame is kept.
 
 ## Build and runtime flow
 
