@@ -407,6 +407,7 @@ export function assertCapabilities(report) {
     '$.state.get',
     '$.state.set',
     '$.ui.resolve',
+    '$.ui.invalidate',
     '$.antiburn.describe',
   ])
   const accountOnly = new Set(['$.session.authorize', '$.http.fetch'])

@@ -306,6 +306,7 @@ test('capability policy permits website activation APIs and rejects background a
       '$.state.get',
       '$.command.register',
       '$.ui.log',
+      '$.ui.invalidate',
       '$.antiburn.describe',
       '$.env.get (via openTerminalWebsite)',
       '$.process.run (via openTerminalWebsite)',
