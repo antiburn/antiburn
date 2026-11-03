@@ -413,10 +413,10 @@ Synthetic usage examples share fixed pace markers (5-hour 55%, Weekly 50%). Only
 ## Terminal brand mark
 
 The terminal uses a monospace `antiburn` wordmark in bright antiburn orange on a
-muted orange background beside its meters. Both inline and stacked layouts use
-exactly two terminal rows. The lower row carries the bright wordmark and inline
-meters; stacked limit rows use the same two-row space. The upper row is blank
-padding while idle and carries the shaded-block flames upward when active. The
+muted orange background beside its meters. The resting wordmark uses one row;
+stacked limits use two meter rows. One blank row separates stacked strips, with
+no internal checks/usage divider. Experimental burn animation reserves a second
+wordmark row only when enabled. The
 wordmark slot is 11 columns: a one-cell inset plus ten columns for the eight
 linked letters and one background-padding cell on each side. The upper flame
 row uses a raster, while linked text retains the heat colors below. The meter gap adds

@@ -11,7 +11,7 @@ import {
   RESPONSIVE_FRAME_WIDTH,
   secondaryTextSvg,
 } from "./usage-graphics";
-import { PRESENTATION, type usageLayout } from "./usage-presentation";
+import { abovePromptGap, PRESENTATION, type usageLayout } from "./usage-presentation";
 import { renderUsageMeterBand } from "./usage-meter-band";
 
 type UsageUi = ReturnType<EngineInterface["ui"]["resolve"]>;
@@ -291,37 +291,16 @@ export function renderUsageComposition({
   usage,
 }: UsageCompositionInput): RenderElement {
   const { Box, Text } = ui;
-  const separatorWidth = Math.max(1, event.props.bodyColumns * 8 - 16);
   return (
     <Box
       key="usage-spacing"
       flexDirection="column"
-      marginTop={
-        event.props.maxRows >= 8 && event.props.bodyColumns >= 24
-          ? event.surface === "desktop"
-            ? 0.25
-            : 1
-          : 0
+      marginTop={event.surface === "desktop" ? 0 : abovePromptGap(event)}
+      gap={
+        event.surface === "desktop" ? abovePromptGap(event, !!checkStrip) : 1
       }
-      gap={checkStrip && event.surface === "desktop" ? 0.5 : 1}
     >
       {checkStrip}
-      {checkStrip && (
-        <Box key="checks-usage-separator" marginX={1}>
-          {event.surface === "desktop" && "Svg" in ui ? (
-            <ui.Svg
-              source={`<svg xmlns="http://www.w3.org/2000/svg" width="${separatorWidth}" height="16" viewBox="0 0 ${separatorWidth} 16"><style>path{stroke:#000;stroke-opacity:.06}@media(prefers-color-scheme:dark){path{stroke:#fff;stroke-opacity:.08}}</style><path d="M0 8H${separatorWidth}" stroke-width="1"/></svg>`}
-              width={separatorWidth}
-              height={16}
-              alt="Checks and usage separator"
-            />
-          ) : (
-            <Text dimColor>
-              {"─".repeat(Math.max(1, event.props.bodyColumns - 4))}
-            </Text>
-          )}
-        </Box>
-      )}
       {syntheticLabel && <Text dimColor>{syntheticLabel}</Text>}
       {usage}
     </Box>

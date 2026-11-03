@@ -17,6 +17,7 @@ type Fake = {
   streamChunks?: TurnStepChunk[]
   streamFailure?: boolean
   streamStarts: number
+  renders: number
   liveMode: string | undefined
   rateLimits: RateLimitReading[]
   usageReads: number
@@ -45,6 +46,7 @@ type Fake = {
 function fakeEngine(on: On, surfaces: readonly RenderSurface[] = ["terminal"]): Fake {
   const fake: Fake = {
     streamStarts: 0,
+    renders: 0,
     liveMode: "checks",
     rateLimits: [],
     usageReads: 0,
@@ -165,6 +167,7 @@ function fakeEngine(on: On, surfaces: readonly RenderSurface[] = ["terminal"]): 
   on("turn.complete", () => ({ text: "" }))
   // Stands for the engine's own drawing when a mod hook yields with next(e).
   on("ui.render", (t$, e) => {
+    fake.renders++
     const { Box } = t$.ui.resolve(e)
     return h(Box, {}) as RenderElement
   })
@@ -492,7 +495,7 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
   })
   expect((await medium.find({ text: /182k tokens per request/ })) === undefined).toBe(true)
   // The fix button acts on the top check, so the shorter forms keep its name.
-  expect(await medium.findAll({ type: "Raster" })).toHaveLength(1)
+  expect(await medium.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
   expect((await medium.find({ text: / \d+ to fix {2}Context heavy/ })) !== undefined).toBe(true)
   const narrow = await $.ui.mount({
     plugin: "antiburn-live",
@@ -500,7 +503,7 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
     component: "AbovePrompt",
     props: stripProps(70),
   })
-  expect(await narrow.findAll({ type: "Raster" })).toHaveLength(1)
+  expect(await narrow.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
   expect((await narrow.find({ text: /Context heavy/ })) !== undefined).toBe(true)
   expect((await narrow.find({ key: "view" }))?.props.label).toBe("2 View")
   // A narrow desktop strip shows the mark and the check name, without the metric.
@@ -514,7 +517,6 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
   expect((await narrowDesktop.findAll({ type: "Svg" })).map((node) => node.props.alt)).toEqual([
     "5 to fix",
     "Dismiss",
-    "Checks and usage separator",
     "antiburn",
     "Usage not available yet. Try send a message first",
   ])
@@ -536,7 +538,7 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
   const count = (await wide.find({ text: /^ 5 to fix $/ })) as
     { props?: { color?: string; backgroundColor?: string } } | undefined
   const mark = (await wide.findAll({ type: "Box" })).find(
-    (node) => node.props.width === 11 && node.props.height === 2,
+    (node) => node.props.width === 11 && node.props.height === (BURN_ANIMATION_ENABLED ? 2 : 1),
   )
   expect(count?.props?.backgroundColor).toBe("#4D2F23")
   expect(count?.props?.color).toBe("#FF8D5C")
@@ -1081,7 +1083,7 @@ test("a watched check offers no second send in its detail", async ($, on) => {
   // Nothing is left to fix, so the strip goes away and the chip shows the watched check.
   expect(await band.find({ key: "fix" })).toBeDefined()
   expect(await band.find({ key: "view" })).toBeDefined()
-  expect(await band.findAll({ type: "Raster" })).toHaveLength(1)
+  expect(await band.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
   const chip = await $.ui.mount({
     plugin: "antiburn-live",
     surface: "terminal",
@@ -3945,21 +3947,23 @@ test("terminal meters share one dot glyph and stacked limits have no blank row",
     expect(dots.some((node) => node.props.color === "subtle")).toBe(true)
     const meters = await band.find({ key: "usage-meters" })
     expect(meters!.props.gap).toBe(columns < 80 ? 0 : 3)
-    expect(await band.findAll({ type: "Raster" })).toHaveLength(1)
+    expect(await band.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
     expect(await band.findAll({ type: "Image" })).toHaveLength(0)
     const raster = (await band.findAll({ type: "Raster" }))[0]!
     const link = (await band.findAll({ type: "Link" })).find(
       (node) => node.props.href === "https://antiburn.com",
     )
     expect(link).toBeUndefined()
-    expect(raster.props.rows).toBe(1)
-    expect(raster.props.columns).toBe(10)
+    if (BURN_ANIMATION_ENABLED) {
+      expect(raster.props.rows).toBe(1)
+      expect(raster.props.columns).toBe(10)
+    }
     const slot = (await band.findAll({ type: "Box" })).find(
-      (node) => node.props.width === 11 && node.props.height === 2,
+      (node) => node.props.width === 11 && node.props.height === (BURN_ANIMATION_ENABLED ? 2 : 1),
     )
     expect(slot!.props.width).toBe(11)
     expect(slot!.props.paddingLeft).toBe(1)
-    expect(slot!.props.height).toBe(2)
+    expect(slot!.props.height).toBe(BURN_ANIMATION_ENABLED ? 2 : 1)
     expect(slot!.props.alignItems).toBe("center")
     expect(slot!.props.justifyContent).toBe("center")
     const windowColumns = columns < 80 ? columns - 12 : Math.floor((columns - 15) / 2)
@@ -4025,7 +4029,7 @@ if (BURN_ANIMATION_ENABLED) {
         expect(frames).toHaveLength(count)
         expect(fake.flameTimers).toHaveLength(timers)
       }
-      expect(await band.findAll({ type: "Raster" })).toHaveLength(1)
+      expect(await band.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
       expect(fake.submits).toEqual([])
     })
   }
@@ -4266,7 +4270,7 @@ test("terminal logo has no hint and keeps its two-row flame slot", async ($, on)
     const tree = JSON.stringify(await band.drawn())
     expect(tree).not.toContain("Click/Enter")
     expect(tree).not.toContain("usage-brand-link")
-    expect((await band.find({ key: "usage-brand-text-slot" }))?.props.height).toBe(2)
+    expect((await band.find({ key: "usage-brand-text-slot" }))?.props.height).toBe(BURN_ANIMATION_ENABLED ? 2 : 1)
     expect(await band.find({ key: "usage-brand-open" })).toBeDefined()
   }
 })
@@ -4749,4 +4753,143 @@ for (const columns of [24, 40, 59, 60, 61, 80, 120]) {
       }
     }
   })
+}
+
+for (const order of ["prepend", "append"] as const) {
+  test(
+    `development preserves stacked mods in ${order} order`,
+    {
+      plugins: [
+        {
+          name: "spacing-fixture",
+          tier: order,
+          register(on) {
+            on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+              const downstream = await next(e)
+              const { Box, Button } = $.ui.resolve(e)
+              return h(
+                Box,
+                {
+                  key: "fixture-stack",
+                  flexDirection: "column",
+                  gap: 0,
+                },
+                h(Button, {
+                  key: "fixture-button",
+                  label: "Other mod",
+                  onPress: async () => {
+                    await $.session.usage()
+                  },
+                }),
+                downstream,
+              ) as RenderElement
+            })
+          },
+        },
+      ],
+    },
+    async ($, on) => {
+      const fake = fakeEngine(on, ["desktop", "terminal"])
+      await startSession($)
+      await showCheckSamples($)
+      for (const surface of ["desktop", "terminal"] as const) {
+        const before = fake.renders
+        const band = await $.ui.mount({
+          plugin: "antiburn-live",
+          surface,
+          component: "AbovePrompt",
+          props: { ...stripProps(), maxRows: 12 },
+        })
+        expect(fake.renders).toBe(before + 1)
+        expect(await band.findAll({ key: "fixture-button" })).toHaveLength(1)
+        expect(await band.findAll({ key: "usage-band" })).toHaveLength(1)
+        expect(await band.find({ key: "fix" })).toBeDefined()
+        const beforePress = fake.usageReads
+        await band.press({ plugin: "spacing-fixture", key: "fixture-button" })
+        expect(fake.usageReads).toBe(beforePress + 1)
+        expect((await band.find({ key: "usage-spacing" }))?.props.marginTop).toBe(
+          surface === "desktop" ? 0 : 1,
+        )
+        expect(await band.find({ key: "checks-usage-separator" })).toBeUndefined()
+        if (surface === "terminal")
+          expect((await band.find({ key: "usage-spacing" }))?.props.gap).toBe(1)
+        if (surface === "desktop") {
+          expect((await band.find({ key: "usage-spacing" }))?.props.marginTop).toBe(0)
+          expect((await band.find({ key: "usage-spacing" }))?.props.gap).toBe("md")
+          expect(await band.find({ key: "checks-usage-separator" })).toBeUndefined()
+        }
+      }
+    },
+  )
+}
+
+test("development keeps downstream once when usage rendering fails", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  await startSession($)
+  fake.clockRead = async () => {
+    throw new Error("Clock unavailable")
+  }
+  const before = fake.renders
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: { ...stripProps(), maxRows: 12 },
+  })
+  expect(fake.renders).toBe(before + 1)
+  expect(await band.find({ key: "usage-spacing" })).toBeUndefined()
+})
+
+for (const order of ["prepend", "append"] as const) {
+  test(
+    `development delegates quota to a public owner in ${order} order`,
+    {
+      plugins: [
+        {
+          name: "antiburn",
+          tier: order,
+          register(on) {
+            on("engine.create", async ($, e, next) => ({
+              ...(await next(e)),
+              antiburn: {
+                describe: async () => ({
+                  id: "antiburn",
+                  version: "test",
+                  capabilities: { usage: true, usageUiEnabled: true },
+                }),
+              },
+            }))
+            on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+              const downstream = await next(e)
+              const { Box, Text } = $.ui.resolve(e)
+              return h(
+                Box,
+                { flexDirection: "column", gap: e.surface === "desktop" ? "sm" : 0 },
+                downstream,
+                h(Text, { key: "public-usage" }, "Public usage"),
+              ) as RenderElement
+            })
+          },
+        },
+      ],
+    },
+    async ($, on) => {
+      const fake = fakeEngine(on, ["desktop"])
+      await startSession($)
+      await showCheckSamples($)
+      const before = fake.renders
+      const band = await $.ui.mount({
+        plugin: "antiburn-live",
+        surface: "desktop",
+        component: "AbovePrompt",
+        props: { ...stripProps(), maxRows: 12 },
+      })
+      expect(fake.renders).toBe(before + 1)
+      expect(fake.usageReads).toBe(0)
+      expect(await band.findAll({ type: "Text", text: /^Public usage$/ })).toHaveLength(1)
+      expect(await band.find({ key: "usage-band" })).toBeUndefined()
+      expect(await band.find({ key: "fix" })).toBeDefined()
+      expect((await band.find({ key: "checks-with-downstream" }))?.props.gap).toBe("md")
+    },
+  )
 }

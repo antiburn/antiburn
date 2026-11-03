@@ -78,6 +78,8 @@ import {
 import { meterDescription } from "./usage-graphics";
 import { UsageEntrance } from "./usage-entrance";
 import {
+  abovePromptGap,
+  hasAbovePromptContent,
   EntranceOwner,
   usageLayout,
   meterGeometry,
@@ -1032,7 +1034,9 @@ function renderTerminalMark(
   }
   */
   const cells =
-    "Raster" in ui ? animateTerminalFlame($, e, state, now, active) : undefined;
+    BURN_ANIMATION_ENABLED && "Raster" in ui
+      ? animateTerminalFlame($, e, state, now, active)
+      : undefined;
   return renderTerminalMarkView(ui, cells, () => openTerminalWebsite($));
 }
 
@@ -2370,36 +2374,57 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
         cancelUsagePresentation();
       return next(e);
     }
-    if (releaseOwnsUsage || !usageUiEnabled) {
-      const downstream = await next(e);
-      if (!checksEnabled() || e.props.isWorking) return downstream;
-      const checkStrip = await renderStrip($, e, false);
-      if (!checkStrip) return downstream;
-      const { Box } = $.ui.resolve(e);
+    const downstream = await next(e);
+    try {
+      if (releaseOwnsUsage || !usageUiEnabled) {
+        if (!checksEnabled() || e.props.isWorking) return downstream;
+        const checkStrip = await renderStrip($, e, false);
+        if (!checkStrip) return downstream;
+        const { Box } = $.ui.resolve(e);
+        return (
+          <Box
+            key="checks-with-downstream"
+            flexDirection="column"
+            gap={e.surface === "desktop" ? abovePromptGap(e, true) : 1}
+          >
+            {checkStrip}
+            {hasAbovePromptContent(downstream) && downstream}
+          </Box>
+        );
+      }
+      const ui = $.ui.resolve(e);
+      const usageState = await read($, usage);
+      const preview = usageState.preview;
+      const checkStrip =
+        checksEnabled() && !e.props.isWorking
+          ? await renderStrip($, e, false)
+          : null;
+      const composition = renderUsageComposition({
+        ui,
+        event: e,
+        checkStrip,
+        syntheticLabel:
+          preview && usageState.showSyntheticLabels
+            ? `Synthetic usage · ${preview.id}`
+            : undefined,
+        usage: await renderUsage($, e),
+      });
+      if (!hasAbovePromptContent(downstream)) return composition;
+      const { Box } = ui;
       return (
-        <Box key="checks-with-downstream" flexDirection="column" gap={1}>
-          {checkStrip}
+        <Box
+          key="usage-with-downstream"
+          flexDirection="column"
+          gap={e.surface === "desktop" ? abovePromptGap(e) : 0}
+        >
           {downstream}
+          {composition}
         </Box>
       );
+    } catch {
+      // Keep the downstream strips if this mod cannot draw.
+      return downstream;
     }
-    const ui = $.ui.resolve(e);
-    const usageState = await read($, usage);
-    const preview = usageState.preview;
-    const checkStrip =
-      checksEnabled() && !e.props.isWorking
-        ? await renderStrip($, e, false)
-        : null;
-    return renderUsageComposition({
-      ui,
-      event: e,
-      checkStrip,
-      syntheticLabel:
-        preview && usageState.showSyntheticLabels
-          ? `Synthetic usage · ${preview.id}`
-          : undefined,
-      usage: await renderUsage($, e),
-    });
   });
 
   on("ui.render", { component: "SessionMode" }, async ($, e, next) => {

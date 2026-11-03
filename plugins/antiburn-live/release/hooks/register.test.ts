@@ -88,6 +88,7 @@ function fakeEngine(on: On) {
     argumentHints: [] as (string | undefined)[],
     forwards: 0,
     renders: 0,
+    emptyDrawing: false,
     forbidden: [] as string[],
     writes: [] as string[],
     mode: undefined as string | undefined,
@@ -165,7 +166,8 @@ function fakeEngine(on: On) {
   on("ui.close", () => ({ value: undefined }))
   on("ui.render", ($, e) => {
     fake.renders++
-    const { Text } = $.ui.resolve(e)
+    const { Box, Text } = $.ui.resolve(e)
+    if (fake.emptyDrawing) return h(Box, {}) as RenderElement
     return h(
       Text,
       {},
@@ -501,12 +503,14 @@ test("hidden bands forward once and narrow layouts keep details available throug
   await start($)
   for (const surface of ["terminal", "desktop"] as const) {
     for (const options of [props(80, 0), props(80, 4, true)]) {
+      const before = fake.renders
       const band = await $.ui.mount({
         plugin: PLUGIN,
         surface,
         component: "AbovePrompt",
         props: options,
       })
+      expect(fake.renders).toBe(before + 1)
       expect(await band.find({ text: "host drawing" })).toBeDefined()
     }
     const narrow = await $.ui.mount({
@@ -606,6 +610,7 @@ for (const surface of ["terminal", "desktop"] as const) {
     if (surface === "terminal") {
       const brand = await band.find({ key: "usage-brand-text-slot" })
       expect(brand?.props.width).toBe(11)
+      expect(brand?.props.height).toBe(1)
       expect(await band.find({ text: " antiburn " })).toBeDefined()
     } else {
       const brand = (await band.findAll({ type: "Svg" })).find(
@@ -2150,7 +2155,10 @@ test("usage spacing separates other plugins without consuming a constrained band
         props: props(80, rows),
       })
       expect((await band.find({ key: "usage-spacing" }))?.props.marginTop).toBe(
-        rows < 8 ? 0 : surface === "desktop" ? 0.25 : 1,
+        surface === "desktop" || rows < 8 ? 0 : 1,
+      )
+      expect((await band.find({ key: "usage-spacing" }))?.props.gap).toBe(
+        rows < 8 ? 0 : surface === "desktop" ? "xs" : 1,
       )
       expect(await band.find({ key: "usage-band" })).toBeDefined()
     }
@@ -2514,7 +2522,7 @@ for (const tier of ["prepend", "append"] as const) {
             expect(own >= 0 && other >= 0).toBe(true)
             expect(own < other).toBe(tier === "append")
             expect((await band.find({ key: "usage-spacing" }))?.props.marginTop).toBe(
-              rows < 8 ? 0 : surface === "desktop" ? 0.25 : 1,
+              rows < 8 || surface === "desktop" ? 0 : 1,
             )
           }
           await band.unmount()
@@ -2589,3 +2597,84 @@ for (const surface of ["terminal", "desktop"] as const) {
     },
   )
 }
+
+for (const order of ["prepend", "append"] as const) {
+  test(
+    `AbovePrompt preserves an interactive mod in ${order} order`,
+    {
+      plugins: [
+        {
+          name: "spacing-fixture",
+          tier: order,
+          register(on) {
+            on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+              const downstream = await next(e)
+              const { Box, Button } = $.ui.resolve(e)
+              return h(
+                Box,
+                {
+                  key: "fixture-stack",
+                  flexDirection: "column",
+                  gap: 0,
+                },
+                h(Button, {
+                  key: "fixture-button",
+                  label: "Other mod",
+                  onPress: async () => {
+                    await $.session.usage()
+                  },
+                }),
+                downstream,
+              ) as RenderElement
+            })
+          },
+        },
+      ],
+    },
+    async ($, on) => {
+      const fake = fakeEngine(on)
+      fake.emptyDrawing = true
+      await start($)
+      for (const surface of ["desktop", "terminal"] as const) {
+        const before = fake.renders
+        const band = await $.ui.mount({
+          plugin: PLUGIN,
+          surface,
+          component: "AbovePrompt",
+          props: props(80, 12),
+        })
+        expect(fake.renders).toBe(before + 1)
+        expect(await band.findAll({ key: "fixture-button" })).toHaveLength(1)
+        expect(await band.findAll({ key: "usage-band" })).toHaveLength(1)
+        const beforePress = fake.usageReads
+        await band.press({ plugin: "spacing-fixture", key: "fixture-button" })
+        expect(fake.usageReads).toBe(beforePress + 1)
+      }
+    },
+  )
+}
+
+test("an empty downstream band adds no sibling, and quota failure returns downstream once", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.emptyDrawing = true
+  await start($)
+  const band = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(80, 12),
+  })
+  expect((await band.find({ key: "usage-spacing" }))?.children).toHaveLength(1)
+  fake.emptyDrawing = false
+  fake.clockFailure = true
+  const before = fake.renders
+  const failed = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(80, 12),
+  })
+  expect(fake.renders).toBe(before + 1)
+  expect(await failed.find({ text: "host drawing" })).toBeDefined()
+  expect(await failed.find({ key: "usage-spacing" })).toBeUndefined()
+})

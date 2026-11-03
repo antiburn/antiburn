@@ -33,7 +33,13 @@ import {
   secondaryTextSvg,
 } from "./usage-graphics"
 import { renderUsageMeterBand } from "./usage-meter-band"
-import { desktopPercentage, PRESENTATION, usageLayout } from "./usage-presentation"
+import {
+  abovePromptGap,
+  desktopPercentage,
+  hasAbovePromptContent,
+  PRESENTATION,
+  usageLayout,
+} from "./usage-presentation"
 
 import {
   ARGUMENT_HINT,
@@ -464,12 +470,11 @@ async function renderUsageContent(
       paddingLeft={1}
       flexDirection="row"
       flexShrink={0}
-      height={2}
+      height={1}
       alignItems="center"
       justifyContent="center"
     >
-      <Box flexDirection="column" width={10} height={2} flexShrink={0}>
-        <Text> </Text>
+      <Box flexDirection="column" width={10} height={1} flexShrink={0}>
         <Box width={10} height={1} flexShrink={0} overflow="hidden">
           <Button
             key="usage-brand-open"
@@ -1193,15 +1198,10 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
         <Box
           key="usage-spacing"
           flexDirection="column"
-          marginTop={
-            e.props.maxRows >= 8 && e.props.bodyColumns >= 24
-              ? e.surface === "desktop"
-                ? 0.25
-                : 1
-              : 0
-          }
+          marginTop={e.surface === "desktop" ? 0 : abovePromptGap(e)}
+          gap={abovePromptGap(e)}
         >
-          {downstream}
+          {hasAbovePromptContent(downstream) && downstream}
           {await renderUsage($, e)}
         </Box>
       )
