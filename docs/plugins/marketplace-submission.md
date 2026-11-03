@@ -15,8 +15,8 @@ selects an immutable artifact commit; its installation route stays on `main`.
 See [directory submission guidance](distribution.md#claude-directory-submission)
 for the permanent source and promotion requirements, and
 [validation scope](validation.md) for recorded checks and their limits.
-The 0.2.6 candidate is not submitted or published through this preparation.
-If a tag is separately authorized, use `claude-plugin-v0.2.6` at the validated
+The 0.2.7 candidate is not submitted or published through this preparation.
+If a tag is separately authorized, use `claude-plugin-v0.2.7` at the validated
 artifact commit. No tag is created here. A package version or tag does not
 establish directory acceptance or publication.
 
