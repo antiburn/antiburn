@@ -196,6 +196,156 @@ const start = ($: Engine) =>
 const measure = ($: Engine, rateLimits: RateLimitReading[]) =>
   $.session.measure({ context: { window: 200000 }, rateLimits, changed: ["rateLimits"] })
 
+test("returning to a desktop session rearms its entrance", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await start($)
+  const band = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(),
+  })
+  fake.now += 1000
+  await band.redraw()
+  const source = async () => String((await band.findAll({ type: "Svg" }))[0]?.props.source)
+  expect(await source()).not.toContain("animation:usage-enter")
+  await $.session.attach({ surface: "desktop", clientId: "returning-desktop" })
+  expect(await source()).toContain(" 0ms both")
+  fake.now += 1000
+  await band.redraw()
+  await $.session.attach({ surface: "terminal", clientId: "terminal" })
+  expect(await source()).not.toContain("animation:usage-enter")
+})
+
+test("an unchanged module fades again after the host reload command", async ($, on) => {
+  const fake = fakeEngine(on)
+  await start($)
+  const band = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(),
+  })
+  const sources = async () =>
+    (await band.findAll({ type: "Svg" })).map((node) => String(node.props.source))
+  const first = await sources()
+  fake.now += 1000
+  await band.redraw()
+  expect((await sources()).some((source) => source.includes("usage-enter"))).toBe(false)
+  expect((await $.command.run(command("reload-plugins", "--force"))).text).toBe(
+    "host:reload-plugins",
+  )
+  const replay = await sources()
+  expect(replay.every((source) => source.includes(" 0ms both"))).toBe(true)
+  expect(replay).not.toEqual(first)
+  expect(fake.commandForwards).toBe(1)
+})
+
+test("desktop entrance reuses the render clock without another fallible read", async ($, on) => {
+  const fake = fakeEngine(on)
+  await start($)
+  let reads = 0
+  fake.readClock = async () => {
+    if (++reads > 1) throw new Error("second clock read fails")
+    return fake.now
+  }
+  const band = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(),
+  })
+  expect((await band.findAll({ type: "Svg" })).length >= 3).toBe(true)
+  expect(reads).toBe(1)
+})
+
+test("desktop usage fades once across readings, resize, and temporary hiding", async ($, on) => {
+  const fake = fakeEngine(on)
+  await start($)
+  const band = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(),
+  })
+  const sources = async () =>
+    (await band.findAll({ type: "Svg" })).map((node) => String(node.props.source))
+  const initial = await sources()
+  expect(initial.length >= 3).toBe(true)
+  expect(initial.every((source) => source.includes("animation:usage-enter"))).toBe(true)
+  fake.now += 120
+  await measure($, [{ kind: "five_hour", percentUsed: 9 }])
+  expect((await sources()).some((source) => source.includes(" -120ms both"))).toBe(true)
+  fake.now += 120
+  await band.redraw(props(40))
+  expect((await sources()).some((source) => source.includes("animation:usage-enter"))).toBe(
+    false,
+  )
+  await band.redraw(props(40, 0, true))
+  expect(await sources()).toEqual([])
+  fake.now += 1000
+  await band.redraw(props())
+  expect((await sources()).some((source) => source.includes("animation:usage-enter"))).toBe(
+    false,
+  )
+  const steady = await sources()
+  await band.redraw()
+  expect(await sources()).toEqual(steady)
+  expect(fake.forbidden).toEqual([])
+})
+
+test("an initially hidden desktop starts its fade only when shown and session restart rearms it", async ($, on) => {
+  const fake = fakeEngine(on)
+  await start($)
+  const band = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(120, 0, true),
+  })
+  fake.now += 1000
+  await band.redraw(props())
+  const source = async () => String((await band.findAll({ type: "Svg" }))[0]?.props.source)
+  expect(await source()).toContain(" 0ms both")
+  fake.now += 1000
+  await band.redraw()
+  expect(await source()).not.toContain("animation:usage-enter")
+  await start($)
+  await band.redraw()
+  expect(await source()).toContain(" 0ms both")
+})
+
+test("unavailable desktop graphics fade before a reading arrives while terminal stays instant", async ($, on) => {
+  const fake = fakeEngine(on)
+  fake.rateLimits = []
+  await start($)
+  const band = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: props(),
+  })
+  const status = (await band.findAll({ type: "Svg" })).find((node) =>
+    String(node.props.alt).includes("Usage unavailable"),
+  )
+  expect(String(status?.props.source)).toContain("animation:usage-enter")
+  expect(await band.find({ key: "usage-refresh" })).toBeDefined()
+  fake.now += 100
+  await measure($, LIMITS)
+  const meters = (await band.findAll({ type: "Svg" })).filter((node) =>
+    String(node.props.alt).startsWith("5-hour:"),
+  )
+  expect(String(meters[0]?.props.source)).toContain(" -100ms both")
+  const terminal = await $.ui.mount({
+    plugin: PLUGIN,
+    surface: "terminal",
+    component: "AbovePrompt",
+    props: props(),
+  })
+  expect(JSON.stringify(await terminal.drawn())).not.toContain("usage-enter")
+})
+
 for (const mode of [undefined, "", "usage", "checks", "CHECKS", "debug", "invalid"]) {
   test(`release ignores development environment ${String(mode)} and rejects check/debug commands`, async ($, on) => {
     const fake = fakeEngine(on)

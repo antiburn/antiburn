@@ -76,6 +76,7 @@ import {
   type UsageSnapshot,
 } from "./usage";
 import { meterDescription } from "./usage-graphics";
+import { UsageEntrance } from "./usage-entrance";
 import {
   EntranceOwner,
   usageLayout,
@@ -481,6 +482,7 @@ let releaseOwnershipResolved = false;
 let startupNoticeEnabled = false;
 let startupNoticeSessionId: string | undefined;
 const usageEntrance = new EntranceOwner();
+const stripEntrance = new UsageEntrance();
 let usageMount: string | undefined;
 let usageRenderKey: string | undefined;
 let usageSources: string[] = [];
@@ -1054,14 +1056,17 @@ function renderUsageMark(
   );
 }
 
-function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
-  return renderUsageView(e, {
+async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
+  const generation = stripEntrance.generation;
+  let renderedAt = Number.NaN;
+  const drawing = await renderUsageView(e, {
     load: async (event) => {
       const ui = $.ui.resolve(event);
       const state = await read($, usage);
       usageLayoutVariant = state.layout === "current" ? "current" : "inline";
       const burnState = await read($, burn);
       const liveNow = await $.clock.now();
+      renderedAt = liveNow;
       return { ui, state, burnState, liveNow };
     },
     settle: settleUsagePresentation,
@@ -1217,6 +1222,9 @@ function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
     refreshPreview: (id) => selectUsagePreview($, id),
     reveal: (kind) => revealUsage($, kind),
   });
+  return e.surface === "desktop"
+    ? stripEntrance.render(drawing, "desktop", renderedAt, generation)
+    : drawing;
 }
 
 let tracker = new LiveChecks();
@@ -1901,6 +1909,7 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   });
 
   on("session.start", async ($, e, next) => {
+    stripEntrance.reset();
     releaseOwnsUsage = await detectReleaseUsage($);
     releaseOwnershipResolved = true;
     cancelUsageSequence();
@@ -1944,14 +1953,7 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
         previewReveal: undefined,
       }));
     }
-    usageEntrance.load(
-      sessionId !== undefined && priorUsage.presentationSessionId !== sessionId,
-    );
-    if (sessionId !== undefined)
-      await update($, usage, (current) => ({
-        ...current,
-        presentationSessionId: sessionId,
-      }));
+    usageEntrance.load(false);
     mode = liveMode(await $.env.get("ANTIBURN_LIVE_MODE"));
     invalidateSessionCheckReads();
     await clearDisabledChecks($);
@@ -2011,6 +2013,7 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   }).catch(($, e, next) => next(e));
 
   on("session.end", async ($, e, next) => {
+    stripEntrance.reset();
     hoverSites.clear();
     cancelUsageSequence();
     resetBurn();
@@ -2025,6 +2028,13 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
     }
     return next(e);
   }).catch(($, e, next) => next(e));
+
+  on("session.attach", async ($, e, next) => {
+    if (e.surface === "desktop") stripEntrance.reset();
+    const result = await next(e);
+    if (e.surface === "desktop") $.ui.invalidate("ui.render");
+    return result;
+  });
 
   on("session.detach", async ($, e, next) => {
     hoverSites.clear();
@@ -2062,6 +2072,12 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   }).catch(($, e, next) => next(e));
 
   on("command.run", async ($, e, next) => {
+    if (e.command === "reload-plugins") {
+      const result = await next(e);
+      stripEntrance.reset();
+      $.ui.invalidate("ui.render");
+      return result;
+    }
     if (e.command === "clear" || e.command === "resume") {
       const result = await next(e);
       await reconcileUsage($);

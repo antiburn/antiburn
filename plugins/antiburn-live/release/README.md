@@ -20,6 +20,12 @@ enabled mod runtime. Ordinary Claude chat and Cowork are outside this
 integration. Account readings depend on the host version, login type and policy;
 API-key sessions do not provide the authenticated account fallback.
 
+Desktop usage graphics fade in together over 240ms when first shown and after
+plugin reload, including the same session. Returning to a session rearms the fade. Reduced motion shortens the fade to
+80ms. Loading and unavailable graphics use the same entrance. Refreshing,
+resizing, or temporarily hiding the strip does not replay it. Terminal output
+appears immediately; controls remain available during the fade.
+
 Historical 0.2.1 native checks covered Claude Code 2.1.304 and Claude Desktop
 2.42304.2 on macOS. Those observations retain their original scope. The
 [validation record](https://github.com/antiburn/antiburn/blob/main/docs/plugins/validation.md)

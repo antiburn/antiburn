@@ -34,6 +34,7 @@ const SHARED_FILES = [
   'hooks/brand.ts',
   'hooks/usage.ts',
   'hooks/usage-presentation.ts',
+  'hooks/usage-entrance.ts',
   'hooks/usage-meter-graphics.ts',
   'hooks/usage-meter-band.tsx',
   'hooks/usage-font.ts',
@@ -462,6 +463,7 @@ export function assemble(root = ROOT, mode = 'release') {
       [`${SOURCE}/release/hooks/register.test.ts`, 'hooks/register.test.ts'],
       [`${SOURCE}/release/hooks/usage-graphics.test.ts`, 'hooks/usage-graphics.test.ts'],
       [`${SOURCE}/hooks/usage.test.ts`, 'hooks/usage.test.ts'],
+      [`${SOURCE}/hooks/usage-entrance.test.ts`, 'hooks/usage-entrance.test.ts'],
     ])
       files.set(target, containedFile(root, source))
     const tests = join(root, LOCAL, 'test')

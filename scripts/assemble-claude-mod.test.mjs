@@ -39,7 +39,7 @@ function temporary(t) {
 
 test('release allowlist is self-contained and preserves authoritative assets', () => {
   const files = releaseFiles(root)
-  assert.equal(files.size, 26)
+  assert.equal(files.size, 27)
   assert.equal(files.has('skills/help/SKILL.md'), false)
   const commands = files.get('hooks/commands.ts').toString()
   assert.doesNotMatch(commands, /command\.list|antiburn-plugin|antiburn-mod/)

@@ -2392,7 +2392,7 @@ for (const surface of ["desktop", "terminal"] as const) {
   })
 }
 
-test("desktop entrance has one bounded owner and newer data cancels delayed fill", async ($, on) => {
+test("desktop usage fades without a delayed fill and retains numeric updates", async ($, on) => {
   const fake = fakeEngine(on, ["desktop"])
   fake.liveMode = "usage"
   fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
@@ -2410,7 +2410,7 @@ test("desktop entrance has one bounded owner and newer data cancels delayed fill
         String(node.props.alt).startsWith("5-hour:"),
       )?.props.source,
     ),
-  ).toContain("animation:meter-in")
+  ).not.toContain("animation:meter-in")
   await $.session.measure({
     context: { window: 200000 },
     rateLimits: [{ kind: "five_hour", percentUsed: 9 }],
@@ -2422,7 +2422,8 @@ test("desktop entrance has one bounded owner and newer data cancels delayed fill
     )?.props.source,
   )
   expect(settled).not.toContain("animation:meter-in")
-  expect(settled).not.toContain('class="roll-old"')
+  expect(settled).toContain("animation:usage-enter")
+  expect(settled).toContain('class="roll-old"')
   await $.session.measure({
     context: { window: 200000 },
     rateLimits: [{ kind: "five_hour", percentUsed: 10 }],
@@ -2453,6 +2454,97 @@ test("desktop entrance has one bounded owner and newer data cancels delayed fill
       )?.props.source,
     ),
   ).not.toContain('class="roll-old"')
+})
+
+test("desktop first visibility fades unavailable content and reloading the same session rearms it", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  fake.liveMode = "usage"
+  fake.rateLimits = []
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: { ...stripProps(), hasSurvey: true },
+  })
+  fake.now += 1000
+  await band.redraw(stripProps())
+  const status = (await band.findAll({ type: "Svg" })).find((node) =>
+    String(node.props.alt).includes("Usage not available yet"),
+  )
+  expect(String(status?.props.source)).toContain("animation:usage-enter")
+  fake.now += 100
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [{ kind: "five_hour", percentUsed: 8 }],
+    changed: ["rateLimits"],
+  })
+  const sources = async () =>
+    (await band.findAll({ type: "Svg" })).map((node) => String(node.props.source))
+  expect((await sources()).some((source) => source.includes(" -100ms both"))).toBe(true)
+  fake.now += 1000
+  await band.redraw(stripProps(40))
+  expect((await sources()).some((source) => source.includes("animation:usage-enter"))).toBe(
+    false,
+  )
+  await band.redraw({ ...stripProps(), hasSurvey: true })
+  await band.redraw(stripProps())
+  expect((await sources()).some((source) => source.includes("animation:usage-enter"))).toBe(
+    false,
+  )
+  await startSession($)
+  await band.redraw()
+  expect((await sources()).every((source) => source.includes(" 0ms both"))).toBe(true)
+  expect(fake.presentationTimers).toEqual([])
+})
+
+test("returning to a desktop session rearms its entrance", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  on("session.attach", (_$, e) => ({ clientId: e.clientId }))
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: stripProps(),
+  })
+  fake.now += 1000
+  await band.redraw()
+  const source = async () => String((await band.findAll({ type: "Svg" }))[0]?.props.source)
+  expect(await source()).not.toContain("animation:usage-enter")
+  await $.session.attach({ surface: "desktop", clientId: "returning-desktop" })
+  expect(await source()).toContain(" 0ms both")
+  fake.now += 1000
+  await band.redraw()
+  await $.session.attach({ surface: "terminal", clientId: "terminal" })
+  expect(await source()).not.toContain("animation:usage-enter")
+})
+
+test("a host reload command rearms the desktop fade without reloading the module", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  on("command.run", () => ({ text: "reloaded" }))
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: stripProps(),
+  })
+  const source = async () => String((await band.findAll({ type: "Svg" }))[0]?.props.source)
+  const first = await source()
+  fake.now += 1000
+  await band.redraw()
+  expect(await source()).not.toContain("animation:usage-enter")
+  await $.command.run({
+    command: "reload-plugins",
+    args: "--force",
+    origin: { kind: "composer" },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(await source()).toContain(" 0ms both")
+  expect(await source()).not.toBe(first)
 })
 
 test("terminal fallback schedules no presentation timers", async ($, on) => {
@@ -2491,7 +2583,7 @@ test("completed desktop entrance permits the next numeric roll without scheduled
         String(node.props.alt).startsWith("5-hour:"),
       )?.props.source,
     )
-  expect(await source()).toContain("animation:meter-in")
+  expect(await source()).not.toContain("animation:meter-in")
   fake.now += 960
   await $.session.measure({
     context: { window: 200000 },
@@ -2749,8 +2841,10 @@ test("desktop meter data stays outside the interactive frame and duplicate measu
     (await band.findAll({ type: "Svg" })).find((node) =>
       String(node.props.alt).startsWith("5-hour:"),
     )!
+  expect((await source()).props.isInteractive).not.toBe(true)
+  fake.now += 240
+  await band.redraw()
   const initial = await source()
-  expect(initial.props.isInteractive).not.toBe(true)
   fake.now += 1000
   await $.session.measure({
     context: { window: 200000 },
@@ -3667,7 +3761,7 @@ if (BURN_ANIMATION_ENABLED) {
   })
 }
 
-test("a reading that interrupts entrance settles the mark as well as the meters", async ($, on) => {
+test("a reading during entrance keeps the mark on its original fade", async ($, on) => {
   const fake = fakeEngine(on, ["desktop"])
   fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
   await startSession($)
@@ -3679,14 +3773,16 @@ test("a reading that interrupts entrance settles the mark as well as the meters"
   })
   const base = async () =>
     (await band.findAll({ type: "Svg" })).find((node) => node.props.alt === "antiburn")!
-  expect(String((await base()).props.source)).toContain("animation:mark-in")
+  const first = String((await base()).props.source)
+  expect(first).toContain("animation:usage-enter")
+  expect(first).not.toContain("animation:mark-in")
   fake.now += 120
   await $.session.measure({
     context: { window: 200000 },
     rateLimits: [{ kind: "five_hour", percentUsed: 9 }],
     changed: ["rateLimits"],
   })
-  expect(String((await base()).props.source)).not.toContain("animation:mark-in")
+  expect(String((await base()).props.source)).toBe(first)
 })
 
 test("entrance replay is available on live data and repeated presses produce fresh animations", async ($, on) => {

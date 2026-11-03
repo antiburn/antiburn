@@ -6,6 +6,7 @@ import {
 import type { EngineInterface, On, Register, RenderInput, SessionAuthorization } from "claude-code"
 import type { UsageState } from "../types"
 import { APP_URL } from "./brand"
+import { UsageEntrance } from "./usage-entrance"
 import { retryAfterTime, type AccountUsageResult } from "./account-usage"
 import {
   filledDotCount,
@@ -53,6 +54,7 @@ const usage = atom(
   } as UsageState,
 )
 const usageOrder = new UsageOrder()
+const stripEntrance = new UsageEntrance()
 const hoverSites = new Map<string, { shape: string; binding: string }>()
 const hoverMount = Math.random().toString(36).slice(2)
 let hoverRevision = 0
@@ -395,6 +397,21 @@ async function openTerminalWebsite($: EngineInterface): Promise<void> {
 }
 
 async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
+  const generation = stripEntrance.generation
+  let renderedAt = Number.NaN
+  const drawing = await renderUsageContent($, e, (now) => {
+    renderedAt = now
+  })
+  return e.surface === "desktop"
+    ? stripEntrance.render(drawing, "desktop", renderedAt, generation)
+    : drawing
+}
+
+async function renderUsageContent(
+  $: EngineInterface,
+  e: RenderInput<"AbovePrompt">,
+  recordTime: (now: number) => void,
+) {
   const generation = uiGeneration
   if (visibleSites.size >= 8 && !visibleSites.has(e.requestId))
     visibleSites.delete(visibleSites.values().next().value!)
@@ -406,6 +423,7 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
   const { Box, Text, Button, Link } = ui
   const state = await read($, usage)
   const now = await $.clock.now()
+  recordTime(now)
   const snapshot = state.snapshot
   const windows = PRIMARY_WINDOWS.map((kind) => primaryWindow(snapshot, kind))
   const columns = Math.max(1, Math.min(4096, e.props.bodyColumns))
@@ -906,6 +924,7 @@ export async function requestUsage($: EngineInterface): Promise<void> {
 }
 
 export async function startQuota($: EngineInterface): Promise<void> {
+  stripEntrance.reset()
   desktopAttached = false
   needsUsageReconciliation = false
   try {
@@ -917,6 +936,7 @@ export async function startQuota($: EngineInterface): Promise<void> {
 }
 
 export async function endQuota($: EngineInterface, reason: string): Promise<void> {
+  stripEntrance.reset()
   try {
     await resetUsage($)
   } catch {
@@ -984,6 +1004,12 @@ export function registerCommands(on: On, usageUiEnabled: boolean) {
   })
 
   on("command.run", async ($, e, next) => {
+    if (e.command === "reload-plugins") {
+      const result = await next(e)
+      stripEntrance.reset()
+      $.ui.invalidate("ui.render")
+      return result
+    }
     if (e.command === "clear" || e.command === "resume") {
       const result = await next(e)
       await reconcileQuota($)
@@ -1027,10 +1053,12 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
   })
 
   on("session.attach", async ($, e, next) => {
+    if (e.surface === "desktop") stripEntrance.reset()
     const state = accountState
     const result = await next(e)
     if (e.surface === "desktop" && state === accountState) {
       desktopAttached = true
+      $.ui.invalidate("ui.render")
       if (uiEnabled) await readUsage($)
     }
     return result
