@@ -1,0 +1,52 @@
+{
+  "source": "https://github.com/TeamCadence/cadence-app",
+  "revision": "6d9f984a6274c227590184713d79a920837fcb5e",
+  "directory": "public/images/icons",
+  "license": "LicenseRef-Trademark",
+  "sha256": {
+    "light/amp.svg": "1d29ec1c4e36a67b822537de186b43e24880e8f4c69f167698dfcd5c33623d15",
+    "light/antigravity.svg": "074e5dc6346b4bac921942571b7ecd8b4ce394634da556555745ce088be54a56",
+    "light/claude.svg": "449735ef8dd57fa8c3d5bbc9f8d683402e03c2c4fa5293274a5e6db97cdfb1a3",
+    "light/cline.svg": "0aa9dce08a1da99c4fc1137a9fffa49dd000c42fc7328801d6afcf96d574f8ed",
+    "light/codex.svg": "22df96f4f6d0147ca878a37221b96c244ad8c2adf68a51f8b99e831d4ff22479",
+    "light/copilot.svg": "5fe3d3a8dc18a9f04918b466e463517d152933311943301ab78ed88fd11fa465",
+    "light/cursor.svg": "4f2fe53f64b7b313b075f2a752bc2e1c232e429c33ec95879f1a102774b6003e",
+    "light/kiro.svg": "774cbc1c7ecec8c935a6091595583d7a92fc8289d6f1db3f071c0f50c61c369f",
+    "light/opencode.svg": "d331bcaf7655f182efcf60e8cb8f8f0b8d297f06571531ca28f794968fb76f04",
+    "light/pi.svg": "abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b",
+    "light/windsurf.svg": "010b2e9e9d4a48adc18ee53beeaf6ed341aaa7d7d0ad8a4af3e095e545f70a73",
+    "dark/amp.svg": "569a48840bb0d4166ea95784b718c8d2496d4ebf8de1e1a93e544aef08b86b4e",
+    "dark/antigravity.svg": "074e5dc6346b4bac921942571b7ecd8b4ce394634da556555745ce088be54a56",
+    "dark/claude.svg": "449735ef8dd57fa8c3d5bbc9f8d683402e03c2c4fa5293274a5e6db97cdfb1a3",
+    "dark/cline.svg": "ea0328ab523ec6befb634bd6e0f878474a90d3a49b66193795457bc5b054dfd2",
+    "dark/codex.svg": "36e9ee7e0170f8be0256dd3637cb9b0393813512cba406ca56a70591f7c21006",
+    "dark/copilot.svg": "ef452b884f01a8fe6b5fc167d50640f08c4db4eab3a2321a8c03fc86350f9639",
+    "dark/cursor.svg": "4662af95535dec9a65112f0afbe43714d6356fcfd0e7473c0fa3b9c4c1a0cac2",
+    "dark/kiro.svg": "774cbc1c7ecec8c935a6091595583d7a92fc8289d6f1db3f071c0f50c61c369f",
+    "dark/opencode.svg": "032be40f5fe27bfbcb55711d656504666fad6f1a7eebf53125e2a50c0729558a",
+    "dark/pi.svg": "abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b",
+    "dark/windsurf.svg": "7cec1b10fc7c3317761b623753f96c888bb12cc23dad785a42a5c581156478bc"
+  },
+  "officialOverrides": {
+    "kiro": {
+      "source": "https://kiro.dev/icon.svg?fe599162bb293ea0",
+      "sha256": "774cbc1c7ecec8c935a6091595583d7a92fc8289d6f1db3f071c0f50c61c369f",
+      "checked": "2026-11-02"
+    },
+    "windsurf": {
+      "source": "https://devin.ai/assets/brand/logos/devin/symbol-light.svg",
+      "sha256": "010b2e9e9d4a48adc18ee53beeaf6ed341aaa7d7d0ad8a4af3e095e545f70a73",
+      "originalSha256": "4c2324a27f3d9848973c945b37d72c89831622c8765ecfbd8891ae3bb8fc9222",
+      "darkSource": "https://devin.ai/assets/brand/logos/devin/symbol-dark.svg",
+      "darkSha256": "7cec1b10fc7c3317761b623753f96c888bb12cc23dad785a42a5c581156478bc",
+      "originalDarkSha256": "ccc076ec6d201abbed6d7531a2ad2f20bf72dbb4a19fca65340590a49970a248",
+      "adaptation": "Remove the background rectangle.",
+      "checked": "2026-11-03"
+    },
+    "pi": {
+      "source": "https://pi.dev/logo-auto.svg",
+      "sha256": "abd66e7868b2d24f0f0895f9237ee8a6dcb22337583b0dc54aeb595acecb4d6b",
+      "checked": "2026-11-03"
+    }
+  }
+}
