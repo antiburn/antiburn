@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.7 — Desktop entrance and compact mod spacing
+
+- Fade Desktop usage graphics together on session entry and plugin reload.
+- Shorten the fade with reduced motion and retain immediate Terminal output.
+- Keep stacked mod strips compact while preserving independent plugin ordering and controls.
+- Remove the unused Terminal wordmark row and internal checks/usage divider.
+- Preserve responsive meter geometry, quota behavior and the embedded 0.2.1 shared core.
+
 ## 0.2.6 — responsive meters and anchored hover details
 
 - Share responsive Desktop meter geometry between the public and development builds.

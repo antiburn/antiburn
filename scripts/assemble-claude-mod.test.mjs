@@ -60,7 +60,7 @@ test('release allowlist is self-contained and preserves authoritative assets', (
     )
   const manifest = JSON.parse(files.get('.claude-plugin/plugin.json'))
   assert.equal(manifest.name, 'antiburn')
-  assert.equal(manifest.version, '0.2.6')
+  assert.equal(manifest.version, '0.2.7')
   assert.equal(manifest.types, undefined)
   assert.equal(manifest.icon, './assets/icon.png')
   assert.equal(
