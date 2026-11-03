@@ -294,6 +294,8 @@ antiburn-local = { path = "../../../crates/antiburn-local", features = [
 ] }
 # Synthetic agent stores for the scan-pipeline tests.
 tempfile = "3"
+# Capture structured local diagnostics without installing a process subscriber.
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 # `tokio::time::pause`/`advance`, for the watcher's debounce tests
 # (`src/scan/watch.rs`). Test builds only: this feature never reaches the
 # release binary.
