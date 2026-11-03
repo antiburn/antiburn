@@ -8,11 +8,48 @@
 use std::sync::Mutex;
 
 use serde_json::Value;
+#[cfg(target_os = "macos")]
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::provider_usage::live::model::Detection;
 
 use super::claude_touch;
+
+#[cfg(target_os = "macos")]
+const DEFAULT_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+/// Select the service from the raw CLI configuration bytes. Do not normalize
+/// the path: the selected hash scheme depends on the exact environment value.
+#[cfg(all(target_os = "macos", test))]
+pub(super) fn keychain_service_for(config_dir: Option<&str>) -> String {
+    keychain_service_for_bytes(config_dir.map(str::as_bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_service_for_bytes(config_dir: Option<&[u8]>) -> String {
+    match config_dir.filter(|value| !value.is_empty()) {
+        Some(config_dir) => {
+            let digest = Sha256::digest(config_dir);
+            format!(
+                "{DEFAULT_KEYCHAIN_SERVICE}-{:02x}{:02x}{:02x}{:02x}",
+                digest[0], digest[1], digest[2], digest[3]
+            )
+        }
+        None => DEFAULT_KEYCHAIN_SERVICE.to_owned(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn keychain_service() -> String {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    keychain_service_for_bytes(
+        std::env::var_os("CLAUDE_CONFIG_DIR")
+            .as_deref()
+            .map(std::ffi::OsStr::as_bytes),
+    )
+}
 
 /// The credentials file is a small, purpose-built OAuth token store, not a
 /// general state file — cap the read defensively rather than trust that.
@@ -185,8 +222,6 @@ pub(super) mod macos_keychain {
     /// wherever it lives, not a reason to trust an unbounded read.
     const MAX_BYTES: usize = super::MAX_CREDENTIAL_BYTES as usize;
 
-    const SERVICE_NAME: &str = "Claude Code-credentials";
-
     /// The exit code `security find-generic-password` returns when the named
     /// item does not exist in the keychain — `errSecItemNotFound`.
     const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
@@ -219,8 +254,8 @@ pub(super) mod macos_keychain {
     /// Reads one Keychain item. See [`KeychainRead`] for what each outcome
     /// means. Every outcome is logged once, with the `security` exit code
     /// when the process reported one. The log never contains the secret.
-    pub fn read() -> KeychainRead {
-        let (read, exit_code) = read_with_exit_code();
+    pub fn read(service: &str) -> KeychainRead {
+        let (read, exit_code) = read_with_exit_code(service);
         ::tracing::debug!(
             event = "claude_keychain_read",
             outcome = read.outcome(),
@@ -229,9 +264,8 @@ pub(super) mod macos_keychain {
         read
     }
 
-    fn read_with_exit_code() -> (KeychainRead, Option<i32>) {
-        let mut child = match antiburn_local::platform::process::headless_std_command("security")
-            .args(["find-generic-password", "-s", SERVICE_NAME, "-w"])
+    fn read_with_exit_code(service: &str) -> (KeychainRead, Option<i32>) {
+        let mut child = match secret_command(service)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -290,6 +324,12 @@ pub(super) mod macos_keychain {
         (read, status.code())
     }
 
+    fn secret_command(service: &str) -> std::process::Command {
+        let mut command = antiburn_local::platform::process::headless_std_command("security");
+        command.args(["find-generic-password", "-s", service, "-w"]);
+        command
+    }
+
     /// Whether a nonzero exit from `security find-generic-password` means
     /// "item not found" or something this carrier could not diagnose.
     ///
@@ -307,6 +347,21 @@ pub(super) mod macos_keychain {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn secret_command_selects_only_the_requested_service() {
+            for service in [
+                super::super::DEFAULT_KEYCHAIN_SERVICE,
+                "Claude Code-credentials-6abacc42",
+            ] {
+                let command = secret_command(service);
+                assert_eq!(command.get_program(), "security");
+                assert_eq!(
+                    command.get_args().collect::<Vec<_>>(),
+                    ["find-generic-password", "-s", service, "-w"]
+                );
+            }
+        }
 
         #[test]
         fn item_not_found_reads_as_absent() {
@@ -520,6 +575,26 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_service_uses_raw_config_dir_only_when_nonempty() {
+        assert_eq!(keychain_service_for(None), DEFAULT_KEYCHAIN_SERVICE);
+        assert_eq!(keychain_service_for(Some("")), DEFAULT_KEYCHAIN_SERVICE);
+        assert_eq!(
+            keychain_service_for(Some("/Users/avery/.claude-work")),
+            "Claude Code-credentials-6abacc42"
+        );
+        assert_ne!(
+            keychain_service_for(Some("/Users/avery/.claude-work/")),
+            keychain_service_for(Some("/Users/avery/.claude-work"))
+        );
+        assert_ne!(keychain_service_for(Some(" ")), DEFAULT_KEYCHAIN_SERVICE);
+        assert_ne!(
+            keychain_service_for_bytes(Some(b"\xff")),
+            DEFAULT_KEYCHAIN_SERVICE
+        );
+    }
 
     /// The Keychain and the file carrier hold the identical JSON shape, so
     /// this exercises `parse_credentials_json` directly against a synthetic

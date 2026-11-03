@@ -196,8 +196,20 @@ To test without Pi's logins, start a debug build with
 for Claude and Codex, and logs `pi_auth_ignored`. Release builds ignore the
 variable.
 
-Each Claude check first reads the Keychain item's attributes, which raises no
-prompt. The secret is read when the item's change marker (an attribute hash)
+On macOS, Claude Code uses the Keychain service `Claude Code-credentials` when
+`CLAUDE_CONFIG_DIR` is unset or empty. For a nonempty value, antiburn selects
+`Claude Code-credentials-` plus the first eight lowercase hex digits of the
+SHA-256 hash of the **raw** environment string. It does not resolve or
+normalize the path and does not try the plain service if the hashed item is
+absent. For example, `/Users/avery/.claude-work` selects
+`Claude Code-credentials-6abacc42`. This is a single service, not multi-profile
+discovery. The installed app must inherit `CLAUDE_CONFIG_DIR`; a Finder launch
+does not automatically inherit the terminal's shell environment. A mismatch
+can look like a missing login. The non-ASCII behavior of Claude's service hash
+is not verified here; this implementation hashes the UTF-8 bytes of the value.
+
+Each Claude check first reads the selected Keychain item's attributes. This
+raises no prompt. The secret is read when the item's change marker (an attribute hash)
 changes or a failed-read backoff expires. Background checks reread a changed
 item after an earlier successful secret read, so macOS can ask for Keychain
 access again. A first secret read waits for a reader-started check. The
@@ -208,9 +220,9 @@ one. The `warn` event `claude_keychain_metadata_failed` means that the
 attribute read failed after all retries (`attempts` is the count); the check
 then keeps the cached login and does not read the secret. The `warn` event
 `claude_keychain_secret_missing` means that the secret read found no
-`Claude Code-credentials` item but the attribute read found it. The meter then
-shows a Keychain read failure, unless another credential carrier returns a
-reading. A failed secret read blocks another read at the same marker for 15
+selected Claude Code credentials item but the attribute read found it. The
+meter then shows a Keychain read failure, unless another credential carrier
+returns a reading. A failed secret read blocks another read at the same marker for 15
 minutes. After the backoff, any check can retry it; a changed marker can be
 read sooner. When no carrier holds a Claude login but the Claude Code
 config folder or CLI exists, the check reports `NotSignedIn`, so the meter

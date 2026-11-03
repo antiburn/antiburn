@@ -7,7 +7,8 @@
 //!
 //! - **The macOS Keychain**, first, on macOS only — the same generic-password
 //!   item the CLI itself reads and writes, service name
-//!   `"Claude Code-credentials"`. Read by spawning `security
+//!   `"Claude Code-credentials"` by default or its config-directory hash.
+//!   Read by spawning `security
 //!   find-generic-password`, exactly as if the reader had typed it
 //!   themselves — the operating system applies the same access control to
 //!   that subprocess as it would to the reader's own terminal; see
@@ -159,7 +160,7 @@ use super::claude_login::{
 #[cfg(test)]
 use super::claude_login::{CachedState, NoCachedLogins};
 #[cfg(target_os = "macos")]
-use super::claude_login::{KeychainMarker, macos_keychain};
+use super::claude_login::{KeychainMarker, keychain_service, macos_keychain};
 use super::claude_touch;
 use super::cooldown::{self, Cooldown, FetchFailure};
 use super::http;
@@ -218,10 +219,6 @@ pub fn default_credentials_path() -> Option<PathBuf> {
     Some(dir.join(".credentials.json"))
 }
 
-/// The Keychain item the Claude CLI keeps its login in.
-#[cfg(target_os = "macos")]
-const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
-
 /// The CLI's own executable name. See [`super::cli_locator`] for where it is searched.
 const BINARY: &str = "claude";
 
@@ -240,6 +237,7 @@ fn detect_presence(
     credentials_path: Option<&Path>,
     pi_auth_path: Option<&Path>,
     pi_status: impl FnOnce() -> PiStatus,
+    #[cfg(target_os = "macos")] keychain_service: &str,
 ) -> Presence {
     let Some(credentials_path) = credentials_path else {
         return Presence::UNKNOWN;
@@ -254,7 +252,7 @@ fn detect_presence(
         Err(_) => return Presence::UNKNOWN,
     }
     #[cfg(target_os = "macos")]
-    match probe.keychain_metadata(KEYCHAIN_SERVICE, None) {
+    match probe.keychain_metadata(keychain_service, None) {
         KeychainMetadata::Found(_) => {
             if let Some(detection) = cached.keychain().detection() {
                 return Presence::via(detection, LoginCarrier::ClaudeKeychain);
@@ -427,6 +425,8 @@ pub struct ClaudeDirectFetch {
     /// to hold. Unused, and absent from the struct, on every other platform.
     #[cfg(target_os = "macos")]
     try_keychain: bool,
+    #[cfg(target_os = "macos")]
+    keychain_service: String,
     /// Where the Claude CLI's own cached usage reading lives. `None` means
     /// no cache is consulted — the ordinary state for a test that has no
     /// reason to exercise it, not a special mode.
@@ -526,18 +526,24 @@ struct LimitResetFetch {
 
 impl ClaudeDirectFetch {
     pub fn new() -> ClaudeDirectFetch {
+        #[cfg(target_os = "macos")]
+        let keychain_service = keychain_service();
         ClaudeDirectFetch {
             credentials_path: default_credentials_path(),
             pi_auth_path: pi_auth::default_auth_path(),
             claude_json_path: default_claude_json_path(),
             #[cfg(target_os = "macos")]
             try_keychain: true,
+            #[cfg(target_os = "macos")]
+            keychain_service: keychain_service.clone(),
             config_cache_path: claude_config_cache::default_config_path(),
             transport: Box::new(LiveAnthropicTransport::default()),
             cooldown: Cooldown::new(),
             pi_refresh: PiRefresher::new(),
             touch_env: Some(Arc::new(claude_touch::CliTouchEnvironment::new(
                 default_credentials_path(),
+                #[cfg(target_os = "macos")]
+                keychain_service,
             ))),
             touch_gate: claude_touch::TouchGate::new(),
             desktop_app: claude_desktop_locations(antiburn_local::paths::home_dir().as_deref()),
@@ -559,6 +565,8 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            #[cfg(target_os = "macos")]
+            keychain_service: "Claude Code-credentials".into(),
             config_cache_path: None,
             transport: Box::new(LiveAnthropicTransport::default()),
             cooldown: Cooldown::new(),
@@ -588,6 +596,8 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            #[cfg(target_os = "macos")]
+            keychain_service: "Claude Code-credentials".into(),
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
@@ -616,6 +626,8 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            #[cfg(target_os = "macos")]
+            keychain_service: "Claude Code-credentials".into(),
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
@@ -648,6 +660,8 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            #[cfg(target_os = "macos")]
+            keychain_service: "Claude Code-credentials".into(),
             config_cache_path: Some(config_cache_path),
             transport,
             cooldown: Cooldown::new(),
@@ -675,6 +689,8 @@ impl ClaudeDirectFetch {
             claude_json_path: None,
             #[cfg(target_os = "macos")]
             try_keychain: false,
+            #[cfg(target_os = "macos")]
+            keychain_service: "Claude Code-credentials".into(),
             config_cache_path: None,
             transport,
             cooldown: Cooldown::new(),
@@ -775,8 +791,8 @@ impl ClaudeDirectFetch {
         if self.try_keychain {
             let deadline = std::time::Instant::now() + Duration::from_millis(750);
             match self.read_keychain_login(
-                || claude_touch::keychain_metadata(deadline),
-                macos_keychain::read,
+                || claude_touch::keychain_metadata(&self.keychain_service, deadline),
+                || macos_keychain::read(&self.keychain_service),
                 &|delay| std::thread::sleep(delay),
                 user,
             ) {
@@ -1160,6 +1176,8 @@ impl LiveUsageSource for ClaudeDirectFetch {
                 (true, Some(path)) => self.pi_refresh.status(path, pi_auth::ANTHROPIC_KEY),
                 _ => PiStatus::Unknown,
             },
+            #[cfg(target_os = "macos")]
+            &self.keychain_service,
         );
         with_claude_desktop(presence, &probe, &self.desktop_app)
     }
@@ -1870,11 +1888,48 @@ mod tests {
             Some(Path::new(PRESENCE_CREDENTIALS)),
             Some(Path::new(PRESENCE_PI)),
             || PiStatus::Unknown,
+            #[cfg(target_os = "macos")]
+            "Claude Code-credentials",
         )
     }
 
     fn detected(probe: &impl PresenceProbe) -> Detection {
         presence(probe).detection
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detection_queries_the_selected_keychain_service() {
+        struct ServiceProbe<'a>(&'a str);
+        impl PresenceProbe for ServiceProbe<'_> {
+            fn path_exists(&self, _: &Path) -> Result<bool, std::io::Error> {
+                Ok(false)
+            }
+            fn keychain_metadata(&self, service: &str, account: Option<&str>) -> KeychainMetadata {
+                assert_eq!(service, self.0);
+                assert_eq!(account, None);
+                KeychainMetadata::Found(b"synthetic attributes".to_vec())
+            }
+            fn binary_present(&self, _: &str) -> bool {
+                false
+            }
+        }
+        for service in [
+            super::super::claude_login::keychain_service_for(None),
+            super::super::claude_login::keychain_service_for(Some("/Users/avery/.claude-work")),
+        ] {
+            assert_eq!(
+                detect_presence(
+                    &ServiceProbe(&service),
+                    &NoCachedLogins,
+                    Some(Path::new(PRESENCE_CREDENTIALS)),
+                    None,
+                    || PiStatus::Unknown,
+                    &service,
+                ),
+                Presence::via(Detection::SignedIn, LoginCarrier::ClaudeKeychain)
+            );
+        }
     }
 
     #[test]
@@ -1969,6 +2024,8 @@ mod tests {
                     Some(Path::new(PRESENCE_CREDENTIALS)),
                     Some(Path::new(PRESENCE_PI)),
                     || status,
+                    #[cfg(target_os = "macos")]
+                    "Claude Code-credentials",
                 ),
                 Presence::via(expected, LoginCarrier::Pi)
             );
@@ -1989,6 +2046,8 @@ mod tests {
                 asked.set(true);
                 PiStatus::Ready
             },
+            #[cfg(target_os = "macos")]
+            "Claude Code-credentials",
         );
         assert!(!asked.get());
 
@@ -2266,7 +2325,15 @@ mod tests {
     fn detection_keeps_an_unresolved_credentials_path_unknown() {
         let probe = RecordingPresence::default();
         assert_eq!(
-            detect_presence(&probe, &NoCachedLogins, None, None, || PiStatus::Ready),
+            detect_presence(
+                &probe,
+                &NoCachedLogins,
+                None,
+                None,
+                || PiStatus::Ready,
+                #[cfg(target_os = "macos")]
+                "Claude Code-credentials",
+            ),
             Presence::UNKNOWN
         );
         assert!(probe.calls.borrow().is_empty());

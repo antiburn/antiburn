@@ -500,6 +500,8 @@ pub struct CliTouchEnvironment {
     /// The `.credentials.json` carrier this environment fingerprints,
     /// matching the path the owning source reads.
     credentials_path: Option<std::path::PathBuf>,
+    #[cfg(target_os = "macos")]
+    keychain_service: String,
 }
 
 /// The binary the touch spawns — the CLI that owns the credential.
@@ -511,8 +513,30 @@ pub(super) const CLAUDE_BINARY: &str = "claude";
 const STATUS_DELAY: Duration = Duration::from_secs(3);
 
 impl CliTouchEnvironment {
-    pub fn new(credentials_path: Option<std::path::PathBuf>) -> CliTouchEnvironment {
-        CliTouchEnvironment { credentials_path }
+    pub fn new(
+        credentials_path: Option<std::path::PathBuf>,
+        #[cfg(target_os = "macos")] keychain_service: String,
+    ) -> CliTouchEnvironment {
+        CliTouchEnvironment {
+            credentials_path,
+            #[cfg(target_os = "macos")]
+            keychain_service,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl CliTouchEnvironment {
+    fn keychain_fingerprint(
+        &self,
+        deadline: Instant,
+        read: impl FnOnce(&str, Instant) -> Result<KeychainMetadata, u32>,
+    ) -> Option<String> {
+        match read(&self.keychain_service, deadline) {
+            Ok(KeychainMetadata::Found(text)) => Some(format!("keychain:{:016x}", hash(&text))),
+            Ok(KeychainMetadata::Absent) => Some("keychain:absent".to_owned()),
+            Ok(KeychainMetadata::Unreadable) | Err(_) => None,
+        }
     }
 }
 
@@ -525,13 +549,9 @@ impl TouchEnvironment for CliTouchEnvironment {
         let mut parts = Vec::new();
         let sleep = |delay| std::thread::sleep(delay);
         #[cfg(target_os = "macos")]
-        match keychain_metadata_with_retries_until(deadline, &sleep) {
-            Ok(KeychainMetadata::Found(text)) => {
-                parts.push(format!("keychain:{:016x}", hash(&text)));
-            }
-            Ok(KeychainMetadata::Absent) => parts.push("keychain:absent".to_owned()),
-            Ok(KeychainMetadata::Unreadable) | Err(_) => return None,
-        }
+        parts.push(self.keychain_fingerprint(deadline, |service, deadline| {
+            keychain_metadata_with_retries_until(service, deadline, &sleep)
+        })?);
         let file = self.credentials_path.as_deref().map(|path| {
             with_retries_until(deadline, &sleep, || match std::fs::read(path) {
                 Ok(bytes) => Some(Some(bytes)),
@@ -639,19 +659,20 @@ const KEYCHAIN_METADATA_TIMEOUT: Duration = Duration::from_millis(250);
 /// same bounded-subprocess shape as `anthropic_fetch::macos_keychain::read`:
 /// a reader thread, a hard deadline, and a kill on timeout.
 #[cfg(target_os = "macos")]
-pub(super) fn keychain_metadata(deadline: Instant) -> KeychainMetadata {
-    keychain_metadata_for_until("Claude Code-credentials", None, deadline)
+pub(super) fn keychain_metadata(service: &str, deadline: Instant) -> KeychainMetadata {
+    keychain_metadata_for_until(service, None, deadline)
 }
 
 /// Read the Claude item's attributes until `deadline`. `Ok` is never
 /// [`KeychainMetadata::Unreadable`]. `Err` holds the failed attempt count.
 #[cfg(target_os = "macos")]
 pub(super) fn keychain_metadata_with_retries_until(
+    service: &str,
     deadline: Instant,
     sleep: &dyn Fn(Duration),
 ) -> Result<KeychainMetadata, u32> {
     with_retries_until(deadline, sleep, || {
-        match keychain_metadata_for_until("Claude Code-credentials", None, deadline) {
+        match keychain_metadata_for_until(service, None, deadline) {
             KeychainMetadata::Unreadable => None,
             metadata => Some(metadata),
         }
@@ -822,6 +843,15 @@ mod tests {
                 vec!["find-generic-password", "-s", "Claude Code-credentials"],
             ),
             (
+                "Claude Code-credentials-6abacc42",
+                None,
+                vec![
+                    "find-generic-password",
+                    "-s",
+                    "Claude Code-credentials-6abacc42",
+                ],
+            ),
+            (
                 "gemini",
                 Some("antigravity"),
                 vec!["find-generic-password", "-s", "gemini", "-a", "antigravity"],
@@ -830,6 +860,32 @@ mod tests {
             let command = keychain_metadata_command(service, account);
             assert_eq!(command.get_program(), "security");
             assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cli_fingerprint_selects_the_configured_service() {
+        for service in [
+            "Claude Code-credentials",
+            "Claude Code-credentials-6abacc42",
+        ] {
+            let env = CliTouchEnvironment::new(None, service.to_owned());
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let part = env.keychain_fingerprint(deadline, |selected, received_deadline| {
+                assert_eq!(selected, service);
+                assert_eq!(received_deadline, deadline);
+                let command = keychain_metadata_command(selected, None);
+                assert_eq!(
+                    command.get_args().collect::<Vec<_>>(),
+                    ["find-generic-password", "-s", service]
+                );
+                Ok(KeychainMetadata::Found(b"synthetic attributes".to_vec()))
+            });
+            assert_eq!(
+                part,
+                Some(format!("keychain:{:016x}", hash(b"synthetic attributes")))
+            );
         }
     }
 
