@@ -7,6 +7,11 @@ session exposed. Existing persisted output from the reviewed Pi example extensio
 is a passive input. The OpenCode WSL discovery limits are recorded in
 `session-coverage.md`.
 
+Copilot, Cline, and Kiro file bundles use discovery fingerprints for evidence
+claim matching. Outdated claims stop before parsing or row writes. Separate
+read-time checks still apply; matching discovery fingerprints alone do not prove
+an unchanged database snapshot or expand finding and clean-result eligibility.
+
 See [`session-coverage.md`](session-coverage.md) for discovery, framing, parsing,
 companion-source, and provider-route coverage for the same source formats.
 

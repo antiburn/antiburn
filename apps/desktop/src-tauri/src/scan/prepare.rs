@@ -91,6 +91,7 @@ pub(super) async fn prepare_description(
                 )
             })
             .collect(),
+        false,
     )
     .await
     .expect("source identity preparation has no store writes");
@@ -123,7 +124,7 @@ pub(super) async fn prepare_description_with_read(
     include_non_repo_folders: bool,
     #[cfg(test)] hooks: Option<Arc<PreparationHooks>>,
 ) -> PreparedDescription {
-    let DescriptionLog { log, key, read } = description;
+    let log = description.log.clone();
     #[cfg(test)]
     if let Some(hooks) = &hooks {
         hooks.wait(&log, PreparationStage::Filter).await;
@@ -135,7 +136,10 @@ pub(super) async fn prepare_description_with_read(
             &log,
             previous.as_ref(),
             &children,
-            read.as_ref().and_then(|read| read.content.as_deref()),
+            description
+                .read
+                .as_ref()
+                .and_then(|read| read.content.as_deref()),
         )
         .await;
         if activity_source != "unknown" && updated_at_epoch.is_some_and(|at| at < cutoff) {
@@ -158,15 +162,14 @@ pub(super) async fn prepare_description_with_read(
     if let Some(hooks) = &hooks {
         hooks.wait(&log, PreparationStage::Title).await;
     }
-    let indexed_title = indexed_title_for_candidate(&log, &key.session_id).await;
+    let indexed_title = indexed_title_for_candidate(&log, &description.key.session_id).await;
     let (_, described, changed) = describe_candidate_with_read(
-        log.clone(),
+        description,
         home,
         previous.clone(),
         activity,
         indexed_title,
         Instant::now(),
-        read,
     )
     .await;
     let outcome = match described {

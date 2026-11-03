@@ -452,7 +452,10 @@ pub fn inline_source_fingerprint(content: &str) -> String {
     .fingerprint()
 }
 
-fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<String> {
+/// Fingerprint a file bundle with the same inputs that discovery uses.
+/// Return `None` for a source or format outside these bundle layouts.
+/// This fingerprint does not prove an unchanged database snapshot.
+pub fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<String> {
     let SessionSource::File(path) = source else {
         return None;
     };

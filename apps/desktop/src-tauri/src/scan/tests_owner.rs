@@ -5,6 +5,8 @@ use tokio::sync::Semaphore;
 
 #[path = "tests/live_admission.rs"]
 mod live_admission;
+#[path = "tests/source_refresh.rs"]
+mod source_refresh;
 
 fn fixture_log(home: &std::path::Path, id: &str) -> SessionLog {
     let project = home.join(".claude/projects/synthetic");
@@ -58,6 +60,7 @@ fn policy(home: &std::path::Path, hooks: Option<Arc<PreparationHooks>>) -> Owner
         include_non_repo_folders: true,
         progress: false,
         refresh_repositories: false,
+        refresh_file_sources: false,
         hooks,
     }
 }

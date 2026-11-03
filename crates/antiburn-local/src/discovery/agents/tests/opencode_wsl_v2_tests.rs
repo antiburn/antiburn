@@ -1545,7 +1545,7 @@ printf '[]\n'
             let args = format!("{:?}", command.as_std().get_args().collect::<Vec<_>>());
             assert!(!args.contains("secret"));
             assert_eq!(
-                run_command(command, password, 1024, Duration::from_secs(2), None)
+                run_command(command, password, 1024, CLI_TIMEOUT, None)
                     .await
                     .unwrap(),
                 b"{}"

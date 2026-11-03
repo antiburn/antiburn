@@ -1532,6 +1532,16 @@ reconciliation requeues old ready evidence when these identities differ. This
 repairs stale transcript evidence through native reindexing; it does not enroll
 historical YAML assessments.
 
+For ordinary file transcripts, evidence analysis rejects an outdated discovery
+claim before parsing records or reading resume state. Copilot, Cline, and Kiro
+file bundles also reject outdated claims before parsing. Bundle claim matching
+uses the same fingerprint as discovery. Separate read-time checks retain
+companion-file and WAL-visible database change detection where available.
+A source-change refresh rereads file identity even when the activity cursor is
+unchanged. Normal scans keep their unchanged-file fast path. Refresh still
+requires discovery and folder admission; it does not restore sessions from
+excluded or missing folders.
+
 ## Desktop Refresh
 
 The desktop watcher requests a scoped refresh when a native source changes.
