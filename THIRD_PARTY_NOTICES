@@ -545,7 +545,6 @@ mio@1.2.2 | MIT | https://github.com/tokio-rs/mio
 mio@1.2.4 | MIT | https://github.com/tokio-rs/mio
 moxcms@0.8.1 | BSD-3-Clause OR Apache-2.0 | https://github.com/awxkee/moxcms.git
 muda@0.20.0 | Apache-2.0 OR MIT | https://github.com/tauri-apps/muda
-muda@0.21.2 | Apache-2.0 OR MIT | https://github.com/tauri-apps/muda
 new_debug_unreachable@1.0.6 | MIT | https://github.com/mbrubeck/rust-debug-unreachable
 nix@0.28.0 | MIT | https://github.com/nix-rust/nix
 nix@0.31.3 | MIT | https://github.com/nix-rust/nix
@@ -7325,7 +7324,6 @@ Apache License
 
 Used by:
   muda@0.20.0
-  muda@0.21.2
   tray-icon@0.25.1
 
 MIT License
