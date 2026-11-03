@@ -51,7 +51,7 @@ toml = "1.1"
 # resumed pass writes one of these on every append, so JSON's re-expanded
 # field names and string values cost too many bytes.
 postcard = { version = "1", default-features = false, features = ["use-std"] }
-pulldown-cmark = { version = "0.13.5", default-features = false }
+pulldown-cmark = { version = "0.13.6", default-features = false }
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # Async runtime pieces used by local persistence and the bounded child-process
 # mechanism. Excludes `net`: nothing in the engine needs it yet, not that the

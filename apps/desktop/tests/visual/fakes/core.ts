@@ -402,6 +402,33 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return empty ? { ...allowanceUsage, accounts: [] } : allowanceUsage
     case "get_live_usage":
     case "refresh_live_usage":
+      if (new URLSearchParams(window.location.search).has("bars")) {
+        const params = new URLSearchParams(window.location.search)
+        const requested = Number(params.get("bars"))
+        const count = [1, 3, 6, 12].includes(requested) ? requested : 1
+        const vendors = [
+          { provider: "openai", displayName: "Codex", sourceLabel: "Codex account" },
+          { provider: "anthropic", displayName: "Claude", sourceLabel: "Claude Code" },
+          { provider: "google", displayName: "Gemini", sourceLabel: "Gemini CLI" },
+        ]
+        const windows = liveUsage.providers[0]!.windows
+        const providers = Array.from({ length: count }, (_, index) => {
+          const vendor = vendors[index % vendors.length]!
+          const window = windows[index % windows.length]!
+          const accountKey = `fixture-${vendor.provider}-${Math.floor(index / vendors.length)}`
+          return {
+            ...liveUsage.providers[0]!,
+            ...vendor,
+            accountKey,
+            windows: [{ ...window, id: `${window.id}-${accountKey}` }],
+          }
+        })
+        return {
+          ...liveUsage,
+          providers,
+          meters: vendors.map((vendor) => ({ ...vendor, shown: true })),
+        }
+      }
       if (state === "long" && new URLSearchParams(window.location.search).has("island")) {
         return {
           ...liveUsage,
@@ -575,13 +602,20 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
     window.__ANTIBURN_VISUAL_SETTINGS_CALLS__ ??= []
     window.__ANTIBURN_VISUAL_SETTINGS_CALLS__.push({ command, args })
   }
-  if (command === "tear_off_overlay" || command === "hud_drag_ended") {
+  if (
+    command === "tear_off_overlay" ||
+    command === "hud_drag_ended" ||
+    command === "expand_hud_island"
+  ) {
     window.__ANTIBURN_VISUAL_HUD_DRAGS__ ??= []
     window.__ANTIBURN_VISUAL_HUD_DRAGS__.push(command)
   }
   if (command === "resize_overlay_window") {
     window.__ANTIBURN_VISUAL_HUD_RESIZES__ ??= []
-    window.__ANTIBURN_VISUAL_HUD_RESIZES__.push(args ?? {})
+    window.__ANTIBURN_VISUAL_HUD_RESIZES__.push({
+      ...(args ?? {}),
+      bodyPresent: document.querySelector('[data-testid="island-body"]') !== null,
+    })
   }
   return dataFor(command, args) as T
 }

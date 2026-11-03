@@ -485,9 +485,12 @@ motion:
   # because Tailwind has no --duration-* theme namespace; consume one as
   # duration-[var(--duration-fast)]. The easing is @theme-registered, so it is
   # the `ease-out-quart` utility. Plain `ease-out` is the default elsewhere.
+  --duration-reduced-motion: 60ms # the reduced-motion opacity crossfade
   --duration-quick: 100ms # a crossfade that leads the movement it accompanies
   --duration-fast: 120ms # the default control, hover, and disclosure transition
   --duration-medium: 180ms # a paired visibility crossfade
+  --duration-hud-island: 200ms # the notch opening and corner transition
+  --duration-hud-island-close: 240ms # the notch retraction; opacity fades over the final duration-quick
   --duration-slow: 300ms # a meter or bar that fills
   --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
   # Recipes, for the timings the tokens above do not carry. Animation timings
@@ -1723,7 +1726,13 @@ is the notch row alone: a scale-aware wing either side of the notch, with its
 bottom corners at a 14px radius and 6px fillets curving out into the bezel
 (`.hud-island`, `.hud-island-fillets`). Expanded, the HUD content hangs
 below the row, the corners open to 24px and the fillets to 19px
-(`.hud-island-open`), over `duration-fast`. The window is the notch plus the
+(`.hud-island-open`), over `duration-hud-island` (200ms). The body reveals downward
+from the fixed header with a rounded inset clip, opacity, and a 4px upward starting
+offset. The clip uses the same 24px bottom radius as the body. Text stays at its
+full size as the lower edge unfolds. Closing retracts the clip over 240ms with
+`ease-out-quart`, slowing as its lower edge approaches the notch. The body remains
+opaque for the first 140ms, then fades over the final `duration-quick` (100ms). Under reduced
+motion, it uses `duration-reduced-motion` (60ms) for an opacity crossfade with no movement. Re-entry follows the visible CSS clip, so the hidden lower body cannot reopen the HUD. The window is the notch plus the
 wings plus a transparent gutter either side for the fillets. The left wing
 holds the live LED, blinking at the spend rate as the floating frame's LED
 does, and the right wing shows the spend rate as a four-character figure
