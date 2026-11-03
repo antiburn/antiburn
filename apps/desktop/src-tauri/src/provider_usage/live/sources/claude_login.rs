@@ -7,6 +7,8 @@
 
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
+use icu_normalizer::ComposingNormalizerBorrowed;
 use serde_json::Value;
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
@@ -19,18 +21,26 @@ use super::claude_touch;
 #[cfg(target_os = "macos")]
 const DEFAULT_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
-/// Select the service from the raw CLI configuration bytes. Do not normalize
-/// the path: the selected hash scheme depends on the exact environment value.
 #[cfg(all(target_os = "macos", test))]
 pub(super) fn keychain_service_for(config_dir: Option<&str>) -> String {
-    keychain_service_for_bytes(config_dir.map(str::as_bytes))
+    keychain_service_for_bytes(None, config_dir.map(str::as_bytes))
 }
 
+/// Select the Keychain service from the first defined override, even if empty.
+/// Normalize the text, not the path: slashes and whitespace remain significant.
 #[cfg(target_os = "macos")]
-fn keychain_service_for_bytes(config_dir: Option<&[u8]>) -> String {
-    match config_dir.filter(|value| !value.is_empty()) {
-        Some(config_dir) => {
-            let digest = Sha256::digest(config_dir);
+fn keychain_service_for_bytes(
+    secure_storage_dir: Option<&[u8]>,
+    config_dir: Option<&[u8]>,
+) -> String {
+    match secure_storage_dir
+        .or(config_dir)
+        .filter(|value| !value.is_empty())
+    {
+        Some(dir) => {
+            let text = String::from_utf8_lossy(dir);
+            let normalized = ComposingNormalizerBorrowed::new_nfc().normalize(&text);
+            let digest = Sha256::digest(normalized.as_bytes());
             format!(
                 "{DEFAULT_KEYCHAIN_SERVICE}-{:02x}{:02x}{:02x}{:02x}",
                 digest[0], digest[1], digest[2], digest[3]
@@ -44,10 +54,11 @@ fn keychain_service_for_bytes(config_dir: Option<&[u8]>) -> String {
 pub(super) fn keychain_service() -> String {
     use std::os::unix::ffi::OsStrExt as _;
 
+    let secure_storage_dir = std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR");
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
     keychain_service_for_bytes(
-        std::env::var_os("CLAUDE_CONFIG_DIR")
-            .as_deref()
-            .map(std::ffi::OsStr::as_bytes),
+        secure_storage_dir.as_deref().map(std::ffi::OsStr::as_bytes),
+        config_dir.as_deref().map(std::ffi::OsStr::as_bytes),
     )
 }
 
@@ -578,21 +589,53 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn keychain_service_uses_raw_config_dir_only_when_nonempty() {
-        assert_eq!(keychain_service_for(None), DEFAULT_KEYCHAIN_SERVICE);
-        assert_eq!(keychain_service_for(Some("")), DEFAULT_KEYCHAIN_SERVICE);
+    fn keychain_service_respects_defined_override_and_nfc_text() {
+        let select = |secure: Option<&str>, config: Option<&str>| {
+            keychain_service_for_bytes(secure.map(str::as_bytes), config.map(str::as_bytes))
+        };
+        assert_eq!(select(None, None), DEFAULT_KEYCHAIN_SERVICE);
+        assert_eq!(select(None, Some("")), DEFAULT_KEYCHAIN_SERVICE);
+        assert_eq!(select(Some(""), None), DEFAULT_KEYCHAIN_SERVICE);
         assert_eq!(
-            keychain_service_for(Some("/Users/avery/.claude-work")),
+            select(Some(""), Some("/Users/avery/.claude-work")),
+            DEFAULT_KEYCHAIN_SERVICE
+        );
+        assert_eq!(
+            select(None, Some("/Users/avery/.claude-work")),
             "Claude Code-credentials-6abacc42"
         );
-        assert_ne!(
-            keychain_service_for(Some("/Users/avery/.claude-work/")),
-            keychain_service_for(Some("/Users/avery/.claude-work"))
+        assert_eq!(
+            select(Some("profile"), Some("/Users/avery/.claude-work")),
+            select(Some("profile"), None)
         );
-        assert_ne!(keychain_service_for(Some(" ")), DEFAULT_KEYCHAIN_SERVICE);
         assert_ne!(
-            keychain_service_for_bytes(Some(b"\xff")),
-            DEFAULT_KEYCHAIN_SERVICE
+            select(Some("profile"), None),
+            select(None, Some("profile2"))
+        );
+        assert_ne!(
+            select(None, Some("/Users/avery/.claude-work/")),
+            select(None, Some("/Users/avery/.claude-work"))
+        );
+        assert_ne!(select(None, Some(" ")), DEFAULT_KEYCHAIN_SERVICE);
+        assert_ne!(
+            select(None, Some(" profile ")),
+            select(None, Some("profile"))
+        );
+        assert_eq!(
+            select(Some("café"), None),
+            select(Some("cafe\u{301}"), None)
+        );
+        assert_eq!(
+            select(None, Some("café")),
+            select(None, Some("cafe\u{301}"))
+        );
+        assert_eq!(
+            keychain_service_for_bytes(Some(b"\xff"), None),
+            select(Some("\u{fffd}"), None)
+        );
+        assert_eq!(
+            keychain_service_for_bytes(None, Some(b"\xff")),
+            select(None, Some("\u{fffd}"))
         );
     }
 

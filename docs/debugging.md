@@ -196,17 +196,21 @@ To test without Pi's logins, start a debug build with
 for Claude and Codex, and logs `pi_auth_ignored`. Release builds ignore the
 variable.
 
-On macOS, Claude Code uses the Keychain service `Claude Code-credentials` when
-`CLAUDE_CONFIG_DIR` is unset or empty. For a nonempty value, antiburn selects
+On macOS, Claude Code selects the Keychain service from
+`CLAUDE_SECURESTORAGE_CONFIG_DIR` when it is defined, even if it is empty.
+Otherwise, it uses `CLAUDE_CONFIG_DIR`. If the selected value is unset or empty,
+the service is `Claude Code-credentials`. For a nonempty value, antiburn selects
 `Claude Code-credentials-` plus the first eight lowercase hex digits of the
-SHA-256 hash of the **raw** environment string. It does not resolve or
-normalize the path and does not try the plain service if the hashed item is
-absent. For example, `/Users/avery/.claude-work` selects
-`Claude Code-credentials-6abacc42`. This is a single service, not multi-profile
-discovery. The installed app must inherit `CLAUDE_CONFIG_DIR`; a Finder launch
-does not automatically inherit the terminal's shell environment. A mismatch
-can look like a missing login. The non-ASCII behavior of Claude's service hash
-is not verified here; this implementation hashes the UTF-8 bytes of the value.
+SHA-256 hash of its NFC-normalized text. It does not resolve, trim, or
+normalize the path: a trailing slash or whitespace changes the service. It
+does not try the plain service if the hashed item is absent. For example,
+`/Users/avery/.claude-work` selects `Claude Code-credentials-6abacc42`.
+This is a single service, not multi-profile discovery. The installed app must
+inherit the relevant environment variables; a Finder launch does not
+automatically inherit the terminal's shell environment. A mismatch can look
+like a missing login. Invalid UTF-8 is converted with replacement characters
+before normalization as a best effort; Claude's Bun behavior for invalid
+bytes is not verified. The credentials file still uses `CLAUDE_CONFIG_DIR`.
 
 Each Claude check first reads the selected Keychain item's attributes. This
 raises no prompt. The secret is read when the item's change marker (an attribute hash)
