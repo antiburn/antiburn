@@ -106,11 +106,10 @@ impl SessionReader for KiroSessionReader {
 /// `{"_type":"metadata",…}` header and whose remaining lines are
 /// `{"role":"user"|"assistant"|"tool","content":…}` records.
 ///
-/// Crew logs record no per-turn token usage, so this emits model identity only
-/// (one assistant event per assistant record carrying the session model). Tool
-/// identity is not recoverable: a `role:"tool"` record is a tool *result* with
-/// no typed tool name, so no `ToolCall` is fabricated. Prompts, message bodies,
-/// and tool content are never retained.
+/// Crew logs provide no per-turn token usage. The reader emits only model
+/// identity for each assistant record. A `role:"tool"` record provides a tool
+/// result without a typed tool name, so the reader does not create a `ToolCall`.
+/// The reader does not retain prompts, message bodies, or tool content.
 fn visit_crew(input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result<VisitOutcome> {
     let RawSource::File(path) = &input.source else {
         anyhow::bail!("Kiro Crew source must be a single JSONL file");
@@ -146,8 +145,8 @@ fn visit_crew(input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result
                             .map(str::to_owned);
                         continue;
                     }
-                    // A Crew log always opens with its metadata header; without
-                    // one the session model is unknown, so the read is partial.
+                    // A Crew log starts with a metadata header. Without it, the
+                    // reader cannot identify the session model and marks the read partial.
                     invalid = true;
                     sink.record(crate::analysis::NormalizedRecord::Unusable(
                         PartialReason::MalformedRecord,
@@ -160,8 +159,8 @@ fn visit_crew(input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result
                         )));
                     }
                     Some(role) if CREW_NON_MODEL_ROLES.contains(&role) => {}
-                    // An unknown role (or no role) could be a model turn in a
-                    // newer shape; report it rather than dropping it silently.
+                    // A new or absent role can represent a model turn. Report it
+                    // instead of dropping it without notice.
                     _ => {
                         invalid = true;
                         sink.record(crate::analysis::NormalizedRecord::Unusable(
@@ -198,36 +197,11 @@ const CREW_NON_MODEL_ROLES: &[&str] = &[
     "mcp_oauth",
 ];
 
-/// One assistant turn in a Crew log, carrying model identity and no usage.
+/// Represent one Crew assistant turn with model identity and no usage.
 fn crew_assistant_event(model: Option<&str>) -> NormalizedEvent {
-    NormalizedEvent {
-        accounting: None,
-        ts_ms: None,
-        usage_ts_ms: None,
-        role: Role::Assistant,
-        source: Default::default(),
-        usage: Usage::default(),
-        tools: Vec::new(),
-        model: model.map(str::to_owned),
-        provider: None,
-        api: None,
-        thinking_mode: None,
-        speed: None,
-        has_thinking: false,
-        message_id: None,
-        is_compaction_boundary: false,
-        compaction_trigger: None,
-        compaction_pre_tokens: None,
-        compaction_post_tokens: None,
-        wrapper_tool: None,
-        may_resolve_late_tool: false,
-        late_tool_candidate_is_builtin: false,
-        uuid: None,
-        parent_uuid: None,
-        logical_parent_uuid: None,
-        thread_id: None,
-        proven_subagent_launches: None,
-    }
+    let mut event = NormalizedEvent::new(Role::Assistant);
+    event.model = model.map(str::to_owned);
+    event
 }
 
 fn observe_turn_usage(metadata: &Value, default_model: Option<&str>, sink: &mut dyn RecordSink) {

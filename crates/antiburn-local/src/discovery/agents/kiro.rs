@@ -7,8 +7,8 @@
 //! - `~/.kiro/sessions/<workspace>/sess_<uuid>/session.json` plus `messages.jsonl` (CLI V3)
 //! - `~/.kiro/crew/sessions/<name>.jsonl` (Kiro Crew autonomous layer)
 //!
-//! Every surface reports as the single `kiro` agent; the IDE, CLI, and Crew
-//! front-ends are not differentiated.
+//! The app reports every surface as the single `kiro` agent. It does not
+//! distinguish the IDE, CLI, and Crew front ends.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -276,12 +276,12 @@ fn kiro_crew_sessions_root_in(home: &Path) -> PathBuf {
     home.join(".kiro").join("crew").join("sessions")
 }
 
-/// A Kiro Crew session log: a `.jsonl` directly under `~/.kiro/crew/sessions/`.
+/// Kiro Crew writes each session `.jsonl` directly under `~/.kiro/crew/sessions/`.
 ///
 /// The directory also holds cron worker logs (`cron_*.jsonl`), lock files, and
-/// an `.index/` subtree; none of those are user-facing sessions, so they are
-/// skipped. A `.jsonl.lock` has a `jsonl` *stem* extension, so the extension
-/// check alone is not enough — the full file name must end in `.jsonl`.
+/// an `.index/` subtree. The scanner skips them because they are not user
+/// sessions. A `.jsonl.lock` has a `jsonl` stem extension, so the scanner
+/// checks that the full file name ends in `.jsonl`.
 fn is_kiro_crew_session_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;

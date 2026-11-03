@@ -1142,7 +1142,8 @@ fn is_kiro_crew_session_path(path: &std::path::Path) -> bool {
     if !name.ends_with(".jsonl") || name.starts_with("cron_") || name.starts_with('.') {
         return false;
     }
-    normalized_path(path).contains("/.kiro/crew/sessions/")
+    path.parent()
+        .is_some_and(|parent| normalized_path(parent).ends_with("/.kiro/crew/sessions/"))
 }
 
 fn is_uuid(value: &str) -> bool {
