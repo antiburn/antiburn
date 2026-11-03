@@ -178,6 +178,7 @@ fn legacy_source_format(value: &str) -> Option<SourceFormat> {
         "KiroCliV2Bundle" => SourceFormat::KiroCliV2Bundle,
         "KiroCliV3Bundle" => SourceFormat::KiroCliV3Bundle,
         "KiroChatSaveExport" => SourceFormat::KiroChatSaveExport,
+        "KiroCrewJsonl" => SourceFormat::KiroCrewJsonl,
         "AmpThreadJson" => SourceFormat::AmpThreadJson,
         "AmpFileChanges" => SourceFormat::AmpFileChanges,
         "WindsurfWorkspaceJson" => SourceFormat::WindsurfWorkspaceJson,
