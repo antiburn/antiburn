@@ -67,15 +67,17 @@ import { TOUR } from "./tour";
 import {
   normalizeUsage,
   pace,
-  percentage,
   primaryWindow,
-  resetText,
   usageFailure,
   UsageOrder,
   PRIMARY_WINDOWS,
   type UsageSnapshot,
 } from "./usage";
-import { meterDescription } from "./usage-graphics";
+import {
+  sameUsagePresentation,
+  usagePercentagesChanged,
+  usageReplyText,
+} from "./register-usage-state";
 import { UsageEntrance } from "./usage-entrance";
 import {
   abovePromptGap,
@@ -566,20 +568,7 @@ async function commitUsage(
     );
     return;
   }
-  if (
-    previousUsage?.status === snapshot.status &&
-    JSON.stringify(previousUsage.windows) ===
-      JSON.stringify(snapshot.windows) &&
-    PRIMARY_WINDOWS.every((kind) => {
-      const window = primaryWindow(snapshot, kind);
-      return (
-        resetText(window, previousUsage!.capturedAt) ===
-          resetText(window, snapshot.capturedAt) &&
-        pace(window, previousUsage!.capturedAt) ===
-          pace(window, snapshot.capturedAt)
-      );
-    })
-  ) {
+  if (sameUsagePresentation(previousUsage, snapshot)) {
     await update($, usage, (current) =>
       usageOrder.isCurrent(ticket)
         ? {
@@ -595,16 +584,7 @@ async function commitUsage(
   if (wasEntering) cancelUsagePresentation();
   else if (usageEntrance.state.phase === "consumed") {
     cancelUsagePresentation();
-    if (
-      previousUsage !== undefined &&
-      snapshot.status === "ready" &&
-      previousUsage.status === "ready" &&
-      PRIMARY_WINDOWS.some(
-        (kind) =>
-          percentage(primaryWindow(previousUsage!, kind)) !==
-          percentage(primaryWindow(snapshot, kind)),
-      )
-    ) {
+    if (usagePercentagesChanged(previousUsage, snapshot)) {
       usageRoll = { previous: previousUsage, startedAt: snapshot.capturedAt };
     }
   }
@@ -1931,13 +1911,7 @@ async function usageReply(
   if (explicitRead) await readUsage($, true);
   const state = await read($, usage);
   const now = await $.clock.now();
-  if (!state.snapshot.windows.some((window) => window.percent !== null))
-    return state.snapshot.status === "error"
-      ? "Usage is unavailable."
-      : "Usage has not been reported yet.";
-  return PRIMARY_WINDOWS.map((kind) =>
-    meterDescription(primaryWindow(state.snapshot, kind), now),
-  ).join("\n");
+  return usageReplyText(state.snapshot, now);
 }
 
 export const register: Register = (on, options: DevRegisterOptions = {}) => {
