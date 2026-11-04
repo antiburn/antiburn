@@ -4,7 +4,6 @@ export type LiveUsageState = {
   sequence?: string
   showSyntheticLabels?: boolean
   previewReveal?: 'show' | 'hide' | 'pace-show' | 'pace-hide'
-  presentationSessionId?: string
   snapshot: {
     status: 'ready' | 'empty' | 'error'
     windows: {

@@ -1,11 +1,11 @@
 # Plugin distribution
 
-The current repository candidate is **antiburn** 0.2.6 for Claude Code.
-It combines responsive Desktop meters and anchored reset/pace hover details from
-PR #779 with the source tree containing PR #778’s development icon refinement.
-The public icon is unchanged. It preserves quota behavior and the embedded
-0.2.1 shared core. It is generated locally as `plugins/antiburn`,
-with a separate local-only `antiburn-dev` build.
+The current repository candidate is **antiburn** 0.2.7 for Claude Code.
+It combines the Desktop usage entrance from PR #797 with compact Desktop and
+Terminal mod spacing from PR #799. It retains responsive meters and anchored
+reset/pace hover details from 0.2.6, quota behavior, and the embedded 0.2.1 shared
+core. It is generated locally as `plugins/antiburn`, with a separate local-only
+`antiburn-dev` build.
 Codex, Cursor, OpenCode and Pi adapters remain unpublished future candidates.
 The user-facing name remains antiburn; the internal package is
 `antiburn-plugin-core`. For how sources, generated builds and catalogs connect,
@@ -19,8 +19,8 @@ public/dev independence still require validation.
 
 The repository remains the source of truth. The [plugin page](../../plugins/README.md)
 is its dedicated GitHub folder page. This candidate catalog selects public
-`antiburn` 0.2.6 from `plugins/antiburn` at immutable artifact
-`f9dabe20b7dac6d33a4e8fecad88e93f1fff87d5`. The public package contains exactly 26 files
+`antiburn` 0.2.7 from `plugins/antiburn` at immutable artifact
+`8b2e7fd22c40e69021088fe079d2bf50c472c312`. The public package contains exactly 27 files
 and retains the embedded 0.2.1 shared core. The catalog on `main` determines what
 public installs receive; a local or PR catalog change does not promote it.
 The submitted 0.2.4 artifact and tag remain unchanged.
@@ -46,8 +46,9 @@ local transport checks alone are insufficient. Verify these checks through the
 permanent main route. Do not treat the catalog merge as evidence that all hosted
 acceptance checks have passed.
 
-Before promoting 0.2.6, verify hosted updates from the immutable 0.2.4 artifact
+Before promoting 0.2.7, verify hosted updates from the immutable 0.2.4 artifact
 and the public 0.2.5 artifact `af3d284cc5a28fa57eb992a1953c6be436efed0a`,
+and the 0.2.6 artifact `f9dabe20b7dac6d33a4e8fecad88e93f1fff87d5`,
 as well as fresh installation, reinstall and removal. Compare every installed
 file against the selected artifact; a version string alone is insufficient.
 Internal testing marketplaces are disposable
@@ -95,7 +96,7 @@ The submitted 0.2.4 candidate selects `claude-plugin-v0.2.4` at
 `f795e08059e993d7f226c4891c845a9f91e63c68`, with marketplace artifact
 `ceb2800b4bb9b25744624b7ee309ef9532f596d0`. The recorded 0.2.4 owner report
 states that its security scan passed and policy review was underway; confirm the
-current portal state before taking action. Preserve its bytes and tag. The 0.2.6
+current portal state before taking action. Preserve its bytes and tag. The 0.2.7
 candidate is unsubmitted; no portal setting or tracked reference changes. The
 recommended directory release channel is a dedicated `claude-plugin-release`
 branch, as described below; it is not configured by this documentation change.
@@ -109,8 +110,8 @@ submits manually through the [Claude developer portal](https://claude.ai/directo
 following the [submission workflow](https://claude.com/docs/plugins/submit) and
 [pre-submission checklist](https://claude.com/docs/plugins/pre-submission-checklist).
 
-A future 0.2.6 tag, if separately authorized, must use the existing format:
-`claude-plugin-v0.2.6`. Point it at the final validated artifact commit and never
+A future 0.2.7 tag, if separately authorized, must use the existing format:
+`claude-plugin-v0.2.7`. Point it at the final validated artifact commit and never
 move it. No tag, GitHub Release or release draft is created by this preparation.
 A tag alone does not change the directory’s tracked reference or publish a version.
 

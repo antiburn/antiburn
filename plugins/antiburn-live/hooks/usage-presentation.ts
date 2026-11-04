@@ -1,6 +1,24 @@
 import { captionWidth } from './usage-font'
+import type { RenderInput, RenderNode } from 'claude-code'
 import { filledDotCount, pace, reachedPace, type UsageWindow } from './usage'
 
+export function hasAbovePromptContent(node: RenderNode): boolean {
+  if (typeof node === 'string') return node.trim().length > 0
+  if (node.type === 'engine') return false
+  if (node.type !== 'Box' && node.type !== 'Text') return true
+  if (node.props?.display === 'none') return false
+  if (node.props?.backgroundColor || node.props?.borderStyle) return true
+  return node.children?.some(hasAbovePromptContent) ?? false
+}
+
+export function abovePromptGap(
+  event: RenderInput<'AbovePrompt'>,
+  followsControls = false,
+): number | 'xs' | 'md' {
+  if (event.props.maxRows < 8 || event.props.bodyColumns < 24) return 0
+  // Native buttons extend below the text row. Keep the visible gap clear.
+  return event.surface === 'desktop' ? (followsControls ? 'md' : 'xs') : 1
+}
 export const PRESENTATION = {
   markSize: 13,
   markSlotSize: 14,

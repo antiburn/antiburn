@@ -5,11 +5,11 @@ Date: 2026-10-16. Status: accepted.
 ## Decision
 
 Use the standard monospace `antiburn` wordmark in bright antiburn orange on a
-muted orange background. Reserve exactly two terminal rows for both inline and
-stacked layouts. The lower row carries the bright wordmark and inline meters;
-stacked limit rows use the same two-row space. Keep the upper row blank as padding
-while idle; during activity, let shaded-block flames rise through it. Animate a
-heat ripple behind the bright lower-row letters so they stay legible. Reserve
+muted orange background. Use one row for the resting wordmark. Let stacked
+limits take two meter rows without adding blank padding above them. Separate
+visible strips with one blank row and no internal checks/usage divider.
+When experimental burn animation is enabled, reserve a second wordmark row
+for the flame and heat ripple. Reserve
 11 columns for the wordmark slot: one inset column plus a 10-column grid (the
 eight letters and one background-padding cell on each side). Keep the one-column
 gap to the meter outside that slot, for 12 columns total before the meter.
