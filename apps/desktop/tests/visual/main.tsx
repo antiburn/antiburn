@@ -6,7 +6,8 @@ import { setHudTokenMapEnabled } from "../../src/lib/overlayWindow"
 import "../../src/styles.css"
 import "./visual.css"
 
-type Surface = "main" | "settings" | "popover" | "preview" | "hud" | "hud-detail" | "nudge"
+type Surface =
+  "main" | "settings" | "popover" | "preview" | "hud" | "hud-detail" | "nudge" | "icons"
 
 const SURFACES: readonly Surface[] = [
   "main",
@@ -16,6 +17,7 @@ const SURFACES: readonly Surface[] = [
   "hud",
   "hud-detail",
   "nudge",
+  "icons",
 ]
 
 function querySurface(): Surface {
@@ -53,6 +55,8 @@ function configureDocument(): void {
 
 async function loadSurface(surface: Surface): Promise<ComponentType> {
   switch (surface) {
+    case "icons":
+      return (await import("./VendorIconGallery")).VendorIconGallery
     case "main":
       return (await import("../../src/views/MainWindowView")).MainWindowView
     case "settings":

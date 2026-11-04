@@ -94,7 +94,7 @@ export function OverlayWindow() {
 function islandContentWidth(state: OverlaySnapshot): number {
   const { island } = state
   if (island.island === "preview") return FLOATING_CONTENT_PX
-  const geometry = islandCssGeometry(island)
+  const geometry = islandCssGeometry(state.islandBodyGeometry ?? island)
   return Math.max(1, geometry.bodyWidth - islandContentPad(geometry.wing) * 2)
 }
 
@@ -168,7 +168,10 @@ function IslandPanel({
   const preview = island.island === "preview"
   const collapsed = island.island === "collapsed"
   const open = !collapsed
-  const geometry = islandCssGeometry(island)
+  const bodyOpen = preview || state.islandBodyOpen
+  const bodyGeometry = islandCssGeometry(state.islandBodyGeometry ?? island)
+  const currentGeometry = islandCssGeometry(island)
+  const geometry = state.islandBodyPresent ? bodyGeometry : currentGeometry
   const headerScale = island.scale
   const shape = [
     "relative select-none",
@@ -180,7 +183,11 @@ function IslandPanel({
   ].join(" ")
   const shellStyle: CSSProperties | undefined = preview
     ? undefined
-    : { width: geometry.bodyWidth + geometry.fillet * 2 }
+    : {
+        width:
+          (state.islandBodyPresent ? bodyGeometry.bodyWidth : geometry.bodyWidth) +
+          geometry.fillet * 2,
+      }
   const headerStyle = {
     height: geometry.height,
     "--hud-header-scale": headerScale,
@@ -197,11 +204,11 @@ function IslandPanel({
   const contentPad: CSSProperties | undefined = preview
     ? undefined
     : {
-        width: geometry.bodyWidth,
-        maxHeight: geometry.bodyMaxHeight,
+        width: bodyGeometry.bodyWidth,
+        maxHeight: bodyGeometry.bodyMaxHeight,
         marginLeft: geometry.fillet,
-        paddingLeft: islandContentPad(geometry.wing),
-        paddingRight: islandContentPad(geometry.wing),
+        paddingLeft: islandContentPad(bodyGeometry.wing),
+        paddingRight: islandContentPad(bodyGeometry.wing),
       }
   // The mark held the live agent's mode colour. That is off for now: one
   // colour beside the notch, until the modes earn a place there.
@@ -220,12 +227,18 @@ function IslandPanel({
       style={shellStyle}
       data-island={island.island}
       data-drag-armed={state.dragArmed || undefined}
-      onMouseDown={(event) => session.startDrag(event)}
+      onMouseDown={(event) => {
+        const closing = collapsed && state.islandBodyPresent && !bodyOpen
+        const onHeader = Boolean((event.target as HTMLElement).closest(".hud-island-header"))
+        if (closing && !onHeader) return
+        session.startDrag(event)
+      }}
     >
       <div
         className={`hud-island hud-island-header relative flex items-center bg-hud-island ${preview ? "" : "hud-island-fillets"} ${open ? "hud-island-header-open" : ""}`}
         style={headerStyle}
         data-testid="island-header"
+        onMouseEnter={session.reopenClosingIsland}
       >
         <div
           className="hud-island-wing flex shrink-0 items-center justify-center"
@@ -262,11 +275,27 @@ function IslandPanel({
           <AntiburnMark className="hud-island-mark text-hud-island-ink opacity-35" />
         </div>
       </div>
-      {open && (
+      {(state.islandBodyPresent || preview) && (
         <div
-          className="hud-island hud-island-open overflow-y-auto overscroll-contain bg-hud-island p-2.5"
+          className={`hud-island hud-island-open hud-island-body-transition overflow-y-auto overscroll-contain bg-hud-island p-2.5 ${preview ? "hud-island-body-preview" : bodyOpen ? "" : "hud-island-body-closed"}`}
           style={contentPad}
           data-testid="island-body"
+          data-open={bodyOpen}
+          aria-hidden={!bodyOpen}
+          onMouseEnter={session.reopenClosingIsland}
+          onTransitionRun={(event) => {
+            if (event.target === event.currentTarget && !bodyOpen)
+              session.startIslandClose(state.islandCloseGeneration)
+          }}
+          onTransitionEnd={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              event.propertyName === "opacity" &&
+              !bodyOpen
+            ) {
+              session.finishIslandClose(state.islandCloseGeneration)
+            }
+          }}
           onMouseDown={(event) => {
             const body = event.currentTarget
             const bounds = body.getBoundingClientRect()

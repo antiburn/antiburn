@@ -63,3 +63,25 @@ body {
   overscroll-behavior: none;
   overflow: hidden;
 }
+
+.agent-icon-dark {
+  display: none;
+}
+
+html[data-theme="dark"] .agent-icon-light {
+  display: none;
+}
+
+html[data-theme="dark"] .agent-icon-dark {
+  display: block;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .agent-icon-light {
+    display: none;
+  }
+
+  html:not([data-theme="light"]) .agent-icon-dark {
+    display: block;
+  }
+}
