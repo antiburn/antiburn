@@ -208,6 +208,8 @@ libc = "0.2"
 tauri-plugin-updater = "2.14.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Match Claude's NFC normalization before hashing the Keychain service suffix.
+icu_normalizer = "=2.2.0"
 keyring = { version = "3.6.3", default-features = false, features = [
   "apple-native",
 ] }

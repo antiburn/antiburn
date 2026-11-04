@@ -7,12 +7,60 @@
 
 use std::sync::Mutex;
 
+#[cfg(target_os = "macos")]
+use icu_normalizer::ComposingNormalizerBorrowed;
 use serde_json::Value;
+#[cfg(target_os = "macos")]
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::provider_usage::live::model::Detection;
 
 use super::claude_touch;
+
+#[cfg(target_os = "macos")]
+const DEFAULT_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
+
+#[cfg(all(target_os = "macos", test))]
+pub(super) fn keychain_service_for(config_dir: Option<&str>) -> String {
+    keychain_service_for_bytes(None, config_dir.map(str::as_bytes))
+}
+
+/// Select the Keychain service from the first defined override, even if empty.
+/// Normalize the text, not the path: slashes and whitespace remain significant.
+#[cfg(target_os = "macos")]
+fn keychain_service_for_bytes(
+    secure_storage_dir: Option<&[u8]>,
+    config_dir: Option<&[u8]>,
+) -> String {
+    match secure_storage_dir
+        .or(config_dir)
+        .filter(|value| !value.is_empty())
+    {
+        Some(dir) => {
+            let text = String::from_utf8_lossy(dir);
+            let normalized = ComposingNormalizerBorrowed::new_nfc().normalize(&text);
+            let digest = Sha256::digest(normalized.as_bytes());
+            format!(
+                "{DEFAULT_KEYCHAIN_SERVICE}-{:02x}{:02x}{:02x}{:02x}",
+                digest[0], digest[1], digest[2], digest[3]
+            )
+        }
+        None => DEFAULT_KEYCHAIN_SERVICE.to_owned(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn keychain_service() -> String {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let secure_storage_dir = std::env::var_os("CLAUDE_SECURESTORAGE_CONFIG_DIR");
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    keychain_service_for_bytes(
+        secure_storage_dir.as_deref().map(std::ffi::OsStr::as_bytes),
+        config_dir.as_deref().map(std::ffi::OsStr::as_bytes),
+    )
+}
 
 /// The credentials file is a small, purpose-built OAuth token store, not a
 /// general state file — cap the read defensively rather than trust that.
@@ -185,8 +233,6 @@ pub(super) mod macos_keychain {
     /// wherever it lives, not a reason to trust an unbounded read.
     const MAX_BYTES: usize = super::MAX_CREDENTIAL_BYTES as usize;
 
-    const SERVICE_NAME: &str = "Claude Code-credentials";
-
     /// The exit code `security find-generic-password` returns when the named
     /// item does not exist in the keychain — `errSecItemNotFound`.
     const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
@@ -219,8 +265,8 @@ pub(super) mod macos_keychain {
     /// Reads one Keychain item. See [`KeychainRead`] for what each outcome
     /// means. Every outcome is logged once, with the `security` exit code
     /// when the process reported one. The log never contains the secret.
-    pub fn read() -> KeychainRead {
-        let (read, exit_code) = read_with_exit_code();
+    pub fn read(service: &str) -> KeychainRead {
+        let (read, exit_code) = read_with_exit_code(service);
         ::tracing::debug!(
             event = "claude_keychain_read",
             outcome = read.outcome(),
@@ -229,9 +275,8 @@ pub(super) mod macos_keychain {
         read
     }
 
-    fn read_with_exit_code() -> (KeychainRead, Option<i32>) {
-        let mut child = match antiburn_local::platform::process::headless_std_command("security")
-            .args(["find-generic-password", "-s", SERVICE_NAME, "-w"])
+    fn read_with_exit_code(service: &str) -> (KeychainRead, Option<i32>) {
+        let mut child = match secret_command(service)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -290,6 +335,12 @@ pub(super) mod macos_keychain {
         (read, status.code())
     }
 
+    fn secret_command(service: &str) -> std::process::Command {
+        let mut command = antiburn_local::platform::process::headless_std_command("security");
+        command.args(["find-generic-password", "-s", service, "-w"]);
+        command
+    }
+
     /// Whether a nonzero exit from `security find-generic-password` means
     /// "item not found" or something this carrier could not diagnose.
     ///
@@ -307,6 +358,21 @@ pub(super) mod macos_keychain {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn secret_command_selects_only_the_requested_service() {
+            for service in [
+                super::super::DEFAULT_KEYCHAIN_SERVICE,
+                "Claude Code-credentials-6abacc42",
+            ] {
+                let command = secret_command(service);
+                assert_eq!(command.get_program(), "security");
+                assert_eq!(
+                    command.get_args().collect::<Vec<_>>(),
+                    ["find-generic-password", "-s", service, "-w"]
+                );
+            }
+        }
 
         #[test]
         fn item_not_found_reads_as_absent() {
@@ -520,6 +586,58 @@ mod tests {
     use super::*;
 
     const NOW: i64 = 1_800_000_000;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_service_respects_defined_override_and_nfc_text() {
+        let select = |secure: Option<&str>, config: Option<&str>| {
+            keychain_service_for_bytes(secure.map(str::as_bytes), config.map(str::as_bytes))
+        };
+        assert_eq!(select(None, None), DEFAULT_KEYCHAIN_SERVICE);
+        assert_eq!(select(None, Some("")), DEFAULT_KEYCHAIN_SERVICE);
+        assert_eq!(select(Some(""), None), DEFAULT_KEYCHAIN_SERVICE);
+        assert_eq!(
+            select(Some(""), Some("/Users/avery/.claude-work")),
+            DEFAULT_KEYCHAIN_SERVICE
+        );
+        assert_eq!(
+            select(None, Some("/Users/avery/.claude-work")),
+            "Claude Code-credentials-6abacc42"
+        );
+        assert_eq!(
+            select(Some("profile"), Some("/Users/avery/.claude-work")),
+            select(Some("profile"), None)
+        );
+        assert_ne!(
+            select(Some("profile"), None),
+            select(None, Some("profile2"))
+        );
+        assert_ne!(
+            select(None, Some("/Users/avery/.claude-work/")),
+            select(None, Some("/Users/avery/.claude-work"))
+        );
+        assert_ne!(select(None, Some(" ")), DEFAULT_KEYCHAIN_SERVICE);
+        assert_ne!(
+            select(None, Some(" profile ")),
+            select(None, Some("profile"))
+        );
+        assert_eq!(
+            select(Some("café"), None),
+            select(Some("cafe\u{301}"), None)
+        );
+        assert_eq!(
+            select(None, Some("café")),
+            select(None, Some("cafe\u{301}"))
+        );
+        assert_eq!(
+            keychain_service_for_bytes(Some(b"\xff"), None),
+            select(Some("\u{fffd}"), None)
+        );
+        assert_eq!(
+            keychain_service_for_bytes(None, Some(b"\xff")),
+            select(None, Some("\u{fffd}"))
+        );
+    }
 
     /// The Keychain and the file carrier hold the identical JSON shape, so
     /// this exercises `parse_credentials_json` directly against a synthetic
