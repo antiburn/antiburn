@@ -90,8 +90,9 @@ const SEED_TAKEOVER_AGE: time::Duration = time::Duration::minutes(10);
 pub const MAX_AGE: time::Duration = time::Duration::minutes(60);
 
 /// Cooldown-gated retry state for one direct-fetch source.
-#[derive(Default)]
 pub struct Cooldown {
+    provider: &'static str,
+    source: &'static str,
     inner: Mutex<Inner>,
 }
 
@@ -109,8 +110,16 @@ struct Inner {
 }
 
 impl Cooldown {
+    pub fn named(provider: &'static str, source: &'static str) -> Cooldown {
+        Cooldown {
+            provider,
+            source,
+            inner: Mutex::default(),
+        }
+    }
+
     pub fn new() -> Cooldown {
-        Cooldown::default()
+        Self::named("anthropic", "claude-usage-fetch")
     }
 
     /// Ask `fetch` for a fresh reading if the cooldown has elapsed; otherwise
@@ -153,10 +162,57 @@ impl Cooldown {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let backing_off = inner
+        let remaining_backoff = inner
             .retry_at
-            .is_some_and(|retry_at| Instant::now() < retry_at);
-        if !backing_off && off_cooldown(inner.last_attempt, max_age) {
+            .and_then(|retry_at| retry_at.checked_duration_since(Instant::now()));
+        let cooldown_open = off_cooldown(inner.last_attempt, max_age);
+        let observed_age_secs = inner.snapshot.as_ref().and_then(|snapshot| {
+            (now - snapshot.observed_at)
+                .is_positive()
+                .then(|| (now - snapshot.observed_at).whole_seconds() as u64)
+        });
+        if remaining_backoff.is_some() || !cooldown_open {
+            let reason = if remaining_backoff.is_some() {
+                "rate_limit_backoff"
+            } else if inner.last_attempt.is_some_and(|(_, succeeded)| succeeded) {
+                "fresh_cache"
+            } else {
+                "failure_cooldown"
+            };
+            if reason == "fresh_cache" {
+                ::tracing::debug!(
+                    event = "live_usage_fetch_decision",
+                    provider = self.provider,
+                    source = self.source,
+                    decision = "skipped",
+                    reason,
+                    max_age_secs = max_age.as_secs(),
+                    cached_error = inner.error.map(|error| error.category()),
+                    remaining_backoff_secs = remaining_backoff.map(|delay| delay.as_secs()),
+                    observed_age_secs
+                );
+            } else {
+                ::tracing::info!(
+                    event = "live_usage_fetch_decision",
+                    provider = self.provider,
+                    source = self.source,
+                    decision = "skipped",
+                    reason,
+                    max_age_secs = max_age.as_secs(),
+                    cached_error = inner.error.map(|error| error.category()),
+                    remaining_backoff_secs = remaining_backoff.map(|delay| delay.as_secs()),
+                    observed_age_secs
+                );
+            }
+        } else {
+            ::tracing::info!(
+                event = "live_usage_fetch_decision",
+                provider = self.provider,
+                source = self.source,
+                decision = "attempted",
+                max_age_secs = max_age.as_secs(),
+                observed_age_secs
+            );
             match fetch() {
                 Ok(snapshot) => {
                     inner.snapshot = snapshot;
@@ -185,8 +241,10 @@ impl Cooldown {
                         inner.rate_limits = inner.rate_limits.saturating_add(1);
                         let wait = rate_limit_backoff(inner.rate_limits, failure.retry_after);
                         inner.retry_at = attempted.checked_add(wait);
-                        ::tracing::debug!(
+                        ::tracing::info!(
                             event = "live_usage_rate_limit_backoff",
+                            provider = self.provider,
+                            source = self.source,
                             consecutive = inner.rate_limits,
                             wait_seconds = wait.as_secs(),
                             retry_after_seconds = failure.retry_after.map(|delay| delay.as_secs())

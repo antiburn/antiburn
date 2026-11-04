@@ -96,7 +96,7 @@ impl AntigravityDirectFetch {
             #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
             try_keychain: true,
             refreshed: Mutex::default(),
-            cooldown: Cooldown::new(),
+            cooldown: Cooldown::named(crate::provider_usage::providers::GOOGLE, SOURCE_ID),
         }
     }
 
@@ -159,7 +159,7 @@ impl AntigravityDirectFetch {
             #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
             try_keychain: false,
             refreshed: Mutex::default(),
-            cooldown: Cooldown::new(),
+            cooldown: Cooldown::named(crate::provider_usage::providers::GOOGLE, SOURCE_ID),
         }
     }
 }
