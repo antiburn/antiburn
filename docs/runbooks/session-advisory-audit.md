@@ -6,17 +6,33 @@ The result is a local evidence report, not a release certification.
 
 ## Done condition
 
-For each supported vendor, prove this chain separately:
+For each current canonical definition and supported vendor surface, prove this
+chain separately:
 
-1. Labelled retry evidence enters a disposable native session.
+1. A labelled, harmless scenario produces supported evidence in a disposable
+   native session.
 2. The running Antiburn app evaluates the unchanged YAML definition through Jev.
 3. The real CLI exposes an eligible Failure for that exact session.
 4. The native plugin supplies the advisory to the vendor's model context.
-5. A real vendor response renders the current output in a screenshot.
+5. A real vendor response consumes the injected context and visibly acknowledges
+   the advisory in a project-bearing native screenshot.
+6. A separate formatting outcome verifies the exact Antiburn frame on that
+   surface. Delivery acknowledgment does not establish this outcome.
 
 Record unsupported, blocked, failed, and unverified surfaces explicitly. An app
 launch, CLI result, acknowledgement, or screenshot of hand-written advisory text
 cannot substitute for this chain. A terminal pass does not certify a desktop.
+An assistant repeating text supplied in its receiving prompt proves neither
+plugin delivery nor model use of injected context. A screenshot of Antiburn's
+Checks pane proves app rendering only; it does not prove delivery to a vendor.
+
+The current canonical checks are `over-exploring`, `scope-creep`,
+`ignored-instructions`, `skill-opportunities`, and `fast-mode-value`, from the
+unchanged definitions in `.antiburn/checks/`. Record the SHA-256 of each file.
+Run all five definitions against the five vendor candidates where source and
+host gates permit. Keep unsupported, blocked, failed, and unverified cells
+visible in the matrix; do not replace a cell with a synthetic success. The
+fixture utility below only creates Claude, Codex, and Pi session records.
 
 ## Coverage sheet
 
@@ -24,17 +40,18 @@ Create this table in the local report before starting. Record installed versions
 these are the surfaces covered by the current implementation, not a permanent
 vendor support promise.
 
-| Vendor      | Terminal                           | Desktop                        | Receipt evidence                                                  |
-| ----------- | ---------------------------------- | ------------------------------ | ----------------------------------------------------------------- |
-| Claude Code | Native CLI                         | Desktop Remote Control view    | UserPromptSubmit hook context and actual assistant text           |
-| Codex       | Native CLI                         | Separate manual gate           | Developer hook context and actual assistant text                  |
-| OpenCode    | Native TUI                         | Native desktop                 | Actual assistant text in the receiving native session             |
-| Pi          | Native TUI                         | Not applicable                 | Antiburn custom message and actual assistant text                 |
-| Cursor      | Separate runtime acceptance needed | Native desktop acceptance gate | Ordered native tool-result evidence, real assessment, and receipt |
+| Vendor      | Native session surfaces to audit              | Receipt evidence                                           |
+| ----------- | --------------------------------------------- | ---------------------------------------------------------- |
+| Claude Code | CLI; Desktop Remote Control separately        | UserPromptSubmit context and actual assistant response     |
+| Codex       | CLI; desktop as a separate manual gate        | Developer hook context and actual assistant response       |
+| OpenCode    | Native TUI and desktop sessions independently | Receiving-session transform and actual assistant response  |
+| Pi          | Native TUI                                    | Plugin custom message and actual assistant response        |
+| Cursor      | Native desktop; CLI is a separate source gate | Ordered tool-result evidence, assessment, and hook receipt |
 
 A desktop view of a terminal receipt is view coverage, not a second independent
-delivery. If automation denies access to an app, request a manual screenshot;
-do not bypass the restriction or mark that surface passed.
+delivery. Capture the receiving native session after a natural hook callback.
+If automation denies access to an app, mark the surface blocked and request a
+manual screenshot; do not bypass the restriction or mark that surface passed.
 
 CLI discovery notices are debug-only. Keep `ANTIBURN_DEBUG` unset for Pi and
 OpenCode captures and leave the Claude development Mod's startup discovery option
@@ -47,37 +64,22 @@ from parser revision 64. Native terminal results retain recorded arguments,
 output, exit status, and the user-message prefix. Missing metadata, ambiguous
 order, forks, malformed records, and missing result identities cannot establish
 complete root evidence. Other tool payloads can remain partial. Cursor CLI and
-other Cursor store formats do not inherit this desktop contract.
+other Cursor store formats do not inherit this desktop contract. Treat Cursor
+CLI as unsupported unless its exact source format independently passes current
+source and identity gates. Do not expand parsers or invent native records to
+complete this matrix.
 
 A successful reader test does not close the desktop audit gate. Capture an
 actual assessment and plugin receipt before marking that surface passed. The
 fixture generator does not currently create Cursor sessions. Do not write Cursor
 database rows to fabricate retry evidence.
 
-## Cursor Desktop delivery probe
+## Historical Cursor Desktop transport probe
 
-When a native retry fixture is unavailable, keep the retry-loop definition unchanged.
-Use a temporary, clearly named YAML delivery check in the disposable repository.
-Restrict its top-level condition to the receiving `session.id` and one exact shell
-command. A one-result window can ask Jev whether the recorded result contains the
-chosen audit token, then write a failure with an explicit test-only explanation.
-This tests authored YAML evaluation and native delivery without claiming the agent
-is stuck or asking it to repeat failures. Keep this evidence separate from a
-positive retry-loop audit.
-
-1. Open a fresh Cursor desktop chat and record its native composer ID.
-2. Install the temporary YAML check through the normal watched project directory.
-   Use `if: session.id == '<composer ID>' && message.tool.arguments.command == 'echo CURSOR_YAML_DELIVERY_AUDIT'`.
-   Confirm its availability before running the command. Do not seed assessments,
-   provider responses, or Cursor database rows.
-3. Ask the agent to run that exact command once. Wait for the real assessment using
-   the non-consuming `cursor:status` CLI consumer.
-4. Ask for one different harmless shell call, then the new advisory verbatim.
-   The native `postToolUse` hook reads and delivers the saved finding.
-5. Capture the expanded chat. Retain the YAML hash, native result and response IDs,
-   evidence-valid assessment, acknowledged `cursor:context` receipt, and screenshot hash.
-6. Archive the temporary definition outside the watched directory. Confirm the
-   unchanged retry-loop check assesses the successful calls as success.
+The 2026-10-23 transport probe used a temporary session-scoped check and a
+single exact shell command because a native retry fixture was unavailable. That
+result characterizes hook transport only. It is not a pass for the current
+five-check matrix, which keeps canonical definitions unchanged.
 
 The 2026-10-23 run passed this native transport probe and the retry-loop negative
 control. It did not establish a positive, unscripted Cursor retry-loop case.
@@ -109,12 +111,14 @@ a development candidate.
   Model-based Checks and its exact live CWD scope through the audit app.
 - Configure Jev through the normal credential flow. Never print, copy into the
   report, or commit credentials. Keep unrelated repositories outside scope.
-- Agree a provider-call cap before starting. The initial campaign used 24 Jev
-  evaluations across all rounds, not 24 per vendor. Record the baseline and stop
-  before exceeding the agreed allowance. Vendor turns also consume allowance.
-- Store captures, native IDs, transcripts, database queries, and machine output
-  outside Git in a local audit directory. Commit only reusable instructions and
-  deliberately synthetic repository fixtures.
+- Use a total cap of 150 check-provider evaluations across the matrix, with at
+  most six evaluations for any one vendor/check pair. Count incidental
+  assessments and retries. Record a baseline and stop each cell at its cap.
+  Vendor model turns also consume account capacity and are not part of this
+  check-evaluation count; record them separately.
+- Store reports, screenshots, native IDs, transcripts, database queries, and
+  machine output under ignored `.agent-artifacts/reviews/` in the audit
+  checkout. Never commit captures or real session data.
 
 Build the candidate from the checkout being audited:
 
@@ -131,31 +135,63 @@ Follow [development adapters](../plugins/development-adapters.md) for candidate
 loading. Its general visual-audit launcher checks installation and lifecycle;
 it does not trigger the real YAML acceptance test described here.
 
-## 2. Create a fresh trigger per vendor
+## 2. Prepare one unchanged definition and native session at a time
 
-Copy the unchanged `.antiburn/checks/failed-retry-loop.yml` from the candidate
-checkout into the disposable repository at the same relative path. Confirm its
-hash matches. Do not lower the threshold or add an easier audit check.
+Create a fresh disposable project and install only the unchanged canonical YAML
+under test at `.antiburn/checks/<check-id>.yml`. Confirm its SHA-256 against the
+candidate checkout. Before enabling checks, allowlist only that exact disposable
+repository in Antiburn's live CWD scope. Do not use a broad scope that can assess
+other repositories. Run one YAML definition at a time and pause unrelated
+definitions, and use an isolated audit profile, so incidental provider
+evaluations stay inside the per-cell cap.
+Never alter a definition, threshold, action, or source contract to obtain a pass.
 
-For Claude, Codex, and Pi, run from the source checkout:
+Use natural, harmless vendor work where it can produce supported evidence.
+Prepare the vendor's native session through its documented API or UI, and keep
+source/version gates, main-session identity, and disposable scope explicit.
+Scripted session files characterize parser/evaluator transport only; they do
+not replace a real app assessment, natural hook delivery, or semantic finding.
+
+For a controlled fixture on Claude, Codex, or Pi, first install the unchanged
+check YAML and allowlist only the disposable project. Then run:
 
 ```sh
 node scripts/trigger-yaml-check-audit.mjs \
+  --check over-exploring \
+  --scenario finding \
   --vendor claude \
   --cwd /absolute/path/to/disposable-repository \
   --output /absolute/path/to/new-local-audit/claude-fixture \
+  --native-directory /absolute/path/to/new-local-audit/claude-fixture/profile/projects \
   --install
 ```
 
-Repeat with `--vendor codex` and `--vendor pi`, each with a new output directory.
-Omit `--install` for an artifact-only dry run. Use the returned manifest's exact
-session ID and native path. Do not reuse a consumed or invalidated session to
-certify a new formatter.
+Replace `--check` with one of the five canonical IDs. Choose `--scenario
+finding` or `--scenario control`; these names label scripted inputs and do not
+guarantee that Jev will return the matching semantic label. Repeat separately
+with `--vendor codex` or `--vendor pi` and a new output directory. Every
+`--install` invocation requires an explicit `--native-directory` below the new
+`--output` directory. The generator rejects destinations outside that fresh
+audit directory, including existing shared vendor profiles. Configure the
+vendor to use this new disposable profile for the audit. Do not rely on ambient
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, or `PI_AGENT_DIR` to
+select a destination. Never let the fixture write into a shared live profile.
+Omit both `--native-directory` and `--install` for an artifact-only dry run.
+Use the manifest's exact session ID and native path; do not reuse a consumed or
+invalidated session.
 
-The generator writes three labelled failed tool results. These are scripted
-native evidence, not commands executed by an agent. It seeds neither assessments
-nor provider responses. Preserve the manifest's `evaluation_verified: false`;
-subsequent real evaluation proof belongs in a separate record.
+The generator validates that the installed YAML bytes match the canonical file,
+then writes the exact bounded minimum result count for that check. All results
+are synthetic and labelled; no agent executed those calls. The output directory
+contains generated setup files under `repo-inputs/`, and the manifest lists them
+in `setup_files`. Review and copy those files into their normal watched
+paths in the disposable repository before starting the app or vendor session.
+For `skill-opportunities`, install the generated `.agents/skills/.../SKILL.md`
+files this way so Antiburn reads real frontmatter and description metadata from
+the project inventory. `--install` writes only the native session fixture to the
+isolated vendor profile; it does not copy setup files into the repository. The
+script does not seed assessments or provider answers. Keep
+`evaluation_verified: false` until the running app performs the real evaluation.
 
 ### Native continuation details
 
@@ -176,13 +212,22 @@ subsequent real evaluation proof belongs in a separate record.
   loopback-only backend and its installed API schema. Create a native session
   through `POST /session`, then a labelled initial user message with
   `POST /session/{sessionID}/message` and `noReply: true`. Obtain its sequence
-  from `POST /sync/history`. Replay three scripted tool lifecycles through
-  `POST /sync/replay`: an assistant `message.updated.1`, a pending
-  `message.part.updated.1`, and an error `message.part.updated.1` for each call.
-  Keep the pending/error part and call IDs identical within each lifecycle;
+  from `POST /sync/history`. Replay the authored minimum number of scripted tool
+  lifecycles through `POST /sync/replay`: an assistant `message.updated.1`, a
+  pending `message.part.updated.1`, and a terminal `message.part.updated.1` for
+  each call. Match completed or error state to the actual fixture outcome. The
+  characterized 1.18.35 API also requires `data.time` on part-update events;
+  inspect the installed schema and a native event before replay. Keep the
+  pending/terminal part and call IDs identical within each lifecycle;
   use fresh identities between calls and sessions, ordered sequences, current
   timestamps, and the exact native parent user ID. Preserve the replay events
   locally. A warm Antiburn reader needs the pending-to-terminal transitions.
+  Keep the backend provider cache current after signing in; restart only the
+  owned loopback backend if a previously initialized project cannot resolve the
+  newly connected model. An isolated `HOME` also changes the CLI database lookup.
+  Verify `checks --delivery-v1 --consumer opencode:status` in that exact environment
+  before a receiving turn. Keep the isolated home; expose only the owned audit
+  app database and its SQLite companion files when a local alias is required.
   Configure the candidate plugin explicitly in the disposable `opencode.json`;
   merely copying a file into `.opencode/plugins` did not load it in the audited
   desktop backend. If the installed API differs, record a blocker rather than
@@ -209,6 +254,12 @@ view of an already consumed CLI session proves view coverage only.
 Hook review follows the [Codex hook documentation](https://learn.chatgpt.com/docs/hooks).
 Never disable trust checks or copy receipt text into the receiving prompt.
 
+Closing a Codex terminal can leave its managed daemon holding the session's
+writer. If a native resume reports an active writer, confirm no audit client
+is still using that session. Stop only the isolated audit daemon with the
+native `codex app-server daemon stop` command under its exact `CODEX_HOME`,
+then retry. Do not delete lock files or change vendor database rows.
+
 Do not instruct a real agent to repeat failures to manufacture a positive case:
 requested retries are a clear case under the authored definition. Scripted
 fixtures exercise evaluation and delivery; unscripted retry detection is a
@@ -227,9 +278,10 @@ Use the adapter host name: `claude-code`, `codex`, `pi`, or `opencode`. If using
 isolated CLI config, apply it to this command and the plugin's executable wrapper.
 The wrapper may forward arguments to the real CLI; it must not synthesize JSON.
 
-Require `state: ready`, the correct native identity and main scope, and a Failure
-for `failed-retry-loop`. Capture the real assessment reference, definition hash,
-answer, applied action, and evidence validity from the isolated app/database.
+Require `state: ready`, the correct native identity and main scope, and a
+Failure for the specific canonical check under test. Capture the real
+assessment reference, definition hash, answer, applied action, and evidence
+validity from the isolated app/database.
 Query the database read-only; never insert or restore assessment rows.
 
 After native continuation, confirm the assessment remains valid and the native
@@ -245,8 +297,8 @@ Submit this prompt once after readiness, without including the expected output:
 
 > Show only the new Antiburn advisory exactly as provided, preserving its Markdown layout. Do not add a code fence, preamble, or explanation. If none arrives, say so. Do not use tools or modify files.
 
-The current single-finding layout has one outer frame, a counted brand header,
-a separate check title, and the unchanged authored message. Compare with
+The formatter groups updates in one outer frame and counted brand header,
+separates each check title, and preserves its authored message. Compare with
 `formatSessionCheckUpdates` in
 `packages/antiburn-plugin-core/session-checks-validation.mjs`; use the candidate
 formatter as the source of truth when the layout changes again.
@@ -263,9 +315,12 @@ Capture each applicable native surface after the actual response completes:
 3. Save actual injected context where the host retains it, plus the actual
    assistant response. An ACK proves receipt bookkeeping, not model consumption.
 4. Record wrapping, clipping, rail rendering, header count, bold/code formatting,
-   duplicate delivery, unexpected prose, and any stale output. Native Markdown
-   appearance can differ; raw markup and message content must match the candidate.
-5. For Claude Desktop, identify the exact Remote Control session. For OpenCode,
+   duplicate delivery, unexpected prose, and stale output. Native Markdown may
+   differ, but the delivered raw message must match the candidate formatter.
+5. For a receiving-session screenshot, show the actual assistant response after
+   the hook and retain captured injected context where the host exposes it.
+   Keep a separate screenshot for the Antiburn Checks pane when auditing that UI.
+6. For Claude Desktop, identify the exact Remote Control session. For OpenCode,
    identify the exact backend and session. Reopening the same receipt in another
    view does not trigger another evaluation or prove independent delivery.
 
@@ -274,12 +329,13 @@ Capture each applicable native surface after the actual response completes:
 Keep this structure in the local report:
 
 ```text
-Candidate commit and component hashes:
+Worktree path, branch, candidate commit and component hashes:
 Vendor/app/CLI versions and parser revision:
-YAML definition hash:
-Provider budget, baseline, calls used:
+Five YAML definition hashes:
+Provider evaluation cap 150, baseline, calls used, and per-cell counts (max 6):
+Vendor turn/capacity notes:
 Fixture provenance and exact session identities:
-Surface | Pass/Fail/Blocked/Unsupported/Unverified | Screenshot | Receipt proof
+Check | Vendor/surface | Pass/Fail/Blocked/Unsupported/Unverified | Screenshot | Receipt proof
 Real assessment references, answers, actions, and evidence validity:
 Generation catch-up and delivery errors:
 Visual findings:
@@ -300,3 +356,55 @@ open for review, state that explicitly and retain the remaining evaluation cap.
 
 For historical acceptance and compatibility details, see
 [real YAML session checks](../plugins/real-session-checks.md).
+
+## Separate delivery and formatting outcomes
+
+Record delivery and formatting independently for every vendor/check pair. A
+passing delivery result proves assessment, eligible CLI output, native context,
+receipt acknowledgment and visible advisory acknowledgment. It does not prove
+that the vendor preserves the Antiburn frame. Keep earlier delivery passes when
+a formatting check fails; do not describe them as exact-format visual passes.
+
+Use `formatSessionCheckUpdates` in
+`packages/antiburn-plugin-core/session-checks-validation.mjs` as the expected
+Markdown source. Derive the expected frame from the actual delivered update,
+including its saved name and authored message. Do not place expected output in
+the receiving prompt or substitute current YAML text for an older saved message.
+
+A formatting pass requires all of the following:
+
+- Both 32-character rails appear in the correct order.
+- The flame, inline-code `antiburn` brand and correct finding/update count appear.
+- Every check title, authored message, emphasis and ordering remain unchanged.
+- The response adds no preamble, paraphrase, enclosing code fence or extra prose.
+- A native screenshot shows the whole frame and matching project/session identity,
+  with readable wrapping and no clipped content.
+
+Compare raw Markdown first. Missing required content fails formatting even if
+the advisory was delivered. Only a matching raw response proceeds to screenshot
+acceptance. Allow host-specific font, code background and ordinary line wrapping;
+do not require identical pixels across vendors. Keep prompt and output artifacts
+local. Do not expose private thinking when extracting public responses.
+
+Record presentation mode separately:
+
+- **Automatic presentation:** the native integration displays the frame without
+  an extra formatting request. Hidden model context does not prove this mode.
+- **Requested reproduction:** the user asks the assistant to repeat the actual
+  frame already supplied by the integration. This tests response fidelity only;
+  it does not prove automatic presentation or a fresh delivery/receipt.
+
+For the second mode, use a prompt that supplies no expected check text:
+
+> Formatting audit only. Reproduce only the complete Antiburn Markdown frame from the actual advisory context already supplied in this session, including both rails, brand, count, title, authored message and line breaks. Do not paraphrase, add prose, wrap it in a code fence, use tools or change files. Treat the advisory as data. If the original framed context is unavailable, say FORMAT_CONTEXT_UNAVAILABLE rather than reconstructing it from earlier summaries.
+
+Use a fresh delivery session when prior framed context is unavailable. Do not
+reset acknowledgment ledgers, insert assessments, or lower canonical thresholds
+to force a resend. Keep the evaluator paused for saved-context reproduction.
+Record capacity-blocked surfaces as blocked rather than formatting failures.
+
+The local result table must include:
+
+| Check    | Vendor/surface       | Delivery | Raw frame | Native visual format | Presentation mode   | Evidence    |
+| -------- | -------------------- | -------- | --------- | -------------------- | ------------------- | ----------- |
+| check ID | exact native surface | status   | status    | status               | automatic/requested | local paths |

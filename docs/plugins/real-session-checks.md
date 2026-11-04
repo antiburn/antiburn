@@ -1,15 +1,22 @@
 # Real YAML session-check acceptance
 
-The immediate target is the existing **Failed retry loop** definition reaching
-one Claude Code main session through the real Antiburn app and CLI.
-Do not add another audit definition or a new communication service. The initial
-Claude acceptance and the later cross-vendor visual audit have separate results.
+This document records dated historical acceptance for the retired **Failed
+retry loop** definition and earlier delivery candidates. It does not certify the
+current canonical YAML checks or current vendor candidates.
 
-For the reusable engineer and agent procedure, follow the
-[session advisory screenshot audit runsheet](../runbooks/session-advisory-audit.md).
-It includes clean framing, native continuation, evidence, and coverage gates.
+The current five checks are `over-exploring`, `scope-creep`,
+`ignored-instructions`, `skill-opportunities`, and `fast-mode-value`. Use the
+[current session advisory screenshot audit runsheet](../runbooks/session-advisory-audit.md)
+for a new audit. The current matrix requires an unchanged definition, real app
+assessment, real CLI delivery, a natural vendor hook, actual receiving context
+and response, and a screenshot of that receiving native session. A prompt that
+contains expected advisory text or a screenshot of Antiburn's Checks pane does
+not prove vendor delivery. Keep each terminal and desktop result independent.
+Record exact-frame formatting as a separate outcome; a delivered advisory or assistant summary does not prove
+the branded frame is visibly preserved. Requested reproduction and automatic
+plugin presentation are distinct acceptance modes.
 
-## Setup
+## Historical setup: Failed retry loop
 
 Use matching candidate app, CLI, and `antiburn-core-plugin` builds. The app and
 CLI must read the same database. Remove synthetic CLI overrides. A local
@@ -22,7 +29,7 @@ Configure the real Jev decision connection and enable Model-based Checks through
 the app. Limit evaluation scope to the disposable repository. Do not copy a user
 database, insert assessment rows, or store credentials in fixtures.
 
-## Acceptance
+## Historical acceptance: Claude Code
 
 1. Start a fresh Claude Code main session with the packaged native hooks.
 2. Confirm Antiburn discovers its actual session ID and exact CWD, loads the
@@ -42,16 +49,18 @@ If no qualifying positive case occurs, record it as unverified. Do not weaken th
 check or replace the evaluator to obtain a pass. CLI reads remain side-effect
 free; the app's normal evaluation cycle produces the result.
 
-Cap the initial run at 24 Jev evaluations and reassess before further calls.
-Provider-backed checks and vendor turns use the configured provider allowance.
-Keep private sessions outside evaluation scope. Keep screenshots, native IDs,
-transcripts, and machine output in local audit artifacts rather than Git.
-Disable temporary activations and stop owned backends after capture. The
-bidirectional request plan and broader vendor audit remain separate work.
+The historical run used a 24-evaluation cap. For any new current-check campaign,
+use the 150 total check-evaluation cap and six-evaluation maximum per
+vendor/check pair in the runsheet. Vendor turns consume separate account
+capacity. Store screenshots, native IDs, transcripts, and machine output under
+ignored `.agent-artifacts/reviews/`, outside Git.
 
-## Repeatable visual trigger
+## Historical repeatable visual trigger (2026-10-23 syntax)
 
-For a controlled visual audit, generate clearly labelled scripted native evidence:
+The following invocation records the syntax used for the archived 2026-10-23
+capture. The current utility requires `--check` and has an isolated install
+contract. Do not run this historical command; use the current runsheet instead.
+It generated labelled scripted native evidence for the retired check:
 
 ```sh
 node scripts/trigger-yaml-check-audit.mjs \
@@ -79,7 +88,7 @@ attributes the scripted attempts to itself; the fixture manifest remains the
 source of truth for their provenance. Current-version ingestion and recovery
 clearance remain separate acceptance cases.
 
-## Cross-vendor fixture audit
+## Historical cross-vendor fixture audit
 
 Select `--vendor claude|codex|pi` with the trigger script. Claude is the default.
 Each format is characterized independently; installing a transcript proves neither
