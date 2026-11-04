@@ -83,3 +83,4 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @antiburn/desktop exec playwright install --with-deps chromium
       - run: node scripts/check-claude-usage-layout.mjs
+      - run: node scripts/check-claude-usage-entry.mjs
