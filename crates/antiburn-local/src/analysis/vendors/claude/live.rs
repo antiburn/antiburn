@@ -3,6 +3,8 @@
 use super::*;
 use crate::analysis::resume::identity_filter::IdentityFilter;
 
+const MAX_SDK_ROOT_PREFIX_RECORDS: u8 = 16;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct State {
     parser: ClaudeStreamState,
@@ -10,6 +12,10 @@ pub(crate) struct State {
     records: IdentityFilter,
     last: Option<String>,
     root: bool,
+    #[serde(default)]
+    root_pending: bool,
+    #[serde(default)]
+    root_prefix_records: u8,
     /// A bounded prefix or summary hit can leave the predecessor unproved.
     order_unproven: bool,
 }
@@ -21,24 +27,46 @@ impl State {
             retired_calls: IdentityFilter::default(),
             records: IdentityFilter::default(),
             last: None,
+            root_pending: !suffix_only
+                && is_root_input(input)
+                && is_sdk_session_owner_header(header, &input.session_id),
+            root_prefix_records: 0,
             order_unproven: suffix_only,
             root: is_root_input(input)
                 && root_record(header, &input.session_id)
                 && header.get("parentUuid") == Some(&Value::Null)
                 && header.get("logicalParentUuid").is_none_or(Value::is_null)
-                && (retained_root::is_user_content(header)
-                    || retained_root::is_informational_root(header)),
+                && (retained_root::is_user_slot_root(header)
+                    || (retained_root::is_informational_root(header)
+                        && retained_root::is_characterized_cli(header))),
         }
     }
 
     pub fn observe(&mut self, mut value: Value, index: u64, sink: &mut dyn RecordSink) {
         let suffix_start = self.order_unproven && self.last.is_none();
         let Some(id) = thread_identity_field(&value, "uuid") else {
+            if self.root_pending {
+                if is_sdk_lifecycle_prefix_record(&value, &self.parser.session_id)
+                    && self.root_prefix_records < MAX_SDK_ROOT_PREFIX_RECORDS
+                {
+                    self.root_prefix_records += 1;
+                    return;
+                }
+                self.root_pending = false;
+                self.root_prefix_records = 0;
+            }
             if matches!(value["type"].as_str(), Some("user" | "assistant")) {
                 self.root = false;
             }
             return;
         };
+        if self.root_pending {
+            self.root_pending = false;
+            self.root_prefix_records = 0;
+            if is_sdk_request_root(&value, &self.parser.session_id) {
+                self.root = true;
+            }
+        }
         let retained_record = self.parser.user_message_root.has_record(&value);
         if self.parser.user_message_root.exact_record_replay(&value) {
             return;
@@ -79,7 +107,7 @@ impl State {
             self.order_unproven = !self.continues_root(&value);
             if !self.order_unproven {
                 self.last = Some(id);
-                self.parser.user_message_root.observe_user_slot(&value);
+                self.parser.observe_request_slot(&value);
             }
             return;
         }
@@ -100,6 +128,7 @@ impl State {
                 || self.last.as_ref().is_some_and(|last| {
                     value.get("parentUuid").is_some()
                         && retained_root::retained_parent(&value) != Some(last.as_str())
+                        && !self.parser.has_known_request_seam(&value)
                 }));
         if scope_failure {
             sink.native_admission_failure(crate::analysis::NativeAdmissionFailure {
@@ -127,7 +156,7 @@ impl State {
         if suffix_start && self.root {
             self.parser.user_message_root.observe_retained_start(&value);
         } else {
-            self.parser.user_message_root.observe_user_slot(&value);
+            self.parser.observe_request_slot(&value);
         }
         if retained_root::is_compaction_boundary(&value) || value["isCompactSummary"] == true {
             sink.tool_result_gap();
@@ -237,24 +266,62 @@ impl State {
     fn continues_root(&self, value: &Value) -> bool {
         self.root
             && root_record(value, &self.parser.session_id)
-            && self
-                .last
-                .as_deref()
-                .is_none_or(|last| retained_root::retained_parent(value) == Some(last))
+            && self.last.as_deref().is_none_or(|last| {
+                retained_root::retained_parent(value) == Some(last)
+                    || self.parser.has_known_request_seam(value)
+            })
     }
 
     pub fn invalidate(&mut self) {
         self.root = false;
+        self.root_pending = false;
+        self.root_prefix_records = 0;
     }
 }
 
 fn root_record(record: &Value, session: &str) -> bool {
-    retained_root::is_characterized_cli(record)
+    retained_root::is_characterized_request_slot(record)
         && record["sessionId"] == session
         && record["isSidechain"] == false
         && record.get("agentId").is_none()
         && (!matches!(record["type"].as_str(), Some("user" | "assistant"))
             || record.pointer("/message/role") == record.get("type"))
+}
+
+fn is_sdk_session_owner_header(record: &Value, session: &str) -> bool {
+    record["type"] == "session-owner"
+        && record["sessionId"] == session
+        && record.get("uuid").is_none()
+        && record.get("parentUuid").is_none()
+        && record.get("logicalParentUuid").is_none()
+        && record.get("agentId").is_none()
+        && record.get("entrypoint").is_none()
+        && record.get("isSidechain").is_none()
+        && record.get("promptSource").is_none()
+        && record.get("turnOrigin").is_none()
+        && record.get("userType").is_none()
+}
+
+fn is_sdk_lifecycle_prefix_record(record: &Value, session: &str) -> bool {
+    matches!(
+        record["type"].as_str(),
+        Some("session-owner" | "queue-operation")
+    ) && record["sessionId"] == session
+        && record.get("uuid").is_none()
+        && record.get("parentUuid").is_none_or(Value::is_null)
+        && record.get("logicalParentUuid").is_none_or(Value::is_null)
+        && record.get("agentId").is_none()
+        && record.get("isSidechain").is_none()
+        && record.get("entrypoint").is_none()
+}
+
+fn is_sdk_request_root(record: &Value, session: &str) -> bool {
+    root_record(record, session)
+        && record["version"] == "2.1.317"
+        && record["type"] == "user"
+        && record.get("parentUuid") == Some(&Value::Null)
+        && record.get("logicalParentUuid").is_none_or(Value::is_null)
+        && retained_root::is_user_slot_root(record)
 }
 
 /// Exact revision-4 layout. Conversion keeps the existing root and record proof.
@@ -275,6 +342,8 @@ impl StateV4 {
             records: self.records,
             last: self.last,
             root: self.root,
+            root_pending: false,
+            root_prefix_records: 0,
             order_unproven: history_incomplete,
         }
     }

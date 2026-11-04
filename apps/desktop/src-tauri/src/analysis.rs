@@ -64,6 +64,7 @@ pub const MIN_ORCHESTRATED_SUBAGENTS: u32 = 2;
 pub struct ClaimedSource {
     pub fingerprint: Option<String>,
     pub generation: i64,
+    pub source_label: Option<String>,
 }
 
 // `CancelFlag` has no production caller left: `analyze_for_evidence` takes a
@@ -2200,7 +2201,20 @@ pub async fn analyze_for_evidence(
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
     fork_parent_session_id: Option<String>,
 ) -> EvidencePass {
-    let Some(source) = locate(agent, session_id, wsl_distro).await else {
+    let source = match claimed.source_label.as_deref() {
+        Some(source_label) => {
+            Explorers::DISK
+                .locate_session_source_by_label_in_environment(
+                    &agent,
+                    session_id,
+                    source_label,
+                    wsl_distro,
+                )
+                .await
+        }
+        None => locate(agent, session_id, wsl_distro).await,
+    };
+    let Some(source) = source else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
     let mut paths = Explorers::DISK

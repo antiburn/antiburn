@@ -1944,6 +1944,70 @@ fn parser_65_partial_upgrade_persists_a_sanitized_retry_cursor_and_finishes_afte
 }
 
 #[test]
+fn parser_67_rejected_sdk_root_replays_under_a_new_origin_boundary_without_old_cursor_state() {
+    use antiburn_local::analysis::SourceFormat;
+
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../crates/antiburn-local/tests/fixtures/claude_characterization/sdk_cli_request_slot.jsonl"
+    ));
+    let (directory, store, input) = fixture_for_source(
+        source,
+        SessionKey::new("native", "claude-code", "synthetic-sdk-session"),
+        SourceFormat::ClaudeJsonl,
+    );
+    let (initial_claim, initial) = next_page(&store, &input, 100);
+    assert_eq!(initial.requests.len(), 1);
+    let mut rejected = serde_json::to_value(initial.cursor).unwrap();
+    rejected["requests"] = json!([]);
+    rejected["history_complete"] = json!(false);
+    rejected["adapter"]["Claude"]["root"] = json!(false);
+    let user_message_root = &mut rejected["adapter"]["Claude"]["parser"]["user_message_root"];
+    user_message_root["user_slot"] = json!(true);
+    user_message_root["characterized"] = json!(false);
+    user_message_root["invalid"] = json!(true);
+    user_message_root["session"] = Value::Null;
+    user_message_root["last"] = Value::Null;
+    user_message_root["fingerprints"] = json!({});
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE native_file_delivery SET parser_revision = 67, cursor_json = ?1,
+                    observed_generation = ?2, pending = 1,
+                    claim_fence = NULL, lease_expires_at_epoch = NULL",
+                params![rejected.to_string(), initial_claim.generation],
+            )
+            .unwrap();
+    }
+
+    let (claim, page) = next_page(&store, &input, 101);
+    assert_eq!(claim.parser_revision, Some(67));
+    assert!(claim.reset);
+    assert!(claim.cursor_json.is_none());
+    assert!(!claim.request_origin_boundary);
+    assert_eq!(page.requests.len(), 1);
+    assert_eq!(page.requests[0].message.message_id, "sdk-request");
+    assert!(!page.history_complete);
+    assert!(!page.results.iter().any(|result| result.live_eligible));
+    assert!(origin_markers(&store).is_empty());
+    store
+        .publish_native_file_page(&claim, &page, &[], 101)
+        .unwrap();
+    assert_eq!(origin_markers(&store).len(), 1);
+
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    let (claim, idle) = next_page(&store, &input, 102);
+    assert_eq!(claim.parser_revision, Some(PARSER_REVISION));
+    assert!(claim.request_origin_boundary);
+    assert_eq!(idle.requests.len(), 1);
+    assert_eq!(idle.requests[0].message.message_id, "sdk-request");
+    assert!(idle.results.is_empty());
+    assert_eq!(origin_markers(&store).len(), 1);
+}
+
+#[test]
 fn parser_65_changed_source_label_requires_a_new_marker_and_sanitizes_the_retained_cursor() {
     let (directory, store, mut input) = fixture(CLAUDE_RESULTS);
     let (claim, first) = next_page(&store, &input, 100);

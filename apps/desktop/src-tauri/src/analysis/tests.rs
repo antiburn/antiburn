@@ -33,6 +33,7 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
         ClaimedSource {
             fingerprint: Some("sv1:stale-discovery-claim".to_owned()),
             generation: 1,
+            source_label: None,
         },
         PassSignal::new(),
         None,
@@ -1819,10 +1820,12 @@ fn an_inline_source_records_matching_and_mismatching_generations() {
     let matching = ClaimedSource {
         fingerprint: Some(fingerprint),
         generation: 9,
+        source_label: None,
     };
     let mismatching = ClaimedSource {
         fingerprint: Some("sv1:different".to_string()),
         generation: 9,
+        source_label: None,
     };
     let actual = inline_fingerprint(&content);
     let StreamOutcome::Published { session, .. } = stream_vendor(

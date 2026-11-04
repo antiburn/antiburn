@@ -91,6 +91,8 @@ fn file_conversion_and_current_layouts_are_distinct_from_readiness() {
         Some(64),
         Some(65),
         Some(66),
+        Some(67),
+        Some(68),
         Some(PARSER_REVISION),
         Some(999),
     ] {
@@ -102,9 +104,9 @@ fn file_conversion_and_current_layouts_are_distinct_from_readiness() {
                     params![parser, file_cursor(revision)],
                 )
                 .unwrap();
-            let current_layout = parser
-                .is_some_and(|value| [63, 64, 65, 66, PARSER_REVISION].contains(&value))
-                && revision == 5;
+            let current_layout = parser.is_some_and(|value| {
+                [63, 64, 65, 66, 67, 68, 69, PARSER_REVISION].contains(&value)
+            }) && revision == 5;
             assert_eq!(
                 file_compatible(&connection),
                 current_layout
@@ -126,6 +128,8 @@ fn journal_conversion_and_current_layouts_are_distinct_from_readiness() {
         Some(64),
         Some(65),
         Some(66),
+        Some(67),
+        Some(68),
         Some(PARSER_REVISION),
         Some(999),
     ] {
@@ -137,9 +141,9 @@ fn journal_conversion_and_current_layouts_are_distinct_from_readiness() {
                     params![parser, journal_cursor(parser, revision)],
                 )
                 .unwrap();
-            let current_layout = parser
-                .is_some_and(|value| [63, 64, 65, 66, PARSER_REVISION].contains(&value))
-                && revision == 5;
+            let current_layout = parser.is_some_and(|value| {
+                [63, 64, 65, 66, 67, 68, 69, PARSER_REVISION].contains(&value)
+            }) && revision == 5;
             assert_eq!(
                 journal_compatible(&connection),
                 current_layout

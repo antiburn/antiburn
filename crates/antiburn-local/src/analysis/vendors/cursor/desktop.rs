@@ -128,18 +128,28 @@ impl<'a> DesktopEvidence<'a> {
             .and_then(bounded_id);
         let arguments = parse_object(tool.get("params"));
         let result = parse_object(tool.get("result"));
-        let output = result
-            .as_ref()
-            .and_then(|result| result.get("output"))
-            .and_then(Value::as_str)
-            .filter(|text| text.len() <= MAX_CONTENT_PART_BYTES);
+        let output = if matches!(name, Some("read_file_v2" | "ripgrep_raw_search")) {
+            None
+        } else {
+            result
+                .as_ref()
+                .and_then(|result| result.get("output"))
+                .and_then(Value::as_str)
+                .filter(|text| text.len() <= MAX_CONTENT_PART_BYTES)
+        };
         let exit = result
             .as_ref()
             .and_then(|result| result.get("exitCode"))
             .and_then(Value::as_i64);
         let terminal = tool.get("status").and_then(Value::as_str) == Some("completed");
         let shell = name == Some("run_terminal_command_v2");
-        let status = if shell && terminal {
+        let native_binding = native_result_binding(tool, name, call_id, terminal);
+        let native_identity_safe = !matches!(native_binding, NativeBinding::UnsafeIdentity);
+        let status = if let NativeBinding::Status(ToolResultStatus::Success) = native_binding {
+            ToolResultStatus::Success
+        } else if let NativeBinding::Status(ToolResultStatus::Error) = native_binding {
+            ToolResultStatus::Error
+        } else if shell && terminal {
             if result
                 .as_ref()
                 .and_then(|result| result.get("rejected"))
@@ -206,12 +216,22 @@ impl<'a> DesktopEvidence<'a> {
                 outcome: None,
                 provider_executed: None,
                 facts: None,
-                finality: terminal,
+                finality: if shell {
+                    terminal
+                } else {
+                    matches!(native_binding, NativeBinding::Status(_))
+                        && terminal
+                        && status != ToolResultStatus::Unknown
+                },
                 completeness: if !self.root {
                     ToolResultCompleteness::UnsafeOwnership
                 } else if !self.ordered {
                     ToolResultCompleteness::UnsafeOrder
-                } else if id.is_none() || call_id.is_none() || name.is_none() {
+                } else if id.is_none()
+                    || call_id.is_none()
+                    || name.is_none()
+                    || !native_identity_safe
+                {
                     ToolResultCompleteness::UnsafeIdentity
                 } else if complete {
                     ToolResultCompleteness::Complete
@@ -224,6 +244,54 @@ impl<'a> DesktopEvidence<'a> {
                 )),
             },
         )));
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeBinding {
+    Status(ToolResultStatus),
+    UnsafeIdentity,
+    Unknown,
+}
+
+fn native_result_binding(
+    tool: &Value,
+    name: Option<&str>,
+    call_id: Option<&str>,
+    terminal: bool,
+) -> NativeBinding {
+    if tool
+        .get("native_result_binding_error")
+        .and_then(Value::as_str)
+        == Some("unsafe_identity")
+    {
+        return NativeBinding::UnsafeIdentity;
+    }
+    if tool.get("toolCallBinary").is_some() {
+        return NativeBinding::Unknown;
+    }
+    let Some(binding) = tool.get("native_result_binding").and_then(Value::as_object) else {
+        return NativeBinding::Unknown;
+    };
+    let Some(name) = name.filter(|name| matches!(*name, "read_file_v2" | "ripgrep_raw_search"))
+    else {
+        return NativeBinding::UnsafeIdentity;
+    };
+    let Some(call_id) = call_id else {
+        return NativeBinding::UnsafeIdentity;
+    };
+    if binding.get("tool_name").and_then(Value::as_str) != Some(name)
+        || binding.get("tool_call_id").and_then(Value::as_str) != Some(call_id)
+        || binding.get("args_verified").and_then(Value::as_bool) != Some(true)
+        || binding.get("completed").and_then(Value::as_bool) != Some(true)
+        || !terminal
+    {
+        return NativeBinding::UnsafeIdentity;
+    }
+    match binding.get("status").and_then(Value::as_str) {
+        Some("success") => NativeBinding::Status(ToolResultStatus::Success),
+        Some("error") => NativeBinding::Status(ToolResultStatus::Error),
+        _ => NativeBinding::Unknown,
     }
 }
 
@@ -248,6 +316,19 @@ mod tests {
         SessionMetricsAccumulator, SourceCapabilities, SourceKind, ToolResultAdmission, reader_for,
     };
     use serde_json::json;
+
+    #[test]
+    fn projected_binary_identity_conflict_stays_unsafe() {
+        assert!(matches!(
+            native_result_binding(
+                &json!({"native_result_binding_error":"unsafe_identity"}),
+                Some("read_file_v2"),
+                Some("call"),
+                true
+            ),
+            NativeBinding::UnsafeIdentity
+        ));
+    }
 
     fn read(
         ordered: bool,

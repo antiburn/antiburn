@@ -901,8 +901,9 @@ pub(super) fn opencode_sqlite_schema(conn: &Connection) -> rusqlite::Result<Open
     };
     let v1_marker = table_exists("session")?;
     let v1 = v1_marker && db_table_has_column(conn, "session", "id");
-    // A V2 marker blocks V1 fallback, even when the V2 schema is incomplete.
-    if table_exists("session_v2")? || table_exists("session_message")? {
+    // `session_v2` always requires the supported V2 schema. OpenCode 1.18.35
+    // also writes a V1 `session_message` projection that references `session`.
+    if table_exists("session_v2")? {
         return Ok(
             if crate::analysis::opencode_v2_schema::is_supported(conn)? {
                 if v1 {
@@ -915,6 +916,13 @@ pub(super) fn opencode_sqlite_schema(conn: &Connection) -> rusqlite::Result<Open
             },
         );
     }
+    if table_exists("session_message")? {
+        return Ok(if v1 && has_v1_session_message_projection(conn)? {
+            OpenCodeSqliteSchema::V1
+        } else {
+            OpenCodeSqliteSchema::Malformed
+        });
+    }
     Ok(if v1 {
         OpenCodeSqliteSchema::V1
     } else if v1_marker {
@@ -922,6 +930,70 @@ pub(super) fn opencode_sqlite_schema(conn: &Connection) -> rusqlite::Result<Open
     } else {
         OpenCodeSqliteSchema::Unsupported
     })
+}
+
+/// Match the `session_message` projection written by OpenCode 1.18.35's V1
+/// database. Its foreign key points to `session`; V2 points to `session_v2`.
+fn has_v1_session_message_projection(conn: &Connection) -> rusqlite::Result<bool> {
+    let mut columns =
+        conn.prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info(?1) ORDER BY cid")?;
+    let columns = columns
+        .query_map(["session_message"], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let expected = [
+        ("id", "text", 1),
+        ("session_id", "text", 0),
+        ("type", "text", 0),
+        ("seq", "integer", 0),
+        ("time_created", "integer", 0),
+        ("time_updated", "integer", 0),
+        ("data", "text", 0),
+    ];
+    let columns_match = columns.len() == expected.len()
+        && columns.iter().zip(expected).all(
+            |((name, column_type, not_null, primary_key), (expected_name, expected_type, pk))| {
+                name == expected_name
+                    && column_type.eq_ignore_ascii_case(expected_type)
+                    && *primary_key == pk
+                    && *not_null == (*primary_key == 0)
+            },
+        );
+    if !columns_match {
+        return Ok(false);
+    }
+
+    let mut foreign_keys = conn.prepare(
+        "SELECT \"table\", \"from\", \"to\", on_update, on_delete, \"match\"
+         FROM pragma_foreign_key_list(?1) ORDER BY id, seq",
+    )?;
+    let foreign_keys = foreign_keys
+        .query_map(["session_message"], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(foreign_keys
+        == [(
+            "session".to_owned(),
+            "session_id".to_owned(),
+            "id".to_owned(),
+            "NO ACTION".to_owned(),
+            "CASCADE".to_owned(),
+            "NONE".to_owned(),
+        )])
 }
 
 pub fn db_session_source_format_connection(

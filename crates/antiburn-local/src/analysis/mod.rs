@@ -291,7 +291,10 @@ pub use vendors::{has_dedicated_reader, reader_for, reader_for_input};
 // Reparse corrected native compaction, generated text, and lifecycle records.
 // Reparse Claude and Pi sessions after native delivery lineage changes.
 // Reparse Codex cycles and request history after inert-record handling changes.
-pub const PARSER_REVISION: i64 = 67;
+// Reparse Claude request slots for the bounded SDK CLI route; parser-67 live
+// cursors can contain a rejected root and must start from the source boundary.
+// Reparse the bounded session-owner prefix before a Claude SDK request root.
+pub const PARSER_REVISION: i64 = 70;
 
 // +1 for turn row chart signals: `has_thinking`, `last_tool`, and
 // `subagent_launches` are now ingest-derived row columns

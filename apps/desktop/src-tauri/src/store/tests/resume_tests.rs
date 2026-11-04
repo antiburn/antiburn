@@ -691,7 +691,7 @@ fn conflicting_duplicate_source_outcomes_are_rejected_without_publishing() {
 fn current_resume_revisions_reject_each_prior_batch_revision() {
     let current = crate::analysis::resume_revisions();
     assert_eq!(current.snapshot_revision, 25);
-    assert_eq!(current.parser_revision, 67);
+    assert_eq!(current.parser_revision, 70);
     assert_eq!(current.analyzer_revision, 25);
     assert_eq!(current.metrics_schema_revision, 10);
     assert_eq!(current.evidence_schema_revision, 22);
@@ -708,7 +708,7 @@ fn current_resume_revisions_reject_each_prior_batch_revision() {
         let mut stale = stored.clone();
         match field {
             0 => stale.snapshot_revision = 24,
-            1 => stale.parser_revision = 66,
+            1 => stale.parser_revision = 67,
             2 => stale.analyzer_revision = 24,
             3 => stale.metrics_schema_revision = 9,
             4 => stale.evidence_schema_revision = 21,
@@ -724,7 +724,7 @@ fn parser_64_batch_resume_is_rejected_and_purged_without_removing_current_state(
     let store = store();
     let (record, _claim) = claimed_projection(&store, "parser-65-batch-resume", 100, 60);
     let current = crate::analysis::resume_revisions();
-    assert_eq!(current.parser_revision, 67);
+    assert_eq!(current.parser_revision, 70);
     let mut old = sample_resume("parser-64");
     old.parser_revision = 64;
     assert!(!current.matches(&old));

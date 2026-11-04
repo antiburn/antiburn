@@ -14,6 +14,24 @@ const DORMANT_POLL_SECS: i64 = 30;
 const MAX_READ_ATTEMPTS: i64 = 5;
 pub(crate) const MAX_CURSOR_BYTES: usize = 32 * 1024 * 1024;
 
+// Parser 67 stored this exact empty rejected-root state for SDK CLI roots.
+pub(crate) const CLAUDE_SDK_ROOT_REJECTED_RESET_SQL: &str = "(s.agent = 'claude-code'
+    AND d.parser_revision = 67
+    AND json_extract(d.cursor_json, '$.revision') = 5
+    AND json_extract(d.cursor_json, '$.agent') = 'claude'
+    AND json_extract(d.cursor_json, '$.session_id') = s.session_id
+    AND json_extract(d.cursor_json, '$.source_format') = 'claude_jsonl'
+    AND json_extract(d.cursor_json, '$.history_complete') = 0
+    AND json_extract(d.cursor_json, '$.requests') = '[]'
+    AND json_extract(d.cursor_json, '$.adapter.Claude.root') = 0
+    AND json_extract(d.cursor_json, '$.adapter.Claude.parser.user_message_root.user_slot') = 1
+    AND json_extract(d.cursor_json, '$.adapter.Claude.parser.user_message_root.characterized') = 0
+    AND json_extract(d.cursor_json, '$.adapter.Claude.parser.user_message_root.invalid') = 1
+    AND json_type(d.cursor_json, '$.adapter.Claude.parser.user_message_root.session') = 'null'
+    AND json_type(d.cursor_json, '$.adapter.Claude.parser.user_message_root.last') = 'null'
+    AND json_type(d.cursor_json, '$.adapter.Claude.parser.user_message_root.fingerprints') = 'object'
+    AND json_extract(d.cursor_json, '$.adapter.Claude.parser.user_message_root.fingerprints') = '{}')";
+
 pub(crate) fn owns_session(record: &SessionRecord) -> bool {
     record.key.environment_key == "native"
         && record.wsl_distro.is_none()
@@ -39,12 +57,13 @@ const CANDIDATES: &str = "WITH candidates AS (
            COALESCE(d.active_until_epoch, 0) AS active_until_epoch,
             (d.source_label <> s.source_label OR d.cwd IS NOT s.cwd) AS binding_changed,
             (d.incarnation IS NULL OR d.incarnation <> s.incarnation
+              OR /*CLAUDE_SDK_ROOT_REJECTED_RESET*/
               OR ((d.source_label <> s.source_label OR d.cwd IS NOT s.cwd) AND d.cursor_json IS NULL)
               ) AS reset
       FROM session s LEFT JOIN native_file_delivery d USING(environment_key, agent, session_id)
      WHERE s.environment_key = 'native' AND s.wsl_distro IS NULL
         AND s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file'
-        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66))
+        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69))
         AND s.cwd IS NOT NULL AND s.cwd <> ''
         AND EXISTS(SELECT 1 FROM burn_check_activation a
           WHERE a.enabled = 1 AND json_extract(a.activation_scope_key, '$.environment') = s.environment_key
@@ -55,6 +74,13 @@ const CANDIDATES: &str = "WITH candidates AS (
            AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
              OR (r.related_id = s.session_id AND r.kind = 'subagent')))
 )";
+
+fn candidates_sql() -> String {
+    CANDIDATES.replace(
+        "/*CLAUDE_SDK_ROOT_REJECTED_RESET*/",
+        CLAUDE_SDK_ROOT_REJECTED_RESET_SQL,
+    )
+}
 
 #[derive(Debug)]
 pub(crate) struct NativeFileClaim {
@@ -86,7 +112,7 @@ impl NativeFileClaim {
             (Some(64), Some(1)) => NativeFileCursor::convert_main_64_json(encoded.as_bytes())?,
             (Some(62), Some(4)) => NativeFileCursor::convert_v4_json(encoded.as_bytes())?,
             (Some(revision), Some(5))
-                if revision == PARSER_REVISION || matches!(revision, 63..=66) =>
+                if revision == PARSER_REVISION || matches!(revision, 63..=69) =>
             {
                 let cursor: NativeFileCursor = serde_json::from_value(value)?;
                 if revision < 65
@@ -141,8 +167,9 @@ impl Store {
             return Ok(None);
         }
         let origin_boundary = super::super::request_origin::boundary_sql("candidates");
+        let candidates = candidates_sql();
         let claim = tx.query_row(
-            &format!("{CANDIDATES}
+            &format!("{candidates}
              SELECT environment_key, agent, session_id, incarnation, source_label, cwd,
                     source_generation, CASE WHEN reset THEN NULL ELSE cursor_json END,
                      CASE WHEN reset THEN 0 ELSE COALESCE(retry_count, 0) END,
@@ -249,7 +276,10 @@ impl Store {
         )?;
         let origin_upgrade = claude
             && (origin_boundary
-                || !matches!(claim.parser_revision, Some(65 | 66 | PARSER_REVISION)));
+                || !matches!(
+                    claim.parser_revision,
+                    Some(65 | 66 | 68 | 69 | PARSER_REVISION)
+                ));
         let mut unsafe_reason = if claim.reset {
             None
         } else {
@@ -457,7 +487,7 @@ fn current_generation(
            AND d.claim_fence = ?4 AND d.cursor_json IS ?5 AND d.lease_expires_at_epoch > ?6
            AND d.incarnation = ?7 AND s.incarnation = ?7 AND d.source_label = ?8
            AND s.source_label = ?8 AND s.source_kind = 'file' AND s.wsl_distro IS NULL
-            AND d.cwd = ?9 AND s.cwd = ?9 AND d.parser_revision IN (?10, 62, 63, 64, 65, 66)
+            AND d.cwd = ?9 AND s.cwd = ?9 AND d.parser_revision IN (?10, 62, 63, 64, 65, 66, 67, 68, 69)
            AND NOT EXISTS(SELECT 1 FROM session_relation r
              WHERE r.environment_key = s.environment_key AND r.agent = s.agent
                AND ((r.session_id = s.session_id AND r.kind = 'forkParent')

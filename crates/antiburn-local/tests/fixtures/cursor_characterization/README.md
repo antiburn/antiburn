@@ -100,3 +100,11 @@ Shared integration must update source/check coverage limits and bump the parser
 revision for content preservation. Do not advertise typed question/plan support
 or complete native scope history from this generic pin. Dedicated evidence needs
 an additional producer pin and matching transcript/companion fixtures.
+
+## Pinned Cursor Desktop Read/Grep completion
+
+`native_read_grep_binary.jsonl` constructs synthetic protobuf messages for the bounded Cursor 3.25.6 Read/Grep schema. Every ID, path, timestamp, parameter, result, and encoded byte is generated from synthetic values. This is not a redacted transcript or captured machine output. The producer descriptor pin and native observations remain in ignored local audit evidence.
+
+The pinned shape supports only schema-matched successful or error Read/Grep completion with exact tool ID, tool name, arguments, and completed lifecycle state. Discovery decodes the opaque bytes and emits a small verified binding. It never projects the binary. Result content remains unavailable, and read extent or search output completeness is not claimed. Unknown fields, malformed encodings, missing or conflicting oneofs, mismatched arguments, and unrecognized modes remain unknown or unavailable as appropriate. The fixtures do not establish a producer release range.
+
+`native_read_grep_projected.jsonl` is the corresponding synthetic normalized projection used by the analysis reader. It contains no binary bytes and preserves only the verified binding.

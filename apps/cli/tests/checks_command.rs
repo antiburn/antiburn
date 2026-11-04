@@ -986,3 +986,146 @@ fn capabilities_is_database_free_and_has_no_profile_side_effects() {
     );
     assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn canonical_yaml_actions_reach_delivery_without_losing_authored_messages() {
+    use antiburn_checks::actions::{ActionOutcomeKind, plan_status_actions};
+    use antiburn_checks::compiler::StatusResult;
+    use antiburn_checks::decision::Question;
+    use antiburn_checks::results::{
+        ChoiceResult, DecisionResult, EvaluatedAssessment, NamedAnswer, QuestionResult,
+    };
+    use std::collections::BTreeMap;
+
+    let definitions = [
+        (
+            "over-exploring",
+            include_str!("../../../.antiburn/checks/over-exploring.yml"),
+            "likely_excess",
+        ),
+        (
+            "scope-creep",
+            include_str!("../../../.antiburn/checks/scope-creep.yml"),
+            "unauthorized_extra",
+        ),
+        (
+            "ignored-instructions",
+            include_str!("../../../.antiburn/checks/ignored-instructions.yml"),
+            "current_file_mismatch",
+        ),
+        (
+            "ignored-instructions",
+            include_str!("../../../.antiburn/checks/ignored-instructions.yml"),
+            "recorded_correction_conflict",
+        ),
+        (
+            "skill-opportunities",
+            include_str!("../../../.antiburn/checks/skill-opportunities.yml"),
+            "actionable_help",
+        ),
+        (
+            "fast-mode-value",
+            include_str!("../../../.antiburn/checks/fast-mode-value.yml"),
+            "try_standard_mode",
+        ),
+    ];
+    for (id, yaml, label) in definitions {
+        let check = antiburn_checks::compile(yaml).unwrap();
+        let declaration = &check.decisions[0];
+        let question = &declaration.outputs[0];
+        let Question::Choice { criteria, .. } = &question.question else {
+            panic!("Expected Choice");
+        };
+        assert!(
+            criteria.iter().any(|(name, _)| name == label),
+            "{id}: missing failure label"
+        );
+        let probabilities = criteria
+            .iter()
+            .map(|(name, _)| {
+                (
+                    name.clone(),
+                    if name == label {
+                        0.98
+                    } else {
+                        0.02 / (criteria.len() - 1) as f64
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let answer = NamedAnswer::new(
+            &question.name,
+            QuestionResult::Choice(
+                ChoiceResult::new(&question.question, label, Some(probabilities), None).unwrap(),
+            ),
+        )
+        .unwrap();
+        let requirements = check.question_requirements();
+        let result = DecisionResult::new(declaration, &requirements, vec![answer], 1).unwrap();
+        let assessment =
+            EvaluatedAssessment::new(&check.decisions, &requirements, vec![result]).unwrap();
+        let plan = plan_status_actions(&check.actions, &json!({}), &assessment, None).unwrap();
+        assert_eq!(plan.current_status, Some(StatusResult::Failure), "{id}");
+        let message = plan
+            .outcomes
+            .iter()
+            .find_map(|outcome| match &outcome.outcome {
+                ActionOutcomeKind::Applied { message, .. } => message.clone(),
+                _ => None,
+            })
+            .unwrap();
+
+        let temp = tempdir().unwrap();
+        let (connection, database, config) = delivery_fixture(temp.path());
+        for table in [
+            "burn_check_activation",
+            "burn_check_runtime_definition",
+            "burn_check_current_status",
+            "burn_check_assessment_history",
+        ] {
+            connection
+                .execute(&format!("UPDATE {table} SET check_id = ?1"), [id])
+                .unwrap();
+        }
+        connection
+            .execute(
+                "UPDATE burn_check_runtime_definition SET name = ?1",
+                [&check.name],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE burn_check_assessment_history SET actions_json = ?1",
+                [serde_json::to_string(&plan).unwrap()],
+            )
+            .unwrap();
+        let before = std::fs::read(&database).unwrap();
+        let first = delivery_call(temp.path(), &config, "claude-code:context", None);
+        assert_eq!(first["state"], "ready", "{id}");
+        assert_eq!(first["updates"][0]["name"], check.name, "{id}");
+        assert_eq!(first["updates"][0]["message"], message, "{id}");
+        assert_eq!(first["snapshot"][0]["message"], message, "{id}");
+        assert_eq!(first["freshness_evaluated"], false);
+        delivery_call(
+            temp.path(),
+            &config,
+            "claude-code:context",
+            first["receipt"].as_str(),
+        );
+        assert_eq!(
+            delivery_call(temp.path(), &config, "claude-code:context", None)["updates"],
+            json!([]),
+            "{id}"
+        );
+        assert_eq!(
+            delivery_call(temp.path(), &config, "claude-code:ui", None)["updates"][0]["message"],
+            message,
+            "{id}"
+        );
+        assert_eq!(
+            std::fs::read(&database).unwrap(),
+            before,
+            "{id}: CLI mutated product data"
+        );
+    }
+}

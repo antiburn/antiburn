@@ -1,6 +1,6 @@
 use super::*;
 use antiburn_local::platform::environment::DiscoveryEnvironment;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Mutex;
 
@@ -949,6 +949,101 @@ async fn an_appended_transcript_produces_a_different_fingerprint() {
     };
 
     assert_ne!(first.source_fingerprint, second.source_fingerprint);
+}
+
+#[tokio::test]
+async fn cursor_desktop_source_refresh_advances_fingerprint_once_without_label_oscillation() {
+    let home = tempfile::TempDir::new().unwrap();
+    let workspace = home.path().join("desktop-workspace");
+    std::fs::create_dir_all(workspace.join(".git")).unwrap();
+    let session_id = "cursor-refresh-session";
+    let source_label = format!("cursor-desktop:composer-hash:{session_id}");
+    let make_log = |assistant_text: &str, updated_at| SessionLog {
+        agent_type: AgentKind::Cursor,
+        source: SessionSource::Inline {
+            label: source_label.clone(),
+            content: format!(
+                "{}\n{}\n{}",
+                serde_json::json!({
+                    "cursor_source": "desktop_state_vscdb",
+                    "cursor_scope_ordering": "recorded_headers",
+                    "session_id": session_id,
+                    "cwd": workspace,
+                    "local_fork_observation": null,
+                }),
+                serde_json::json!({
+                    "role": "user",
+                    "bubbleId": "user-1",
+                    "content": "Inspect this workspace",
+                }),
+                serde_json::json!({
+                    "role": "assistant",
+                    "bubbleId": "assistant-1",
+                    "content": assistant_text,
+                }),
+            ),
+            source_format: None,
+        },
+        updated_at: Some(updated_at),
+        environment: DiscoveryEnvironment::Native,
+    };
+    let store = crate::store::Store::open_in_memory(home.path()).unwrap();
+    let key = SessionKey::new("native", "cursor", session_id);
+
+    let first = describe_with_states(
+        vec![make_log("initial snapshot", 1_800_000_000)],
+        home.path(),
+        &HashSet::new(),
+        &HashMap::new(),
+    )
+    .await;
+    assert_eq!(first.records.len(), 1);
+    assert_eq!(first.records[0].source_label, source_label);
+    store
+        .upsert_sessions(&first.records, &agents::evidence_cohort())
+        .unwrap();
+    let first_state = store.session_source_state(&key).unwrap().unwrap();
+
+    let second = describe_with_states(
+        vec![make_log("updated native snapshot", 1_800_000_100)],
+        home.path(),
+        &HashSet::new(),
+        &store.session_records().unwrap(),
+    )
+    .await;
+    assert_eq!(second.records.len(), 1);
+    assert_eq!(second.records[0].source_label, source_label);
+    assert_ne!(
+        second.records[0].source_fingerprint,
+        first.records[0].source_fingerprint
+    );
+    store
+        .upsert_sessions(&second.records, &agents::evidence_cohort())
+        .unwrap();
+    let second_state = store.session_source_state(&key).unwrap().unwrap();
+    assert!(second_state.source_generation > first_state.source_generation);
+    assert_ne!(
+        second_state.source_fingerprint,
+        first_state.source_fingerprint
+    );
+
+    let third = describe_with_states(
+        vec![make_log("updated native snapshot", 1_800_000_200)],
+        home.path(),
+        &HashSet::new(),
+        &store.session_records().unwrap(),
+    )
+    .await;
+    assert_eq!(third.records.len(), 1);
+    assert_eq!(third.records[0].source_label, source_label);
+    store
+        .upsert_sessions(&third.records, &agents::evidence_cohort())
+        .unwrap();
+    assert_eq!(
+        store.session_source_state(&key).unwrap().unwrap(),
+        second_state,
+        "an unchanged refresh must not advance source generation again"
+    );
 }
 
 #[tokio::test]

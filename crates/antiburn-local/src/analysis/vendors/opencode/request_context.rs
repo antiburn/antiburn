@@ -225,15 +225,19 @@ impl RequestHistory {
                         && part["sessionID"] == session
                 })
         });
+        let mut requester = crate::analysis::NativeRequestAttribution::observed(
+            request.and_then(|info| info["providerID"].as_str()),
+            request.and_then(|info| info["modelID"].as_str()),
+        );
+        requester.fast_mode = request.and_then(|info| {
+            selected_catalog_fast_mode(info["providerID"].as_str(), info["modelID"].as_str())
+        });
         crate::analysis::NativeToolFacts::for_call(
             SourceFormat::OpenCodeSqliteV1,
             name,
             arguments,
             None,
-            crate::analysis::NativeRequestAttribution::observed(
-                request.and_then(|info| info["providerID"].as_str()),
-                request.and_then(|info| info["modelID"].as_str()),
-            ),
+            requester,
         )
     }
 
@@ -504,6 +508,13 @@ impl RequestHistory {
     }
 }
 
+fn selected_catalog_fast_mode(provider: Option<&str>, model: Option<&str>) -> Option<bool> {
+    match (provider, model) {
+        (Some("openai"), Some("gpt-6.1-sol-fast")) => Some(true),
+        _ => None,
+    }
+}
+
 fn bounded_id(value: &Value) -> Option<&str> {
     value
         .as_str()
@@ -579,5 +590,58 @@ mod tests {
                 .requester,
             crate::analysis::NativeRequestAttribution::default()
         );
+    }
+
+    #[test]
+    fn selected_fast_catalog_attribution_requires_exact_owned_openai_request() {
+        let facts = |provider: &str, model: &str, step_message: Option<&str>| {
+            let mut history = RequestHistory {
+                root: true,
+                ..RequestHistory::default()
+            };
+            let assistant = json!({"sessionID":"facts","info":{
+                "id":"assistant-1","sessionID":"facts","role":"assistant",
+                "providerID":provider,"modelID":model,
+                "path":{"cwd":"/synthetic/project"}
+            }});
+            history.observe("message.updated.1", &assistant, "facts", 1);
+            if let Some(message) = step_message {
+                history.observe(
+                    "message.part.updated.1",
+                    &json!({"sessionID":"facts","part":{
+                        "id":"step-1","messageID":message,"sessionID":"facts","type":"step-start"
+                    }}),
+                    "facts",
+                    2,
+                );
+            }
+            history
+                .tool_facts("facts", "assistant-1", "read", None)
+                .requester
+                .fast_mode
+        };
+
+        assert_eq!(
+            facts("openai", "gpt-6.1-sol-fast", Some("assistant-1")),
+            Some(true)
+        );
+        assert_eq!(facts("openai", "gpt-6.1-sol", Some("assistant-1")), None);
+        assert_eq!(
+            facts("openai", "gpt-6.1-sol-ultrafast", Some("assistant-1")),
+            None
+        );
+        assert_eq!(
+            facts("other-provider", "gpt-6.1-sol-fast", Some("assistant-1")),
+            None
+        );
+        assert_eq!(
+            facts("openai", "unreviewed-model-fast", Some("assistant-1")),
+            None
+        );
+        assert_eq!(
+            facts("openai", "gpt-6.1-sol-fast", Some("other-assistant")),
+            None
+        );
+        assert_eq!(facts("openai", "gpt-6.1-sol-fast", None), None);
     }
 }

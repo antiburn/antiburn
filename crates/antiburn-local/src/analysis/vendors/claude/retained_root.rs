@@ -1,4 +1,4 @@
-//! This contract proves a retained linear root, not the original historical conversation.
+//! This contract proves a retained root, not the original historical conversation.
 
 use std::collections::BTreeMap;
 
@@ -14,6 +14,7 @@ use crate::analysis::jev_evidence::{
 };
 
 const CHARACTERIZED_VERSIONS: &[&str] = &["2.1.278", "2.1.309"];
+const CHARACTERIZED_SDK_CLI_VERSIONS: &[&str] = &["2.1.309", "2.1.317"];
 const MAX_RECORDS: usize = 16_384;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -43,9 +44,9 @@ impl ClaudeRetainedRoot {
             && self.fingerprints.is_empty()
     }
 
-    pub(super) fn observe_user_slot(&mut self, record: &Value) {
+    pub(super) fn observe_user_slot(&mut self, record: &Value, sdk_result_seam: bool) {
         self.user_slot = true;
-        self.observe(record);
+        self.observe_record(record, false, sdk_result_seam);
     }
 
     pub(super) fn observe_retained_start(&mut self, record: &Value) {
@@ -55,7 +56,7 @@ impl ClaudeRetainedRoot {
             return;
         }
         self.user_slot = true;
-        self.observe_record(record, true);
+        self.observe_record(record, true, false);
     }
 
     pub(super) fn admits(&self, session_id: &str) -> bool {
@@ -71,6 +72,38 @@ impl ClaudeRetainedRoot {
             retained_parent(record) == Some(last)
                 && (self.user_slot || !is_compaction_boundary(record))
         })
+    }
+
+    pub(super) fn has_sdk_result_seam<'a>(
+        &self,
+        record: &Value,
+        call_parent: impl Fn(&str) -> Option<&'a str>,
+    ) -> bool {
+        self.user_slot
+            && !self.invalid
+            && record["version"] == "2.1.317"
+            && record["entrypoint"] == "sdk-cli"
+            && record["type"] == "user"
+            && record.pointer("/message/role").and_then(Value::as_str) == Some("user")
+            && record["sessionId"].as_str() == self.session.as_deref()
+            && record["isSidechain"] == false
+            && record.get("agentId").is_none()
+            && !has_injection_flags(record)
+            && record
+                .pointer("/message/content")
+                .and_then(Value::as_array)
+                .is_some_and(|blocks| {
+                    let mut ids = std::collections::BTreeSet::new();
+                    !blocks.is_empty()
+                        && blocks.iter().all(|block| {
+                            block["type"] == "tool_result"
+                                && bounded_id(&block["tool_use_id"]).is_some_and(|id| {
+                                    ids.insert(id)
+                                        && call_parent(id) == retained_parent(record)
+                                        && retained_parent(record).is_some()
+                                })
+                        })
+                })
     }
 
     pub(super) fn has_gap(&self) -> bool {
@@ -110,11 +143,15 @@ impl ClaudeRetainedRoot {
     }
 
     pub(super) fn observe(&mut self, record: &Value) {
-        self.observe_record(record, false);
+        self.observe_record(record, false, false);
     }
 
-    fn observe_record(&mut self, record: &Value, retained_start: bool) {
-        self.characterized |= is_characterized_cli(record);
+    fn observe_record(&mut self, record: &Value, retained_start: bool, sdk_result_seam: bool) {
+        self.characterized |= if self.user_slot {
+            is_characterized_request_slot(record)
+        } else {
+            is_characterized_cli(record)
+        };
         if ((record["subtype"] == "compact_boundary" || record["isCompactSummary"] == true)
             && !self.user_slot)
             || record["type"] == "fork-context-ref"
@@ -134,15 +171,18 @@ impl ClaudeRetainedRoot {
                 || (record.get("parentUuid") == Some(&Value::Null)
                     && record.get("logicalParentUuid").is_none_or(Value::is_null)
                     && ((if self.user_slot {
-                        is_user_content(record)
+                        is_user_slot_root(record)
                     } else {
                         is_human(record)
-                    }) || is_informational_root(record)))
+                    }) || is_informational_root(record) && is_characterized_cli(record)))
         } else {
-            self.has_known_seam(record)
+            self.has_known_seam(record) || sdk_result_seam
         };
-        if !is_characterized_cli(record)
-            || record["isSidechain"] != false
+        if !(if self.user_slot {
+            is_characterized_request_slot(record)
+        } else {
+            is_characterized_cli(record)
+        }) || record["isSidechain"] != false
             || record.get("agentId").is_some()
             || id.is_none()
             || session.is_none()
@@ -242,6 +282,38 @@ pub(super) fn is_characterized_cli(record: &Value) -> bool {
             .is_some_and(|version| CHARACTERIZED_VERSIONS.contains(&version))
 }
 
+pub(super) fn is_characterized_request_slot(record: &Value) -> bool {
+    is_characterized_cli(record)
+        || (record["entrypoint"] == "sdk-cli"
+            && record["version"]
+                .as_str()
+                .is_some_and(|version| CHARACTERIZED_SDK_CLI_VERSIONS.contains(&version)))
+}
+
+pub(super) fn is_sdk_request_root(record: &Value) -> bool {
+    record["entrypoint"] == "sdk-cli"
+        && record.get("origin").is_none()
+        && record["promptSource"] == "sdk"
+        && record["turnOrigin"] == "sdk"
+        && record["userType"] == "external"
+}
+
+pub(super) fn is_user_slot_root(record: &Value) -> bool {
+    is_user_content(record) && (is_characterized_cli(record) || is_sdk_request_root(record))
+}
+
+pub(super) fn has_api_request_origin(record: &Value) -> bool {
+    record["entrypoint"] == "sdk-cli"
+        || [
+            record.pointer("/origin/kind").and_then(Value::as_str),
+            record.get("promptSource").and_then(Value::as_str),
+            record.get("turnOrigin").and_then(Value::as_str),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|origin| matches!(origin, "api" | "extension" | "sdk"))
+}
+
 pub(super) fn is_user_content(record: &Value) -> bool {
     record["type"] == "user"
         && record.pointer("/message/role").and_then(Value::as_str) == Some("user")
@@ -321,7 +393,7 @@ fn denies_human_authority(record: &Value) -> bool {
 
 pub(super) fn set_user_authority(record: &Value, parts: &mut [ContentPart]) {
     let injected = denies_human_authority(record);
-    let unproven = is_characterized_cli(record) && !is_human(record);
+    let unproven = is_characterized_request_slot(record) && !is_human(record);
     let injected_block = record
         .pointer("/message/content")
         .and_then(Value::as_array)
@@ -342,6 +414,80 @@ pub(super) fn set_user_authority(record: &Value, parts: &mut [ContentPart]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sdk_record(id: &str, parent: Value, role: &str, content: Value) -> Value {
+        serde_json::json!({"type":role,"uuid":id,"parentUuid":parent,
+            "sessionId":"session","version":"2.1.317","entrypoint":"sdk-cli",
+            "isSidechain":false,"userType":"external",
+            "message":{"role":role,"content":content}})
+    }
+
+    #[test]
+    fn sdk_parallel_result_seam_requires_exact_pending_call_and_owner() {
+        for case in [
+            "valid",
+            "wrong-call",
+            "wrong-parent",
+            "wrong-session",
+            "sidechain",
+            "agent",
+            "injected",
+            "user-text",
+            "duplicate-result",
+            "unsupported-version",
+            "cli",
+        ] {
+            let mut root = ClaudeRetainedRoot::for_user_slot();
+            let mut request = sdk_record(
+                "root",
+                Value::Null,
+                "user",
+                Value::String("Read both files.".into()),
+            );
+            request["promptSource"] = Value::String("sdk".into());
+            request["turnOrigin"] = Value::String("sdk".into());
+            root.observe_user_slot(&request, false);
+            for (id, parent, call) in [("a", "root", "tool-a"), ("b", "a", "tool-b")] {
+                root.observe_user_slot(&sdk_record(id, Value::String(parent.into()), "assistant",
+                    serde_json::json!([{"type":"tool_use","id":call,"name":"Read","input":{"file_path":"/synthetic/source.rs"}}])), false);
+            }
+            let mut result = sdk_record(
+                "result-a",
+                Value::String("a".into()),
+                "user",
+                serde_json::json!([{"type":"tool_result","tool_use_id":"tool-a","content":"source","is_error":false}]),
+            );
+            match case {
+                "wrong-call" => {
+                    result["message"]["content"][0]["tool_use_id"] = Value::String("unknown".into())
+                }
+                "wrong-parent" => result["parentUuid"] = Value::String("root".into()),
+                "wrong-session" => result["sessionId"] = Value::String("other".into()),
+                "sidechain" => result["isSidechain"] = Value::Bool(true),
+                "agent" => result["agentId"] = Value::String("child".into()),
+                "injected" => result["isSynthetic"] = Value::Bool(true),
+                "user-text" => result["message"]["content"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(serde_json::json!({"type":"text","text":"New request"})),
+                "duplicate-result" => {
+                    let block = result["message"]["content"][0].clone();
+                    result["message"]["content"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(block);
+                }
+                "unsupported-version" => result["version"] = Value::String("2.1.318".into()),
+                "cli" => result["entrypoint"] = Value::String("cli".into()),
+                _ => {}
+            }
+            root = serde_json::from_value(serde_json::to_value(root).unwrap()).unwrap();
+            let seam = root.has_sdk_result_seam(&result, |id| (id == "tool-a").then_some("a"));
+            assert_eq!(seam, case == "valid", "{case}");
+            root.observe_user_slot(&result, seam);
+            assert_eq!(root.admits("session"), case == "valid", "{case}");
+        }
+    }
 
     fn user(version: &str, id: &str, parent: Value) -> Value {
         serde_json::json!({

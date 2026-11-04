@@ -2016,6 +2016,88 @@ impl Explorers {
             .map(|log| log.source.clone())
     }
 
+    /// Locate a session by its persisted source label and environment.
+    ///
+    /// A source label is part of a claimed source identity. This lookup never
+    /// replaces a missing source with another source that has the same id.
+    pub async fn locate_session_source_by_label_in_environment(
+        &self,
+        agent: &AgentKind,
+        session_id: &str,
+        source_label: &str,
+        wsl_distro: Option<&str>,
+    ) -> Option<SessionSource> {
+        if session_id.is_empty() || source_label.is_empty() {
+            return None;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default();
+        let logs = if let Some(distro) = wsl_distro.filter(|value| !value.is_empty()) {
+            let info = crate::platform::environment::discover_wsl_environments()
+                .await
+                .into_iter()
+                .find(|info| info.distribution.eq_ignore_ascii_case(distro))?;
+            self.discover_wsl_file_sessions_in(&info, now, now).await
+        } else {
+            if let DirectSessionSource::Found(source) =
+                self.get(agent).direct_session_source(session_id).await
+            {
+                let direct_log = SessionLog {
+                    agent_type: *agent,
+                    source: source.clone(),
+                    updated_at: None,
+                    environment: DiscoveryEnvironment::Native,
+                };
+                if direct_log.source_label() == source_label {
+                    return Some(source);
+                }
+            }
+            self.get(agent).discover_recent(now, now).await
+        };
+
+        self.find_source_log_by_label(&logs, agent, session_id, source_label, wsl_distro)
+            .map(|log| log.source.clone())
+    }
+
+    fn find_source_log_by_label<'a>(
+        &self,
+        logs: &'a [SessionLog],
+        agent: &AgentKind,
+        session_id: &str,
+        source_label: &str,
+        wsl_distro: Option<&str>,
+    ) -> Option<&'a SessionLog> {
+        logs.iter().find(|log| {
+            if log.agent_type != *agent || log.source_label() != source_label {
+                return false;
+            }
+            let environment_matches = match wsl_distro.filter(|value| !value.is_empty()) {
+                Some(distro) => log
+                    .environment
+                    .wsl_distro()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(distro)),
+                None => log.environment.is_native(),
+            };
+            let session_matches = match &log.source {
+                SessionSource::Inline { content, .. } => {
+                    scanner::parse_session_metadata_str(content)
+                        .session_id
+                        .as_deref()
+                        == Some(session_id)
+                }
+                SessionSource::File(_) => self.session_id_of_log(log) == session_id,
+                SessionSource::ProviderDb {
+                    session_id: source_session_id,
+                    ..
+                } => source_session_id == session_id,
+            };
+            environment_matches && session_matches
+        })
+    }
+
     /// Resolves one session within an explicit caller-supplied environment
     /// identity.
     ///

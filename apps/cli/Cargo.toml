@@ -31,6 +31,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["a
 libc = "0.2"
 
 [dev-dependencies]
+antiburn-checks = { path = "../../crates/antiburn-checks" }
 tempfile = "3"
 
 [profile.release]

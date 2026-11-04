@@ -656,7 +656,9 @@ fn published_tool_metadata(
             match source_format {
                 SourceFormat::ClaudeJsonl => Some("reported-speed"),
                 SourceFormat::CodexRolloutJsonl => Some("requested-tier-preference"),
-                SourceFormat::OpenCodeSqliteV2 => Some("selected-catalog-model"),
+                SourceFormat::OpenCodeSqliteV1 | SourceFormat::OpenCodeSqliteV2 => {
+                    Some("selected-catalog-model")
+                }
                 SourceFormat::PiV3Jsonl => Some("model-id-suffix-hint"),
                 _ => None,
             }

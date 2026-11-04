@@ -30,6 +30,51 @@ fn fixture_paths(root: &Path) -> Result<Vec<PathBuf>, &'static str> {
     super::super::super::database_paths_for_root_config(root, None)
 }
 
+#[test]
+fn opencode_11835_v1_projection_binds_the_v1_journal_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("opencode.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../../tests/fixtures/opencode_11835_v1_projection.sql"
+        ))
+        .unwrap();
+    connection
+        .execute("INSERT INTO project (id) VALUES ('project')", [])
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+             VALUES ('ses_11835', 'project', 'test', '/synthetic', 'V1 journal', '1.18.35', 10, 20)",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+             VALUES ('msg_11835', 'ses_11835', 'user', 1, 10, 10, '{}')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        super::super::opencode_sqlite_schema(&connection).unwrap(),
+        OpenCodeSqliteSchema::V1
+    );
+    drop(connection);
+
+    let selected = select_fixture(&[directory.path().to_path_buf()], &["ses_11835"]);
+    assert!(matches!(
+        &selected["ses_11835"].as_ref().unwrap().source,
+        SessionSource::ProviderDb {
+            db_path,
+            session_id,
+            source_format: Some(crate::analysis::SourceFormat::OpenCodeSqliteV1),
+            ..
+        } if db_path == &path && session_id == "ses_11835"
+    ));
+}
+
 fn select_fixture(roots: &[PathBuf], ids: &[&str]) -> HashMap<String, Option<SessionLog>> {
     select_with_path_resolver(
         roots,

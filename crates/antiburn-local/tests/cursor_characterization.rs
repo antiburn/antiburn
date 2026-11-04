@@ -4,8 +4,8 @@ use antiburn_local::analysis::{
     AppendOnlyGuarantee, CompositeSink, ContentKind, EvidenceCoverage, EvidenceSource,
     EvidenceValue, MemoryTurnRowStore, NormalizedEvent, NormalizedRecord, PartialReason, RawSource,
     RecordSink, SessionCollector, SessionEvidence, SessionEvidenceAccumulator, SessionInput,
-    SessionMetricsAccumulator, SessionSummary, SourceClaim, SourceFormat, SourceKind, ToolClass,
-    TurnContent, TurnRowSink, TurnRowStore, reader_for,
+    SessionMetricsAccumulator, SessionSummary, SourceClaim, SourceFormat, SourceKind, ToolCategory,
+    ToolClass, TurnContent, TurnRowSink, TurnRowStore, reader_for,
 };
 use antiburn_local::discovery::source_version::{FingerprintInputs, SourceStat, head_hash_of};
 use antiburn_local::insights::{
@@ -21,6 +21,68 @@ fn input(source: RawSource) -> SessionInput {
         fork_parent_session_id: None,
         source_format: Default::default(),
     }
+}
+
+#[test]
+fn cursor_desktop_binary_read_and_search_keep_success_without_result_text() {
+    let input = SessionInput {
+        agent: "cursor".into(),
+        session_id: "cursor-native-probe".into(),
+        source: RawSource::Jsonl(
+            include_str!("fixtures/cursor_characterization/native_read_grep_projected.jsonl")
+                .into(),
+        ),
+        fork_parent_session_id: None,
+        source_format: SourceFormat::CursorIdeComposer,
+    };
+    let reader = reader_for("cursor");
+    let mut sink = antiburn_local::analysis::CompositeSink::new(
+        SessionMetricsAccumulator::new("cursor", "cursor-native-probe"),
+        SessionEvidenceAccumulator::new(EvidenceSource {
+            agent: "cursor".into(),
+            session_id: "cursor-native-probe".into(),
+            kind: SourceKind::Jsonl,
+            capabilities: reader.capabilities(&input),
+        }),
+    );
+    reader.visit(&input, &mut sink).unwrap();
+
+    let results = sink.tool_result_observations();
+    assert_eq!(results.len(), 2);
+    for (result, name, category) in [
+        (&results[0], "read_file_v2", ToolCategory::Read),
+        (&results[1], "ripgrep_raw_search", ToolCategory::Search),
+    ] {
+        assert_eq!(result.tool_name.as_deref(), Some(name));
+        assert_eq!(result.tool_category, Some(category));
+        assert_eq!(
+            result.status,
+            antiburn_local::analysis::ToolResultStatus::Success
+        );
+        assert!(result.finality);
+        assert_eq!(result.content, None);
+        assert_eq!(
+            result.completeness,
+            antiburn_local::analysis::ToolResultCompleteness::Incomplete
+        );
+        assert_eq!(
+            result.admission(),
+            antiburn_local::analysis::ToolResultAdmission::Admitted
+        );
+        assert!(result.context.as_ref().unwrap().complete_through_event);
+    }
+    let read_path = results[0].arguments.as_ref().unwrap()["targetFile"]
+        .as_str()
+        .unwrap();
+    let search_path = results[1].arguments.as_ref().unwrap()["path"]
+        .as_str()
+        .unwrap();
+    assert!(read_path.starts_with(search_path));
+    assert!(read_path.ends_with("/probe.txt"));
+    assert_eq!(
+        results[1].arguments.as_ref().unwrap()["pattern"],
+        "synthetic needle"
+    );
 }
 
 fn evidence(input: &SessionInput) -> SessionEvidence {

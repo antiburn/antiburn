@@ -16,6 +16,10 @@ fn cursor_transcript(session_id: &str, count: usize) -> String {
 }
 
 fn publish_cursor(fixture: &Fixture, count: usize) {
+    publish_cursor_transcript(fixture, count, cursor_transcript("cursor-main", count));
+}
+
+fn publish_cursor_transcript(fixture: &Fixture, count: usize, transcript: String) {
     let environment = "native";
     let session_id = "cursor-main";
     let cwd = &fixture.project;
@@ -45,7 +49,7 @@ fn publish_cursor(fixture: &Fixture, count: usize) {
     let input = SessionInput {
         agent: "cursor".into(),
         session_id: session_id.into(),
-        source: RawSource::Jsonl(cursor_transcript(session_id, count)),
+        source: RawSource::Jsonl(transcript),
         source_format: SourceFormat::CursorIdeComposer,
         fork_parent_session_id: None,
     };
@@ -308,4 +312,61 @@ fn cursor_attachment_rejects_paused_activation() {
         .unwrap();
     host.deactivate_active().unwrap();
     assert!(adapter.initialize_recent(&activation, cursor, &[]).is_err());
+}
+
+#[tokio::test]
+async fn cursor_completed_partial_reads_reach_canonical_exploration_without_content() {
+    let fixture = Fixture::new();
+    fixture
+        .store
+        .delete_session(&SessionKey::new("native", "pi", "main"))
+        .unwrap();
+    let definition =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.antiburn/checks/over-exploring.yml");
+    std::fs::copy(definition, fixture.global.join("failed-retry-loop.yml")).unwrap();
+    let mut rows: Vec<Value> = include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
+        "/../../../crates/antiburn-local/tests/fixtures/cursor_characterization/native_read_grep_projected.jsonl"))
+        .lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    rows[0]["session_id"] = json!("cursor-main");
+    let templates = rows.split_off(2);
+    for index in 0..10 {
+        let mut row = templates[index % templates.len()].clone();
+        let id = format!("synthetic-call-{index}");
+        row["bubbleId"] = json!(format!("synthetic-bubble-{index}"));
+        row["cursor_tool_result"]["toolCallId"] = json!(id);
+        row["cursor_tool_result"]["native_result_binding"]["tool_call_id"] = json!(id);
+        rows.push(row);
+    }
+    publish_cursor_transcript(
+        &fixture,
+        10,
+        rows.iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    let mut host = fixture.host();
+    host.reconcile(&Admission::Ready).unwrap();
+    drain(&mut host);
+    fixture.evaluator.answer("likely_excess");
+    assert_eq!(
+        host.evaluation_jobs(1)
+            .pop()
+            .unwrap()
+            .run()
+            .await
+            .unwrap()
+            .unwrap()
+            .outcome,
+        RunOutcome::Accepted
+    );
+    let inputs = fixture.evaluator.inputs.lock().unwrap();
+    assert_eq!(inputs.len(), 1);
+    let activity = inputs[0]["activity"].as_array().unwrap();
+    assert_eq!(activity.len(), 10);
+    for message in activity {
+        assert_eq!(message["quality"]["result_content_available"], false);
+        assert_eq!(message["quality"]["source_complete"], false);
+        assert!(message["tool"]["result"]["content"].is_null());
+    }
 }

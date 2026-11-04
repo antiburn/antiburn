@@ -14,14 +14,16 @@ use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Value, json};
 
 mod json_encoding;
+mod tool_call_binary;
 
 use self::json_encoding::{decode_hex_jsonish, looks_like_jsonish};
+use self::tool_call_binary::{DecodeError, NativeStatus, decode_completed_call};
 use super::path_codec::decode_cursor_workspace_path_buf;
 use crate::discovery::scanner::{self, AgentKind};
 use crate::discovery::{
     AgentExplorer, DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation, SessionLog,
-    SessionSource, SurfacePaths, WatchRoot, app_config_dir_in, find_chat_session_dirs, home_dir,
-    recent_files_with_exts,
+    SessionSource, SurfacePaths, WatchRoot, app_config_dir_in, env_path_when_real_home,
+    find_chat_session_dirs, home_dir, recent_files_with_exts,
 };
 
 const CURSOR_PROJECT_SKIP_DIRS: &[&str] = &["mcps", "agent-tools", "terminals"];
@@ -87,21 +89,23 @@ impl AgentExplorer for CursorExplorer {
         discover_recent_in(&home, now, since_secs, self.duplicate_fork_detector).await
     }
 
-    /// Owns `~/.cursor/{projects,chats}/**` (CLI) and `<app-config>/Cursor/User/**`
-    /// (IDE). The loose `/cursor/` substring is intentionally avoided — it
-    /// catches unrelated user directories named `cursor`.
+    /// Owns `~/.cursor/{projects,chats}/**` (CLI) and each selected Cursor
+    /// user-data root's `User/**` tree (IDE). The loose `/cursor/` substring
+    /// is intentionally avoided — it catches unrelated user directories.
     ///
     /// Substring → `surface_paths` bucket:
     /// - `/.cursor/`       → `cli` (`cursor-agent` projects + chats)
-    /// - `/cursor/user/`   → `ide_desktop` (IDE workspaceStorage + state.vscdb)
+    /// - `/cursor/user/`   → `ide_desktop` (canonical Cursor User roots)
+    /// - selected `<user-data>/User/` → `ide_desktop` (workspace and state DBs)
     fn owns_path(&self, path_lower: &str) -> bool {
-        path_lower.contains("/.cursor/") || path_lower.contains("/cursor/user/")
+        let roots = home_dir().map_or_else(Vec::new, |home| cursor_user_data_roots_in(&home));
+        cursor_owns_path(path_lower, &roots)
     }
 
     // Cursor is bi-modal:
     //   - CLI (`cursor-agent`): `~/.cursor/projects/**/agent-transcripts/**`
     //                           and `~/.cursor/chats/**`.
-    //   - IDE chat:             `<app_config>/Cursor/User/workspaceStorage/**`
+    //   - IDE chat:             `<user_data>/User/workspaceStorage/**`
     //                           and store.db cascades labelled `cursor-store:` /
     //                           `cursor-desktop:`.
     // Trait default classifies via `surface_paths`; inline labels without
@@ -112,32 +116,15 @@ impl AgentExplorer for CursorExplorer {
     }
 
     /// CLI: `~/.cursor/{projects,chats}/**` (cursor-agent). IDE:
-    /// `<app-config>/Cursor/User/workspaceStorage/**` (chat sessions, store.db
-    /// cascades surfaced via inline labels).
+    /// Each selected user-data root's `User/workspaceStorage/**` (chat
+    /// sessions, store.db cascades surfaced via inline labels).
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
-        SurfacePaths {
-            cli: vec![
-                home.join(".cursor").join("projects"),
-                home.join(".cursor").join("chats"),
-            ],
-            ide_desktop: vec![
-                app_config_dir_in("Cursor", home)
-                    .join("User")
-                    .join("workspaceStorage"),
-            ],
-            mirror: Vec::new(),
-        }
+        cursor_surface_paths(home, &cursor_user_data_roots_in(home))
     }
 
     /// The same CLI and IDE roots discovery walks.
     fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
-        let paths = self.surface_paths(home);
-        paths
-            .cli
-            .into_iter()
-            .chain(paths.ide_desktop)
-            .map(WatchRoot::recursive)
-            .collect()
+        cursor_watch_roots(home, &cursor_user_data_roots_in(home))
     }
 }
 
@@ -151,33 +138,118 @@ pub(crate) fn sample_log_path(home: &Path) -> PathBuf {
         .join("session.json")
 }
 
+/// The platform default plus an explicit isolated Cursor Desktop profile.
+/// Cursor must still be launched with `--user-data-dir` for this override to
+/// refer to the profile it writes.
+fn cursor_user_data_roots_in(home: &Path) -> Vec<PathBuf> {
+    let process_home = home_dir();
+    let explicit = env_path_when_real_home(home, "ANTIBURN_CURSOR_USER_DATA_DIR");
+    cursor_user_data_roots_for_home(home, process_home.as_deref(), explicit.as_deref())
+}
+
+fn cursor_user_data_roots_for_home(
+    home: &Path,
+    process_home: Option<&Path>,
+    configured: Option<&Path>,
+) -> Vec<PathBuf> {
+    let default = app_config_dir_in("Cursor", home);
+    let explicit = configured
+        .filter(|_| process_home == Some(home))
+        .filter(|path| {
+            path.is_absolute() && path.to_str().is_none_or(|value| !value.trim().is_empty())
+        })
+        .map(Path::to_path_buf);
+    let mut roots = vec![default];
+    if let Some(explicit) = explicit {
+        let canonical =
+            |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let explicit_canonical = canonical(&explicit);
+        if !roots
+            .iter()
+            .any(|root| canonical(root) == explicit_canonical)
+        {
+            roots.push(explicit);
+        }
+    }
+    roots
+}
+
+fn cursor_owns_path(path_lower: &str, roots: &[PathBuf]) -> bool {
+    path_lower.contains("/.cursor/")
+        || path_lower.contains("/cursor/user/")
+        || roots.iter().any(|root| {
+            let root = root.to_string_lossy().replace('\\', "/").to_lowercase();
+            path_lower.starts_with(&format!("{}/user/", root.trim_end_matches('/')))
+        })
+}
+
+fn cursor_surface_paths(home: &Path, user_data_roots: &[PathBuf]) -> SurfacePaths {
+    SurfacePaths {
+        cli: vec![
+            home.join(".cursor").join("projects"),
+            home.join(".cursor").join("chats"),
+        ],
+        ide_desktop: user_data_roots
+            .iter()
+            .flat_map(|root| {
+                [
+                    root.join("User/workspaceStorage"),
+                    root.join("User/globalStorage"),
+                ]
+            })
+            .collect(),
+        mirror: Vec::new(),
+    }
+}
+
+fn cursor_watch_roots(home: &Path, user_data_roots: &[PathBuf]) -> Vec<WatchRoot> {
+    let paths = cursor_surface_paths(home, user_data_roots);
+    paths
+        .cli
+        .into_iter()
+        .chain(paths.ide_desktop)
+        .map(WatchRoot::recursive)
+        .collect()
+}
+
 async fn discover_recent_in(
     home: &Path,
     now: i64,
     since_secs: i64,
     duplicate_fork_detector: Option<DuplicateForkDetector>,
 ) -> Vec<SessionLog> {
+    let roots = cursor_user_data_roots_in(home);
+    discover_recent_in_roots(home, &roots, now, since_secs, duplicate_fork_detector).await
+}
+
+async fn discover_recent_in_roots(
+    home: &Path,
+    roots: &[PathBuf],
+    now: i64,
+    since_secs: i64,
+    duplicate_fork_detector: Option<DuplicateForkDetector>,
+) -> Vec<SessionLog> {
     let mut discovered: HashMap<String, CursorDiscoveredSession> = HashMap::new();
 
-    let ws_root = app_config_dir_in("Cursor", home)
-        .join("User")
-        .join("workspaceStorage");
-    let chat_session_dirs = find_chat_session_dirs(&ws_root).await;
-    for file in recent_files_with_exts(&chat_session_dirs, now, since_secs, &["json"]).await {
-        let metadata = scanner::parse_session_metadata(&file.path).await;
-        let candidate = CursorDiscoveredSession {
-            canonical_id: metadata.session_id,
-            workspace_hint: metadata.cwd,
-            content_len: 0,
-            priority: CursorSourcePriority::LegacyChatSession,
-            log: SessionLog {
-                environment: Default::default(),
-                agent_type: AgentKind::Cursor,
-                source: SessionSource::File(file.path),
-                updated_at: Some(file.mtime_epoch),
-            },
-        };
-        merge_cursor_session(&mut discovered, candidate);
+    for root in roots {
+        let ws_root = root.join("User/workspaceStorage");
+        let chat_session_dirs = find_chat_session_dirs(&ws_root).await;
+        for file in recent_files_with_exts(&chat_session_dirs, now, since_secs, &["json"]).await {
+            let metadata = scanner::parse_session_metadata(&file.path).await;
+            let candidate = CursorDiscoveredSession {
+                canonical_id: metadata.session_id,
+                workspace_hint: metadata.cwd,
+                content_len: 0,
+                priority: CursorSourcePriority::LegacyChatSession,
+                log: SessionLog {
+                    environment: Default::default(),
+                    agent_type: AgentKind::Cursor,
+                    source: SessionSource::File(file.path),
+                    updated_at: Some(file.mtime_epoch),
+                },
+            };
+            merge_cursor_session(&mut discovered, candidate);
+        }
     }
 
     for candidate in discover_agent_transcripts(home, now, since_secs).await {
@@ -189,7 +261,7 @@ async fn discover_recent_in(
     }
 
     let desktop_logs =
-        discover_desktop_sessions(home, now, since_secs, duplicate_fork_detector).await;
+        discover_desktop_sessions(roots, now, since_secs, duplicate_fork_detector).await;
     for candidate in desktop_logs {
         merge_cursor_session(&mut discovered, candidate);
     }
@@ -212,10 +284,9 @@ async fn discover_recent_in(
 async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
-    let ws_root = app_config_dir_in("Cursor", home)
-        .join("User")
-        .join("workspaceStorage");
-    dirs.extend(find_chat_session_dirs(&ws_root).await);
+    for root in cursor_user_data_roots_in(home) {
+        dirs.extend(find_chat_session_dirs(&root.join("User/workspaceStorage")).await);
+    }
 
     let projects_dir = home.join(".cursor").join("projects");
     dirs.extend(collect_agent_transcript_dirs(&projects_dir).await);
@@ -474,34 +545,36 @@ async fn collect_cursor_chat_metadata(home: &Path) -> HashMap<String, CursorChat
 }
 
 async fn collect_workspace_paths(home: &Path) -> HashMap<String, String> {
-    let ws_root = app_config_dir_in("Cursor", home)
-        .join("User")
-        .join("workspaceStorage");
-    let mut out = HashMap::new();
-    let mut entries = match tokio::fs::read_dir(&ws_root).await {
-        Ok(entries) => entries,
-        Err(_) => return out,
-    };
+    collect_workspace_paths_in_roots(&cursor_user_data_roots_in(home)).await
+}
 
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        let workspace_dir = entry.path();
-        if !entry
-            .file_type()
-            .await
-            .map(|ft| ft.is_dir())
-            .unwrap_or(false)
-        {
+async fn collect_workspace_paths_in_roots(roots: &[PathBuf]) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for root in roots {
+        let ws_root = root.join("User/workspaceStorage");
+        let Ok(mut entries) = tokio::fs::read_dir(ws_root).await else {
             continue;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let workspace_dir = entry.path();
+            if !entry
+                .file_type()
+                .await
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let workspace_json = workspace_dir.join("workspace.json");
+            let Ok(content) = tokio::fs::read_to_string(&workspace_json).await else {
+                continue;
+            };
+            let Some(path) = parse_workspace_json_path(&content) else {
+                continue;
+            };
+            let encoded_key = encode_cursor_project_workspace_key(Path::new(&path));
+            out.entry(encoded_key).or_insert(path);
         }
-        let workspace_json = workspace_dir.join("workspace.json");
-        let Ok(content) = tokio::fs::read_to_string(&workspace_json).await else {
-            continue;
-        };
-        let Some(path) = parse_workspace_json_path(&content) else {
-            continue;
-        };
-        let encoded_key = encode_cursor_project_workspace_key(Path::new(&path));
-        out.entry(encoded_key).or_insert(path);
     }
 
     out
@@ -663,36 +736,27 @@ fn is_safe_session_id(id: &str) -> bool {
 }
 
 async fn discover_desktop_sessions(
-    home: &Path,
+    roots: &[PathBuf],
     now: i64,
     since_secs: i64,
     duplicate_fork_detector: Option<DuplicateForkDetector>,
 ) -> Vec<CursorDiscoveredSession> {
-    let ws_root = app_config_dir_in("Cursor", home)
-        .join("User")
-        .join("workspaceStorage");
-    let global_db = app_config_dir_in("Cursor", home)
-        .join("User")
-        .join("globalStorage")
-        .join("state.vscdb");
-
-    if !global_db.exists() || !ws_root.exists() {
-        return Vec::new();
+    let mut logs = Vec::new();
+    for root in roots {
+        let ws_root = root.join("User/workspaceStorage");
+        let global_db = root.join("User/globalStorage/state.vscdb");
+        if !global_db.exists() || !ws_root.exists() {
+            continue;
+        }
+        let detector = duplicate_fork_detector;
+        let result = tokio::task::spawn_blocking(move || {
+            query_cursor_desktop_sessions(&ws_root, &global_db, now, since_secs, detector)
+        })
+        .await
+        .unwrap_or_default();
+        logs.extend(result);
     }
-
-    let ws_root = ws_root.clone();
-    let global_db = global_db.clone();
-    tokio::task::spawn_blocking(move || {
-        query_cursor_desktop_sessions(
-            &ws_root,
-            &global_db,
-            now,
-            since_secs,
-            duplicate_fork_detector,
-        )
-    })
-    .await
-    .unwrap_or_default()
+    logs
 }
 
 fn query_cursor_desktop_sessions(
@@ -1157,6 +1221,63 @@ fn cursor_native_tool_fields(bubble: &Value) -> Value {
     {
         fields.insert("native_status".into(), Value::String(status.into()));
     }
+    if !matches!(
+        tool.get("name").and_then(Value::as_str),
+        Some("read_file_v2" | "ripgrep_raw_search")
+    ) {
+        return Value::Object(fields);
+    }
+    let native_binding = (|| {
+        let binary = tool
+            .get("toolCallBinary")
+            .and_then(Value::as_str)
+            .filter(|binary| binary.len() <= 384 * 1024)
+            .ok_or(DecodeError::Malformed)?;
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(DecodeError::Malformed)?;
+        let call_id = tool
+            .get("toolCallId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= crate::analysis::EVIDENCE_STRING_CAP)
+            .ok_or(DecodeError::UnsafeIdentity)?;
+        let life_status = tool
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or(DecodeError::Malformed)?;
+        let params = tool
+            .get("params")
+            .and_then(Value::as_str)
+            .filter(|params| params.len() <= crate::analysis::MAX_CONTENT_PART_BYTES)
+            .ok_or(DecodeError::Malformed)?;
+        let params = serde_json::from_str::<Value>(params).map_err(|_| DecodeError::Malformed)?;
+        let status = decode_completed_call(name, call_id, life_status, &params, binary)?;
+        Ok((name, call_id, status))
+    })();
+    match native_binding {
+        Ok((name, call_id, status)) => {
+            fields.insert("native_result_binding".into(), json!({
+                "tool_name": name,
+                "tool_call_id": call_id,
+                "status": match status { NativeStatus::Success => "success", NativeStatus::Error => "error" },
+                "completed": true,
+                "args_verified": true,
+            }));
+        }
+        Err(error) => {
+            fields.insert(
+                "native_result_binding_error".into(),
+                Value::String(
+                    match error {
+                        DecodeError::UnsafeIdentity => "unsafe_identity",
+                        DecodeError::Malformed => "malformed",
+                    }
+                    .into(),
+                ),
+            );
+        }
+    }
     Value::Object(fields)
 }
 
@@ -1465,6 +1586,9 @@ fn merge_cursor_candidate_metadata(
     selected: &mut CursorDiscoveredSession,
     other: &CursorDiscoveredSession,
 ) {
+    if selected.workspace_hint != other.workspace_hint {
+        return;
+    }
     let (
         SessionSource::Inline {
             content: selected_content,
@@ -1509,8 +1633,7 @@ fn merge_cursor_candidate_metadata(
 
 fn cursor_discovered_key(candidate: &CursorDiscoveredSession) -> String {
     match (&candidate.canonical_id, &candidate.workspace_hint) {
-        (Some(session_id), Some(cwd)) => format!("{session_id}::{cwd}"),
-        (Some(session_id), None) => format!("{session_id}::"),
+        (Some(session_id), _) => session_id.clone(),
         (None, Some(cwd)) => format!("::<{cwd}>"),
         (None, None) => candidate.log.source_label(),
     }
@@ -1526,7 +1649,11 @@ fn should_replace_cursor_candidate(
     if incoming.content_len != existing.content_len {
         return incoming.content_len > existing.content_len;
     }
-    incoming.log.updated_at.unwrap_or_default() > existing.log.updated_at.unwrap_or_default()
+    if incoming.log.updated_at != existing.log.updated_at {
+        return incoming.log.updated_at.unwrap_or_default()
+            > existing.log.updated_at.unwrap_or_default();
+    }
+    incoming.log.source_label() < existing.log.source_label()
 }
 
 fn query_cursor_store_db_sessions(chats_root: &Path, cutoff: i64) -> Vec<CursorDiscoveredSession> {
@@ -2251,6 +2378,67 @@ mod tests {
     }
 
     #[test]
+    fn native_read_projection_preserves_conflicts_and_bounds_params() {
+        let fixture = include_str!(
+            "../../../tests/fixtures/cursor_characterization/native_read_grep_binary.jsonl"
+        );
+        let row: Value = fixture
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|row| {
+                row.pointer("/cursor_tool_result/name")
+                    .and_then(Value::as_str)
+                    == Some("read_file_v2")
+            })
+            .unwrap();
+        let original = row["cursor_tool_result"].clone();
+        let mut conflicting = original.clone();
+        conflicting["toolCallId"] = json!("different-call");
+        let projected = cursor_native_tool_fields(&json!({"toolFormerData": conflicting}));
+        assert_eq!(projected["native_result_binding_error"], "unsafe_identity");
+        assert!(projected.get("native_result_binding").is_none());
+        let mut oversized = original;
+        oversized["params"] = json!(" ".repeat(crate::analysis::MAX_CONTENT_PART_BYTES + 1));
+        let projected = cursor_native_tool_fields(&json!({"toolFormerData": oversized}));
+        assert_eq!(projected["native_result_binding_error"], "malformed");
+        assert!(projected.get("params").is_none());
+        assert!(projected.get("native_result_binding").is_none());
+    }
+
+    #[test]
+    fn native_read_grep_projection_keeps_only_verified_bounded_binding() {
+        let fixture = include_str!(
+            "../../../tests/fixtures/cursor_characterization/native_read_grep_binary.jsonl"
+        );
+        for line in fixture
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
+            let Some(tool) = line.get("cursor_tool_result") else {
+                continue;
+            };
+            let projected = cursor_native_tool_fields(&json!({"toolFormerData": tool}));
+            assert!(projected.get("toolCallBinary").is_none());
+            if matches!(
+                tool.get("name").and_then(Value::as_str),
+                Some("read_file_v2" | "ripgrep_raw_search")
+            ) {
+                assert!(
+                    projected["native_result_binding"]["args_verified"]
+                        .as_bool()
+                        .unwrap_or(false)
+                );
+                assert!(
+                    projected["native_result_binding"]["completed"]
+                        .as_bool()
+                        .unwrap_or(false)
+                );
+                assert_eq!(projected["native_result_binding"]["status"], "success");
+            }
+        }
+    }
+
+    #[test]
     fn desktop_native_tool_bubbles_keep_full_ids_and_bounded_result_fields() {
         let temp = TempDir::new().unwrap();
         let db = create_cursor_db(&temp.path().join("state.vscdb"));
@@ -2549,6 +2737,285 @@ mod tests {
     use super::*;
     use crate::discovery::scanner;
     use tempfile::TempDir;
+
+    #[test]
+    fn cursor_user_data_override_keeps_default_and_deduplicates_canonical_roots() {
+        let home = TempDir::new().unwrap();
+        let explicit = TempDir::new().unwrap();
+        let roots =
+            cursor_user_data_roots_for_home(home.path(), Some(home.path()), Some(explicit.path()));
+        assert_eq!(
+            roots,
+            vec![
+                app_config_dir_in("Cursor", home.path()),
+                explicit.path().to_path_buf()
+            ]
+        );
+
+        let default = app_config_dir_in("Cursor", home.path());
+        std::fs::create_dir_all(&default).unwrap();
+        let alias = home.path().join("cursor-profile-alias");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&default, &alias).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&default, &alias).unwrap();
+        let roots = cursor_user_data_roots_for_home(home.path(), Some(home.path()), Some(&alias));
+        assert_eq!(roots, vec![default]);
+    }
+
+    #[test]
+    fn cursor_user_data_override_ignores_blank_relative_and_synthetic_home_values() {
+        let home = TempDir::new().unwrap();
+        for value in [
+            Path::new(""),
+            Path::new("   "),
+            Path::new("relative/cursor"),
+        ] {
+            let roots =
+                cursor_user_data_roots_for_home(home.path(), Some(home.path()), Some(value));
+            assert_eq!(roots, vec![app_config_dir_in("Cursor", home.path())]);
+        }
+
+        let explicit = TempDir::new().unwrap();
+        let other_home = TempDir::new().unwrap();
+        let roots = cursor_user_data_roots_for_home(
+            home.path(),
+            Some(other_home.path()),
+            Some(explicit.path()),
+        );
+        assert_eq!(roots, vec![app_config_dir_in("Cursor", home.path())]);
+    }
+
+    #[test]
+    fn cursor_owns_path_keeps_canonical_user_roots_without_profile_environment() {
+        assert!(cursor_owns_path(
+            "/users/a/library/application support/cursor/user/workspacestorage/workspace/state.vscdb",
+            &[]
+        ));
+        assert!(cursor_owns_path(
+            "/tmp/home/.cursor/projects/session.jsonl",
+            &[]
+        ));
+    }
+
+    #[tokio::test]
+    async fn cursor_user_data_override_discovers_and_classifies_native_desktop_state() {
+        let home = TempDir::new().unwrap();
+        let explicit = TempDir::new().unwrap();
+        let global_dir = explicit.path().join("User/globalStorage");
+        tokio::fs::create_dir_all(&global_dir).await.unwrap();
+        seed_global_cursor_session(&global_dir.join("state.vscdb"), "override-composer");
+        let workspace_dir = explicit
+            .path()
+            .join("User/workspaceStorage/workspace-override");
+        write_workspace(
+            &workspace_dir,
+            if cfg!(windows) {
+                "file:///C:/cursor-test-workspace"
+            } else {
+                "file:///tmp/cursor-test-workspace"
+            },
+            "override-composer",
+            1_775_083_382_256i64,
+        )
+        .await;
+
+        let roots =
+            cursor_user_data_roots_for_home(home.path(), Some(home.path()), Some(explicit.path()));
+        let logs = discover_recent_in_roots(home.path(), &roots, 1_775_083_400, 3600, None).await;
+        assert_eq!(logs.len(), 1);
+        let workspace_paths = collect_workspace_paths_in_roots(&roots).await;
+        assert_eq!(workspace_paths.len(), 1);
+        let surface_paths = cursor_surface_paths(home.path(), &roots);
+        let watch_roots = cursor_watch_roots(home.path(), &roots);
+        let owned = cursor_owns_path(
+            &explicit
+                .path()
+                .join("User/workspaceStorage/workspace-override/state.vscdb")
+                .to_string_lossy()
+                .to_lowercase(),
+            &roots,
+        );
+        let default_ws = app_config_dir_in("Cursor", home.path()).join("User/workspaceStorage");
+        let explicit_ws = explicit.path().join("User/workspaceStorage");
+        let explicit_global = explicit.path().join("User/globalStorage");
+        assert!(surface_paths.ide_desktop.contains(&default_ws));
+        assert!(surface_paths.ide_desktop.contains(&explicit_ws));
+        assert!(surface_paths.ide_desktop.contains(&explicit_global));
+        assert!(watch_roots.iter().any(|root| root.path == explicit_ws));
+        assert!(watch_roots.iter().any(|root| root.path == explicit_global));
+        assert!(
+            owned,
+            "override paths should be owned by Cursor IDE discovery"
+        );
+    }
+
+    #[test]
+    fn cursor_desktop_profile_environment_does_not_rewrite_cli_roots() {
+        let home = TempDir::new().unwrap();
+        let explicit = TempDir::new().unwrap();
+        let roots =
+            cursor_user_data_roots_for_home(home.path(), Some(home.path()), Some(explicit.path()));
+        let paths = cursor_surface_paths(home.path(), &roots);
+        assert_eq!(
+            paths.cli,
+            vec![
+                home.path().join(".cursor/projects"),
+                home.path().join(".cursor/chats")
+            ]
+        );
+    }
+
+    #[test]
+    fn cursor_desktop_priority_keeps_claimed_source_when_cli_reuses_id_at_newer_workspace() {
+        let session_id = "shared-session";
+        let desktop_label = "cursor-desktop:composer-hash:shared-session";
+        let desktop = CursorDiscoveredSession {
+            canonical_id: Some(session_id.to_string()),
+            workspace_hint: Some("/workspace/desktop".to_string()),
+            content_len: 50,
+            priority: CursorSourcePriority::DesktopComposer,
+            log: SessionLog {
+                environment: Default::default(),
+                agent_type: AgentKind::Cursor,
+                source: SessionSource::Inline {
+                    label: desktop_label.to_string(),
+                    content: format!(
+                        "{}\n{{}}",
+                        json!({"session_id": session_id, "cwd": "/workspace/desktop"})
+                    ),
+                    source_format: None,
+                },
+                updated_at: Some(100),
+            },
+        };
+        let cli = CursorDiscoveredSession {
+            canonical_id: Some(session_id.to_string()),
+            workspace_hint: Some("/workspace/cli".to_string()),
+            content_len: 500,
+            priority: CursorSourcePriority::AgentTranscript,
+            log: SessionLog {
+                environment: Default::default(),
+                agent_type: AgentKind::Cursor,
+                source: SessionSource::File(PathBuf::from(format!(
+                    "/home/tester/.cursor/projects/cli/agent-transcripts/{session_id}/{session_id}.jsonl"
+                ))),
+                updated_at: Some(200),
+            },
+        };
+        let mut discovered = HashMap::new();
+        merge_cursor_session(&mut discovered, cli);
+        merge_cursor_session(&mut discovered, desktop);
+
+        assert_eq!(discovered.len(), 1);
+        let selected = discovered.into_values().next().unwrap().log;
+        assert_eq!(selected.source_label(), desktop_label);
+        let SessionSource::Inline { content, .. } = &selected.source else {
+            panic!("Desktop composer must win over the newer CLI transcript");
+        };
+        assert!(content.contains("/workspace/desktop"));
+        assert!(
+            crate::discovery::Explorers::DISK
+                .find_source_log_by_label(
+                    std::slice::from_ref(&selected),
+                    &AgentKind::Cursor,
+                    session_id,
+                    desktop_label,
+                    None,
+                )
+                .is_some(),
+            "the source refresh candidate must satisfy the exact persisted label"
+        );
+    }
+
+    #[test]
+    fn cursor_candidates_do_not_merge_metadata_across_workspaces() {
+        let session_id = "shared-metadata-session";
+        let make_inline = |label: &str, cwd: &str, priority, metadata: Value| {
+            let content = format!("{metadata}\n{{}}",);
+            CursorDiscoveredSession {
+                canonical_id: Some(session_id.to_string()),
+                workspace_hint: Some(cwd.to_string()),
+                content_len: content.len(),
+                priority,
+                log: SessionLog {
+                    environment: Default::default(),
+                    agent_type: AgentKind::Cursor,
+                    source: SessionSource::Inline {
+                        label: label.to_string(),
+                        content,
+                        source_format: None,
+                    },
+                    updated_at: Some(100),
+                },
+            }
+        };
+        let desktop = make_inline(
+            "cursor-desktop:desktop:shared-metadata-session",
+            "/workspace/desktop",
+            CursorSourcePriority::DesktopComposer,
+            json!({"session_id": session_id, "cwd": "/workspace/desktop"}),
+        );
+        let cli = make_inline(
+            "cursor-store:cli:shared-metadata-session",
+            "/workspace/cli",
+            CursorSourcePriority::AgentTranscript,
+            json!({
+                "session_id": session_id,
+                "cwd": "/workspace/cli",
+                "title": "CLI title",
+                "model": "cli-model",
+                "createdAt": 50,
+            }),
+        );
+        let mut discovered = HashMap::new();
+        merge_cursor_session(&mut discovered, desktop);
+        merge_cursor_session(&mut discovered, cli);
+
+        assert_eq!(discovered.len(), 1);
+        let selected = discovered.into_values().next().unwrap();
+        assert_eq!(
+            selected.log.source_label(),
+            "cursor-desktop:desktop:shared-metadata-session"
+        );
+        let SessionSource::Inline { content, .. } = selected.log.source else {
+            panic!("the desktop composer source must remain inline");
+        };
+        let metadata: Value = serde_json::from_str(content.lines().next().unwrap()).unwrap();
+        assert_eq!(metadata["cwd"], "/workspace/desktop");
+        assert!(metadata.get("title").is_none());
+        assert!(metadata.get("model").is_none());
+        assert!(metadata.get("createdAt").is_none());
+    }
+
+    #[test]
+    fn cursor_equal_candidates_use_a_stable_source_label_tiebreak() {
+        let make_candidate = |label: &str| CursorDiscoveredSession {
+            canonical_id: Some("stable-session".to_string()),
+            workspace_hint: Some("/workspace/stable".to_string()),
+            content_len: 10,
+            priority: CursorSourcePriority::DesktopComposer,
+            log: SessionLog {
+                environment: Default::default(),
+                agent_type: AgentKind::Cursor,
+                source: SessionSource::Inline {
+                    label: label.to_string(),
+                    content: "{\"session_id\":\"stable-session\"}\n{}".to_string(),
+                    source_format: None,
+                },
+                updated_at: Some(100),
+            },
+        };
+        let mut discovered = HashMap::new();
+        merge_cursor_session(&mut discovered, make_candidate("cursor-z"));
+        merge_cursor_session(&mut discovered, make_candidate("cursor-a"));
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(
+            discovered.into_values().next().unwrap().log.source_label(),
+            "cursor-a"
+        );
+    }
 
     fn create_cursor_db(path: &Path) -> Connection {
         let conn = Connection::open(path).expect("test Cursor database should open");
