@@ -39,14 +39,17 @@ function temporary(t) {
 
 test('release allowlist is self-contained and preserves authoritative assets', () => {
   const files = releaseFiles(root)
-  assert.equal(files.size, 26)
+  assert.equal(files.size, 28)
+  assert.ok(files.has('hooks/usage-strip-graphics.ts'))
   assert.equal(files.has('skills/help/SKILL.md'), false)
   const commands = files.get('hooks/commands.ts').toString()
   assert.doesNotMatch(commands, /command\.list|antiburn-plugin|antiburn-mod/)
   assert.match(commands, /const COMMAND = "antiburn"/)
   assert.deepEqual(
     files.get('hooks/checking-status.ts'),
-    readFileSync(join(root, 'plugins/antiburn-live/release/hooks/checking-status.ts')),
+    readFileSync(
+      join(root, 'plugins/antiburn-live/release/hooks/checking-status.ts'),
+    ),
   )
   assert.deepEqual(files.get('LICENSE'), readFileSync(join(root, 'LICENSE')))
   assert.deepEqual(
@@ -60,7 +63,7 @@ test('release allowlist is self-contained and preserves authoritative assets', (
     )
   const manifest = JSON.parse(files.get('.claude-plugin/plugin.json'))
   assert.equal(manifest.name, 'antiburn')
-  assert.equal(manifest.version, '0.2.6')
+  assert.equal(manifest.version, '0.2.7')
   assert.equal(manifest.types, undefined)
   assert.equal(manifest.icon, './assets/icon.png')
   assert.equal(
@@ -76,8 +79,13 @@ test('release allowlist is self-contained and preserves authoritative assets', (
   assert.ok(files.has('hooks/commands.ts'))
   assert.ok(files.has('hooks/quota-controller.tsx'))
   assert.ok(files.has('lib/product.mjs'))
-  assert.doesNotMatch([...files.keys()].join('\n'), /(?:discovery|probe|checks|debug|\.test\.)/)
-  const marketplace = JSON.parse(readFileSync(join(root, '.claude-plugin/marketplace.json')))
+  assert.doesNotMatch(
+    [...files.keys()].join('\n'),
+    /(?:discovery|probe|checks|debug|\.test\.)/,
+  )
+  const marketplace = JSON.parse(
+    readFileSync(join(root, '.claude-plugin/marketplace.json')),
+  )
   assert.equal(marketplace.plugins.length, 1)
   assert.equal(marketplace.plugins[0].name, 'antiburn')
   assert.deepEqual(marketplace.plugins[0].source, {
@@ -94,7 +102,9 @@ test('release allowlist is self-contained and preserves authoritative assets', (
 })
 
 test('marketplace pin matches authoritative sources at its release commit', (t) => {
-  const marketplace = JSON.parse(readFileSync(join(root, '.claude-plugin/marketplace.json')))
+  const marketplace = JSON.parse(
+    readFileSync(join(root, '.claude-plugin/marketplace.json')),
+  )
   const source = marketplace.plugins[0].source
   const snapshot = temporary(t)
   const archive = execFileSync(
@@ -113,14 +123,21 @@ test('marketplace pin matches authoritative sources at its release commit', (t) 
   )
   execFileSync('tar', ['-x', '-C', snapshot], { input: archive })
   const check = () =>
-    execFileSync(process.execPath, ['scripts/assemble-claude-mod.mjs', '--check'], {
-      cwd: snapshot,
-      encoding: 'utf8',
-      stdio: 'pipe',
-    })
+    execFileSync(
+      process.execPath,
+      ['scripts/assemble-claude-mod.mjs', '--check'],
+      {
+        cwd: snapshot,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      },
+    )
   check()
   const artifact = join(snapshot, source.path, 'hooks/usage-graphics.ts')
-  writeFileSync(artifact, `${readFileSync(artifact, 'utf8')}\n// Changed artifact.\n`)
+  writeFileSync(
+    artifact,
+    `${readFileSync(artifact, 'utf8')}\n// Changed artifact.\n`,
+  )
   assert.throws(check, (error) => {
     assert.match(error.stderr, /Artifact drift:.*hooks\/usage-graphics\.ts/)
     return true
@@ -129,7 +146,8 @@ test('marketplace pin matches authoritative sources at its release commit', (t) 
 
 test('candidate plugin icon is a compact 512px PNG without metadata or trailing content', () => {
   function image(bytes) {
-    assert.deepEqual(bytes.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    assert.deepEqual(bytes.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    )
     const data = []
     let header
     let offset = 8
@@ -183,14 +201,17 @@ test('candidate plugin icon is a compact 512px PNG without metadata or trailing 
               ? up
               : upperLeft,
         ][filter]
-        assert.notEqual(predictor, undefined, `Unsupported PNG filter: ${filter}`)
+        assert.notEqual(predictor, undefined, `Unsupported PNG filter: ${filter}`,
+        )
         output[rowOffset + column] = (scanlines[inputOffset] + predictor) & 0xff
         inputOffset += 1
       }
     }
     return output
   }
-  const plugin = readFileSync(join(root, 'plugins/antiburn-live/assets/icon.png'))
+  const plugin = readFileSync(
+    join(root, 'plugins/antiburn-live/assets/icon.png'),
+  )
   assert.ok(
     plugin.length < 256 * 1024,
     'The entire PNG must fit below the printable-text limit',
@@ -235,7 +256,10 @@ test('tree verification rejects symlinks', (t) => {
 test('source collection rejects a symlink in a parent directory', (t) => {
   const path = temporary(t)
   mkdirSync(join(path, 'plugins'))
-  symlinkSync(join(root, 'plugins/antiburn-live'), join(path, 'plugins/antiburn-live'))
+  symlinkSync(
+    join(root, 'plugins/antiburn-live'),
+    join(path, 'plugins/antiburn-live'),
+  )
   assert.throws(() => releaseFiles(path), /Symbolic link/)
 })
 
@@ -266,7 +290,10 @@ test('import verification rejects omitted modules, package imports, and path esc
   }
   assertImports(
     new Map([
-      ['hooks/register.tsx', Buffer.from("import { on } from 'claude-code'; import './usage'")],
+      [
+        'hooks/register.tsx',
+        Buffer.from("import { on } from 'claude-code'; import './usage'"),
+      ],
       ['hooks/usage.ts', Buffer.from('export {}')],
     ]),
   )
@@ -274,7 +301,9 @@ test('import verification rejects omitted modules, package imports, and path esc
     new Map([
       [
         'hooks/register.tsx',
-        Buffer.from("import './runtime.mjs'; import './usage.js'; import('./runtime.mjs')"),
+        Buffer.from(
+          "import './runtime.mjs'; import './usage.js'; import('./runtime.mjs')",
+        ),
       ],
       ['hooks/runtime.mjs', Buffer.from('export {}')],
       ['hooks/usage.ts', Buffer.from('export {}')],
@@ -306,6 +335,7 @@ test('capability policy permits website activation APIs and rejects background a
       '$.state.get',
       '$.command.register',
       '$.ui.log',
+      '$.ui.invalidate',
       '$.antiburn.describe',
       '$.env.get (via openTerminalWebsite)',
       '$.process.run (via openTerminalWebsite)',
@@ -344,7 +374,10 @@ test('website capabilities require exclusive opener attribution for every occurr
       ' (via openTerminalWebsite) (via sessionStart)',
     ]) {
       assert.throws(
-        () => assertCapabilities(report('$.session.usage', `${name}${attribution}`)),
+        () =>
+          assertCapabilities(
+            report('$.session.usage', `${name}${attribution}`),
+          ),
         /Unapproved release capability/,
       )
     }
@@ -357,7 +390,10 @@ test('website capabilities require exclusive opener attribution for every occurr
     )
     const mixed = report('$.session.usage', `${name} (via openTerminalWebsite)`)
     mixed.contents.push({ notes: [`./other.ts calls: ${name}`] })
-    assert.throws(() => assertCapabilities(mixed), /Unapproved release capability/)
+    assert.throws(
+      () => assertCapabilities(mixed),
+      /Unapproved release capability/,
+    )
   }
 })
 
@@ -403,23 +439,31 @@ test('validation policy rejects every warning and error', () => {
     )
   }
   assert.throws(
-    () => assertValidation({ ...base, contents: [{ errors: ['broken import'] }] }),
+    () =>
+      assertValidation({ ...base, contents: [{ errors: ['broken import'] }] }),
     /Validation errors/,
   )
   assert.throws(
     () => assertValidation({ ...base, contents: [{ warnings: [warning] }] }),
     /Unexpected validation warning/,
   )
-  assert.throws(() => assertValidation({ ...base, success: false }), /Host validation failed/)
+  assert.throws(
+    () => assertValidation({ ...base, success: false }),
+    /Host validation failed/,
+  )
 })
 
 test('assembly is deterministic and isolates private, development, and test files', (t) => {
   const path = temporary(t)
   mkdirSync(join(path, 'plugins'), { recursive: true })
-  cpSync(join(root, 'plugins/antiburn-live'), join(path, 'plugins/antiburn-live'), {
-    recursive: true,
-    filter: (source) => !source.includes('/.claude-plugin/types'),
-  })
+  cpSync(
+    join(root, 'plugins/antiburn-live'),
+    join(path, 'plugins/antiburn-live'),
+    {
+      recursive: true,
+      filter: (source) => !source.includes('/.claude-plugin/types'),
+    },
+  )
   const privateTypes = join(path, 'plugins/antiburn-live/.claude-plugin/types')
   mkdirSync(privateTypes, { recursive: true })
   writeFileSync(join(privateTypes, 'account.d.ts'), 'private fixture')
@@ -492,12 +536,18 @@ test('assembly is deterministic and isolates private, development, and test file
   assert.equal(existsSync(join(plugin, '.claude-plugin/types')), false)
   assert.equal(existsSync(join(plugin, 'hooks/register.test.ts')), false)
   assert.equal(existsSync(join(plugin, 'hooks/checks.ts')), true)
-  assert.equal(existsSync(join(plugin, 'lib/session-checks-validation.mjs')), true)
+  assert.equal(
+    existsSync(join(plugin, 'lib/session-checks-validation.mjs')),
+    true,
+  )
   const dev = readFileSync(join(plugin, 'hooks/register.tsx'), 'utf8')
   assert.doesNotMatch(dev, /plugin: 'antiburn-live'|name: 'antiburn'/)
   assert.match(dev, /commandName = registered.command/)
   const devTestRoot = assemble(path, 'dev-test')
-  const devTestRelease = join(devTestRoot, 'plugins/antiburn-dev/release-reference')
+  const devTestRelease = join(
+    devTestRoot,
+    'plugins/antiburn-dev/release-reference',
+  )
   for (const [name, content] of expected)
     assert.deepEqual(readFileSync(join(devTestRelease, name)), content)
   const testRoot = assemble(path, 'test')
@@ -523,7 +573,9 @@ test('development rewrite preserves explicit commands and brand URLs', () => {
 
 test('account capabilities require exclusive fetchAccountUsage attribution', () => {
   for (const name of ['$.session.authorize', '$.http.fetch']) {
-    assertCapabilities(report('$.session.usage', `${name} (via fetchAccountUsage)`))
+    assertCapabilities(
+      report('$.session.usage', `${name} (via fetchAccountUsage)`),
+    )
     for (const attribution of [
       '',
       ' (via renderUsage)',
@@ -533,13 +585,18 @@ test('account capabilities require exclusive fetchAccountUsage attribution', () 
       ' (via fetchAccountUsage) (via renderUsage)',
     ]) {
       assert.throws(
-        () => assertCapabilities(report('$.session.usage', `${name}${attribution}`)),
+        () =>
+          assertCapabilities(
+            report('$.session.usage', `${name}${attribution}`),
+          ),
         /Unapproved release capability/,
       )
     }
     assert.throws(
       () =>
-        assertCapabilities(report('$.session.usage', `${name} (via fetchAccountUsage)`, name)),
+        assertCapabilities(
+          report('$.session.usage', `${name} (via fetchAccountUsage)`, name),
+        ),
       /Unapproved release capability/,
     )
   }
@@ -572,7 +629,7 @@ test('public hook helpers keep capability and registration arguments in their mo
   assert.ok(checked >= 8)
 })
 
-test('both artifacts package the same meter graphics and flex layout without fixture policy', (t) => {
+test('both artifacts package the same meter graphics and shared scene without fixture policy', (t) => {
   const path = temporary(t)
   cpSync(join(root, 'plugins'), join(path, 'plugins'), { recursive: true })
   cpSync(join(root, 'packages'), join(path, 'packages'), { recursive: true })
@@ -582,7 +639,11 @@ test('both artifacts package the same meter graphics and flex layout without fix
   cpSync(join(root, 'LICENSE'), join(path, 'LICENSE'))
   const release = releaseFiles(path)
   const dev = assemble(path, 'dev')
-  for (const file of ['usage-meter-graphics.ts', 'usage-meter-band.tsx']) {
+  for (const file of [
+    'usage-meter-graphics.ts',
+    'usage-meter-band.tsx',
+    'usage-strip-graphics.ts',
+  ]) {
     assert.deepEqual(
       release.get(`hooks/${file}`),
       readFileSync(join(dev, 'plugins/antiburn-dev/hooks', file)),
@@ -593,9 +654,15 @@ test('both artifacts package the same meter graphics and flex layout without fix
     )
   }
   for (const [entry, expression] of [
-    ['plugins/antiburn-live/release/hooks/quota-controller.tsx', /renderUsageMeterBand\(/],
-    ['plugins/antiburn-live/hooks/register-usage-bands.tsx', /renderUsageMeterBand\(/],
-    ['plugins/antiburn-live/hooks/register-usage-view.tsx', /responsiveMeterSvg\(/],
+    [
+      'plugins/antiburn-live/release/hooks/quota-controller.tsx',
+      /usageStripSvg\(/,
+    ],
+    ['plugins/antiburn-live/hooks/register-usage-bands.tsx', /usageStripSvg\(/],
+    [
+      'plugins/antiburn-live/hooks/register-usage-view.tsx',
+      /responsiveMeterSvg\(/,
+    ],
   ])
     assert.match(readFileSync(join(root, entry), 'utf8'), expression)
   assert.match(
@@ -603,5 +670,8 @@ test('both artifacts package the same meter graphics and flex layout without fix
     /responsiveMeterSvg\(window, now\)/,
   )
   for (const file of release.keys())
-    assert.doesNotMatch(file, /fixtures|debug|burn-controls|register-usage-view/)
+    assert.doesNotMatch(
+      file,
+      /fixtures|debug|burn-controls|register-usage-view/,
+    )
 })

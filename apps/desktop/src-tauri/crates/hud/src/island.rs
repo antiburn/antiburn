@@ -53,6 +53,47 @@ const HOTSPOT_SIDE: f64 = 10.0;
 #[cfg(any(target_os = "macos", test))]
 const HOTSPOT_BELOW: f64 = 5.0;
 
+/// How long the pointer rests in the notch before the HUD opens.
+#[cfg(target_os = "macos")]
+const HOVER_HOLD: Duration = Duration::from_millis(100);
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy)]
+pub(crate) struct CloseTiming {
+    requested: std::time::Instant,
+    started: Option<std::time::Instant>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl CloseTiming {
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            requested: now,
+            started: None,
+        }
+    }
+
+    fn acknowledge(&mut self, now: std::time::Instant) {
+        self.started.get_or_insert(now);
+    }
+
+    fn expired(self, now: std::time::Instant) -> bool {
+        let (start, delay) = self.started.map_or(
+            (self.requested, std::time::Duration::from_secs(2)),
+            |start| (start, std::time::Duration::from_millis(290)),
+        );
+        now.saturating_duration_since(start) >= delay
+    }
+}
+
+/// Start the close watchdog after the current renderer reports its geometry.
+#[cfg(target_os = "macos")]
+pub(crate) fn acknowledge_close() {
+    if let Some(close) = state().island_closing.as_mut() {
+        close.acknowledge(Instant::now());
+    }
+}
+
 /// The notch the development menu pretends a display has, in logical pixels.
 #[cfg(target_os = "macos")]
 const FAKE_NOTCH: (f64, f64) = (200.0, 32.0);
@@ -473,8 +514,13 @@ pub(crate) fn geometry_changed(app: &AppHandle) {
 pub(crate) fn fit_height(window: &WebviewWindow, height: f64) -> Option<(f64, f64)> {
     let dock = state();
     let notch = dock.notch.filter(|_| dock.island)?;
-    let collapsed = dock.docked;
+    let closing = dock.island_closing.is_some();
+    let collapsed = dock.docked && (!closing || height <= notch.rect.height / notch.scale + 0.5);
     drop(dock);
+    if collapsed && closing {
+        state().island_closing = None;
+        let _ = window.set_ignore_cursor_events(false);
+    }
     let layout = notch.layout(
         if collapsed {
             IslandPhase::Collapsed
@@ -553,6 +599,7 @@ pub(crate) fn island_at(app: &AppHandle, window: &WebviewWindow) -> bool {
         };
         let rect = island_rect(&notch.rect, notch.scale, notch.wing_width(scale));
         dock.island = true;
+        dock.island_closing = None;
         dock.island_wanted = true;
         dock.docked = true;
         dock.park_timing = None;
@@ -563,6 +610,7 @@ pub(crate) fn island_at(app: &AppHandle, window: &WebviewWindow) -> bool {
         dock.generation += 1;
         (notch, dock.generation)
     };
+    let _ = window.set_ignore_cursor_events(false);
     super::hide_detail(app);
     let rect = island_rect(&notch.rect, notch.scale, notch.wing_width(scale));
     tracing::info!(
@@ -602,6 +650,7 @@ fn fit_window(window: &WebviewWindow, rect: &Rect, width: f64, height: f64) {
 pub(crate) fn leave_window(app: &AppHandle) {
     let _guard = super::resize_apply_guard();
     if let Some(window) = app.get_webview_window(super::OVERLAY_LABEL) {
+        let _ = window.set_ignore_cursor_events(false);
         let scale = window.scale_factor().unwrap_or(1.0);
         let height = window
             .outer_size()
@@ -643,10 +692,12 @@ pub(crate) fn expand(app: &AppHandle, window: &WebviewWindow, hold: Duration, li
             return;
         }
         dock.docked = false;
+        dock.island_closing = None;
         dock.park_timing = Some(dock::ParkTiming::new(Instant::now(), hold, linger));
         dock.generation += 1;
         dock.generation
     };
+    let _ = window.set_ignore_cursor_events(false);
     tracing::info!(event = "hud_island_expand");
     emit_state(app);
     dock::spawn_auto_park(
@@ -655,7 +706,7 @@ pub(crate) fn expand(app: &AppHandle, window: &WebviewWindow, hold: Duration, li
         generation,
         hold,
         linger,
-        cursor_in_hotspot,
+        pointer_zone,
         move |app, window| {
             tracing::info!(event = "hud_island_collapse", generation);
             collapse(app, window, generation);
@@ -686,18 +737,73 @@ fn collapse(app: &AppHandle, window: &WebviewWindow, expected_generation: u64) {
             return;
         }
         dock.docked = true;
+        dock.island_closing = Some(CloseTiming::new(Instant::now()));
         dock.generation += 1;
         dock.generation
     };
     super::hide_detail(app);
     emit_state(app);
     spawn_hotspot_watcher(app.clone(), window.clone(), generation);
+    let window = window.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(super::dismissal::SAMPLE_INTERVAL).await;
+            let expired = {
+                let dock = state();
+                if dock.generation != generation {
+                    return;
+                }
+                let Some(close) = dock.island_closing else {
+                    return;
+                };
+                close.expired(Instant::now())
+            };
+            if expired {
+                finish_collapse(&window, generation);
+                return;
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn finish_collapse(window: &WebviewWindow, generation: u64) {
+    let _guard = super::resize_apply_guard();
+    let notch = {
+        let mut dock = state();
+        if dock.generation != generation
+            || !dock.island
+            || !dock.docked
+            || dock.island_closing.is_none()
+        {
+            return;
+        }
+        dock.island_closing = None;
+        dock.notch
+    };
+    let Some(notch) = notch else {
+        return;
+    };
+    let layout = notch.layout(IslandPhase::Collapsed, super::interface_scale());
+    fit_window(
+        window,
+        &Rect {
+            x: layout.x,
+            y: notch.rect.y,
+            width: layout.width * notch.scale,
+            height: notch.rect.height,
+        },
+        layout.width,
+        layout.header_height,
+    );
+    let _ = window.set_ignore_cursor_events(false);
 }
 
 /// Restore the watcher after scale reconciliation cancels old motion.
 #[cfg(target_os = "macos")]
 pub(crate) fn resume_after_scale(app: &AppHandle, window: &WebviewWindow, generation: u64) {
     if state().docked {
+        finish_collapse_after_scale(window);
         spawn_hotspot_watcher(app.clone(), window.clone(), generation);
     } else {
         dock::spawn_auto_park(
@@ -706,18 +812,70 @@ pub(crate) fn resume_after_scale(app: &AppHandle, window: &WebviewWindow, genera
             generation,
             Duration::ZERO,
             dock::PEEK_LINGER,
-            cursor_in_hotspot,
+            pointer_zone,
             move |app, window| collapse(app, window, generation),
         );
     }
+}
+
+#[cfg(target_os = "macos")]
+fn finish_collapse_after_scale(window: &WebviewWindow) {
+    let notch = {
+        let mut dock = state();
+        dock.island_closing.take().and(dock.notch)
+    };
+    if let Some(notch) = notch {
+        let layout = notch.layout(IslandPhase::Collapsed, super::interface_scale());
+        fit_window(
+            window,
+            &Rect {
+                x: layout.x,
+                y: notch.rect.y,
+                width: layout.width * notch.scale,
+                height: notch.rect.height,
+            },
+            layout.width,
+            layout.header_height,
+        );
+    }
+    let _ = window.set_ignore_cursor_events(false);
+}
+
+/// Classify the pointer against the untransformed expanded island.
+#[cfg(target_os = "macos")]
+fn pointer_zone(window: &WebviewWindow) -> Option<super::dismissal::Zone> {
+    let report = super::cursor_report(window)?;
+    let notch = state().notch?;
+    let (x, y, width, height) = report.frame;
+    let header = notch.rect.height / notch.scale;
+    let inset = FILLET;
+    let regions = [
+        (x + inset, y, (width - inset * 2.0).max(0.0), header),
+        (
+            x + inset,
+            y + header,
+            (width - inset * 2.0).max(0.0),
+            (height - header).max(0.0),
+        ),
+    ];
+    Some(super::dismissal::Zone::at(report.cursor, &regions))
 }
 
 /// True when the pointer is in the cached notch's hotspot.
 #[cfg(target_os = "macos")]
 fn cursor_in_hotspot(window: &WebviewWindow) -> bool {
     let notch = state().notch;
-    match (notch, window.cursor_position().ok()) {
-        (Some(notch), Some(cursor)) => in_hotspot(&notch.rect, notch.scale, (cursor.x, cursor.y)),
+    match (notch, super::cursor_report(window)) {
+        (Some(notch), Some(report)) => in_hotspot(
+            &Rect {
+                x: notch.rect.x / notch.scale,
+                y: notch.rect.y / notch.scale,
+                width: notch.rect.width / notch.scale,
+                height: notch.rect.height / notch.scale,
+            },
+            1.0,
+            report.cursor,
+        ),
         _ => false,
     }
 }
@@ -728,7 +886,7 @@ fn spawn_hotspot_watcher(app: AppHandle, window: WebviewWindow, generation: u64)
     tauri::async_runtime::spawn(async move {
         let mut since: Option<Instant> = None;
         loop {
-            tokio::time::sleep(dock::TAB_POLL).await;
+            tokio::time::sleep(super::dismissal::SAMPLE_INTERVAL).await;
             {
                 let dock = state();
                 if dock.generation != generation || !dock.docked || !dock.island {
@@ -738,12 +896,20 @@ fn spawn_hotspot_watcher(app: AppHandle, window: WebviewWindow, generation: u64)
             if app.get_webview_window(super::OVERLAY_LABEL).is_none() {
                 return;
             }
+            if !super::work_is_active() || super::drag_in_progress() {
+                since = None;
+                continue;
+            }
+            if state().island_closing.is_some() {
+                // The renderer tests the visible clip during the close.
+                continue;
+            }
             let near = cursor_in_hotspot(&window) || super::cursor_inside(&window).unwrap_or(false);
             if !near {
                 since = None;
                 continue;
             }
-            if since.get_or_insert_with(Instant::now).elapsed() < dock::TAB_HOLD {
+            if since.get_or_insert_with(Instant::now).elapsed() < HOVER_HOLD {
                 continue;
             }
             tracing::info!(event = "hud_island_peek");
@@ -837,6 +1003,33 @@ pub(crate) fn dropped_on_notch(window: &Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn delayed_renderer_gets_a_full_close_period() {
+        let now = std::time::Instant::now();
+        let mut close = super::CloseTiming::new(now);
+        assert!(!close.expired(now + std::time::Duration::from_millis(500)));
+        close.acknowledge(now + std::time::Duration::from_millis(500));
+        assert!(!close.expired(now + std::time::Duration::from_millis(789)));
+        assert!(close.expired(now + std::time::Duration::from_millis(790)));
+    }
+
+    #[test]
+    fn missing_renderer_has_a_bounded_close_watchdog() {
+        let now = std::time::Instant::now();
+        let close = super::CloseTiming::new(now);
+        assert!(!close.expired(now + std::time::Duration::from_millis(1999)));
+        assert!(close.expired(now + std::time::Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn repeated_measurements_do_not_extend_the_close() {
+        let now = std::time::Instant::now();
+        let mut close = super::CloseTiming::new(now);
+        close.acknowledge(now);
+        close.acknowledge(now + std::time::Duration::from_millis(200));
+        assert!(close.expired(now + std::time::Duration::from_millis(290)));
+    }
+
     use super::*;
 
     /// A 14-inch MacBook Pro display at 2x: 1512 x 982 logical.

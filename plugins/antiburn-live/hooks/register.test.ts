@@ -17,6 +17,7 @@ type Fake = {
   streamChunks?: TurnStepChunk[]
   streamFailure?: boolean
   streamStarts: number
+  renders: number
   liveMode: string | undefined
   rateLimits: RateLimitReading[]
   usageReads: number
@@ -28,6 +29,7 @@ type Fake = {
   readUsage?: () => Promise<RateLimitReading[]>
   clockRead?: () => Promise<number>
   readSurfaces?: () => Promise<readonly RenderSurface[]>
+  reload?: () => Promise<void>
   stateWrites: string[]
   submits: string[]
   fills: string[]
@@ -45,6 +47,7 @@ type Fake = {
 function fakeEngine(on: On, surfaces: readonly RenderSurface[] = ["terminal"]): Fake {
   const fake: Fake = {
     streamStarts: 0,
+    renders: 0,
     liveMode: "checks",
     rateLimits: [],
     usageReads: 0,
@@ -165,6 +168,7 @@ function fakeEngine(on: On, surfaces: readonly RenderSurface[] = ["terminal"]): 
   on("turn.complete", () => ({ text: "" }))
   // Stands for the engine's own drawing when a mod hook yields with next(e).
   on("ui.render", (t$, e) => {
+    fake.renders++
     const { Box } = t$.ui.resolve(e)
     return h(Box, {}) as RenderElement
   })
@@ -228,7 +232,10 @@ async function turn($: Engine, fake: Fake, options: { failures?: number } = {}) 
   })
 }
 
-async function showCheckSamples($: Engine, variant: "demo" | "demo states" = "demo states") {
+async function showCheckSamples(
+  $: Engine,
+  variant: "demo" | "demo states" = "demo states",
+) {
   await $.command.run({
     command: "antiburn-dev",
     args: variant,
@@ -319,7 +326,8 @@ for (const surface of ["terminal", "desktop"] as const) {
     const isTerminal = surface === "terminal"
     // The desktop puts the count in a badge and names the group, as the app does.
     expect(
-      (await view.find({ text: isTerminal ? /^● Checks 5$/ : /^Checks$/ })) !== undefined,
+      (await view.find({ text: isTerminal ? /^● Checks 5$/ : /^Checks$/ })) !==
+        undefined,
     ).toBe(true)
     // Both surfaces give the first sentence of the check as its reason.
     expect(
@@ -490,9 +498,11 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
     component: "AbovePrompt",
     props: stripProps(90),
   })
-  expect((await medium.find({ text: /182k tokens per request/ })) === undefined).toBe(true)
+  expect((await medium.find({ text: /182k tokens per request/ })) === undefined).toBe(
+    true,
+  )
   // The fix button acts on the top check, so the shorter forms keep its name.
-  expect(await medium.findAll({ type: "Raster" })).toHaveLength(1)
+  expect(await medium.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
   expect((await medium.find({ text: / \d+ to fix {2}Context heavy/ })) !== undefined).toBe(true)
   const narrow = await $.ui.mount({
     plugin: "antiburn-live",
@@ -500,7 +510,7 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
     component: "AbovePrompt",
     props: stripProps(70),
   })
-  expect(await narrow.findAll({ type: "Raster" })).toHaveLength(1)
+  expect(await narrow.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
   expect((await narrow.find({ text: /Context heavy/ })) !== undefined).toBe(true)
   expect((await narrow.find({ key: "view" }))?.props.label).toBe("2 View")
   // A narrow desktop strip shows the mark and the check name, without the metric.
@@ -511,12 +521,13 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
     props: stripProps(54),
   })
   // The close glyph is an Svg too, because the desktop draws no native close control for the strip.
-  expect((await narrowDesktop.findAll({ type: "Svg" })).map((node) => node.props.alt)).toEqual([
+  expect(
+    (await narrowDesktop.findAll({ type: "Svg" })).map((node) => node.props.alt),
+  ).toEqual([
     "5 to fix",
     "Dismiss",
-    "Checks and usage separator",
-    "antiburn",
     "Usage not available yet. Try send a message first",
+    "antiburn",
   ])
   expect((await narrowDesktop.find({ text: /Context heavy/ })) !== undefined).toBe(true)
   expect((await narrowDesktop.find({ text: /182k tokens/ })) === undefined).toBe(true)
@@ -526,7 +537,10 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
     component: "AbovePrompt",
     props: stripProps(120),
   })
-  expect((await desktop.find({ text: /Context heavy · 182k tokens per request/ })) !== undefined).toBe(true)
+  expect(
+    (await desktop.find({ text: /Context heavy · 182k tokens per request/ })) !==
+      undefined,
+  ).toBe(true)
   const head = (await desktop.find({ key: "brand-head" })) as
     { children?: { type?: string }[] } | undefined
   // The wordmark and the count pill are SVG, so they follow the theme. The pill carries the state, so no dot.
@@ -536,7 +550,7 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
   const count = (await wide.find({ text: /^ 5 to fix $/ })) as
     { props?: { color?: string; backgroundColor?: string } } | undefined
   const mark = (await wide.findAll({ type: "Box" })).find(
-    (node) => node.props.width === 11 && node.props.height === 2,
+    (node) => node.props.width === 11 && node.props.height === (BURN_ANIMATION_ENABLED ? 2 : 1),
   )
   expect(count?.props?.backgroundColor).toBe("#4D2F23")
   expect(count?.props?.color).toBe("#FF8D5C")
@@ -546,7 +560,9 @@ test("the strip picks a shorter form at narrow widths", async ($, on) => {
   )
   const pillSource = String(pill?.props.source)
   expect(pillSource).toMatch(/\.r\{fill:#F2DCCD\}\.i\{fill:#9A3412\}/)
-  expect(pillSource).toMatch(/prefers-color-scheme:dark\)\{\.r\{fill:#51372A\}\.i\{fill:#FF8D5C\}/)
+  expect(pillSource).toMatch(
+    /prefers-color-scheme:dark\)\{\.r\{fill:#51372A\}\.i\{fill:#FF8D5C\}/,
+  )
   expect(pillSource).toMatch(/monospace/)
   const wordmark = (await desktop.findAll({ type: "Svg" })).find(
     (node) => node.props.key === "brand" || node.props.alt === "antiburn",
@@ -566,7 +582,7 @@ test("the strip drops the metric below 100 columns and stacks the buttons below 
       component: "AbovePrompt",
       props: stripProps(90),
     })
-  expect((await medium.find({ text: /182k tokens/ })) === undefined).toBe(true)
+    expect((await medium.find({ text: /182k tokens/ })) === undefined).toBe(true)
     expect(await medium.find({ key: "actions" })).toBe(undefined)
     // Below 56 columns the buttons take a second row, and the first row keeps the check name.
     const stacked = await $.ui.mount({
@@ -586,7 +602,9 @@ test("the strip drops the metric below 100 columns and stacks the buttons below 
     component: "AbovePrompt",
     props: stripProps(44),
   })
-  expect((await stacked.find({ text: /^\s*5 to fix {2}Context heavy$/ })) !== undefined).toBe(true)
+  expect(
+    (await stacked.find({ text: /^\s*5 to fix {2}Context heavy$/ })) !== undefined,
+  ).toBe(true)
 })
 
 test("the strip yields while a turn runs", async ($, on) => {
@@ -632,7 +650,9 @@ test("dismiss hides the strip, and a new kind brings it back with a new count", 
     ),
   ).toBe(false)
   expect(
-    (await desktop.findAll({ type: "Svg" })).some((node) => node.props.alt === "antiburn"),
+    (await desktop.findAll({ type: "Svg" })).some(
+      (node) => node.props.alt === "antiburn",
+    ),
   ).toBe(true)
   expect(
     (await desktop.findAll({ type: "Svg" })).some(
@@ -669,26 +689,34 @@ test("the Claude pane shows Antiburn-authored checks and acknowledges only after
   const delivery = {
     protocol_version: 1,
     session_id: "test-session",
-    identity: { environment_key: "native", agent: "claude-code", session_id: "test-session" },
+    identity: {
+      environment_key: "native",
+      agent: "claude-code",
+      session_id: "test-session",
+    },
     session_scope: "main",
     freshness_evaluated: false,
     state: "ready",
-    snapshot: [{
-      id: "dynamic-check-42",
-      check_id: "predefined-yaml-check",
-      name: "Review the risky change",
-      message: "Check the affected files before continuing.",
-      status: "failure",
-      assessed_at_epoch: 1_800_000_000,
-      checking: false,
-      eligibility: "ready",
-    }],
-    updates: [{
-      id: "dynamic-check-42",
-      kind: "finding",
-      name: "Review the risky change",
-      message: "Check the affected files before continuing.",
-    }],
+    snapshot: [
+      {
+        id: "dynamic-check-42",
+        check_id: "predefined-yaml-check",
+        name: "Review the risky change",
+        message: "Check the affected files before continuing.",
+        status: "failure",
+        assessed_at_epoch: 1_800_000_000,
+        checking: false,
+        eligibility: "ready",
+      },
+    ],
+    updates: [
+      {
+        id: "dynamic-check-42",
+        kind: "finding",
+        name: "Review the risky change",
+        message: "Check the affected files before continuing.",
+      },
+    ],
     receipt: "a".repeat(64),
   }
   on("process.run", (_$, event) => {
@@ -699,25 +727,33 @@ test("the Claude pane shows Antiburn-authored checks and acknowledges only after
       stdout = JSON.stringify({ protocol_version: 1, acknowledged: true })
     } else if (argv[0] === "antiburn") {
       sessionReads += 1
-      stdout = JSON.stringify(sessionReads === 1 ? delivery : {
-        ...delivery,
-        state: "waiting",
-        snapshot: [{
-          ...delivery.snapshot[0],
-          name: "dynamic-check-42",
-          message: null,
-          status: null,
-          assessed_at_epoch: null,
-          eligibility: "waiting",
-        }],
-        updates: [{
-          id: "dynamic-check-42",
-          kind: "invalidated",
-          name: "dynamic-check-42",
-          message: null,
-        }],
-        receipt: "c".repeat(64),
-      })
+      stdout = JSON.stringify(
+        sessionReads === 1
+          ? delivery
+          : {
+              ...delivery,
+              state: "waiting",
+              snapshot: [
+                {
+                  ...delivery.snapshot[0],
+                  name: "dynamic-check-42",
+                  message: null,
+                  status: null,
+                  assessed_at_epoch: null,
+                  eligibility: "waiting",
+                },
+              ],
+              updates: [
+                {
+                  id: "dynamic-check-42",
+                  kind: "invalidated",
+                  name: "dynamic-check-42",
+                  message: null,
+                },
+              ],
+              receipt: "c".repeat(64),
+            },
+      )
     }
     return {
       value: {
@@ -738,12 +774,15 @@ test("the Claude pane shows Antiburn-authored checks and acknowledges only after
     props: PANE_PROPS,
   })
   const displayed = {
-    advice: (await pane.find({ text: /^Check the affected files before continuing\.$/ })) !== undefined,
+    advice:
+      (await pane.find({ text: /^Check the affected files before continuing\.$/ })) !==
+      undefined,
     assessedTime: (await pane.findAll({ type: "Svg" })).some((node) =>
       String(node.props.alt ?? "").includes("Assessed"),
     ),
-    connectedLabel: (await pane.find({ text: /Connected · freshness not evaluated/ })) !== undefined,
-    noFix: await pane.find({ key: "card-fix-dynamic-check-42" }) === undefined,
+    connectedLabel:
+      (await pane.find({ text: /Connected · freshness not evaluated/ })) !== undefined,
+    noFix: (await pane.find({ key: "card-fix-dynamic-check-42" })) === undefined,
     uiConsumer: commands.some((argv) => argv.includes("claude-code:ui")),
     receiptAck: commands.some((argv) => argv.includes("--ack")),
   }
@@ -758,7 +797,9 @@ test("the Claude pane shows Antiburn-authored checks and acknowledges only after
   expect(fake.submits).toEqual([])
   expect(fake.compacts).toEqual([])
   await pane.press({ key: "row-dynamic-check-42" })
-  expect((await pane.find({ key: "hide-dynamic-check-42" }))?.props.label).toBe("Dismiss this check")
+  expect((await pane.find({ key: "hide-dynamic-check-42" }))?.props.label).toBe(
+    "Dismiss this check",
+  )
   await pane.press({ key: "hide-dynamic-check-42" })
   await turn($, fake)
   expect(await pane.find({ text: /^Review the risky change$/ })).toBeUndefined()
@@ -831,7 +872,11 @@ test("a stale session-check read cannot write status after a newer read", async 
   const emptyDelivery = {
     protocol_version: 1,
     session_id: "test-session",
-    identity: { environment_key: "native", agent: "claude-code", session_id: "test-session" },
+    identity: {
+      environment_key: "native",
+      agent: "claude-code",
+      session_id: "test-session",
+    },
     session_scope: "main",
     freshness_evaluated: false,
     state: "ready",
@@ -852,26 +897,57 @@ test("a stale session-check read cannot write status after a newer read", async 
   let reads = 0
   on("process.run", (_$, event) => {
     if (event.argv[0] !== "antiburn") {
-      return { value: { exitCode: 0, stdout: "{}", stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: "{}",
+          stderr: "",
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
     }
     if (event.argv.includes("--ack")) {
-      return { value: { exitCode: 0, stdout: JSON.stringify({ protocol_version: 1, acknowledged: true }), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }
+      return {
+        value: {
+          exitCode: 0,
+          stdout: JSON.stringify({ protocol_version: 1, acknowledged: true }),
+          stderr: "",
+          isStdoutTruncated: false,
+          isStderrTruncated: false,
+        },
+      }
     }
     reads += 1
-    const delivery = reads === 1
-      ? emptyDelivery
-      : reads === 2
-        ? {
-            ...emptyDelivery,
-            receipt: "a".repeat(64),
-            snapshot: [failure],
-            updates: [{ id: failure.id, kind: "finding", name: failure.name, message: failure.message }],
-          }
-        : {
-            ...emptyDelivery,
-            snapshot: [{ ...failure, name: "Recovered", message: "The current snapshot has no warning.", status: "success" }],
-            updates: [],
-          }
+    const delivery =
+      reads === 1
+        ? emptyDelivery
+        : reads === 2
+          ? {
+              ...emptyDelivery,
+              receipt: "a".repeat(64),
+              snapshot: [failure],
+              updates: [
+                {
+                  id: failure.id,
+                  kind: "finding",
+                  name: failure.name,
+                  message: failure.message,
+                },
+              ],
+            }
+          : {
+              ...emptyDelivery,
+              snapshot: [
+                {
+                  ...failure,
+                  name: "Recovered",
+                  message: "The current snapshot has no warning.",
+                  status: "success",
+                },
+              ],
+              updates: [],
+            }
     return {
       value: {
         exitCode: 0,
@@ -888,8 +964,12 @@ test("a stale session-check read cannot write status after a newer read", async 
   let surfaceCalls = 0
   let releaseFirstSurface!: () => void
   let firstSurfaceEntered!: () => void
-  const firstSurfaceReady = new Promise<void>((resolve) => { firstSurfaceEntered = resolve })
-  const firstSurface = new Promise<readonly RenderSurface[]>((resolve) => { releaseFirstSurface = () => resolve(["mobile"]) })
+  const firstSurfaceReady = new Promise<void>((resolve) => {
+    firstSurfaceEntered = resolve
+  })
+  const firstSurface = new Promise<readonly RenderSurface[]>((resolve) => {
+    releaseFirstSurface = () => resolve(["mobile"])
+  })
   fake.readSurfaces = async () => {
     surfaceCalls += 1
     if (surfaceCalls === 1) {
@@ -899,13 +979,14 @@ test("a stale session-check read cannot write status after a newer read", async 
     return ["mobile"]
   }
 
-  const complete = (turnId: string) => $.turn.complete({
-    answer: "",
-    durationMs: 1,
-    isAborted: false,
-    turnId,
-    reason: "answer",
-  })
+  const complete = (turnId: string) =>
+    $.turn.complete({
+      answer: "",
+      durationMs: 1,
+      isAborted: false,
+      turnId,
+      reason: "answer",
+    })
   const staleRead = complete("old-read")
   await firstSurfaceReady
   await complete("new-read")
@@ -934,7 +1015,12 @@ test("/antiburn-dev demo shows all five checks and keeps them until demo off", a
     requestId: "checks",
     props: PANE_PROPS,
   })
-  for (const label of ["Retry loop", "Reading spiral", "Context heavy", "Overthinking"]) {
+  for (const label of [
+    "Retry loop",
+    "Reading spiral",
+    "Context heavy",
+    "Overthinking",
+  ]) {
     expect((await pane.find({ text: new RegExp(label) })) !== undefined).toBe(true)
   }
   // The resolved check is in the folded Resolved group.
@@ -1009,13 +1095,16 @@ test("resolved checks fold into a group that opens on press", async ($, on) => {
   const metric = (await desktop.findAll({ type: "Svg" })).find((node) =>
     String(node.props.source).includes('class="p"'),
   )
-  expect(String(metric?.props.source)).toMatch(/\.p\{fill:#108EAC\}.*#2DA7C6.*font-weight="400"/)
+  expect(String(metric?.props.source)).toMatch(
+    /\.p\{fill:#108EAC\}.*#2DA7C6.*font-weight="400"/,
+  )
   // The card shows the Resolved heading's CircleCheck, and the outcome text has no ✓ glyph.
   const svgs = await desktop.findAll({ type: "Svg" })
   expect(
     svgs.some(
       (node) =>
-        node.props.alt === "Resolved" && String(node.props.source).includes("m9 12 2 2 4-4"),
+        node.props.alt === "Resolved" &&
+        String(node.props.source).includes("m9 12 2 2 4-4"),
     ),
   ).toBe(true)
   expect(svgs.some((node) => String(node.props.alt).startsWith("✓"))).toBe(false)
@@ -1081,7 +1170,7 @@ test("a watched check offers no second send in its detail", async ($, on) => {
   // Nothing is left to fix, so the strip goes away and the chip shows the watched check.
   expect(await band.find({ key: "fix" })).toBeDefined()
   expect(await band.find({ key: "view" })).toBeDefined()
-  expect(await band.findAll({ type: "Raster" })).toHaveLength(1)
+  expect(await band.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
   const chip = await $.ui.mount({
     plugin: "antiburn-live",
     surface: "terminal",
@@ -1241,9 +1330,9 @@ for (const surface of ["terminal", "desktop"] as const) {
     }
     expect(await view.find({ text: /Keep your session in check/ })).toBe(undefined)
     expect(await view.find({ text: /\+r\d+/ })).toBe(undefined)
-    expect((await view.find({ text: /Get more from every session with / })) !== undefined).toBe(
-      true,
-    )
+    expect(
+      (await view.find({ text: /Get more from every session with / })) !== undefined,
+    ).toBe(true)
     expect(await view.find({ text: /not findings/ })).toBe(undefined)
     expect(await view.find({ text: /Across sessions · / })).toBe(undefined)
   })
@@ -1270,8 +1359,10 @@ test("only the desktop pane draws the antiburn watermark", async ($, on) => {
   expect(await terminal.find({ key: "watermark" })).toBe(undefined)
   // Only the desktop draws the small brand mark beside the footer link.
   const linkRow = async (drawing: typeof desktop | typeof terminal) =>
-    ((await drawing.find({ key: "app-link" })) as { children?: { type?: string }[] } | undefined)
-      ?.children ?? []
+    (
+      (await drawing.find({ key: "app-link" })) as
+        { children?: { type?: string }[] } | undefined
+    )?.children ?? []
   expect((await linkRow(desktop)).some((child) => child.type === "Svg")).toBe(true)
   expect((await linkRow(terminal)).some((child) => child.type === "Svg")).toBe(false)
 })
@@ -1308,11 +1399,15 @@ test("a card offers its fix and a Show more toggle, and compacts only on a secon
     })) !== undefined,
   ).toBe(true)
   // The open card gives the compact instructions but no Evidence block: the metric sits above.
-  expect((await desktop.find({ text: /^Compact instructions$/ })) !== undefined).toBe(true)
+  expect((await desktop.find({ text: /^Compact instructions$/ })) !== undefined).toBe(
+    true,
+  )
   expect((await desktop.find({ text: /^Evidence$/ })) === undefined).toBe(true)
   expect((await desktop.find({ key: "card-fix-D" })) !== undefined).toBe(true)
   await desktop.press({ key: "row-D" })
-  expect((await desktop.find({ text: /^Compact instructions$/ })) === undefined).toBe(true)
+  expect((await desktop.find({ text: /^Compact instructions$/ })) === undefined).toBe(
+    true,
+  )
   await desktop.press({ key: "card-fix-D" })
   expect(fake.compacts.length).toBe(0)
   // The armed button asks for the second press itself.
@@ -1391,8 +1486,12 @@ test("a watched check moves to its own section, and the section icon draws in on
     requestId: "checks",
     props: PANE_PROPS,
   })
-  expect((await desktop.find({ text: /^Awaiting verification$/ })) !== undefined).toBe(true)
-  expect((await desktop.find({ text: /^Checking the next turns\./ })) !== undefined).toBe(true)
+  expect((await desktop.find({ text: /^Awaiting verification$/ })) !== undefined).toBe(
+    true,
+  )
+  expect(
+    (await desktop.find({ text: /^Checking the next turns\./ })) !== undefined,
+  ).toBe(true)
   expect(await desktop.find({ key: "card-fix-X1" })).toBe(undefined)
   const icon = (await desktop.findAll({ type: "Svg" })).find(
     (node) => node.props.alt === "Awaiting verification",
@@ -1405,7 +1504,9 @@ test("a watched check moves to its own section, and the section icon draws in on
     requestId: "checks",
     props: PANE_PROPS,
   })
-  expect((await terminal.find({ text: /⧗ Awaiting verification 1/ })) !== undefined).toBe(true)
+  expect(
+    (await terminal.find({ text: /⧗ Awaiting verification 1/ })) !== undefined,
+  ).toBe(true)
   // A press in the pane draws the pane again, so the icon stops its draw-in and does not flicker.
   await desktop.press({ key: "row-X1" })
   const settled = (await desktop.findAll({ type: "Svg" })).find(
@@ -1450,7 +1551,9 @@ for (const surface of ["desktop", "terminal"] as const) {
     // Each word is its own Text, so a wrapped line stays centred.
     const words = (await view.findAll({ type: "Text" })).map((node) => node.text.trim())
     expect(words.join(" ")).toMatch(/antiburn is watching this session\./)
-    expect((await view.find({ text: /^Nothing to fix right now\.$/ })) === undefined).toBe(true)
+    expect(
+      (await view.find({ text: /^Nothing to fix right now\.$/ })) === undefined,
+    ).toBe(true)
   })
 
   test(`a pane with no active check says there is nothing to fix on ${surface}`, async ($, on) => {
@@ -1469,7 +1572,9 @@ for (const surface of ["desktop", "terminal"] as const) {
       requestId: "checks",
       props: PANE_PROPS,
     })
-    expect((await view.find({ text: /^Nothing to fix right now\.$/ })) === undefined).toBe(true)
+    expect(
+      (await view.find({ text: /^Nothing to fix right now\.$/ })) === undefined,
+    ).toBe(true)
     // A demo press acts as a real fix does and moves the card to Awaiting verification.
     for (const id of ["D", "D", "T", "E1", "K1", "K2"]) {
       if (surface === "desktop") {
@@ -1483,7 +1588,9 @@ for (const surface of ["desktop", "terminal"] as const) {
           await view.press({ key: `card-fix-${id}` })
       }
     }
-    expect((await view.find({ text: /^Nothing to fix right now\.$/ })) !== undefined).toBe(true)
+    expect(
+      (await view.find({ text: /^Nothing to fix right now\.$/ })) !== undefined,
+    ).toBe(true)
   })
 
   test(`a pane with every check ignored says there is nothing to fix, with no active mark, on ${surface}`, async ($, on) => {
@@ -1511,7 +1618,9 @@ for (const surface of ["desktop", "terminal"] as const) {
         await view.press({ key: `hide-${id}` })
     }
     expect(await view.find({ text: /^No checks yet$/ })).toBe(undefined)
-    expect((await view.find({ text: /^Nothing to fix right now\.$/ })) !== undefined).toBe(true)
+    expect(
+      (await view.find({ text: /^Nothing to fix right now\.$/ })) !== undefined,
+    ).toBe(true)
     expect(await view.find({ text: /^● $/ })).toBe(undefined)
     expect(await view.find({ key: "checks-icon" })).toBe(undefined)
   })
@@ -1534,7 +1643,9 @@ test("the strip leads with an active check over a watched one", async ($, on) =>
   })
   // Retry loop comes first in catalog order, but it is watched, so Context heavy leads.
   expect((await band.find({ key: "fix" }))?.props.label).toBe("1 Compact now")
-  expect((await band.find({ text: / to fix {2}Context heavy · / })) !== undefined).toBe(true)
+  expect((await band.find({ text: / to fix {2}Context heavy · / })) !== undefined).toBe(
+    true,
+  )
 })
 
 test("the open Context heavy card names file reads as the cause", async ($, on) => {
@@ -1555,7 +1666,9 @@ test("the open Context heavy card names file reads as the cause", async ($, on) 
   })
   expect(await desktop.find({ text: /File reads are about/ })).toBe(undefined)
   await desktop.press({ key: "row-D" })
-  expect((await desktop.find({ text: /File reads are about 61% of it/ })) !== undefined).toBe(true)
+  expect(
+    (await desktop.find({ text: /File reads are about 61% of it/ })) !== undefined,
+  ).toBe(true)
 })
 
 test("the open terminal card follows the desktop card: Cause under the reason, no Evidence, keys on the buttons", async ($, on) => {
@@ -1587,8 +1700,12 @@ test("the open terminal card follows the desktop card: Cause under the reason, n
       text: /^Cause · File reads are about 61% of it/,
     })) !== undefined,
   ).toBe(true)
-  expect((await terminal.find({ key: "card-fix-D" }))?.props.label).toBe("f Compact now")
-  expect((await terminal.find({ key: "hide-D" }))?.props.label).toBe("h Ignore this session")
+  expect((await terminal.find({ key: "card-fix-D" }))?.props.label).toBe(
+    "f Compact now",
+  )
+  expect((await terminal.find({ key: "hide-D" }))?.props.label).toBe(
+    "h Ignore this session",
+  )
 })
 
 test("a demo press acts as a real fix does, and the card moves to Awaiting verification", async ($, on) => {
@@ -1637,7 +1754,9 @@ test("a terminal card compacts only on a second press, and a group press disarms
   await view.press({ key: "row-D" })
   await view.press({ key: "card-fix-D" })
   expect(fake.compacts).toEqual([])
-  expect((await view.find({ key: "card-fix-D" }))?.props.label).toBe("f Confirm compact")
+  expect((await view.find({ key: "card-fix-D" }))?.props.label).toBe(
+    "f Confirm compact",
+  )
   // A press on the Resolved heading is a press in the pane, so it disarms the fix, as on the desktop.
   await view.press({ key: "group-resolved" })
   expect((await view.find({ key: "card-fix-D" }))?.props.label).toBe("f Compact now")
@@ -1749,13 +1868,17 @@ test("the demo tour adds checks step by step and keeps the live checks apart", a
   // A real turn feeds only the live tracker, so the tour does not show its retry loop.
   await turn($, fake, { failures: 3 })
   expect(await pane.find({ text: /Retry loop/ })).toBe(undefined)
-  expect((await run("demo next")).text).toBe("Tour step 1 of 4: A retry loop is the first warning.")
+  expect((await run("demo next")).text).toBe(
+    "Tour step 1 of 4: A retry loop is the first warning.",
+  )
   expect((await band.find({ text: /Retry loop/ })) !== undefined).toBe(true)
   await pane.press({ key: "tour-next" })
   expect((await band.find({ text: /4 to fix \(3 new\)/ })) !== undefined).toBe(true)
   await run("demo next")
   await run("demo next")
-  expect((await pane.find({ text: /Demo tour · step 4 of 4/ })) !== undefined).toBe(true)
+  expect((await pane.find({ text: /Demo tour · step 4 of 4/ })) !== undefined).toBe(
+    true,
+  )
   expect((await run("demo next")).text).toMatch(/^The tour has no more steps/)
   await pane.press({ key: "tour-end" })
   expect(await pane.find({ key: "tour" })).toBe(undefined)
@@ -1788,7 +1911,9 @@ test("the chip does not count a building check, so it agrees with the pane", asy
   // Step 1 also holds T at building. The pane leaves it out, and so does the chip.
   await pane.press({ key: "row-X1" })
   await pane.press({ key: "hide-X1" })
-  expect((await pane.find({ text: /^Nothing to fix right now\.$/ })) !== undefined).toBe(true)
+  expect(
+    (await pane.find({ text: /^Nothing to fix right now\.$/ })) !== undefined,
+  ).toBe(true)
   expect((await chip.find({ key: "chip" }))?.props.label).toBe("antiburn")
   expect((await chip.find({ text: /^✓$/ })) !== undefined).toBe(true)
 })
@@ -1930,10 +2055,68 @@ for (const [state, message] of [
   ["not-found", "CLI not found"],
   ["unavailable", "CLI check unavailable"],
 ] as const) {
-  test(`startup notice reports ${state} CLI without blocking live checks`, { options: { startupNoticeEnabled: true } }, async ($, on) => {
+  test(
+    `startup notice reports ${state} CLI without blocking live checks`,
+    { options: { startupNoticeEnabled: true } },
+    async ($, on) => {
+      const fake = fakeEngine(on)
+      fake.liveMode = "checks"
+      fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+      let probes = 0
+      on("process.run", (_$, event) => {
+        if (event.argv[0] === "antiburn") {
+          return {
+            value: {
+              exitCode: 0,
+              stdout: JSON.stringify({
+                protocol_version: 1,
+                session_id: "test-session",
+                session_scope: "unsupported",
+                freshness_evaluated: false,
+                state: "waiting",
+                snapshot: [],
+                updates: [],
+                receipt: null,
+              }),
+              stderr: "",
+              isStdoutTruncated: false,
+              isStderrTruncated: false,
+            },
+          }
+        }
+        probes += 1
+        if (state === "unavailable") throw new Error("probe failed")
+        return {
+          value: {
+            exitCode: 0,
+            stdout: JSON.stringify({ state }),
+            stderr: "",
+            isStdoutTruncated: false,
+            isStderrTruncated: false,
+          },
+        }
+      })
+      await startSession($)
+      expect(fake.logs.some((line) => line.includes(message))).toBe(true)
+      await turn($, fake, { failures: 3 })
+      const band = await $.ui.mount({
+        plugin: "antiburn-live",
+        surface: "terminal",
+        component: "AbovePrompt",
+        props: stripProps(),
+      })
+      expect(await band.find({ text: /to fix/ })).toBeUndefined()
+      expect(fake.usageReads).toBe(1)
+      expect(probes).toBe(1)
+    },
+  )
+}
+
+test(
+  "startup notice probes once when the same session starts again",
+  { options: { startupNoticeEnabled: true } },
+  async ($, on) => {
     const fake = fakeEngine(on)
-    fake.liveMode = "checks"
-    fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
     let probes = 0
     on("process.run", (_$, event) => {
       if (event.argv[0] === "antiburn") {
@@ -1957,11 +2140,10 @@ for (const [state, message] of [
         }
       }
       probes += 1
-      if (state === "unavailable") throw new Error("probe failed")
       return {
         value: {
           exitCode: 0,
-          stdout: JSON.stringify({ state }),
+          stdout: '{"state":"found"}',
           stderr: "",
           isStdoutTruncated: false,
           isStderrTruncated: false,
@@ -1969,64 +2151,15 @@ for (const [state, message] of [
       }
     })
     await startSession($)
-    expect(fake.logs.some((line) => line.includes(message))).toBe(true)
-    await turn($, fake, { failures: 3 })
-    const band = await $.ui.mount({
-      plugin: "antiburn-live",
+    await $.session.start({
+      cwd: "/work",
       surface: "terminal",
-      component: "AbovePrompt",
-      props: stripProps(),
+      isInteractive: true,
     })
-    expect(await band.find({ text: /to fix/ })).toBeUndefined()
-    expect(fake.usageReads).toBe(1)
     expect(probes).toBe(1)
-  })
-}
-
-test("startup notice probes once when the same session starts again", { options: { startupNoticeEnabled: true } }, async ($, on) => {
-  const fake = fakeEngine(on)
-  let probes = 0
-  on("process.run", (_$, event) => {
-    if (event.argv[0] === "antiburn") {
-      return {
-        value: {
-          exitCode: 0,
-          stdout: JSON.stringify({
-            protocol_version: 1,
-            session_id: "test-session",
-            session_scope: "unsupported",
-            freshness_evaluated: false,
-            state: "waiting",
-            snapshot: [],
-            updates: [],
-            receipt: null,
-          }),
-          stderr: "",
-          isStdoutTruncated: false,
-          isStderrTruncated: false,
-        },
-      }
-    }
-    probes += 1
-    return {
-      value: {
-        exitCode: 0,
-        stdout: '{"state":"found"}',
-        stderr: "",
-        isStdoutTruncated: false,
-        isStderrTruncated: false,
-      },
-    }
-  })
-  await startSession($)
-  await $.session.start({
-    cwd: "/work",
-    surface: "terminal",
-    isInteractive: true,
-  })
-  expect(probes).toBe(1)
-  expect(fake.logs.filter((line) => line.includes("CLI found"))).toHaveLength(1)
-})
+    expect(fake.logs.filter((line) => line.includes("CLI found"))).toHaveLength(1)
+  },
+)
 
 test(
   "disabling the dev usage UI avoids automatic usage reads while Antiburn checks remain separate",
@@ -2051,7 +2184,11 @@ test(
     await startSession($)
     expect(fake.usageReads).toBe(0)
     expect(processes.some((argv) => argv[0] === "node")).toBe(false)
-    expect(processes.some((argv) => argv[0] === "antiburn" && argv.includes("claude-code:ui"))).toBe(true)
+    expect(
+      processes.some(
+        (argv) => argv[0] === "antiburn" && argv.includes("claude-code:ui"),
+      ),
+    ).toBe(true)
     await turn($, fake, { failures: 3 })
     const band = await $.ui.mount({
       plugin: "antiburn-live",
@@ -2086,7 +2223,9 @@ for (const flag of [undefined, "usage", "invalid", "CHECKS"]) {
       })
       expect(result.text).toBe("Usage: /antiburn-dev")
     }
-    expect(fake.stateWrites.filter((key) => key !== "usage" && key !== "burn")).toEqual([])
+    expect(fake.stateWrites.filter((key) => key !== "usage" && key !== "burn")).toEqual(
+      [],
+    )
     expect(fake.statuses).toEqual([])
     expect(fake.opens).toEqual([])
     expect(fake.submits).toEqual([])
@@ -2275,26 +2414,34 @@ test("reload into usage mode clears prior check UI and disables stale actions", 
         ? JSON.stringify({
             protocol_version: 1,
             session_id: "test-session",
-            identity: { environment_key: "native", agent: "claude-code", session_id: "test-session" },
+            identity: {
+              environment_key: "native",
+              agent: "claude-code",
+              session_id: "test-session",
+            },
             session_scope: "main",
             freshness_evaluated: false,
             state: "ready",
-            snapshot: [{
-              id: "dynamic-status-check",
-              check_id: "predefined-yaml-check",
-              name: "Review the risky change",
-              message: "Check the affected files before continuing.",
-              status: "failure",
-              assessed_at_epoch: 1_800_000_000,
-              checking: false,
-              eligibility: "ready",
-            }],
-            updates: [{
-              id: "dynamic-status-check",
-              kind: "finding",
-              name: "Review the risky change",
-              message: "Check the affected files before continuing.",
-            }],
+            snapshot: [
+              {
+                id: "dynamic-status-check",
+                check_id: "predefined-yaml-check",
+                name: "Review the risky change",
+                message: "Check the affected files before continuing.",
+                status: "failure",
+                assessed_at_epoch: 1_800_000_000,
+                checking: false,
+                eligibility: "ready",
+              },
+            ],
+            updates: [
+              {
+                id: "dynamic-status-check",
+                kind: "finding",
+                name: "Review the risky change",
+                message: "Check the affected files before continuing.",
+              },
+            ],
             receipt: "b".repeat(64),
           })
         : '{"state":"found"}'
@@ -2352,26 +2499,24 @@ for (const surface of ["desktop", "terminal"] as const) {
       const fiveHour =
         surface === "desktop"
           ? (await band.findAll({ type: "Svg" })).find((node) =>
-              String(node.props.alt).startsWith("5-hour:"),
+              String(node.props.alt).includes("5-hour:"),
             )?.props.alt
           : (await band.find({ key: "usage-detail-five_hour" }))?.props.label
       const weekly =
         surface === "desktop"
           ? (await band.findAll({ type: "Svg" })).find((node) =>
-              String(node.props.alt).startsWith("Weekly:"),
+              String(node.props.alt).includes("Weekly:"),
             )?.props.alt
           : (await band.find({ key: "usage-detail-seven_day" }))?.props.label
-      expect(fiveHour).toMatch(
-        new RegExp(
-          `^5-hour: ${String(surface === "desktop" ? Math.floor(percentUsed) : percentUsed).replace(".", "\\.")}%\\.`,
-        ),
+      expect(fiveHour).toContain(
+        `5-hour: ${String(surface === "desktop" ? Math.floor(percentUsed) : percentUsed)}%.`,
       )
-      expect(weekly).toMatch(/^Weekly: Unavailable\./)
+      expect(weekly).toContain("Weekly: Unavailable.")
     }
     expect(fake.usageReads).toBe(1)
     if (surface === "desktop") {
       const graphic = (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )
       expect(String(graphic?.props.source)).toContain("bitcount-pixel")
       expect(String(graphic?.props.source)).toContain("Reset unavailable")
@@ -2392,7 +2537,7 @@ for (const surface of ["desktop", "terminal"] as const) {
   })
 }
 
-test("desktop entrance has one bounded owner and newer data cancels delayed fill", async ($, on) => {
+test("desktop usage fades without a delayed fill and retains numeric updates", async ($, on) => {
   const fake = fakeEngine(on, ["desktop"])
   fake.liveMode = "usage"
   fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
@@ -2407,10 +2552,10 @@ test("desktop entrance has one bounded owner and newer data cancels delayed fill
   expect(
     String(
       (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )?.props.source,
     ),
-  ).toContain("animation:meter-in")
+  ).not.toMatch(/animation:(?:strip-meter-\d+-)?meter-in/)
   await $.session.measure({
     context: { window: 200000 },
     rateLimits: [{ kind: "five_hour", percentUsed: 9 }],
@@ -2418,11 +2563,12 @@ test("desktop entrance has one bounded owner and newer data cancels delayed fill
   })
   const settled = String(
     (await band.findAll({ type: "Svg" })).find((node) =>
-      String(node.props.alt).startsWith("5-hour:"),
+      String(node.props.alt).includes("5-hour:"),
     )?.props.source,
   )
-  expect(settled).not.toContain("animation:meter-in")
-  expect(settled).not.toContain('class="roll-old"')
+  expect(settled).not.toMatch(/animation:(?:strip-meter-\d+-)?meter-in/)
+  expect(settled).toContain("animation:usage-enter")
+  expect(settled).toContain('class="roll-old"')
   await $.session.measure({
     context: { window: 200000 },
     rateLimits: [{ kind: "five_hour", percentUsed: 10 }],
@@ -2431,7 +2577,7 @@ test("desktop entrance has one bounded owner and newer data cancels delayed fill
   expect(
     String(
       (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )?.props.source,
     ),
   ).toContain('class="roll-old"')
@@ -2449,10 +2595,255 @@ test("desktop entrance has one bounded owner and newer data cancels delayed fill
   expect(
     String(
       (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )?.props.source,
     ),
   ).not.toContain('class="roll-old"')
+})
+
+test("desktop first visibility fades unavailable content and reloading the same session rearms it", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  fake.liveMode = "usage"
+  fake.rateLimits = []
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: { ...stripProps(), hasSurvey: true },
+  })
+  fake.now += 1000
+  await band.redraw(stripProps())
+  const status = (await band.findAll({ type: "Svg" })).find((node) =>
+    String(node.props.alt).includes("Usage"),
+  )
+  expect(String(status?.props.source)).toContain("animation:usage-enter")
+  fake.now += 100
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [{ kind: "five_hour", percentUsed: 8 }],
+    changed: ["rateLimits"],
+  })
+  const sources = async () =>
+    (await band.findAll({ type: "Svg" })).map((node) => String(node.props.source))
+  expect((await sources()).some((source) => source.includes(" -100ms both"))).toBe(true)
+  fake.now += 1000
+  await band.redraw(stripProps(40))
+  const settled = await sources()
+  expect(settled).toEqual(await sources())
+  await band.redraw({ ...stripProps(), hasSurvey: true })
+  await band.redraw(stripProps())
+  const scene = async () =>
+    String(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    )
+  expect(await scene()).not.toContain("animation:usage-enter")
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  await band.redraw()
+  expect(await scene()).toContain(" 0ms both")
+  expect(await sources()).not.toEqual(settled)
+  expect(fake.presentationTimers).toEqual([])
+})
+
+test("returning to a desktop session rearms its entrance", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  on("session.attach", (_$, e) => ({ clientId: e.clientId }))
+  on("session.detach", (_$, e) => ({ clientId: e.clientId }))
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: stripProps(),
+  })
+  fake.now += 1000
+  await band.redraw()
+  const source = async () =>
+    String(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    )
+  expect(await source()).toContain("animation:usage-enter")
+  const first = await source()
+  fake.now += 1000
+  await band.redraw()
+  expect(await source()).toBe(first)
+  await $.session.detach({
+    surface: "desktop",
+    clientId: "returning-desktop",
+    reason: "detach",
+  })
+  await $.session.attach({ surface: "desktop", clientId: "returning-desktop" })
+  expect(await source()).toContain(" 0ms both")
+  const returned = await source()
+  fake.now += 1000
+  await band.redraw()
+  expect(await source()).toBe(returned)
+})
+
+test("a host reload command rearms the desktop fade without reloading the module", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  on("command.run", () => ({ text: "reloaded" }))
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: stripProps(),
+  })
+  const source = async () =>
+    String(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    )
+  const first = await source()
+  fake.now += 1000
+  await band.redraw()
+  const settled = await source()
+  expect(settled).toBe(first)
+  await $.command.run({
+    command: "reload-plugins",
+    args: "--force",
+    origin: { kind: "composer" },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(await source()).toContain(" 0ms both")
+  expect(await source()).not.toBe(first)
+})
+
+test("a reload invalidates a render that is waiting for its clock", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  on("command.run", () => ({ text: "reloaded" }))
+  fake.liveMode = "usage"
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: stripProps(),
+  })
+  const source = async () =>
+    String(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    )
+  const identity = (svg: string) => svg.match(/data-usage-entrance="([^"]+)"/)?.[1]
+  const before = await source()
+  let entered!: () => void
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve
+  })
+  let releaseClock!: (value: number) => void
+  fake.clockRead = () => {
+    fake.clockRead = undefined
+    entered()
+    return new Promise<number>((resolve) => {
+      releaseClock = resolve
+    })
+  }
+  const pendingRedraw = band.redraw()
+  await waiting
+  await $.command.run({
+    command: "reload-plugins",
+    args: "--force",
+    origin: { kind: "composer" },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  releaseClock(fake.now)
+  await pendingRedraw
+  fake.clockRead = undefined
+  const after = await source()
+  expect(identity(after)).not.toBe(identity(before))
+  expect(after).toContain("animation:usage-enter")
+  await band.redraw()
+  expect(identity(await source())).toBe(identity(after))
+})
+
+test("reload resets the entrance before the host reload callback redraws", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  on("command.run", async () => {
+    await fake.reload?.()
+    return { text: "reloaded" }
+  })
+  fake.liveMode = "usage"
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: stripProps(),
+  })
+  const source = async () =>
+    String(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    )
+  const identity = (svg: string) => svg.match(/data-usage-entrance="([^"]+)"/)?.[1]
+  const first = await source()
+  fake.now += 1000
+  await band.redraw()
+  let callbackSource = ""
+  fake.reload = async () => {
+    await band.redraw()
+    callbackSource = await source()
+  }
+  expect(
+    (
+      await $.command.run({
+        command: "reload-plugins",
+        args: "--force",
+        origin: { kind: "composer" },
+        presentation: { isFullscreen: false, columns: 80 },
+      })
+    ).text,
+  ).toBe("reloaded")
+  expect(identity(callbackSource)).not.toBe(identity(first))
+  expect(callbackSource).toContain(" 0ms both")
+  expect(callbackSource).toContain("animation:usage-enter")
+})
+
+test("first, duplicate, secondary, and terminal attaches keep peer entrance identities", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  on("session.attach", (_$, e) => ({ clientId: e.clientId }))
+  fake.liveMode = "usage"
+  fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+  await startSession($)
+  const primary = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: stripProps(),
+  })
+  const peer = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    requestId: "desktop-peer",
+    props: stripProps(),
+  })
+  const identity = async (band: typeof primary) =>
+    String(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    ).match(/data-usage-entrance="([^"]+)"/)?.[1]
+  const before = [await identity(primary), await identity(peer)]
+  await $.session.attach({ surface: "desktop", clientId: "desktop:first" })
+  await $.session.attach({ surface: "desktop", clientId: "desktop:first" })
+  await $.session.attach({ surface: "desktop", clientId: "desktop:secondary" })
+  await $.session.attach({ surface: "terminal", clientId: "terminal:peer" })
+  expect([await identity(primary), await identity(peer)]).toEqual(before)
 })
 
 test("terminal fallback schedules no presentation timers", async ($, on) => {
@@ -2488,10 +2879,10 @@ test("completed desktop entrance permits the next numeric roll without scheduled
   const source = async () =>
     String(
       (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )?.props.source,
     )
-  expect(await source()).toContain("animation:meter-in")
+  expect(await source()).not.toMatch(/animation:(?:strip-meter-\d+-)?meter-in/)
   fake.now += 960
   await $.session.measure({
     context: { window: 200000 },
@@ -2499,7 +2890,7 @@ test("completed desktop entrance permits the next numeric roll without scheduled
     changed: ["rateLimits"],
   })
   expect(await source()).toContain('class="roll-old"')
-  expect(await source()).not.toContain("animation:meter-in")
+  expect(await source()).not.toMatch(/animation:(?:strip-meter-\d+-)?meter-in/)
   const completedRollSource = await source()
   fake.now += 284
   await $.session.measure({
@@ -2537,7 +2928,10 @@ for (const surface of ["desktop", "terminal"] as const) {
       })
       expect(
         await debug.find({
-          text: flag === "checks" ? "Mode 1 · Usage limits + live checks" : "Mode 0 · Usage limits",
+          text:
+            flag === "checks"
+              ? "Mode 1 · Usage limits + live checks"
+              : "Mode 0 · Usage limits",
         }),
       ).toBeDefined()
       expect(await debug.find({ key: "usage-preview-mid" })).toBeDefined()
@@ -2573,7 +2967,9 @@ for (const surface of ["desktop", "terminal"] as const) {
         props: PANE_PROPS,
       })
       expect(await checks.find({ text: /^Mode [01]/ })).toBeUndefined()
-      expect(fake.opens).toEqual(flag === "checks" ? ["debug", "checks", "checks"] : ["debug"])
+      expect(fake.opens).toEqual(
+        flag === "checks" ? ["debug", "checks", "checks"] : ["debug"],
+      )
       expect(fake.submits).toEqual([])
       expect(fake.fills).toEqual([])
     })
@@ -2607,7 +3003,9 @@ for (const surface of ["desktop", "terminal"] as const) {
         ? (await band.findAll({ type: "Svg" })).some((node) =>
             String(node.props.alt).includes(text),
           )
-        : (await band.findAll({ type: "Text" })).some((node) => node.text.includes(text))
+        : (await band.findAll({ type: "Text" })).some((node) =>
+            node.text.includes(text),
+          )
     const initialReads = fake.usageReads
     await pane.press({ key: "usage-state-idle" })
     expect(await visible("Usage unavailable")).toBe(true)
@@ -2627,11 +3025,14 @@ for (const surface of ["desktop", "terminal"] as const) {
     expect(await visible("Account retry at")).toBe(true)
     expect(await visible("Refresh checks session.")).toBe(true)
     if (surface === "terminal") {
-      expect((await band.find({ key: "usage-retry-copy" }))?.props.height).toBeUndefined()
+      expect(
+        (await band.find({ key: "usage-retry-copy" }))?.props.height,
+      ).toBeUndefined()
       expect((await band.find({ key: "usage-state-refresh" }))?.props.label).toBe("[↻]")
     }
     await band.press({ key: "usage-state-refresh" })
-    if (surface === "terminal") expect(await band.find({ key: "usage-checking" })).toBeDefined()
+    if (surface === "terminal")
+      expect(await band.find({ key: "usage-checking" })).toBeDefined()
     else expect(await visible("Checking usage...")).toBe(true)
     expect(fake.usageReads).toBe(initialReads)
     await pane.press({ key: "usage-state-success" })
@@ -2660,7 +3061,7 @@ for (const surface of ["desktop", "terminal"] as const) {
       expect(
         String(
           (await band.findAll({ type: "Svg" })).find((node) =>
-            String(node.props.alt).startsWith("5-hour:"),
+            String(node.props.alt).includes("5-hour:"),
           )?.props.source,
         ),
       ).toMatch(/debug-pulse/)
@@ -2668,7 +3069,7 @@ for (const surface of ["desktop", "terminal"] as const) {
       expect(
         String(
           (await band.findAll({ type: "Svg" })).find((node) =>
-            String(node.props.alt).startsWith("5-hour:"),
+            String(node.props.alt).includes("5-hour:"),
           )?.props.source,
         ),
       ).toMatch(/debug-reset 280ms/)
@@ -2676,7 +3077,7 @@ for (const surface of ["desktop", "terminal"] as const) {
       expect(
         String(
           (await band.findAll({ type: "Svg" })).find((node) =>
-            String(node.props.alt).startsWith("5-hour:"),
+            String(node.props.alt).includes("5-hour:"),
           )?.props.source,
         ),
       ).toMatch(/debug-reset 180ms/)
@@ -2689,7 +3090,7 @@ for (const surface of ["desktop", "terminal"] as const) {
       expect(
         String(
           (await band.findAll({ type: "Svg" })).find((node) =>
-            String(node.props.alt).startsWith("5-hour:"),
+            String(node.props.alt).includes("5-hour:"),
           )?.props.source,
         ),
       ).not.toMatch(/debug-pulse/)
@@ -2735,7 +3136,7 @@ test("a delayed animation inspector cannot restore a preview after returning to 
   expect(await usagePane.find({ text: "5-hour: 8%" })).toBeDefined()
 })
 
-test("desktop meter data stays outside the interactive frame and duplicate measurements preserve its source", async ($, on) => {
+test("desktop usage scene carries interactive controls and duplicate measurements preserve its source", async ($, on) => {
   const fake = fakeEngine(on, ["desktop"])
   fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
   await startSession($)
@@ -2747,10 +3148,14 @@ test("desktop meter data stays outside the interactive frame and duplicate measu
   })
   const source = async () =>
     (await band.findAll({ type: "Svg" })).find((node) =>
-      String(node.props.alt).startsWith("5-hour:"),
+      String(node.props.alt).includes("5-hour:"),
     )!
+  expect((await source()).props.isInteractive).toBe(true)
+  expect(String((await source()).props.alt)).toContain("5-hour:")
+  expect(String((await source()).props.alt)).toContain("Weekly:")
+  fake.now += 240
+  await band.redraw()
   const initial = await source()
-  expect(initial.props.isInteractive).not.toBe(true)
   fake.now += 1000
   await $.session.measure({
     context: { window: 200000 },
@@ -2784,7 +3189,9 @@ for (const surface of ["desktop", "terminal"] as const) {
     expect(await debug.find({ key: "usage-preview-decimal" })).toBeUndefined()
     await debug.press({ key: "usage-preview-mid" })
     await debug.press({ key: "usage-debug-mode" })
-    expect(await debug.find({ text: "Mode 1 · Usage limits + live checks" })).toBeDefined()
+    expect(
+      await debug.find({ text: "Mode 1 · Usage limits + live checks" }),
+    ).toBeDefined()
     expect(await debug.find({ key: "debug-checks" })).toBeDefined()
     expect(await usagePane.find({ key: "debug-checks" })).toBeDefined()
     expect(await usagePane.find({ text: "5-hour: 48%" })).toBeDefined()
@@ -2917,7 +3324,7 @@ test("a pending measurement cannot populate checks after switching away and back
     rateLimits: [],
     changed: ["context"],
   })
-    expect(await band.find({ text: /Context heavy/ })).toBeUndefined()
+  expect(await band.find({ text: /Context heavy/ })).toBeUndefined()
 })
 
 test("reload closes the retired usage pane", async ($, on) => {
@@ -2980,14 +3387,18 @@ for (const surface of ["desktop", "terminal"] as const) {
       component: "AbovePrompt",
       props: stripProps(80),
     })
-    expect(await debug.find({ text: "Layout: Label reveal · inline (default)" })).toBeDefined()
+    expect(
+      await debug.find({ text: "Layout: Label reveal · inline (default)" }),
+    ).toBeDefined()
     await debug.press({ key: "usage-preview-mid" })
     await debug.press({ key: "usage-layout-current" })
-    expect(await debug.find({ text: "Layout: Current · captions above meters" })).toBeDefined()
+    expect(
+      await debug.find({ text: "Layout: Current · captions above meters" }),
+    ).toBeDefined()
     expect(await debug.find({ text: "5-hour: 48%" })).toBeDefined()
     if (surface === "desktop") {
       const svg = (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )!
       expect(svg.props.height).toBe(33.75)
     }
@@ -3000,17 +3411,21 @@ for (const surface of ["desktop", "terminal"] as const) {
     expect(await debug.find({ text: "5-hour: 48%" })).toBeDefined()
     if (surface === "desktop") {
       const svg = (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )!
       expect(svg.props.height).toBe(18)
-      expect(String(svg.props.source)).not.toContain("animation:meter-in")
+      expect(String(svg.props.source)).not.toMatch(
+        /animation:(?:strip-meter-\d+-)?meter-in/,
+      )
       expect(String(svg.props.source)).not.toContain("animation:preview-fill")
     }
     await debug.press({ key: "usage-preview-live" })
     expect(await debug.find({ text: "5-hour: 12%" })).toBeDefined()
     await debug.press({ key: "usage-layout-current" })
     await $.session.start({ cwd: "/work", surface, isInteractive: true })
-    expect(await debug.find({ text: "Layout: Label reveal · inline (default)" })).toBeDefined()
+    expect(
+      await debug.find({ text: "Layout: Label reveal · inline (default)" }),
+    ).toBeDefined()
     expect(fake.presentationTimers).toEqual([])
     expect(fake.submits).toEqual([])
   })
@@ -3028,7 +3443,9 @@ test("terminal Label reveal exposes reset and pace separately without changing v
     {
       kind: "seven_day",
       percentUsed: 5,
-      resetsAt: new Date(fake.now + (6 * 24 + 15 + 36 / 60) * 60 * 60 * 1000).toISOString(),
+      resetsAt: new Date(
+        fake.now + (6 * 24 + 15 + 36 / 60) * 60 * 60 * 1000,
+      ).toISOString(),
     },
   ]
   await startSession($)
@@ -3065,9 +3482,9 @@ test("terminal Label reveal exposes reset and pace separately without changing v
   await band.press({ key: "usage-pace-seven_day" })
   const weeklyPace = await band.find({ text: /^Even pace:/ })
   expect(weeklyPace).toBeDefined()
-  expect(JSON.stringify(await band.find({ key: "usage-pace-right-seven_day" }))).toContain(
-    "Even pace:",
-  )
+  expect(
+    JSON.stringify(await band.find({ key: "usage-pace-right-seven_day" })),
+  ).toContain("Even pace:")
   expect(await band.find({ key: "usage-pace-seven_day" })).toBeDefined()
   await $.ui.focus({
     component: "AbovePrompt",
@@ -3088,7 +3505,9 @@ for (const elapsed of [0.2, 0.8]) {
       {
         kind: "seven_day",
         percentUsed: 1,
-        resetsAt: new Date(fake.now + (1 - elapsed) * 7 * 24 * 60 * 60 * 1000).toISOString(),
+        resetsAt: new Date(
+          fake.now + (1 - elapsed) * 7 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
       },
     ]
     await startSession($)
@@ -3141,7 +3560,7 @@ if (BURN_ANIMATION_ENABLED) {
       props: PANE_PROPS,
     })
     const before = (await band.findAll({ type: "Svg" })).find((node) =>
-      String(node.props.alt).startsWith("5-hour:"),
+      String(node.props.alt).includes("5-hour:"),
     )!.props.source
     await debug.press({ key: "burn-preview" })
     const mark = (await band.findAll({ type: "Svg" })).find((node) =>
@@ -3154,31 +3573,32 @@ if (BURN_ANIMATION_ENABLED) {
     )!
     expect(slot.props.height).toBe(13)
     expect(slot.props.isInteractive).toBe(false)
+    const scene = (await band.findAll({ type: "Svg" })).find((node) =>
+      String(node.props.alt).includes("5-hour:"),
+    )
+    expect(scene?.props.isInteractive).toBe(true)
+    expect(String(scene?.props.source)).toContain('class="strip-brand"')
     const activitySlot = (await band.findAll({ type: "Box" })).find(
-      (node) => node.props.bottom === 0 && node.props.left === 0 && node.props.width === 14 / 8,
+      (node) =>
+        node.props.bottom === 0 && node.props.left === 0 && node.props.width === 14 / 8,
     )
     expect(activitySlot?.props.alignItems).toBe("center")
     expect(String(slot.props.source)).not.toContain('<svg opacity="0"')
     expect(
       (await band.findAll({ type: "Svg" })).find((node) =>
-        String(node.props.alt).startsWith("5-hour:"),
+        String(node.props.alt).includes("5-hour:"),
       )!.props.source,
     ).toBe(before)
     expect(await debug.find({ text: /Live usage data/ })).toBeDefined()
-    const controls = (await band.findAll({ type: "Svg" })).filter((node) =>
-      String(node.props.alt).endsWith("reset and pace controls"),
-    )
-    expect(controls).toHaveLength(2)
-    expect(controls.every((node) => node.props.width === 4096)).toBe(true)
-    expect(controls.every((node) => node.props.isInteractive === true)).toBe(true)
+    expect(String(scene?.props.source)).toContain("strip-meter-0-")
+    expect(String(scene?.props.source)).toContain("strip-meter-1-")
     fake.now += 1000
     await debug.press({ key: "burn-stats" })
-    const refreshedControls = (await band.findAll({ type: "Svg" })).filter((node) =>
-      String(node.props.alt).endsWith("reset and pace controls"),
-    )
-    expect(refreshedControls.map((node) => node.props.source)).toEqual(
-      controls.map((node) => node.props.source),
-    )
+    expect(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    ).toBe(scene?.props.source)
     await debug.press({ key: "burn-preview-reduced" })
     const reduced = (await band.findAll({ type: "Svg" })).find((node) =>
       String(node.props.alt).includes("output activity preview"),
@@ -3429,7 +3849,9 @@ for (const surface of ["desktop", "terminal"] as const) {
       if (surface === "desktop" && index === 0) {
         const sources = await band.findAll({ type: "Svg" })
         expect(
-          sources.some((node) => String(node.props.source).includes("animation:meter-in")),
+          sources.some((node) =>
+            /animation:(?:strip-meter-\d+-)?meter-in/.test(String(node.props.source)),
+          ),
         ).toBe(true)
       }
       await advance()
@@ -3440,11 +3862,15 @@ for (const surface of ["desktop", "terminal"] as const) {
       ["Pace reveal", ".pace-detail", 280],
       ["Pace hide", ".pace-detail", 180],
     ] as const) {
-      expect(await debug.find({ text: new RegExp(`Playing: .*${label}`) })).toBeDefined()
+      expect(
+        await debug.find({ text: new RegExp(`Playing: .*${label}`) }),
+      ).toBeDefined()
       if (surface === "desktop") {
         expect(
           (await band.findAll({ type: "Svg" })).some((node) =>
-            String(node.props.source).includes(`${selector}{animation:debug-reset ${duration}ms`),
+            new RegExp(
+              `${selector.replace(".", "\\.")}\\{animation:(?:strip-meter-\\d+-)?debug-reset ${duration}ms`,
+            ).test(String(node.props.source)),
           ),
         ).toBe(true)
       }
@@ -3467,7 +3893,9 @@ for (const surface of ["desktop", "terminal"] as const) {
       expect(await band.find({ key: "usage-mark" })).toBeUndefined()
     }
     expect(await debug.find({ key: "usage-sequence-stop" })).toBeUndefined()
-    expect(fake.presentationTimers).toHaveLength(reelIds.length + (BURN_ANIMATION_ENABLED ? 5 : 4))
+    expect(fake.presentationTimers).toHaveLength(
+      reelIds.length + (BURN_ANIMATION_ENABLED ? 5 : 4),
+    )
     expect(fake.submits).toEqual([])
     expect(fake.usageReads).toBe(1)
   })
@@ -3510,8 +3938,10 @@ for (const action of ["stop", "manual", "live", "layout", "restart", "clear", "e
     expect(fake.presentationTimers).toHaveLength(timerCount)
     if (action !== "restart")
       expect(await debug.find({ key: "usage-sequence-stop" })).toBeUndefined()
-    if (action === "manual") expect(await debug.find({ text: "Preview: mid" })).toBeDefined()
-    if (action === "live") expect(await debug.find({ text: /Preview:/ })).toBeUndefined()
+    if (action === "manual")
+      expect(await debug.find({ text: "Preview: mid" })).toBeDefined()
+    if (action === "live")
+      expect(await debug.find({ text: /Preview:/ })).toBeUndefined()
   })
 }
 
@@ -3559,7 +3989,9 @@ if (BURN_ANIMATION_ENABLED) {
     fake.now += 1000
     await debug.press({ key: "burn-preview" })
     const base = async () =>
-      (await band.findAll({ type: "Svg" })).find((node) => node.props.alt === "antiburn")!
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )!
     const visible = String((await base()).props.source)
     expect(visible).not.toContain('<svg opacity="0"')
     fake.now += 15000
@@ -3603,14 +4035,18 @@ for (const columns of [160, 60, 24]) {
     await debug.press({ key: "usage-preview-empty" })
     const empty = await band.find({ key: "usage-band" })
     expect(empty!.props.height).toBe(18 / 16)
-    const status = (await band.findAll({ type: "Svg" })).find(
-      (node) => node.props.alt === "Usage not available yet. Try send a message first",
+    const status = (await band.findAll({ type: "Svg" })).find((node) =>
+      String(node.props.alt).includes(
+        "Usage not available yet. Try send a message first",
+      ),
     )
-    expect(status!.props.alt).toBe("Usage not available yet. Try send a message first")
+    expect(String(status!.props.alt)).toContain(
+      "Usage not available yet. Try send a message first",
+    )
     expect(String(status!.props.source)).toContain('class="hint"')
     if (columns === 24) {
       expect(String(status!.props.source)).not.toContain('<g class="ink">')
-      expect(Number(status!.props.width)).toBeGreaterThan(150)
+      expect(status!.props.width).toBe(4096)
     }
     expect(String(status!.props.source)).toContain("bitcount-pixel")
     expect(String(status!.props.source)).not.toContain("<text")
@@ -3653,21 +4089,21 @@ if (BURN_ANIMATION_ENABLED) {
       )
     expect((await overlays()).length).toBe(1)
     const meter = (await band.findAll({ type: "Svg" })).find((node) =>
-      String(node.props.alt).startsWith("5-hour:"),
+      String(node.props.alt).includes("5-hour:"),
     )!
     expect(String(meter.props.source)).not.toContain("animation:preview-fill")
     expect(String(meter.props.source)).not.toContain('class="roll-old"')
     fake.now += 801
     await debug.press({ key: "burn-stats" })
     expect((await overlays()).length).toBe(0)
-    const base = (await band.findAll({ type: "Svg" })).find(
-      (node) => node.props.alt === "antiburn",
+    const base = (await band.findAll({ type: "Svg" })).find((node) =>
+      String(node.props.alt).includes("5-hour:"),
     )!
     expect(base.props.isInteractive).toBe(true)
   })
 }
 
-test("a reading that interrupts entrance settles the mark as well as the meters", async ($, on) => {
+test("a reading during entrance keeps the mark on its original fade", async ($, on) => {
   const fake = fakeEngine(on, ["desktop"])
   fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
   await startSession($)
@@ -3678,15 +4114,25 @@ test("a reading that interrupts entrance settles the mark as well as the meters"
     props: stripProps(),
   })
   const base = async () =>
-    (await band.findAll({ type: "Svg" })).find((node) => node.props.alt === "antiburn")!
-  expect(String((await base()).props.source)).toContain("animation:mark-in")
+    (await band.findAll({ type: "Svg" })).find((node) =>
+      String(node.props.alt).includes("5-hour:"),
+    )!
+  const first = String((await base()).props.source)
+  expect(first).toContain("animation:usage-enter")
+  expect(first).not.toMatch(/animation:(?:strip-brand-)?mark-in/)
   fake.now += 120
   await $.session.measure({
     context: { window: 200000 },
     rateLimits: [{ kind: "five_hour", percentUsed: 9 }],
     changed: ["rateLimits"],
   })
-  expect(String((await base()).props.source)).not.toContain("animation:mark-in")
+  const updated = String((await base()).props.source)
+  expect(updated).not.toBe(first)
+  expect(updated.match(/data-usage-entrance="([^"]+)"/)?.[1]).toBe(
+    first.match(/data-usage-entrance="([^"]+)"/)?.[1],
+  )
+  expect(updated).toContain(" -120ms both")
+  expect((await base()).props.alt).toContain("5-hour: 9%.")
 })
 
 test("entrance replay is available on live data and repeated presses produce fresh animations", async ($, on) => {
@@ -3708,20 +4154,20 @@ test("entrance replay is available on live data and repeated presses produce fre
   })
   expect(await debug.find({ key: "usage-preview-entrance" })).toBeDefined()
   await debug.press({ key: "usage-preview-entrance" })
-  const sources = async () =>
-    (await band.findAll({ type: "Svg" }))
-      .filter(
-        (node) => node.props.alt === "antiburn" || String(node.props.alt).startsWith("5-hour:"),
-      )
-      .map((node) => String(node.props.source))
+  const sources = async () => [
+    String(
+      (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )?.props.source,
+    ),
+  ]
   const first = await sources()
-  expect(first.some((source) => source.includes("animation:mark-in"))).toBe(true)
-  expect(first.some((source) => source.includes("animation:meter-in"))).toBe(true)
+  expect(first[0]).toMatch(/animation:(?:strip-brand-)?mark-in/)
+  expect(first[0]).toMatch(/animation:(?:strip-meter-\d+-)?meter-in/)
   await debug.press({ key: "usage-preview-entrance" })
   const second = await sources()
   expect(second).not.toEqual(first)
   expect(second[0]).not.toBe(first[0])
-  expect(second[1]).not.toBe(first[1])
   expect(await debug.find({ text: "Live usage data" })).toBeDefined()
   expect(await debug.find({ text: /Preview:/ })).toBeUndefined()
   expect(fake.presentationTimers).toEqual([])
@@ -3806,8 +4252,10 @@ for (const surface of ["desktop", "terminal"] as const) {
     expect(await debug.find({ text: /Claude has not reported usage/ })).toBeDefined()
     if (surface === "desktop") {
       expect(
-        (await band.findAll({ type: "Svg" })).some(
-          (node) => node.props.alt === "Usage not available yet. Try send a message first",
+        (await band.findAll({ type: "Svg" })).some((node) =>
+          String(node.props.alt).includes(
+            "Usage not available yet. Try send a message first",
+          ),
         ),
       ).toBe(true)
     } else expect(await band.find({ text: "Usage not available yet" })).toBeDefined()
@@ -3819,7 +4267,7 @@ for (const surface of ["desktop", "terminal"] as const) {
     if (surface === "desktop") {
       expect(
         (await band.findAll({ type: "Svg" })).some((node) =>
-          String(node.props.alt).startsWith("5-hour: 9%."),
+          String(node.props.alt).includes("5-hour: 9%."),
         ),
       ).toBe(true)
     } else expect(await band.find({ text: /^9%$/ })).toBeDefined()
@@ -3849,21 +4297,23 @@ test("terminal meters share one dot glyph and stacked limits have no blank row",
     expect(dots.some((node) => node.props.color === "subtle")).toBe(true)
     const meters = await band.find({ key: "usage-meters" })
     expect(meters!.props.gap).toBe(columns < 80 ? 0 : 3)
-    expect(await band.findAll({ type: "Raster" })).toHaveLength(1)
+    expect(await band.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
     expect(await band.findAll({ type: "Image" })).toHaveLength(0)
     const raster = (await band.findAll({ type: "Raster" }))[0]!
     const link = (await band.findAll({ type: "Link" })).find(
       (node) => node.props.href === "https://antiburn.com",
     )
     expect(link).toBeUndefined()
-    expect(raster.props.rows).toBe(1)
-    expect(raster.props.columns).toBe(10)
+    if (BURN_ANIMATION_ENABLED) {
+      expect(raster.props.rows).toBe(1)
+      expect(raster.props.columns).toBe(10)
+    }
     const slot = (await band.findAll({ type: "Box" })).find(
-      (node) => node.props.width === 11 && node.props.height === 2,
+      (node) => node.props.width === 11 && node.props.height === (BURN_ANIMATION_ENABLED ? 2 : 1),
     )
     expect(slot!.props.width).toBe(11)
     expect(slot!.props.paddingLeft).toBe(1)
-    expect(slot!.props.height).toBe(2)
+    expect(slot!.props.height).toBe(BURN_ANIMATION_ENABLED ? 2 : 1)
     expect(slot!.props.alignItems).toBe("center")
     expect(slot!.props.justifyContent).toBe("center")
     const windowColumns = columns < 80 ? columns - 12 : Math.floor((columns - 15) / 2)
@@ -3929,7 +4379,7 @@ if (BURN_ANIMATION_ENABLED) {
         expect(frames).toHaveLength(count)
         expect(fake.flameTimers).toHaveLength(timers)
       }
-      expect(await band.findAll({ type: "Raster" })).toHaveLength(1)
+      expect(await band.findAll({ type: "Raster" })).toHaveLength(BURN_ANIMATION_ENABLED ? 1 : 0)
       expect(fake.submits).toEqual([])
     })
   }
@@ -4014,7 +4464,9 @@ for (const fixture of ["high", "near-limit"] as const) {
     await debug.press({ key: `usage-preview-${fixture}` })
     await band.drawn()
     expect(fake.pulseTimers).toHaveLength(1)
-    const marker = (await band.findAll({ type: "Text" })).find((node) => node.text === "│")
+    const marker = (await band.findAll({ type: "Text" })).find(
+      (node) => node.text === "│",
+    )
     expect(marker?.props.color).toBe("#FF5914")
     expect(marker?.props.dimColor).toBe(false)
     expect(await band.findAll({ text: "•" })).toHaveLength(0)
@@ -4093,7 +4545,8 @@ for (const surface of ["desktop", "terminal"] as const) {
       expect(links).toHaveLength(surface === "desktop" ? 1 : 0)
       expect(JSON.stringify(links[0])).not.toContain('"type":"Svg"')
       expect(JSON.stringify(links[0])).not.toContain('"type":"Raster"')
-      if (surface === "terminal") expect(await band.find({ key: "usage-brand-open" })).toBeDefined()
+      if (surface === "terminal")
+        expect(await band.find({ key: "usage-brand-open" })).toBeDefined()
       else expect(links[0]?.props.label).toBe("Open antiburn website")
     }
   })
@@ -4128,11 +4581,17 @@ if (BURN_ANIMATION_ENABLED) {
       expect(links).toHaveLength(surface === "desktop" ? 1 : 0)
       if (surface === "desktop") {
         const graphics = await band.findAll({ type: "Svg" })
+        const scene = graphics.find((node) =>
+          String(node.props.alt).includes("5-hour:"),
+        )
+        expect(scene?.props.width).toBe(4096)
+        expect(scene?.props.isInteractive).toBe(true)
+        expect(String(scene?.props.source)).toContain("strip-meter-0-")
+        expect(String(scene?.props.source)).toContain("strip-meter-1-")
         expect(
-          graphics.filter((node) => String(node.props.alt).endsWith("reset and pace controls")),
-        ).toHaveLength(2)
-        expect(
-          graphics.some((node) => String(node.props.alt).includes("output activity preview")),
+          graphics.some((node) =>
+            String(node.props.alt).includes("output activity preview"),
+          ),
         ).toBe(true)
       } else expect((await band.findAll({ type: "Raster" }))[0]?.props.rows).toBe(1)
       await debug.press({ key: "burn-preview-stop" })
@@ -4170,7 +4629,7 @@ test("terminal logo has no hint and keeps its two-row flame slot", async ($, on)
     const tree = JSON.stringify(await band.drawn())
     expect(tree).not.toContain("Click/Enter")
     expect(tree).not.toContain("usage-brand-link")
-    expect((await band.find({ key: "usage-brand-text-slot" }))?.props.height).toBe(2)
+    expect((await band.find({ key: "usage-brand-text-slot" }))?.props.height).toBe(BURN_ANIMATION_ENABLED ? 2 : 1)
     expect(await band.find({ key: "usage-brand-open" })).toBeDefined()
   }
 })
@@ -4288,7 +4747,9 @@ test("terminal brand activation opens only the fixed website and leaves reset de
   })
   expect(commands.filter((argv) => argv[0] !== "node")).toEqual([])
   await band.press({ key: "usage-brand-open" })
-  expect(commands.filter((argv) => argv[0] !== "node")).toEqual([["open", "https://antiburn.com"]])
+  expect(commands.filter((argv) => argv[0] !== "node")).toEqual([
+    ["open", "https://antiburn.com"],
+  ])
   expect(await band.find({ text: /^Reset unavailable$/ })).toBeUndefined()
   expect(fake.submits).toEqual([])
 })
@@ -4432,7 +4893,8 @@ test("terminal hover is cleared when a pace target or the usage strip disappears
   fake.now = beforeExpiry
   await band.redraw()
   expect(await band.find({ text: /^Even pace:/ })).toBeUndefined()
-  const oldProps = (await band.find({ key: "usage-hover-pace-five_hour" }))!.props.props as {
+  const oldProps = (await band.find({ key: "usage-hover-pace-five_hour" }))!.props
+    .props as {
     binding: string
   }
   await band.pointer({
@@ -4472,134 +4934,149 @@ test("terminal hover is cleared when a pace target or the usage strip disappears
   expect(await band.find({ text: /^RESETS IN / })).toBeUndefined()
 })
 
-for (const surface of ["desktop", "terminal"] as const) {
-  for (const mode of ["usage", "checks"] as const) {
-    test(`disabled burn forwards streaming without activity work in ${mode} on ${surface}`, async ($, on) => {
+if (!BURN_ANIMATION_ENABLED) {
+  for (const surface of ["desktop", "terminal"] as const) {
+    for (const mode of ["usage", "checks"] as const) {
+      test(`disabled burn forwards streaming without activity work in ${mode} on ${surface}`, async ($, on) => {
+        const fake = fakeEngine(on, [surface])
+        fake.liveMode = mode
+        fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+        fake.usage = DEEP
+        await startSession($)
+        if (mode === "checks") await showCheckSamples($)
+        const band = await $.ui.mount({
+          plugin: "antiburn-live",
+          surface,
+          component: "AbovePrompt",
+          props: stripProps(),
+        })
+        await band.drawn()
+        let clockReads = 0
+        fake.clockRead = async () => {
+          clockReads++
+          return fake.now
+        }
+        const burnWrites = fake.stateWrites.filter((key) => key === "burn").length
+        fake.streamChunks = [
+          { kind: "text", index: 0, text: "x".repeat(4000), ref: 1 },
+          { kind: "thinking", index: 1, text: "y".repeat(4000), ref: 2 },
+          { kind: "input", index: 2, json: '{"path":"a"}', ref: 3 },
+        ]
+        const stream = $.turn.step({
+          turnId: "t",
+          index: 0,
+          model: fake.model,
+          effort: "high",
+          messageCount: 1,
+        })
+        const chunks: TurnStepChunk[] = []
+        let item = await stream.next()
+        while (!item.done) {
+          chunks.push(item.value)
+          fake.now += 1000
+          item = await stream.next()
+        }
+        expect(chunks).toEqual(fake.streamChunks)
+        expect(item.value.usage).toEqual({ ...DEEP, model: fake.model })
+        expect(fake.streamStarts).toBe(1)
+        expect(clockReads).toBe(0)
+        expect(fake.stateWrites.filter((key) => key === "burn")).toHaveLength(
+          burnWrites,
+        )
+        await $.turn.complete({
+          answer: "",
+          durationMs: 1,
+          isAborted: false,
+          turnId: "t",
+          reason: "answer",
+        })
+        expect(fake.flameTimers).toHaveLength(0)
+        expect(await band.find({ key: "usage-mark" })).toBeUndefined()
+        expect(await band.find({ key: "burn-controls" })).toBeUndefined()
+        expect(await band.find({ key: "usage-band" })).toBeDefined()
+        if (mode === "checks") {
+          expect((await band.find({ key: "fix" }))?.props.label).toBe(
+            surface === "desktop" ? "Compact now" : "1 Compact now",
+          )
+          await band.press({ key: "fix" })
+          expect(fake.compacts).toHaveLength(1)
+        } else expect(await band.find({ key: "fix" })).toBeUndefined()
+      })
+    }
+
+    test(`disabled burn previews stay unavailable through debug and check demos on ${surface}`, async ($, on) => {
       const fake = fakeEngine(on, [surface])
-      fake.liveMode = mode
       fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
-      fake.usage = DEEP
       await startSession($)
-      if (mode === "checks") await showCheckSamples($)
+      await $.command.run({
+        command: "antiburn-dev",
+        args: "debug",
+        origin: { kind: "composer" },
+        presentation: { isFullscreen: false, columns: 120 },
+      })
+      const debug = await $.ui.mount({
+        plugin: "antiburn-live",
+        surface,
+        component: "Pane",
+        requestId: "debug",
+        props: PANE_PROPS,
+      })
       const band = await $.ui.mount({
         plugin: "antiburn-live",
         surface,
         component: "AbovePrompt",
         props: stripProps(),
       })
-      await band.drawn()
-      let clockReads = 0
-      fake.clockRead = async () => {
-        clockReads++
-        return fake.now
-      }
+      expect(
+        await debug.find({
+          text: "Burn previews and activity tracking are unavailable.",
+        }),
+      ).toBeDefined()
+      for (const key of [
+        "burn-preview",
+        "burn-preview-reduced",
+        "burn-preview-stop",
+        "burn-stats",
+      ])
+        expect(await debug.find({ key })).toBeUndefined()
       const burnWrites = fake.stateWrites.filter((key) => key === "burn").length
-      fake.streamChunks = [
-        { kind: "text", index: 0, text: "x".repeat(4000), ref: 1 },
-        { kind: "thinking", index: 1, text: "y".repeat(4000), ref: 2 },
-        { kind: "input", index: 2, json: '{"path":"a"}', ref: 3 },
-      ]
-      const stream = $.turn.step({
-        turnId: "t",
-        index: 0,
-        model: fake.model,
-        effort: "high",
-        messageCount: 1,
+      await debug.press({ key: "debug-checks-demo" })
+      expect(await band.find({ key: "fix" })).toBeDefined()
+      await debug.press({ key: "debug-checks-live" })
+      await $.command.run({
+        command: "antiburn-dev",
+        args: "demo",
+        origin: { kind: "composer" },
+        presentation: { isFullscreen: false, columns: 120 },
       })
-      const chunks: TurnStepChunk[] = []
-      let item = await stream.next()
-      while (!item.done) {
-        chunks.push(item.value)
-        fake.now += 1000
-        item = await stream.next()
-      }
-      expect(chunks).toEqual(fake.streamChunks)
-      expect(item.value.usage).toEqual({ ...DEEP, model: fake.model })
-      expect(fake.streamStarts).toBe(1)
-      expect(clockReads).toBe(0)
+      expect(await band.find({ key: "fix" })).toBeDefined()
+      await $.command.run({
+        command: "antiburn-dev",
+        args: "demo off",
+        origin: { kind: "composer" },
+        presentation: { isFullscreen: false, columns: 120 },
+      })
+      await band.drawn()
       expect(fake.stateWrites.filter((key) => key === "burn")).toHaveLength(burnWrites)
-      await $.turn.complete({
-        answer: "",
-        durationMs: 1,
-        isAborted: false,
-        turnId: "t",
-        reason: "answer",
-      })
       expect(fake.flameTimers).toHaveLength(0)
       expect(await band.find({ key: "usage-mark" })).toBeUndefined()
       expect(await band.find({ key: "burn-controls" })).toBeUndefined()
       expect(await band.find({ key: "usage-band" })).toBeDefined()
-      if (mode === "checks") {
-        expect((await band.find({ key: "fix" }))?.props.label).toBe(
-          surface === "desktop" ? "Compact now" : "1 Compact now",
-        )
-        await band.press({ key: "fix" })
-        expect(fake.compacts).toHaveLength(1)
-      } else expect(await band.find({ key: "fix" })).toBeUndefined()
     })
   }
-
-  test(`disabled burn previews stay unavailable through debug and check demos on ${surface}`, async ($, on) => {
-    const fake = fakeEngine(on, [surface])
-    fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
-    await startSession($)
-    await $.command.run({
-      command: "antiburn-dev",
-      args: "debug",
-      origin: { kind: "composer" },
-      presentation: { isFullscreen: false, columns: 120 },
-    })
-    const debug = await $.ui.mount({
-      plugin: "antiburn-live",
-      surface,
-      component: "Pane",
-      requestId: "debug",
-      props: PANE_PROPS,
-    })
-    const band = await $.ui.mount({
-      plugin: "antiburn-live",
-      surface,
-      component: "AbovePrompt",
-      props: stripProps(),
-    })
-    expect(
-      await debug.find({
-        text: "Burn previews and activity tracking are unavailable.",
-      }),
-    ).toBeDefined()
-    for (const key of ["burn-preview", "burn-preview-reduced", "burn-preview-stop", "burn-stats"])
-      expect(await debug.find({ key })).toBeUndefined()
-    const burnWrites = fake.stateWrites.filter((key) => key === "burn").length
-    await debug.press({ key: "debug-checks-demo" })
-    expect(await band.find({ key: "fix" })).toBeDefined()
-    await debug.press({ key: "debug-checks-live" })
-    await $.command.run({
-      command: "antiburn-dev",
-      args: "demo",
-      origin: { kind: "composer" },
-      presentation: { isFullscreen: false, columns: 120 },
-    })
-    expect(await band.find({ key: "fix" })).toBeDefined()
-    await $.command.run({
-      command: "antiburn-dev",
-      args: "demo off",
-      origin: { kind: "composer" },
-      presentation: { isFullscreen: false, columns: 120 },
-    })
-    await band.drawn()
-    expect(fake.stateWrites.filter((key) => key === "burn")).toHaveLength(burnWrites)
-    expect(fake.flameTimers).toHaveLength(0)
-    expect(await band.find({ key: "usage-mark" })).toBeUndefined()
-    expect(await band.find({ key: "burn-controls" })).toBeUndefined()
-    expect(await band.find({ key: "usage-band" })).toBeDefined()
-  })
 }
 
 test("startup discovery is quiet by default when the CLI is absent", async ($, on) => {
   const fake = fakeEngine(on)
-  on("process.run", () => { throw new Error("CLI unavailable") })
+  on("process.run", () => {
+    throw new Error("CLI unavailable")
+  })
   await startSession($)
-  expect(fake.logs.some((line) => /CLI found|CLI not found|CLI check unavailable/.test(line))).toBe(false)
+  expect(
+    fake.logs.some((line) =>
+      /CLI found|CLI not found|CLI check unavailable/.test(line),
+    ),
+  ).toBe(false)
   expect(fake.usageReads).toBe(1)
 })
 
@@ -4628,29 +5105,204 @@ for (const columns of [24, 40, 59, 60, 61, 80, 120]) {
     for (const example of [undefined, "mid", "beyond-pace", "near-limit"]) {
       if (example) await debug.press({ key: `usage-preview-${example}` })
       expect((await band.find({ key: "usage-band" }))?.props.width).toBe("100%")
-      const meters = await band.find({ key: "usage-meters" })
-      expect(meters?.props.width).toBe(0)
-      expect(meters?.props.flexGrow).toBe(1)
-      expect(meters?.props.minWidth).toBe(0)
-      expect(meters?.props.flexDirection).toBe(columns >= 60 ? "row" : "column")
-      for (const kind of ["five_hour", "seven_day"]) {
-        const slot = await band.find({ key: `meter-${kind}` })
-        expect(slot?.props.width).toBe(columns >= 60 ? 0 : "100%")
-        expect(slot?.props.flexGrow).toBe(1)
-        const graphic = (await band.findAll({ type: "Svg" })).find((node) =>
-          String(node.props.alt).startsWith(kind === "five_hour" ? "5-hour:" : "Weekly:"),
-        )
-        const interaction = (await band.findAll({ type: "Svg" })).find(
-          (node) => node.props.alt === `${kind === "five_hour" ? "5-hour" : "Weekly"} reset and pace controls`,
-        )
-        expect(graphic?.props.width).toBe(4096)
-        expect(String(graphic?.props.source)).toContain('width="100%"')
-        expect(String(graphic?.props.source)).not.toContain("viewBox=")
-        expect(interaction?.props.width).toBe(4096)
-        expect(interaction?.props.isInteractive).toBe(true)
-        expect(String(interaction?.props.source)).toContain('width="100%"')
-        expect(String(interaction?.props.source)).not.toContain("viewBox=")
-      }
+      const scene = (await band.findAll({ type: "Svg" })).find((node) =>
+        String(node.props.alt).includes("5-hour:"),
+      )
+      expect(scene?.props.width).toBe(4096)
+      expect(scene?.props.isInteractive).toBe(true)
+      expect(String(scene?.props.source)).toContain('width="100%"')
+      expect(String(scene?.props.source)).toContain("strip-meter-0-")
+      expect(String(scene?.props.source)).toContain("strip-meter-1-")
+      expect(String(scene?.props.alt)).toContain("5-hour:")
+      expect(String(scene?.props.alt)).toContain("Weekly:")
     }
   })
+}
+
+for (const order of ["prepend", "append"] as const) {
+  test(
+    `development preserves stacked mods in ${order} order`,
+    {
+      plugins: [
+        {
+          name: "spacing-fixture",
+          tier: order,
+          register(on) {
+            on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+              const downstream = await next(e)
+              const { Box, Button } = $.ui.resolve(e)
+              return h(
+                Box,
+                {
+                  key: "fixture-stack",
+                  flexDirection: "column",
+                  gap: 0,
+                },
+                h(Button, {
+                  key: "fixture-button",
+                  label: "Other mod",
+                  onPress: async () => {
+                    await $.session.usage()
+                  },
+                }),
+                downstream,
+              ) as RenderElement
+            })
+          },
+        },
+      ],
+    },
+    async ($, on) => {
+      const fake = fakeEngine(on, ["desktop", "terminal"])
+      await startSession($)
+      await showCheckSamples($)
+      for (const surface of ["desktop", "terminal"] as const) {
+        const before = fake.renders
+        const band = await $.ui.mount({
+          plugin: "antiburn-live",
+          surface,
+          component: "AbovePrompt",
+          props: { ...stripProps(), maxRows: 12 },
+        })
+        expect(fake.renders).toBe(before + 1)
+        expect(await band.findAll({ key: "fixture-button" })).toHaveLength(1)
+        expect(await band.findAll({ key: "usage-band" })).toHaveLength(1)
+        expect(await band.find({ key: "fix" })).toBeDefined()
+        const beforePress = fake.usageReads
+        await band.press({ plugin: "spacing-fixture", key: "fixture-button" })
+        expect(fake.usageReads).toBe(beforePress + 1)
+        expect((await band.find({ key: "usage-spacing" }))?.props.marginTop).toBe(
+          surface === "desktop" ? 0 : 1,
+        )
+        expect(await band.find({ key: "checks-usage-separator" })).toBeUndefined()
+        if (surface === "terminal")
+          expect((await band.find({ key: "usage-spacing" }))?.props.gap).toBe(1)
+        if (surface === "desktop") {
+          expect((await band.find({ key: "usage-spacing" }))?.props.marginTop).toBe(0)
+          expect((await band.find({ key: "usage-spacing" }))?.props.gap).toBe("md")
+          expect(await band.find({ key: "checks-usage-separator" })).toBeUndefined()
+        }
+      }
+    },
+  )
+}
+
+test("development keeps downstream once when usage rendering fails", async ($, on) => {
+  const fake = fakeEngine(on, ["desktop"])
+  await startSession($)
+  fake.clockRead = async () => {
+    throw new Error("Clock unavailable")
+  }
+  const before = fake.renders
+  const band = await $.ui.mount({
+    plugin: "antiburn-live",
+    surface: "desktop",
+    component: "AbovePrompt",
+    props: { ...stripProps(), maxRows: 12 },
+  })
+  expect(fake.renders).toBe(before + 1)
+  expect(await band.find({ key: "usage-spacing" })).toBeUndefined()
+})
+
+for (const order of ["prepend", "append"] as const) {
+  test(
+    `development delegates quota to a public owner in ${order} order`,
+    {
+      plugins: [
+        {
+          name: "antiburn",
+          tier: order,
+          register(on) {
+            on("engine.create", async ($, e, next) => ({
+              ...(await next(e)),
+              antiburn: {
+                describe: async () => ({
+                  id: "antiburn",
+                  version: "test",
+                  capabilities: { usage: true, usageUiEnabled: true },
+                }),
+              },
+            }))
+            on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+              const downstream = await next(e)
+              const { Box, Text } = $.ui.resolve(e)
+              return h(
+                Box,
+                { flexDirection: "column", gap: e.surface === "desktop" ? "sm" : 0 },
+                downstream,
+                h(Text, { key: "public-usage" }, "Public usage"),
+              ) as RenderElement
+            })
+          },
+        },
+      ],
+    },
+    async ($, on) => {
+      const fake = fakeEngine(on, ["desktop"])
+      await startSession($)
+      await showCheckSamples($)
+      const before = fake.renders
+      const band = await $.ui.mount({
+        plugin: "antiburn-live",
+        surface: "desktop",
+        component: "AbovePrompt",
+        props: { ...stripProps(), maxRows: 12 },
+      })
+      expect(fake.renders).toBe(before + 1)
+      expect(fake.usageReads).toBe(0)
+      expect(await band.findAll({ type: "Text", text: /^Public usage$/ })).toHaveLength(1)
+      expect(await band.find({ key: "usage-band" })).toBeUndefined()
+      expect(await band.find({ key: "fix" })).toBeDefined()
+      expect((await band.find({ key: "checks-with-downstream" }))?.props.gap).toBe("md")
+    },
+  )
+}
+
+for (const ownerTier of ["prepend", "append"] as const) {
+  for (const surface of ["terminal", "desktop"] as const) {
+    test(
+      `public ownership suppresses development quota in ${ownerTier} order on ${surface}`,
+      {
+        plugins: [
+          {
+            name: "antiburn",
+            tier: ownerTier,
+            register(on) {
+              on("engine.create", async ($, e, next) => {
+                const built = await next(e)
+                return {
+                  ...built,
+                  antiburn: {
+                    describe: async () => {
+                      return {
+                        id: "antiburn",
+                        version: "0.2.7",
+                        capabilities: { usage: true, usageUiEnabled: true },
+                      }
+                    },
+                  },
+                }
+              })
+            },
+          },
+        ],
+      },
+      async ($, on) => {
+        const fake = fakeEngine(on)
+        fake.rateLimits = [{ kind: "five_hour", percentUsed: 8 }]
+        const band = await $.ui.mount({
+          plugin: "antiburn-live",
+          surface,
+          component: "AbovePrompt",
+          props: stripProps(),
+        })
+        expect(await band.find({ key: "usage-band" })).toBeUndefined()
+        expect(fake.usageReads).toBe(0)
+        await startSession($)
+        await band.redraw()
+        expect(await band.find({ key: "usage-band" })).toBeUndefined()
+        expect(fake.usageReads).toBe(0)
+      },
+    )
+  }
 }

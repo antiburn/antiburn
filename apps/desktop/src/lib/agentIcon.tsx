@@ -1,89 +1,15 @@
-/**
- * Filling the presentation layer's agent-icon slot.
- *
- * The presentation components take a `renderAgentIcon` slot and never ship
- * artwork; the registry in `lib/presentation/agents` resolves a slug to an
- * icon *name*, not an asset. This module answers that slot with three tiers:
- *
- * 1. **A brand mark** with recorded provenance — licensed path data,
- *    verified against each icon's recorded source so a name collision cannot
- *    smuggle in the wrong brand. `simple-icons` supplies all but one (its
- *    `AMP` is Google's web framework, not the Amp agent, so Amp deliberately
- *    has no entry here, and its only OpenAI-adjacent icon is the discontinued
- *    `OpenAI Gym`); OpenAI's mark comes from `lib/brandMarks`, which carries
- *    its own provenance and a test pinning it to its source. Antigravity uses
- *    the monochrome silhouette from its product asset.
- * 2. **A letter tile** for known agents without a usable mark (Kiro, Amp):
- *    the display name's initial in a small rounded tile,
- *    the same treatment the provider glyphs use.
- * 3. **A surface glyph** for `generic-agent` — terminal for CLI, editor panel
- *    for IDE, neutral mark otherwise — since an unknown agent has no name to
- *    draw.
- *
- * Colour follows the same evidence rule as the artwork. Most marks render in
- * the theme's brand-mark ink (`--color-agent-mark`) so the set reads as one
- * set in both themes; a mark whose identity *is* its colour opts into
- * {@link BRAND_COLORED} and renders in the hex the package records for it,
- * never a hex chosen here. Use is nominative — identifying which vendor's
- * agent produced a session.
- */
+/** Agent icons preserve vendor colors or use neutral theme ink at the caller's request. */
 
 import { Bot, PanelsTopLeft, SquareTerminal, type LucideIcon } from "lucide-react"
 import type { ReactNode } from "react"
-import {
-  siClaude,
-  siCline,
-  siCursor,
-  siGithubcopilot,
-  siOpencode,
-  siPi,
-  siWindsurf,
-} from "simple-icons"
+import { VENDOR_ARTWORK, type VendorArtwork } from "./vendorArtwork"
 
-import {
-  ANTIGRAVITY_MARK,
-  fromSimpleIcons,
-  OMP_MARK,
-  OPENAI_MARK,
-  type BrandMark,
-} from "./brandMarks"
 import {
   agentDisplayName,
   agentIconName,
   type AgentIconAppearance,
   type AgentSurface,
 } from "./presentation/agents"
-
-/**
- * Registry icon name → brand mark. Keyed by the registry's icon names (not
- * slugs) so aliases like `claude-code` → `claude` resolve once, upstream.
- */
-export const BRAND_MARKS: Record<string, BrandMark> = {
-  claude: fromSimpleIcons(siClaude),
-  cursor: fromSimpleIcons(siCursor),
-  copilot: fromSimpleIcons(siGithubcopilot),
-  cline: fromSimpleIcons(siCline),
-  opencode: fromSimpleIcons(siOpencode),
-  windsurf: fromSimpleIcons(siWindsurf),
-  pi: fromSimpleIcons(siPi),
-  omp: OMP_MARK,
-  codex: OPENAI_MARK,
-  antigravity: ANTIGRAVITY_MARK,
-}
-
-/**
- * Marks that render in their brand's own hex rather than the theme ink.
- *
- * The bar is that the colour carries the identity — Claude's clay orange is
- * as much the mark as its shape, and flattening it to ink loses the brand
- * rather than unifying it. Everything else stays ink, because a row of eleven
- * competing brand colours reads as noise and several vendor hexes are
- * near-black or near-white, so they vanish in one theme or the other.
- *
- * The value is always the mark's recorded `hex`, never a hex written here, so
- * a member without one is a bug the tests catch rather than a silent fallback.
- */
-export const BRAND_COLORED: ReadonlySet<string> = new Set(["claude"])
 
 /** The glyph for a surface. Unknown surfaces get the neutral agent mark. */
 function glyphFor(surface: AgentSurface | undefined): LucideIcon {
@@ -93,32 +19,50 @@ function glyphFor(surface: AgentSurface | undefined): LucideIcon {
 }
 
 function Mark({
-  name,
-  mark,
   size,
   appearance,
+  artwork,
 }: {
-  name: string
-  mark: BrandMark
   size: number
   appearance: AgentIconAppearance
+  artwork: VendorArtwork
 }) {
+  if (appearance === "default") {
+    return (
+      <>
+        <img
+          className="agent-icon-light"
+          src={artwork.light}
+          alt=""
+          width={size}
+          height={size}
+          aria-hidden="true"
+        />
+        <img
+          className="agent-icon-dark"
+          src={artwork.dark}
+          alt=""
+          width={size}
+          height={size}
+          aria-hidden="true"
+        />
+      </>
+    )
+  }
   return (
-    <svg
-      viewBox={mark.viewBox}
-      width={size}
-      height={size}
-      fill="currentColor"
-      // Brand-coloured marks override the inherited ink; the rest inherit it.
-      style={
-        appearance === "default" && BRAND_COLORED.has(name)
-          ? { color: `#${mark.hex}` }
-          : undefined
-      }
+    <span
       aria-hidden="true"
-    >
-      <path d={mark.path} />
-    </svg>
+      className="inline-block bg-current"
+      style={{
+        width: size,
+        height: size,
+        maskImage: `url("${artwork.mask}")`,
+        maskMode: artwork.maskMode,
+        maskSize: "contain",
+        maskPosition: "center",
+        maskRepeat: "no-repeat",
+      }}
+    />
   )
 }
 
@@ -148,18 +92,18 @@ export function renderAgentIcon(
   appearance: AgentIconAppearance = "default",
 ): ReactNode {
   const iconName = agentIconName(slug)
-  const mark = BRAND_MARKS[iconName]
+  const artwork = VENDOR_ARTWORK[iconName]
   const Glyph = glyphFor(surface)
   return (
     <span
       data-agent-icon={iconName}
-      className={appearance === "neutral" ? "text-label-tertiary" : "text-agent-mark"}
+      className={`inline-flex shrink-0 ${appearance === "neutral" ? "text-label-tertiary" : "text-agent-mark"}`}
       role="img"
       aria-label={agentDisplayName(slug)}
       title={agentDisplayName(slug)}
     >
-      {mark ? (
-        <Mark name={iconName} mark={mark} size={size} appearance={appearance} />
+      {artwork ? (
+        <Mark size={size} appearance={appearance} artwork={artwork} />
       ) : iconName === "generic-agent" ? (
         <Glyph size={size} strokeWidth={1.75} aria-hidden="true" />
       ) : (

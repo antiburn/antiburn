@@ -12,6 +12,25 @@ The plugin-owned 512px PNG has identical decompressed image data to the existing
 The immutable 0.2.2 artifact remains available at
 `beb44113c1ad61ac540a29e7b6cfdfdbab0ff43f`.
 
+## 0.2.7 stacked candidate — 3 November 2026
+
+The candidate artifact is `8b2e7fd22c40e69021088fe079d2bf50c472c312`, with 27 public files
+and the embedded 0.2.1 shared core. It combines PR #797's Desktop usage entrance
+and PR #799's compact Desktop/Terminal spacing. The release PR pins this artifact;
+preparing or pushing the PR does not promote the catalog on `main`.
+
+Local combined checks pass: 282 development tests, 224 public tests, 19 packaging
+and artifact tests, TypeScript, strict plugin validation and capability policy.
+The public tests also pass against the generated 0.2.7 package. These checks use
+synthetic fixtures; they do not prove native host behavior or account freshness.
+
+Earlier native captures cover the fade and spacing changes separately. The
+combined candidate still needs native Desktop/Terminal acceptance and hosted
+fresh-install, update, reinstall, removal and installed-file equality checks.
+The Desktop public/development reverse-order spacing review finding remains open.
+Keep the candidate in draft until these release gates are resolved.
+
+
 ## 0.2.6 responsive-meter candidate — 28 October 2026
 
 The candidate artifact is `f9dabe20b7dac6d33a4e8fecad88e93f1fff87d5`, with 26 public files
