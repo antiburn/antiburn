@@ -899,7 +899,9 @@ async function setDebugMode(
   mode = nextMode;
   const generation = sessionCheckGeneration;
   const isCurrent = () =>
-    sessionCheckGeneration === generation && mode === nextMode && checksEnabled();
+    sessionCheckGeneration === generation &&
+    mode === nextMode &&
+    checksEnabled();
   resetTracker();
   await clearDisabledChecks($);
   if (checksEnabled()) {
@@ -914,8 +916,7 @@ async function setDebugMode(
       sessionId = undefined;
     }
     await refreshSessionChecks($, sessionId);
-  }
-  else await $.ui.status(undefined);
+  } else await $.ui.status(undefined);
   const registered = await $.command.register({
     name: "antiburn-dev",
     description: checksEnabled()
@@ -1056,7 +1057,10 @@ function renderUsageMark(
   );
 }
 
-async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
+async function renderUsage(
+  $: EngineInterface,
+  e: RenderInput<"AbovePrompt">,
+): Promise<Awaited<ReturnType<typeof renderUsageView>>> {
   const generation = stripEntrance.generation;
   let renderedAt = Number.NaN;
   const drawing = await renderUsageView(e, {
@@ -1222,9 +1226,9 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
     refreshPreview: (id) => selectUsagePreview($, id),
     reveal: (kind) => revealUsage($, kind),
   });
-  return e.surface === "desktop"
-    ? stripEntrance.render(drawing, "desktop", renderedAt, generation)
-    : drawing;
+  if (e.surface !== "desktop") return drawing;
+  if (generation !== stripEntrance.generation) return renderUsage($, e);
+  return stripEntrance.render(drawing, "desktop", renderedAt);
 }
 
 let tracker = new LiveChecks();
@@ -1285,7 +1289,11 @@ async function resetSessionChecks(
     entered: [],
     connection: "waiting" as const,
   }));
-  await update($, strip, () => ({ isDismissed: false, newCount: 0, armedId: null }));
+  await update($, strip, () => ({
+    isDismissed: false,
+    newCount: 0,
+    armedId: null,
+  }));
 }
 
 async function setSessionConnection(
@@ -1296,7 +1304,9 @@ async function setSessionConnection(
   const current = await read($, view);
   if (!isCurrent()) return;
   const next = disconnectedSessionChecks(current);
-  await update($, view, (latest) => isCurrent() ? { ...next, connection } : latest);
+  await update($, view, (latest) =>
+    isCurrent() ? { ...next, connection } : latest,
+  );
   if (!isCurrent()) return;
   sessionCheckCache = { ...next, connection };
 }
@@ -1319,7 +1329,14 @@ async function refreshSessionChecks(
   let result;
   try {
     result = await $.process.run(
-      ["antiburn", "checks", sessionId, "--delivery-v1", "--consumer", "claude-code:ui"],
+      [
+        "antiburn",
+        "checks",
+        sessionId,
+        "--delivery-v1",
+        "--consumer",
+        "claude-code:ui",
+      ],
       { timeoutMs: 1500 },
     );
   } catch {
@@ -1328,7 +1345,9 @@ async function refreshSessionChecks(
   }
   if (!isCurrent()) return;
   if (
-    result.exitCode !== 0 || result.isStdoutTruncated || result.stdout.length > 256 * 1024
+    result.exitCode !== 0 ||
+    result.isStdoutTruncated ||
+    result.stdout.length > 256 * 1024
   ) {
     if (isCurrent()) await setSessionConnection($, "disconnected", isCurrent);
     return;
@@ -1342,7 +1361,7 @@ async function refreshSessionChecks(
   if (!isCurrent()) return;
   const next = applySessionChecks(current, delivery);
   if (!isCurrent()) return;
-  await update($, view, (latest) => isCurrent() ? next : latest);
+  await update($, view, (latest) => (isCurrent() ? next : latest));
   if (!isCurrent()) return;
   sessionCheckCache = next;
   await showStatus($, next.checks, isCurrent);
@@ -1351,16 +1370,37 @@ async function refreshSessionChecks(
     if (!isCurrent()) return;
     try {
       const ack = await $.process.run(
-        ["antiburn", "checks", sessionId, "--delivery-v1", "--consumer", "claude-code:ui", "--ack", delivery.receipt],
+        [
+          "antiburn",
+          "checks",
+          sessionId,
+          "--delivery-v1",
+          "--consumer",
+          "claude-code:ui",
+          "--ack",
+          delivery.receipt,
+        ],
         { timeoutMs: 1500 },
       );
       if (!isCurrent() || ack.exitCode !== 0 || ack.isStdoutTruncated) return;
-      const accepted = JSON.parse(ack.stdout) as { protocol_version?: unknown; acknowledged?: unknown };
-      if (isCurrent() && (accepted.protocol_version !== 1 || accepted.acknowledged !== true))
-        await $.ui.log("Antiburn checks were shown, but the delivery receipt was not accepted.", { to: "debug" });
+      const accepted = JSON.parse(ack.stdout) as {
+        protocol_version?: unknown;
+        acknowledged?: unknown;
+      };
+      if (
+        isCurrent() &&
+        (accepted.protocol_version !== 1 || accepted.acknowledged !== true)
+      )
+        await $.ui.log(
+          "Antiburn checks were shown, but the delivery receipt was not accepted.",
+          { to: "debug" },
+        );
     } catch {
       if (isCurrent())
-        await $.ui.log("Antiburn checks were shown, but the delivery receipt was not accepted.", { to: "debug" });
+        await $.ui.log(
+          "Antiburn checks were shown, but the delivery receipt was not accepted.",
+          { to: "debug" },
+        );
     }
   }
 }
@@ -1377,7 +1417,7 @@ async function restoreSessionChecks(
     entered: [],
     connection: "waiting" as const,
   };
-  await update($, view, (current) => isCurrent() ? next : current);
+  await update($, view, (current) => (isCurrent() ? next : current));
   if (!isCurrent()) return;
   await showStatus($, next.checks, isCurrent);
 }
@@ -1798,7 +1838,10 @@ async function toggleFullPrompt($: EngineInterface, id: LiveCheckId) {
 // An Svg image still runs its own CSS animation.
 async function renderPane($: EngineInterface, e: PaneEvent) {
   const ui = $.ui.resolve(e);
-  const { checks, entered, connection, freshnessEvaluated } = await read($, view);
+  const { checks, entered, connection, freshnessEvaluated } = await read(
+    $,
+    view,
+  );
   const { selectedId, openGroups, turned, fullPromptId } = await read($, pane);
   const { armedId } = await read($, strip);
   return renderChecksPaneView({
@@ -1812,9 +1855,10 @@ async function renderPane($: EngineInterface, e: PaneEvent) {
     fullPromptId,
     armedId,
     tourBeat: tour?.beat ?? null,
-    connectionText: isDemo || tour !== null
-      ? undefined
-      : sessionConnectionText(connection, freshnessEvaluated),
+    connectionText:
+      isDemo || tour !== null
+        ? undefined
+        : sessionConnectionText(connection, freshnessEvaluated),
     actions: {
       centredLine: (event, key, line) => centredLineView(ui, event, key, line),
       toggleGroup: (title) => toggleGroupOpen($, title),
@@ -1909,7 +1953,7 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   });
 
   on("session.start", async ($, e, next) => {
-    stripEntrance.reset();
+    stripEntrance.start();
     releaseOwnsUsage = await detectReleaseUsage($);
     releaseOwnershipResolved = true;
     cancelUsageSequence();
@@ -2013,7 +2057,7 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   }).catch(($, e, next) => next(e));
 
   on("session.end", async ($, e, next) => {
-    stripEntrance.reset();
+    stripEntrance.start();
     hoverSites.clear();
     cancelUsageSequence();
     resetBurn();
@@ -2030,13 +2074,14 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
   }).catch(($, e, next) => next(e));
 
   on("session.attach", async ($, e, next) => {
-    if (e.surface === "desktop") stripEntrance.reset();
+    if (e.surface === "desktop") stripEntrance.attach(e.clientId);
     const result = await next(e);
     if (e.surface === "desktop") $.ui.invalidate("ui.render");
     return result;
   });
 
   on("session.detach", async ($, e, next) => {
+    if (e.surface === "desktop") stripEntrance.detach(e.clientId);
     hoverSites.clear();
     resetTerminalFlames();
     const result = await next(e);
@@ -2073,8 +2118,8 @@ export const register: Register = (on, options: DevRegisterOptions = {}) => {
 
   on("command.run", async ($, e, next) => {
     if (e.command === "reload-plugins") {
-      const result = await next(e);
       stripEntrance.reset();
+      const result = await next(e);
       $.ui.invalidate("ui.render");
       return result;
     }
