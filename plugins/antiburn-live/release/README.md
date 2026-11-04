@@ -7,11 +7,10 @@ weekly percentages, reset times and even-pace markers. Pace compares usage with
 the elapsed part of a limit window; it is a reference, not a forecast or a
 guarantee that a limit will not be reached. Missing readings stay unavailable.
 
-Version **0.2.6** keeps Desktop meters and their reset and pace controls aligned
-as the window changes. Hover captions stay anchored to their controls in inline
-and stacked layouts. It preserves glyph and dot size, other mods above the
-prompt, and the existing Terminal rendering. The plugin version is independent of
-Antiburn desktop app versions.
+Version **0.2.7** adds a shared Desktop usage fade and compact spacing between
+stacked mod strips on Desktop and Terminal. It preserves responsive meters,
+anchored reset and pace details, other mods above the prompt, and quota behavior.
+The plugin version is independent of Antiburn desktop app versions.
 
 ## Supported surfaces
 
@@ -19,6 +18,12 @@ Use Claude Code **Terminal** or the **Code tab in Claude Desktop**, with an
 enabled mod runtime. Ordinary Claude chat and Cowork are outside this
 integration. Account readings depend on the host version, login type and policy;
 API-key sessions do not provide the authenticated account fallback.
+
+Desktop usage graphics fade in together over 240ms when first shown and after
+plugin reload, including the same session. Returning to a session rearms the fade. Reduced motion shortens the fade to
+80ms. Loading and unavailable graphics use the same entrance. Refreshing,
+resizing, or temporarily hiding the strip does not replay it. Terminal output
+appears immediately; controls remain available during the fade.
 
 Historical 0.2.1 native checks covered Claude Code 2.1.304 and Claude Desktop
 2.42304.2 on macOS. Those observations retain their original scope. The

@@ -293,7 +293,8 @@ export async function renderUsageView(
       retryHint,
       canRefresh,
       statusGraphic: usageStatusSvg(status, hint, event.props.bodyColumns < 60),
-      renderMark: () => runtime.renderMark(event, BRAND_MARK_SVG, "antiburn"),
+      statusMarkSource: BRAND_MARK_SVG,
+      renderMark: (source) => runtime.renderMark(event, source, "antiburn"),
       renderTerminalMark: () =>
         runtime.renderTerminalMark(event, burnState, liveNow, burnActive),
       onRefresh: () => runtime.refreshPreview("state-checking"),

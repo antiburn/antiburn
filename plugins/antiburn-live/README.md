@@ -72,6 +72,12 @@ closest to the composer, below optional checks, including while Claude works.
 A host survey temporarily owns the band. Claude Code scrolls a tree taller
 than its `maxRows`; the mod does not override that height limit.
 
+Desktop usage graphics fade in together over 240ms on first display and after
+plugin reload, including reloads of the same session. Reduced motion shortens
+the fade to 80ms. Loading and unavailable graphics share the same entrance;
+refreshing, resizing, and hiding the strip do not restart it. Terminal output
+appears immediately. The debug inspector retains its explicit animation replays.
+
 The Usage card in `/antiburn-dev debug` holds usage details and a Refresh button
 for the native snapshot. Details include the exact percentage, reset timestamp
 and recognized additional windows. Values come from `session.usage()` and `session.measure`, as last
@@ -107,12 +113,12 @@ Missing percentage readings display `—`; internal availability and read-error 
 Desktop draws no native tooltip; the Usage card in `/antiburn-dev debug` keeps full
 reset and pace text available, and accessible labels retain the same information.
 
-Desktop presentation includes the once-per-session entrance, 600–960ms fill
-sweep, changed-digit rolls and reset hover transitions. SVG CSS handles motion;
-host events release expired presentation bookkeeping without scheduling timers. New readings interrupt entrance and
-settle to current values. Resize, surveys, clear and teardown cancel presentation
-work. Same-session reload does not grant another entrance. CSS reduced-motion
-rules remove movement and delayed fill and use 80ms opacity for entrance/details.
+Desktop presentation uses the shared fade and changed-digit rolls. The animation
+inspector also offers the longer mark/meter entrance and 600–960ms fill sweep.
+SVG CSS handles motion; host events release expired preview bookkeeping without
+scheduling timers. New readings continue the automatic fade on its original
+timeline. Resize and surveys do not grant another entrance; a new session or
+module reload does. Reduced motion shortens the fade and removes preview movement.
 Live reduced-motion preference changes were verified on desktop 2.37337.1.
 Full native boundary-frame validation is tracked separately;
 these implementation rules are not a claim of pixel-identical native output.
@@ -407,10 +413,10 @@ Synthetic usage examples share fixed pace markers (5-hour 55%, Weekly 50%). Only
 ## Terminal brand mark
 
 The terminal uses a monospace `antiburn` wordmark in bright antiburn orange on a
-muted orange background beside its meters. Both inline and stacked layouts use
-exactly two terminal rows. The lower row carries the bright wordmark and inline
-meters; stacked limit rows use the same two-row space. The upper row is blank
-padding while idle and carries the shaded-block flames upward when active. The
+muted orange background beside its meters. The resting wordmark uses one row;
+stacked limits use two meter rows. One blank row separates stacked strips, with
+no internal checks/usage divider. Experimental burn animation reserves a second
+wordmark row only when enabled. The
 wordmark slot is 11 columns: a one-cell inset plus ten columns for the eight
 linked letters and one background-padding cell on each side. The upper flame
 row uses a raster, while linked text retains the heat colors below. The meter gap adds
