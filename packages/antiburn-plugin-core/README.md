@@ -33,6 +33,7 @@ Type checking requires actual declarations, not hand-written SDK substitutes. Se
 | ---------------------------- | ---------------------------------------------------------- |
 | `ANTIBURN_CLAUDE_TYPES`      | Claude Code 2.1.301 generated `claude-code/index.d.ts`     |
 | `ANTIBURN_PI_TYPES`          | `@earendil-works/pi-coding-agent` 0.80.3 `dist/index.d.ts` |
+| `ANTIBURN_PI_TUI_TYPES`      | `@earendil-works/pi-tui` 0.80.3 `dist/index.d.ts`          |
 | `ANTIBURN_OPENCODE_TYPES`    | `@opencode-ai/plugin` 1.19.2 `dist/index.d.ts`             |
 | `ANTIBURN_OPENCODE_SDK_ROOT` | `@opencode-ai/sdk` 1.19.2 package root                     |
 | `ANTIBURN_NODE_TYPES`        | Installed `@types/node` package directory                  |

@@ -56,6 +56,7 @@ else if (mode === 'typecheck') {
   const required = [
     'ANTIBURN_CLAUDE_TYPES',
     'ANTIBURN_PI_TYPES',
+    'ANTIBURN_PI_TUI_TYPES',
     'ANTIBURN_OPENCODE_TYPES',
     'ANTIBURN_OPENCODE_SDK_ROOT',
     'ANTIBURN_NODE_TYPES',
@@ -83,6 +84,7 @@ else if (mode === 'typecheck') {
         paths: {
           'claude-code': [requiredValue('ANTIBURN_CLAUDE_TYPES')],
           '@earendil-works/pi-coding-agent': [requiredValue('ANTIBURN_PI_TYPES')],
+          '@earendil-works/pi-tui': [requiredValue('ANTIBURN_PI_TUI_TYPES')],
           '@opencode-ai/plugin': [requiredValue('ANTIBURN_OPENCODE_TYPES')],
           '@opencode-ai/sdk': [
             join(requiredValue('ANTIBURN_OPENCODE_SDK_ROOT'), 'dist/index.d.ts'),

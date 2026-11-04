@@ -84,6 +84,44 @@ and execution limits. Malformed or incompatible responses fail closed.
 Disconnected adapters do not activate local detectors. Plugin reads do not
 create evaluation requests or model turns.
 
+## Automatic native display in Claude and Pi
+
+Claude's synchronous UserPromptSubmit and PostToolUse hooks include a plain-text
+update frame in top-level `systemMessage`, alongside the existing Markdown advisory
+`additionalContext`. The native hook notice does not render Markdown, so its frame
+omits Markdown delimiters and escaping. A leading newline separates the opening
+rail from the host's hook prefix. Claude Code 2.1.317 has native visual
+notification evidence; 2.1.318 emits the message as a native informational notice
+in stream JSON. The host owns warning presentation. Async hooks do not provide
+this user-facing behavior and are not used. Markdown-capable surfaces retain the
+Markdown frame. Cleared and withdrawn updates retain a readable check name when
+supplied; when only the finding ID remains, they use “Previous advisory” instead.
+
+Pi returns one custom message with `display: true` in an interactive TUI with
+`hasUI`. Its `content` keeps the full advisory guardrail and canonical Markdown
+frame in model context. A separate optional renderer extension reads the same frame from
+renderer-only `details` and displays just that frame, without Pi's default
+custom-message label or the guardrail paragraph. Headless and RPC operation
+retain the original hidden context. The renderer uses Pi's host-provided TUI
+packages; the package declares them as peer dependencies. If that optional
+extension cannot load or the host lacks the renderer API, the context extension
+still delivers the full message and Pi uses its default rendering. Saved messages
+without renderer metadata also fall back to their full content. A renderer probe
+does not establish a captured native session.
+
+Both paths use the existing `HOST:context` consumer and receipt because each
+native result carries context and display together. No second UI fetch repeats
+the finding. A receipt confirms only the documented handoff boundary, not pixels,
+model consumption or human attention. The CLI deduplicates acknowledged revisions;
+changes, clearing and invalidation follow the existing update protocol. Pending
+unacknowledged handoffs can replay. Clear and withdrawal messages append updates;
+they do not remove historical transcript entries. Read failures stay silent.
+
+Native notification and complete-frame visibility require separate session
+captures. The support table below retains its original context-only scope.
+These display paths do not change evidence parsing, check eligibility, thresholds,
+or automatic-installation gates.
+
 ## Native delivery versus evidence coverage
 
 A native adapter is a delivery mechanism. It does not add an evidence reader

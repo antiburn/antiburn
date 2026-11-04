@@ -8,6 +8,14 @@ const root = resolve(import.meta.dirname, '../../..')
 async function loadAdapter(name, stub = '', denyDiscovery = false) {
   let source = await readFile(resolve(root, `integrations/antiburn/${name}`), 'utf8')
   source = source.replace("import { atom, update } from 'claude-code'", stub)
+  source = source.replace(
+    "import { Markdown } from '@earendil-works/pi-tui'",
+    'const Markdown = class Markdown {}',
+  )
+  source = source.replace(
+    "import { getMarkdownTheme } from '@earendil-works/pi-coding-agent'",
+    'const getMarkdownTheme = () => ({})',
+  )
   if (denyDiscovery)
     source = source.replace(
       "import { discover } from '../../../packages/antiburn-plugin-core/discovery.mjs'",
@@ -23,6 +31,10 @@ async function loadAdapter(name, stub = '', denyDiscovery = false) {
     "'./session-checks.mjs'",
     `'${pathToFileURL(resolve(root, 'integrations/antiburn/opencode/session-checks.mjs')).href}'`,
   )
+  source = source.replaceAll(
+    "'./session-check-renderer.mjs'",
+    `'${pathToFileURL(resolve(root, 'integrations/antiburn/pi/session-check-renderer.mjs')).href}'`,
+  )
   return import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
 }
 
@@ -35,7 +47,7 @@ test('Pi startup stays quiet without discovery and help remains available', asyn
     registerCommand: (name, command) => commands.set(name, command),
     on: (event, handler) => events.set(event, handler),
   }
-  mod.default(pi)
+  await mod.default(pi)
   assert.deepEqual([...events.keys()], ['session_start', 'before_agent_start'])
   assert.equal(notices.length, 0)
   const ctx = {
@@ -45,7 +57,7 @@ test('Pi startup stays quiet without discovery and help remains available', asyn
     sessionManager: { getSessionId: () => 'fixture-pi-one' },
   }
   await events.get('session_start')({}, ctx)
-  mod.default(pi)
+  await mod.default(pi)
   await events.get('session_start')({}, ctx)
   assert.equal(notices.length, 0)
   await commands.get('antiburn').handler('help --ascii', ctx)
@@ -53,7 +65,7 @@ test('Pi startup stays quiet without discovery and help remains available', asyn
   assert.match(notices.at(-1), /App connection: Not checked/)
 })
 
-test('Pi adds hidden context only while preparing a user-started run', async () => {
+test('Pi keeps headless context hidden and requests native display only for a TUI', async () => {
   const mod = await loadAdapter('pi/antiburn.mjs')
   const calls = []
   const read = async (options) => {
@@ -67,11 +79,22 @@ test('Pi adds hidden context only while preparing a user-started run', async () 
     customType: 'antiburn-session-checks',
     content: 'Antiburn context',
     display: false,
+    details: { frame: '' },
   })
+  const visible = await mod.piSessionCheckMessage('user', 'session-1', read, acknowledge, true)
+  assert.equal(visible.display, true)
+  assert.equal(visible.content, 'Antiburn context')
   assert.deepEqual(acknowledgements, [
     { host: 'pi', sessionId: 'session-1', consumer: 'context', receipt: 'c'.repeat(64) },
+    { host: 'pi', sessionId: 'session-1', consumer: 'context', receipt: 'c'.repeat(64) },
   ])
-  assert.deepEqual(calls, [{ host: 'pi', sessionId: 'session-1', consumer: 'context' }])
+  assert.equal(calls.length, 2)
+  assert.ok(
+    calls.every(
+      (call) =>
+        call.host === 'pi' && call.sessionId === 'session-1' && call.consumer === 'context',
+    ),
+  )
 })
 
 test('OpenCode startup stays quiet without discovery on local and remote servers', async () => {
@@ -365,7 +388,10 @@ test('Pi RPC notifies without stdout and unsupported print avoids discovery', as
   const mod = await loadAdapter('pi/antiburn.mjs', '', true)
   const commands = new Map(),
     notices = []
-  mod.default({ registerCommand: (name, command) => commands.set(name, command), on: () => {} })
+  await mod.default({
+    registerCommand: (name, command) => commands.set(name, command),
+    on: () => {},
+  })
   const ctx = {
     mode: 'rpc',
     hasUI: true,
@@ -387,7 +413,10 @@ test('Pi help stays quiet and explicit status always checks availability', async
   )
   const commands = new Map(),
     notices = []
-  mod.default({ registerCommand: (name, command) => commands.set(name, command), on: () => {} })
+  await mod.default({
+    registerCommand: (name, command) => commands.set(name, command),
+    on: () => {},
+  })
   const ctx = {
     mode: 'rpc',
     hasUI: true,
@@ -420,7 +449,7 @@ test('Pi and OpenCode startup discovery is opt-in and deduplicated in debug mode
     const pi = await loadAdapter('pi/antiburn.mjs', '', stub)
     const events = new Map(),
       notices = []
-    pi.default({ registerCommand() {}, on: (name, handler) => events.set(name, handler) })
+    await pi.default({ registerCommand() {}, on: (name, handler) => events.set(name, handler) })
     const ctx = {
       mode: 'tui',
       hasUI: true,

@@ -12,6 +12,7 @@ import {
   formatSessionCheckStatus,
   readSessionChecks,
 } from '../../../packages/antiburn-plugin-core/session-checks.mjs'
+import { formatSessionCheckUpdates } from '../../../packages/antiburn-plugin-core/session-checks-validation.mjs'
 
 const key = Symbol.for('antiburn.shell.sessions.v1')
 const shared = /** @type {typeof globalThis & {[key: symbol]: Map<string, boolean>}} */ (
@@ -19,12 +20,13 @@ const shared = /** @type {typeof globalThis & {[key: symbol]: Map<string, boolea
 )
 const sessions = (shared[key] ??= new Map())
 
-/** @param {string} messageType @param {string} sessionId @param {typeof readSessionChecks} read @param {typeof acknowledgeAfterHandoff} acknowledge */
+/** @param {string} messageType @param {string} sessionId @param {typeof readSessionChecks} read @param {typeof acknowledgeAfterHandoff} acknowledge @param {boolean} display */
 export async function piSessionCheckMessage(
   messageType,
   sessionId,
   read = readSessionChecks,
   acknowledge = acknowledgeAfterHandoff,
+  display = false,
 ) {
   if (messageType !== 'user') return undefined
   const result = await read({ host: 'pi', sessionId, consumer: 'context' })
@@ -34,7 +36,8 @@ export async function piSessionCheckMessage(
   return {
     customType: 'antiburn-session-checks',
     content: result.message,
-    display: false,
+    display,
+    details: { frame: formatSessionCheckUpdates(result.updates) },
   }
 }
 
@@ -47,7 +50,7 @@ export async function piSessionCheckStatus(sessionId, read = readSessionChecks) 
 }
 
 /** @param {import('@earendil-works/pi-coding-agent').ExtensionAPI} pi */
-export default function antiburn(pi) {
+export default async function antiburn(pi) {
   pi.registerCommand('antiburn', {
     description: 'antiburn help and executable availability',
     handler: async (args, ctx) => {
@@ -73,8 +76,13 @@ export default function antiburn(pi) {
   })
   pi.on('before_agent_start', async (event, ctx) => {
     const message = await piSessionCheckMessage(
-      event.messageType,
+      'messageType' in event && typeof event.messageType === 'string'
+        ? event.messageType
+        : 'user',
       ctx.sessionManager.getSessionId(),
+      undefined,
+      undefined,
+      ctx.hasUI && ctx.mode === 'tui',
     )
     return message ? { message } : undefined
   })

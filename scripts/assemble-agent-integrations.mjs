@@ -60,6 +60,8 @@ export async function assembleAgentIntegrations(output = defaultOutput) {
     ['opencode', 'session-checks.mjs'],
     ['pi', 'antiburn.mjs'],
     ['pi', 'session-checks.mjs'],
+    ['pi', 'session-check-renderer.mjs'],
+    ['pi', 'session-check-renderer-extension.mjs'],
   ]) {
     const source = await read(`integrations/antiburn/${vendor}/${entry}`)
     const directory = ['claude', 'codex', 'cursor'].includes(vendor)
@@ -79,7 +81,16 @@ export async function assembleAgentIntegrations(output = defaultOutput) {
       version: '0.1.0',
       private: true,
       type: 'module',
-      pi: { extensions: ['./extensions/session-checks.mjs'] },
+      peerDependencies: {
+        '@earendil-works/pi-coding-agent': '*',
+        '@earendil-works/pi-tui': '*',
+      },
+      pi: {
+        extensions: [
+          './extensions/session-checks.mjs',
+          './extensions/session-check-renderer-extension.mjs',
+        ],
+      },
     }),
   )
   add('LICENSE', await read('LICENSE'))
