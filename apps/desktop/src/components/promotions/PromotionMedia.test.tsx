@@ -7,19 +7,19 @@ const media = {
   src: "/dark.gif",
   poster: "/dark.png",
   alt: "Promo preview",
-  light: { kind: "video" as const, src: "/light.mp4", poster: "/light.png" },
+  light: { kind: "image" as const, src: "/light.webp", poster: "/light.png" },
 }
 let dark = false
+let reduced = false
 const changes = new EventTarget()
 beforeEach(() => {
   dark = false
+  reduced = false
   delete document.documentElement.dataset.theme
   vi.spyOn(document, "hasFocus").mockReturnValue(true)
-  vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => undefined)
-  vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined)
   vi.stubGlobal("matchMedia", (query: string) => ({
     get matches() {
-      return query.includes("color-scheme") && dark
+      return query.includes("color-scheme") ? dark : reduced
     },
     addEventListener: changes.addEventListener.bind(changes),
     removeEventListener: changes.removeEventListener.bind(changes),
@@ -31,32 +31,31 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
-it("pairs the light video and poster on first render", () => {
+
+const preview = () => screen.getByRole("img", { name: media.alt })
+
+it("shows the light animation on first render", () => {
   render(<PromotionMedia media={media} />)
-  const preview = () => screen.getByRole("img", { name: media.alt })
-  expect(preview().querySelector("video")).toHaveAttribute("src", "/light.mp4")
-  expect(preview().querySelector("video")).toHaveAttribute("poster", "/light.png")
-  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.png")
-})
-it("switches explicit themes atomically and clears video failure on return", async () => {
-  render(<PromotionMedia media={media} />)
-  const preview = () => screen.getByRole("img", { name: media.alt })
-  fireEvent.error(preview().querySelector("video")!)
+  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.webp")
   expect(preview().querySelector("video")).toBeNull()
+})
+
+it("switches explicit themes atomically and clears a failure on return", async () => {
+  render(<PromotionMedia media={media} />)
+  fireEvent.error(preview().querySelector("img")!)
+  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.png")
   await act(async () => {
     document.documentElement.dataset.theme = "dark"
   })
   expect(preview().querySelector("img")).toHaveAttribute("src", "/dark.gif")
-  expect(preview().querySelector("video")).toBeNull()
   await act(async () => {
     document.documentElement.dataset.theme = "light"
   })
-  expect(preview().querySelector("video")).toHaveAttribute("src", "/light.mp4")
-  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.png")
+  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.webp")
 })
+
 it("follows system changes unless an explicit theme overrides them", async () => {
   render(<PromotionMedia media={media} />)
-  const preview = () => screen.getByRole("img", { name: media.alt })
   act(() => {
     dark = true
     changes.dispatchEvent(new Event("change"))
@@ -65,42 +64,53 @@ it("follows system changes unless an explicit theme overrides them", async () =>
   await act(async () => {
     document.documentElement.dataset.theme = "light"
   })
-  expect(preview().querySelector("video")).toHaveAttribute("src", "/light.mp4")
+  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.webp")
 })
+
 it("retains base media for definitions without a light variant", () => {
   render(
     <PromotionMedia
       media={{ kind: media.kind, src: media.src, poster: media.poster, alt: media.alt }}
     />,
   )
-  expect(screen.getByRole("img", { name: media.alt }).querySelector("img")).toHaveAttribute(
-    "src",
-    "/dark.gif",
-  )
+  expect(preview().querySelector("img")).toHaveAttribute("src", "/dark.gif")
 })
 
-it("keeps video position and playback across blur, focus, and visibility changes", () => {
+it("shows the still poster when the reader requests less motion", () => {
+  reduced = true
   render(<PromotionMedia media={media} />)
-  const video = screen.getByRole("img", { name: media.alt }).querySelector("video")!
-  video.currentTime = 5
-  vi.mocked(video.play).mockClear()
-  vi.mocked(video.pause).mockClear()
-  act(() => {
-    window.dispatchEvent(new Event("blur"))
-    document.dispatchEvent(new Event("visibilitychange"))
-    window.dispatchEvent(new Event("focus"))
-  })
-  expect(video.currentTime).toBe(5)
-  expect(video.pause).not.toHaveBeenCalled()
-  expect(video.play).not.toHaveBeenCalled()
-  expect(video).toHaveAttribute("loop")
+  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.png")
 })
 
-it("retains the GIF source when the window loses focus", () => {
+it("tries the animation after a reduced-motion poster fails", () => {
+  reduced = true
+  render(<PromotionMedia media={media} />)
+  const image = preview().querySelector("img")!
+  expect(image).toHaveAttribute("src", "/light.png")
+  fireEvent.error(image)
+  act(() => {
+    reduced = false
+    changes.dispatchEvent(new Event("change"))
+  })
+  expect(image).toHaveAttribute("src", "/light.webp")
+  fireEvent.error(image)
+  expect(image).toHaveAttribute("src", "/light.png")
+})
+
+it("falls back to the poster once, and never loops on a broken poster", () => {
+  render(<PromotionMedia media={media} />)
+  const image = preview().querySelector("img")!
+  fireEvent.error(image)
+  expect(preview().querySelector("img")).toHaveAttribute("src", "/light.png")
+  // The poster is the last resort, so its own failure must not re-arm onError.
+  expect(preview().querySelector("img")).not.toHaveAttribute("src", "/light.webp")
+})
+
+it("retains the animated source when the window loses focus", () => {
   document.documentElement.dataset.theme = "dark"
   vi.spyOn(document, "hasFocus").mockReturnValue(false)
   render(<PromotionMedia media={media} />)
-  const image = screen.getByRole("img", { name: media.alt }).querySelector("img")!
+  const image = preview().querySelector("img")!
   expect(image).toHaveAttribute("src", "/dark.gif")
   act(() => {
     window.dispatchEvent(new Event("blur"))

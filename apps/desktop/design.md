@@ -485,9 +485,12 @@ motion:
   # because Tailwind has no --duration-* theme namespace; consume one as
   # duration-[var(--duration-fast)]. The easing is @theme-registered, so it is
   # the `ease-out-quart` utility. Plain `ease-out` is the default elsewhere.
+  --duration-reduced-motion: 60ms # the reduced-motion opacity crossfade
   --duration-quick: 100ms # a crossfade that leads the movement it accompanies
   --duration-fast: 120ms # the default control, hover, and disclosure transition
   --duration-medium: 180ms # a paired visibility crossfade
+  --duration-hud-island: 200ms # the notch opening and corner transition
+  --duration-hud-island-close: 240ms # the notch retraction; opacity fades over the final duration-quick
   --duration-slow: 300ms # a meter or bar that fills
   --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
   # Recipes, for the timings the tokens above do not carry. Animation timings
@@ -686,18 +689,24 @@ Notes for what isn't expressible as a token:
 - **Icons** — `lucide-react`, inherits `currentColor`. `size` 12 (footnote) / 14–16 (default) / 24
   (feature); color with `text-*`; `strokeWidth` 2 (2.5–3 tiny marks, 1.5 large/chart); `shrink-0` in
   flex; decorative → `aria-hidden`.
-- **Vendor brand marks** — the one exception to the icon rule, and not interchangeable with it: a
-  vendor's mark is its trademark, so its shape and colour are the vendor's to define. Marks are
-  filled paths, not stroked glyphs, and take `--color-agent-mark` rather than a `text-*` label
-  colour — a deliberately firmer ink, because a shape has no letterforms to carry it at 18px. A mark
-  whose identity _is_ its colour keeps that colour in both themes, taken from the value its source
-  package records. Marks are never drawn inline; they come from the `renderAgentIcon` slot. The
-  same rule covers the one other place a vendor colour appears: the HUD draws Anthropic's usage bar
-  in the hex `simple-icons` records for the Claude mark, read from the package rather than written
-  into the palette. The bar raises the saturation of that hex and keeps its hue and lightness. A
-  published brand value is made for a filled mark at 18px, and a row of 6px dots on an uncontrolled
-  desktop needs more chroma to read as the same colour. The lift is a factor applied to the package
-  value, so the source stays the package.
+- **Vendor brand marks** — `renderAgentIcon` uses official color artwork when available,
+  with Cadence's themed marks for the remaining vendors. Naturally monochrome logos
+  remain monochrome. Every neutral icon uses a single-color CSS mask derived from the
+  same SVG, in `text-label-tertiary` ink. Kiro omits its app tile background
+  from the mask. Amp uses its unboxed monochrome wordmark. Kiro's eyes and OpenCode's interior remain negative space through
+  luminance masks; other marks use alpha masks. There is no separate neutral path registry.
+  Oh My Pi uses its recorded official gradient SVG for both appearances, without its
+  background tile. Its centered `10 14 44 44` viewBox reduces the glyph by about 9%
+  relative to the previous `12 16 40 40` glyph crop at every requested size. The neutral appearance masks that same artwork. Theme selection
+  follows `data-theme` and the system preference through `src/styles/base.css`.
+  Artwork provenance and checksums live in `src/assets/agents/provenance.json`.
+  Devin uses its current official hexagonal symbol, without a background tile, in the
+  existing `windsurf` icon slot. Vendor colors do not replace chart tokens.
+  The HUD draws Anthropic's usage bar in the hex `simple-icons` records for the Claude
+  mark, read from the package rather than written into the palette. The bar raises the
+  saturation of that hex and keeps its hue and lightness. A published brand value is made
+  for a filled mark at 18px, and a row of 6px dots on an uncontrolled desktop needs more
+  chroma to read as the same colour. The lift is a factor applied to the package value.
   Session cards omit the mark from the model line. Instead, each card places a decorative 40px neutral
   mark at 5% opacity in light mode and 6% in dark mode, cropped 6px beyond the lower-right edge. The
   denser Antigravity mark scales to 90% inside the same box for equal optical weight. The card clips
@@ -1098,6 +1107,11 @@ Notes for what isn't expressible as a token:
   needed uses an icon with a tooltip. A figure's method belongs in its tooltip, not beside it: a
   hero figure has room for a name and no room for a method. Every horizontal bar uses the usage
   meter (`SegmentedMeter`) silhouette; judgment is carried by ink, never by a multi-color bar.
+- **Last-known limits** — a provider limit reading that is kept after its check failed for a
+  recoverable reason, past the ten-minute grace period, draws its rings and meters at 60%
+  opacity. It carries no warning text and no failure color. Its tooltip gives only the age
+  ("Last updated 2 hr ago."), and never an instruction. A window whose period reset since the
+  reading shows "—" instead of the old figure.
 - **Chart color** — color only where it means a category: blue for context, the token series
   colors for in/out, `cost-cache-read` and `cost-cache-write` for the cache layers, yellow and
   pink for cache marks, brand orange for a compaction or carry, and the `measure` blue wherever
@@ -1718,7 +1732,13 @@ is the notch row alone: a scale-aware wing either side of the notch, with its
 bottom corners at a 14px radius and 6px fillets curving out into the bezel
 (`.hud-island`, `.hud-island-fillets`). Expanded, the HUD content hangs
 below the row, the corners open to 24px and the fillets to 19px
-(`.hud-island-open`), over `duration-fast`. The window is the notch plus the
+(`.hud-island-open`), over `duration-hud-island` (200ms). The body reveals downward
+from the fixed header with a rounded inset clip, opacity, and a 4px upward starting
+offset. The clip uses the same 24px bottom radius as the body. Text stays at its
+full size as the lower edge unfolds. Closing retracts the clip over 240ms with
+`ease-out-quart`, slowing as its lower edge approaches the notch. The body remains
+opaque for the first 140ms, then fades over the final `duration-quick` (100ms). Under reduced
+motion, it uses `duration-reduced-motion` (60ms) for an opacity crossfade with no movement. Re-entry follows the visible CSS clip, so the hidden lower body cannot reopen the HUD. The window is the notch plus the
 wings plus a transparent gutter either side for the fillets. The left wing
 holds the live LED, blinking at the spend rate as the floating frame's LED
 does, and the right wing shows the spend rate as a four-character figure
@@ -1900,7 +1920,7 @@ What’s new is reserved for recent changes. Small windows constrain the frame a
 its content. The media cell uses a 32:15 ratio (150px tall at the default width) and bottom-aligned cover fitting.
 Light-mode media and its poster switch together through the optional YAML `media.light` variant.
 The base source remains the dark-mode fallback. Theme changes reset media failures;
-reduced motion still shows the poster. Videos and GIFs keep looping across focus
+reduced motion still shows the poster. Animated images keep looping across focus
 changes without swapping sources or resetting playback.
 Use the opaque `surface-overlay`, `rounded-promotion`, and `shadow-promotion`
 tokens. The promotion shadow retains the popover shadow in light mode. In dark mode,

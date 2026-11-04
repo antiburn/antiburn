@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 26 October 2026
+Effective: 30 October 2026
 
 This policy explains first-party analytics and optional model-based Burn Check assessment
 requests sent by the antiburn desktop application.
@@ -207,8 +207,8 @@ type, and app runtime. We store them with the raw event.
 
 We use these events to understand whether first-run setup works, which product
 features are useful, which operations fail, whether fix-prompt actions work,
-when Claude makes its session-limit reset
-available, and whether antiburn has resource regressions. We do not use them
+when Claude makes its session-limit reset available, whether antiburn can keep
+reading your Claude login, and whether antiburn has resource regressions. We do not use them
 for advertising, user profiling, or decisions about a person.
 
 We process this data for our legitimate interest in maintaining and improving

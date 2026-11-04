@@ -15,6 +15,7 @@ export interface SessionLimitBadgeInfo {
   provider?: string
   windowId?: string
   unknown?: boolean
+  stale?: boolean
 }
 
 export interface SessionLimitBadgeProps {
@@ -65,17 +66,21 @@ export function SessionLimitBadge({
   const isHighCostPill = !plain && isHighCost
 
   return limitBadge.percent !== null ? (
-    <Tooltip label={isHighCostPill ? "Higher than usual cost" : limitBadge.label} delayMs={150}>
+    <Tooltip
+      label={isHighCostPill ? `${limitBadge.label} Higher than usual cost.` : limitBadge.label}
+      delayMs={150}
+    >
       <span
         className={
-          isHighCostPill
+          (limitBadge.stale ? "opacity-60 " : "") +
+          (isHighCostPill
             ? // The pill keeps the tracking of type-footnote. Tighter
               // tracking moves the wide percent sign into the last digit,
               // because the monospace cell is already full.
               "flex shrink-0 items-center gap-0.5 rounded-full bg-brand-tint px-1.5 py-px font-mono type-footnote font-medium! leading-[13px] text-white tabular-nums"
             : // The same 13px line box as the pill, so the two states of
               // the badge occupy one box.
-              "font-mono type-footnote leading-[13px] tabular-nums text-label-secondary"
+              "font-mono type-footnote leading-[13px] tabular-nums text-label-secondary")
         }
         data-session-limit-provider={limitBadge.provider}
         data-session-limit-window={limitBadge.windowId}

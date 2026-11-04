@@ -78,6 +78,7 @@ const TOKEN_MAP_WINDOW_SECS = 300
 const TOKEN_MAP_POLL_MS = 5_000
 /** How long the reset message and its confetti stay. */
 const CELEBRATION_MS = 6_000
+const ISLAND_CLOSE_FALLBACK_MS = 290
 
 const EMPTY_TOKEN_MAP = deriveTokenMap(null)
 
@@ -110,6 +111,14 @@ export type OverlaySnapshot = {
   spendFigure: string | null
   /** Where the HUD sits in the notch, if it does, and the notch's shape. */
   island: HudIslandState
+  /** Expanded body geometry held until its close transition finishes. */
+  islandBodyGeometry: HudIslandState | null
+  /** Keep the island body mounted while it exits. */
+  islandBodyPresent: boolean
+  /** Whether the mounted body should be visible. */
+  islandBodyOpen: boolean
+  /** Invalidates callbacks from an earlier close. */
+  islandCloseGeneration: number
   /** The clock the countdown to a reset reads from. */
   now: number
   /** The reset message under the bars, or null. */
@@ -131,6 +140,10 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   spend: null,
   spendFigure: null,
   island: HUD_ISLAND_OFF,
+  islandBodyGeometry: null,
+  islandBodyPresent: false,
+  islandBodyOpen: false,
+  islandCloseGeneration: 0,
   now: 0,
   celebration: null,
 }
@@ -156,6 +169,8 @@ function sameBars(left: UsageBarItem[], right: UsageBarItem[]): boolean {
         bar.key === other.key &&
         bar.label === other.label &&
         bar.percent === other.percent &&
+        bar.stale === other.stale &&
+        bar.statusNote === other.statusNote &&
         bar.resetsAt?.getTime() === other.resetsAt?.getTime() &&
         bar.color === other.color &&
         bar.expectedFraction === other.expectedFraction
@@ -219,6 +234,8 @@ export class OverlaySession {
   private detailRevision = 0
   private latestUsage: LiveUsageSummaryPayload | null = null
   private celebrationTimer = 0
+  private islandCloseTimer = 0
+  private islandCloseStartedGeneration = -1
   /** The reset time a fresh read was already asked for, so it is asked once. */
   private resetAskedFor = 0
   private latestSpend: HudSpendRate | null = null
@@ -575,6 +592,8 @@ export class OverlaySession {
     this.burnWake = new BurnWakeTracker()
     window.clearTimeout(this.celebrationTimer)
     this.celebrationTimer = 0
+    window.clearTimeout(this.islandCloseTimer)
+    this.islandCloseTimer = 0
     window.clearTimeout(this.devBlockTimer)
     this.devBlockTimer = 0
     this.devBlockUntil = 0
@@ -595,6 +614,10 @@ export class OverlaySession {
       liveModels: {},
       celebration: null,
       island: HUD_ISLAND_OFF,
+      islandBodyGeometry: null,
+      islandBodyPresent: false,
+      islandBodyOpen: false,
+      islandCloseGeneration: this.snapshot.islandCloseGeneration + 1,
     })
   }
 
@@ -640,12 +663,123 @@ export class OverlaySession {
    */
   private applyIsland(island: HudIslandState): void {
     if (island.revision < this.snapshot.island.revision) return
-    this.commitLayout({ island })
-    void this.syncWindow(false, this.activityGeneration)
+    if (island.island === "expanded") {
+      const entering = !this.snapshot.islandBodyPresent
+      window.clearTimeout(this.islandCloseTimer)
+      this.islandCloseTimer = 0
+      const islandCloseGeneration = this.snapshot.islandCloseGeneration + 1
+      this.commitLayout({
+        island,
+        islandBodyGeometry: island,
+        islandBodyPresent: true,
+        islandBodyOpen: !entering,
+        islandCloseGeneration,
+      })
+      const generation = this.activityGeneration
+      const revision = island.revision
+      void this.syncWindow(false, generation).then(() => {
+        if (!entering) return
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            if (
+              this.isCurrent(generation) &&
+              this.snapshot.island.revision === revision &&
+              this.snapshot.island.island === "expanded"
+            )
+              this.commitLayout({ islandBodyOpen: true })
+          })
+        })
+      })
+    } else if (
+      island.island === "collapsed" &&
+      this.snapshot.islandBodyPresent &&
+      this.snapshot.islandBodyGeometry?.scale === island.scale
+    ) {
+      const justStartedClosing = this.snapshot.island.island === "expanded"
+      const islandCloseGeneration = justStartedClosing
+        ? this.snapshot.islandCloseGeneration + 1
+        : this.snapshot.islandCloseGeneration
+      this.commitLayout({ island, islandBodyOpen: false, islandCloseGeneration })
+      if (justStartedClosing) {
+        window.clearTimeout(this.islandCloseTimer)
+        this.islandCloseTimer = window.setTimeout(
+          () => this.finishIslandClose(islandCloseGeneration),
+          ISLAND_CLOSE_FALLBACK_MS,
+        )
+      }
+    } else if (island.island === "preview") {
+      window.clearTimeout(this.islandCloseTimer)
+      this.islandCloseTimer = 0
+      this.commitLayout({
+        island,
+        islandBodyGeometry: null,
+        islandBodyPresent: true,
+        islandBodyOpen: true,
+        islandCloseGeneration: this.snapshot.islandCloseGeneration + 1,
+      })
+    } else {
+      window.clearTimeout(this.islandCloseTimer)
+      this.islandCloseTimer = 0
+      this.commitLayout({
+        island,
+        islandBodyGeometry: null,
+        islandBodyPresent: false,
+        islandBodyOpen: false,
+        islandCloseGeneration: this.snapshot.islandCloseGeneration + 1,
+      })
+    }
+    if (
+      island.island !== "expanded" &&
+      (island.island !== "collapsed" || !this.snapshot.islandBodyPresent)
+    )
+      void this.syncWindow(false, this.activityGeneration)
     if (island.island !== "off") {
       this.clearShowTimer()
       this.hideDetail()
     }
+  }
+
+  startIslandClose = (closeGeneration: number): void => {
+    if (
+      this.snapshot.island.island !== "collapsed" ||
+      this.snapshot.islandCloseGeneration !== closeGeneration ||
+      !this.snapshot.islandBodyPresent
+    )
+      return
+    if (this.islandCloseStartedGeneration !== closeGeneration) {
+      this.islandCloseStartedGeneration = closeGeneration
+      window.clearTimeout(this.islandCloseTimer)
+      this.islandCloseTimer = window.setTimeout(
+        () => this.finishIslandClose(closeGeneration),
+        ISLAND_CLOSE_FALLBACK_MS,
+      )
+    }
+    void this.syncWindow(false, this.activityGeneration)
+  }
+
+  reopenClosingIsland = (): void => {
+    if (
+      this.active &&
+      this.snapshot.island.island === "collapsed" &&
+      this.snapshot.islandBodyPresent &&
+      !this.snapshot.dragging &&
+      !this.snapshot.dragArmed
+    )
+      void expandHudIsland().catch(() => {})
+  }
+
+  finishIslandClose = (closeGeneration = this.snapshot.islandCloseGeneration): void => {
+    if (
+      this.snapshot.island.island !== "collapsed" ||
+      this.snapshot.islandCloseGeneration !== closeGeneration ||
+      !this.snapshot.islandBodyPresent
+    )
+      return
+    window.clearTimeout(this.islandCloseTimer)
+    this.islandCloseTimer = 0
+    this.commitLayout({ islandBodyPresent: false, islandBodyGeometry: null })
+    const generation = this.activityGeneration
+    if (this.isCurrent(generation)) void this.syncWindow(false, generation)
   }
 
   private armShowTimer(): void {
@@ -692,6 +826,8 @@ export class OverlaySession {
         key: bar.key,
         label: bar.label,
         percent: bar.percent,
+        stale: bar.stale ?? false,
+        statusNote: bar.statusNote ?? null,
         resetsAt: bar.resetsAt ? bar.resetsAt.toISOString() : null,
         color: bar.color,
         expectedFraction: bar.expectedFraction,
@@ -886,6 +1022,10 @@ export class OverlaySession {
       this.snapshot.spend === next.spend &&
       this.snapshot.spendFigure === next.spendFigure &&
       this.snapshot.island === next.island &&
+      this.snapshot.islandBodyGeometry === next.islandBodyGeometry &&
+      this.snapshot.islandBodyPresent === next.islandBodyPresent &&
+      this.snapshot.islandBodyOpen === next.islandBodyOpen &&
+      this.snapshot.islandCloseGeneration === next.islandCloseGeneration &&
       this.snapshot.now === next.now &&
       this.snapshot.celebration === next.celebration
     ) {

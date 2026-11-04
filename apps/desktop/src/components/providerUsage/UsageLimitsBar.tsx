@@ -17,9 +17,10 @@ import type {
 } from "../../lib/presentation/liveUsage"
 import {
   liveDisplayableProviders,
-  liveGraceNote,
   livePlanAccountLabel,
   liveProviderStatus,
+  liveStatusNote,
+  liveStatusNotes,
   liveResetLabel,
   liveUnavailableProviders,
   liveUnavailableReason,
@@ -327,14 +328,12 @@ function ProviderGroup({
   activation: Exclude<AnchoredTriggerActivation, "idle"> | null
 }) {
   const plan = livePlanAccountLabel(provider, accountCount)
-  const graceNote =
-    status.kind === "grace"
-      ? liveGraceNote(status.category, provider.provider, status.ageMs, status.detail)
-      : null
+  const { graceNote, staleNote, actionNote } = liveStatusNotes(status, provider.provider)
   return (
     <div
       role="group"
       aria-label={providerGroupLabel(displayName, plan)}
+      {...(staleNote ? { title: staleNote } : {})}
       data-state={activation ?? "idle"}
       className="rounded-md px-2 py-2 transition-colors duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
       onMouseEnter={(event) =>
@@ -354,8 +353,10 @@ function ProviderGroup({
         {action}
       </div>
       {/* Not orange: a grace-period reading is still fine, not a failure. */}
-      {graceNote && <p className="pb-1.5 type-footnote text-label-tertiary">{graceNote}</p>}
-      <div className="space-y-2.5">
+      {(actionNote ?? graceNote) && (
+        <p className="pb-1.5 type-footnote text-label-tertiary">{actionNote ?? graceNote}</p>
+      )}
+      <div className={cn("space-y-2.5", staleNote && "opacity-60")}>
         {liveWindows(provider).map((window, index) => (
           <WindowMeterRow
             key={window.id}
@@ -401,10 +402,8 @@ function ProviderRadial({
   const elapsedPercent = expectedFraction == null ? null : Math.round(expectedFraction * 100)
   const roundedPercent = percent == null ? null : Math.round(percent)
   const figure = roundedPercent == null ? "no stated figure" : `${roundedPercent}% used`
-  const graceNote =
-    status.kind === "grace"
-      ? liveGraceNote(status.category, provider.provider, status.ageMs, status.detail)
-      : null
+  const graceNote = liveStatusNote(status, provider.provider)
+  const stale = status.kind === "stale"
   const baseLabel = `${displayName}${
     roundedPercent != null ? ` at ${roundedPercent} percent` : ", no stated figure"
   }`
@@ -452,7 +451,7 @@ function ProviderRadial({
           mark={providerMark(provider.provider)}
           glyph={providerInitial(displayName)}
           size={RING_SIZE}
-          className="block text-label-secondary"
+          className={cn("block text-label-secondary", stale && "opacity-60")}
           live={live}
         />
         <span

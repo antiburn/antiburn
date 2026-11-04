@@ -16,6 +16,59 @@ type CatalogOptions = {
   developmentDirectory?: string
 }
 
+function isStillPoster(bytes: Buffer): boolean {
+  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    for (let at = 8; at + 12 <= bytes.length;) {
+      const size = bytes.readUInt32BE(at)
+      const end = at + 12 + size
+      if (end > bytes.length) return false
+      const type = bytes.toString("ascii", at + 4, at + 8)
+      if (type === "acTL") return false
+      if (type === "IEND") return true
+      at = end
+    }
+    return false
+  }
+  if (["GIF87a", "GIF89a"].includes(bytes.toString("ascii", 0, 6)) && bytes.length >= 13) {
+    let at = 13 + (bytes[10] & 0x80 ? 3 * 2 ** ((bytes[10] & 7) + 1) : 0)
+    let frames = 0
+    while (at < bytes.length) {
+      const block = bytes[at++]
+      if (block === 0x3b) return frames === 1
+      if (block === 0x2c) {
+        if (at + 9 > bytes.length || ++frames > 1) return false
+        const flags = bytes[at + 8]
+        at += 9 + (flags & 0x80 ? 3 * 2 ** ((flags & 7) + 1) : 0)
+        if (at >= bytes.length) return false
+        at++
+      } else if (block === 0x21) {
+        if (at >= bytes.length) return false
+        at++
+      } else return false
+      while (at < bytes.length && bytes[at] !== 0) at += 1 + bytes[at]
+      if (at >= bytes.length) return false
+      at++
+    }
+    return false
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return true
+  if (bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") {
+    const end = bytes.readUInt32LE(4) + 8
+    if (end > bytes.length || end < 20) return false
+    for (let at = 12; at + 8 <= end;) {
+      const type = bytes.toString("ascii", at, at + 4)
+      const size = bytes.readUInt32LE(at + 4)
+      const next = at + 8 + size + (size % 2)
+      if (next > end) return false
+      if (type === "ANIM" || type === "ANMF") return false
+      if (type === "VP8X" && (size < 10 || (bytes[at + 8] & 0x02) !== 0)) return false
+      at = next
+    }
+    return true
+  }
+  return false
+}
+
 async function collectMediaPaths(
   definition: PromotionDefinition,
   definitionDirectory: string,
@@ -49,6 +102,14 @@ async function collectMediaPaths(
         path.isAbsolute(relative)
       ) {
         throw new Error(`Promotion asset "${source}" resolves outside ${definitionDirectory}`)
+      }
+      if (variants.some((variant) => variant.poster === source)) {
+        const bytes = await readFile(realAsset)
+        if (!isStillPoster(bytes)) {
+          throw new Error(
+            `Promotion poster "${source}" must be a still PNG, JPEG, GIF, or WebP image`,
+          )
+        }
       }
       resolved.set(source, realAsset)
     }

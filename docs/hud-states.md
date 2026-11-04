@@ -125,16 +125,19 @@ There is no setting and no dock control; the drop is the gesture.
   first.
 - **The tab.** While docked, the crate polls the global cursor every 100ms.
   The cursor resting on the tab for 150ms peeks the HUD in to its home
-  position. It parks again 3s after the pointer leaves it, or after 3s if the
-  pointer never reaches it.
+  position. Once the pointer has entered the HUD, departure within 48 logical
+  px starts a 400ms grace period. Departure beyond that zone parks it at the
+  next 50ms cursor sample. Before first interaction, the wake keeps its 4.8s
+  minimum hold.
 - **Tearing off.** A drag on a docked or peeked HUD undocks it. The HUD webview
   calls `tear_off_overlay` as the drag starts, so the auto-dock timer stops
   and the drop lands wherever the pointer leaves it. A drop near an edge docks
   again.
 - **Wake.** The HUD webview asks the shell to wake a docked HUD for two
   reasons: a transcript write more than an hour after the previous one it saw
-  through events, and a spend rate at the ceiling for two polls in a row. A
-  woken HUD stays at least 2.8s, and longer while hovered. The burn wake re-arms
+  through events, and a spend rate at the ceiling for two polls in a row. An
+  unattended wake parks after 4.8s. Pointer entry releases the minimum hold;
+  after interaction, the departure grace applies. The burn wake re-arms
   only after the rate drops below the ceiling. Both start cold: a fresh dock
   never wakes on its first sample. Each wake is logged with its reason.
 - **Displays.** The dock edge is the edge of the display the HUD was dropped
@@ -161,17 +164,21 @@ crate stores it with the dock state.
   light. It takes the brand colour; the mode colour is off for now. It pulses
   between three-quarters and one-third opacity on the spend-rate period, and
   holds the dim value under reduced motion. The detail window never opens from the collapsed row.
-- **Expanded.** The crate polls the global cursor every 100ms while
-  collapsed. The pointer resting for 150ms in the hotspot, the notch plus
+- **Expanded.** The crate polls the global cursor every 50ms while
+  collapsed. The pointer resting for 100ms in the hotspot, the notch plus
   10px either side and 5px below, or on a wing, expands the island: the full
   HUD hangs below the notch row. Each bar carries a label row, its name on
   the left and its figure on the right, and the time to its reset under it,
   so the island has no caption to clip. When the token map shows, a legend
   under it names each session with its rate and its top mode. The content
   is padded to half the wing, so the bars start under the marks and not
-  nearer the edge than them. It collapses 3s after the pointer leaves the
-  island and the hotspot. A wake expands it the same way, for as long as a
-  docked HUD peeks.
+  nearer the edge than them. Pointer movement outside the island starts a 400ms grace
+  period within a 48px proximity zone; movement beyond that zone collapses it
+  at the next 50ms cursor sample. A brief re-entry cancels the close. The body
+  reveals downward from the fixed header over 200ms, using a rounded inset clip,
+  opacity, and a 4px upward starting offset. Closing retracts the clip over 240ms
+  with an ease-out slowdown near the notch and fades during the final 100ms. An unattended wake parks after 4.8s. Pointer entry releases its minimum hold
+  and uses the same close behavior.
 - **No detail card.** The island opens no detail window: the open island
   carries what the card would say. A card left over from the floating frame
   hides when the HUD lands in the notch.
@@ -488,3 +495,18 @@ always-on-top behavior.
 
 The separate detail window and content-sized HUD frame close this list. The HUD
 does not expand, and the detail window is sized before it appears.
+
+## Manual macOS pointer sampling check
+
+Browser fixtures inject island states and do not test the native cursor sampler.
+Run this check on macOS with a real notch, then repeat at a second interface scale:
+
+1. Place the HUD in the notch and open it with the pointer.
+2. Move within the notch header and the visible body. Each region must keep it open.
+3. Move just outside the body, within 48 logical points. It must close after about 400ms.
+4. Move beyond 48 points. It must start closing at the next cursor sample.
+5. During closing, return to the visible body or header. It must reopen.
+6. Move over the lower body area after its clip retracts. It must continue closing.
+
+Repeat on a mixed-DPI display arrangement. This exercises the native
+`cursor_report` and `pointer_zone` path; synthetic zone tests do not replace it.

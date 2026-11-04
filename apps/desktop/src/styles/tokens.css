@@ -269,9 +269,12 @@
      duration-[var(--duration-fast)] — the same shape as the geometry vars.
      Keeping them here is what stops 120ms from being retyped at each site.
      Animation timings stay with the keyframes that own them in motion.css. */
+  --duration-reduced-motion: 60ms;
   --duration-quick: 100ms;
   --duration-fast: 120ms;
   --duration-medium: 180ms;
+  --duration-hud-island: 200ms;
+  --duration-hud-island-close: 240ms;
   --duration-slow: 300ms;
 
   /* Source-list / sidebar width for multi-pane windows. Geometry vars are not
