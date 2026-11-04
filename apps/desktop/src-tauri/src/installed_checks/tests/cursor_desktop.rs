@@ -217,6 +217,110 @@ async fn cursor_desktop_startup_and_live_results_reach_one_assessment_without_re
     }
 }
 
+#[tokio::test]
+async fn cursor_desktop_skill_candidate_freezes_metadata_and_limits_before_evaluation() {
+    let fixture = Fixture::new();
+    fixture
+        .store
+        .delete_session(&SessionKey::new("native", "pi", "main"))
+        .unwrap();
+    let definition = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../.antiburn/checks/skill-opportunities.yml");
+    std::fs::copy(definition, fixture.global.join("failed-retry-loop.yml")).unwrap();
+    let home = fixture
+        .directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("source-home");
+    let global_skill = home.join(".agents/skills/parser-review/SKILL.md");
+    let repo_skill = fixture
+        .project
+        .join(".cursor/skills/parser-codegen/SKILL.md");
+    let repo_instruction = fixture.project.join("AGENTS.md");
+    std::fs::write(&repo_instruction, "Do not edit generated parser tables.\n").unwrap();
+    for (path, name, description) in [
+        (
+            &global_skill,
+            "parser-review",
+            "Inspect parser build failures.",
+        ),
+        (
+            &repo_skill,
+            "parser-codegen",
+            "Regenerate missing parser tables with the codegen tool.",
+        ),
+    ] {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            format!("---\nname: {name}\ndescription: {description}\n---\nPrivate skill body.\n"),
+        )
+        .unwrap();
+    }
+    publish_cursor(&fixture, 3);
+    let mut host = fixture.host();
+    host.current_context = current_context::CurrentContextCapture::new(Some(home));
+    host.reconcile(&Admission::Ready).unwrap();
+    drain(&mut host);
+    let frozen: String = fixture
+        .store
+        .lock()
+        .query_row(
+            "SELECT frozen_input_json FROM burn_check_candidate",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let candidate: FrozenCandidate = serde_json::from_str(&frozen).unwrap();
+    let snapshot = &candidate.context.value;
+    assert_eq!(snapshot["repo"]["skills"][0]["name"], "parser-codegen");
+    assert_eq!(snapshot["global"]["skills"][0]["name"], "parser-review");
+    assert!(snapshot["global"].get("instructions").is_none());
+    assert_eq!(
+        snapshot["repo"]["instructions"][0]["content"],
+        "Do not edit generated parser tables.\n"
+    );
+    for scope in ["global", "repo"] {
+        assert_eq!(snapshot[scope]["instructions_complete"], false);
+        assert_eq!(snapshot[scope]["skills_complete"], false);
+        assert!(
+            !snapshot[scope]["skills_limits"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(!frozen.contains("Private skill body."));
+    assert!(host.current_context.calls > 0);
+    std::fs::remove_file(global_skill).unwrap();
+    std::fs::remove_file(repo_skill).unwrap();
+    std::fs::remove_file(repo_instruction).unwrap();
+    drop(host);
+    let mut restarted = fixture.host();
+    restarted.reconcile(&Admission::Ready).unwrap();
+    drain(&mut restarted);
+    assert_eq!(restarted.current_context.calls, 0);
+    fixture.evaluator.answer("actionable_help");
+    assert_eq!(
+        restarted
+            .evaluation_jobs(1)
+            .pop()
+            .unwrap()
+            .run()
+            .await
+            .unwrap()
+            .unwrap()
+            .outcome,
+        RunOutcome::Accepted
+    );
+    let inputs = fixture.evaluator.inputs.lock().unwrap();
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0]["current_repo_scope"], snapshot["repo"]);
+    assert_eq!(inputs[0]["current_global_scope"], snapshot["global"]);
+    assert_eq!(restarted.current_context.calls, 0);
+}
+
 #[test]
 fn cursor_report_counts_only_the_native_desktop_root_route() {
     let fixture = Fixture::new();

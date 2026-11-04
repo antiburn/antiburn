@@ -1,6 +1,7 @@
 use super::*;
 use std::fs;
 
+mod cursor;
 mod paths;
 mod protected_case_aliases;
 mod review;

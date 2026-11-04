@@ -11,6 +11,7 @@ use super::{Collector, Producer};
 pub(super) enum SkillTraversal {
     Direct,
     Grouped,
+    Cursor,
     OpenCodeV2,
 }
 
@@ -115,10 +116,12 @@ impl Collector<'_> {
             return;
         }
         let paths = self.entries(directory, safety, global, true);
-        if traversal != SkillTraversal::OpenCodeV2
-            && let Some(path) = paths
-                .iter()
-                .find(|path| path.file_name().is_some_and(|name| name == "SKILL.md"))
+        if !matches!(
+            traversal,
+            SkillTraversal::Cursor | SkillTraversal::OpenCodeV2
+        ) && let Some(path) = paths
+            .iter()
+            .find(|path| path.file_name().is_some_and(|name| name == "SKILL.md"))
         {
             if let Some(fallback) = directory.file_name().and_then(|name| name.to_str()) {
                 self.skill(path, safety, global, fallback);
@@ -151,7 +154,10 @@ impl Collector<'_> {
             if metadata.is_file() {
                 if name == "SKILL.md"
                     || (depth == 0
-                        && traversal != SkillTraversal::Direct
+                        && matches!(
+                            traversal,
+                            SkillTraversal::Grouped | SkillTraversal::OpenCodeV2
+                        )
                         && path.extension().is_some_and(|extension| extension == "md"))
                 {
                     let fallback = if name == "SKILL.md" {
@@ -168,7 +174,10 @@ impl Collector<'_> {
                     self.limit(global, true, "skill_depth_limit");
                     continue;
                 }
-                if traversal == SkillTraversal::OpenCodeV2 {
+                if matches!(
+                    traversal,
+                    SkillTraversal::Cursor | SkillTraversal::OpenCodeV2
+                ) {
                     self.skill_source(&path, safety, global, traversal, depth + 1);
                     continue;
                 }

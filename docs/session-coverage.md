@@ -1384,8 +1384,10 @@ This parser does not add skill snapshots to YAML model input.
 YAML checks use the separate bounded `agent_config::current_context` collector.
 It observes current configured definitions, not historical activation or an
 effective session inventory. The accepted current-file subset covers native
-Claude, Codex, Pi V3, and separately reviewed OpenCode V1/V2 configuration shapes.
-Other agents, remote/WSL environments, and mismatched source/agent pairs leave
+Claude, Codex, Pi V3, separately reviewed OpenCode V1/V2 configuration shapes,
+and repository AGENTS instructions and skill metadata for native
+`CursorIdeComposer` sessions. Cursor global instruction collections remain
+unavailable. Other agents, remote/WSL environments, and mismatched source/agent pairs leave
 collections unavailable. A format tag alone does not establish a producer release
 range or resolve process overrides.
 
@@ -1412,6 +1414,25 @@ Claude and Codex current-file scope follows their documented
 [AGENTS](https://developers.openai.com/codex/guides/agents-md), and
 [skill](https://developers.openai.com/codex/skills.md) contracts reviewed on
 2026-10-23, not an all-version claim.
+
+Cursor skill observations cover user `.cursor/skills` and `.agents/skills`, plus
+those directories at the CWD and its ancestors through the bound repository root.
+Each root supports bounded recursive `SKILL.md` discovery, including children of
+a directory that has its own definition. Loose Markdown files and other nested
+project roots are not traversed. Compatibility directories, plugins, built-in or
+synced skills, activation globs, and skill controls remain unresolved. This is a
+partial metadata inventory, not evidence that Cursor loaded a skill. The subset
+follows [Cursor's skill documentation](https://cursor.com/docs/skills), reviewed
+on 2026-11-03; it does not claim all historical versions.
+
+Cursor repository instruction observations include plain `AGENTS.md` files at
+the CWD and its ancestors through the bound repository root. Each entry retains
+its directory scope. Other nested project directories, `.cursor/rules`, legacy
+`.cursorrules`, user/team rules, referenced files, and activation controls are
+not resolved. Known AGENTS entries remain usable beside these explicit limits;
+an empty observed subset does not prove the absence of other instructions.
+This current-file subset follows [Cursor's AGENTS documentation](https://cursor.com/docs/rules#agentsmd),
+reviewed on 2026-11-04. It does not prove past loading or effective precedence.
 
 The collector requires source-owned home, CWD, repository binding, and recorded
 protected-directory grants. It checks every file and directory before I/O,

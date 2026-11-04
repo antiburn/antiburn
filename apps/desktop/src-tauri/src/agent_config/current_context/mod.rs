@@ -58,6 +58,7 @@ impl<'a> CurrentContextRequest<'a> {
 enum Producer {
     Claude,
     Codex,
+    Cursor,
     Pi,
     OpenCodeV1,
     OpenCodeV2,
@@ -68,6 +69,7 @@ impl Producer {
         match (request.agent, request.source_format?) {
             (AgentKind::Claude, SourceFormat::ClaudeJsonl) => Some(Self::Claude),
             (AgentKind::Codex, SourceFormat::CodexRolloutJsonl) => Some(Self::Codex),
+            (AgentKind::Cursor, SourceFormat::CursorIdeComposer) => Some(Self::Cursor),
             (AgentKind::Pi, SourceFormat::PiV3Jsonl) => Some(Self::Pi),
             (AgentKind::OpenCode, SourceFormat::OpenCodeJsonl | SourceFormat::OpenCodeSqliteV1) => {
                 Some(Self::OpenCodeV1)

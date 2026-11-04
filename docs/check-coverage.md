@@ -613,6 +613,17 @@ later request cannot supply a new result seam. This exception admits only
 tool-result blocks, not request text or arbitrary branches. Older cursors retain
 failed proofs without reset or source replay.
 
+For native Cursor Desktop sessions, Skill opportunities can use the bounded
+current `.cursor/skills` and `.agents/skills` metadata subset. Known descriptions
+remain usable beside explicit partial-inventory limits. Ignored instructions can
+also compare observed work with the bounded current repository `AGENTS.md`
+subset. Global instruction collections and other Cursor rule sources remain
+unavailable or unresolved; current observations do not prove past loading or
+that a rule applied when the work happened. These additions do not change the built-in
+check matrix, prompt recommendations, auto-fix, verification, or estimates. See
+[current-file source limits](session-coverage.md#yaml-current-file-inputs) for
+roots, omissions, and the producer documentation boundary.
+
 The two inventory definitions select whole current `global` and `repo` scopes
 to retain useful entries when an array is absent. The current expression language
 cannot build a selective object that safely omits that unavailable array. As a

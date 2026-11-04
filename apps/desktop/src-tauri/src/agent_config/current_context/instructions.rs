@@ -53,6 +53,19 @@ impl Collector<'_> {
                     "admin_system_plugins_and_skill_controls_not_resolved",
                 );
             }
+            Producer::Cursor => {
+                self.root(true).instructions = None;
+                self.limit(true, false, "cursor_instruction_sources_not_read");
+                for relative in [".cursor/skills", ".agents/skills"] {
+                    self.skill_source(&home.join(relative), home, true, SkillTraversal::Cursor, 0);
+                }
+                self.limit(
+                    true,
+                    true,
+                    "cursor_compatibility_plugins_and_skill_controls_not_resolved",
+                );
+                self.limit(true, true, "cursor_builtin_and_synced_skills_not_read");
+            }
             Producer::Pi => {
                 let directory = home.join(".pi/agent");
                 self.first_instruction(&directory, home, true, None, &PI_INSTRUCTIONS);
@@ -162,6 +175,24 @@ impl Collector<'_> {
                         0,
                     );
                 }
+                Producer::Cursor => {
+                    self.instruction(
+                        &directory.join("AGENTS.md"),
+                        root,
+                        false,
+                        Some(&directory),
+                        false,
+                    );
+                    for relative in [".cursor/skills", ".agents/skills"] {
+                        self.skill_source(
+                            &directory.join(relative),
+                            root,
+                            false,
+                            SkillTraversal::Cursor,
+                            0,
+                        );
+                    }
+                }
                 Producer::Pi => {
                     self.first_instruction(
                         &directory,
@@ -215,6 +246,19 @@ impl Collector<'_> {
                     "codex_fallback_names_and_byte_policy_not_resolved",
                 );
                 self.limit(false, true, "skill_controls_not_resolved");
+            }
+            Producer::Cursor => {
+                self.limit(
+                    false,
+                    false,
+                    "cursor_rules_user_team_and_activation_controls_not_resolved",
+                );
+                self.limit(false, true, "cursor_nested_project_skills_not_read");
+                self.limit(
+                    false,
+                    true,
+                    "cursor_compatibility_plugins_and_skill_controls_not_resolved",
+                );
             }
             Producer::Pi => {
                 for name in ["SYSTEM.md", "APPEND_SYSTEM.md"] {
