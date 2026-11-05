@@ -107,6 +107,7 @@ test('Claude and Codex add context at user prompt submission and ignore empty se
       read,
     ),
     {
+      systemMessage: formatSessionCheckUpdates(delivery.updates, 'text'),
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
         additionalContext: delivery.message,
@@ -215,10 +216,13 @@ function nativeDelivery(
   }
 }
 
-for (const host of ['claude-code', 'pi']) {
+for (const host of ['claude-code', 'codex', 'pi']) {
   test(`${host}: native display and context share validated revision and withdrawal handoffs`, async () => {
     const { claudeSessionCheckOutput } = await load(
       'integrations/antiburn/claude/session-check-hook.mjs',
+    )
+    const { codexSessionCheckOutput } = await load(
+      'integrations/antiburn/codex/session-check-hook.mjs',
     )
     const sessionId = 'visual-session'
     const reads = [],
@@ -239,7 +243,8 @@ for (const host of ['claude-code', 'pi']) {
     const receive = async () => {
       if (host === 'pi')
         return piSessionCheckMessage('user', sessionId, read, acknowledge, true)
-      const output = await claudeSessionCheckOutput(
+      const receiveHook = host === 'codex' ? codexSessionCheckOutput : claudeSessionCheckOutput
+      const output = await receiveHook(
         { session_id: sessionId, hook_event_name: 'UserPromptSubmit' },
         read,
       )
@@ -261,7 +266,7 @@ for (const host of ['claude-code', 'pi']) {
         ),
       )
       assert.match(visible, host === 'pi' ? /🔥 `antiburn`/ : /🔥 antiburn/)
-      if (host === 'claude-code') {
+      if (host !== 'pi') {
         assert.doesNotMatch(visible, /`|\*\*/)
         assert.ok(visible.startsWith('\n────────────────────────────────\n'))
         assert.ok(

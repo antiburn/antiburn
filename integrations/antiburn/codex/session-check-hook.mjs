@@ -1,3 +1,4 @@
+import { formatSessionCheckUpdates } from '../../../packages/antiburn-plugin-core/session-checks-validation.mjs'
 import { readSessionChecks } from '../../../packages/antiburn-plugin-core/session-checks.mjs'
 import {
   isDirectExecution,
@@ -22,9 +23,11 @@ export async function codexSessionCheckOutput(input, read = readSessionChecks) {
   )
     return undefined
   const result = await read({ host: 'codex', sessionId: input.session_id, consumer: 'context' })
+  const notice = result?.receipt ? formatSessionCheckUpdates(result.updates, 'text') : ''
   return result?.receipt
     ? withSessionCheckReceipt(
         {
+          systemMessage: notice ? `\n${notice}` : '',
           hookSpecificOutput: {
             hookEventName: 'UserPromptSubmit',
             additionalContext: result.message,

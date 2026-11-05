@@ -122,6 +122,37 @@ captures. The support table below retains its original context-only scope.
 These display paths do not change evidence parsing, check eligibility, thresholds,
 or automatic-installation gates.
 
+### Codex notice output
+
+The Codex UserPromptSubmit adapter also includes a plain-text update frame in
+`systemMessage`, alongside its existing Markdown `additionalContext`. It uses
+the same context receipt and writes both fields in one hook result. The
+[Codex hook contract](https://developers.openai.com/codex/hooks) defines
+`systemMessage` as a warning surfaced in the UI or event stream. The host owns
+the warning layout; the adapter does not ask the assistant to reproduce it.
+
+Codex CLI 0.166.0 `exec --json` accepted and acknowledged the adapter's context
+in an isolated synthetic transport probe, but did not expose its notice in the
+captured output. A separate native TUI capture showed the complete plain-text
+frame after an ordinary readiness prompt, separately from the assistant's reply.
+That probe used a synthetic CLI response and localhost provider; it establishes
+automatic native presentation alone. A follow-up controlled audit delivered a
+real saved predefined Fast mode value assessment through the same TUI hook after
+an ordinary readiness prompt. A second ordinary turn showed no new notice; the
+CLI retained one acknowledged revision and returned no new update or receipt.
+The assessment used controlled fixture evidence, and the receiving provider
+returned only a local canned reply. This verifies saved-assessment delivery,
+native presentation and duplicate suppression, not natural-work detection or
+assistant reproduction. Desktop visibility remains unverified. Do not infer
+headless or desktop display support from the hook output fields alone.
+
+OpenCode and Cursor retain context delivery. OpenCode's existing debug toast
+does not establish complete advisory presentation, and Cursor's existing
+postToolUse context result does not establish a non-blocking visible notice.
+Complete automatic display for these hosts requires a separately verified UI
+path. A short alert, blocked operation, or forced model continuation does not
+establish that support.
+
 ## Native delivery versus evidence coverage
 
 A native adapter is a delivery mechanism. It does not add an evidence reader
