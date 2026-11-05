@@ -146,12 +146,83 @@ native presentation and duplicate suppression, not natural-work detection or
 assistant reproduction. Desktop visibility remains unverified. Do not infer
 headless or desktop display support from the hook output fields alone.
 
-OpenCode and Cursor retain context delivery. OpenCode's existing debug toast
-does not establish complete advisory presentation, and Cursor's existing
-postToolUse context result does not establish a non-blocking visible notice.
-Complete automatic display for these hosts requires a separately verified UI
-path. A short alert, blocked operation, or forced model continuation does not
-establish that support.
+### OpenCode optional native TUI candidate
+
+OpenCode's server adapter retains its existing context transformation. A separate
+optional TUI module, `runtime/session-check-ui.tsx`, targets exactly OpenCode
+1.19.3 and `@opencode-ai/plugin/tui`. It registers a persistent `app_bottom`
+frame without replacing the prompt. It prefers the public OpenTUI Markdown
+intrinsic with canonical brand, check titles, authored multiline messages and
+rails. Styles use public host theme tokens; each native style resource is
+destroyed on unmount. A rendering error falls back to the complete canonical
+plain-text frame. Links are passive and remain closed. A bounded scrollbox
+wraps the text and retains its full content. Long frames require scrolling.
+Actual OpenCode 1.19.3 PTY captures establish synthetic CLI transport, complete
+short frames, long-message wrapping and scrolling, A/B/A session isolation,
+home-route removal and one UI acknowledgement per session revision.
+A native terminal-window screenshot also verifies a complete short synthetic
+frame, Markdown styling and exact session identity, correlated with one UI
+acknowledgement.
+A separate actual packaged TUI probe confirms canonical Markdown with
+native bold/link styling, multiline wrapping and scrolling, plus complete
+plain-text fallback after an injected Markdown failure. It also observes native
+style resource cleanup.
+
+A live OpenCode 1.19.3 audit used a disposable project and one ordinary
+diagnostic turn. The unchanged Skill opportunities check scored 0.96 at its
+0.95 threshold. Its complete warning appeared automatically below the composer
+in the attached terminal. The real CLI recorded the matching `opencode:ui`
+acknowledgement. This verifies live display for one session through the
+explicit loopback serve/attach path.
+
+OpenCode Desktop 1.19.4 has no GUI plugin host for this renderer;
+its native desktop window is unsupported by this terminal TUI candidate.
+
+Install the server entry through its existing configuration. Configure the TUI
+entry separately in `tui.json`, using an absolute path to the assembled file:
+
+```json
+{
+  "plugin": ["/absolute/path/to/opencode/runtime/session-check-ui.tsx"]
+}
+```
+
+The package exposes this target as `./tui`; its root export remains the server
+plugin. The managed payload includes the optional files without enabling them.
+The TUI candidate accepts only an exact active main-session identity returned
+by the connected server and public SDK request/response metadata showing a
+loopback HTTP(S) connection. Use an explicit local `opencode serve --hostname
+127.0.0.1 --port PORT` and `opencode attach http://127.0.0.1:PORT`. The default
+embedded server's internal URL, remote servers, redirects, child sessions,
+unknown identities and other host versions fail closed. Session metadata
+requests reject redirects before following them. Merely sharing a
+workspace does not establish session identity.
+
+The UI uses the separate `opencode:ui` consumer. Context acknowledgement does
+not consume a pending UI update. An acknowledgement means that the complete
+matching frame reached the mounted host component after route and revision
+checks; it does not prove terminal pixels, human attention, or display in every
+attached client. Registration alone does not acknowledge anything. A headless
+server never loads this consumer. Missing UI, failed CLI reads and renderer
+load failure leave the existing context path available.
+
+Each active route gets a fresh read. Full snapshots restore current findings
+when another client already acknowledged the global UI receipt. Pending
+updates can replay after restart or failed acknowledgement. Same revisions do
+not schedule another acknowledgement after success within the active route.
+Clear and withdrawal updates replace the old warning and persist while that
+route's snapshot remains unchanged; acknowledged transitions do not replay on
+restart. A new snapshot replaces these transitions. Leaving the session,
+losing a safe binding, an unavailable read or unloading the plugin removes the
+frame. Route generations reject late asynchronous reads and stale component
+mounts. Reads coalesce while one is in flight; active routes refresh on message
+updates, session idle and bounded polling. No transcript messages or assistant
+follow-up turns are created.
+
+Cursor retains context delivery. Its existing postToolUse context result does
+not establish a non-blocking visible notice. Complete automatic display needs
+a separately verified UI path. A short alert, blocked operation or forced
+model continuation does not establish that support.
 
 ## Native delivery versus evidence coverage
 

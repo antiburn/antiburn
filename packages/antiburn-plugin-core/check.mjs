@@ -11,13 +11,13 @@ async function collect(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) found.push(...(await collect(path)))
-    else if (/\.(mjs|json|ts)$/.test(path)) found.push(path)
+    else if (/\.(mjs|json|tsx?)$/.test(path)) found.push(path)
   }
   return found
 }
 const files = [
   ...(await collect(own)),
-  ...integrations.filter((path) => /\.(?:mjs|d\.ts)$/.test(path)),
+  ...integrations.filter((path) => /\.(?:mjs|d\.ts|tsx)$/.test(path)),
   join(root, 'scripts/assemble-antiburn-core-plugin.mjs'),
   join(root, 'scripts/assemble-agent-integrations.mjs'),
   join(root, 'scripts/artifact-files.mjs'),
@@ -52,7 +52,47 @@ else if (mode === 'format')
     join(own, '.prettierrc.json'),
     ...files,
   ])
-else if (mode === 'typecheck') {
+else if (mode === 'typecheck:opencode-ui') {
+  const modules = requiredValue('ANTIBURN_OPENCODE_UI_NODE_MODULES')
+  const temp = await mkdtemp(join(tmpdir(), 'antiburn-opencode-ui-types-'))
+  try {
+    const config = {
+      compilerOptions: {
+        allowJs: true,
+        checkJs: false,
+        noEmit: true,
+        strict: true,
+        noImplicitAny: true,
+        skipLibCheck: true,
+        target: 'ES2022',
+        module: 'ESNext',
+        moduleResolution: 'Bundler',
+        jsx: 'preserve',
+        jsxImportSource: '@opentui/solid',
+        types: ['node'],
+        typeRoots: [dirname(requiredValue('ANTIBURN_NODE_TYPES'))],
+        paths: {
+          '@opencode-ai/plugin/tui': [join(modules, '@opencode-ai/plugin/dist/tui.d.ts')],
+          '*': [join(modules, '*')],
+        },
+      },
+      files: [join(root, 'integrations/antiburn/opencode/session-check-ui.tsx')],
+    }
+    await writeFile(join(temp, 'tsconfig.json'), JSON.stringify(config))
+    run(process.env.ANTIBURN_TSC || 'tsc', ['--project', join(temp, 'tsconfig.json')])
+    const javascript = {
+      ...config,
+      compilerOptions: { ...config.compilerOptions, checkJs: true, noImplicitAny: false },
+    }
+    await writeFile(join(temp, 'tsconfig.javascript.json'), JSON.stringify(javascript))
+    run(process.env.ANTIBURN_TSC || 'tsc', [
+      '--project',
+      join(temp, 'tsconfig.javascript.json'),
+    ])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+} else if (mode === 'typecheck') {
   const required = [
     'ANTIBURN_CLAUDE_TYPES',
     'ANTIBURN_PI_TYPES',
@@ -86,6 +126,9 @@ else if (mode === 'typecheck') {
           '@earendil-works/pi-coding-agent': [requiredValue('ANTIBURN_PI_TYPES')],
           '@earendil-works/pi-tui': [requiredValue('ANTIBURN_PI_TUI_TYPES')],
           '@opencode-ai/plugin': [requiredValue('ANTIBURN_OPENCODE_TYPES')],
+          '@opencode-ai/plugin/tui': [
+            join(dirname(requiredValue('ANTIBURN_OPENCODE_TYPES')), 'tui.d.ts'),
+          ],
           '@opencode-ai/sdk': [
             join(requiredValue('ANTIBURN_OPENCODE_SDK_ROOT'), 'dist/index.d.ts'),
           ],
@@ -95,7 +138,10 @@ else if (mode === 'typecheck') {
         },
       },
       files: files
-        .filter((path) => !path.includes('/test/') && !path.endsWith('.json'))
+        .filter(
+          (path) =>
+            !path.includes('/test/') && !path.endsWith('.json') && !path.endsWith('.tsx'),
+        )
         .concat(requiredValue('ANTIBURN_CLAUDE_TYPES')),
     }
     await writeFile(join(temp, 'tsconfig.json'), JSON.stringify(config))
@@ -103,4 +149,4 @@ else if (mode === 'typecheck') {
   } finally {
     await rm(temp, { recursive: true, force: true })
   }
-} else throw new Error('Usage: node check.mjs lint|format|typecheck')
+} else throw new Error('Usage: node check.mjs lint|format|typecheck|typecheck:opencode-ui')

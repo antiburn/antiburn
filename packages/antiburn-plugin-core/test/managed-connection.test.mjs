@@ -204,7 +204,9 @@ test('desktop payload contains only complete runtime adapters, without public Cl
     const one = await assembleAgentIntegrations(join(root, 'one'))
     const two = await assembleAgentIntegrations(join(root, 'two'))
     assert.deepEqual(one, two)
-    assert.equal(one.files.length, 46)
+    assert.equal(one.files.length, 48)
+    for (const entry of ['session-check-ui.mjs', 'session-check-ui.tsx'])
+      assert.ok(one.files.some(({ path }) => path === `opencode/runtime/${entry}`))
     assert.ok(
       one.files.every(
         ({ path }) => !/candidate|debug|\.ts$|SKILL|marketplace|commands\//.test(path),
