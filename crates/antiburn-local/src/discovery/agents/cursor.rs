@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Value, json};
 
+mod header_log;
 mod json_encoding;
 mod tool_call_binary;
 
@@ -1089,7 +1090,7 @@ fn build_desktop_cursor_session_content(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let scope_ordering_proven = composer
+    let inline_ordering_proven = composer
         .get("fullConversationHeadersOnly")
         .and_then(Value::as_array)
         .is_some_and(|headers| {
@@ -1101,7 +1102,27 @@ fn build_desktop_cursor_session_content(
                         .is_some_and(|id| !id.is_empty())
                 })
                 && header_ids.iter().collect::<HashSet<_>>().len() == header_ids.len()
-        })
+        });
+    let header_ordering_proven = if let Some(metadata) = composer.get("headerLog") {
+        match header_log::read_header_ids(global, composer_id, metadata) {
+            Some(ids)
+                if composer
+                    .get("fullConversationHeadersOnly")
+                    .is_none_or(|value| {
+                        value.is_null()
+                            || value.as_array().is_some_and(Vec::is_empty)
+                            || (inline_ordering_proven && header_ids == ids)
+                    }) =>
+            {
+                header_ids = ids;
+                true
+            }
+            _ => false,
+        }
+    } else {
+        inline_ordering_proven
+    };
+    let scope_ordering_proven = header_ordering_proven
         && composer
             .get("conversation")
             .is_none_or(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty))

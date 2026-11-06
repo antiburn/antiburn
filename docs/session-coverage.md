@@ -912,6 +912,22 @@ complete history. Bubble keys retain their full native IDs, including colons and
 newlines. A tool bubble must match its recorded header identity. Empty legacy
 conversation maps do not invalidate an otherwise recorded order.
 
+The pinned Cursor 3.28.7 chunked-header shape can also establish recorded order.
+Discovery reads `headerLog` metadata and exact numbered `composerConvHeaders`
+keys in the same SQLite snapshot as the composer and bubbles. Numeric chunk
+order and header-array order supply chronology; row order and timestamps do not.
+The supported subset requires chunk size 256, a nonempty bounded root generation,
+at most 256 chunks and 16,384 unique nonempty bubble IDs, at most 256 KiB per
+chunk, and at most 16 MiB of chunk JSON in total. Every declared chunk must exist
+and the aggregate header count must match. Filtered interior chunks may be short
+or empty. Missing, malformed, oversized, duplicate, or conflicting data cannot
+establish order. An invalid declared log cannot fall back to inline order; any
+nonempty inline headers must match the chunk order exactly. Generation belongs
+to the producer's atomic root/chunk write, not individual chunk keys or headers.
+The [synthetic chunked-header characterization](../crates/antiburn-local/tests/fixtures/cursor_characterization/README.md#pinned-cursor-desktop-chunked-headers)
+pins the producer commit and bundle hash. This adds an ordering shape, not a
+historical release range, new tool payload contract, or real visual-delivery proof.
+
 The characterized `run_terminal_command_v2` result supplies JSON arguments,
 recorded output, terminal state, and accepted user-slot prefix. Its recorded exit
 code helps derive status; it does not create a normalized `result.outcome` field. Native
