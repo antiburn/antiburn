@@ -1,0 +1,35 @@
+{
+  "name": "antiburn-cursor-inbox",
+  "displayName": "Antiburn Inbox for Cursor",
+  "description": "An optional Inbox for explicitly enrolled local workspace conversations.",
+  "publisher": "antiburn",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "vscode": "^1.128.0"
+  },
+  "main": "./extension.cjs",
+  "extensionKind": [
+    "ui"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "antiburn.cursorInbox.enroll",
+        "title": "Antiburn Inbox: Enroll This Workspace Window"
+      },
+      {
+        "command": "antiburn.cursorInbox.show",
+        "title": "Antiburn Inbox: Show Enrolled Conversations"
+      },
+      {
+        "command": "antiburn.cursorInbox.hookConfig",
+        "title": "Antiburn Inbox: Preview Optional Hook Configuration"
+      },
+      {
+        "command": "antiburn.cursorInbox.stop",
+        "title": "Antiburn Inbox: Stop Enrollment"
+      }
+    ]
+  }
+}

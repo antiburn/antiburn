@@ -223,6 +223,30 @@ export async function assemble(output = defaultOutput) {
       await adapter('integrations/antiburn/status-command.mjs'),
     )
     add('cursor/skills/antiburn/SKILL.md', instructions('cursor', '/antiburn'))
+    add('cursor/inbox/LICENSE', license)
+    for (const entry of [
+      'inbox-bridge.mjs',
+      'inbox-controller.mjs',
+      'inbox-reference-hook.mjs',
+      'inbox-view.mjs',
+      'inbox-extension/extension.cjs',
+      'inbox-extension/package.json',
+    ]) {
+      const source = await read(`integrations/antiburn/cursor/${entry}`)
+      add(
+        `cursor/inbox/${entry.replace('inbox-extension/', '')}`,
+        source
+          .replaceAll('../../../packages/antiburn-plugin-core/', './lib/')
+          .replaceAll('../inbox-', './inbox-'),
+      )
+    }
+    for (const entry of [
+      'session-checks.mjs',
+      'session-checks-validation.mjs',
+      'native-hook.mjs',
+      'managed-connection.mjs',
+    ])
+      add(`cursor/inbox/lib/${entry}`, await read(`packages/antiburn-plugin-core/${entry}`))
     add(
       'opencode/commands/antiburn.md',
       instructions('opencode', '/antiburn') + '\nUser arguments: $ARGUMENTS\n',

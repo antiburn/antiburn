@@ -11,13 +11,13 @@ async function collect(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name)
     if (entry.isDirectory()) found.push(...(await collect(path)))
-    else if (/\.(mjs|json|tsx?)$/.test(path)) found.push(path)
+    else if (/\.(mjs|cjs|json|tsx?)$/.test(path)) found.push(path)
   }
   return found
 }
 const files = [
   ...(await collect(own)),
-  ...integrations.filter((path) => /\.(?:mjs|d\.ts|tsx)$/.test(path)),
+  ...integrations.filter((path) => /\.(?:mjs|cjs|d\.ts|tsx)$/.test(path)),
   join(root, 'scripts/assemble-antiburn-core-plugin.mjs'),
   join(root, 'scripts/assemble-agent-integrations.mjs'),
   join(root, 'scripts/artifact-files.mjs'),
@@ -43,7 +43,7 @@ if (mode === 'lint')
     '--no-ignore',
     '--config',
     join(own, 'eslint.config.mjs'),
-    ...files.filter((path) => path.endsWith('.mjs')),
+    ...files.filter((path) => /\.[mc]js$/.test(path)),
   ])
 else if (mode === 'format')
   run(process.env.ANTIBURN_PRETTIER || 'prettier', [
@@ -52,7 +52,32 @@ else if (mode === 'format')
     join(own, '.prettierrc.json'),
     ...files,
   ])
-else if (mode === 'typecheck:opencode-ui') {
+else if (mode === 'typecheck:cursor-ui') {
+  const temp = await mkdtemp(join(tmpdir(), 'antiburn-cursor-ui-types-'))
+  try {
+    const config = {
+      compilerOptions: {
+        allowJs: true,
+        checkJs: true,
+        noEmit: true,
+        strict: true,
+        noImplicitAny: false,
+        skipLibCheck: true,
+        target: 'ES2022',
+        module: 'NodeNext',
+        moduleResolution: 'NodeNext',
+        types: ['node'],
+        typeRoots: [dirname(requiredValue('ANTIBURN_NODE_TYPES'))],
+        paths: { vscode: [requiredValue('ANTIBURN_CURSOR_TYPES')] },
+      },
+      files: integrations.filter((path) => path.includes('/cursor/') && /\.[mc]js$/.test(path)),
+    }
+    await writeFile(join(temp, 'tsconfig.json'), JSON.stringify(config))
+    run(process.env.ANTIBURN_TSC || 'tsc', ['--project', join(temp, 'tsconfig.json')])
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+} else if (mode === 'typecheck:opencode-ui') {
   const modules = requiredValue('ANTIBURN_OPENCODE_UI_NODE_MODULES')
   const temp = await mkdtemp(join(tmpdir(), 'antiburn-opencode-ui-types-'))
   try {
@@ -140,7 +165,10 @@ else if (mode === 'typecheck:opencode-ui') {
       files: files
         .filter(
           (path) =>
-            !path.includes('/test/') && !path.endsWith('.json') && !path.endsWith('.tsx'),
+            !path.includes('/test/') &&
+            !path.endsWith('.json') &&
+            !path.endsWith('.tsx') &&
+            !path.endsWith('.cjs'),
         )
         .concat(requiredValue('ANTIBURN_CLAUDE_TYPES')),
     }
@@ -149,4 +177,7 @@ else if (mode === 'typecheck:opencode-ui') {
   } finally {
     await rm(temp, { recursive: true, force: true })
   }
-} else throw new Error('Usage: node check.mjs lint|format|typecheck|typecheck:opencode-ui')
+} else
+  throw new Error(
+    'Usage: node check.mjs lint|format|typecheck|typecheck:opencode-ui|typecheck:cursor-ui',
+  )

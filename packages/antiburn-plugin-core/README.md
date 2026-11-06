@@ -56,6 +56,21 @@ the controller's public API types. TUI dependencies do not load through the
 server entry. See [session checks](../../docs/plugins/session-checks.md#opencode-optional-native-tui-candidate)
 for the exact host, loopback attach and acceptance limits.
 
+The optional Cursor Inbox has a separate editor declaration check. Set
+`ANTIBURN_CURSOR_TYPES` to the installed Cursor 3.25.6 or 3.28.7
+`Contents/Resources/app/out/vscode-dts/vscode.d.ts` and `ANTIBURN_NODE_TYPES`
+to the installed Node types, then run:
+
+```sh
+node packages/antiburn-plugin-core/check.mjs typecheck:cursor-ui
+```
+
+This checks the CommonJS editor entry and its JavaScript modules against the
+actual public editor declarations. The regular shared JSDoc check excludes the
+editor entry. The local bundle includes a self-contained `cursor/inbox/`
+extension directory; assembly does not install, enroll or enable it. It is
+separate from the desktop-managed context payload and its private CLI binding.
+
 SDK declarations stay outside shipped artifacts. The core JSDoc check covers
 JavaScript modules and selected integration/assembly scripts. It excludes the
 JavaScript test folder and does not include native Claude TypeScript/TSX entry

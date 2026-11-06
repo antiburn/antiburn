@@ -219,10 +219,62 @@ mounts. Reads coalesce while one is in flight; active routes refresh on message
 updates, session idle and bounded polling. No transcript messages or assistant
 follow-up turns are created.
 
-Cursor retains context delivery. Its existing postToolUse context result does
-not establish a non-blocking visible notice. Complete automatic display needs
-a separately verified UI path. A short alert, blocked operation or forced
-model continuation does not establish that support.
+### Cursor optional conversation Inbox candidate
+
+Cursor retains its existing postToolUse model-context delivery. A separate
+optional editor extension is assembled under `cursor/inbox/`. It targets the
+public editor APIs checked in Cursor 3.25.6 and 3.28.7 (VS Code 1.128.0).
+Assembly does not install, enroll or enable it, and the desktop-managed context
+payload does not load it.
+The extension uses the existing unmanaged CLI resolver; it does not inherit the
+desktop payload's private CLI connection.
+
+A controlled packaged reference-hook test reaches the real editor webview and
+acknowledges one matching UI receipt after a duplicate reference. It uses a
+synthetic CLI response, not a native model tool event or real assessment. An
+unobscured Cursor 3.28.7 native-window capture verifies both rails, the branded
+frame, authored text, conversation identity and enrolled workspace.
+
+A live Cursor 3.28.7 audit combined this Inbox and the chunked-header parser
+with the separate scoped Cursor inventory change. One ordinary diagnostic turn
+produced a Skill opportunities warning at 0.99 against the unchanged 0.95
+threshold. The warning appeared in the already-open Inbox and stayed visible
+through a normal refresh with the same `cursor:ui` receipt. This verifies live
+display in the combined build. A separate synthetic two-window audit verified
+that distinct enrolled roots each received only their own conversation.
+
+Load the extension directory in a separate editor development host, then run
+**Antiburn Inbox: Enroll This Workspace Window**. Enrollment is explicit and
+limited to local POSIX workspaces with at most eight roots. Remote workspaces,
+empty windows and Windows are unsupported. Use **Antiburn Inbox: Preview Optional
+Hook Configuration** to print a separate postToolUse reference-hook fragment.
+Merge that fragment through Cursor's normal configuration and trust controls,
+preserving the existing context hook and any other hooks. Previewing does not
+write configuration. Do not replace the context hook with the reference hook.
+
+The reference hook publishes bounded conversation references to an existing
+private enrollment. It does not store authored advice, transcripts or context
+receipts. The Inbox reads canonical CLI snapshots with the separate `cursor:ui`
+consumer. Each card identifies its exact conversation; workspace attribution is
+hook-reported. The Inbox does not follow the active native chat or identify the
+originating editor window. Matching enrolled windows can receive the same
+conversation. Workspace changes end enrollment.
+
+Changed findings can reveal the Inbox while preserving keyboard focus. Closing
+it mutes automatic reveal until **Antiburn Inbox: Show Enrolled Conversations**
+is used. **Antiburn Inbox: Stop Enrollment** stops this window's enrollment.
+The renderer preserves authored text with a bounded emphasis, inline-code and
+passive-link subset; unsupported Markdown remains literal. Raw HTML is escaped
+and external resources, active links and command URIs are disabled.
+
+UI acknowledgements require a matching session, receipt and renderer generation,
+confirmed after application to a visible webview. Hook completion and successful
+`postMessage` do not acknowledge display. The UI receipt is shared across
+windows, not proof of per-window attention. Full snapshots restore current
+findings after another window consumes a receipt; this does not guarantee that
+every window sees each clear or withdrawal transition. Missing, hidden, muted or
+disposed UI leaves context delivery independent. Local bridge metadata expires;
+no provider calls or assistant continuation turns are created by this renderer.
 
 ## Native delivery versus evidence coverage
 

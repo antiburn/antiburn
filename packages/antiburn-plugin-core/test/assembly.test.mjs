@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { mkdtemp, realpath, readFile, writeFile, rm, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { assemble, verify } from '../../../scripts/assemble-antiburn-core-plugin.mjs'
 
 test('assembly is reproducible, self-contained, licensed, and refuses altered ownership', async () => {
@@ -14,6 +15,22 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
     const first = await readFile(join(output, 'SHA256SUMS'), 'utf8')
     assert.ok(first.includes('codex/hooks/session-check-config.mjs'))
     assert.ok(first.includes('cursor/hooks/session-check-config.mjs'))
+    assert.ok(first.includes('cursor/inbox/extension.cjs'))
+    const cursorInbox = JSON.parse(
+      await readFile(join(output, 'cursor/inbox/package.json'), 'utf8'),
+    )
+    assert.equal(cursorInbox.main, './extension.cjs')
+    for (const entry of [
+      'inbox-controller.mjs',
+      'inbox-bridge.mjs',
+      'inbox-view.mjs',
+      'inbox-reference-hook.mjs',
+      'extension.cjs',
+    ]) {
+      const source = await readFile(join(output, 'cursor/inbox', entry), 'utf8')
+      assert.doesNotMatch(source, /\.\.\/inbox-|packages\/antiburn-plugin-core/)
+    }
+    await import(pathToFileURL(join(output, 'cursor/inbox/inbox-controller.mjs')).href)
     assert.match(first, /claude\/hooks\/register.ts/)
     assert.match(first, /pi\/extensions\/antiburn.mjs/)
     assert.match(first, /pi\/extensions\/session-check-renderer\.mjs/)
