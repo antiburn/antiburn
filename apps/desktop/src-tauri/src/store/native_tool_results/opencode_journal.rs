@@ -36,7 +36,7 @@ fn candidates_sql() -> String {
       FROM source_sessions s LEFT JOIN opencode_journal_delivery d
         ON d.environment_key = s.environment_key AND d.agent = s.agent
        AND d.session_id = s.session_id
-      WHERE s.main_session AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70))
+      WHERE s.main_session AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71))
 ), scheduled AS (
     SELECT *, CASE WHEN reset THEN ?2 ELSE MAX(COALESCE(lease_expires_at_epoch, ?2),
         CASE WHEN observed_generation <> source_generation THEN ?2
@@ -97,7 +97,7 @@ impl OpenCodeJournalClaim {
                 ensure!(
                     matches!(
                         (parser, layout),
-                        (64, Some(2)) | (62, Some(4)) | (63..=70, Some(5)) | (62..=70, None)
+                        (64, Some(2)) | (62, Some(4)) | (63..=71, Some(5)) | (62..=71, None)
                     ) || (parser == PARSER_REVISION && matches!(layout, None | Some(5))),
                     "journal parser and live layout are incompatible"
                 );
@@ -593,7 +593,7 @@ fn current_generation(
           AND d.claim_fence = ?4 AND d.cursor_json IS ?5 AND d.lease_expires_at_epoch > ?6
           AND d.incarnation = ?7 AND s.incarnation = ?7
           AND s.source_kind = 'providerDb' AND s.wsl_distro IS NULL AND s.source_label = ?8 AND s.cwd IS ?9
-          AND d.source_label = ?8 AND d.cwd IS ?9 AND d.parser_revision IN (?10, 62, 63, 64, 65, 66, 67, 68, 69, 70)
+          AND d.source_label = ?8 AND d.cwd IS ?9 AND d.parser_revision IN (?10, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71)
           AND d.main_session = ?11 AND ?11 = (NOT EXISTS (
               SELECT 1 FROM session_relation r WHERE r.environment_key = s.environment_key
                 AND r.agent = s.agent AND ((r.session_id = s.session_id AND r.kind = 'forkParent')

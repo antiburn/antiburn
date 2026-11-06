@@ -432,9 +432,9 @@ capture sequence. Unbound removals report coverage gaps; page absence never
 removes evidence. Strict historical replay still does not support whole-message
 deletion.
 
-The source parser is revision 71, analyzer is 25, evidence schema is 22, file
+The source parser is revision 72, analyzer is 25, evidence schema is 22, file
 cursor is 5, resume snapshot is 25, and V1 live journal is 5. Compatible
-parser-63 through parser-70 cursor/state-5 receipts retain committed
+parser-63 through parser-71 cursor/state-5 receipts retain committed
 progress except for the exact parser-67 rejected Claude SDK-root reset. Named
 parser-62/file-V4 and V1 journal-V4 conversions retain
 old result progress, result identities, joins, and result seed semantics. They
@@ -457,7 +457,7 @@ unknown delivery still cannot trigger a resend. Startup selection cannot seed
 old request context merely because its selector cursor is newer.
 Transient read errors do not erase proved request origin or revoke otherwise
 current frozen work. Existing source-evidence and idle-continuity gates still apply.
-Batch resume snapshots require parser 71. Parser numbers alone do not establish
+Batch resume snapshots require parser 72. Parser numbers alone do not establish
 layout compatibility: parser 64 from the producer commit below used file cursor 1
 and V1 live state 2, not the accepted cursor/state-5 layouts. Named converters
 accept only the exact parser/layout pairs from producer commit

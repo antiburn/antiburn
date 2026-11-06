@@ -415,18 +415,18 @@ their source-specific meaning; none proves a served tier or measured savings.
 
 ### Saved-state revisions and conversion
 
-Parser revision is 71, analyzer revision is 25, evidence schema revision is 22,
+Parser revision is 72, analyzer revision is 25, evidence schema revision is 22,
 and resume snapshot revision is 25. Native file cursor and OpenCode V1 live
-journal revisions are both 5. Compatible parser-63 through parser-70
+journal revisions are both 5. Compatible parser-63 through parser-71
 cursor/state-5 receipts retain committed progress except for the exact parser-67
 rejected Claude SDK-root reset described below. The named parser-62 predecessor
 uses claim-fenced conversion. Batch resume snapshots require the current parser.
 Unknown parser or cursor revisions fail closed; they do not authorize a rewind
 or resend.
 
-The regular file loader accepts parser 62 with cursor 4, or parser 63 through 71
+The regular file loader accepts parser 62 with cursor 4, or parser 63 through 72
 with cursor 5. V1 live journal validation accepts parser 62 with live state 4
-through its named converter, or parser 63 through 71 with live state 5 and a
+through its named converter, or parser 63 through 72 with live state 5 and a
 valid public baseline. Source identity, owner, sequence, and bounded source
 samples still require validation. A matching layout number alone does not admit
 another parser pair. The saved parser revision and cursor payload advance only
@@ -767,7 +767,7 @@ Request-history records include message metadata and user text parts.
 
 | Limit                        |   Value | Scope                                                           |
 | ---------------------------- | ------: | --------------------------------------------------------------- |
-| Parser revision              |      71 | Accepted source parser revision                                 |
+| Parser revision              |      72 | Accepted source parser revision                                 |
 | Resume snapshot revision     |      25 | File-reader resume state                                        |
 | Result observations          |    4096 | Retained results per strict journal page or legacy sink window  |
 | Result payload bytes         | 4194304 | Serialized result payload per strict page or legacy sink window |
@@ -934,6 +934,7 @@ after the composer's epoch-millisecond creation time and no later than the
 discovery second. Missing, invalid, equal, earlier, or future timestamps leave
 ownership unproven, including when a copied prefix is followed by new bubbles.
 Header order still determines chronology and no parent identity is inferred.
+Parser revision 72 requires a fresh projection before this evidence is ready.
 The [synthetic chunked-header characterization](../crates/antiburn-local/tests/fixtures/cursor_characterization/README.md#pinned-cursor-desktop-chunked-headers)
 pins the producer commit and bundle hash. This adds an ordering shape, not a
 historical release range, new tool payload contract, or real visual-delivery proof.
@@ -1972,7 +1973,7 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-revisions are parser 70, analyzer 25, evidence schema 22, coverage schema 6, and
+revisions are parser 72, analyzer 25, evidence schema 22, coverage schema 6, and
 resume snapshot 25. Existing revision gates invalidate old projections and
 snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.

@@ -1031,6 +1031,7 @@ fn native_cursor_loader_requires_exact_parser_and_cursor_revision_pairs() {
         (66, 4, false),
         (66, 5, true),
         (70, 5, true),
+        (71, 5, true),
         (PARSER_REVISION, 1, false),
         (PARSER_REVISION, 4, false),
         (PARSER_REVISION, 5, true),
@@ -1073,7 +1074,7 @@ fn native_cursor_loader_requires_exact_parser_and_cursor_revision_pairs() {
             assert_eq!(loaded.baseline_offset(), first.baseline_offset);
             assert_eq!(
                 serde_json::to_string(&loaded).unwrap().contains(CANARY),
-                matches!(parser, 65 | 66 | 70 | PARSER_REVISION)
+                matches!(parser, 65 | 66 | 70 | 71 | PARSER_REVISION)
             );
         } else {
             store

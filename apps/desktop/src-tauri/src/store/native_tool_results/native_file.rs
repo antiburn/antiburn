@@ -63,7 +63,7 @@ const CANDIDATES: &str = "WITH candidates AS (
       FROM session s LEFT JOIN native_file_delivery d USING(environment_key, agent, session_id)
      WHERE s.environment_key = 'native' AND s.wsl_distro IS NULL
         AND s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file'
-        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70))
+        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71))
         AND s.cwd IS NOT NULL AND s.cwd <> ''
         AND EXISTS(SELECT 1 FROM burn_check_activation a
           WHERE a.enabled = 1 AND json_extract(a.activation_scope_key, '$.environment') = s.environment_key
@@ -112,7 +112,7 @@ impl NativeFileClaim {
             (Some(64), Some(1)) => NativeFileCursor::convert_main_64_json(encoded.as_bytes())?,
             (Some(62), Some(4)) => NativeFileCursor::convert_v4_json(encoded.as_bytes())?,
             (Some(revision), Some(5))
-                if revision == PARSER_REVISION || matches!(revision, 63..=70) =>
+                if revision == PARSER_REVISION || matches!(revision, 63..=71) =>
             {
                 let cursor: NativeFileCursor = serde_json::from_value(value)?;
                 // Parser 67 could mark API-origin requests complete even after an origin boundary.
@@ -279,7 +279,7 @@ impl Store {
             && (origin_boundary
                 || !matches!(
                     claim.parser_revision,
-                    Some(65 | 66 | 68 | 69 | 70 | PARSER_REVISION)
+                    Some(65 | 66 | 68 | 69 | 70 | 71 | PARSER_REVISION)
                 ));
         let mut unsafe_reason = if claim.reset {
             None
@@ -488,7 +488,7 @@ fn current_generation(
            AND d.claim_fence = ?4 AND d.cursor_json IS ?5 AND d.lease_expires_at_epoch > ?6
            AND d.incarnation = ?7 AND s.incarnation = ?7 AND d.source_label = ?8
            AND s.source_label = ?8 AND s.source_kind = 'file' AND s.wsl_distro IS NULL
-            AND d.cwd = ?9 AND s.cwd = ?9 AND d.parser_revision IN (?10, 62, 63, 64, 65, 66, 67, 68, 69, 70)
+            AND d.cwd = ?9 AND s.cwd = ?9 AND d.parser_revision IN (?10, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71)
            AND NOT EXISTS(SELECT 1 FROM session_relation r
              WHERE r.environment_key = s.environment_key AND r.agent = s.agent
                AND ((r.session_id = s.session_id AND r.kind = 'forkParent')

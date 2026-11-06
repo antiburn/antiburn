@@ -1016,7 +1016,7 @@ fn source_ready_at_sql(parser: usize, analyzer: usize, evidence: usize, now: &st
 
 pub(crate) fn source_can_arrive_sql(parser: usize, active_since: usize) -> String {
     // Match delivery reset admission. A compatible pending claim can outlive activity.
-    let fresh_revision = format!("d.parser_revision IN (?{parser}, 62, 63, 64, 65, 66)");
+    let fresh_revision = format!("d.parser_revision IN (?{parser}, 62, 63, 64, 65, 66, 70, 71)");
     let route = |table: &str, reset: &str, compatible: &str| {
         let scheduled = "d.blocked = 0 AND (d.last_error IS NULL OR d.last_error NOT IN ('native-unsafe-identity', 'native-unsafe-order', 'native-unsafe-ownership'))
               AND (d.pending = 1 OR d.next_attempt_at_epoch IS NOT NULL
