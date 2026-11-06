@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use rusqlite::{Connection, params};
 use serde_json::Value;
@@ -64,6 +64,31 @@ pub(super) fn read_header_ids(
         }
     }
     (ids.len() == count as usize).then_some(ids)
+}
+
+/// Cursor copies bubble timestamps when it forks a chat and resets the composer timestamp.
+pub(super) fn bubble_ownership_proven(
+    composer: &Value,
+    ids: &[String],
+    bubbles: &BTreeMap<String, Value>,
+    now: i64,
+) -> bool {
+    let Some(created_at) = composer.get("createdAt").and_then(Value::as_i64) else {
+        return false;
+    };
+    created_at > 0
+        && ids.iter().all(|id| {
+            bubbles
+                .get(id)
+                .and_then(|bubble| bubble.get("createdAt"))
+                .filter(|value| {
+                    value
+                        .as_str()
+                        .is_some_and(|text| text.len() == 24 && text.ends_with('Z'))
+                })
+                .and_then(crate::analysis::records::parse_ts)
+                .is_some_and(|timestamp| timestamp > created_at && timestamp / 1000 <= now)
+        })
 }
 
 #[cfg(test)]

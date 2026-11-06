@@ -924,6 +924,13 @@ or empty. Missing, malformed, oversized, duplicate, or conflicting data cannot
 establish order. An invalid declared log cannot fall back to inline order; any
 nonempty inline headers must match the chunk order exactly. Generation belongs
 to the producer's atomic root/chunk write, not individual chunk keys or headers.
+The same producer copies original bubble timestamps into Fork Chat results and
+sets the new composer's creation time to the fork time. For chunked snapshots,
+every referenced bubble must carry a native ISO UTC creation timestamp strictly
+after the composer's epoch-millisecond creation time and no later than the
+discovery second. Missing, invalid, equal, earlier, or future timestamps leave
+ownership unproven, including when a copied prefix is followed by new bubbles.
+Header order still determines chronology and no parent identity is inferred.
 The [synthetic chunked-header characterization](../crates/antiburn-local/tests/fixtures/cursor_characterization/README.md#pinned-cursor-desktop-chunked-headers)
 pins the producer commit and bundle hash. This adds an ordering shape, not a
 historical release range, new tool payload contract, or real visual-delivery proof.

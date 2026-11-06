@@ -1,5 +1,6 @@
 {
   "composer": {
+    "createdAt": 1793926800000,
     "fullConversationHeadersOnly": [],
     "conversationMap": {},
     "headerLog": {
@@ -17,11 +18,13 @@
     {
       "bubbleId": "z-user",
       "type": 1,
+      "createdAt": "2026-11-06T01:00:01.000Z",
       "text": "Diagnose the synthetic parser failure without changing files."
     },
     {
       "bubbleId": "a-tool",
       "type": 2,
+      "createdAt": "2026-11-06T01:00:02.000Z",
       "toolFormerData": {
         "name": "run_terminal_command_v2",
         "toolCallId": "synthetic-call",
@@ -33,6 +36,7 @@
     {
       "bubbleId": "m-assistant",
       "type": 2,
+      "createdAt": "2026-11-06T01:00:03.000Z",
       "text": "The synthetic parser table is missing."
     }
   ]

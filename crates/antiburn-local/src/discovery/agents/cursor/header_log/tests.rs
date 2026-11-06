@@ -2,6 +2,8 @@ use super::*;
 use rusqlite::params;
 use serde_json::json;
 
+const OBSERVED_AT: i64 = 1_793_926_810;
+
 fn fixture() -> (Connection, Value) {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../../tests/fixtures/cursor_characterization/native_chunked_headers.json"
@@ -173,8 +175,14 @@ fn tool_results(db: &Connection) -> Vec<crate::analysis::ToolResultObservation> 
         CompositeSink, EvidenceSource, RawSource, SessionEvidenceAccumulator, SessionInput,
         SessionMetricsAccumulator, SourceFormat, SourceKind, reader_for,
     };
-    let content =
-        super::super::build_desktop_cursor_session_content(db, "synthetic", None, None).unwrap();
+    let content = super::super::build_desktop_cursor_session_content(
+        db,
+        "synthetic",
+        None,
+        None,
+        OBSERVED_AT,
+    )
+    .unwrap();
     let input = SessionInput {
         agent: "cursor".into(),
         session_id: "synthetic".into(),
@@ -209,6 +217,56 @@ fn chunked_source_admits_native_result_with_recorded_user_prefix() {
     assert!(context.main_session);
     assert!(context.complete_through_event);
     assert_eq!(context.user_messages.len(), 1);
+}
+
+#[test]
+fn chunked_source_rejects_inherited_or_unproven_bubble_ownership() {
+    for timestamp in [
+        json!("2026-11-06T00:59:59.999Z"),
+        json!("2026-11-06T01:00:00.000Z"),
+        json!("2026-11-06T01:01:00.000Z"),
+        json!("invalid"),
+        Value::Null,
+    ] {
+        let (db, _) = fixture();
+        let raw: String = db
+            .query_row(
+                "SELECT value FROM cursorDiskKV WHERE key='bubbleId:synthetic:a-tool'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut bubble: Value = serde_json::from_str(&raw).unwrap();
+        bubble["createdAt"] = timestamp.clone();
+        db.execute(
+            "UPDATE cursorDiskKV SET value=?1 WHERE key='bubbleId:synthetic:a-tool'",
+            [bubble.to_string()],
+        )
+        .unwrap();
+        let results = tool_results(&db);
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].admission(),
+            crate::analysis::ToolResultAdmission::UnsafeOwnership,
+            "{timestamp}"
+        );
+    }
+}
+
+#[test]
+fn chunked_source_with_inherited_prefix_and_new_bubbles_is_not_main_evidence() {
+    let (db, _) = fixture();
+    db.execute(
+        "UPDATE cursorDiskKV SET value=json_set(value, '$.createdAt', 1793926802500, '$.name', 'Renamed chat') WHERE key='composerData:synthetic'",
+        [],
+    )
+    .unwrap();
+    let results = tool_results(&db);
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].admission(),
+        crate::analysis::ToolResultAdmission::UnsafeOwnership
+    );
 }
 
 #[test]
@@ -266,8 +324,48 @@ fn chunked_source_preserves_legacy_inline_order_support() {
     );
 }
 
+fn write_generation(db: &Connection, generation: &str) {
+    let snapshot = db.unchecked_transaction().unwrap();
+    snapshot
+        .execute(
+            "INSERT OR REPLACE INTO cursorDiskKV VALUES ('composerData:synthetic', ?1)",
+            [json!({
+                "name": generation,
+                "createdAt": 1793926800000_i64,
+                "headerLog": {"chunkSize": 256, "chunkCount": 1, "count": 1, "generation": generation}
+            })
+            .to_string()],
+        )
+        .unwrap();
+    let bubble_id = format!("{generation}-user");
+    snapshot
+        .execute(
+            "INSERT OR REPLACE INTO cursorDiskKV VALUES ('composerConvHeaders:synthetic:000000', ?1)",
+            [json!([{"bubbleId": bubble_id}]).to_string()],
+        )
+        .unwrap();
+    snapshot
+        .execute(
+            "DELETE FROM cursorDiskKV WHERE key GLOB 'bubbleId:synthetic:*'",
+            [],
+        )
+        .unwrap();
+    snapshot
+        .execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, ?2)",
+            params![
+                format!("bubbleId:synthetic:{bubble_id}"),
+                json!({"type": 1, "bubbleId": bubble_id, "text": generation, "createdAt": "2026-11-06T01:00:01.000Z"}).to_string(),
+            ],
+        )
+        .unwrap();
+    snapshot.commit().unwrap();
+}
+
 #[test]
-fn chunked_headers_snapshot_does_not_mix_committed_generations() {
+fn chunked_source_snapshot_does_not_mix_committed_generations() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path().join("state.vscdb");
     let reader = Connection::open(&path).unwrap();
@@ -276,52 +374,43 @@ fn chunked_headers_snapshot_does_not_mix_committed_generations() {
             "PRAGMA journal_mode=WAL; CREATE TABLE cursorDiskKV(key TEXT PRIMARY KEY, value TEXT)",
         )
         .unwrap();
-    let old = json!({"chunkSize":256,"chunkCount":1,"count":1,"generation":"old"});
-    reader
-        .execute(
-            "INSERT INTO cursorDiskKV VALUES ('composerData:synthetic', ?1)",
-            [old.to_string()],
-        )
-        .unwrap();
-    reader
-        .execute(
-            "INSERT INTO cursorDiskKV VALUES ('composerConvHeaders:synthetic:000000', ?1)",
-            [json!([{"bubbleId":"old-user"}]).to_string()],
-        )
-        .unwrap();
-    let snapshot = reader.unchecked_transaction().unwrap();
-    let raw: String = snapshot
-        .query_row(
-            "SELECT value FROM cursorDiskKV WHERE key='composerData:synthetic'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let metadata: Value = serde_json::from_str(&raw).unwrap();
+    write_generation(&reader, "old");
+
     let writer = Connection::open(&path).unwrap();
-    let update = writer.unchecked_transaction().unwrap();
-    let mut new = old.clone();
-    new["generation"] = json!("new");
-    update
-        .execute(
-            "UPDATE cursorDiskKV SET value=?1 WHERE key='composerData:synthetic'",
-            [new.to_string()],
+    let mut replaced = false;
+    reader.authorizer(Some(move |context: AuthContext<'_>| {
+        // The chunk query checks its byte length after the composer read.
+        if !replaced
+            && matches!(
+                context.action,
+                AuthAction::Function {
+                    function_name: "length"
+                }
+            )
+        {
+            write_generation(&writer, "new");
+            replaced = true;
+        }
+        Authorization::Allow
+    }));
+
+    for generation in ["old", "new"] {
+        let content = super::super::build_desktop_cursor_session_content(
+            &reader,
+            "synthetic",
+            None,
+            None,
+            OBSERVED_AT,
         )
         .unwrap();
-    update
-        .execute(
-            "UPDATE cursorDiskKV SET value=?1 WHERE key='composerConvHeaders:synthetic:000000'",
-            [json!([{"bubbleId":"new-user"}]).to_string()],
-        )
-        .unwrap();
-    update.commit().unwrap();
-    assert_eq!(
-        read_header_ids(&snapshot, "synthetic", &metadata).unwrap(),
-        ["old-user"]
-    );
-    snapshot.commit().unwrap();
-    assert_eq!(
-        read_header_ids(&reader, "synthetic", &new).unwrap(),
-        ["new-user"]
-    );
+        let rows: Vec<Value> = content
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["title"], generation);
+        assert_eq!(rows[0]["cursor_scope_ordering"], "recorded_headers");
+        assert_eq!(rows[1]["bubbleId"], format!("{generation}-user"));
+        assert_eq!(rows[1]["content"], generation);
+    }
 }

@@ -21,6 +21,16 @@ order differs from recorded order. It uses invented conversation text and IDs.
 This pin establishes a storage shape, not a historical release range or proof of
 natural check detection.
 
+The same producer's Fork Chat path copies recorded bubble rows with their IDs
+and original creation timestamps, then sets the cloned composer's creation time
+to the fork time. It does not record a durable parent ID for local Fork Chat.
+The fixture tests the additional ownership gate for chunked evidence: each
+referenced bubble must have a native ISO UTC timestamp strictly after the
+composer's epoch-millisecond creation time and within the discovery time.
+A copied prefix stays ineligible even after new bubbles arrive or the chat is
+renamed. Missing, invalid, equal, earlier, and future timestamps leave ownership
+unproven. The gate does not invent a parent identity or establish chronology.
+
 ## Public generic store pin
 
 Repository: `antonvp/cursor-acp-enriched`.

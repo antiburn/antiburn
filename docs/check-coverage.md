@@ -144,8 +144,10 @@ See the [source contract](session-coverage.md#cursor-desktop-yaml-tool-evidence)
 for synthetic tests, terminal-result fields, and missing-evidence limits. The
 pinned Cursor 3.28.7 chunked-header store can supply that recorded order within
 the source contract's chunk, byte, identity and count limits. It does not bypass
-main-source ownership, complete-prefix, current-generation or assessment gates;
-missing or conflicting chunks remain ineligible. This ordering support does not
+main-source ownership, complete-prefix, current-generation or assessment gates.
+Chunked snapshots need native creation timestamps within the composer's observed
+lifetime. An inherited or unproven prefix, missing chunks, or conflicting chunks
+remain ineligible. This ordering support does not
 establish automatic Inbox delivery or broaden other tool-payload version pins. The
 pinned Cursor 3.25.6 Read/Grep shape can match completed read/search filters
 without returned content. Its exact native call/name/argument/result binding

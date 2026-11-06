@@ -827,6 +827,7 @@ fn query_cursor_desktop_sessions(
                 &composer.composer_id,
                 cwd.as_deref(),
                 fork_observation.as_ref(),
+                now,
             ) else {
                 continue;
             };
@@ -1063,6 +1064,7 @@ fn build_desktop_cursor_session_content(
     composer_id: &str,
     cwd: Option<&str>,
     fork_observation: Option<&ForkObservation>,
+    now: i64,
 ) -> Option<String> {
     let snapshot = global.unchecked_transaction().ok()?;
     let global = &*snapshot;
@@ -1139,6 +1141,9 @@ fn build_desktop_cursor_session_content(
     dedupe_preserving_order(&mut header_ids);
 
     let mut bubbles = query_cursor_bubbles(global, composer_id);
+    let chunked_ownership_proven = composer.get("headerLog").is_none()
+        || (scope_ordering_proven
+            && header_log::bubble_ownership_proven(&composer, &header_ids, &bubbles, now));
     if header_ids.is_empty() {
         header_ids.extend(bubbles.keys().cloned());
         header_ids.sort();
@@ -1157,24 +1162,25 @@ fn build_desktop_cursor_session_content(
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let mut lines = Vec::new();
-    lines.push(
-        json!({
-            "sessionId": composer_id,
-            "session_id": composer_id,
-            "cwd": cwd,
-            "workspacePath": cwd,
-            "model": model,
-            "title": composer_name,
-            "createdAt": composer.get("createdAt").and_then(Value::as_i64),
-            "lastUpdatedAt": composer.get("lastUpdatedAt").and_then(Value::as_i64),
-            "cursor_source": "desktop_state_vscdb",
-            "cursor_scope_ordering": if scope_ordering_proven { "recorded_headers" } else { "unproven" },
-            "workspaceId": composer.get("workspaceId").and_then(Value::as_str),
-            FORK_OBSERVATION_KEY: fork_observation,
-        })
-        .to_string(),
-    );
+    let mut metadata = json!({
+        "sessionId": composer_id,
+        "session_id": composer_id,
+        "cwd": cwd,
+        "workspacePath": cwd,
+        "model": model,
+        "title": composer_name,
+        "createdAt": composer.get("createdAt").and_then(Value::as_i64),
+        "lastUpdatedAt": composer.get("lastUpdatedAt").and_then(Value::as_i64),
+        "cursor_source": "desktop_state_vscdb",
+        "cursor_scope_ordering": if scope_ordering_proven { "recorded_headers" } else { "unproven" },
+        "workspaceId": composer.get("workspaceId").and_then(Value::as_str),
+        FORK_OBSERVATION_KEY: fork_observation,
+    });
+    if !chunked_ownership_proven && fork_observation.is_none() {
+        // A missing observation leaves ownership unknown.
+        metadata.as_object_mut()?.remove(FORK_OBSERVATION_KEY);
+    }
+    let mut lines = vec![metadata.to_string()];
 
     for bubble_id in header_ids {
         let Some(bubble) = bubbles.remove(&bubble_id) else {

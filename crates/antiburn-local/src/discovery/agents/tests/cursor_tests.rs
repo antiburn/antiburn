@@ -118,7 +118,8 @@ fn cursor_native_id_fallback_and_tied_timestamps_do_not_prove_scope_chronology()
             )
             .unwrap();
         }
-        let content = build_desktop_cursor_session_content(&db, "synthetic", None, None).unwrap();
+        let content =
+            build_desktop_cursor_session_content(&db, "synthetic", None, None, 0).unwrap();
         assert_cursor_scope_ordering_gap(&content);
         let turns = content
             .lines()
@@ -237,7 +238,7 @@ fn desktop_native_tool_bubbles_keep_full_ids_and_bounded_result_fields() {
         ],
     )
     .unwrap();
-    let content = build_desktop_cursor_session_content(&db, "synthetic", None, None).unwrap();
+    let content = build_desktop_cursor_session_content(&db, "synthetic", None, None, 0).unwrap();
     let records = content
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
@@ -290,7 +291,7 @@ fn cursor_native_missing_user_and_missing_bubble_prevent_complete_history() {
         )
         .unwrap();
     }
-    let content = build_desktop_cursor_session_content(&db, "synthetic", None, None).unwrap();
+    let content = build_desktop_cursor_session_content(&db, "synthetic", None, None, 0).unwrap();
     let records = content
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
