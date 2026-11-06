@@ -14,22 +14,28 @@ export function escapeInboxHtml(value) {
   )
 }
 
+function unescapeInlineMarkdown(text) {
+  return text.replace(/\\([\\`*_[\]<>])/g, '$1')
+}
+
 /** Render a bounded inline subset. Links remain passive and raw HTML stays text. */
 export function inboxInlineMarkdown(text) {
   const pattern =
-    /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\[\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g
+    /\\([\\`*_[\]<>])|`([^`\n]+)`|\*\*((?:\\[^\n]|[^*\\\n])+)\*\*|\*((?:\\[^\n]|[^*\\\n])+)\*|\[([^\[\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g
   let html = ''
   let offset = 0
   for (const match of text.matchAll(pattern)) {
     html += escapeInboxHtml(text.slice(offset, match.index))
     html +=
       match[1] !== undefined
-        ? `<code>${escapeInboxHtml(match[1])}</code>`
+        ? escapeInboxHtml(match[1])
         : match[2] !== undefined
-          ? `<strong>${escapeInboxHtml(match[2])}</strong>`
+          ? `<code>${escapeInboxHtml(match[2])}</code>`
           : match[3] !== undefined
-            ? `<em>${escapeInboxHtml(match[3])}</em>`
-            : `${escapeInboxHtml(match[4])} (${escapeInboxHtml(match[5])})`
+            ? `<strong>${escapeInboxHtml(unescapeInlineMarkdown(match[3]))}</strong>`
+            : match[4] !== undefined
+              ? `<em>${escapeInboxHtml(unescapeInlineMarkdown(match[4]))}</em>`
+              : `${escapeInboxHtml(match[5])} (${escapeInboxHtml(match[6])})`
     offset = match.index + match[0].length
   }
   return html + escapeInboxHtml(text.slice(offset))

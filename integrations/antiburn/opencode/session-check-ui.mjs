@@ -217,7 +217,11 @@ export function createOpenCodeUiController(options) {
         clear()
         return
       }
-      if (frame?.text === text && frame.receipt === delivery.receipt) {
+      if (
+        frame?.text === text &&
+        (frame.receipt === delivery.receipt ||
+          (delivery.receipt === null && acknowledged === frame.receipt))
+      ) {
         handoff()
         return
       }

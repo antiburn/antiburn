@@ -222,6 +222,21 @@ test('allowlisted inline Markdown never executes authored HTML, resources or lin
   assert.ok(html.includes('END'))
 })
 
+test('escaped check titles keep literal punctuation inside their bold heading', () => {
+  const result = saved()
+  result.snapshot[0].name = 'my_check [literal] *stars* `code` \\ <img src=x>'
+  const html = renderCursorInbox(
+    { frame: 'a'.repeat(32), cards: [{ sessionId: 'session-1', result }] },
+    'b'.repeat(32),
+  )
+  assert.ok(
+    html.includes('<strong>my_check [literal] *stars* `code` \\ &lt;img src=x&gt;</strong>'),
+  )
+  assert.ok(!html.includes('<img'))
+  assert.equal(inboxInlineMarkdown('\\*literal\\* \\[label\\]'), '*literal* [label]')
+  assert.equal(inboxInlineMarkdown('`a\\_b`'), '<code>a\\_b</code>')
+})
+
 test('acknowledgment failure remains pending and revocation before confirmation prevents writes', async () => {
   let accept = false
   let calls = 0

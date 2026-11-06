@@ -243,6 +243,30 @@ test('same revision stays mounted and is acknowledged once; failed ack retries o
   h.controller.dispose()
 })
 
+test('receipt removal after acknowledgement preserves the mounted frame', async () => {
+  const h = harness()
+  await h.start()
+  const frame = h.frame()
+  h.controller.mounted(frame)
+  await h.flush()
+  const count = h.frames.length
+  h.result(delivery({ receipt: null, updates: [] }))
+  await h.controller.refresh()
+  await h.flush()
+  assert.equal(h.frame(), frame)
+  assert.equal(h.frames.length, count)
+  assert.equal(h.acks.length, 1)
+  h.result(delivery({ receipt: 'b'.repeat(64) }))
+  await h.controller.refresh()
+  assert.notEqual(h.frame(), frame)
+  await h.flush()
+  assert.equal(h.acks.length, 1)
+  h.controller.mounted(h.frame())
+  await h.flush()
+  assert.equal(h.acks[1].receipt, 'b'.repeat(64))
+  h.controller.dispose()
+})
+
 test('a changed revision requires a new mounted component and cannot ack the old revision', async () => {
   const h = harness()
   await h.start()
