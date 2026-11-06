@@ -16,9 +16,35 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
     assert.ok(first.includes('cursor/hooks/session-check-config.mjs'))
     assert.match(first, /claude\/hooks\/register.ts/)
     assert.match(first, /pi\/extensions\/antiburn.mjs/)
+    assert.match(first, /pi-renderer\/extensions\/session-check-renderer\.mjs/)
+    assert.match(first, /pi-renderer\/extensions\/session-check-renderer-extension\.mjs/)
     assert.match(first, /opencode\/runtime\/session-checks\.mjs/)
     assert.match(first, /codex\/hooks\/session-check-hook.mjs/)
     assert.match(first, /cursor\/hooks\/session-check-hook.mjs/)
+    const piPackage = JSON.parse(await readFile(join(output, 'pi/package.json'), 'utf8'))
+    assert.equal(piPackage.peerDependencies, undefined)
+    assert.deepEqual(piPackage.pi.extensions, ['./extensions/antiburn.mjs'])
+    const piRendererPackage = JSON.parse(
+      await readFile(join(output, 'pi-renderer/package.json'), 'utf8'),
+    )
+    assert.deepEqual(piRendererPackage.peerDependencies, {
+      '@earendil-works/pi-coding-agent': '*',
+      '@earendil-works/pi-tui': '*',
+    })
+    assert.deepEqual(piRendererPackage.pi.extensions, [
+      './extensions/session-check-renderer-extension.mjs',
+    ])
+    const piRendererExtension = await readFile(
+      join(output, 'pi-renderer/extensions/session-check-renderer-extension.mjs'),
+      'utf8',
+    )
+    assert.match(piRendererExtension, /from '@earendil-works\/pi-tui'/)
+    assert.match(piRendererExtension, /from '@earendil-works\/pi-coding-agent'/)
+    const piRenderer = await readFile(
+      join(output, 'pi-renderer/extensions/session-check-renderer.mjs'),
+      'utf8',
+    )
+    assert.doesNotMatch(piRenderer, /\bawait\s+import\s*\(/)
     assert.match(first, /claude-session-checks\/hooks\/session-check-hook.mjs/)
     assert.match(
       first,

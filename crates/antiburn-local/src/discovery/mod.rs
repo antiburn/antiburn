@@ -230,6 +230,11 @@ pub enum DirectSessionSource {
 pub trait AgentExplorer: Send + Sync {
     async fn discover_recent(&self, now: i64, since_secs: i64) -> Vec<SessionLog>;
 
+    /// Keep source candidates separate for exact saved-source lookup.
+    async fn discover_recent_sources(&self, now: i64, since_secs: i64) -> Vec<SessionLog> {
+        self.discover_recent(now, since_secs).await
+    }
+
     /// Discover recent sessions and send them in bounded, activity-ordered batches.
     ///
     /// `since_secs` is a lookback duration, not an absolute cutoff. The default
@@ -2016,6 +2021,95 @@ impl Explorers {
             .map(|log| log.source.clone())
     }
 
+    /// Locate a session by its persisted source label and environment.
+    ///
+    /// A source label is part of a claimed source identity. This lookup never
+    /// replaces a missing source with another source that has the same id.
+    pub async fn locate_session_source_by_label_in_environment(
+        &self,
+        agent: &AgentKind,
+        session_id: &str,
+        source_label: &str,
+        wsl_distro: Option<&str>,
+    ) -> Option<SessionSource> {
+        if session_id.is_empty() || source_label.is_empty() {
+            return None;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or_default();
+        let logs = if let Some(distro) = wsl_distro.filter(|value| !value.is_empty()) {
+            let info = crate::platform::environment::discover_wsl_environments()
+                .await
+                .into_iter()
+                .find(|info| info.distribution.eq_ignore_ascii_case(distro))?;
+            self.discover_wsl_file_sessions_in(&info, now, now).await
+        } else {
+            if let DirectSessionSource::Found(source) =
+                self.get(agent).direct_session_source(session_id).await
+            {
+                let direct_log = SessionLog {
+                    agent_type: *agent,
+                    source: source.clone(),
+                    updated_at: None,
+                    environment: DiscoveryEnvironment::Native,
+                };
+                if direct_log.source_label() == source_label {
+                    return Some(source);
+                }
+            }
+            self.get(agent).discover_recent_sources(now, now).await
+        };
+
+        self.find_source_log_by_label(&logs, agent, session_id, source_label, wsl_distro)
+            .map(|log| log.source.clone())
+    }
+
+    fn find_source_log_by_label<'a>(
+        &self,
+        logs: &'a [SessionLog],
+        agent: &AgentKind,
+        session_id: &str,
+        source_label: &str,
+        wsl_distro: Option<&str>,
+    ) -> Option<&'a SessionLog> {
+        let mut matches = logs.iter().filter(|log| {
+            let label = log.source_label();
+            let label_matches = label == source_label
+                || (*agent == AgentKind::Cursor
+                    && agents::cursor::legacy_cursor_source_label(&label).as_deref()
+                        == Some(source_label));
+            if log.agent_type != *agent || !label_matches {
+                return false;
+            }
+            let environment_matches = match wsl_distro.filter(|value| !value.is_empty()) {
+                Some(distro) => log
+                    .environment
+                    .wsl_distro()
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(distro)),
+                None => log.environment.is_native(),
+            };
+            let session_matches = match &log.source {
+                SessionSource::Inline { content, .. } => {
+                    scanner::parse_session_metadata_str(content)
+                        .session_id
+                        .as_deref()
+                        == Some(session_id)
+                }
+                SessionSource::File(_) => self.session_id_of_log(log) == session_id,
+                SessionSource::ProviderDb {
+                    session_id: source_session_id,
+                    ..
+                } => source_session_id == session_id,
+            };
+            environment_matches && session_matches
+        });
+        let candidate = matches.next()?;
+        matches.next().is_none().then_some(candidate)
+    }
+
     /// Resolves one session within an explicit caller-supplied environment
     /// identity.
     ///
@@ -2149,6 +2243,29 @@ impl Explorers {
         parent_transcript: &Path,
     ) -> Vec<PathBuf> {
         self.get(agent).list_subagents(parent_transcript).await
+    }
+
+    /// List children from the selected source without a second session-id lookup.
+    pub async fn list_subagents_for_source(
+        &self,
+        agent: &AgentKind,
+        source: &SessionSource,
+    ) -> Vec<PathBuf> {
+        if !self.get(agent).supports_subagents() {
+            return Vec::new();
+        }
+        let parent = subagent_parent_transcript(source).or_else(|| match source {
+            SessionSource::Inline { label, .. } if *agent == AgentKind::Claude => {
+                let path = Path::new(label);
+                (path.is_absolute() && path.extension().is_some_and(|ext| ext == "jsonl"))
+                    .then(|| path.to_path_buf())
+            }
+            _ => None,
+        });
+        match parent {
+            Some(parent) => self.list_subagents_for_transcript(agent, &parent).await,
+            None => Vec::new(),
+        }
     }
 
     /// Resolve a single sub-agent's transcript source for analysis or deep-linking,

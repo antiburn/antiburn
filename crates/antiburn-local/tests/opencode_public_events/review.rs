@@ -194,7 +194,7 @@ fn compatible_parser_revisions_require_the_current_journal_layout() {
     let (_directory, path, connection) = journal();
     v1_messages(&connection);
     let initial = read(&path, "root", None, None, &|| false).unwrap();
-    for parser_revision in [63, 64, 65, 66, PARSER_REVISION] {
+    for parser_revision in [63, 64, 65, 66, 67, PARSER_REVISION] {
         for live_revision in [2, 4, 6] {
             let mut incompatible = serde_json::to_value(&initial.cursor).unwrap();
             incompatible["parser_revision"] = json!(parser_revision);

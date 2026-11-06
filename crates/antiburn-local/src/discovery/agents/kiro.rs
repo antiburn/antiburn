@@ -36,6 +36,10 @@ impl AgentExplorer for KiroExplorer {
         discover_recent_in(&all_log_dirs().await, now, since_secs).await
     }
 
+    async fn discover_recent_sources(&self, now: i64, since_secs: i64) -> Vec<SessionLog> {
+        discover_recent_sources_in(&all_log_dirs().await, now, since_secs).await
+    }
+
     /// Owns the Kiro IDE `globalStorage/kiro.kiroagent/` tree under each
     /// platform's Kiro app-config root (macOS Application Support, Linux
     /// `.config`, Windows AppData/Roaming).
@@ -142,6 +146,60 @@ struct Candidate {
 }
 
 async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec<SessionLog> {
+    let candidates = discover_recent_candidates_in(roots, now, since_secs).await;
+    let mut deduped: HashMap<String, Candidate> = HashMap::new();
+    for candidate in candidates {
+        match deduped.get(&candidate.session_id) {
+            None => {
+                deduped.insert(candidate.session_id.clone(), candidate);
+            }
+            Some(existing) => {
+                let replace = (candidate.canonical && !existing.canonical)
+                    || (candidate.canonical == existing.canonical
+                        && candidate.mtime_epoch > existing.mtime_epoch);
+                if replace {
+                    deduped.insert(candidate.session_id.clone(), candidate);
+                }
+            }
+        }
+    }
+
+    let mut selected: Vec<_> = deduped.into_values().collect();
+    selected.sort_by(|a, b| a.path.cmp(&b.path));
+
+    selected
+        .into_iter()
+        .map(|candidate| SessionLog {
+            environment: Default::default(),
+            agent_type: AgentKind::Kiro,
+            source: SessionSource::File(candidate.path),
+            updated_at: Some(candidate.mtime_epoch),
+        })
+        .collect()
+}
+
+async fn discover_recent_sources_in(
+    roots: &[PathBuf],
+    now: i64,
+    since_secs: i64,
+) -> Vec<SessionLog> {
+    discover_recent_candidates_in(roots, now, since_secs)
+        .await
+        .into_iter()
+        .map(|candidate| SessionLog {
+            environment: Default::default(),
+            agent_type: AgentKind::Kiro,
+            source: SessionSource::File(candidate.path),
+            updated_at: Some(candidate.mtime_epoch),
+        })
+        .collect()
+}
+
+async fn discover_recent_candidates_in(
+    roots: &[PathBuf],
+    now: i64,
+    since_secs: i64,
+) -> Vec<Candidate> {
     let cutoff = now - since_secs;
     let mut candidates = Vec::new();
 
@@ -206,35 +264,7 @@ async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec
         }
     }
 
-    let mut deduped: HashMap<String, Candidate> = HashMap::new();
-    for candidate in candidates {
-        match deduped.get(&candidate.session_id) {
-            None => {
-                deduped.insert(candidate.session_id.clone(), candidate);
-            }
-            Some(existing) => {
-                let replace = (candidate.canonical && !existing.canonical)
-                    || (candidate.canonical == existing.canonical
-                        && candidate.mtime_epoch > existing.mtime_epoch);
-                if replace {
-                    deduped.insert(candidate.session_id.clone(), candidate);
-                }
-            }
-        }
-    }
-
-    let mut selected: Vec<_> = deduped.into_values().collect();
-    selected.sort_by(|a, b| a.path.cmp(&b.path));
-
-    selected
-        .into_iter()
-        .map(|candidate| SessionLog {
-            environment: Default::default(),
-            agent_type: AgentKind::Kiro,
-            source: SessionSource::File(candidate.path),
-            updated_at: Some(candidate.mtime_epoch),
-        })
-        .collect()
+    candidates
 }
 
 async fn companion_mtime_epoch(path: &Path) -> Option<i64> {
@@ -434,6 +464,51 @@ mod tests {
             SessionSource::Inline { .. } => panic!("expected file source"),
             SessionSource::ProviderDb { .. } => panic!("expected file source"),
         }
+    }
+
+    #[tokio::test]
+    async fn source_discovery_retains_same_id_sessions_from_distinct_workspaces() {
+        let home = TempDir::new().unwrap();
+        let root = kiro_storage_root_in(home.path());
+        let older = root
+            .join("workspace-sessions")
+            .join("workspace-a")
+            .join("shared-session");
+        let newer = root
+            .join("workspace-sessions")
+            .join("workspace-b")
+            .join("shared-session");
+        tokio::fs::create_dir_all(&older).await.unwrap();
+        tokio::fs::create_dir_all(&newer).await.unwrap();
+        let older_file = older.join("shared-session.json");
+        let newer_file = newer.join("shared-session.json");
+        tokio::fs::write(&older_file, r#"{"sessionId":"shared-session"}"#)
+            .await
+            .unwrap();
+        tokio::fs::write(&newer_file, r#"{"sessionId":"shared-session"}"#)
+            .await
+            .unwrap();
+        let now = 1_700_000_000;
+        set_file_mtime(&older_file, now - 20);
+        set_file_mtime(&newer_file, now - 10);
+
+        let sources = discover_recent_sources_in(std::slice::from_ref(&root), now, 3600).await;
+        assert_eq!(sources.len(), 2);
+        assert!(sources.iter().any(|log| matches!(
+            &log.source,
+            SessionSource::File(path) if path == &older_file
+        )));
+        assert!(sources.iter().any(|log| matches!(
+            &log.source,
+            SessionSource::File(path) if path == &newer_file
+        )));
+
+        let display = discover_recent_in(&[root], now, 3600).await;
+        assert_eq!(display.len(), 1);
+        assert!(matches!(
+            &display[0].source,
+            SessionSource::File(path) if path == &newer_file
+        ));
     }
 
     #[tokio::test]

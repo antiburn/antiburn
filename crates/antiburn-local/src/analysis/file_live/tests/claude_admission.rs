@@ -18,6 +18,175 @@ fn root() -> Value {
     record("root", None, "user", json!("Keep billing unchanged."))
 }
 
+fn sdk_root(version: &str) -> Value {
+    let mut root = record("root", None, "user", json!("Use the existing checkout."));
+    root["version"] = json!(version);
+    root["entrypoint"] = json!("sdk-cli");
+    root["userType"] = json!("external");
+    root["promptSource"] = json!("sdk");
+    root["turnOrigin"] = json!("sdk");
+    root
+}
+
+fn sdk_lifecycle_prefix(session: &str) -> String {
+    source(&[
+        json!({"type":"session-owner","sessionId":session}),
+        json!({"type":"queue-operation","sessionId":session}),
+        json!({"type":"queue-operation","sessionId":session}),
+    ])
+}
+
+#[test]
+fn sdk_mixed_request_preserves_its_result_then_retires_prior_calls() {
+    let directory = TempDir::new().unwrap();
+    let mut call = read_call("call", "root", "read");
+    let mut unused = call["message"]["content"][0].clone();
+    unused["id"] = json!("unused");
+    call["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(unused);
+    let mut mixed = read_result("mixed", "call", "read");
+    mixed["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type":"text","text":"Continue with the next task."}));
+    let mut records = vec![sdk_root("2.1.317"), call, mixed];
+    for record in &mut records {
+        record["version"] = json!("2.1.317");
+        record["entrypoint"] = json!("sdk-cli");
+        record["userType"] = json!("external");
+    }
+    let input = input(
+        &directory,
+        "claude",
+        "facts",
+        SourceFormat::ClaudeJsonl,
+        &source(&records[..2]),
+    );
+    let cursor = read_native_file_page(&input, None, &|| false)
+        .unwrap()
+        .cursor;
+    append(&input, &source(&records[2..]));
+    let page = read_native_file_page(&input, Some(&restored(&cursor)), &|| false).unwrap();
+    assert!(page.admission_failure.is_none());
+    let full = identity_proofs::full_events("claude", &source(&records));
+    for events in [&full, &page.evidence.events] {
+        let observed = results(events);
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].tool_name.as_deref(), Some("Read"));
+        assert!(observed[0].arguments.is_some());
+        assert_eq!(observed[0].completeness, ToolResultCompleteness::Complete);
+        assert!(!observed[0].context.as_ref().unwrap().complete_through_event);
+    }
+    let mut late = read_result("late", "call", "unused");
+    late["version"] = json!("2.1.317");
+    late["entrypoint"] = json!("sdk-cli");
+    late["userType"] = json!("external");
+    append(&input, &source(std::slice::from_ref(&late)));
+    records.push(late);
+    let resumed = read_native_file_page(&input, Some(&restored(&page.cursor)), &|| false).unwrap();
+    assert!(resumed.admission_failure.is_some());
+    let full = identity_proofs::full_events("claude", &source(&records));
+    assert!(
+        results(&full)
+            .iter()
+            .filter(|result| result.record_id.as_deref() == Some("late"))
+            .all(|result| result.tool_name.is_none())
+    );
+}
+
+#[test]
+fn sdk_parallel_tool_results_keep_linked_source_continuity() {
+    for reverse in [false, true] {
+        let directory = TempDir::new().unwrap();
+        let mut records = vec![sdk_root("2.1.317")];
+        records.push(read_call("call-a", "root", "tool-a"));
+        records.push(read_call("call-b", "call-a", "tool-b"));
+        let results = [
+            read_result("result-a", "call-a", "tool-a"),
+            read_result("result-b", "call-b", "tool-b"),
+        ];
+        records.extend(if reverse {
+            results.into_iter().rev().collect::<Vec<_>>()
+        } else {
+            results.to_vec()
+        });
+        for record in &mut records {
+            record["version"] = json!("2.1.317");
+            record["entrypoint"] = json!("sdk-cli");
+            record["userType"] = json!("external");
+        }
+        let input = input(
+            &directory,
+            "claude",
+            "facts",
+            SourceFormat::ClaudeJsonl,
+            &source(&records[..1]),
+        );
+        let mut page = read_native_file_page(&input, None, &|| false).unwrap();
+        for record in &records[1..] {
+            append(&input, &source(std::slice::from_ref(record)));
+            page = read_native_file_page(&input, Some(&restored(&page.cursor)), &|| false).unwrap();
+            assert!(page.admission_failure.is_none(), "{reverse}: {record}");
+            if record["type"] == "user" {
+                assert_eq!(page.results.len(), 1);
+                assert!(page.results[0].live_eligible);
+                let context = page.results[0].observation.context.as_ref().unwrap();
+                assert!(context.main_session, "{reverse}: {record}");
+                assert!(!context.complete_through_event);
+            }
+        }
+    }
+}
+
+#[test]
+fn sdk_parallel_result_seams_reject_consumed_calls_and_later_requests() {
+    for later_request in [false, true] {
+        let directory = TempDir::new().unwrap();
+        let mut records = vec![
+            sdk_root("2.1.317"),
+            read_call("call-a", "root", "tool-a"),
+            read_call("call-b", "call-a", "tool-b"),
+        ];
+        if later_request {
+            records.push(record(
+                "request-b",
+                Some("call-b"),
+                "user",
+                json!("New task."),
+            ));
+        } else {
+            records.push(read_result("first-result", "call-a", "tool-a"));
+        }
+        records.push(read_result("unproved-result", "call-a", "tool-a"));
+        for record in &mut records {
+            record["version"] = json!("2.1.317");
+            record["entrypoint"] = json!("sdk-cli");
+            record["userType"] = json!("external");
+        }
+        let input = input(
+            &directory,
+            "claude",
+            "facts",
+            SourceFormat::ClaudeJsonl,
+            &source(&records[..1]),
+        );
+        let initial = read_native_file_page(&input, None, &|| false).unwrap();
+        append(&input, &source(&records[1..records.len() - 1]));
+        let page =
+            read_native_file_page(&input, Some(&restored(&initial.cursor)), &|| false).unwrap();
+        assert!(page.admission_failure.is_none());
+        append(&input, &source(&records[records.len() - 1..]));
+        let rejected =
+            read_native_file_page(&input, Some(&restored(&page.cursor)), &|| false).unwrap();
+        assert_eq!(
+            rejected.admission_failure.unwrap().reason,
+            ToolResultCompleteness::UnsafeOrder
+        );
+    }
+}
+
 fn read_call(id: &str, parent: &str, call: &str) -> Value {
     record(
         id,
@@ -44,6 +213,171 @@ fn read_result(id: &str, parent: &str, call: &str) -> Value {
         "startLine":7, "numLines":2, "totalLines":20
     }});
     result
+}
+
+#[test]
+fn characterized_sdk_cli_request_slot_reaches_normalized_live_evidence_with_unknown_history() {
+    for version in ["2.1.309", "2.1.317"] {
+        let directory = TempDir::new().unwrap();
+        let text = if version == "2.1.309" {
+            include_str!(
+                "../../../../tests/fixtures/claude_characterization/sdk_cli_request_slot.jsonl"
+            )
+            .to_owned()
+        } else {
+            let mut root = sdk_root(version);
+            root["uuid"] = json!("sdk-request");
+            root["sessionId"] = json!("synthetic-sdk-session");
+            let mut assistant = read_call("sdk-call", "sdk-request", "sdk-bash");
+            assistant["sessionId"] = json!("synthetic-sdk-session");
+            assistant["version"] = json!(version);
+            assistant["entrypoint"] = json!("sdk-cli");
+            let mut result = record(
+                "sdk-result",
+                Some("sdk-call"),
+                "user",
+                json!([{"type":"tool_result","tool_use_id":"sdk-bash","content":"ok","is_error":false}]),
+            );
+            result["sessionId"] = json!("synthetic-sdk-session");
+            result["version"] = json!(version);
+            result["entrypoint"] = json!("sdk-cli");
+            source(&[root, assistant, result])
+        };
+        let (root_record, suffix) = text.split_once('\n').expect("SDK fixture has a root");
+        let prefix = if version == "2.1.317" {
+            sdk_lifecycle_prefix("synthetic-sdk-session")
+        } else {
+            String::new()
+        };
+        let input = input(
+            &directory,
+            "claude",
+            "synthetic-sdk-session",
+            SourceFormat::ClaudeJsonl,
+            &format!("{prefix}{root_record}\n"),
+        );
+        let initial = read_native_file_page(&input, None, &|| false).unwrap();
+        assert_eq!(
+            initial.requests[0].message.message_id, "sdk-request",
+            "{version}"
+        );
+        assert!(!initial.history_complete, "{version}");
+        append(&input, suffix);
+        let page =
+            read_native_file_page(&input, Some(&restored(&initial.cursor)), &|| false).unwrap();
+        assert!(page.admission_failure.is_none(), "{version}");
+        assert_eq!(
+            page.requests
+                .iter()
+                .map(|request| request.message.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["sdk-request"],
+            "{version}"
+        );
+        assert!(!page.history_complete, "{version}");
+        assert_eq!(page.results.len(), 1, "{version}");
+        let result = &page.results[0];
+        assert!(result.live_eligible, "{version}");
+        let result = &result.observation;
+        let context = result.context.as_ref().unwrap();
+        assert!(context.main_session, "{version}");
+        assert!(!context.complete_through_event, "{version}");
+        assert_eq!(
+            request_ids(&context.user_messages),
+            ["sdk-request"],
+            "{version}"
+        );
+        assert!(
+            initial.evidence.events.iter().any(|event| matches!(
+                &event.fact,
+                NativeEvidenceFact::Message(NativeMessageObservation::User(message))
+                    if message.message.message_id == "sdk-request"
+            )),
+            "{version}"
+        );
+        let request_parts: Vec<_> = parts(&text)
+            .into_iter()
+            .filter(|part| part.text == "Use the existing checkout.")
+            .collect();
+        assert_eq!(request_parts.len(), 1, "{version}");
+        assert!(
+            request_parts.iter().all(|part| {
+                part.authority == ContentAuthority::Unknown
+                    && part.metadata.user_text_history.is_none()
+            }),
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn sdk_cli_root_requires_exact_version_entrypoint_and_sdk_markers() {
+    for case in [
+        "unsupported-version",
+        "legacy-prefix-version",
+        "cli-entrypoint",
+        "wrapper-entrypoint",
+        "missing-turn-origin",
+        "wrong-prompt-source",
+        "wrong-user-type",
+        "supplied-origin",
+        "sidechain",
+        "untrusted-record-before-root",
+        "wrong-session-owner",
+        "prefix-overflow",
+    ] {
+        let directory = TempDir::new().unwrap();
+        let mut root = sdk_root("2.1.317");
+        let owner_session = if case == "wrong-session-owner" {
+            "different-session"
+        } else {
+            "facts"
+        };
+        let mut records = vec![
+            json!({"type":"session-owner","sessionId":owner_session}),
+            json!({"type":"queue-operation","sessionId":owner_session}),
+        ];
+        match case {
+            "unsupported-version" => root["version"] = json!("2.1.318"),
+            "legacy-prefix-version" => root["version"] = json!("2.1.309"),
+            "cli-entrypoint" => root["entrypoint"] = json!("cli"),
+            "wrapper-entrypoint" => root["entrypoint"] = json!("sdk-wrapper"),
+            "missing-turn-origin" => {
+                root.as_object_mut().unwrap().remove("turnOrigin");
+            }
+            "wrong-prompt-source" => root["promptSource"] = json!("typed"),
+            "wrong-user-type" => root["userType"] = json!("internal"),
+            "supplied-origin" => root["origin"] = json!({"kind":"sdk"}),
+            "sidechain" => root["isSidechain"] = json!(true),
+            "untrusted-record-before-root" => {
+                records.push(record(
+                    "before-root",
+                    Some("parent"),
+                    "assistant",
+                    json!([]),
+                ));
+            }
+            "wrong-session-owner" => {}
+            "prefix-overflow" => {
+                for _ in 0..16 {
+                    records.push(json!({"type":"queue-operation","sessionId":owner_session}));
+                }
+            }
+            _ => unreachable!(),
+        }
+        records.push(root);
+        let input = input(
+            &directory,
+            "claude",
+            "facts",
+            SourceFormat::ClaudeJsonl,
+            &source(&records),
+        );
+        let page = read_native_file_page(&input, None, &|| false).unwrap();
+        assert!(page.requests.is_empty(), "{case}");
+        assert!(!page.history_complete, "{case}");
+        assert!(page.results.is_empty(), "{case}");
+    }
 }
 
 fn boundary(id: &str, parent: &str) -> Value {

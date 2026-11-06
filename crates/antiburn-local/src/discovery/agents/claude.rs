@@ -22,8 +22,8 @@ use crate::discovery::scanner;
 use crate::discovery::scanner::AgentKind;
 use crate::discovery::{
     AgentExplorer, DirectSessionSource, SessionLog, SessionSource, SurfacePaths, TitleLookupKind,
-    WatchRoot, app_config_dir_in, collect_dirs_with_exts, extract_json_string_field, home_dir,
-    recent_files_with_exts,
+    WatchRoot, app_config_dir_in, collect_dirs_with_exts, env_path_when_real_home,
+    extract_json_string_field, home_dir, recent_files_with_exts,
 };
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -131,13 +131,17 @@ impl AgentExplorer for ClaudeExplorer {
         "cli"
     }
 
-    /// CLI: `~/.claude/projects/**` (also touched by Desktop/VS Code; content's
-    /// `entrypoint` marker disambiguates). IDE: the Claude Desktop session
-    /// trees `<app-config>/Claude/{claude-code-sessions,local-agent-mode-sessions}/**`,
+    /// CLI: each selected config root's `projects/**` (also touched by
+    /// Desktop/VS Code; content's `entrypoint` marker disambiguates). IDE: the
+    /// Claude Desktop session trees
+    /// `<app-config>/Claude/{claude-code-sessions,local-agent-mode-sessions}/**`,
     /// which include the nested Cowork transcript roots.
     fn surface_paths(&self, home: &Path) -> SurfacePaths {
         SurfacePaths {
-            cli: vec![home.join(".claude").join("projects")],
+            cli: claude_config_roots_in(home)
+                .into_iter()
+                .map(|root| root.join("projects"))
+                .collect(),
             ide_desktop: desktop_session_trees_in(home),
             mirror: Vec::new(),
         }
@@ -147,13 +151,19 @@ impl AgentExplorer for ClaudeExplorer {
     /// all move independently: a fork's `state.json` can change with no
     /// transcript write at all. Watch every root discovery reads.
     fn watch_roots(&self, home: &Path) -> Vec<WatchRoot> {
-        let mut roots = vec![WatchRoot::recursive(home.join(".claude").join("projects"))];
+        let mut roots: Vec<_> = claude_config_roots_in(home)
+            .into_iter()
+            .flat_map(|root| {
+                [root.join("projects"), root.join("jobs")]
+                    .into_iter()
+                    .map(WatchRoot::recursive)
+            })
+            .collect();
         roots.extend(
             desktop_session_trees_in(home)
                 .into_iter()
                 .map(WatchRoot::recursive),
         );
-        roots.push(WatchRoot::recursive(home.join(".claude").join("jobs")));
         roots
     }
 
@@ -258,6 +268,50 @@ pub(crate) fn sample_log_path(home: &Path) -> PathBuf {
 /// sessions. `claude-code-sessions` holds the desktop manifests.
 const DESKTOP_SESSION_TREES: [&str; 2] = ["claude-code-sessions", "local-agent-mode-sessions"];
 
+/// Claude's default profile root plus an explicitly selected config directory.
+/// Relative and blank overrides are ignored because their base is ambiguous.
+fn claude_config_roots_in(home: &Path) -> Vec<PathBuf> {
+    let default = home.join(".claude");
+    let explicit = env_path_when_real_home(home, "CLAUDE_CONFIG_DIR")
+        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute());
+    let mut roots = vec![default];
+    if let Some(explicit) = explicit
+        && !roots.contains(&explicit)
+    {
+        roots.push(explicit);
+    }
+    roots
+}
+
+#[cfg(test)]
+fn with_claude_config_env<T>(
+    home: &Path,
+    value: Option<&std::ffi::OsStr>,
+    body: impl FnOnce() -> T,
+) -> T {
+    let previous_home = std::env::var_os("HOME");
+    let previous_config = std::env::var_os("CLAUDE_CONFIG_DIR");
+    unsafe {
+        std::env::set_var("HOME", home);
+        match value {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+    }
+    let result = body();
+    unsafe {
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        match previous_config {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+    }
+    result
+}
+
 /// Maximum number of directory levels between a desktop session tree and a
 /// nested `.claude` directory. The observed Cowork layouts use three levels
 /// (`<org>/<account>/local_<workspace>`) and four levels
@@ -359,13 +413,19 @@ async fn locate_transcript_in(home: &Path, session_id: &str) -> Option<PathBuf> 
 
 /// Internal: find ALL Claude log directories under a given home directory.
 ///
-/// The result holds the project directories of `~/.claude/projects` and of
+/// The result holds the project directories of each Claude config root and of
 /// each nested Claude Desktop root (see [`nested_projects_roots_blocking`]).
 async fn all_log_dirs_in(home: &Path) -> Vec<PathBuf> {
-    let projects_dir = home.join(".claude").join("projects");
+    let projects_dirs: Vec<_> = claude_config_roots_in(home)
+        .into_iter()
+        .map(|root| root.join("projects"))
+        .collect();
     let trees = desktop_session_trees_in(home);
     tokio::task::spawn_blocking(move || {
-        let mut dirs = project_dirs_blocking(&projects_dir);
+        let mut dirs = Vec::new();
+        for projects_dir in &projects_dirs {
+            dirs.extend(project_dirs_blocking(projects_dir));
+        }
         for tree in &trees {
             for root in nested_projects_roots_blocking(tree) {
                 dirs.extend(project_dirs_blocking(&root));
@@ -679,88 +739,123 @@ async fn interactive_fork_job_logs(
     project_dirs: &[PathBuf],
     cutoff: i64,
 ) -> Vec<SessionLog> {
-    let jobs_root = home.join(".claude").join("jobs");
-    let Ok(mut entries) = tokio::fs::read_dir(&jobs_root).await else {
-        return Vec::new();
-    };
-    let mut logs = Vec::new();
-    let mut job_count = 0;
-    while job_count < MAX_CLAUDE_JOB_COUNT {
-        let Ok(Some(entry)) = entries.next_entry().await else {
-            break;
-        };
-        job_count += 1;
-        let state_path = entry.path().join("state.json");
-        let Ok(state_content) = tokio::fs::read_to_string(&state_path).await else {
-            continue;
-        };
-        let Ok(state) = serde_json::from_str::<ClaudeForkJobState>(&state_content) else {
-            continue;
-        };
-        let (Some(child_id), Some(parent_id), Some(session_id), Some(cwd)) = (
-            state.fork_session_id.as_deref(),
-            state.fork_parent_session_id.as_deref(),
-            state.session_id.as_deref(),
-            state.cwd.as_deref(),
-        ) else {
-            continue;
-        };
-        if !state.interactive_lineage
-            || child_id != session_id
-            || child_id == parent_id
-            || !valid_claude_session_id(child_id)
-            || !valid_claude_session_id(parent_id)
-            || !valid_claude_job_cwd(cwd)
-        {
-            continue;
-        }
+    interactive_fork_job_logs_in_roots(
+        &claude_config_roots_in(home),
+        project_dirs,
+        cutoff,
+        MAX_CLAUDE_JOB_COUNT,
+    )
+    .await
+}
 
-        let transcript_path = resolve_cli_transcript_path(project_dirs, child_id).await;
-        let transcript_mtime = transcript_path
-            .as_deref()
-            .and_then(file_mtime_epoch_blocking)
-            .unwrap_or_default();
-        let state_mtime = file_mtime_epoch_blocking(&state_path).unwrap_or_default();
-        let updated_at = transcript_mtime.max(state_mtime);
-        if updated_at < cutoff {
+async fn interactive_fork_job_logs_in_roots(
+    config_roots: &[PathBuf],
+    project_dirs: &[PathBuf],
+    cutoff: i64,
+    job_limit: usize,
+) -> Vec<SessionLog> {
+    let mut logs = Vec::new();
+    for config_root in config_roots {
+        let jobs_root = config_root.join("jobs");
+        let profile_projects = config_root.join("projects");
+        let project_dirs: Vec<_> = project_dirs
+            .iter()
+            .filter(|path| path.starts_with(&profile_projects))
+            .cloned()
+            .collect();
+        let mut job_count = 0;
+        let Ok(mut entries) = tokio::fs::read_dir(&jobs_root).await else {
             continue;
+        };
+        while job_count < job_limit {
+            let Ok(Some(entry)) = entries.next_entry().await else {
+                break;
+            };
+            job_count += 1;
+            let state_path = entry.path().join("state.json");
+            let Ok(state_content) = tokio::fs::read_to_string(&state_path).await else {
+                continue;
+            };
+            let Ok(state) = serde_json::from_str::<ClaudeForkJobState>(&state_content) else {
+                continue;
+            };
+            let (Some(child_id), Some(parent_id), Some(session_id), Some(cwd)) = (
+                state.fork_session_id.as_deref(),
+                state.fork_parent_session_id.as_deref(),
+                state.session_id.as_deref(),
+                state.cwd.as_deref(),
+            ) else {
+                continue;
+            };
+            if !state.interactive_lineage
+                || child_id != session_id
+                || child_id == parent_id
+                || !valid_claude_session_id(child_id)
+                || !valid_claude_session_id(parent_id)
+                || !valid_claude_job_cwd(cwd)
+            {
+                continue;
+            }
+
+            let transcript_path = resolve_cli_transcript_path(&project_dirs, child_id).await;
+            let transcript_mtime = transcript_path
+                .as_deref()
+                .and_then(file_mtime_epoch_blocking)
+                .unwrap_or_default();
+            let state_mtime = file_mtime_epoch_blocking(&state_path).unwrap_or_default();
+            let updated_at = transcript_mtime.max(state_mtime);
+            if updated_at < cutoff {
+                continue;
+            }
+            let transcript = match transcript_path.as_deref() {
+                Some(path) => tokio::fs::read_to_string(path).await.unwrap_or_default(),
+                None => String::new(),
+            };
+            let title = state
+                .name
+                .as_deref()
+                .or(state.intent.as_deref())
+                .filter(|value| {
+                    !value.trim().is_empty() && value.len() <= MAX_CLAUDE_JOB_VALUE_BYTES
+                });
+            let header = serde_json::json!({
+                "type": "session",
+                "sessionId": child_id,
+                "cwd": cwd,
+                "entrypoint": "cli",
+                "aiTitle": title,
+                "forkedFrom": { "sessionId": parent_id },
+                crate::discovery::fork::FORK_OBSERVATION_KEY: crate::discovery::fork::ForkObservation {
+                    parent_agent: "claude-code".to_owned(),
+                    parent_agent_session_id: parent_id.to_owned(),
+                    fork_kind: "fork".to_owned(),
+                    provider_fork_point_id: None,
+                    detection_source: "interactive_fork_job".to_owned(),
+                    confidence: 100,
+                    inherited_item_count: None,
+                    extractor_version: "1".to_owned(),
+                }
+            });
+            let content = if transcript.is_empty() {
+                header.to_string()
+            } else {
+                format!("{header}\n{transcript}")
+            };
+            let label = transcript_path
+                .as_deref()
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("claude-fork-job:{child_id}"));
+            logs.push(SessionLog {
+                environment: Default::default(),
+                agent_type: AgentKind::Claude,
+                source: SessionSource::Inline {
+                    label,
+                    content,
+                    source_format: None,
+                },
+                updated_at: Some(updated_at),
+            });
         }
-        let transcript = match transcript_path.as_deref() {
-            Some(path) => tokio::fs::read_to_string(path).await.unwrap_or_default(),
-            None => String::new(),
-        };
-        let title = state
-            .name
-            .as_deref()
-            .or(state.intent.as_deref())
-            .filter(|value| !value.trim().is_empty() && value.len() <= MAX_CLAUDE_JOB_VALUE_BYTES);
-        let header = serde_json::json!({
-            "type": "session",
-            "sessionId": child_id,
-            "cwd": cwd,
-            "entrypoint": "cli",
-            "aiTitle": title,
-            "forkedFrom": { "sessionId": parent_id }
-        });
-        let content = if transcript.is_empty() {
-            header.to_string()
-        } else {
-            format!("{header}\n{transcript}")
-        };
-        let label = transcript_path
-            .as_deref()
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("claude-fork-job:{child_id}"));
-        logs.push(SessionLog {
-            environment: Default::default(),
-            agent_type: AgentKind::Claude,
-            source: SessionSource::Inline {
-                label,
-                content,
-                source_format: None,
-            },
-            updated_at: Some(updated_at),
-        });
     }
     logs
 }
@@ -876,6 +971,131 @@ mod tests {
     use crate::discovery::set_file_mtime;
     use tempfile::TempDir;
 
+    #[test]
+    #[serial_test::serial]
+    fn claude_config_dir_adds_an_explicit_profile_and_keeps_the_default() {
+        let home = TempDir::new().unwrap();
+        let explicit = TempDir::new().unwrap();
+        let roots = with_claude_config_env(home.path(), Some(explicit.path().as_os_str()), || {
+            claude_config_roots_in(home.path())
+        });
+        assert_eq!(
+            roots,
+            vec![home.path().join(".claude"), explicit.path().to_path_buf()]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn blank_and_relative_claude_config_dirs_keep_the_default() {
+        let home = TempDir::new().unwrap();
+        for value in [
+            std::ffi::OsStr::new(""),
+            std::ffi::OsStr::new("relative/claude"),
+        ] {
+            let roots = with_claude_config_env(home.path(), Some(value), || {
+                claude_config_roots_in(home.path())
+            });
+            assert_eq!(roots, vec![home.path().join(".claude")]);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn claude_config_dir_does_not_leak_into_synthetic_homes() {
+        let home = TempDir::new().unwrap();
+        let explicit = TempDir::new().unwrap();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", explicit.path()) };
+        let roots = claude_config_roots_in(home.path());
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+                None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+            }
+        }
+        assert_eq!(roots, vec![home.path().join(".claude")]);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn explicit_profile_projects_are_discovered_and_watched_with_default_roots() {
+        let home = TempDir::new().unwrap();
+        let explicit = TempDir::new().unwrap();
+        let default_project = home.path().join(".claude/projects/default-project");
+        let explicit_project = explicit.path().join("projects/explicit-project");
+        tokio::fs::create_dir_all(&default_project).await.unwrap();
+        tokio::fs::create_dir_all(&explicit_project).await.unwrap();
+        tokio::fs::write(default_project.join("default-session.jsonl"), "{}\n")
+            .await
+            .unwrap();
+        let explicit_transcript = explicit_project.join("explicit-session.jsonl");
+        tokio::fs::write(&explicit_transcript, "{}\n")
+            .await
+            .unwrap();
+        let explicit_jobs = explicit.path().join("jobs/explicit-fork");
+        tokio::fs::create_dir_all(&explicit_jobs).await.unwrap();
+        tokio::fs::write(
+            explicit_jobs.join("state.json"),
+            r#"{"interactiveLineage":true,"forkSessionId":"child-fork","forkParentSessionId":"parent-fork","sessionId":"child-fork","cwd":"/repo"}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(explicit_project.join("child-fork.jsonl"), "{}\n")
+            .await
+            .unwrap();
+
+        let previous_home = std::env::var_os("HOME");
+        let previous_config = std::env::var_os("CLAUDE_CONFIG_DIR");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+            std::env::set_var("CLAUDE_CONFIG_DIR", explicit.path());
+        }
+        let explorer = ClaudeExplorer;
+        let dirs = all_log_dirs_in(home.path()).await;
+        let located = locate_transcript_in(home.path(), "explicit-session").await;
+        let job_logs =
+            interactive_fork_job_logs(home.path(), std::slice::from_ref(&explicit_project), 0)
+                .await;
+        let watch_roots = explorer.watch_roots(home.path());
+        let surface_paths = explorer.surface_paths(home.path());
+        unsafe {
+            match previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match previous_config {
+                Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+                None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+            }
+        }
+
+        assert!(dirs.contains(&default_project));
+        assert!(dirs.contains(&explicit_project));
+        assert_eq!(located, Some(explicit_transcript));
+        assert_eq!(job_logs.len(), 1);
+        assert!(
+            watch_roots
+                .iter()
+                .any(|root| root.path == explicit.path().join("projects"))
+        );
+        assert!(
+            watch_roots
+                .iter()
+                .any(|root| root.path == explicit.path().join("jobs"))
+        );
+        assert!(
+            surface_paths
+                .cli
+                .contains(&home.path().join(".claude/projects"))
+        );
+        assert!(
+            surface_paths
+                .cli
+                .contains(&explicit.path().join("projects"))
+        );
+    }
+
     #[tokio::test]
     async fn interactive_fork_job_enriches_waiting_child_with_parent_and_cwd() {
         let fixture: serde_json::Value =
@@ -915,8 +1135,6 @@ mod tests {
             metadata.cwd.as_deref(),
             Some("/home/avery/projects/demo-app")
         );
-        // The enrichment states the lineage in Claude's own `forkedFrom`
-        // shape, which is what a lineage consumer reads back.
         let header: serde_json::Value =
             serde_json::from_str(content.lines().next().unwrap()).unwrap();
         assert_eq!(
@@ -924,6 +1142,82 @@ mod tests {
                 .pointer("/forkedFrom/sessionId")
                 .and_then(|v| v.as_str()),
             Some("claude-parent-fork")
+        );
+        assert_eq!(
+            crate::discovery::fork::fork_parent_from_content(content).as_deref(),
+            Some("claude-parent-fork")
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_jobs_use_only_their_own_profiles_transcripts() {
+        let temp = TempDir::new().unwrap();
+        let roots = [temp.path().join("default"), temp.path().join("explicit")];
+        let projects: Vec<_> = roots
+            .iter()
+            .map(|root| root.join("projects/repo"))
+            .collect();
+        for (index, root) in roots.iter().enumerate() {
+            tokio::fs::create_dir_all(&projects[index]).await.unwrap();
+            tokio::fs::write(
+                projects[index].join("child.jsonl"),
+                format!("{{\"profile\":{index}}}\n"),
+            )
+            .await
+            .unwrap();
+            let job = root.join("jobs/child");
+            tokio::fs::create_dir_all(&job).await.unwrap();
+            tokio::fs::write(
+                job.join("state.json"),
+                serde_json::json!({
+                    "interactiveLineage": true, "forkSessionId": "child",
+                    "forkParentSessionId": "parent", "sessionId": "child",
+                    "cwd": format!("/repo-{index}")
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        }
+        let logs = interactive_fork_job_logs_in_roots(&roots, &projects, 0, 10).await;
+        assert_eq!(logs.len(), 2);
+        for (index, log) in logs.iter().enumerate() {
+            assert_eq!(
+                log.source_label(),
+                projects[index].join("child.jsonl").to_string_lossy()
+            );
+            let SessionSource::Inline { content, .. } = &log.source else {
+                panic!("inline job")
+            };
+            assert!(content.contains(&format!("\"profile\":{index}")));
+            assert!(content.contains(&format!("/repo-{index}")));
+            assert_eq!(
+                crate::discovery::fork::fork_parent_from_content(content).as_deref(),
+                Some("parent")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_job_budget_is_independent_for_each_profile() {
+        let temp = TempDir::new().unwrap();
+        let roots = [temp.path().join("default"), temp.path().join("explicit")];
+        tokio::fs::create_dir_all(roots[0].join("jobs/stale"))
+            .await
+            .unwrap();
+        let job = roots[1].join("jobs/child");
+        tokio::fs::create_dir_all(&job).await.unwrap();
+        tokio::fs::write(job.join("state.json"), r#"{"interactiveLineage":true,"forkSessionId":"child","forkParentSessionId":"parent","sessionId":"child","cwd":"/repo"}"#).await.unwrap();
+        let logs = interactive_fork_job_logs_in_roots(&roots, &[], 0, 1).await;
+        assert_eq!(logs.len(), 1);
+        let SessionSource::Inline { content, .. } = &logs[0].source else {
+            panic!("inline job")
+        };
+        assert_eq!(
+            scanner::parse_session_metadata_str(content)
+                .session_id
+                .as_deref(),
+            Some("child")
         );
     }
 

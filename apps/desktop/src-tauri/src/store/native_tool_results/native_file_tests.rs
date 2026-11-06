@@ -1030,6 +1030,7 @@ fn native_cursor_loader_requires_exact_parser_and_cursor_revision_pairs() {
         (66, 1, false),
         (66, 4, false),
         (66, 5, true),
+        (70, 5, true),
         (PARSER_REVISION, 1, false),
         (PARSER_REVISION, 4, false),
         (PARSER_REVISION, 5, true),
@@ -1072,7 +1073,7 @@ fn native_cursor_loader_requires_exact_parser_and_cursor_revision_pairs() {
             assert_eq!(loaded.baseline_offset(), first.baseline_offset);
             assert_eq!(
                 serde_json::to_string(&loaded).unwrap().contains(CANARY),
-                matches!(parser, 65 | 66 | PARSER_REVISION)
+                matches!(parser, 65 | 66 | 70 | PARSER_REVISION)
             );
         } else {
             store
@@ -1404,6 +1405,100 @@ fn parser_65_receipt_without_a_marker_sanitizes_requests_and_pending_contexts_be
     );
     assert!(!format!("{page:?}").contains(CANARY));
     assert_eq!(origin_markers(&store), markers);
+}
+
+#[test]
+fn parser_67_cursor_with_origin_boundary_downgrades_saved_request_history() {
+    use antiburn_local::analysis::{
+        NativeEvidenceEvent, NativeEvidenceFact, NativeMessageObservation,
+    };
+
+    const CANARY: &str = "PARSER_67_API_REQUEST_HISTORY_IS_NOT_COMPLETE";
+    let (_directory, store, input) = fixture(CLAUDE_RESULTS);
+    let (claim, first) = next_page(&store, &input, 100);
+    store
+        .publish_native_file_page(&claim, &first, &[], 100)
+        .unwrap();
+    assert_eq!(origin_markers(&store).len(), 1);
+
+    let mut request = first.requests[0].clone();
+    request.message.parts[0].text = CANARY.into();
+    let mut result = first.results[0].observation.clone();
+    result.position = antiburn_local::analysis::ToolResultPosition::Jsonl {
+        record_index: 2,
+        item_index: first.results[0].position.item_index,
+    };
+    let context = result.context.as_mut().unwrap();
+    context.result_position = result.position;
+    context.user_messages = vec![request.message.clone()];
+    context.complete_through_event = true;
+    let mut evidence_result = result.clone();
+    evidence_result.position = first.results[0].observation.position;
+    evidence_result.context.as_mut().unwrap().result_position = evidence_result.position;
+
+    let mut cursor = serde_json::to_value(&first.cursor).unwrap();
+    cursor["history_complete"] = json!(true);
+    cursor["requests"] = json!([request.clone()]);
+    cursor["pending_results"] = json!({
+        "position": first.results[0].position,
+        "observations_json": [serde_json::to_string(&result).unwrap()],
+        "requests": [request],
+        "main_session": true,
+        "history_complete": true,
+    });
+    cursor["pending_evidence"] = json!(
+        serde_json::to_string(&vec![NativeEvidenceEvent {
+            fact: NativeEvidenceFact::Message(NativeMessageObservation::ToolResult(
+                evidence_result,
+            )),
+            live_eligible: true,
+        }])
+        .unwrap()
+    );
+
+    store
+        .lock()
+        .execute(
+            "UPDATE native_file_delivery SET parser_revision = 67, cursor_json = ?1,
+                 pending = 1, next_attempt_at_epoch = 101",
+            [cursor.to_string()],
+        )
+        .unwrap();
+
+    let claim = store.claim_next_native_file(101, 60).unwrap().unwrap();
+    assert_eq!(claim.parser_revision, Some(67));
+    assert!(claim.request_origin_boundary);
+    let loaded = claim.cursor().unwrap().unwrap();
+    let migrated = serde_json::to_value(&loaded).unwrap();
+    assert_eq!(migrated["history_complete"], false);
+    assert!(migrated["requests"].as_array().unwrap().is_empty());
+    assert_eq!(migrated["pending_results"]["history_complete"], false);
+    assert!(
+        migrated["pending_results"]["requests"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!serde_json::to_string(&migrated).unwrap().contains(CANARY));
+
+    let page = read_native_file_page(&input, Some(&loaded), &|| false).unwrap();
+    assert_eq!(page.bytes_read, 0);
+    assert!(!page.history_complete);
+    assert!(page.requests.is_empty());
+    assert!(!page.results.is_empty());
+    assert!(page.results.iter().all(|result| {
+        result.observation.context.as_ref().is_some_and(|context| {
+            !context.complete_through_event && context.user_messages.is_empty()
+        })
+    }));
+    assert!(page.evidence.events.iter().any(|event| matches!(
+        &event.fact,
+        NativeEvidenceFact::Message(NativeMessageObservation::ToolResult(result))
+            if result.context.as_ref().is_some_and(|context| {
+                !context.complete_through_event && context.user_messages.is_empty()
+            })
+    )));
+    assert!(!format!("{page:?}").contains(CANARY));
 }
 
 #[test]
@@ -1941,6 +2036,70 @@ fn parser_65_partial_upgrade_persists_a_sanitized_retry_cursor_and_finishes_afte
             )
             .unwrap()
     );
+}
+
+#[test]
+fn parser_67_rejected_sdk_root_replays_under_a_new_origin_boundary_without_old_cursor_state() {
+    use antiburn_local::analysis::SourceFormat;
+
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../crates/antiburn-local/tests/fixtures/claude_characterization/sdk_cli_request_slot.jsonl"
+    ));
+    let (directory, store, input) = fixture_for_source(
+        source,
+        SessionKey::new("native", "claude-code", "synthetic-sdk-session"),
+        SourceFormat::ClaudeJsonl,
+    );
+    let (initial_claim, initial) = next_page(&store, &input, 100);
+    assert_eq!(initial.requests.len(), 1);
+    let mut rejected = serde_json::to_value(initial.cursor).unwrap();
+    rejected["requests"] = json!([]);
+    rejected["history_complete"] = json!(false);
+    rejected["adapter"]["Claude"]["root"] = json!(false);
+    let user_message_root = &mut rejected["adapter"]["Claude"]["parser"]["user_message_root"];
+    user_message_root["user_slot"] = json!(true);
+    user_message_root["characterized"] = json!(false);
+    user_message_root["invalid"] = json!(true);
+    user_message_root["session"] = Value::Null;
+    user_message_root["last"] = Value::Null;
+    user_message_root["fingerprints"] = json!({});
+    {
+        let connection = store.lock();
+        connection
+            .execute(
+                "UPDATE native_file_delivery SET parser_revision = 67, cursor_json = ?1,
+                    observed_generation = ?2, pending = 1,
+                    claim_fence = NULL, lease_expires_at_epoch = NULL",
+                params![rejected.to_string(), initial_claim.generation],
+            )
+            .unwrap();
+    }
+
+    let (claim, page) = next_page(&store, &input, 101);
+    assert_eq!(claim.parser_revision, Some(67));
+    assert!(claim.reset);
+    assert!(claim.cursor_json.is_none());
+    assert!(!claim.request_origin_boundary);
+    assert_eq!(page.requests.len(), 1);
+    assert_eq!(page.requests[0].message.message_id, "sdk-request");
+    assert!(!page.history_complete);
+    assert!(!page.results.iter().any(|result| result.live_eligible));
+    assert!(origin_markers(&store).is_empty());
+    store
+        .publish_native_file_page(&claim, &page, &[], 101)
+        .unwrap();
+    assert_eq!(origin_markers(&store).len(), 1);
+
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    let (claim, idle) = next_page(&store, &input, 102);
+    assert_eq!(claim.parser_revision, Some(PARSER_REVISION));
+    assert!(claim.request_origin_boundary);
+    assert_eq!(idle.requests.len(), 1);
+    assert_eq!(idle.requests[0].message.message_id, "sdk-request");
+    assert!(idle.results.is_empty());
+    assert_eq!(origin_markers(&store).len(), 1);
 }
 
 #[test]

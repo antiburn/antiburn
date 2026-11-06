@@ -606,6 +606,7 @@ pub fn run_pass(
                     analysis::ClaimedSource {
                         fingerprint: record.source_fingerprint,
                         generation: 0,
+                        source_label: Some(record.source_label.clone()),
                     },
                     signal,
                     Some(writer),
@@ -823,6 +824,7 @@ mod tests {
             analysis::ClaimedSource {
                 fingerprint: Some(parent_fingerprint(&path).unwrap()),
                 generation: 0,
+                source_label: None,
             },
             PassSignal::new(),
             Some(antiburn_local::analysis::MemoryTurnRowStore::new(
@@ -938,6 +940,7 @@ mod tests {
                 analysis::ClaimedSource {
                     fingerprint: record.source_fingerprint.clone(),
                     generation: 0,
+                    source_label: None,
                 },
                 PassSignal::new(),
                 Some(antiburn_local::analysis::MemoryTurnRowStore::new(

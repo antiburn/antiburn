@@ -82,7 +82,7 @@ If startup notice behavior is unverified, use the explicit command and report th
 
 ## Pi
 
-Load the complete artifact through its entry for one-session testing:
+Load the context artifact through its entry for one-session testing:
 
 ```sh
 pi --extension /absolute/path/to/generated-plugins/pi/extensions/antiburn.mjs
@@ -94,6 +94,19 @@ Keep adjacent shared files. Alternatively install the local package:
 pi install /absolute/path/to/generated-plugins/pi
 pi list
 ```
+
+The default Pi package loads only the context extension and does not import
+renderer dependencies. Frame-only TUI display is a separate opt-in package:
+
+```sh
+pi install /absolute/path/to/generated-plugins/pi-renderer
+```
+
+The renderer package uses static imports for Pi's host aliases. Enable it only
+on a Pi version whose renderer API and aliases you have verified; a failed
+renderer import can stop Pi startup. The Pi 1.4.0 frame-only visual acceptance
+record used the renderer explicitly before this package split. The new package
+split has separate offline loader validation.
 
 Set `PI_CODING_AGENT_DIR` to a temporary profile and use a disposable working directory during testing. Personal scope is the default. Explicit `--local` installation writes project declarations and needs project trust. Review source before granting trust.
 

@@ -8,6 +8,7 @@ use rusqlite::{Connection, StatementStatus, params};
 
 use super::*;
 
+mod claude_sdk;
 mod merge;
 mod request_origin;
 
@@ -87,6 +88,7 @@ fn mode_evidence_qualifiers_use_the_frozen_native_source_format() {
     for (format, qualifier) in [
         (SourceFormat::ClaudeJsonl, "reported-speed"),
         (SourceFormat::CodexRolloutJsonl, "requested-tier-preference"),
+        (SourceFormat::OpenCodeSqliteV1, "selected-catalog-model"),
         (SourceFormat::OpenCodeSqliteV2, "selected-catalog-model"),
         (SourceFormat::PiV3Jsonl, "model-id-suffix-hint"),
     ] {

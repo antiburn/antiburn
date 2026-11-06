@@ -1,8 +1,155 @@
 use super::*;
-use antiburn_local::discovery::SessionLog;
+use antiburn_local::discovery::{AgentExplorer, Explorers, SessionLog, SessionSource};
 use antiburn_local::platform::environment::DiscoveryEnvironment;
 
 mod claude_parent_child;
+
+const HANDOFF_SESSION_ID: &str = "same-session";
+const DEFAULT_DESKTOP_LABEL: &str = "cursor-desktop:workspace:same-session";
+const PROFILE_DESKTOP_LABEL: &str =
+    "cursor-desktop:profile:0123456789abcdef:workspace:same-session";
+const WSL_DESKTOP_LABEL: &str = "cursor-desktop:profile:fedcba9876543210:workspace:same-session";
+
+struct SourceHandoffExplorer;
+
+#[async_trait::async_trait]
+impl AgentExplorer for SourceHandoffExplorer {
+    async fn discover_recent(&self, _now: i64, _since_secs: i64) -> Vec<SessionLog> {
+        vec![
+            cursor_handoff_log(
+                DEFAULT_DESKTOP_LABEL,
+                "default-profile-model",
+                DiscoveryEnvironment::Native,
+            ),
+            cursor_handoff_log(
+                PROFILE_DESKTOP_LABEL,
+                "explicit-profile-model",
+                DiscoveryEnvironment::Native,
+            ),
+            cursor_handoff_log(
+                WSL_DESKTOP_LABEL,
+                "wsl-profile-model",
+                DiscoveryEnvironment::Wsl {
+                    distribution: "SyntheticLinux".to_owned(),
+                    user: "tester".to_owned(),
+                },
+            ),
+        ]
+    }
+
+    fn owns_path(&self, _path_lower: &str) -> bool {
+        false
+    }
+}
+
+static SOURCE_HANDOFF_EXPLORER: SourceHandoffExplorer = SourceHandoffExplorer;
+
+fn source_handoff_explorer_for(_agent: &AgentKind) -> &'static dyn AgentExplorer {
+    &SOURCE_HANDOFF_EXPLORER
+}
+
+fn cursor_handoff_log(label: &str, model: &str, environment: DiscoveryEnvironment) -> SessionLog {
+    let mut lines = vec![
+        serde_json::json!({
+            "session_id": HANDOFF_SESSION_ID,
+            "cursor_source": "desktop_state_vscdb",
+            "cursor_scope_ordering": "recorded_headers",
+            "local_fork_observation": null,
+            "model": model,
+        })
+        .to_string(),
+        serde_json::json!({
+            "role": "user",
+            "bubbleId": format!("{model}-user"),
+            "content": format!("Question from {model}"),
+        })
+        .to_string(),
+        serde_json::json!({
+            "role": "assistant",
+            "bubbleId": format!("{model}-assistant"),
+            "content": "Synthetic answer",
+            "timestamp": "2026-11-06T00:00:00Z",
+            "model": model,
+        })
+        .to_string(),
+    ];
+    if model == "explicit-profile-model" {
+        lines.push(
+            serde_json::json!({
+                "role": "user",
+                "bubbleId": format!("{model}-extra-user"),
+                "content": "Only the explicit profile has this event",
+            })
+            .to_string(),
+        );
+    }
+    let content = lines.join("\n");
+    SessionLog {
+        agent_type: AgentKind::Cursor,
+        source: SessionSource::Inline {
+            label: label.to_owned(),
+            content,
+            source_format: None,
+        },
+        updated_at: Some(1),
+        environment,
+    }
+}
+
+fn claimed_cursor_source(source_label: &str) -> ClaimedSource {
+    ClaimedSource {
+        fingerprint: None,
+        generation: 1,
+        source_label: Some(source_label.to_owned()),
+    }
+}
+
+#[tokio::test]
+async fn analyze_for_evidence_resolves_the_claimed_cursor_profile_source() {
+    let explorers = Explorers::new(source_handoff_explorer_for);
+    let pass = analyze_for_evidence_with_explorers(
+        EvidenceSourceLookup {
+            explorers,
+            agent: AgentKind::Cursor,
+            session_id: HANDOFF_SESSION_ID,
+            wsl_distro: None,
+        },
+        claimed_cursor_source(PROFILE_DESKTOP_LABEL),
+        PassSignal::new(),
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(pass.outcome, PassOutcome::Published);
+    assert_eq!(
+        pass.native_tool_result_source_format,
+        Some(SourceFormat::CursorIdeComposer)
+    );
+    assert_eq!(pass.analysis.metrics.as_ref().unwrap().event_count, 3);
+}
+
+#[tokio::test]
+async fn analyze_for_evidence_rejects_missing_and_wrong_environment_labels() {
+    let explorers = Explorers::new(source_handoff_explorer_for);
+    for label in ["cursor-desktop:missing:same-session", WSL_DESKTOP_LABEL] {
+        let pass = analyze_for_evidence_with_explorers(
+            EvidenceSourceLookup {
+                explorers,
+                agent: AgentKind::Cursor,
+                session_id: HANDOFF_SESSION_ID,
+                wsl_distro: None,
+            },
+            claimed_cursor_source(label),
+            PassSignal::new(),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(pass.outcome, PassOutcome::SourceMissing, "{label}");
+        assert!(pass.evidence.is_none(), "{label}");
+    }
+}
 
 #[tokio::test]
 async fn parser_panic_before_progress_returns_adapter_failed() {
@@ -33,6 +180,7 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
         ClaimedSource {
             fingerprint: Some("sv1:stale-discovery-claim".to_owned()),
             generation: 1,
+            source_label: None,
         },
         PassSignal::new(),
         None,
@@ -1819,10 +1967,12 @@ fn an_inline_source_records_matching_and_mismatching_generations() {
     let matching = ClaimedSource {
         fingerprint: Some(fingerprint),
         generation: 9,
+        source_label: None,
     };
     let mismatching = ClaimedSource {
         fingerprint: Some("sv1:different".to_string()),
         generation: 9,
+        source_label: None,
     };
     let actual = inline_fingerprint(&content);
     let StreamOutcome::Published { session, .. } = stream_vendor(

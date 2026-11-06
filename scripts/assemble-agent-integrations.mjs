@@ -52,7 +52,7 @@ export async function assembleAgentIntegrations(output = defaultOutput) {
     for (const vendor of ['claude', 'codex', 'cursor', 'opencode', 'pi'])
       add(`${vendor}/lib/${name}`, contents)
   }
-  for (const [vendor, entry] of [
+  for (const [vendor, entry, outputVendor = vendor] of [
     ['claude', 'session-check-hook.mjs'],
     ['codex', 'session-check-hook.mjs'],
     ['cursor', 'session-check-hook.mjs'],
@@ -60,15 +60,17 @@ export async function assembleAgentIntegrations(output = defaultOutput) {
     ['opencode', 'session-checks.mjs'],
     ['pi', 'antiburn.mjs'],
     ['pi', 'session-checks.mjs'],
+    ['pi', 'session-check-renderer.mjs', 'pi-renderer'],
+    ['pi', 'session-check-renderer-extension.mjs', 'pi-renderer'],
   ]) {
     const source = await read(`integrations/antiburn/${vendor}/${entry}`)
-    const directory = ['claude', 'codex', 'cursor'].includes(vendor)
+    const directory = ['claude', 'codex', 'cursor'].includes(outputVendor)
       ? 'hooks'
-      : vendor === 'pi'
+      : outputVendor === 'pi' || outputVendor === 'pi-renderer'
         ? 'extensions'
         : 'runtime'
     add(
-      `${vendor}/${directory}/${entry}`,
+      `${outputVendor}/${directory}/${entry}`,
       source.replaceAll('../../../packages/antiburn-plugin-core/', '../lib/'),
     )
   }
@@ -80,6 +82,21 @@ export async function assembleAgentIntegrations(output = defaultOutput) {
       private: true,
       type: 'module',
       pi: { extensions: ['./extensions/session-checks.mjs'] },
+    }),
+  )
+  add(
+    'pi-renderer/package.json',
+    json({
+      name: 'antiburn-pi-renderer-local',
+      version: '0.1.0',
+      private: true,
+      type: 'module',
+      keywords: ['pi-package'],
+      peerDependencies: {
+        '@earendil-works/pi-coding-agent': '*',
+        '@earendil-works/pi-tui': '*',
+      },
+      pi: { extensions: ['./extensions/session-check-renderer-extension.mjs'] },
     }),
   )
   add('LICENSE', await read('LICENSE'))

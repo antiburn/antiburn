@@ -16,6 +16,7 @@ pub(crate) fn next_live_source_in(
     now: i64,
     fair_turn: bool,
 ) -> Result<Option<(String, String, String, String)>> {
+    let claude_sdk_root_reset = native_file::CLAUDE_SDK_ROOT_REJECTED_RESET_SQL;
     let order = if fair_turn {
         "COALESCE(service_ticket, (SELECT next_ticket FROM work_queue_schedule
             WHERE domain = 'native_delivery')), environment_key, agent, session_id"
@@ -29,6 +30,7 @@ pub(crate) fn next_live_source_in(
                      SELECT 'file' AS family, s.environment_key, s.agent, s.session_id,
                             s.updated_at_epoch, d.service_ticket,
                             (d.incarnation IS NULL OR d.incarnation <> s.incarnation
+                             OR {claude_sdk_root_reset}
                              OR ((d.source_label <> s.source_label OR d.cwd IS NOT s.cwd)
                                  AND d.cursor_json IS NULL)
                               ) AS reset,
@@ -39,7 +41,7 @@ pub(crate) fn next_live_source_in(
                          USING(environment_key, agent, session_id)
                       WHERE s.environment_key = 'native' AND s.wsl_distro IS NULL
                          AND s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file'
-                         AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66))
+                         AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70))
                         AND s.cwd IS NOT NULL AND s.cwd <> ''
                         AND ({LIVE_ACTIVATION_SQL}) AND ({ROOT_SESSION_SQL})
                  ), journal_rows AS (
@@ -54,7 +56,7 @@ pub(crate) fn next_live_source_in(
                        FROM session s LEFT JOIN opencode_journal_delivery d
                          USING(environment_key, agent, session_id)
                         WHERE ({OPENCODE_V1_SOURCE_SQL}) AND s.wsl_distro IS NULL
-                        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66))
+                        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70))
                         AND s.cwd IS NOT NULL AND s.cwd <> ''
                         AND ({ROOT_SESSION_SQL}) AND ({LIVE_ACTIVATION_SQL})
                  ), eligible AS (

@@ -49,6 +49,178 @@ async fn a_non_consuming_inline_source_does_not_clone_content() {
 }
 
 #[tokio::test]
+async fn exact_source_lookup_keeps_same_id_cursor_desktop_claim_and_environment() {
+    let temp = TempDir::new().expect("tempdir");
+    let session_id = "same-session";
+    let cli_path = temp
+        .path()
+        .join(".cursor/projects/demo/agent-transcripts/same-session/same-session.jsonl");
+    tokio::fs::create_dir_all(cli_path.parent().unwrap())
+        .await
+        .expect("create CLI transcript directory");
+    let cli_content = br#"{"type":"user","sessionId":"same-session","cwd":"/workspace/cli"}"#;
+    tokio::fs::write(&cli_path, cli_content)
+        .await
+        .expect("write CLI transcript");
+    let desktop_label = "cursor-desktop:composer-hash:same-session";
+    let desktop_content = r#"{"session_id":"same-session","cwd":"/workspace/desktop"}"#;
+    let mut wsl_desktop = sample_session(AgentKind::Cursor, desktop_label);
+    wsl_desktop.environment = DiscoveryEnvironment::Wsl {
+        distribution: "Ubuntu".to_string(),
+        user: "dev".to_string(),
+    };
+    if let SessionSource::Inline { content, .. } = &mut wsl_desktop.source {
+        *content = r#"{"session_id":"same-session","cwd":"/workspace/wsl"}"#.to_string();
+    }
+    let logs = vec![
+        SessionLog {
+            agent_type: AgentKind::Cursor,
+            source: SessionSource::File(cli_path.clone()),
+            updated_at: None,
+            environment: DiscoveryEnvironment::default(),
+        },
+        SessionLog {
+            agent_type: AgentKind::Cursor,
+            source: SessionSource::Inline {
+                label: desktop_label.to_string(),
+                content: desktop_content.to_string(),
+                source_format: None,
+            },
+            updated_at: None,
+            environment: DiscoveryEnvironment::default(),
+        },
+        wsl_desktop,
+    ];
+
+    let cli_stat = source_version::SourceStat::from_path(&cli_path)
+        .await
+        .expect("read CLI source stat");
+    let cli_fingerprint = FingerprintInputs {
+        stat: cli_stat,
+        head_hash: Some(source_version::head_hash_of(cli_content)),
+    }
+    .fingerprint();
+    let desktop_fingerprint = source_version::inline_source_fingerprint(desktop_content);
+    assert_ne!(cli_fingerprint, desktop_fingerprint);
+
+    let desktop = Explorers::DISK
+        .find_source_log_by_label(&logs, &AgentKind::Cursor, session_id, desktop_label, None)
+        .expect("find the exact native desktop source");
+    assert_eq!(desktop.source_label(), desktop_label);
+    let SessionSource::Inline { content, .. } = &desktop.source else {
+        panic!("the claimed desktop source must remain inline");
+    };
+    assert!(content.contains("/workspace/desktop"));
+    assert_eq!(
+        source_version::inline_source_fingerprint(content),
+        desktop_fingerprint
+    );
+
+    let wsl = Explorers::DISK
+        .find_source_log_by_label(
+            &logs,
+            &AgentKind::Cursor,
+            session_id,
+            desktop_label,
+            Some("ubuntu"),
+        )
+        .expect("same source label in WSL must stay in its requested environment");
+    let SessionSource::Inline { content, .. } = &wsl.source else {
+        panic!("the WSL source must remain inline");
+    };
+    assert!(content.contains("/workspace/wsl"));
+
+    assert!(
+        Explorers::DISK
+            .find_source_log_by_label(
+                &logs,
+                &AgentKind::Cursor,
+                session_id,
+                "cursor-desktop:missing:same-session",
+                None,
+            )
+            .is_none(),
+        "a missing claimed label must not fall back to the same-ID CLI source"
+    );
+}
+
+#[tokio::test]
+async fn cursor_legacy_source_labels_require_one_profile_candidate() {
+    let old = "cursor-desktop:workspace:same-session";
+    let new = "cursor-desktop:profile:0123456789abcdef:workspace:same-session";
+    let make = |label: &str| SessionLog {
+        agent_type: AgentKind::Cursor,
+        source: SessionSource::Inline {
+            label: label.into(),
+            content: r#"{"session_id":"same-session"}"#.into(),
+            source_format: None,
+        },
+        updated_at: None,
+        environment: DiscoveryEnvironment::Native,
+    };
+    let logs = vec![make(new)];
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", old, None)
+            .unwrap()
+            .source_label(),
+        new
+    );
+    let logs = vec![make(old), make(new)];
+    assert!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", old, None)
+            .is_none()
+    );
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", new, None)
+            .unwrap()
+            .source_label(),
+        new
+    );
+}
+
+#[tokio::test]
+async fn cursor_profile_labels_keep_default_and_explicit_sources_distinct() {
+    let default = "cursor-desktop:profile:aaaaaaaaaaaaaaaa:workspace:same-session";
+    let explicit = "cursor-desktop:profile:bbbbbbbbbbbbbbbb:workspace:same-session";
+    let legacy = "cursor-desktop:workspace:same-session";
+    let make = |label: &str| SessionLog {
+        agent_type: AgentKind::Cursor,
+        source: SessionSource::Inline {
+            label: label.into(),
+            content: r#"{"session_id":"same-session"}"#.into(),
+            source_format: None,
+        },
+        updated_at: None,
+        environment: DiscoveryEnvironment::Native,
+    };
+    let logs = vec![make(default), make(explicit)];
+
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", default, None)
+            .unwrap()
+            .source_label(),
+        default
+    );
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", explicit, None)
+            .unwrap()
+            .source_label(),
+        explicit
+    );
+    assert!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", legacy, None)
+            .is_none(),
+        "an old unscoped label cannot identify which profile owned the source"
+    );
+}
+
+#[tokio::test]
 async fn a_non_claude_file_source_uses_whole_document_fallback() {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path().join("session.jsonl");
@@ -1573,6 +1745,53 @@ fn matcher_precedence_covers_every_agent_exactly_once() {
 /// doesn't (Codex), purely via the default trait impl — no `matches!` gate
 /// in the dispatcher. This is the seam that lets a future vendor opt in by
 /// implementing the hooks on its own explorer alone.
+#[tokio::test]
+async fn selected_parent_source_keeps_its_own_subagents() {
+    let temp = TempDir::new().unwrap();
+    let mut parents = Vec::new();
+    let mut children = Vec::new();
+    for profile in ["default", "explicit"] {
+        let root = temp.path().join(profile);
+        let child = root
+            .join("same-id/subagents")
+            .join(format!("agent-{profile}.jsonl"));
+        tokio::fs::create_dir_all(child.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&child, "{}").await.unwrap();
+        parents.push(root.join("same-id.jsonl"));
+        children.push(child);
+    }
+    for index in 0..parents.len() {
+        for source in [
+            SessionSource::File(parents[index].clone()),
+            SessionSource::Inline {
+                label: parents[index].to_string_lossy().into_owned(),
+                content: "{}".into(),
+                source_format: None,
+            },
+        ] {
+            assert_eq!(
+                Explorers::DISK
+                    .list_subagents_for_source(&AgentKind::Claude, &source)
+                    .await,
+                vec![children[index].clone()]
+            );
+        }
+    }
+    let source = SessionSource::Inline {
+        label: "claude-fork-job:same-id".into(),
+        content: "{}".into(),
+        source_format: None,
+    };
+    assert!(
+        Explorers::DISK
+            .list_subagents_for_source(&AgentKind::Claude, &source)
+            .await
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn subagent_dispatch_is_vendor_specific_via_trait() {
     let home = TempDir::new().unwrap();

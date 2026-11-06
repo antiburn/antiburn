@@ -9,6 +9,22 @@ import { promisify } from 'node:util'
 import { managedExecutable } from '../managed-connection.mjs'
 import { assembleAgentIntegrations } from '../../../scripts/assemble-agent-integrations.mjs'
 
+async function stubPiHostPackages(piRoot) {
+  const hostModules = join(piRoot, 'node_modules/@earendil-works')
+  for (const [name, source] of [
+    ['pi-tui', 'export class Markdown {}\n'],
+    ['pi-coding-agent', 'export const getMarkdownTheme = () => ({})\n'],
+  ]) {
+    const packageRoot = join(hostModules, name)
+    await mkdir(packageRoot, { recursive: true })
+    await writeFile(
+      join(packageRoot, 'package.json'),
+      '{"type":"module","exports":"./index.js"}',
+    )
+    await writeFile(join(packageRoot, 'index.js'), source)
+  }
+}
+
 test(
   'all desktop vendor runtimes deliver through the internal CLI with empty PATH and no terminal shortcut',
   { skip: process.platform === 'win32' },
@@ -17,6 +33,7 @@ test(
     try {
       const payload = join(root, 'payload')
       await assembleAgentIntegrations(payload)
+      await stubPiHostPackages(join(payload, 'pi-renderer'))
       const internal = join(root, 'internal runtime é')
       await mkdir(internal)
       const executable = join(internal, 'antiburn-cli')
@@ -89,14 +106,27 @@ test(
         } else if (vendor === 'pi') {
           const { default: register } = await import(pathToFileURL(join(root, 'extensions/session-checks.mjs')))
           let handler
-          register({ on: (name, callback) => { assert.equal(name, 'before_agent_start'); handler = callback } })
-          const result = await handler({ messageType: 'user' }, { sessionManager: { getSessionId: () => sessionId } })
+          await register({ on: (name, callback) => { assert.equal(name, 'before_agent_start'); handler = callback } })
+          const ignored = await handler({ messageType: 'tool' }, { mode: 'tui', hasUI: true, sessionManager: { getSessionId: () => sessionId } })
+          assert.equal(ignored, undefined)
+          const result = await handler({ type: 'before_agent_start', prompt: 'fixture' }, { mode: 'tui', hasUI: true, sessionManager: { getSessionId: () => sessionId } })
+          assert.equal(result.message.display, true)
           assert.match(result?.message.content ?? '', /Internal CLI finding/)
+          const rendererRoot = join(${JSON.stringify(payload)}, 'pi-renderer')
+          const { default: registerRenderer } = await import(
+            pathToFileURL(join(rendererRoot, 'extensions/session-check-renderer-extension.mjs'))
+          )
+          const renderers = new Map()
+          registerRenderer({
+            registerMessageRenderer: (name, renderer) => renderers.set(name, renderer),
+          })
+          assert.equal(typeof renderers.get('antiburn-session-checks'), 'function')
         } else {
           const adapter = await import(pathToFileURL(join(root, 'hooks/session-check-hook.mjs')))
           const input = { session_id: sessionId, hook_event_name: 'UserPromptSubmit', conversation_id: sessionId, generation_id: 'generation' }
           const result = await adapter[vendor + 'SessionCheckOutput'](input)
           assert.match(JSON.stringify(result), /Internal CLI finding/)
+          if (vendor === 'claude') assert.match(result.systemMessage, /🔥 antiburn/)
           const { handoffJsonHook } = await import(pathToFileURL(join(root, 'lib/native-hook.mjs')))
           await handoffJsonHook(result, (_text, done) => done())
         }
@@ -170,7 +200,7 @@ test('desktop payload contains only complete runtime adapters, without public Cl
     const one = await assembleAgentIntegrations(join(root, 'one'))
     const two = await assembleAgentIntegrations(join(root, 'two'))
     assert.deepEqual(one, two)
-    assert.equal(one.files.length, 44)
+    assert.equal(one.files.length, 47)
     assert.ok(
       one.files.every(
         ({ path }) => !/candidate|debug|\.ts$|SKILL|marketplace|commands\//.test(path),
@@ -185,13 +215,49 @@ test('desktop payload contains only complete runtime adapters, without public Cl
       await import(pathToFileURL(join(root, 'one', host, 'lib/session-checks.mjs')).href)
     }
     const pi = JSON.parse(await readFile(join(root, 'one/pi/package.json'), 'utf8'))
+    assert.equal(pi.peerDependencies, undefined)
+    assert.deepEqual(pi.pi.extensions, ['./extensions/session-checks.mjs'])
+    const piRenderer = JSON.parse(
+      await readFile(join(root, 'one/pi-renderer/package.json'), 'utf8'),
+    )
+    assert.deepEqual(piRenderer.peerDependencies, {
+      '@earendil-works/pi-coding-agent': '*',
+      '@earendil-works/pi-tui': '*',
+    })
+    assert.deepEqual(piRenderer.pi.extensions, [
+      './extensions/session-check-renderer-extension.mjs',
+    ])
+    await stubPiHostPackages(join(root, 'one/pi-renderer'))
+    const piEntry = await readFile(join(root, 'one/pi/extensions/session-checks.mjs'), 'utf8')
+    assert.doesNotMatch(piEntry, /@earendil-works\/pi-tui/)
+    await import(pathToFileURL(join(root, 'one/pi', pi.pi.extensions[0])).href)
+    const rendererEntry = await readFile(
+      join(root, 'one/pi-renderer/extensions/session-check-renderer-extension.mjs'),
+      'utf8',
+    )
+    assert.match(rendererEntry, /from '@earendil-works\/pi-tui'/)
+    assert.match(rendererEntry, /from '@earendil-works\/pi-coding-agent'/)
+    assert.ok(
+      await readFile(
+        join(root, 'one/pi-renderer/extensions/session-check-renderer.mjs'),
+        'utf8',
+      ),
+    )
     const adapter = await import(pathToFileURL(join(root, 'one/pi', pi.pi.extensions[0])).href)
     const registrations = []
-    adapter.default({
+    await adapter.default({
       on: (event) => registrations.push(event),
       registerCommand: () => assert.fail('optional command installed'),
     })
     assert.deepEqual(registrations, ['before_agent_start'])
+    const rendererAdapter = await import(
+      pathToFileURL(join(root, 'one/pi-renderer', piRenderer.pi.extensions[0])).href
+    )
+    const renderers = new Map()
+    rendererAdapter.default({
+      registerMessageRenderer: (name, renderer) => renderers.set(name, renderer),
+    })
+    assert.equal(typeof renderers.get('antiburn-session-checks'), 'function')
     await assert.rejects(assembleAgentIntegrations(join(root, 'one')))
     await mkdir(join(root, 'unrelated'))
   } finally {

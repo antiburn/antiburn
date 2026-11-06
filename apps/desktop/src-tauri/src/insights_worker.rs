@@ -319,6 +319,7 @@ fn run_record_pass_with(
             analysis::ClaimedSource {
                 fingerprint: record.source_fingerprint.clone(),
                 generation: 0,
+                source_label: Some(record.source_label.clone()),
             },
             signal,
             Some(writer),

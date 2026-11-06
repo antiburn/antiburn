@@ -541,6 +541,40 @@ test('keeps authored names inside the check heading', () => {
   assert.ok(result.includes('**Retry \\*\\*loop\\*\\* extra**  \n'))
 })
 
+test('uses plain text only when the display surface requires it', () => {
+  assert.equal(
+    formatSessionCheckUpdates(response.updates, 'text'),
+    '────────────────────────────────\n\n🔥 antiburn · 1 finding\n\nRetry loop\nRepeated failed retries.\n\n────────────────────────────────',
+  )
+  assert.equal(
+    formatSessionCheckUpdate({ ...response.updates[0], name: 'Retry [loop]\nextra' }, 'text'),
+    'Retry [loop] extra\nRepeated failed retries.',
+  )
+  assert.equal(formatSessionCheckUpdates([], 'text'), '')
+  assert.match(formatSessionChecksContext(response), /🔥 `antiburn` · \*\*1 finding\*\*/)
+})
+
+test('state updates use a readable fallback when only the finding ID remains', () => {
+  const id = `yaml:${'a'.repeat(64)}`
+  for (const [kind, suffix] of [
+    ['invalidated', 'withdrawn'],
+    ['cleared', 'cleared'],
+  ]) {
+    const update = { id, name: id, kind, message: null }
+    for (const format of ['text', 'markdown']) {
+      const result = formatSessionCheckUpdates([update], format)
+      assert.ok(result.includes(`Previous advisory — ${suffix}`))
+      assert.equal(result.includes(id), false)
+      assert.ok(
+        formatSessionCheckUpdates(
+          [{ ...update, name: 'Skill opportunities' }],
+          format,
+        ).includes(`Skill opportunities — ${suffix}`),
+      )
+    }
+  }
+})
+
 test('groups multiple findings into one counted frame for context and UI', async () => {
   const second = {
     ...response.updates[0],

@@ -169,6 +169,7 @@ async fn publish_fixture_with_prompts(
         ClaimedSource {
             fingerprint: Some(fingerprint),
             generation: claim.source_generation,
+            source_label: None,
         },
         PassSignal::new(),
         Some(row_store),

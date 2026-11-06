@@ -897,7 +897,7 @@ impl ClaudeSessionReader {
                             state.retained_root.invalidate();
                         }
                         if !state.user_message_root.has_record(&value)
-                            && !state.user_message_root.has_known_seam(&value)
+                            && !state.has_known_request_seam(&value)
                         {
                             state.user_message_root.invalidate();
                         }
@@ -933,7 +933,7 @@ impl ClaudeSessionReader {
                             || value["isSidechain"] == true
                             || value.get("agentId").is_some()
                             || (value.get("parentUuid").is_some()
-                                && !state.user_message_root.has_known_seam(&value)))
+                                && !state.has_known_request_seam(&value)))
                     {
                         sink.native_admission_failure(crate::analysis::NativeAdmissionFailure {
                             source_format: state.source_format,
@@ -1011,7 +1011,7 @@ impl ClaudeSessionReader {
 
                     state.scope.observe_record(&value);
                     state.retained_root.observe(&value);
-                    state.user_message_root.observe_user_slot(&value);
+                    state.observe_request_slot(&value);
                     if retained_root::is_compaction_boundary(&value)
                         || value["isCompactSummary"] == true
                     {
@@ -1021,6 +1021,7 @@ impl ClaudeSessionReader {
                         emit_user_message(&value, index, &state.session_id, sink);
                     }
                     state.capture_native_tool_results(&value, index, sink);
+                    state.retire_calls_after_request(&value);
                     if state.user_message_root.admits(&state.session_id)
                         && native_activity_record(&value)
                     {
@@ -1207,6 +1208,10 @@ fn emit_user_message(
         }
         return;
     }
+    if retained_root::has_api_request_origin(record) {
+        // API-origin text does not prove that the source contains every request.
+        sink.tool_result_gap();
+    }
     let (texts, complete): (Vec<&str>, bool) = match &record["message"]["content"] {
         Value::String(text) => (vec![text], true),
         Value::Array(blocks) => (
@@ -1325,6 +1330,36 @@ impl ClaudeStreamState {
         sink: &mut dyn RecordSink,
     ) {
         self.capture_native_tool_results_with_public(record, record_index, sink, true);
+    }
+
+    fn has_sdk_result_seam(&self, record: &Value) -> bool {
+        self.user_message_root.has_sdk_result_seam(record, |id| {
+            self.native_calls
+                .get(id)
+                .and_then(Option::as_ref)
+                .and_then(|call| call.record_id.as_deref())
+        })
+    }
+
+    fn has_known_request_seam(&self, record: &Value) -> bool {
+        self.user_message_root.has_known_seam(record) || self.has_sdk_result_seam(record)
+    }
+
+    fn observe_request_slot(&mut self, record: &Value) {
+        let seam = self.has_sdk_result_seam(record);
+        self.user_message_root.observe_user_slot(record, seam);
+    }
+
+    fn retire_calls_after_request(&mut self, record: &Value) {
+        if record["version"] == "2.1.317"
+            && record["entrypoint"] == "sdk-cli"
+            && retained_root::is_user_content(record)
+        {
+            for call in self.native_calls.values_mut() {
+                *call = None;
+            }
+            self.native_call_bytes = self.native_calls.keys().map(String::len).sum();
+        }
     }
 
     fn capture_native_tool_results_with_public(
@@ -1551,6 +1586,16 @@ impl ClaudeStreamState {
                             },
                         },
                     )));
+                    if record["version"] == "2.1.317"
+                        && record["entrypoint"] == "sdk-cli"
+                        && let Some(call) = block["tool_use_id"]
+                            .as_str()
+                            .and_then(|id| self.native_calls.get_mut(id))
+                            .and_then(Option::take)
+                    {
+                        self.native_call_bytes =
+                            self.native_call_bytes.saturating_sub(call.retained_bytes);
+                    }
                 }
                 _ => {}
             }

@@ -1894,6 +1894,7 @@ async fn file_source_identity_survives_real_publication_and_revision_reconciliat
                 analysis::ClaimedSource {
                     fingerprint,
                     generation: source_generation,
+                    source_label: None,
                 },
                 signal,
                 Some(writer),

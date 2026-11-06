@@ -140,8 +140,8 @@ impl NativeFileCursor {
         Ok(serde_json::to_string(&self)?)
     }
 
-    /// Remove request text whose pre-65 Claude state does not retain origin proof.
-    /// Call this only for a cursor saved before parser revision 65.
+    /// Remove retained Claude request text whose origin or completeness is unproven.
+    /// Use this for pre-65 state, parser-67 state, or a missing origin boundary.
     pub fn migrate_pre_65_claude_requests(mut self) -> anyhow::Result<Self> {
         if self.source_format != SourceFormat::ClaudeJsonl {
             return Ok(self);

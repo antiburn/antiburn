@@ -64,7 +64,7 @@ fn parser_50_requeues_legacy_path_only_reads_and_rejects_their_resume_state() {
     }
     let before = store.session_source_state(&record.key).unwrap().unwrap();
     let revisions = projection_revisions();
-    assert_eq!(revisions.parser_revision, 67);
+    assert_eq!(revisions.parser_revision, 71);
     assert_eq!(revisions.evidence_schema_revision, 22);
     assert_eq!(
         store
@@ -107,7 +107,7 @@ fn parser_53_requeues_completed_omp_sessions() {
         )
         .unwrap();
     let revisions = crate::analysis::projection_revisions();
-    assert_eq!(revisions.parser_revision, 67);
+    assert_eq!(revisions.parser_revision, 71);
     store
         .lock()
         .execute(
@@ -174,7 +174,7 @@ fn prior_parser_evidence_requeues_without_changing_source_progress(parser_revisi
         .unwrap();
     let before = store.session_source_state(&record.key).unwrap().unwrap();
     let revisions = projection_revisions();
-    assert_eq!(revisions.parser_revision, 67);
+    assert_eq!(revisions.parser_revision, 71);
     assert_eq!(
         store
             .reconcile_evidence_revisions(&["claude-code"], revisions)

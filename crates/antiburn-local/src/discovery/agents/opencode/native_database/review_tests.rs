@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn incomplete_session_message_only_marker_is_malformed() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY);
+             CREATE TABLE session_message (
+                 id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
+                 seq INTEGER NOT NULL, time_created INTEGER NOT NULL,
+                 time_updated INTEGER NOT NULL, data TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+
+    assert_eq!(
+        opencode_sqlite_schema(&connection).unwrap(),
+        OpenCodeSqliteSchema::Malformed
+    );
+}
+
+#[test]
+fn session_v2_marker_requires_a_valid_v2_schema_even_with_v1_projection() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../../tests/fixtures/opencode_11835_v1_projection.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch("CREATE TABLE session_v2 (id TEXT PRIMARY KEY);")
+        .unwrap();
+
+    assert_eq!(
+        opencode_sqlite_schema(&connection).unwrap(),
+        OpenCodeSqliteSchema::Malformed
+    );
+}
+
+#[test]
 fn fork_inference_does_not_return_a_partial_winner_after_budget_exhaustion() {
     let connection = Connection::open_in_memory().unwrap();
     connection

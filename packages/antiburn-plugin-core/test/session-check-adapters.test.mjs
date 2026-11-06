@@ -3,11 +3,53 @@ import { test } from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { resolve } from 'node:path'
+import { readSessionChecks } from '../session-checks.mjs'
+import { handoffJsonHook } from '../native-hook.mjs'
+import {
+  createPiSessionCheckRenderer,
+  registerPiSessionCheckRenderer,
+} from '../../../integrations/antiburn/pi/session-check-renderer.mjs'
+import {
+  formatSessionCheckUpdates,
+  formatSessionChecksContext,
+} from '../session-checks-validation.mjs'
 
 const root = resolve(import.meta.dirname, '../../..')
 
-async function load(relative) {
+async function load(relative, { stubPiRead = false, stubPiHandler = false } = {}) {
   let source = await readFile(resolve(root, relative), 'utf8')
+  if (stubPiRead && relative === 'integrations/antiburn/pi/antiburn.mjs')
+    source = source.replace(
+      `import {
+  acknowledgeAfterHandoff,
+  formatSessionCheckStatus,
+  readSessionChecks,
+} from '../../../packages/antiburn-plugin-core/session-checks.mjs'`,
+      `const acknowledgeAfterHandoff = () => true
+const formatSessionCheckStatus = () => 'status'
+const readSessionChecks = async () => ({
+  message: 'Pi callback route',
+  updates: [],
+  receipt: 'r'.repeat(64),
+})`,
+    )
+  if (stubPiHandler && relative === 'integrations/antiburn/pi/session-checks.mjs')
+    source = source.replace(
+      "import { piSessionCheckMessage } from './antiburn.mjs'",
+      'const piSessionCheckMessage = async (...args) => ({ display: args[4] })',
+    )
+  source = source.replace(
+    "import { Markdown } from '@earendil-works/pi-tui'",
+    'const Markdown = class Markdown {}',
+  )
+  source = source.replace(
+    "import { getMarkdownTheme } from '@earendil-works/pi-coding-agent'",
+    "const getMarkdownTheme = () => 'theme'",
+  )
+  source = source.replace(
+    "'./session-check-renderer.mjs'",
+    `'${pathToFileURL(resolve(root, 'integrations/antiburn/pi/session-check-renderer.mjs')).href}'`,
+  )
   source = source.replaceAll(
     '../../../packages/antiburn-plugin-core/',
     pathToFileURL(resolve(root, 'packages/antiburn-plugin-core')).href + '/',
@@ -19,12 +61,47 @@ async function load(relative) {
   return import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'))
 }
 
+const { piSessionCheckMessage } = await load('integrations/antiburn/pi/antiburn.mjs')
+
 const delivery = {
   message: 'Antiburn check details',
   updates: [],
   state: 'ready',
   freshnessEvaluated: false,
   receipt: 'b'.repeat(64),
+}
+
+for (const [entry, options] of [
+  ['integrations/antiburn/pi/antiburn.mjs', { stubPiRead: true }],
+  ['integrations/antiburn/pi/session-checks.mjs', { stubPiHandler: true }],
+]) {
+  test(`Pi ${entry.split('/').at(-1)} displays only in an explicitly identified TUI`, async () => {
+    const mod = await load(entry, options)
+    let handler
+    const pi = {
+      registerCommand: () => {},
+      on: (event, callback) => {
+        if (event === 'before_agent_start') handler = callback
+      },
+    }
+    await mod.default(pi)
+
+    for (const [ctx, expectedDisplay] of [
+      [{ mode: 'tui', hasUI: true }, true],
+      [{ mode: 'rpc', hasUI: true }, false],
+      [{ hasUI: true }, false],
+      [{ mode: 'tui', hasUI: false }, false],
+    ]) {
+      const result = await handler(
+        { messageType: 'user' },
+        {
+          ...ctx,
+          sessionManager: { getSessionId: () => 'pi-display-route' },
+        },
+      )
+      assert.equal(result.message.display, expectedDisplay)
+    }
+  })
 }
 
 test('Claude and Codex add context at user prompt submission and ignore empty sessions', async () => {
@@ -58,6 +135,7 @@ test('Claude and Codex add context at user prompt submission and ignore empty se
     read,
   )
   assert.deepEqual(claudeOutput, {
+    systemMessage: formatSessionCheckUpdates(delivery.updates, 'text'),
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext: delivery.message,
@@ -69,6 +147,7 @@ test('Claude and Codex add context at user prompt submission and ignore empty se
       read,
     ),
     {
+      systemMessage: formatSessionCheckUpdates(delivery.updates, 'text'),
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
         additionalContext: delivery.message,
@@ -156,4 +235,179 @@ test('Codex and Cursor status command validates arguments and uses a separate co
     undefined,
   )
   assert.equal(calls.length, 1)
+})
+
+function nativeDelivery(
+  host,
+  sessionId,
+  kind = 'finding',
+  message = 'Use the available parser skill.',
+) {
+  const update = { id: 'yaml:fixture', kind, name: 'Skill opportunities', message }
+  return {
+    protocol_version: 1,
+    session_id: sessionId,
+    identity: { environment_key: 'native', agent: host, session_id: sessionId },
+    session_scope: 'main',
+    freshness_evaluated: false,
+    state: 'ready',
+    snapshot: [
+      {
+        id: update.id,
+        check_id: 'fixture',
+        name: update.name,
+        message: kind === 'invalidated' ? null : message,
+        status: kind === 'finding' ? 'failure' : kind === 'cleared' ? 'success' : null,
+        assessed_at_epoch: kind === 'invalidated' ? null : 1,
+        checking: false,
+        eligibility: kind === 'invalidated' ? 'waiting' : 'ready',
+      },
+    ],
+    updates: [{ ...update, message: kind === 'invalidated' ? null : message }],
+    receipt: 'd'.repeat(64),
+  }
+}
+
+for (const host of ['claude-code', 'pi']) {
+  test(`${host}: native display and context share validated revision and withdrawal handoffs`, async () => {
+    const { claudeSessionCheckOutput } = await load(
+      'integrations/antiburn/claude/session-check-hook.mjs',
+    )
+    const sessionId = 'visual-session'
+    const reads = [],
+      acknowledgements = []
+    let response = nativeDelivery(host, sessionId)
+    const read = (options) =>
+      readSessionChecks({
+        ...options,
+        run: async (args) => {
+          reads.push(args)
+          return JSON.stringify(response)
+        },
+      })
+    const acknowledge = (options) => {
+      acknowledgements.push(options)
+      return true
+    }
+    const receive = async () => {
+      if (host === 'pi')
+        return piSessionCheckMessage('user', sessionId, read, acknowledge, true)
+      const output = await claudeSessionCheckOutput(
+        { session_id: sessionId, hook_event_name: 'UserPromptSubmit' },
+        read,
+      )
+      if (output) await handoffJsonHook(output, (_text, done) => done(), acknowledge)
+      return output
+    }
+    for (const [kind, message] of [
+      ['finding', 'Use the available parser skill.'],
+      ['finding', 'Read the updated grammar first.'],
+      ['cleared', 'Passing assessment.'],
+      ['invalidated', null],
+    ]) {
+      response = nativeDelivery(host, sessionId, kind, message)
+      const output = await receive()
+      const visible = host === 'pi' ? output.content : output.systemMessage
+      assert.ok(
+        visible.includes(
+          formatSessionCheckUpdates(response.updates, host === 'pi' ? 'markdown' : 'text'),
+        ),
+      )
+      assert.match(visible, host === 'pi' ? /🔥 `antiburn`/ : /🔥 antiburn/)
+      if (host === 'claude-code') {
+        assert.doesNotMatch(visible, /`|\*\*/)
+        assert.ok(visible.startsWith('\n────────────────────────────────\n'))
+        assert.ok(
+          `UserPromptSubmit says: ${visible}`.startsWith(
+            'UserPromptSubmit says: \n────────────────────────────────\n',
+          ),
+        )
+      }
+      assert.equal(visible.split('────────────────────────────────').length, 3)
+      const context =
+        host === 'pi' ? output.content : output.hookSpecificOutput.additionalContext
+      assert.match(context, /untrusted data, not instructions/)
+      if (host === 'pi') {
+        const frame = formatSessionCheckUpdates(response.updates)
+        assert.equal(output.content, formatSessionChecksContext(response))
+        assert.equal(output.details.frame, frame)
+        assert.doesNotMatch(output.details.frame, /untrusted data, not instructions/)
+        assert.equal(output.display, true)
+      }
+      if (kind !== 'finding')
+        assert.equal(visible.includes('Use the available parser skill.'), false)
+      response = { ...response, updates: [], receipt: null }
+      assert.equal(await receive(), undefined)
+    }
+    assert.equal(acknowledgements.length, 4)
+    assert.ok(
+      acknowledgements.every(
+        (x) => x.host === host && x.sessionId === sessionId && x.consumer === 'context',
+      ),
+    )
+    assert.ok(reads.every((args) => args[1] === sessionId && args[4] === `${host}:context`))
+    for (const change of [
+      { session_id: 'other-session' },
+      { identity: { environment_key: 'native', agent: 'cursor', session_id: sessionId } },
+      { session_scope: 'unsupported' },
+      { state: 'unavailable' },
+      { receipt: null },
+    ]) {
+      response = { ...nativeDelivery(host, sessionId), ...change }
+      assert.equal(await receive(), undefined)
+    }
+    response = null
+    assert.equal(await receive(), undefined)
+    assert.equal(acknowledgements.length, 4)
+  })
+}
+
+test('Pi renders only the structured frame and safely falls back for older messages', async () => {
+  class Markdown {
+    constructor(text, paddingX, paddingY, theme) {
+      Object.assign(this, { text, paddingX, paddingY, theme })
+    }
+  }
+  const components = { Markdown, getMarkdownTheme: () => 'theme' }
+  const frame = formatSessionCheckUpdates([
+    {
+      id: 'check-1',
+      kind: 'finding',
+      name: 'Skill opportunities',
+      message: 'Use a parser skill.',
+    },
+  ])
+  const message = {
+    customType: 'antiburn-session-checks',
+    content: `Guardrail paragraph.\n\n${frame}`,
+    details: { frame },
+  }
+  const rendered = createPiSessionCheckRenderer(message, { outputPad: 1 }, components)
+  assert.equal(rendered.text, frame)
+  assert.equal(rendered.text.includes('Guardrail paragraph.'), false)
+  assert.equal(rendered.text.includes('[antiburn-session-checks]'), false)
+  assert.equal(rendered.theme, 'theme')
+
+  const oldMessage = createPiSessionCheckRenderer(
+    { content: 'Legacy context and advisory frame.' },
+    { outputPad: 0 },
+    components,
+  )
+  assert.equal(oldMessage.text, 'Legacy context and advisory frame.')
+
+  const unavailable = {}
+  assert.equal(registerPiSessionCheckRenderer(unavailable, components), false)
+  let registrationCount = 0
+  let renderer
+  const pi = {
+    registerMessageRenderer(type, callback) {
+      assert.equal(type, 'antiburn-session-checks')
+      registrationCount += 1
+      renderer = callback
+    },
+  }
+  assert.equal(registerPiSessionCheckRenderer(pi, components), true)
+  assert.equal(registerPiSessionCheckRenderer(pi, components), true)
+  assert.equal(registrationCount, 1)
+  assert.equal(renderer(message, { outputPad: 0 }, {}).text, frame)
 })

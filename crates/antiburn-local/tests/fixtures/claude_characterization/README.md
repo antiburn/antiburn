@@ -11,6 +11,7 @@ No captured provider session log ever enters this repository. Do not copy one. D
 | File | Proves |
 | --- | --- |
 | `records_all_kinds.jsonl` | User and assistant records preserve usage, model, tool use, error tool results, thinking, and compaction. The fixture also provides positive initial-context and skill-description signals. |
+| `sdk_cli_request_slot.jsonl` | A sanitized `sdk-cli` request/result slot using exact 2.1.309 entrypoint, version, `userType: external`, SDK prompt/turn markers, no `origin` field, and parent links. It supports Unknown-authority request context with partial history; it does not grant human authority or specialized native result facts. |
 | `timestamps_repeated_and_out_of_order.jsonl` | Repeated and non-monotonic timestamps produce stable duration, active time, and buckets. |
 | `malformed_between_valid.jsonl` | The parser skips one malformed line and keeps valid records on both sides. CH-004 must also assert `Partial` coverage because the current API exposes no coverage value. |
 | `incomplete_final_record.jsonl` | The parser does not commit the truncated final record. The next source generation can pick up the record after its terminating newline arrives. |
@@ -146,9 +147,11 @@ Its first human message has a non-null parent that resolves to an earlier
 informational system record. The original human-only null-parent requirement
 rejected this real prefix. `retained_informational_root.jsonl` characterizes the
 corrected prelude without copying private text or identities. Later ambiguous
-links still reject the source; this correction does not admit arbitrary system,
-meta, or SDK roots. Local SDK roots have `promptSource:sdk`, `turnOrigin:sdk`,
-and no human-origin marker, so they do not receive human history proof.
+links still reject the source; this correction does not admit arbitrary system
+or meta roots or prove human history. Local SDK CLI request roots are separately
+characterized only for 2.1.309 and 2.1.317 with `userType: external`,
+`promptSource:sdk`, `turnOrigin:sdk`, and no `origin` field. They retain Unknown
+authority and partial request history; this does not admit broader SDK history.
 
 The unit characterization for a 2.1.278-to-2.1.309 resume follows a
 `system/bridge_status` row through the existing parent chain. The bridge row

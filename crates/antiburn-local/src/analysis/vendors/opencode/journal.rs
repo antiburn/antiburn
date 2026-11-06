@@ -881,7 +881,7 @@ fn live_boundary(
 }
 
 fn compatible_parser_revision(revision: i64) -> bool {
-    revision == PARSER_REVISION || matches!(revision, 63..=66)
+    revision == PARSER_REVISION || matches!(revision, 63..=70)
 }
 
 #[cfg(test)]
@@ -919,7 +919,7 @@ mod compatibility_tests {
             root: true,
             all_events_visible: true,
         };
-        for parser_revision in [63, 64, 65, 66, PARSER_REVISION] {
+        for parser_revision in [63, 64, 65, 66, 67, 68, 69, PARSER_REVISION] {
             let cursor = OpenCodeJournalCursor {
                 session_id: "root".into(),
                 owner_id: None,
@@ -969,7 +969,7 @@ fn validate_live(
                     && live.public == PublicState::default()))
             && cursor.through_sequence <= metadata.latest
             && cursor.cold_replay.as_ref().is_none_or(|replay| {
-                matches!(cursor.parser_revision, 66 | PARSER_REVISION)
+                matches!(cursor.parser_revision, 66 | 67 | 68 | 69 | PARSER_REVISION)
                     && live.revision == LIVE_STATE_REVISION
                     && live.baseline <= cursor.through_sequence
                     && live.public_baseline == Some(cursor.through_sequence)

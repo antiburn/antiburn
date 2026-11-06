@@ -151,7 +151,7 @@ fn parser_67_reconciliation_keeps_parser_66_results_unknown_delivery_and_usage()
     };
     let before_attempts = attempts(&store);
     let revisions = crate::analysis::projection_revisions();
-    assert_eq!(revisions.parser_revision, 67);
+    assert_eq!(revisions.parser_revision, 71);
     assert_eq!(
         store
             .reconcile_evidence_revisions(&["fixture"], revisions)

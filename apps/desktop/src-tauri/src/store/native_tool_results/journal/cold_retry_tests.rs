@@ -109,6 +109,11 @@ fn parser_66_cold_journal_retry_keeps_partial_publication_after_restart() {
     cold_journal_retry_keeps_original_ownership_at_parser_revision(66);
 }
 
+#[test]
+fn parser_67_cold_journal_retry_keeps_partial_publication_after_restart() {
+    cold_journal_retry_keeps_original_ownership_at_parser_revision(67);
+}
+
 fn cold_journal_retry_keeps_original_ownership_at_parser_revision(parser_revision: i64) {
     use antiburn_local::analysis::ToolResultChange;
     use sha2::{Digest, Sha256};

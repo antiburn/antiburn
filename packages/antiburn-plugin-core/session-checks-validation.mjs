@@ -201,12 +201,13 @@ export function validateSessionChecksDelivery(value, { sessionId, host }) {
   return projectDelivery(item, identity)
 }
 
-/** Format one check name and its advisory text. */
-export function formatSessionCheckUpdate(update) {
+/** @param {'markdown'|'text'} [format] */
+export function formatSessionCheckUpdate(update, format = 'markdown') {
   const clean = (value) => value.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim()
-  const name = clean(update.name)
-    .replace(/[\r\n]+/g, ' ')
-    .replace(/([\\`*_[\]<>])/g, '\\$1')
+  const title = clean(update.name).replace(/[\r\n]+/g, ' ')
+  const name =
+    update.kind !== 'finding' && (!title || title === update.id) ? 'Previous advisory' : title
+  const heading = format === 'text' ? name : name.replace(/([\\`*_[\]<>])/g, '\\$1')
   const suffix =
     update.kind === 'cleared'
       ? ' — cleared'
@@ -219,17 +220,25 @@ export function formatSessionCheckUpdate(update) {
       : update.kind === 'invalidated'
         ? 'The prior advice is unavailable because current eligibility could not be confirmed.'
         : clean(update.message)
-  return `**${name}${suffix}**  \n${message}`
+  return format === 'text'
+    ? `${heading}${suffix}\n${message}`
+    : `**${heading}${suffix}**  \n${message}`
 }
 
-/** Group check updates inside one counted Antiburn frame. */
-export function formatSessionCheckUpdates(updates) {
+/** @param {'markdown'|'text'} [format] */
+export function formatSessionCheckUpdates(updates, format = 'markdown') {
   if (!updates?.length) return ''
   const count = updates.length
   const label = updates.every((update) => update.kind === 'finding') ? 'finding' : 'update'
-  const rail = '`────────────────────────────────`'
-  const checks = updates.map(formatSessionCheckUpdate).join('\n\n')
-  return `${rail}\n\n🔥 \`antiburn\` · **${count} ${label}${count === 1 ? '' : 's'}**\n\n${checks}\n\n${rail}`
+  const rail =
+    format === 'text'
+      ? '────────────────────────────────'
+      : '`────────────────────────────────`'
+  const checks = updates.map((update) => formatSessionCheckUpdate(update, format)).join('\n\n')
+  const summary = `${count} ${label}${count === 1 ? '' : 's'}`
+  const header =
+    format === 'text' ? `🔥 antiburn · ${summary}` : `🔥 \`antiburn\` · **${summary}**`
+  return `${rail}\n\n${header}\n\n${checks}\n\n${rail}`
 }
 
 /** Format advisory context without treating authored check text as trusted instructions. */
