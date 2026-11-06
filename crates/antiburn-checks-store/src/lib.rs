@@ -640,7 +640,7 @@ fn source_can_arrive(
 /// Use delivery alias `d` and session alias `s`, joined by environment, agent,
 /// and session ID. `parser` is a SQL parameter position. A NULL cursor permits
 /// initialization only when its parser is NULL or known. A saved cursor needs a
-/// known pair: 62/layout 4, main 64/layout 1, or current/63/64/65/66/67/68/69/layout 5.
+/// known pair: 62/layout 4, main 64/layout 1, or current/63/64/65/66/67/68/69/70/layout 5.
 ///
 /// This predicate does not grant readiness or pending work. It does not check
 /// source incarnation, health, activity, or origin. Apply the native reset policy
@@ -650,11 +650,11 @@ fn source_can_arrive(
 pub fn native_file_receipt_compatible_sql(parser: usize) -> String {
     format!(
         "CASE WHEN d.cursor_json IS NULL THEN
-           d.parser_revision IS NULL OR d.parser_revision IN (?{parser}, 62, 63, 64, 65, 66, 67, 68, 69)
+           d.parser_revision IS NULL OR d.parser_revision IN (?{parser}, 62, 63, 64, 65, 66, 67, 68, 69, 70)
          ELSE COALESCE(
             ((d.parser_revision = 62 AND json_extract(d.cursor_json, '$.revision') = 4)
              OR (d.parser_revision = 64 AND json_extract(d.cursor_json, '$.revision') = 1)
-             OR (d.parser_revision IN (?{parser}, 63, 64, 65, 66, 67, 68, 69)
+             OR (d.parser_revision IN (?{parser}, 63, 64, 65, 66, 67, 68, 69, 70)
                AND json_extract(d.cursor_json, '$.revision') = 5))
            AND json_extract(d.cursor_json, '$.session_id') = s.session_id
            AND json_extract(d.cursor_json, '$.agent') = CASE s.agent
@@ -672,7 +672,7 @@ pub fn native_file_receipt_compatible_sql(parser: usize) -> String {
 /// Use delivery alias `d` and session alias `s`, joined by environment, agent,
 /// and session ID. `parser` is a SQL parameter position. NULL cursor/parser rules
 /// match `native_file_receipt_compatible_sql`. Saved receipts need matching row
-/// and cursor parsers: 62/live 4, main 64/live 2, or current/63/64/65/66/67/68/69/live 5.
+/// and cursor parsers: 62/live 4, main 64/live 2, or current/63/64/65/66/67/68/69/70/live 5.
 /// Live 2 needs a non-negative integer baseline. Live 5 needs a non-negative
 /// integer public baseline. These checks do not prove historical public fields.
 ///
@@ -683,7 +683,7 @@ pub fn native_file_receipt_compatible_sql(parser: usize) -> String {
 pub fn opencode_journal_receipt_compatible_sql(parser: usize) -> String {
     format!(
         "CASE WHEN d.cursor_json IS NULL THEN
-           d.parser_revision IS NULL OR d.parser_revision IN (?{parser}, 62, 63, 64, 65, 66, 67, 68, 69)
+           d.parser_revision IS NULL OR d.parser_revision IN (?{parser}, 62, 63, 64, 65, 66, 67, 68, 69, 70)
          ELSE COALESCE(
            json_extract(d.cursor_json, '$.session_id') = s.session_id
            AND json_extract(d.cursor_json, '$.parser_revision') = d.parser_revision
@@ -691,7 +691,7 @@ pub fn opencode_journal_receipt_compatible_sql(parser: usize) -> String {
              OR (d.parser_revision = 64 AND json_extract(d.cursor_json, '$.live.revision') = 2
                AND json_type(d.cursor_json, '$.live.baseline') = 'integer'
                AND json_extract(d.cursor_json, '$.live.baseline') >= 0)
-             OR (d.parser_revision IN (?{parser}, 63, 64, 65, 66, 67, 68, 69)
+             OR (d.parser_revision IN (?{parser}, 63, 64, 65, 66, 67, 68, 69, 70)
                AND json_extract(d.cursor_json, '$.live.revision') = 5
                AND json_type(d.cursor_json, '$.live.public_baseline') = 'integer'
                AND json_extract(d.cursor_json, '$.live.public_baseline') >= 0)), 0) END"
@@ -748,7 +748,7 @@ pub fn source_ready_at_sql(parser: usize, analyzer: usize, evidence: usize, now:
                   WHERE r.environment_key = s.environment_key AND r.agent = s.agent
                     AND ((r.session_id = s.session_id AND r.kind = 'forkParent')
                        OR (r.related_id = s.session_id AND r.kind = 'subagent')))
-                 AND (s.agent <> 'claude-code' OR (d.parser_revision IN (?{parser}, 65, 66)
+                 AND (s.agent <> 'claude-code' OR (d.parser_revision IN (?{parser}, 65, 66, 68, 69, 70)
                    AND EXISTS(SELECT 1 FROM native_tool_result_publication origin
                      JOIN setting origin_binding ON origin_binding.key =
                        'internal:claudeRequestOriginParser65:' ||

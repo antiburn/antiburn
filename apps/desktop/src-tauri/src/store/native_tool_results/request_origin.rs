@@ -38,7 +38,7 @@ fn source_origin_proven_sql(session: &str) -> String {
            WHERE origin_file.environment_key = {session}.environment_key AND origin_file.agent = {session}.agent
              AND origin_file.session_id = {session}.session_id AND origin_file.incarnation = {session}.incarnation
              AND origin_file.source_label = {session}.source_label AND origin_file.cwd IS {session}.cwd
-                AND origin_file.parser_revision IN (65, 66, 68, 69, {})
+                AND origin_file.parser_revision IN (65, 66, 68, 69, 70, {})
              AND json_extract(origin_file.cursor_json, '$.revision') = 5
              AND json_extract(origin_file.cursor_json, '$.agent') = 'claude'
              AND json_extract(origin_file.cursor_json, '$.session_id') = {session}.session_id

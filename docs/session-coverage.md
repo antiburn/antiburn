@@ -415,18 +415,18 @@ their source-specific meaning; none proves a served tier or measured savings.
 
 ### Saved-state revisions and conversion
 
-Parser revision is 70, analyzer revision is 25, evidence schema revision is 22,
+Parser revision is 71, analyzer revision is 25, evidence schema revision is 22,
 and resume snapshot revision is 25. Native file cursor and OpenCode V1 live
-journal revisions are both 5. Compatible parser-63 through parser-69
+journal revisions are both 5. Compatible parser-63 through parser-70
 cursor/state-5 receipts retain committed progress except for the exact parser-67
 rejected Claude SDK-root reset described below. The named parser-62 predecessor
 uses claim-fenced conversion. Batch resume snapshots require the current parser.
 Unknown parser or cursor revisions fail closed; they do not authorize a rewind
 or resend.
 
-The regular file loader accepts parser 62 with cursor 4, or parser 63 through 70
+The regular file loader accepts parser 62 with cursor 4, or parser 63 through 71
 with cursor 5. V1 live journal validation accepts parser 62 with live state 4
-through its named converter, or parser 63 through 70 with live state 5 and a
+through its named converter, or parser 63 through 71 with live state 5 and a
 valid public baseline. Source identity, owner, sequence, and bounded source
 samples still require validation. A matching layout number alone does not admit
 another parser pair. The saved parser revision and cursor payload advance only
@@ -462,6 +462,9 @@ resetting paid attempts is not a supported recovery step.
 Pre-65 Claude cursors retain byte progress and bindings but drop old request text
 and pending user events whose origin they cannot prove. Pending contexts become
 partial. Accepted inputs and publication hashes stay unchanged.
+Parser-67 Claude cursors receive the same context sanitization even when a
+request-origin boundary exists. That boundary does not prove API-origin history
+is complete. Queued results cannot restore complete history before new bytes are read.
 An old suffix cursor that has framed bytes but observed no records can retain
 its valid header proof and admit the first retained record as a partial seam.
 This repair requires a pristine root and no admission failure; it never restores
@@ -764,7 +767,7 @@ Request-history records include message metadata and user text parts.
 
 | Limit                        |   Value | Scope                                                           |
 | ---------------------------- | ------: | --------------------------------------------------------------- |
-| Parser revision              |      70 | Accepted source parser revision                                 |
+| Parser revision              |      71 | Accepted source parser revision                                 |
 | Resume snapshot revision     |      25 | File-reader resume state                                        |
 | Result observations          |    4096 | Retained results per strict journal page or legacy sink window  |
 | Result payload bytes         | 4194304 | Serialized result payload per strict page or legacy sink window |
@@ -985,9 +988,12 @@ home is the process's real home. Cursor must also be launched with
 `User/workspaceStorage` and `User/globalStorage` roots, including legacy
 workspace metadata; canonical duplicate roots are read once. Cursor CLI
 `.cursor/projects` and `.cursor/chats` remain rooted at the process home. When
-Cursor Desktop and CLI sources share a canonical session ID, discovery keeps
-the Desktop composer source even when their workspace hints differ; exact-label
-analysis then reopens that persisted source within its claimed environment.
+Cursor Desktop and CLI sources share a canonical session ID, the session list keeps
+the Desktop composer source even when their workspace hints differ. Exact-label
+analysis retains the unmerged candidates so saved CLI bindings remain readable.
+Explicit Desktop profiles use profile-scoped source labels; the default profile
+keeps its legacy labels. A legacy label resolves only when exactly one profile
+candidate matches within the claimed session and environment.
 Isolated-profile discovery does not certify native live capture.
 
 ## Retained native content
@@ -1020,6 +1026,8 @@ The four pinned native contracts are:
   remaining false. This does not admit SDK history, sidechains, wrappers, other
   entrypoints, or other versions. The sanitized fixture is
   [`sdk_cli_request_slot.jsonl`](../crates/antiburn-local/tests/fixtures/claude_characterization/sdk_cli_request_slot.jsonl).
+  A mixed text/result SDK 2.1.317 envelope retains its exact linked result before
+  retiring unresolved prior calls. Its API text does not make request history complete.
 - Codex / `CodexRolloutJsonl`: 0.160.1, producer
   `d27764b82f7118f674371e6d6e76271d9d606edb`, accepted paginated completed-work
   shape and characterized legacy retained-message subset. Consecutive ordinals,
@@ -1874,6 +1882,11 @@ their parent. A desktop manifest `cliSessionId` also resolves against these
 roots. The normal-home explicit `CLAUDE_CONFIG_DIR` adds a CLI project/job
 root alongside `~/.claude`; blank and relative values keep the default. The
 override does not redirect the separate Desktop Cowork or manifest roots.
+Fork-job transcript lookup stays within the job's configuration profile, and each
+profile has its own bounded job scan. Evidence analysis finds child transcripts
+relative to the selected parent source, not another transcript with the same ID.
+Enriched fork-job headers include a normalized lineage observation so downstream
+analysis retains the declared parent from either configuration profile.
 The path gives the IDE/Desktop surface, whatever the `entrypoint` marker says.
 Discovery never reads `audit*.jsonl`. The Cowork audit log repeats the
 transcript's `message.usage` objects and is not a token ledger. For the

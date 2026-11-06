@@ -37,6 +37,66 @@ fn sdk_lifecycle_prefix(session: &str) -> String {
 }
 
 #[test]
+fn sdk_mixed_request_preserves_its_result_then_retires_prior_calls() {
+    let directory = TempDir::new().unwrap();
+    let mut call = read_call("call", "root", "read");
+    let mut unused = call["message"]["content"][0].clone();
+    unused["id"] = json!("unused");
+    call["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(unused);
+    let mut mixed = read_result("mixed", "call", "read");
+    mixed["message"]["content"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type":"text","text":"Continue with the next task."}));
+    let mut records = vec![sdk_root("2.1.317"), call, mixed];
+    for record in &mut records {
+        record["version"] = json!("2.1.317");
+        record["entrypoint"] = json!("sdk-cli");
+        record["userType"] = json!("external");
+    }
+    let input = input(
+        &directory,
+        "claude",
+        "facts",
+        SourceFormat::ClaudeJsonl,
+        &source(&records[..2]),
+    );
+    let cursor = read_native_file_page(&input, None, &|| false)
+        .unwrap()
+        .cursor;
+    append(&input, &source(&records[2..]));
+    let page = read_native_file_page(&input, Some(&restored(&cursor)), &|| false).unwrap();
+    assert!(page.admission_failure.is_none());
+    let full = identity_proofs::full_events("claude", &source(&records));
+    for events in [&full, &page.evidence.events] {
+        let observed = results(events);
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].tool_name.as_deref(), Some("Read"));
+        assert!(observed[0].arguments.is_some());
+        assert_eq!(observed[0].completeness, ToolResultCompleteness::Complete);
+        assert!(!observed[0].context.as_ref().unwrap().complete_through_event);
+    }
+    let mut late = read_result("late", "call", "unused");
+    late["version"] = json!("2.1.317");
+    late["entrypoint"] = json!("sdk-cli");
+    late["userType"] = json!("external");
+    append(&input, &source(std::slice::from_ref(&late)));
+    records.push(late);
+    let resumed = read_native_file_page(&input, Some(&restored(&page.cursor)), &|| false).unwrap();
+    assert!(resumed.admission_failure.is_some());
+    let full = identity_proofs::full_events("claude", &source(&records));
+    assert!(
+        results(&full)
+            .iter()
+            .filter(|result| result.record_id.as_deref() == Some("late"))
+            .all(|result| result.tool_name.is_none())
+    );
+}
+
+#[test]
 fn sdk_parallel_tool_results_keep_linked_source_continuity() {
     for reverse in [false, true] {
         let directory = TempDir::new().unwrap();

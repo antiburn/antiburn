@@ -739,16 +739,35 @@ async fn interactive_fork_job_logs(
     project_dirs: &[PathBuf],
     cutoff: i64,
 ) -> Vec<SessionLog> {
+    interactive_fork_job_logs_in_roots(
+        &claude_config_roots_in(home),
+        project_dirs,
+        cutoff,
+        MAX_CLAUDE_JOB_COUNT,
+    )
+    .await
+}
+
+async fn interactive_fork_job_logs_in_roots(
+    config_roots: &[PathBuf],
+    project_dirs: &[PathBuf],
+    cutoff: i64,
+    job_limit: usize,
+) -> Vec<SessionLog> {
     let mut logs = Vec::new();
-    let mut job_count = 0;
-    for jobs_root in claude_config_roots_in(home)
-        .into_iter()
-        .map(|root| root.join("jobs"))
-    {
+    for config_root in config_roots {
+        let jobs_root = config_root.join("jobs");
+        let profile_projects = config_root.join("projects");
+        let project_dirs: Vec<_> = project_dirs
+            .iter()
+            .filter(|path| path.starts_with(&profile_projects))
+            .cloned()
+            .collect();
+        let mut job_count = 0;
         let Ok(mut entries) = tokio::fs::read_dir(&jobs_root).await else {
             continue;
         };
-        while job_count < MAX_CLAUDE_JOB_COUNT {
+        while job_count < job_limit {
             let Ok(Some(entry)) = entries.next_entry().await else {
                 break;
             };
@@ -778,7 +797,7 @@ async fn interactive_fork_job_logs(
                 continue;
             }
 
-            let transcript_path = resolve_cli_transcript_path(project_dirs, child_id).await;
+            let transcript_path = resolve_cli_transcript_path(&project_dirs, child_id).await;
             let transcript_mtime = transcript_path
                 .as_deref()
                 .and_then(file_mtime_epoch_blocking)
@@ -805,7 +824,17 @@ async fn interactive_fork_job_logs(
                 "cwd": cwd,
                 "entrypoint": "cli",
                 "aiTitle": title,
-                "forkedFrom": { "sessionId": parent_id }
+                "forkedFrom": { "sessionId": parent_id },
+                crate::discovery::fork::FORK_OBSERVATION_KEY: crate::discovery::fork::ForkObservation {
+                    parent_agent: "claude-code".to_owned(),
+                    parent_agent_session_id: parent_id.to_owned(),
+                    fork_kind: "fork".to_owned(),
+                    provider_fork_point_id: None,
+                    detection_source: "interactive_fork_job".to_owned(),
+                    confidence: 100,
+                    inherited_item_count: None,
+                    extractor_version: "1".to_owned(),
+                }
             });
             let content = if transcript.is_empty() {
                 header.to_string()
@@ -826,9 +855,6 @@ async fn interactive_fork_job_logs(
                 },
                 updated_at: Some(updated_at),
             });
-        }
-        if job_count >= MAX_CLAUDE_JOB_COUNT {
-            break;
         }
     }
     logs
@@ -1109,8 +1135,6 @@ mod tests {
             metadata.cwd.as_deref(),
             Some("/home/avery/projects/demo-app")
         );
-        // The enrichment states the lineage in Claude's own `forkedFrom`
-        // shape, which is what a lineage consumer reads back.
         let header: serde_json::Value =
             serde_json::from_str(content.lines().next().unwrap()).unwrap();
         assert_eq!(
@@ -1118,6 +1142,82 @@ mod tests {
                 .pointer("/forkedFrom/sessionId")
                 .and_then(|v| v.as_str()),
             Some("claude-parent-fork")
+        );
+        assert_eq!(
+            crate::discovery::fork::fork_parent_from_content(content).as_deref(),
+            Some("claude-parent-fork")
+        );
+    }
+
+    #[tokio::test]
+    async fn fork_jobs_use_only_their_own_profiles_transcripts() {
+        let temp = TempDir::new().unwrap();
+        let roots = [temp.path().join("default"), temp.path().join("explicit")];
+        let projects: Vec<_> = roots
+            .iter()
+            .map(|root| root.join("projects/repo"))
+            .collect();
+        for (index, root) in roots.iter().enumerate() {
+            tokio::fs::create_dir_all(&projects[index]).await.unwrap();
+            tokio::fs::write(
+                projects[index].join("child.jsonl"),
+                format!("{{\"profile\":{index}}}\n"),
+            )
+            .await
+            .unwrap();
+            let job = root.join("jobs/child");
+            tokio::fs::create_dir_all(&job).await.unwrap();
+            tokio::fs::write(
+                job.join("state.json"),
+                serde_json::json!({
+                    "interactiveLineage": true, "forkSessionId": "child",
+                    "forkParentSessionId": "parent", "sessionId": "child",
+                    "cwd": format!("/repo-{index}")
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        }
+        let logs = interactive_fork_job_logs_in_roots(&roots, &projects, 0, 10).await;
+        assert_eq!(logs.len(), 2);
+        for (index, log) in logs.iter().enumerate() {
+            assert_eq!(
+                log.source_label(),
+                projects[index].join("child.jsonl").to_string_lossy()
+            );
+            let SessionSource::Inline { content, .. } = &log.source else {
+                panic!("inline job")
+            };
+            assert!(content.contains(&format!("\"profile\":{index}")));
+            assert!(content.contains(&format!("/repo-{index}")));
+            assert_eq!(
+                crate::discovery::fork::fork_parent_from_content(content).as_deref(),
+                Some("parent")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_job_budget_is_independent_for_each_profile() {
+        let temp = TempDir::new().unwrap();
+        let roots = [temp.path().join("default"), temp.path().join("explicit")];
+        tokio::fs::create_dir_all(roots[0].join("jobs/stale"))
+            .await
+            .unwrap();
+        let job = roots[1].join("jobs/child");
+        tokio::fs::create_dir_all(&job).await.unwrap();
+        tokio::fs::write(job.join("state.json"), r#"{"interactiveLineage":true,"forkSessionId":"child","forkParentSessionId":"parent","sessionId":"child","cwd":"/repo"}"#).await.unwrap();
+        let logs = interactive_fork_job_logs_in_roots(&roots, &[], 0, 1).await;
+        assert_eq!(logs.len(), 1);
+        let SessionSource::Inline { content, .. } = &logs[0].source else {
+            panic!("inline job")
+        };
+        assert_eq!(
+            scanner::parse_session_metadata_str(content)
+                .session_id
+                .as_deref(),
+            Some("child")
         );
     }
 

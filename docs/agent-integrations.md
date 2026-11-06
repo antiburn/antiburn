@@ -47,11 +47,14 @@ The released public Claude usage plugin, marketplace, and immutable release pin
 remain separate. An existing session-check companion or equivalent hook causes
 setup to stop for review instead of registering duplicate callbacks.
 
-The runtime payload contains complete adapters and libraries, a Pi package entry,
-and the license. It excludes help skills, marketplace files, SDK declarations,
-and development tools. `scripts/assemble-agent-integrations.mjs` assembles the
-payload during the desktop build; runtime code only verifies and stages it.
-Neither startup nor Repair downloads or bundles Node.
+The runtime payload contains complete adapters and libraries, a Pi context
+package entry, a separate opt-in Pi renderer package, and the license. The
+default package does not load renderer dependencies. The renderer package is
+not installed by the managed integration route. The payload excludes help
+skills, marketplace files, SDK declarations, and development tools.
+`scripts/assemble-agent-integrations.mjs` assembles the payload during the
+desktop build; runtime code only verifies and stages it. Neither startup nor
+Repair downloads or bundles Node.
 
 Agent profiles honor explicit supported environment overrides. A selected
 profile is recorded and does not silently switch when the GUI environment

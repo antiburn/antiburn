@@ -881,7 +881,7 @@ fn live_boundary(
 }
 
 fn compatible_parser_revision(revision: i64) -> bool {
-    revision == PARSER_REVISION || matches!(revision, 63..=69)
+    revision == PARSER_REVISION || matches!(revision, 63..=70)
 }
 
 #[cfg(test)]

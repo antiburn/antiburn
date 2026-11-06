@@ -208,6 +208,7 @@ impl State {
                         .user_message_root
                         .admits(&self.parser.session_id)),
         );
+        self.parser.retire_calls_after_request(&value);
         if self.root && native_activity_record(&value) {
             crate::analysis::public_events::emit_activity(
                 sink,

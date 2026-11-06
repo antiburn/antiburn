@@ -33,7 +33,7 @@ test(
     try {
       const payload = join(root, 'payload')
       await assembleAgentIntegrations(payload)
-      await stubPiHostPackages(join(payload, 'pi'))
+      await stubPiHostPackages(join(payload, 'pi-renderer'))
       const internal = join(root, 'internal runtime é')
       await mkdir(internal)
       const executable = join(internal, 'antiburn-cli')
@@ -112,8 +112,9 @@ test(
           const result = await handler({ type: 'before_agent_start', prompt: 'fixture' }, { mode: 'tui', hasUI: true, sessionManager: { getSessionId: () => sessionId } })
           assert.equal(result.message.display, true)
           assert.match(result?.message.content ?? '', /Internal CLI finding/)
+          const rendererRoot = join(${JSON.stringify(payload)}, 'pi-renderer')
           const { default: registerRenderer } = await import(
-            pathToFileURL(join(root, 'extensions/session-check-renderer-extension.mjs'))
+            pathToFileURL(join(rendererRoot, 'extensions/session-check-renderer-extension.mjs'))
           )
           const renderers = new Map()
           registerRenderer({
@@ -204,7 +205,7 @@ test('desktop payload contains only complete runtime adapters, without public Cl
     const one = await assembleAgentIntegrations(join(root, 'one'))
     const two = await assembleAgentIntegrations(join(root, 'two'))
     assert.deepEqual(one, two)
-    assert.equal(one.files.length, 48)
+    assert.equal(one.files.length, 49)
     for (const entry of ['session-check-ui.mjs', 'session-check-ui.tsx'])
       assert.ok(one.files.some(({ path }) => path === `opencode/runtime/${entry}`))
     assert.ok(
@@ -221,25 +222,33 @@ test('desktop payload contains only complete runtime adapters, without public Cl
       await import(pathToFileURL(join(root, 'one', host, 'lib/session-checks.mjs')).href)
     }
     const pi = JSON.parse(await readFile(join(root, 'one/pi/package.json'), 'utf8'))
-    assert.deepEqual(pi.peerDependencies, {
+    assert.equal(pi.peerDependencies, undefined)
+    assert.deepEqual(pi.pi.extensions, ['./extensions/session-checks.mjs'])
+    const piRenderer = JSON.parse(
+      await readFile(join(root, 'one/pi-renderer/package.json'), 'utf8'),
+    )
+    assert.deepEqual(piRenderer.peerDependencies, {
       '@earendil-works/pi-coding-agent': '*',
       '@earendil-works/pi-tui': '*',
     })
-    assert.deepEqual(pi.pi.extensions, [
-      './extensions/session-checks.mjs',
+    assert.deepEqual(piRenderer.pi.extensions, [
       './extensions/session-check-renderer-extension.mjs',
     ])
-    await stubPiHostPackages(join(root, 'one/pi'))
+    await stubPiHostPackages(join(root, 'one/pi-renderer'))
     const piEntry = await readFile(join(root, 'one/pi/extensions/session-checks.mjs'), 'utf8')
     assert.doesNotMatch(piEntry, /@earendil-works\/pi-tui/)
+    await import(pathToFileURL(join(root, 'one/pi', pi.pi.extensions[0])).href)
     const rendererEntry = await readFile(
-      join(root, 'one/pi/extensions/session-check-renderer-extension.mjs'),
+      join(root, 'one/pi-renderer/extensions/session-check-renderer-extension.mjs'),
       'utf8',
     )
     assert.match(rendererEntry, /from '@earendil-works\/pi-tui'/)
     assert.match(rendererEntry, /from '@earendil-works\/pi-coding-agent'/)
     assert.ok(
-      await readFile(join(root, 'one/pi/extensions/session-check-renderer.mjs'), 'utf8'),
+      await readFile(
+        join(root, 'one/pi-renderer/extensions/session-check-renderer.mjs'),
+        'utf8',
+      ),
     )
     const adapter = await import(pathToFileURL(join(root, 'one/pi', pi.pi.extensions[0])).href)
     const registrations = []
@@ -249,7 +258,7 @@ test('desktop payload contains only complete runtime adapters, without public Cl
     })
     assert.deepEqual(registrations, ['before_agent_start'])
     const rendererAdapter = await import(
-      pathToFileURL(join(root, 'one/pi', pi.pi.extensions[1])).href
+      pathToFileURL(join(root, 'one/pi-renderer', piRenderer.pi.extensions[0])).href
     )
     const renderers = new Map()
     rendererAdapter.default({

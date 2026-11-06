@@ -897,8 +897,8 @@ fn main_64_journal_loader_rejects_mismatched_row_and_encoded_legacy_parsers() {
 
 #[test]
 fn journal_cursor_loader_rejects_mismatched_known_current_layout_parsers() {
-    for stored in [62, 63, 64, 65, 66, 67, 68, 69, PARSER_REVISION] {
-        for encoded in [63, 64, 65, 66, 67, 68, 69, PARSER_REVISION] {
+    for stored in [62, 63, 64, 65, 66, 67, 68, 69, 70, PARSER_REVISION] {
+        for encoded in [63, 64, 65, 66, 67, 68, 69, 70, PARSER_REVISION] {
             if stored == encoded {
                 continue;
             }
@@ -1497,7 +1497,7 @@ fn malformed_main_parser_64_journal_2_blocks_without_replaying_saved_results() {
 
 #[test]
 fn compatible_parser_receipts_keep_journal_5_progress_baselines_and_pending_calls() {
-    for parser_revision in [63, 64, 65, 66, 67, 68, 69] {
+    for parser_revision in [63, 64, 65, 66, 67, 68, 69, 70] {
         let state = tempfile::tempdir().unwrap();
         let store = Store::open(state.path()).unwrap();
         SyntheticJournal::enable_live(&store, "/synthetic");

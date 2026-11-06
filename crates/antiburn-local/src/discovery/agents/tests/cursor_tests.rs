@@ -188,11 +188,14 @@ fn native_read_grep_projection_keeps_only_verified_bounded_binding() {
     let fixture = include_str!(
         "../../../../tests/fixtures/cursor_characterization/native_read_grep_binary.jsonl"
     );
-    for line in fixture
+    let mut rows = Vec::new();
+    let mut expected = Vec::new();
+    for mut line in fixture
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
     {
         let Some(tool) = line.get("cursor_tool_result") else {
+            rows.push(line.to_string());
             continue;
         };
         let projected = cursor_native_tool_fields(&json!({"toolFormerData": tool}));
@@ -212,7 +215,41 @@ fn native_read_grep_projection_keeps_only_verified_bounded_binding() {
                     .unwrap_or(false)
             );
             assert_eq!(projected["native_result_binding"]["status"], "success");
+            expected.push((
+                tool["toolCallId"].as_str().unwrap().to_owned(),
+                serde_json::from_str::<Value>(tool["params"].as_str().unwrap()).unwrap(),
+            ));
         }
+        line["cursor_tool_result"] = projected;
+        rows.push(line.to_string());
+    }
+    let input = crate::analysis::SessionInput {
+        agent: "cursor".into(),
+        session_id: "cursor-native-probe".into(),
+        source: crate::analysis::RawSource::Jsonl(rows.join("\n")),
+        fork_parent_session_id: None,
+        source_format: crate::analysis::SourceFormat::CursorIdeComposer,
+    };
+    let reader = crate::analysis::reader_for("cursor");
+    let mut sink = crate::analysis::CompositeSink::new(
+        crate::analysis::SessionMetricsAccumulator::new("cursor", "cursor-native-probe"),
+        crate::analysis::SessionEvidenceAccumulator::new(crate::analysis::EvidenceSource {
+            agent: input.agent.clone(),
+            session_id: input.session_id.clone(),
+            kind: crate::analysis::SourceKind::Jsonl,
+            capabilities: reader.capabilities(&input),
+        }),
+    );
+    reader.visit(&input, &mut sink).unwrap();
+    let results = sink.tool_result_observations();
+    assert_eq!(results.len(), expected.len());
+    for (result, (call_id, arguments)) in results.iter().zip(expected) {
+        assert_eq!(result.call_id.as_deref(), Some(call_id.as_str()));
+        assert_eq!(result.arguments.as_ref(), Some(&arguments));
+        assert_eq!(
+            result.admission(),
+            crate::analysis::ToolResultAdmission::Admitted
+        );
     }
 }
 
@@ -614,11 +651,12 @@ async fn cursor_user_data_override_discovers_and_classifies_native_desktop_state
     let surface_paths = cursor_surface_paths(home.path(), &roots);
     let watch_roots = cursor_watch_roots(home.path(), &roots);
     let owned = cursor_owns_path(
-        &explicit
-            .path()
-            .join("User/workspaceStorage/workspace-override/state.vscdb")
-            .to_string_lossy()
-            .to_lowercase(),
+        &crate::discovery::normalize_for_matching(
+            &explicit
+                .path()
+                .join("User/workspaceStorage/workspace-override/state.vscdb")
+                .to_string_lossy(),
+        ),
         &roots,
     );
     let default_ws = app_config_dir_in("Cursor", home.path()).join("User/workspaceStorage");
@@ -633,6 +671,143 @@ async fn cursor_user_data_override_discovers_and_classifies_native_desktop_state
         owned,
         "override paths should be owned by Cursor IDE discovery"
     );
+}
+
+#[tokio::test]
+async fn cursor_copied_profiles_keep_distinct_refresh_identities_and_legacy_aliases() {
+    let home = TempDir::new().unwrap();
+    let explicit = TempDir::new().unwrap();
+    let default = app_config_dir_in("Cursor", home.path());
+    let roots = vec![default.clone(), explicit.path().to_path_buf()];
+
+    for (index, root) in roots.iter().enumerate() {
+        let global_dir = root.join("User/globalStorage");
+        tokio::fs::create_dir_all(&global_dir).await.unwrap();
+        let title = if index == 0 {
+            "newer short title".to_owned()
+        } else {
+            "older but longer title ".repeat(32)
+        };
+        seed_global_cursor_session_with_name(
+            &global_dir.join("state.vscdb"),
+            "copied-profile-session",
+            &title,
+        );
+        write_workspace(
+            &root.join("User/workspaceStorage/workspace-copy"),
+            "file:///tmp/copied-profile-workspace",
+            "copied-profile-session",
+            1_775_083_382_256 - (index as i64 * 10_000),
+        )
+        .await;
+    }
+
+    let candidates =
+        discover_recent_candidates_in_roots(home.path(), &roots, 1_775_083_400, 3600, None).await;
+    let labels = candidates
+        .iter()
+        .filter_map(|candidate| match &candidate.log.source {
+            SessionSource::Inline { label, .. } => Some(label.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(labels.len(), 2);
+    assert!(labels.contains(&"cursor-desktop:workspace-copy:copied-profile-session".into()));
+    let scoped = labels
+        .iter()
+        .find(|label| label.starts_with("cursor-desktop:profile:"))
+        .expect("the explicit profile should have a scoped identity");
+    assert_ne!(labels[0], labels[1]);
+    assert_eq!(
+        legacy_cursor_source_label(scoped).as_deref(),
+        Some("cursor-desktop:workspace-copy:copied-profile-session")
+    );
+
+    let display = discover_recent_in_roots(home.path(), &roots, 1_775_083_400, 3600, None).await;
+    assert_eq!(
+        display.len(),
+        1,
+        "display discovery still deduplicates copies"
+    );
+    assert_eq!(
+        display[0].source_label(),
+        *scoped,
+        "the longer older copy still wins the display merge, but exact source lookup can retain both identities"
+    );
+}
+
+#[tokio::test]
+async fn cursor_unmerged_sources_retain_cli_identity_when_desktop_reuses_its_id() {
+    let home = TempDir::new().unwrap();
+    let default = app_config_dir_in("Cursor", home.path());
+    let global_dir = default.join("User/globalStorage");
+    tokio::fs::create_dir_all(&global_dir).await.unwrap();
+    seed_global_cursor_session(&global_dir.join("state.vscdb"), "shared-session");
+    write_workspace(
+        &default.join("User/workspaceStorage/workspace-desktop"),
+        "file:///tmp/desktop-workspace",
+        "shared-session",
+        1_775_083_382_256,
+    )
+    .await;
+
+    let transcript = home.path().join(
+        ".cursor/projects/workspace-cli/agent-transcripts/shared-session/shared-session.jsonl",
+    );
+    tokio::fs::create_dir_all(transcript.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(
+        &transcript,
+        "{\"role\":\"user\",\"message\":\"CLI session\"}\n",
+    )
+    .await
+    .unwrap();
+
+    let roots = vec![default];
+    let candidates =
+        discover_recent_candidates_in_roots(home.path(), &roots, 1_775_083_400, 100_000_000, None)
+            .await;
+    assert!(candidates.iter().any(|candidate| matches!(
+        &candidate.log.source,
+        SessionSource::Inline { label, .. } if label == transcript.to_string_lossy().as_ref()
+    )));
+    assert!(candidates.iter().any(|candidate| matches!(
+        &candidate.log.source,
+        SessionSource::Inline { label, .. }
+            if label == "cursor-desktop:workspace-desktop:shared-session"
+    )));
+
+    let merged =
+        discover_recent_in_roots(home.path(), &roots, 1_775_083_400, 100_000_000, None).await;
+    assert_eq!(merged.len(), 1);
+    assert!(matches!(merged[0].source, SessionSource::Inline { .. }));
+}
+
+#[test]
+fn cursor_user_data_override_matches_normalized_windows_paths() {
+    let roots = vec![PathBuf::from(r"C:\Audit\Cursor Profile")];
+    for (path, expected) in [
+        (
+            r"C:\Audit\Cursor Profile\User\globalStorage\state.vscdb",
+            true,
+        ),
+        (
+            r"C:\Audit\Cursor Profile\User\workspaceStorage\one\state.vscdb",
+            true,
+        ),
+        (
+            r"C:\Audit\Cursor Profile Other\User\globalStorage\state.vscdb",
+            false,
+        ),
+        (r"C:\Audit\Cursor Profile\UserOther\state.vscdb", false),
+    ] {
+        assert_eq!(
+            cursor_owns_path(&crate::discovery::normalize_for_matching(path), &roots),
+            expected,
+            "{path}"
+        );
+    }
 }
 
 #[test]
@@ -1189,6 +1364,7 @@ fn cursor_desktop_reader_embeds_only_verified_duplicate_lineage() {
     let sessions = query_cursor_desktop_sessions(
         &ws_root,
         &global_path,
+        None,
         4_000,
         4_000,
         Some(prefix_duplicate_detector),

@@ -98,16 +98,21 @@ Markdown frame. Cleared and withdrawn updates retain a readable check name when
 supplied; when only the finding ID remains, they use “Previous advisory” instead.
 
 Pi returns one custom message with `display: true` in an interactive TUI with
-`hasUI`. Its `content` keeps the full advisory guardrail and canonical Markdown
-frame in model context. A separate optional renderer extension reads the same frame from
-renderer-only `details` and displays just that frame, without Pi's default
-custom-message label or the guardrail paragraph. Headless and RPC operation
-retain the original hidden context. The renderer uses Pi's host-provided TUI
-packages; the package declares them as peer dependencies. If that optional
-extension cannot load or the host lacks the renderer API, the context extension
-still delivers the full message and Pi uses its default rendering. Saved messages
-without renderer metadata also fall back to their full content. A renderer probe
-does not establish a captured native session.
+`hasUI` and an explicit TUI mode. Contexts without a mode retain hidden context;
+they do not establish native display support. Its `content` keeps the full
+advisory guardrail and canonical Markdown frame in model context. The default
+context package does not load the native renderer. A separate opt-in Pi
+renderer package reads the frame from
+renderer-only `details` and displays it without Pi's default custom-message
+label or the guardrail paragraph. The renderer package statically imports Pi's
+host TUI APIs. Install it only after verifying the host version and aliases; an
+import failure can stop Pi startup. Without the renderer package, Pi's default
+renderer displays the full context message. The Pi 1.4.0 frame-only visual proof used
+the renderer explicitly before this package split; the new package split has
+separate offline loader validation. Headless and RPC operation retain the
+original hidden context. Saved messages without renderer metadata fall back to
+their full content. A renderer probe does not establish a captured native
+session.
 
 Both paths use the existing `HOST:context` consumer and receipt because each
 native result carries context and display together. No second UI fetch repeats
