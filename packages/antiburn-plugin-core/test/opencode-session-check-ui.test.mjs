@@ -572,15 +572,12 @@ test('public and managed packages keep optional target-exclusive TUI module sepa
       '.': './runtime/antiburn.mjs',
       './tui': './runtime/session-check-ui.tsx',
     })
-    assert.equal(manifest.peerDependencies['@opencode-ai/plugin'], '1.19.2 || 1.19.3')
-    for (const [name, version] of [
-      ['@opentui/solid', '0.4.5'],
-      ['@opentui/core', '0.4.5'],
-      ['solid-js', '1.9.12'],
-    ]) {
-      assert.equal(manifest.peerDependencies[name], version)
-      assert.deepEqual(manifest.peerDependenciesMeta[name], { optional: true })
-    }
+    assert.deepEqual(manifest.peerDependencies, { '@opencode-ai/plugin': '1.19.2 || 1.19.3' })
+    const readme = await readFile(join(standalone, 'opencode/README.md'), 'utf8')
+    assert.match(
+      readme,
+      /OpenCode 1\.19\.3 with host-provided @opentui\/core and @opentui\/solid 0\.4\.5 and solid-js 1\.9\.12/,
+    )
     for (const root of [standalone, managed]) {
       const source = await readFile(join(root, 'opencode/runtime/session-check-ui.tsx'), 'utf8')
       assert.match(source, /import type .*TuiPluginModule/)
