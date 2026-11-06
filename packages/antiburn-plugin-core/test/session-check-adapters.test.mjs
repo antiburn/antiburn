@@ -16,8 +16,28 @@ import {
 
 const root = resolve(import.meta.dirname, '../../..')
 
-async function load(relative) {
+async function load(relative, { stubPiRead = false, stubPiHandler = false } = {}) {
   let source = await readFile(resolve(root, relative), 'utf8')
+  if (stubPiRead && relative === 'integrations/antiburn/pi/antiburn.mjs')
+    source = source.replace(
+      `import {
+  acknowledgeAfterHandoff,
+  formatSessionCheckStatus,
+  readSessionChecks,
+} from '../../../packages/antiburn-plugin-core/session-checks.mjs'`,
+      `const acknowledgeAfterHandoff = () => true
+const formatSessionCheckStatus = () => 'status'
+const readSessionChecks = async () => ({
+  message: 'Pi callback route',
+  updates: [],
+  receipt: 'r'.repeat(64),
+})`,
+    )
+  if (stubPiHandler && relative === 'integrations/antiburn/pi/session-checks.mjs')
+    source = source.replace(
+      "import { piSessionCheckMessage } from './antiburn.mjs'",
+      'const piSessionCheckMessage = async (...args) => ({ display: args[4] })',
+    )
   source = source.replace(
     "import { Markdown } from '@earendil-works/pi-tui'",
     'const Markdown = class Markdown {}',
@@ -49,6 +69,39 @@ const delivery = {
   state: 'ready',
   freshnessEvaluated: false,
   receipt: 'b'.repeat(64),
+}
+
+for (const [entry, options] of [
+  ['integrations/antiburn/pi/antiburn.mjs', { stubPiRead: true }],
+  ['integrations/antiburn/pi/session-checks.mjs', { stubPiHandler: true }],
+]) {
+  test(`Pi ${entry.split('/').at(-1)} displays only in an explicitly identified TUI`, async () => {
+    const mod = await load(entry, options)
+    let handler
+    const pi = {
+      registerCommand: () => {},
+      on: (event, callback) => {
+        if (event === 'before_agent_start') handler = callback
+      },
+    }
+    await mod.default(pi)
+
+    for (const [ctx, expectedDisplay] of [
+      [{ mode: 'tui', hasUI: true }, true],
+      [{ mode: 'rpc', hasUI: true }, false],
+      [{ hasUI: true }, false],
+      [{ mode: 'tui', hasUI: false }, false],
+    ]) {
+      const result = await handler(
+        { messageType: 'user' },
+        {
+          ...ctx,
+          sessionManager: { getSessionId: () => 'pi-display-route' },
+        },
+      )
+      assert.equal(result.message.display, expectedDisplay)
+    }
+  })
 }
 
 test('Claude and Codex add context at user prompt submission and ignore empty sessions', async () => {

@@ -66,7 +66,7 @@ export async function assemble(output = defaultOutput) {
       )
       add(
         `${host}/README.md`,
-        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. This candidate is generated from the public usage plugin and does not include the separate development checks mod.' : host === 'pi' ? 'Pi API target: 0.80.3. The package manifest loads extensions/antiburn.mjs for context and extensions/session-check-renderer-extension.mjs for optional native frame rendering. Native TUI startup and explicit TUI/RPC command use the host notification API. User prompts receive Antiburn context before the model call; print/JSON output is unsupported.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated help/status command. Runtime API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs adds checks to main-session messages with experimental.chat.messages.transform on loopback hosts.' : host === 'codex' ? 'The packaged UserPromptSubmit hook reads staged Antiburn findings and adds them as context without starting a model turn. Codex CLI catalog installation did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host codex` to print the native hooks.json fragment, merge it into Codex hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host codex --session SESSION_ID` for read-only delivery status.' : 'The packaged postToolUse hook adds staged Antiburn findings after a tool result. It does not start a new turn. Cursor plugin discovery alone did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host cursor` to print the native hooks.json fragment, merge it into Cursor hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host cursor --session SESSION_ID` for read-only delivery status.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
+        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. This candidate is generated from the public usage plugin and does not include the separate development checks mod.' : host === 'pi' ? 'Pi API target: 0.80.3. The default package loads extensions/antiburn.mjs for context and has no TUI imports. The sibling pi-renderer package is an explicit opt-in for native frame rendering on verified hosts. It uses static host imports; an import failure can stop Pi startup. Native TUI startup and explicit TUI/RPC command use the host notification API. User prompts receive Antiburn context before the model call; print/JSON output is unsupported.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated help/status command. Runtime API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs adds checks to main-session messages with experimental.chat.messages.transform on loopback hosts.' : host === 'codex' ? 'The packaged UserPromptSubmit hook reads staged Antiburn findings and adds them as context without starting a model turn. Codex CLI catalog installation did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host codex` to print the native hooks.json fragment, merge it into Codex hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host codex --session SESSION_ID` for read-only delivery status.' : 'The packaged postToolUse hook adds staged Antiburn findings after a tool result. It does not start a new turn. Cursor plugin discovery alone did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host cursor` to print the native hooks.json fragment, merge it into Cursor hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host cursor --session SESSION_ID` for read-only delivery status.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
       )
     }
     for (const host of ['pi', 'opencode', 'codex', 'cursor']) {
@@ -248,14 +248,8 @@ export async function assemble(output = defaultOutput) {
       }),
     )
     add('pi/extensions/antiburn.mjs', await adapter('integrations/antiburn/pi/antiburn.mjs'))
-    add(
-      'pi/extensions/session-check-renderer-extension.mjs',
-      await adapter('integrations/antiburn/pi/session-check-renderer-extension.mjs'),
-    )
-    add(
-      'pi/extensions/session-check-renderer.mjs',
-      await adapter('integrations/antiburn/pi/session-check-renderer.mjs'),
-    )
+    for (const entry of ['session-check-renderer-extension.mjs', 'session-check-renderer.mjs'])
+      add(`pi-renderer/extensions/${entry}`, await adapter(`integrations/antiburn/pi/${entry}`))
     add(
       'pi/package.json',
       json({
@@ -265,18 +259,30 @@ export async function assemble(output = defaultOutput) {
         license: 'MIT',
         type: 'module',
         keywords: ['pi-package'],
+        pi: { extensions: ['./extensions/antiburn.mjs'] },
+        files: ['extensions', 'lib', 'LICENSE', 'README.md', 'core-plugin.json'],
+      }),
+    )
+    add(
+      'pi-renderer/package.json',
+      json({
+        name: 'antiburn-pi-renderer-local',
+        version: VERSION,
+        private: true,
+        license: 'MIT',
+        type: 'module',
         peerDependencies: {
           '@earendil-works/pi-coding-agent': '*',
           '@earendil-works/pi-tui': '*',
         },
-        pi: {
-          extensions: [
-            './extensions/antiburn.mjs',
-            './extensions/session-check-renderer-extension.mjs',
-          ],
-        },
-        files: ['extensions', 'lib', 'LICENSE', 'README.md', 'core-plugin.json'],
+        pi: { extensions: ['./extensions/session-check-renderer-extension.mjs'] },
+        files: ['extensions', 'LICENSE', 'README.md'],
       }),
+    )
+    add('pi-renderer/LICENSE', await read('LICENSE'))
+    add(
+      'pi-renderer/README.md',
+      `# Antiburn Pi renderer\n\nThis package adds the optional frame-only TUI renderer to an installed Antiburn Pi context package. It statically imports Pi's host-provided TUI APIs. Use it only with a Pi host version whose renderer API and aliases you have verified; an import failure can stop Pi startup.\n\nInstall it separately after the context package:\n\n\`\`\`sh\npi install /absolute/path/to/generated-plugins/pi-renderer\n\`\`\`\n`,
     )
     for (const host of ['claude', 'codex', 'cursor']) {
       for (const [name, content] of files)
