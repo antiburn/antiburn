@@ -968,9 +968,16 @@ workspace metadata; canonical duplicate roots are read once. Cursor CLI
 Cursor Desktop and CLI sources share a canonical session ID, the session list keeps
 the Desktop composer source even when their workspace hints differ. Exact-label
 analysis retains the unmerged candidates so saved CLI bindings remain readable.
-Explicit Desktop profiles use profile-scoped source labels; the default profile
-keeps its legacy labels. A legacy label resolves only when exactly one profile
-candidate matches within the claimed session and environment.
+Every Desktop profile, including the default profile, uses a profile-scoped
+source label. Older unscoped labels act as aliases only when exactly one
+profile candidate matches within the claimed session and environment. If copied
+profiles share the same legacy label, the old label cannot identify its original
+profile and exact lookup fails closed; current profile-scoped labels retain each
+source binding.
+Kiro exact-source lookup retains raw candidates before display deduplication, so
+a saved file source remains available when another workspace has a session with
+the same ID. The session list keeps its existing canonical-first, newest-source
+winner.
 Isolated-profile discovery does not certify native live capture.
 
 ## Retained native content
