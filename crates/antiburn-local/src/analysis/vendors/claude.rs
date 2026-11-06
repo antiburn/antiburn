@@ -1021,6 +1021,7 @@ impl ClaudeSessionReader {
                         emit_user_message(&value, index, &state.session_id, sink);
                     }
                     state.capture_native_tool_results(&value, index, sink);
+                    state.retire_calls_after_request(&value);
                     if state.user_message_root.admits(&state.session_id)
                         && native_activity_record(&value)
                     {
@@ -1347,6 +1348,9 @@ impl ClaudeStreamState {
     fn observe_request_slot(&mut self, record: &Value) {
         let seam = self.has_sdk_result_seam(record);
         self.user_message_root.observe_user_slot(record, seam);
+    }
+
+    fn retire_calls_after_request(&mut self, record: &Value) {
         if record["version"] == "2.1.317"
             && record["entrypoint"] == "sdk-cli"
             && retained_root::is_user_content(record)

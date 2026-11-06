@@ -2201,9 +2201,44 @@ pub async fn analyze_for_evidence(
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
     fork_parent_session_id: Option<String>,
 ) -> EvidencePass {
+    analyze_for_evidence_with_explorers(
+        EvidenceSourceLookup {
+            explorers: Explorers::DISK,
+            agent,
+            session_id,
+            wsl_distro,
+        },
+        claimed,
+        signal,
+        turn_row_store,
+        fork_parent_session_id,
+    )
+    .await
+}
+
+struct EvidenceSourceLookup<'a> {
+    explorers: Explorers,
+    agent: AgentKind,
+    session_id: &'a str,
+    wsl_distro: Option<&'a str>,
+}
+
+async fn analyze_for_evidence_with_explorers(
+    source_lookup: EvidenceSourceLookup<'_>,
+    claimed: ClaimedSource,
+    signal: PassSignal,
+    turn_row_store: Option<Arc<dyn TurnRowStore>>,
+    fork_parent_session_id: Option<String>,
+) -> EvidencePass {
+    let EvidenceSourceLookup {
+        explorers,
+        agent,
+        session_id,
+        wsl_distro,
+    } = source_lookup;
     let source = match claimed.source_label.as_deref() {
         Some(source_label) => {
-            Explorers::DISK
+            explorers
                 .locate_session_source_by_label_in_environment(
                     &agent,
                     session_id,
@@ -2212,19 +2247,21 @@ pub async fn analyze_for_evidence(
                 )
                 .await
         }
-        None => locate(agent, session_id, wsl_distro).await,
+        None => {
+            explorers
+                .locate_session_source_in_environment(&agent, session_id, wsl_distro)
+                .await
+        }
     };
     let Some(source) = source else {
         return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
     };
-    let mut paths = Explorers::DISK
-        .list_subagents_in_environment(&agent, session_id, wsl_distro)
-        .await;
+    let mut paths = explorers.list_subagents_for_source(&agent, &source).await;
     paths.sort();
     let mut children = Vec::new();
     for path in paths {
-        if let Some(id) = Explorers::DISK.subagent_id(&agent, &path) {
-            let label = Explorers::DISK.subagent_label(&agent, &path).await;
+        if let Some(id) = explorers.subagent_id(&agent, &path) {
+            let label = explorers.subagent_label(&agent, &path).await;
             children.push((id, label, path));
         }
     }

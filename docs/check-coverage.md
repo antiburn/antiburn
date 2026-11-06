@@ -425,9 +425,9 @@ capture sequence. Unbound removals report coverage gaps; page absence never
 removes evidence. Strict historical replay still does not support whole-message
 deletion.
 
-The source parser is revision 70, analyzer is 25, evidence schema is 22, file
+The source parser is revision 71, analyzer is 25, evidence schema is 22, file
 cursor is 5, resume snapshot is 25, and V1 live journal is 5. Compatible
-parser-63 through parser-69 cursor/state-5 receipts retain committed
+parser-63 through parser-70 cursor/state-5 receipts retain committed
 progress except for the exact parser-67 rejected Claude SDK-root reset. Named
 parser-62/file-V4 and V1 journal-V4 conversions retain
 old result progress, result identities, joins, and result seed semantics. They
@@ -435,6 +435,14 @@ establish a separate future-only public baseline without replaying old results.
 Pre-65 Claude request contexts are an exception: old pending text has no retained
 origin proof and becomes partial rather than entering a new assessment. This
 conversion does not rewrite accepted inputs, attempts, cooldowns, usage, or status.
+Parser-67 Claude cursors also drop retained request text and make queued contexts
+partial, including cursors with an existing request-origin boundary. The boundary
+alone does not certify API-origin history completeness.
+Claude discovery keeps subagent and fork-job evidence attached to the selected
+configuration-profile source. Enriched fork-job headers include the declared
+parent in the normalized lineage observation consumed by evidence analysis.
+Mixed SDK 2.1.317 text/result envelopes retain exact result binding before
+prior calls expire; API request history remains partial.
 Native Claude execution also requires a committed request-origin boundary and
 its consumed selector reset. Pre-boundary candidates cannot dispatch or write a
 new status. A late answer can retain its response and usage without acceptance;
@@ -442,7 +450,7 @@ unknown delivery still cannot trigger a resend. Startup selection cannot seed
 old request context merely because its selector cursor is newer.
 Transient read errors do not erase proved request origin or revoke otherwise
 current frozen work. Existing source-evidence and idle-continuity gates still apply.
-Batch resume snapshots require parser 70. Parser numbers alone do not establish
+Batch resume snapshots require parser 71. Parser numbers alone do not establish
 layout compatibility: parser 64 from the producer commit below used file cursor 1
 and V1 live state 2, not the accepted cursor/state-5 layouts. Named converters
 accept only the exact parser/layout pairs from producer commit

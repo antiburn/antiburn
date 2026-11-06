@@ -230,6 +230,11 @@ pub enum DirectSessionSource {
 pub trait AgentExplorer: Send + Sync {
     async fn discover_recent(&self, now: i64, since_secs: i64) -> Vec<SessionLog>;
 
+    /// Keep source candidates separate for exact saved-source lookup.
+    async fn discover_recent_sources(&self, now: i64, since_secs: i64) -> Vec<SessionLog> {
+        self.discover_recent(now, since_secs).await
+    }
+
     /// Discover recent sessions and send them in bounded, activity-ordered batches.
     ///
     /// `since_secs` is a lookback duration, not an absolute cutoff. The default
@@ -2055,7 +2060,7 @@ impl Explorers {
                     return Some(source);
                 }
             }
-            self.get(agent).discover_recent(now, now).await
+            self.get(agent).discover_recent_sources(now, now).await
         };
 
         self.find_source_log_by_label(&logs, agent, session_id, source_label, wsl_distro)
@@ -2070,8 +2075,13 @@ impl Explorers {
         source_label: &str,
         wsl_distro: Option<&str>,
     ) -> Option<&'a SessionLog> {
-        logs.iter().find(|log| {
-            if log.agent_type != *agent || log.source_label() != source_label {
+        let mut matches = logs.iter().filter(|log| {
+            let label = log.source_label();
+            let label_matches = label == source_label
+                || (*agent == AgentKind::Cursor
+                    && agents::cursor::legacy_cursor_source_label(&label).as_deref()
+                        == Some(source_label));
+            if log.agent_type != *agent || !label_matches {
                 return false;
             }
             let environment_matches = match wsl_distro.filter(|value| !value.is_empty()) {
@@ -2095,7 +2105,9 @@ impl Explorers {
                 } => source_session_id == session_id,
             };
             environment_matches && session_matches
-        })
+        });
+        let candidate = matches.next()?;
+        matches.next().is_none().then_some(candidate)
     }
 
     /// Resolves one session within an explicit caller-supplied environment
@@ -2231,6 +2243,29 @@ impl Explorers {
         parent_transcript: &Path,
     ) -> Vec<PathBuf> {
         self.get(agent).list_subagents(parent_transcript).await
+    }
+
+    /// List children from the selected source without a second session-id lookup.
+    pub async fn list_subagents_for_source(
+        &self,
+        agent: &AgentKind,
+        source: &SessionSource,
+    ) -> Vec<PathBuf> {
+        if !self.get(agent).supports_subagents() {
+            return Vec::new();
+        }
+        let parent = subagent_parent_transcript(source).or_else(|| match source {
+            SessionSource::Inline { label, .. } if *agent == AgentKind::Claude => {
+                let path = Path::new(label);
+                (path.is_absolute() && path.extension().is_some_and(|ext| ext == "jsonl"))
+                    .then(|| path.to_path_buf())
+            }
+            _ => None,
+        });
+        match parent {
+            Some(parent) => self.list_subagents_for_transcript(agent, &parent).await,
+            None => Vec::new(),
+        }
     }
 
     /// Resolve a single sub-agent's transcript source for analysis or deep-linking,

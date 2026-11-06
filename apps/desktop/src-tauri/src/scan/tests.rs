@@ -1005,7 +1005,7 @@ async fn cursor_desktop_source_refresh_advances_fingerprint_once_without_label_o
     let first_state = store.session_source_state(&key).unwrap().unwrap();
 
     let second = describe_with_states(
-        vec![make_log("updated native snapshot", 1_800_000_100)],
+        vec![make_log("updated native snapshot", 1_800_000_000)],
         home.path(),
         &HashSet::new(),
         &store.session_records().unwrap(),

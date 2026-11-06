@@ -145,6 +145,43 @@ async fn exact_source_lookup_keeps_same_id_cursor_desktop_claim_and_environment(
 }
 
 #[tokio::test]
+async fn cursor_legacy_source_labels_require_one_profile_candidate() {
+    let old = "cursor-desktop:workspace:same-session";
+    let new = "cursor-desktop:profile:0123456789abcdef:workspace:same-session";
+    let make = |label: &str| SessionLog {
+        agent_type: AgentKind::Cursor,
+        source: SessionSource::Inline {
+            label: label.into(),
+            content: r#"{"session_id":"same-session"}"#.into(),
+            source_format: None,
+        },
+        updated_at: None,
+        environment: DiscoveryEnvironment::Native,
+    };
+    let logs = vec![make(new)];
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", old, None)
+            .unwrap()
+            .source_label(),
+        new
+    );
+    let logs = vec![make(old), make(new)];
+    assert!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", old, None)
+            .is_none()
+    );
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", new, None)
+            .unwrap()
+            .source_label(),
+        new
+    );
+}
+
+#[tokio::test]
 async fn a_non_claude_file_source_uses_whole_document_fallback() {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path().join("session.jsonl");
@@ -1669,6 +1706,53 @@ fn matcher_precedence_covers_every_agent_exactly_once() {
 /// doesn't (Codex), purely via the default trait impl — no `matches!` gate
 /// in the dispatcher. This is the seam that lets a future vendor opt in by
 /// implementing the hooks on its own explorer alone.
+#[tokio::test]
+async fn selected_parent_source_keeps_its_own_subagents() {
+    let temp = TempDir::new().unwrap();
+    let mut parents = Vec::new();
+    let mut children = Vec::new();
+    for profile in ["default", "explicit"] {
+        let root = temp.path().join(profile);
+        let child = root
+            .join("same-id/subagents")
+            .join(format!("agent-{profile}.jsonl"));
+        tokio::fs::create_dir_all(child.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&child, "{}").await.unwrap();
+        parents.push(root.join("same-id.jsonl"));
+        children.push(child);
+    }
+    for index in 0..parents.len() {
+        for source in [
+            SessionSource::File(parents[index].clone()),
+            SessionSource::Inline {
+                label: parents[index].to_string_lossy().into_owned(),
+                content: "{}".into(),
+                source_format: None,
+            },
+        ] {
+            assert_eq!(
+                Explorers::DISK
+                    .list_subagents_for_source(&AgentKind::Claude, &source)
+                    .await,
+                vec![children[index].clone()]
+            );
+        }
+    }
+    let source = SessionSource::Inline {
+        label: "claude-fork-job:same-id".into(),
+        content: "{}".into(),
+        source_format: None,
+    };
+    assert!(
+        Explorers::DISK
+            .list_subagents_for_source(&AgentKind::Claude, &source)
+            .await
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn subagent_dispatch_is_vendor_specific_via_trait() {
     let home = TempDir::new().unwrap();

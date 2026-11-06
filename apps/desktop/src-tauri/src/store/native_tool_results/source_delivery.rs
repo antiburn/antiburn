@@ -41,7 +41,7 @@ pub(crate) fn next_live_source_in(
                          USING(environment_key, agent, session_id)
                       WHERE s.environment_key = 'native' AND s.wsl_distro IS NULL
                          AND s.agent IN ('claude-code', 'codex', 'pi') AND s.source_kind = 'file'
-                         AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69))
+                         AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70))
                         AND s.cwd IS NOT NULL AND s.cwd <> ''
                         AND ({LIVE_ACTIVATION_SQL}) AND ({ROOT_SESSION_SQL})
                  ), journal_rows AS (
@@ -56,7 +56,7 @@ pub(crate) fn next_live_source_in(
                        FROM session s LEFT JOIN opencode_journal_delivery d
                          USING(environment_key, agent, session_id)
                         WHERE ({OPENCODE_V1_SOURCE_SQL}) AND s.wsl_distro IS NULL
-                        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69))
+                        AND (d.parser_revision IS NULL OR d.parser_revision IN (?1, 62, 63, 64, 65, 66, 67, 68, 69, 70))
                         AND s.cwd IS NOT NULL AND s.cwd <> ''
                         AND ({ROOT_SESSION_SQL}) AND ({LIVE_ACTIVATION_SQL})
                  ), eligible AS (
