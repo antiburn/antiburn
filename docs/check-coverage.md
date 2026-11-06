@@ -142,6 +142,13 @@ reconciliation and startup generation/incarnation fences still apply. Cursor CLI
 generic stores, forks, children, remote, and WSL sources do not inherit this route.
 See the [source contract](session-coverage.md#cursor-desktop-yaml-tool-evidence)
 for synthetic tests, terminal-result fields, and missing-evidence limits. The
+pinned Cursor 3.28.7 chunked-header store can supply that recorded order within
+the source contract's chunk, byte, identity and count limits. It does not bypass
+main-source ownership, complete-prefix, current-generation or assessment gates.
+Chunked snapshots need native creation timestamps within the composer's observed
+lifetime. An inherited or unproven prefix, missing chunks, or conflicting chunks
+remain ineligible. This ordering support does not
+establish automatic Inbox delivery or broaden other tool-payload version pins. The
 pinned Cursor 3.25.6 Read/Grep shape can match completed read/search filters
 without returned content. Its exact native call/name/argument/result binding
 retains partial payload quality; it does not prove full read extent, full search
@@ -425,9 +432,9 @@ capture sequence. Unbound removals report coverage gaps; page absence never
 removes evidence. Strict historical replay still does not support whole-message
 deletion.
 
-The source parser is revision 71, analyzer is 25, evidence schema is 22, file
+The source parser is revision 72, analyzer is 25, evidence schema is 22, file
 cursor is 5, resume snapshot is 25, and V1 live journal is 5. Compatible
-parser-63 through parser-70 cursor/state-5 receipts retain committed
+parser-63 through parser-71 cursor/state-5 receipts retain committed
 progress except for the exact parser-67 rejected Claude SDK-root reset. Named
 parser-62/file-V4 and V1 journal-V4 conversions retain
 old result progress, result identities, joins, and result seed semantics. They
@@ -450,7 +457,7 @@ unknown delivery still cannot trigger a resend. Startup selection cannot seed
 old request context merely because its selector cursor is newer.
 Transient read errors do not erase proved request origin or revoke otherwise
 current frozen work. Existing source-evidence and idle-continuity gates still apply.
-Batch resume snapshots require parser 71. Parser numbers alone do not establish
+Batch resume snapshots require parser 72. Parser numbers alone do not establish
 layout compatibility: parser 64 from the producer commit below used file cursor 1
 and V1 live state 2, not the accepted cursor/state-5 layouts. Named converters
 accept only the exact parser/layout pairs from producer commit

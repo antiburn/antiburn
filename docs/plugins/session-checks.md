@@ -127,6 +127,195 @@ captures. The support table below retains its original context-only scope.
 These display paths do not change evidence parsing, check eligibility, thresholds,
 or automatic-installation gates.
 
+### Codex notice output
+
+By default, the Codex UserPromptSubmit adapter includes a plain-text update frame in
+`systemMessage`, alongside its existing Markdown `additionalContext`. It uses
+the same context receipt and writes both fields in one hook result. The
+[Codex hook contract](https://developers.openai.com/codex/hooks) defines
+`systemMessage` as a warning surfaced in the UI or event stream. The host owns
+the warning layout; the adapter does not ask the assistant to reproduce it.
+
+Codex CLI 0.166.0 `exec --json` accepted and acknowledged the adapter's context
+in an isolated synthetic transport probe, but did not expose its notice in the
+captured output. A separate native TUI capture showed the complete plain-text
+frame after an ordinary readiness prompt, separately from the assistant's reply.
+That probe used a synthetic CLI response and localhost provider; it establishes
+automatic native presentation alone. A follow-up controlled audit delivered a
+real saved predefined Fast mode value assessment through the same TUI hook after
+an ordinary readiness prompt. A second ordinary turn showed no new notice; the
+CLI retained one acknowledged revision and returned no new update or receipt.
+The assessment used controlled fixture evidence, and the receiving provider
+returned only a local canned reply. This verifies saved-assessment delivery,
+native presentation and duplicate suppression, not natural-work detection or
+assistant reproduction. This native-hook path has not produced a visible notice
+in the tested desktop conversation. Do not infer headless or desktop display
+support from the hook output fields alone.
+
+For desktop projects that need an inline notice, the adapter accepts the explicit
+option `--presentation assistant`. Append this option to the packaged
+`session-check-hook.mjs` command in the project's reviewed hook configuration;
+keep only one Antiburn UserPromptSubmit hook for that project. Do not add the
+option to a shared global hook unless assistant rendering is also wanted in
+terminal sessions using that configuration. Omitting the option (or using
+`--presentation native`) preserves the native terminal path. The configuration
+preview and bundled hooks continue to select native presentation by default;
+there is no automatic desktop detection.
+
+Assistant presentation supplies a fixed instruction to show the canonical
+Markdown frame after the ordinary answer on that turn. The frame is JSON-encoded
+as advisory data, with instructions to ignore commands within it and honor
+conflicting explicit user instructions. This mode omits `systemMessage` to avoid
+a second native notice. It uses the existing context receipt and deduplication
+ledger: switching presentation modes does not replay an acknowledged revision.
+Acknowledgment proves hook handoff, not that the assistant rendered the frame.
+The assistant can omit or alter it; this is not a deterministic native widget.
+
+A cross-surface audit of this opt-in adapter displayed a real saved terminal
+assessment as the exact branded Markdown frame in Desktop. A subsequent ordinary
+turn did not repeat the notice. The assessment used controlled terminal fixture
+evidence; freshness was not re-evaluated. The hook handed off the warning before
+a direct Desktop request failed with an input-item-ID error. An ordinary prompt
+sent through Codex's dedicated chat tool then recovered the response from retained
+hook context, without a request to reproduce Antiburn output or a receipt reset.
+This verifies that recovery path, not a fix for direct Desktop submission or
+fresh Desktop-origin assessment support. A failed model request can occur after
+the hook acknowledges delivery; acknowledgment does not guarantee a visible
+notice or an automatic retry.
+
+### OpenCode optional native TUI candidate
+
+OpenCode's server adapter retains its existing context transformation and accepts
+the 1.19.2 and 1.19.3 SDK peers. The optional TUI module,
+`runtime/session-check-ui.tsx`, targets exactly OpenCode 1.19.3 and
+`@opencode-ai/plugin/tui`. The TUI host supplies OpenTUI Core and Solid 0.4.5
+and Solid JS 1.9.12. It registers a persistent `app_bottom`
+frame without replacing the prompt. It prefers the public OpenTUI Markdown
+intrinsic with canonical brand, check titles, authored multiline messages and
+rails. Styles use public host theme tokens; each native style resource is
+destroyed on unmount. A rendering error falls back to the complete canonical
+plain-text frame. Links are passive and remain closed. A bounded scrollbox
+wraps the text and retains its full content. Long frames require scrolling.
+Actual OpenCode 1.19.3 PTY captures establish synthetic CLI transport, complete
+short frames, long-message wrapping and scrolling, A/B/A session isolation,
+home-route removal and one UI acknowledgement per session revision.
+A native terminal-window screenshot also verifies a complete short synthetic
+frame, Markdown styling and exact session identity, correlated with one UI
+acknowledgement.
+A separate actual packaged TUI probe confirms canonical Markdown with
+native bold/link styling, multiline wrapping and scrolling, plus complete
+plain-text fallback after an injected Markdown failure. It also observes native
+style resource cleanup.
+
+A live OpenCode 1.19.3 audit used a disposable project and one ordinary
+diagnostic turn. The unchanged Skill opportunities check scored 0.96 at its
+0.95 threshold. Its complete warning appeared automatically below the composer
+in the attached terminal. The real CLI recorded the matching `opencode:ui`
+acknowledgement. This verifies live display for one session through the
+explicit loopback serve/attach path.
+
+OpenCode Desktop 1.19.4 has no GUI plugin host for this renderer;
+its native desktop window is unsupported by this terminal TUI candidate.
+
+Install the server entry through its existing configuration. Configure the TUI
+entry separately in `tui.json`, using an absolute path to the assembled file:
+
+```json
+{
+  "plugin": ["/absolute/path/to/opencode/runtime/session-check-ui.tsx"]
+}
+```
+
+The package exposes this target as `./tui`; its root export remains the server
+plugin. The managed payload includes the optional files without enabling them.
+The TUI candidate accepts only an exact active main-session identity returned
+by the connected server and public SDK request/response metadata showing a
+loopback HTTP(S) connection. Use an explicit local `opencode serve --hostname
+127.0.0.1 --port PORT` and `opencode attach http://127.0.0.1:PORT`. The default
+embedded server's internal URL, remote servers, redirects, child sessions,
+unknown identities and other host versions fail closed. Session metadata
+requests reject redirects before following them. Merely sharing a
+workspace does not establish session identity.
+
+The UI uses the separate `opencode:ui` consumer. Context acknowledgement does
+not consume a pending UI update. An acknowledgement means that the complete
+matching frame reached the mounted host component after route and revision
+checks; it does not prove terminal pixels, human attention, or display in every
+attached client. Registration alone does not acknowledge anything. A headless
+server never loads this consumer. Missing UI, failed CLI reads and renderer
+load failure leave the existing context path available.
+
+Each active route gets a fresh read. Full snapshots restore current findings
+when another client already acknowledged the global UI receipt. Pending
+updates can replay after restart or failed acknowledgement. Same revisions do
+not schedule another acknowledgement after success within the active route.
+Clear and withdrawal updates replace the old warning and persist while that
+route's snapshot remains unchanged; acknowledged transitions do not replay on
+restart. A new snapshot replaces these transitions. Leaving the session,
+losing a safe binding, an unavailable read or unloading the plugin removes the
+frame. Route generations reject late asynchronous reads and stale component
+mounts. Reads coalesce while one is in flight. Active routes refresh on activation,
+session idle, polling and at most one message-triggered read per second.
+No transcript messages or assistant
+follow-up turns are created.
+
+### Cursor optional conversation Inbox candidate
+
+Cursor retains its existing postToolUse model-context delivery. A separate
+optional editor extension is assembled under `cursor/inbox/`. It targets the
+public editor APIs checked in Cursor 3.25.6 and 3.28.7 (VS Code 1.128.0).
+Assembly does not install, enroll or enable it, and the desktop-managed context
+payload does not load it.
+The extension uses the existing unmanaged CLI resolver; it does not inherit the
+desktop payload's private CLI connection.
+
+A controlled packaged reference-hook test reaches the real editor webview and
+acknowledges one matching UI receipt after a duplicate reference. It uses a
+synthetic CLI response, not a native model tool event or real assessment. An
+unobscured Cursor 3.28.7 native-window capture verifies both rails, the branded
+frame, authored text, conversation identity and enrolled workspace.
+
+A live Cursor 3.28.7 audit combined this Inbox and the chunked-header parser
+with the separate scoped Cursor inventory change. One ordinary diagnostic turn
+produced a Skill opportunities warning at 0.99 against the unchanged 0.95
+threshold. The warning appeared in the already-open Inbox and stayed visible
+through a normal refresh with the same `cursor:ui` receipt. This verifies live
+display in the combined build. A separate synthetic two-window audit verified
+that distinct enrolled roots each received only their own conversation.
+
+Load the extension directory in a separate editor development host, then run
+**Antiburn Inbox: Enroll This Workspace Window**. Enrollment is explicit and
+limited to local POSIX workspaces with at most eight roots. Remote workspaces,
+empty windows and Windows are unsupported. Use **Antiburn Inbox: Preview Optional
+Hook Configuration** to print a separate postToolUse reference-hook fragment.
+Merge that fragment through Cursor's normal configuration and trust controls,
+preserving the existing context hook and any other hooks. Previewing does not
+write configuration. Do not replace the context hook with the reference hook.
+
+The reference hook publishes bounded conversation references to an existing
+private enrollment. It does not store authored advice, transcripts or context
+receipts. The Inbox reads canonical CLI snapshots with the separate `cursor:ui`
+consumer. Each card identifies its exact conversation; workspace attribution is
+hook-reported. The Inbox does not follow the active native chat or identify the
+originating editor window. Matching enrolled windows can receive the same
+conversation. Workspace changes end enrollment.
+
+Changed findings can reveal the Inbox while preserving keyboard focus. Closing
+it mutes automatic reveal until **Antiburn Inbox: Show Enrolled Conversations**
+is used. **Antiburn Inbox: Stop Enrollment** stops this window's enrollment.
+The renderer preserves authored text with a bounded emphasis, inline-code and
+passive-link subset; unsupported Markdown remains literal. Raw HTML is escaped
+and external resources, active links and command URIs are disabled.
+
+UI acknowledgements require a matching session, receipt and renderer generation,
+confirmed after application to a visible webview. Hook completion and successful
+`postMessage` do not acknowledge display. The UI receipt is shared across
+windows, not proof of per-window attention. Full snapshots restore current
+findings after another window consumes a receipt; this does not guarantee that
+every window sees each clear or withdrawal transition. Missing, hidden, muted or
+disposed UI leaves context delivery independent. Local bridge metadata expires;
+no provider calls or assistant continuation turns are created by this renderer.
+
 ## Native delivery versus evidence coverage
 
 A native adapter is a delivery mechanism. It does not add an evidence reader

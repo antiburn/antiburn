@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { mkdtemp, realpath, readFile, writeFile, rm, mkdir, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { assemble, verify } from '../../../scripts/assemble-antiburn-core-plugin.mjs'
 
 test('assembly is reproducible, self-contained, licensed, and refuses altered ownership', async () => {
@@ -14,6 +15,22 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
     const first = await readFile(join(output, 'SHA256SUMS'), 'utf8')
     assert.ok(first.includes('codex/hooks/session-check-config.mjs'))
     assert.ok(first.includes('cursor/hooks/session-check-config.mjs'))
+    assert.ok(first.includes('cursor/inbox/extension.cjs'))
+    const cursorInbox = JSON.parse(
+      await readFile(join(output, 'cursor/inbox/package.json'), 'utf8'),
+    )
+    assert.equal(cursorInbox.main, './extension.cjs')
+    for (const entry of [
+      'inbox-controller.mjs',
+      'inbox-bridge.mjs',
+      'inbox-view.mjs',
+      'inbox-reference-hook.mjs',
+      'extension.cjs',
+    ]) {
+      const source = await readFile(join(output, 'cursor/inbox', entry), 'utf8')
+      assert.doesNotMatch(source, /\.\.\/inbox-|packages\/antiburn-plugin-core/)
+    }
+    await import(pathToFileURL(join(output, 'cursor/inbox/inbox-controller.mjs')).href)
     assert.match(first, /claude\/hooks\/register.ts/)
     assert.match(first, /pi\/extensions\/antiburn.mjs/)
     assert.match(first, /pi-renderer\/extensions\/session-check-renderer\.mjs/)
@@ -170,6 +187,23 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
     )
     const publicClaudeEntry = await readFile(join(output, 'claude/hooks/register.ts'), 'utf8')
     assert.doesNotMatch(publicClaudeEntry, /session-check/)
+    const packagedCodexHook = join(output, 'codex/hooks/session-check-hook.mjs')
+    for (const args of [[], ['--presentation', 'native'], ['--presentation', 'assistant']]) {
+      const result = spawnSync(process.execPath, [packagedCodexHook, ...args], {
+        input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', agent_id: 'child' }),
+        encoding: 'utf8',
+      })
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(result.stdout, '')
+    }
+    const invalidPresentation = spawnSync(
+      process.execPath,
+      [packagedCodexHook, '--presentation', 'unknown'],
+      { input: '{}', encoding: 'utf8' },
+    )
+    assert.equal(invalidPresentation.status, 1)
+    assert.equal(invalidPresentation.stdout, '')
+    assert.match(invalidPresentation.stderr, /Usage:/)
     const cursorHooks = JSON.parse(
       await readFile(join(output, 'cursor/hooks/hooks.json'), 'utf8'),
     )

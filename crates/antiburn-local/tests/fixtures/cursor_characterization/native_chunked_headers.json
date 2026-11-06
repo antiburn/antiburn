@@ -1,0 +1,43 @@
+{
+  "composer": {
+    "createdAt": 1793926800000,
+    "fullConversationHeadersOnly": [],
+    "conversationMap": {},
+    "headerLog": {
+      "chunkSize": 256,
+      "chunkCount": 2,
+      "count": 3,
+      "generation": "synthetic-generation"
+    }
+  },
+  "chunks": [
+    [{ "bubbleId": "z-user" }, { "bubbleId": "a-tool" }],
+    [{ "bubbleId": "m-assistant" }]
+  ],
+  "bubbles": [
+    {
+      "bubbleId": "z-user",
+      "type": 1,
+      "createdAt": "2026-11-06T01:00:01.000Z",
+      "text": "Diagnose the synthetic parser failure without changing files."
+    },
+    {
+      "bubbleId": "a-tool",
+      "type": 2,
+      "createdAt": "2026-11-06T01:00:02.000Z",
+      "toolFormerData": {
+        "name": "run_terminal_command_v2",
+        "toolCallId": "synthetic-call",
+        "status": "completed",
+        "params": "{\"command\":\"cargo test parser\"}",
+        "result": "{\"output\":\"Synthetic missing parser table\",\"exitCode\":1}"
+      }
+    },
+    {
+      "bubbleId": "m-assistant",
+      "type": 2,
+      "createdAt": "2026-11-06T01:00:03.000Z",
+      "text": "The synthetic parser table is missing."
+    }
+  ]
+}

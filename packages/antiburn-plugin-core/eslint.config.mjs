@@ -1,6 +1,6 @@
 export default [
   {
-    files: ['**/*.mjs'],
+    files: ['**/*.{mjs,cjs}'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',
@@ -17,6 +17,19 @@ export default [
       'no-unreachable': 'error',
       'no-constant-condition': 'error',
       'constructor-super': 'error',
+    },
+  },
+  {
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'readonly',
+        __dirname: 'readonly',
+        setInterval: 'readonly',
+        clearInterval: 'readonly',
+      },
     },
   },
 ]

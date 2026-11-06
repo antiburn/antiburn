@@ -415,18 +415,18 @@ their source-specific meaning; none proves a served tier or measured savings.
 
 ### Saved-state revisions and conversion
 
-Parser revision is 71, analyzer revision is 25, evidence schema revision is 22,
+Parser revision is 72, analyzer revision is 25, evidence schema revision is 22,
 and resume snapshot revision is 25. Native file cursor and OpenCode V1 live
-journal revisions are both 5. Compatible parser-63 through parser-70
+journal revisions are both 5. Compatible parser-63 through parser-71
 cursor/state-5 receipts retain committed progress except for the exact parser-67
 rejected Claude SDK-root reset described below. The named parser-62 predecessor
 uses claim-fenced conversion. Batch resume snapshots require the current parser.
 Unknown parser or cursor revisions fail closed; they do not authorize a rewind
 or resend.
 
-The regular file loader accepts parser 62 with cursor 4, or parser 63 through 71
+The regular file loader accepts parser 62 with cursor 4, or parser 63 through 72
 with cursor 5. V1 live journal validation accepts parser 62 with live state 4
-through its named converter, or parser 63 through 71 with live state 5 and a
+through its named converter, or parser 63 through 72 with live state 5 and a
 valid public baseline. Source identity, owner, sequence, and bounded source
 samples still require validation. A matching layout number alone does not admit
 another parser pair. The saved parser revision and cursor payload advance only
@@ -767,7 +767,7 @@ Request-history records include message metadata and user text parts.
 
 | Limit                        |   Value | Scope                                                           |
 | ---------------------------- | ------: | --------------------------------------------------------------- |
-| Parser revision              |      71 | Accepted source parser revision                                 |
+| Parser revision              |      72 | Accepted source parser revision                                 |
 | Resume snapshot revision     |      25 | File-reader resume state                                        |
 | Result observations          |    4096 | Retained results per strict journal page or legacy sink window  |
 | Result payload bytes         | 4194304 | Serialized result payload per strict page or legacy sink window |
@@ -914,6 +914,30 @@ must contain nonempty unique bubble IDs. Missing referenced bubbles cannot prove
 complete history. Bubble keys retain their full native IDs, including colons and
 newlines. A tool bubble must match its recorded header identity. Empty legacy
 conversation maps do not invalidate an otherwise recorded order.
+
+The pinned Cursor 3.28.7 chunked-header shape can also establish recorded order.
+Discovery reads `headerLog` metadata and exact numbered `composerConvHeaders`
+keys in the same SQLite snapshot as the composer and bubbles. Numeric chunk
+order and header-array order supply chronology; row order and timestamps do not.
+The supported subset requires chunk size 256, a nonempty bounded root generation,
+at most 256 chunks and 16,384 unique nonempty bubble IDs, at most 256 KiB per
+chunk, and at most 16 MiB of chunk JSON in total. Every declared chunk must exist
+and the aggregate header count must match. Filtered interior chunks may be short
+or empty. Missing, malformed, oversized, duplicate, or conflicting data cannot
+establish order. An invalid declared log cannot fall back to inline order; any
+nonempty inline headers must match the chunk order exactly. Generation belongs
+to the producer's atomic root/chunk write, not individual chunk keys or headers.
+The same producer copies original bubble timestamps into Fork Chat results and
+sets the new composer's creation time to the fork time. For chunked snapshots,
+every referenced bubble must carry a native ISO UTC creation timestamp strictly
+after the composer's epoch-millisecond creation time and no later than the
+discovery second. Missing, invalid, equal, earlier, or future timestamps leave
+ownership unproven, including when a copied prefix is followed by new bubbles.
+Header order still determines chronology and no parent identity is inferred.
+Parser revision 72 requires a fresh projection before this evidence is ready.
+The [synthetic chunked-header characterization](../crates/antiburn-local/tests/fixtures/cursor_characterization/README.md#pinned-cursor-desktop-chunked-headers)
+pins the producer commit and bundle hash. This adds an ordering shape, not a
+historical release range, new tool payload contract, or real visual-delivery proof.
 
 The characterized `run_terminal_command_v2` result supplies JSON arguments,
 recorded output, terminal state, and accepted user-slot prefix. Its recorded exit
@@ -1956,7 +1980,7 @@ compactions, or incomplete history prevent clean. OpenCode uses validated
 ordered history, not `parentID` as a fabricated predecessor link.
 
 The route columns use engine turn migration 7 and desktop migration 39. Current
-revisions are parser 70, analyzer 25, evidence schema 22, coverage schema 6, and
+revisions are parser 72, analyzer 25, evidence schema 22, coverage schema 6, and
 resume snapshot 25. Existing revision gates invalidate old projections and
 snapshots; JSON and binary
 evidence round trips and full/resumed replay are covered by tests.

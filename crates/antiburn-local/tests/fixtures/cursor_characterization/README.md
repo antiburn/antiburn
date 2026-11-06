@@ -2,6 +2,35 @@
 
 These fixtures are synthetic. They contain no captured session data.
 
+## Pinned Cursor Desktop chunked headers
+
+`native_chunked_headers.json` characterizes the chunked-header store in Cursor
+3.28.7, commit `25b52e7d03ebf2d5608914158e119f7992432a30`. The installed
+`workbench.desktop.main.js` producer has SHA256
+`a002fc9d697368f2f298461edd24ee8612303717b66e3843f7bb5fa73975c8f8`.
+Its header-log reader and writer use exact
+`composerConvHeaders:<composerId>:<six-digit chunk index>` keys. Each value is a
+JSON header array. Numeric chunk order and array order define conversation order;
+the root declares chunk size, chunk count, total header count, and generation.
+The writer batches root and chunk changes atomically; generation is a root
+conditional-write field, not part of the chunk key or header.
+
+The writer filters original positional chunks, so an interior chunk can contain
+fewer than 256 headers. The fixture tests that shape and uses IDs whose lexical
+order differs from recorded order. It uses invented conversation text and IDs.
+This pin establishes a storage shape, not a historical release range or proof of
+natural check detection.
+
+The same producer's Fork Chat path copies recorded bubble rows with their IDs
+and original creation timestamps, then sets the cloned composer's creation time
+to the fork time. It does not record a durable parent ID for local Fork Chat.
+The fixture tests the additional ownership gate for chunked evidence: each
+referenced bubble must have a native ISO UTC timestamp strictly after the
+composer's epoch-millisecond creation time and within the discovery time.
+A copied prefix stays ineligible even after new bubbles arrive or the chat is
+renamed. Missing, invalid, equal, earlier, and future timestamps leave ownership
+unproven. The gate does not invent a parent identity or establish chronology.
+
 ## Public generic store pin
 
 Repository: `antonvp/cursor-acp-enriched`.

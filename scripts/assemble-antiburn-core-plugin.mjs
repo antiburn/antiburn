@@ -66,7 +66,7 @@ export async function assemble(output = defaultOutput) {
       )
       add(
         `${host}/README.md`,
-        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. This candidate is generated from the public usage plugin and does not include the separate development checks mod.' : host === 'pi' ? 'Pi API target: 0.80.3. The default package loads extensions/antiburn.mjs for context and has no TUI imports. The sibling pi-renderer package is an explicit opt-in for native frame rendering on verified hosts. It uses static host imports; an import failure can stop Pi startup. Native TUI startup and explicit TUI/RPC command use the host notification API. User prompts receive Antiburn context before the model call; print/JSON output is unsupported.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated help/status command. Runtime API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs adds checks to main-session messages with experimental.chat.messages.transform on loopback hosts.' : host === 'codex' ? 'The packaged UserPromptSubmit hook reads staged Antiburn findings and adds them as context without starting a model turn. Codex CLI catalog installation did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host codex` to print the native hooks.json fragment, merge it into Codex hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host codex --session SESSION_ID` for read-only delivery status.' : 'The packaged postToolUse hook adds staged Antiburn findings after a tool result. It does not start a new turn. Cursor plugin discovery alone did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host cursor` to print the native hooks.json fragment, merge it into Cursor hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host cursor --session SESSION_ID` for read-only delivery status.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
+        `# antiburn ${VERSION}\n\nLocal ${host} candidate; runtime certification is unverified. See docs/plugins in the source repository for installation and lifecycle gates.\n\n${host === 'claude' ? 'Claude mods API target: 2.1.301. This candidate is generated from the public usage plugin and does not include the separate development checks mod.' : host === 'pi' ? 'Pi API target: 0.80.3. The default package loads extensions/antiburn.mjs for context and has no TUI imports. The sibling pi-renderer package is an explicit opt-in for native frame rendering on verified hosts. It uses static host imports; an import failure can stop Pi startup. Native TUI startup and explicit TUI/RPC command use the host notification API. User prompts receive Antiburn context before the model call; print/JSON output is unsupported.' : host === 'opencode' ? 'The commands/antiburn.md asset is the explicit model-mediated help/status command. Server API target: @opencode-ai/plugin 1.19.2; runtime/antiburn.mjs adds checks to main-session messages with experimental.chat.messages.transform on loopback hosts. Optional native TUI target: OpenCode 1.19.3 with host-provided @opentui/core and @opentui/solid 0.4.5 and solid-js 1.9.12. Add runtime/session-check-ui.tsx separately to tui.json plugin entries for a verified loopback serve/attach connection. The default embedded server identity is unsupported. The ./tui export is separate from the server entry. Read docs/plugins/session-checks.md for receipt, scrolling, eligibility, and acceptance limits.' : host === 'codex' ? 'The packaged UserPromptSubmit hook reads staged Antiburn findings and adds them as context without starting a model turn. Codex CLI catalog installation did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host codex` to print the native hooks.json fragment, merge it into Codex hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host codex --session SESSION_ID` for read-only delivery status.' : 'The packaged postToolUse hook adds staged Antiburn findings after a tool result. It does not start a new turn. Cursor plugin discovery alone did not activate bundled hooks on tested builds. Run `node hooks/session-check-config.mjs --host cursor` to print the native hooks.json fragment, merge it into Cursor hooks.json, and review/trust it through the normal host flow. Run `node hooks/session-check-status.mjs --host cursor --session SESSION_ID` for read-only delivery status.'}\n\nThe default brand uses a flame emoji and code delimiters around antiburn. Use status --ascii to omit the emoji; --flame remains a default-style alias. No automatic font detection or orange color certification is claimed.\n`,
       )
     }
     for (const host of ['pi', 'opencode', 'codex', 'cursor']) {
@@ -223,6 +223,30 @@ export async function assemble(output = defaultOutput) {
       await adapter('integrations/antiburn/status-command.mjs'),
     )
     add('cursor/skills/antiburn/SKILL.md', instructions('cursor', '/antiburn'))
+    add('cursor/inbox/LICENSE', license)
+    for (const entry of [
+      'inbox-bridge.mjs',
+      'inbox-controller.mjs',
+      'inbox-reference-hook.mjs',
+      'inbox-view.mjs',
+      'inbox-extension/extension.cjs',
+      'inbox-extension/package.json',
+    ]) {
+      const source = await read(`integrations/antiburn/cursor/${entry}`)
+      add(
+        `cursor/inbox/${entry.replace('inbox-extension/', '')}`,
+        source
+          .replaceAll('../../../packages/antiburn-plugin-core/', './lib/')
+          .replaceAll('../inbox-', './inbox-'),
+      )
+    }
+    for (const entry of [
+      'session-checks.mjs',
+      'session-checks-validation.mjs',
+      'native-hook.mjs',
+      'managed-connection.mjs',
+    ])
+      add(`cursor/inbox/lib/${entry}`, await read(`packages/antiburn-plugin-core/${entry}`))
     add(
       'opencode/commands/antiburn.md',
       instructions('opencode', '/antiburn') + '\nUser arguments: $ARGUMENTS\n',
@@ -235,6 +259,8 @@ export async function assemble(output = defaultOutput) {
       'opencode/runtime/session-checks.mjs',
       await adapter('integrations/antiburn/opencode/session-checks.mjs'),
     )
+    for (const entry of ['session-check-ui.mjs', 'session-check-ui.tsx'])
+      add(`opencode/runtime/${entry}`, await adapter(`integrations/antiburn/opencode/${entry}`))
     add(
       'opencode/package.json',
       json({
@@ -243,7 +269,10 @@ export async function assemble(output = defaultOutput) {
         private: true,
         license: 'MIT',
         type: 'module',
-        exports: './runtime/antiburn.mjs',
+        exports: { '.': './runtime/antiburn.mjs', './tui': './runtime/session-check-ui.tsx' },
+        peerDependencies: {
+          '@opencode-ai/plugin': '1.19.2 || 1.19.3',
+        },
         files: ['runtime', 'lib', 'commands', 'LICENSE', 'README.md', 'core-plugin.json'],
       }),
     )

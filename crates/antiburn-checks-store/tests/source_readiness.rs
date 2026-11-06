@@ -50,7 +50,7 @@ fn readiness_wrappers_share_one_predicate() {
 #[test]
 fn file_readiness_requires_current_cursor_layout_and_identity() {
     for (agent, format) in [("codex", "codex_rollout_jsonl"), ("pi", "pi_v3_jsonl")] {
-        for parser in [63, 64, 65, 66, 67, 68, 69, 70, PARSER_REVISION] {
+        for parser in [63, 64, 65, 66, 67, 68, 69, 70, 71, PARSER_REVISION] {
             for revision in [1, 4, 5] {
                 let connection = database();
                 connection
@@ -75,7 +75,7 @@ fn file_readiness_requires_current_cursor_layout_and_identity() {
 
 #[test]
 fn claude_predecessor_keeps_its_exact_origin_boundary() {
-    for parser in [65, 66, 68, 69, 70, PARSER_REVISION] {
+    for parser in [65, 66, 68, 69, 70, 71, PARSER_REVISION] {
         let connection = database();
         connection
             .execute(
@@ -112,7 +112,7 @@ fn claude_predecessor_keeps_its_exact_origin_boundary() {
 
 #[test]
 fn journal_readiness_requires_live_state_five_and_a_bound_public_baseline() {
-    for parser in [63, 64, 65, 66, 67, 68, 69, 70, PARSER_REVISION] {
+    for parser in [63, 64, 65, 66, 67, 68, 69, 70, 71, PARSER_REVISION] {
         for revision in [2, 4, 5] {
             let connection = database();
             connection.execute("UPDATE session SET agent = 'opencode', source_kind = 'providerDb', source_format = '\"open_code_sqlite_v2\"'", []).unwrap();
@@ -305,6 +305,7 @@ fn cursor_keeps_only_the_native_inline_snapshot_route() {
         "UPDATE session SET source_label = 'cursor-cli:s1'",
         "UPDATE session SET wsl_distro = 'synthetic'",
         "UPDATE session SET source_generation = 2",
+        "UPDATE session_evidence SET parser_revision = 71",
         "INSERT INTO session_relation VALUES ('native','cursor','child','s1','subagent')",
         "INSERT INTO session_relation VALUES ('native','cursor','s1','parent','forkParent')",
     ] {

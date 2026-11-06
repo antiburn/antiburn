@@ -126,7 +126,12 @@ test(
           const input = { session_id: sessionId, hook_event_name: 'UserPromptSubmit', conversation_id: sessionId, generation_id: 'generation' }
           const result = await adapter[vendor + 'SessionCheckOutput'](input)
           assert.match(JSON.stringify(result), /Internal CLI finding/)
-          if (vendor === 'claude') assert.match(result.systemMessage, /🔥 antiburn/)
+          if (vendor === 'claude' || vendor === 'codex') {
+            assert.match(result.systemMessage, /🔥 antiburn/)
+            assert.match(result.systemMessage, /Internal delivery\\nInternal CLI finding\\./)
+            assert.equal(result.systemMessage.split('────────────────────────────────').length, 3)
+            assert.doesNotMatch(result.systemMessage, /untrusted data|\\*\\*|\x60/)
+          }
           const { handoffJsonHook } = await import(pathToFileURL(join(root, 'lib/native-hook.mjs')))
           await handoffJsonHook(result, (_text, done) => done())
         }
@@ -200,7 +205,9 @@ test('desktop payload contains only complete runtime adapters, without public Cl
     const one = await assembleAgentIntegrations(join(root, 'one'))
     const two = await assembleAgentIntegrations(join(root, 'two'))
     assert.deepEqual(one, two)
-    assert.equal(one.files.length, 47)
+    assert.equal(one.files.length, 49)
+    for (const entry of ['session-check-ui.mjs', 'session-check-ui.tsx'])
+      assert.ok(one.files.some(({ path }) => path === `opencode/runtime/${entry}`))
     assert.ok(
       one.files.every(
         ({ path }) => !/candidate|debug|\.ts$|SKILL|marketplace|commands\//.test(path),

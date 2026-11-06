@@ -58,6 +58,8 @@ export async function assembleAgentIntegrations(output = defaultOutput) {
     ['cursor', 'session-check-hook.mjs'],
     ['opencode', 'antiburn.mjs'],
     ['opencode', 'session-checks.mjs'],
+    ['opencode', 'session-check-ui.mjs'],
+    ['opencode', 'session-check-ui.tsx'],
     ['pi', 'antiburn.mjs'],
     ['pi', 'session-checks.mjs'],
     ['pi', 'session-check-renderer.mjs', 'pi-renderer'],
