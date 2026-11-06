@@ -259,7 +259,10 @@ export function createOpenCodeUiController(options) {
     refresh,
     /** @param {AdvisoryFrame} value */
     mounted(value) {
-      if (frame !== value || !active(value.sessionId, generation)) return () => {}
+      if (frame !== value || !active(value.sessionId, generation))
+        return () => {
+          // A rejected mount owns no resources to release.
+        }
       mounted = value
       handoff()
       return () => {

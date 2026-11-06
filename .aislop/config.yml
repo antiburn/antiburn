@@ -2,6 +2,14 @@ version: 1
 # Artifact checks compare the generated copies with their scanned source.
 exclude:
   - plugins/antiburn
+# Cursor provides vscode; the OpenCode TUI provides its renderer peer dependencies.
+imports:
+  provided:
+    - vscode
+    - '@opencode-ai/plugin'
+    - '@opentui/core'
+    - '@opentui/solid'
+    - solid-js
 engines:
   format: true
   lint: true
