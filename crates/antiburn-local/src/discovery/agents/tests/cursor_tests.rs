@@ -613,11 +613,12 @@ async fn cursor_user_data_override_discovers_and_classifies_native_desktop_state
     let surface_paths = cursor_surface_paths(home.path(), &roots);
     let watch_roots = cursor_watch_roots(home.path(), &roots);
     let owned = cursor_owns_path(
-        &explicit
-            .path()
-            .join("User/workspaceStorage/workspace-override/state.vscdb")
-            .to_string_lossy()
-            .to_lowercase(),
+        &crate::discovery::normalize_for_matching(
+            &explicit
+                .path()
+                .join("User/workspaceStorage/workspace-override/state.vscdb")
+                .to_string_lossy(),
+        ),
         &roots,
     );
     let default_ws = app_config_dir_in("Cursor", home.path()).join("User/workspaceStorage");
@@ -632,6 +633,32 @@ async fn cursor_user_data_override_discovers_and_classifies_native_desktop_state
         owned,
         "override paths should be owned by Cursor IDE discovery"
     );
+}
+
+#[test]
+fn cursor_user_data_override_matches_normalized_windows_paths() {
+    let roots = vec![PathBuf::from(r"C:\Audit\Cursor Profile")];
+    for (path, expected) in [
+        (
+            r"C:\Audit\Cursor Profile\User\globalStorage\state.vscdb",
+            true,
+        ),
+        (
+            r"C:\Audit\Cursor Profile\User\workspaceStorage\one\state.vscdb",
+            true,
+        ),
+        (
+            r"C:\Audit\Cursor Profile Other\User\globalStorage\state.vscdb",
+            false,
+        ),
+        (r"C:\Audit\Cursor Profile\UserOther\state.vscdb", false),
+    ] {
+        assert_eq!(
+            cursor_owns_path(&crate::discovery::normalize_for_matching(path), &roots),
+            expected,
+            "{path}"
+        );
+    }
 }
 
 #[test]
