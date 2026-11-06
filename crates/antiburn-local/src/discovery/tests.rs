@@ -182,6 +182,45 @@ async fn cursor_legacy_source_labels_require_one_profile_candidate() {
 }
 
 #[tokio::test]
+async fn cursor_profile_labels_keep_default_and_explicit_sources_distinct() {
+    let default = "cursor-desktop:profile:aaaaaaaaaaaaaaaa:workspace:same-session";
+    let explicit = "cursor-desktop:profile:bbbbbbbbbbbbbbbb:workspace:same-session";
+    let legacy = "cursor-desktop:workspace:same-session";
+    let make = |label: &str| SessionLog {
+        agent_type: AgentKind::Cursor,
+        source: SessionSource::Inline {
+            label: label.into(),
+            content: r#"{"session_id":"same-session"}"#.into(),
+            source_format: None,
+        },
+        updated_at: None,
+        environment: DiscoveryEnvironment::Native,
+    };
+    let logs = vec![make(default), make(explicit)];
+
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", default, None)
+            .unwrap()
+            .source_label(),
+        default
+    );
+    assert_eq!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", explicit, None)
+            .unwrap()
+            .source_label(),
+        explicit
+    );
+    assert!(
+        Explorers::DISK
+            .find_source_log_by_label(&logs, &AgentKind::Cursor, "same-session", legacy, None)
+            .is_none(),
+        "an old unscoped label cannot identify which profile owned the source"
+    );
+}
+
+#[tokio::test]
 async fn a_non_claude_file_source_uses_whole_document_fallback() {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path().join("session.jsonl");

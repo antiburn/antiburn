@@ -194,34 +194,19 @@ fn cursor_user_data_roots_for_home(
     roots
 }
 
-fn cursor_profile_id(root: &Path, default_root: &Path) -> Option<String> {
-    let normalize =
-        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let root = normalize(root);
-    if root == normalize(default_root) {
-        return None;
-    }
-
+fn cursor_profile_id(root: &Path) -> String {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     // FNV-1a keeps this profile identity stable across process and toolchain versions.
     let mut hash = 0xcbf29ce484222325u64;
     for byte in root.to_string_lossy().as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    Some(format!("{hash:016x}"))
+    format!("{hash:016x}")
 }
 
-fn cursor_desktop_source_label(
-    profile_id: Option<&str>,
-    workspace_id: &str,
-    session_id: &str,
-) -> String {
-    match profile_id {
-        Some(profile_id) => {
-            format!("cursor-desktop:profile:{profile_id}:{workspace_id}:{session_id}")
-        }
-        None => format!("cursor-desktop:{workspace_id}:{session_id}"),
-    }
+fn cursor_desktop_source_label(profile_id: &str, workspace_id: &str, session_id: &str) -> String {
+    format!("cursor-desktop:profile:{profile_id}:{workspace_id}:{session_id}")
 }
 
 /// Map a profile-scoped Cursor label to its pre-profile label for safe legacy lookup.
@@ -344,9 +329,8 @@ async fn discover_recent_candidates_in_roots(
 
     candidates.extend(discover_agent_transcripts(home, now, since_secs).await);
     candidates.extend(discover_store_db_sessions(home, now, since_secs).await);
-    candidates.extend(
-        discover_desktop_sessions(home, roots, now, since_secs, duplicate_fork_detector).await,
-    );
+    candidates
+        .extend(discover_desktop_sessions(roots, now, since_secs, duplicate_fork_detector).await);
     candidates
 }
 
@@ -806,27 +790,25 @@ fn is_safe_session_id(id: &str) -> bool {
 }
 
 async fn discover_desktop_sessions(
-    home: &Path,
     roots: &[PathBuf],
     now: i64,
     since_secs: i64,
     duplicate_fork_detector: Option<DuplicateForkDetector>,
 ) -> Vec<CursorDiscoveredSession> {
     let mut logs = Vec::new();
-    let default_root = app_config_dir_in("Cursor", home);
     for root in roots {
         let ws_root = root.join("User/workspaceStorage");
         let global_db = root.join("User/globalStorage/state.vscdb");
         if !global_db.exists() || !ws_root.exists() {
             continue;
         }
-        let profile_id = cursor_profile_id(root, &default_root);
+        let profile_id = cursor_profile_id(root);
         let detector = duplicate_fork_detector;
         let result = tokio::task::spawn_blocking(move || {
             query_cursor_desktop_sessions(
                 &ws_root,
                 &global_db,
-                profile_id.as_deref(),
+                &profile_id,
                 now,
                 since_secs,
                 detector,
@@ -842,7 +824,7 @@ async fn discover_desktop_sessions(
 fn query_cursor_desktop_sessions(
     ws_root: &Path,
     global_db: &Path,
-    profile_id: Option<&str>,
+    profile_id: &str,
     now: i64,
     since_secs: i64,
     duplicate_fork_detector: Option<DuplicateForkDetector>,

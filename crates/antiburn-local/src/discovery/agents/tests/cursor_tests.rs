@@ -712,15 +712,25 @@ async fn cursor_copied_profiles_keep_distinct_refresh_identities_and_legacy_alia
         })
         .collect::<Vec<_>>();
     assert_eq!(labels.len(), 2);
-    assert!(labels.contains(&"cursor-desktop:workspace-copy:copied-profile-session".into()));
+    assert!(
+        labels
+            .iter()
+            .all(|label| label.starts_with("cursor-desktop:profile:"))
+    );
     let scoped = labels
         .iter()
-        .find(|label| label.starts_with("cursor-desktop:profile:"))
-        .expect("the explicit profile should have a scoped identity");
+        .find(|label| label.contains("copied-profile-session"))
+        .expect("the copied sessions should have profile-scoped identities");
     assert_ne!(labels[0], labels[1]);
     assert_eq!(
         legacy_cursor_source_label(scoped).as_deref(),
         Some("cursor-desktop:workspace-copy:copied-profile-session")
+    );
+    assert!(
+        labels
+            .iter()
+            .all(|label| legacy_cursor_source_label(label).as_deref()
+                == Some("cursor-desktop:workspace-copy:copied-profile-session"))
     );
 
     let display = discover_recent_in_roots(home.path(), &roots, 1_775_083_400, 3600, None).await;
@@ -770,18 +780,40 @@ async fn cursor_unmerged_sources_retain_cli_identity_when_desktop_reuses_its_id(
             .await;
     assert!(candidates.iter().any(|candidate| matches!(
         &candidate.log.source,
-        SessionSource::Inline { label, .. } if label == transcript.to_string_lossy().as_ref()
+        SessionSource::Inline { label, .. }
+            if crate::discovery::normalize_for_matching(label)
+                == crate::discovery::normalize_for_matching(&transcript.to_string_lossy())
     )));
     assert!(candidates.iter().any(|candidate| matches!(
         &candidate.log.source,
         SessionSource::Inline { label, .. }
-            if label == "cursor-desktop:workspace-desktop:shared-session"
+            if label.starts_with("cursor-desktop:profile:")
+                && legacy_cursor_source_label(label).as_deref()
+                    == Some("cursor-desktop:workspace-desktop:shared-session")
     )));
 
     let merged =
         discover_recent_in_roots(home.path(), &roots, 1_775_083_400, 100_000_000, None).await;
     assert_eq!(merged.len(), 1);
     assert!(matches!(merged[0].source, SessionSource::Inline { .. }));
+}
+
+#[test]
+fn cursor_default_profile_receives_a_scoped_identity() {
+    let home = TempDir::new().unwrap();
+    let default = app_config_dir_in("Cursor", home.path());
+    let explicit = home.path().join("Cursor Profile");
+
+    let default_id = cursor_profile_id(&default);
+    let explicit_id = cursor_profile_id(&explicit);
+
+    assert_eq!(default_id.len(), 16);
+    assert_eq!(explicit_id.len(), 16);
+    assert_ne!(default_id, explicit_id);
+    assert_eq!(
+        cursor_desktop_source_label(&default_id, "workspace", "same-session"),
+        format!("cursor-desktop:profile:{default_id}:workspace:same-session")
+    );
 }
 
 #[test]
@@ -1364,7 +1396,7 @@ fn cursor_desktop_reader_embeds_only_verified_duplicate_lineage() {
     let sessions = query_cursor_desktop_sessions(
         &ws_root,
         &global_path,
-        None,
+        &cursor_profile_id(temp.path()),
         4_000,
         4_000,
         Some(prefix_duplicate_detector),
