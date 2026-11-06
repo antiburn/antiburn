@@ -1,8 +1,11 @@
+import { performance } from 'node:perf_hooks'
 import {
   acknowledgeSessionChecks,
   readSessionChecks,
 } from '../../../packages/antiburn-plugin-core/session-checks.mjs'
 import { formatSessionCheckUpdates } from '../../../packages/antiburn-plugin-core/session-checks-validation.mjs'
+
+const MESSAGE_REFRESH_INTERVAL_MS = 1000
 
 /** @typedef {NonNullable<Awaited<ReturnType<typeof readSessionChecks>>>} Delivery */
 /** @typedef {{sessionId:string,text:string,markdown:string,receipt:string|null,revision:number}} AdvisoryFrame */
@@ -101,13 +104,14 @@ export function openCodeMarkdownStyles(theme) {
 
 /**
  * Keep reads and receipts separate from the server context consumer.
- * @param {{currentSessionId:()=>string|undefined,resolveSession:(id:string)=>Promise<string|undefined>,onFrame:(frame:AdvisoryFrame|undefined)=>void,read?:typeof readSessionChecks,acknowledge?:typeof acknowledgeSessionChecks,schedule?:(callback:()=>void)=>ReturnType<typeof setTimeout>,cancel?:typeof clearTimeout}} options
+ * @param {{currentSessionId:()=>string|undefined,resolveSession:(id:string)=>Promise<string|undefined>,onFrame:(frame:AdvisoryFrame|undefined)=>void,read?:typeof readSessionChecks,acknowledge?:typeof acknowledgeSessionChecks,schedule?:(callback:()=>void)=>ReturnType<typeof setTimeout>,cancel?:typeof clearTimeout,now?:()=>number}} options
  */
 export function createOpenCodeUiController(options) {
   const read = options.read ?? readSessionChecks
   const acknowledge = options.acknowledge ?? acknowledgeSessionChecks
   const schedule = options.schedule ?? ((callback) => setTimeout(callback, 0))
   const cancel = options.cancel ?? clearTimeout
+  const now = options.now ?? (() => performance.now())
   let disposed = false
   let generation = 0
   /** @type {string|undefined} */
@@ -117,6 +121,7 @@ export function createOpenCodeUiController(options) {
   let bindingChanged = false
   let reading = false
   let queued = false
+  let lastMessageRefresh = -Infinity
   let revision = 0
   /** @type {string|undefined} */
   let key
@@ -251,6 +256,7 @@ export function createOpenCodeUiController(options) {
       if (disposed || id === sessionId) return
       generation += 1
       sessionId = safeSessionId(id) ? id : undefined
+      lastMessageRefresh = -Infinity
       origin = undefined
       bindingChanged = false
       key = undefined
@@ -261,6 +267,12 @@ export function createOpenCodeUiController(options) {
       void refresh()
     },
     refresh,
+    refreshFromMessage() {
+      const time = now()
+      if (time - lastMessageRefresh < MESSAGE_REFRESH_INTERVAL_MS) return
+      lastMessageRefresh = time
+      return refresh()
+    },
     /** @param {AdvisoryFrame} value */
     mounted(value) {
       if (frame !== value || !active(value.sessionId, generation))

@@ -88,6 +88,6 @@ if (isDirectExecution(import.meta.filename)) {
     )
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : 'Invalid presentation'}\n`)
-    process.exitCode = 2
+    process.exitCode = 1
   }
 }

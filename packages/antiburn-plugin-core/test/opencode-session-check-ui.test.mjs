@@ -162,6 +162,29 @@ test('Markdown styles use public host theme tokens with semantic emphasis', () =
   assert.equal(styles['markup.quote'].fg, theme.markdownBlockQuote)
 })
 
+test('message updates are throttled while activation and idle refresh immediately', async () => {
+  let now = 0
+  const h = harness({ now: () => now })
+  await h.start()
+  for (const time of [0, 100, 200, 300]) {
+    now = time
+    await h.controller.refreshFromMessage()
+  }
+  assert.equal(h.reads.length, 2)
+  await h.controller.refresh()
+  assert.equal(h.reads.length, 3)
+  h.route('session-b')
+  await tick()
+  assert.equal(h.reads.length, 4)
+  assert.equal(h.reads.at(-1).sessionId, 'session-b')
+  await h.controller.refreshFromMessage()
+  assert.equal(h.reads.length, 5)
+  now = 1300
+  await h.controller.refreshFromMessage()
+  assert.equal(h.reads.length, 6)
+  h.controller.dispose()
+})
+
 test('routing A/B/A rejects stale reads and restores only freshly read session frames', async () => {
   const first = deferred()
   const reads = []
@@ -549,8 +572,15 @@ test('public and managed packages keep optional target-exclusive TUI module sepa
       '.': './runtime/antiburn.mjs',
       './tui': './runtime/session-check-ui.tsx',
     })
-    assert.equal(manifest.peerDependencies['@opencode-ai/plugin'], '1.19.3')
-    assert.equal(manifest.peerDependencies['@opentui/core'], '0.4.5')
+    assert.equal(manifest.peerDependencies['@opencode-ai/plugin'], '1.19.2 || 1.19.3')
+    for (const [name, version] of [
+      ['@opentui/solid', '0.4.5'],
+      ['@opentui/core', '0.4.5'],
+      ['solid-js', '1.9.12'],
+    ]) {
+      assert.equal(manifest.peerDependencies[name], version)
+      assert.deepEqual(manifest.peerDependenciesMeta[name], { optional: true })
+    }
     for (const root of [standalone, managed]) {
       const source = await readFile(join(root, 'opencode/runtime/session-check-ui.tsx'), 'utf8')
       assert.match(source, /import type .*TuiPluginModule/)

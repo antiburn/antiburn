@@ -35,6 +35,26 @@ function confirmation(controller, sessionId = 'session-1') {
   }
 }
 
+test('poll rotates four reads across all sixteen retained conversations and wraps', async () => {
+  const reads = []
+  const controller = new CursorInboxController({
+    read: async ({ sessionId }) => {
+      reads.push(sessionId)
+      return saved()
+    },
+  })
+  const sessions = Array.from({ length: 17 }, (_, index) => `session-${index + 1}`)
+  for (let index = 0; index < 5; index++) {
+    const offset = (index * 4) % 16
+    await controller.poll(sessions)
+    assert.deepEqual(reads.splice(0), sessions.slice(offset, offset + 4))
+  }
+  assert.deepEqual(
+    controller.snapshot().cards.map((card) => card.sessionId),
+    sessions.slice(0, 16),
+  )
+})
+
 test('poll reads full UI snapshots separately and confirms only matching visible frames', async () => {
   const reads = [],
     acks = []

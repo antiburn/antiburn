@@ -271,10 +271,15 @@ export async function assemble(output = defaultOutput) {
         type: 'module',
         exports: { '.': './runtime/antiburn.mjs', './tui': './runtime/session-check-ui.tsx' },
         peerDependencies: {
-          '@opencode-ai/plugin': '1.19.3',
+          '@opencode-ai/plugin': '1.19.2 || 1.19.3',
           '@opentui/solid': '0.4.5',
           '@opentui/core': '0.4.5',
           'solid-js': '1.9.12',
+        },
+        peerDependenciesMeta: {
+          '@opentui/solid': { optional: true },
+          '@opentui/core': { optional: true },
+          'solid-js': { optional: true },
         },
         files: ['runtime', 'lib', 'commands', 'LICENSE', 'README.md', 'core-plugin.json'],
       }),

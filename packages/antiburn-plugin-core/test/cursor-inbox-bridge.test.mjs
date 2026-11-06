@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { test } from 'node:test'
+import fs from 'node:fs'
 import {
   chmodSync,
   existsSync,
@@ -12,8 +13,10 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -129,6 +132,34 @@ test('the reference hook cannot adopt an arbitrary private directory without an 
   assert.throws(() => enrollInbox(f.base, [f.workspace], 1000), /marker/)
 })
 
+test('two initial enrollments both succeed when one publishes the Inbox while the other initializes it', (t) => {
+  const f = fixture(t)
+  const rename = fs.renameSync
+  let second
+  let initializingSecond = false
+  t.mock.method(fs, 'renameSync', (source, target) => {
+    if (
+      !initializingSecond &&
+      (target === f.base || target === join(f.base, 'antiburn-inbox.json'))
+    ) {
+      initializingSecond = true
+      second = enrollInbox(f.base, [f.workspace], 1000)
+    }
+    return rename(source, target)
+  })
+  syncBuiltinESMExports()
+  let first
+  try {
+    first = enrollInbox(f.base, [f.workspace], 1000)
+  } finally {
+    t.mock.restoreAll()
+    syncBuiltinESMExports()
+  }
+  assert.ok(second)
+  assert.notEqual(first.id, second.id)
+  assert.equal(publishInboxReference(f.base, payload(f.workspace), 1100), 2)
+})
+
 test('expiry, renewal and cleanup bound enrollment lifecycle', (t) => {
   const f = fixture(t)
   const enrolled = enrollInbox(f.base, [f.workspace], 1000)
@@ -147,6 +178,30 @@ test('32 expired enrollments cannot starve a new live window', (t) => {
   assert.equal(publishInboxReference(f.base, payload(f.workspace), 70_100), 1)
   assert.deepEqual(readInboxReferences(live, 70_100), ['conversation-1'])
   assert.equal(readdirSync(f.base).length, 2)
+})
+
+test('expired renewals and interrupted cleanup leave no stale private enrollment directories', (t) => {
+  const f = fixture(t)
+  const expired = enrollInbox(f.base, [f.workspace], 1000)
+  const expiredPath = join(f.base, expired.id)
+  const interruptedRenewal = 'enrollment.json.0123456789abcdef.tmp'
+  writeFileSync(join(expiredPath, interruptedRenewal), '{', { mode: 0o600 })
+
+  const orphan = join(f.base, '1'.repeat(32))
+  const unrelated = join(f.base, '2'.repeat(32))
+  const fresh = join(f.base, '3'.repeat(32))
+  for (const path of [orphan, unrelated, fresh]) mkdirSync(path, { mode: 0o700 })
+  writeFileSync(join(orphan, interruptedRenewal), '{', { mode: 0o600 })
+  writeFileSync(join(unrelated, 'untouched'), 'keep', { mode: 0o600 })
+  const old = new Date(Date.now() - 120_000)
+  for (const path of [orphan, unrelated]) utimesSync(path, old, old)
+
+  const live = enrollInbox(f.base, [f.workspace])
+  assert.deepEqual(
+    readdirSync(f.base).sort(),
+    ['2'.repeat(32), '3'.repeat(32), 'antiburn-inbox.json', live.id].sort(),
+  )
+  assert.equal(readFileSync(join(unrelated, 'untouched'), 'utf8'), 'keep')
 })
 
 test('a transient concurrent 17th reference still yields the newest 16 and publication repairs retention', (t) => {
@@ -221,10 +276,37 @@ test('symlinks and nonprivate modes fail closed without touching targets', (t) =
 test('oversized manifest is unavailable and root normalization rejects duplicates or relative paths', (t) => {
   const f = fixture(t)
   const enrolled = enrollInbox(f.base, [f.workspace], 1000)
-  writeFileSync(join(f.base, enrolled.id, 'enrollment.json'), ' '.repeat(17 * 1024), {
+  writeFileSync(join(f.base, enrolled.id, 'enrollment.json'), ' '.repeat(129 * 1024), {
     mode: 0o600,
   })
   assert.equal(publishInboxReference(f.base, payload(f.workspace), 1100), 0)
   assert.equal(normalizeInboxRoots([f.workspace, f.workspace]), undefined)
   assert.equal(normalizeInboxRoots(['relative']), undefined)
 })
+
+test(
+  'eight long canonical roots round-trip through the manifest and reference',
+  {
+    skip: process.platform !== 'linux',
+  },
+  (t) => {
+    const f = fixture(t)
+    let parent = f.workspace
+    for (let i = 0; i < 9; i++) {
+      parent = join(parent, '"'.repeat(240))
+      mkdirSync(parent)
+    }
+    const roots = Array.from({ length: 8 }, (_, index) => {
+      const path = join(parent, String(index))
+      mkdirSync(path)
+      return path
+    })
+    assert.ok(Buffer.byteLength(JSON.stringify(roots)) > 16 * 1024)
+    const enrollment = enrollInbox(f.base, roots, 1000)
+    assert.equal(
+      publishInboxReference(f.base, { ...payload(f.workspace), workspace_roots: roots }, 1100),
+      1,
+    )
+    assert.deepEqual(readInboxReferences(enrollment, 1100), ['conversation-1'])
+  },
+)

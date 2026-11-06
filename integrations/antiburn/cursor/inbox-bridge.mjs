@@ -5,6 +5,7 @@ import {
   fstatSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readSync,
   readdirSync,
@@ -20,11 +21,16 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 const MAX_ENROLLMENTS = 32
 const MAX_REFERENCES = 16
 const MAX_REFERENCE_FILES = 64
-const MAX_BYTES = 16 * 1024
+const MAX_BYTES = 128 * 1024
+const MAX_ROOT_LENGTH = 4096
+const MAX_DIRECTORY_ENTRIES = 512
 const TTL = 60_000
 const ID = /^[A-Za-z0-9_-]{1,128}$/
 const ENROLLMENT = /^[a-f0-9]{32}$/
 const MARKER = 'antiburn-inbox.json'
+const MANIFEST = 'enrollment.json'
+const MANIFEST_FILE = /^enrollment\.json(?:\.[a-f0-9]{16}\.tmp)?$/
+const REFERENCE_FILE = /^[a-f0-9]{64}\.json(?:\.[a-f0-9]{16}\.tmp)?$/
 
 function validBase(base) {
   if (basename(base) !== 'inbox-v1' || !directory(base)) return false
@@ -76,21 +82,36 @@ function readJson(path) {
 function writeJson(path, value) {
   if (existsSync(path) && !privateEntry(lstatSync(path), false))
     throw new Error('Unsafe Inbox file')
+  const serialized = JSON.stringify(value)
+  if (Buffer.byteLength(serialized) > MAX_BYTES) throw new Error('Inbox file limit reached')
   const temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`
   try {
-    writeFileSync(temporary, JSON.stringify(value), { flag: 'wx', mode: 0o600 })
+    writeFileSync(temporary, serialized, { flag: 'wx', mode: 0o600 })
     renameSync(temporary, path)
   } finally {
     if (existsSync(temporary)) unlinkSync(temporary)
   }
 }
 
+function hasErrorCode(error, code) {
+  return error instanceof Error && 'code' in error && error.code === code
+}
+
 function unlinkIfPresent(path) {
   try {
     unlinkSync(path)
   } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+    if (!hasErrorCode(error, 'ENOENT')) throw error
   }
+}
+
+function validRoot(root) {
+  return (
+    typeof root === 'string' &&
+    root.length <= MAX_ROOT_LENGTH &&
+    isAbsolute(root) &&
+    !/[\x00-\x1f\x7f]/.test(root)
+  )
 }
 
 /** Resolve only explicit local roots. Empty and remote workspaces are unavailable. */
@@ -98,15 +119,10 @@ export function normalizeInboxRoots(roots) {
   if (!Array.isArray(roots) || roots.length < 1 || roots.length > 8) return undefined
   try {
     const normalized = roots.map((root) => {
-      if (
-        typeof root !== 'string' ||
-        root.length > 4096 ||
-        !isAbsolute(root) ||
-        /[\x00-\x1f\x7f]/.test(root)
-      )
-        throw new Error('Invalid workspace root')
+      if (!validRoot(root)) throw new Error('Invalid workspace root')
       const canonical = realpathSync(root)
-      if (!lstatSync(canonical).isDirectory()) throw new Error('Invalid workspace directory')
+      if (!validRoot(canonical) || !lstatSync(canonical).isDirectory())
+        throw new Error('Invalid workspace directory')
       return canonical
     })
     if (new Set(normalized).size !== normalized.length) return undefined
@@ -135,6 +151,35 @@ function validManifest(manifest, id, roots, now) {
   )
 }
 
+function initializeInboxBase(base) {
+  if (existsSync(base)) {
+    if (!directory(base)) throw new Error('Inbox directory must be private and owned')
+    if (validBase(base)) return
+    if (readdirSync(base).length !== 0) {
+      if (validBase(base)) return
+      throw new Error('Inbox directory marker is unavailable')
+    }
+  }
+  const temporary = mkdtempSync(`${base}.`)
+  try {
+    writeJson(join(temporary, MARKER), {
+      protocol_version: 1,
+      kind: 'antiburn-cursor-inbox-references',
+    })
+    try {
+      renameSync(temporary, base)
+    } catch (error) {
+      if (!hasErrorCode(error, 'EEXIST') && !hasErrorCode(error, 'ENOTEMPTY')) throw error
+    }
+    if (!validBase(base)) throw new Error('Inbox directory marker is unavailable')
+  } finally {
+    if (existsSync(temporary)) {
+      unlinkIfPresent(join(temporary, MARKER))
+      rmdirSync(temporary)
+    }
+  }
+}
+
 /** Create an explicit window enrollment. The hook never calls this function. */
 export function enrollInbox(base, roots, now = Date.now()) {
   const normalized = normalizeInboxRoots(roots)
@@ -150,45 +195,33 @@ export function enrollInbox(base, roots, now = Date.now()) {
     (parentStat.mode & 0o022) !== 0
   )
     throw new Error('Inbox parent must be owned and must not allow other users to write')
-  if (!existsSync(base)) mkdirSync(base, { mode: 0o700 })
-  if (!directory(base)) throw new Error('Inbox directory must be private and owned')
-  if (readdirSync(base).length === 0)
-    writeJson(join(base, MARKER), {
-      protocol_version: 1,
-      kind: 'antiburn-cursor-inbox-references',
-    })
-  if (!validBase(base)) throw new Error('Inbox directory marker is unavailable')
-  let entries = readdirSync(base)
-  if (entries.length > 512) throw new Error('Inbox directory limit reached')
+  initializeInboxBase(base)
+  const entries = readdirSync(base)
+  if (entries.length > MAX_DIRECTORY_ENTRIES) throw new Error('Inbox directory limit reached')
+  let active = 0
   for (const id of entries.filter((entry) => ENROLLMENT.test(entry))) {
     try {
-      if (!directory(join(base, id))) continue
-      const manifest = readJson(join(base, id, 'enrollment.json'))
+      const path = join(base, id)
+      if (!directory(path)) continue
+      const manifestPath = join(path, MANIFEST)
+      const manifest = readJson(manifestPath)
       if (
         manifest?.protocol_version === 1 &&
         manifest.enrollmentId === id &&
-        Number.isSafeInteger(manifest.expiresAt) &&
-        manifest.expiresAt <= now
-      )
-        disposeInboxEnrollment({ base, id, roots: [] })
+        Number.isSafeInteger(manifest.expiresAt)
+      ) {
+        if (manifest.expiresAt <= now) disposeInboxEnrollment({ base, id })
+        else if (manifest.expiresAt <= now + TTL) active += 1
+      } else if (!existsSync(manifestPath) && lstatSync(path).mtimeMs <= now - TTL) {
+        disposeInboxEnrollment({ base, id })
+      }
     } catch {
       continue
     }
   }
-  entries = readdirSync(base)
-  if (entries.length >= 512) throw new Error('Inbox directory limit reached')
-  const active = entries.filter((id) => {
-    if (!ENROLLMENT.test(id)) return false
-    if (!directory(join(base, id))) return false
-    const manifest = readJson(join(base, id, 'enrollment.json'))
-    return (
-      manifest?.enrollmentId === id &&
-      Number.isSafeInteger(manifest.expiresAt) &&
-      manifest.expiresAt > now &&
-      manifest.expiresAt <= now + TTL
-    )
-  })
-  if (active.length >= MAX_ENROLLMENTS) throw new Error('Inbox active enrollment limit reached')
+  if (readdirSync(base).length >= MAX_DIRECTORY_ENTRIES)
+    throw new Error('Inbox directory limit reached')
+  if (active >= MAX_ENROLLMENTS) throw new Error('Inbox active enrollment limit reached')
   const id = randomBytes(16).toString('hex')
   const path = join(base, id)
   mkdirSync(path, { mode: 0o700 })
@@ -199,7 +232,7 @@ export function enrollInbox(base, roots, now = Date.now()) {
     workspaceRoots: normalized,
     expiresAt: now + TTL,
   }
-  writeJson(join(path, 'enrollment.json'), manifest)
+  writeJson(join(path, MANIFEST), manifest)
   return { base, id, roots: normalized }
 }
 
@@ -214,7 +247,7 @@ function enrollmentPath(enrollment) {
 
 export function renewInbox(enrollment, now = Date.now()) {
   const path = enrollmentPath(enrollment)
-  writeJson(join(path, 'enrollment.json'), {
+  writeJson(join(path, MANIFEST), {
     protocol_version: 1,
     enrollmentId: enrollment.id,
     workspaceRoots: enrollment.roots,
@@ -224,20 +257,37 @@ export function renewInbox(enrollment, now = Date.now()) {
 
 export function disposeInboxEnrollment(enrollment) {
   try {
-    const path = enrollmentPath(enrollment)
-    if (existsSync(join(path, 'enrollment.json'))) unlinkSync(join(path, 'enrollment.json'))
-    const references = join(path, 'references')
-    const files = readdirSync(references)
-    if (files.length > MAX_REFERENCE_FILES) return
-    for (const name of files) {
-      if (
-        !/^[a-f0-9]{64}\.json(?:\.[a-f0-9]{16}\.tmp)?$/.test(name) ||
-        !privateEntry(lstatSync(join(references, name)), false)
+    if (!ENROLLMENT.test(enrollment.id) || !validBase(enrollment.base)) return
+    const path = join(enrollment.base, enrollment.id)
+    if (!directory(path)) return
+    const entries = readdirSync(path)
+    if (entries.length > MAX_REFERENCE_FILES) return
+    const manifests = entries.filter((name) => name !== 'references')
+    if (
+      manifests.some(
+        (name) =>
+          !MANIFEST_FILE.test(name) || !privateEntry(lstatSync(join(path, name)), false),
       )
-        return
+    )
+      return
+    const references = join(path, 'references')
+    const hasReferences = entries.includes('references')
+    if (hasReferences && !directory(references)) return
+    const files = hasReferences ? readdirSync(references) : []
+    if (
+      files.length > MAX_REFERENCE_FILES ||
+      files.some(
+        (name) =>
+          !REFERENCE_FILE.test(name) || !privateEntry(lstatSync(join(references, name)), false),
+      )
+    )
+      return
+    unlinkIfPresent(join(path, MANIFEST))
+    for (const name of manifests) {
+      if (name !== MANIFEST) unlinkIfPresent(join(path, name))
     }
-    for (const name of files) unlinkSync(join(references, name))
-    rmdirSync(references)
+    for (const name of files) unlinkIfPresent(join(references, name))
+    if (hasReferences) rmdirSync(references)
     rmdirSync(path)
   } catch {
     return
@@ -263,13 +313,13 @@ export function publishInboxReference(base, input, now = Date.now()) {
   try {
     if (!validBase(base)) return 0
     const ids = readdirSync(base)
-    if (ids.length > 512) return 0
+    if (ids.length > MAX_DIRECTORY_ENTRIES) return 0
     for (const id of ids.filter((entry) => ENROLLMENT.test(entry))) {
       if (published >= MAX_ENROLLMENTS) break
       try {
         const enrollment = { base, id, roots }
         const path = enrollmentPath(enrollment)
-        if (!validManifest(readJson(join(path, 'enrollment.json')), id, roots, now)) continue
+        if (!validManifest(readJson(join(path, MANIFEST)), id, roots, now)) continue
         const references = join(path, 'references')
         const key = createHash('sha256').update(input.conversation_id).digest('hex')
         const file = `${key}.json`
@@ -310,14 +360,7 @@ export function publishInboxReference(base, input, now = Date.now()) {
 export function readInboxReferences(enrollment, now = Date.now()) {
   try {
     const path = enrollmentPath(enrollment)
-    if (
-      !validManifest(
-        readJson(join(path, 'enrollment.json')),
-        enrollment.id,
-        enrollment.roots,
-        now,
-      )
-    )
+    if (!validManifest(readJson(join(path, MANIFEST)), enrollment.id, enrollment.roots, now))
       return []
     const dir = join(path, 'references')
     const files = readdirSync(dir)

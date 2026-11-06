@@ -180,9 +180,11 @@ notice or an automatic retry.
 
 ### OpenCode optional native TUI candidate
 
-OpenCode's server adapter retains its existing context transformation. A separate
-optional TUI module, `runtime/session-check-ui.tsx`, targets exactly OpenCode
-1.19.3 and `@opencode-ai/plugin/tui`. It registers a persistent `app_bottom`
+OpenCode's server adapter retains its existing context transformation and accepts
+the 1.19.2 and 1.19.3 SDK peers. The optional TUI module,
+`runtime/session-check-ui.tsx`, targets exactly OpenCode 1.19.3 and
+`@opencode-ai/plugin/tui`. Its UI dependencies are optional package peers,
+pinned to OpenTUI Core and Solid 0.4.5 and Solid JS 1.9.12. It registers a persistent `app_bottom`
 frame without replacing the prompt. It prefers the public OpenTUI Markdown
 intrinsic with canonical brand, check titles, authored multiline messages and
 rails. Styles use public host theme tokens; each native style resource is
@@ -247,8 +249,9 @@ route's snapshot remains unchanged; acknowledged transitions do not replay on
 restart. A new snapshot replaces these transitions. Leaving the session,
 losing a safe binding, an unavailable read or unloading the plugin removes the
 frame. Route generations reject late asynchronous reads and stale component
-mounts. Reads coalesce while one is in flight; active routes refresh on message
-updates, session idle and bounded polling. No transcript messages or assistant
+mounts. Reads coalesce while one is in flight. Active routes refresh on activation,
+session idle, polling and at most one message-triggered read per second.
+No transcript messages or assistant
 follow-up turns are created.
 
 ### Cursor optional conversation Inbox candidate

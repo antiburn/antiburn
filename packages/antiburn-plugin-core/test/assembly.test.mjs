@@ -197,7 +197,7 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
       [packagedCodexHook, '--presentation', 'unknown'],
       { input: '{}', encoding: 'utf8' },
     )
-    assert.equal(invalidPresentation.status, 2)
+    assert.equal(invalidPresentation.status, 1)
     assert.equal(invalidPresentation.stdout, '')
     assert.match(invalidPresentation.stderr, /Usage:/)
     const cursorHooks = JSON.parse(

@@ -31,18 +31,13 @@ const plugin: TuiPluginModule = {
       for (const cleanup of cleanups) cleanup()
       controller.dispose()
     })
-    for (const event of ['message.updated', 'session.idle'] as const) {
-      cleanups.push(
-        api.event.on(event, (event) => {
-          const id =
-            event.type === 'message.updated'
-              ? event.properties.info.sessionID
-              : event.properties.sessionID
-          if (id === sessionId()) void controller.refresh()
-        }),
-      )
-    }
     cleanups.push(
+      api.event.on('message.updated', ({ properties }) => {
+        if (properties.info.sessionID === sessionId()) void controller.refreshFromMessage()
+      }),
+      api.event.on('session.idle', ({ properties }) => {
+        if (properties.sessionID === sessionId()) void controller.refresh()
+      }),
       api.event.on('session.deleted', ({ properties }) => {
         if (properties.info.id === sessionId()) controller.activate(undefined)
       }),
