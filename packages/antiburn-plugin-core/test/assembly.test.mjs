@@ -183,6 +183,23 @@ test('assembly is reproducible, self-contained, licensed, and refuses altered ow
     )
     const publicClaudeEntry = await readFile(join(output, 'claude/hooks/register.ts'), 'utf8')
     assert.doesNotMatch(publicClaudeEntry, /session-check/)
+    const packagedCodexHook = join(output, 'codex/hooks/session-check-hook.mjs')
+    for (const args of [[], ['--presentation', 'native'], ['--presentation', 'assistant']]) {
+      const result = spawnSync(process.execPath, [packagedCodexHook, ...args], {
+        input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', agent_id: 'child' }),
+        encoding: 'utf8',
+      })
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(result.stdout, '')
+    }
+    const invalidPresentation = spawnSync(
+      process.execPath,
+      [packagedCodexHook, '--presentation', 'unknown'],
+      { input: '{}', encoding: 'utf8' },
+    )
+    assert.equal(invalidPresentation.status, 2)
+    assert.equal(invalidPresentation.stdout, '')
+    assert.match(invalidPresentation.stderr, /Usage:/)
     const cursorHooks = JSON.parse(
       await readFile(join(output, 'cursor/hooks/hooks.json'), 'utf8'),
     )

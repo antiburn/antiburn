@@ -124,7 +124,7 @@ or automatic-installation gates.
 
 ### Codex notice output
 
-The Codex UserPromptSubmit adapter also includes a plain-text update frame in
+By default, the Codex UserPromptSubmit adapter includes a plain-text update frame in
 `systemMessage`, alongside its existing Markdown `additionalContext`. It uses
 the same context receipt and writes both fields in one hook result. The
 [Codex hook contract](https://developers.openai.com/codex/hooks) defines
@@ -143,8 +143,40 @@ CLI retained one acknowledged revision and returned no new update or receipt.
 The assessment used controlled fixture evidence, and the receiving provider
 returned only a local canned reply. This verifies saved-assessment delivery,
 native presentation and duplicate suppression, not natural-work detection or
-assistant reproduction. Desktop visibility remains unverified. Do not infer
-headless or desktop display support from the hook output fields alone.
+assistant reproduction. This native-hook path has not produced a visible notice
+in the tested desktop conversation. Do not infer headless or desktop display
+support from the hook output fields alone.
+
+For desktop projects that need an inline notice, the adapter accepts the explicit
+option `--presentation assistant`. Append this option to the packaged
+`session-check-hook.mjs` command in the project's reviewed hook configuration;
+keep only one Antiburn UserPromptSubmit hook for that project. Do not add the
+option to a shared global hook unless assistant rendering is also wanted in
+terminal sessions using that configuration. Omitting the option (or using
+`--presentation native`) preserves the native terminal path. The configuration
+preview and bundled hooks continue to select native presentation by default;
+there is no automatic desktop detection.
+
+Assistant presentation supplies a fixed instruction to show the canonical
+Markdown frame after the ordinary answer on that turn. The frame is JSON-encoded
+as advisory data, with instructions to ignore commands within it and honor
+conflicting explicit user instructions. This mode omits `systemMessage` to avoid
+a second native notice. It uses the existing context receipt and deduplication
+ledger: switching presentation modes does not replay an acknowledged revision.
+Acknowledgment proves hook handoff, not that the assistant rendered the frame.
+The assistant can omit or alter it; this is not a deterministic native widget.
+
+A cross-surface audit of this opt-in adapter displayed a real saved terminal
+assessment as the exact branded Markdown frame in Desktop. A subsequent ordinary
+turn did not repeat the notice. The assessment used controlled terminal fixture
+evidence; freshness was not re-evaluated. The hook handed off the warning before
+a direct Desktop request failed with an input-item-ID error. An ordinary prompt
+sent through Codex's dedicated chat tool then recovered the response from retained
+hook context, without a request to reproduce Antiburn output or a receipt reset.
+This verifies that recovery path, not a fix for direct Desktop submission or
+fresh Desktop-origin assessment support. A failed model request can occur after
+the hook acknowledges delivery; acknowledgment does not guarantee a visible
+notice or an automatic retry.
 
 ### OpenCode optional native TUI candidate
 
