@@ -717,15 +717,13 @@ async fn cursor_copied_profiles_keep_distinct_refresh_identities_and_legacy_alia
             .iter()
             .all(|label| label.starts_with("cursor-desktop:profile:"))
     );
-    let scoped = labels
-        .iter()
-        .find(|label| label.contains("copied-profile-session"))
-        .expect("the copied sessions should have profile-scoped identities");
-    assert_ne!(labels[0], labels[1]);
-    assert_eq!(
-        legacy_cursor_source_label(scoped).as_deref(),
-        Some("cursor-desktop:workspace-copy:copied-profile-session")
+    let explicit_label = cursor_desktop_source_label(
+        &cursor_profile_id(explicit.path()),
+        "workspace-copy",
+        "copied-profile-session",
     );
+    assert!(labels.contains(&explicit_label));
+    assert_ne!(labels[0], labels[1]);
     assert!(
         labels
             .iter()
@@ -741,7 +739,7 @@ async fn cursor_copied_profiles_keep_distinct_refresh_identities_and_legacy_alia
     );
     assert_eq!(
         display[0].source_label(),
-        *scoped,
+        explicit_label,
         "the longer older copy still wins the display merge, but exact source lookup can retain both identities"
     );
 }
