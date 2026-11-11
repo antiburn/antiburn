@@ -34,7 +34,7 @@ import type { AppSettingsController } from "./useAppSettings"
  * Usage: where the plan limits come from, and the one switch that turns it
  * off.
  *
- * Provider usage requires an explicit action in this pane.
+ * Provider usage starts by default. This pane preserves the user's opt-out.
  */
 
 export type UsagePaneProps = AppSettingsController

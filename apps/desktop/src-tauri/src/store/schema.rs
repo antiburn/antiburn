@@ -109,7 +109,13 @@ pub const MIGRATIONS: &[&str] = &[
     V91,
     V92,
     V93,
+    V94,
 ];
+
+// Start collection by default. Keep explicit master and provider opt-outs.
+const V94: &str = r#"
+UPDATE setting SET value = 'true' WHERE key = 'internal:liveUsageStarted';
+"#;
 
 // Preserve legacy preference fallbacks before removing the retired setup flag.
 const V93: &str = r#"

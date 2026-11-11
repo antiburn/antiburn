@@ -445,6 +445,19 @@ pub async fn set_settings(
     Ok(saved)
 }
 
+/// Change sidebar preferences without replacing other settings.
+#[tauri::command]
+pub async fn patch_sidebar_usage(
+    app: tauri::AppHandle,
+    patch: crate::store::SidebarUsagePatch,
+) -> CommandResult<AppSettings> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (_, saved) = run_blocking(move || store.patch_sidebar_usage(patch).map_err(fail)).await?;
+    crate::interface_scale::emit_settings_changed(&app, &saved).map_err(fail)?;
+    Ok(saved)
+}
+
 /// Change the application interface size against the latest stored preset.
 #[tauri::command]
 pub async fn set_interface_scale(
@@ -517,13 +530,7 @@ pub async fn set_interface_scale(
     }
 }
 
-/// Start live usage from a deliberate click in Settings.
-///
-/// Before this, `AppSettings::live_usage_active` stays false, so the
-/// credential read it gates — and, on macOS, the Keychain prompt that read
-/// can trigger — cannot run. Setting the flag through the settings-save path
-/// runs `apply_settings_transition`, which syncs the tray meter the same way
-/// any other transition into "live usage active" does.
+/// Enable live usage after the user turns it off.
 #[tauri::command]
 pub async fn start_live_usage(app: tauri::AppHandle) -> CommandResult<AppSettings> {
     let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
@@ -532,6 +539,7 @@ pub async fn start_live_usage(app: tauri::AppHandle) -> CommandResult<AppSetting
         store
             .update_settings(|settings| {
                 settings.live_usage_started = true;
+                settings.live_usage_enabled = true;
             })
             .map_err(fail)
     })

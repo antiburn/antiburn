@@ -42,6 +42,7 @@
   --color-surface-window: var(--color-bg-window);
   --color-surface-overlay: var(--color-bg-overlay);
   --color-command-palette-scrim: var(--color-command-palette-scrim-val);
+  --color-modal-scrim: var(--color-modal-scrim-val);
   /* Source-list / sidebar material for any multi-pane window. */
   --color-surface-sidebar: var(--color-bg-sidebar);
   /* Soft selected-row fill for any list or source list. Distinct from
@@ -180,6 +181,7 @@
   --color-bg-window: hsl(0 0% 96.4%);
   --color-bg-overlay: hsl(0 0% 96.4%);
   --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+  --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   --color-bg-sidebar: hsl(0 0% 0% / 0.03);
   --color-bg-selected: hsl(0 0% 0% / 0.09);
 
@@ -327,6 +329,7 @@
     --color-bg-window: hsl(0 0% 12.5%);
     --color-bg-overlay: hsl(0 0% 12.5%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
     --color-bg-sidebar: hsl(0 0% 100% / 0.04);
     --color-bg-selected: hsl(0 0% 100% / 0.14);
     --color-text-primary: hsl(0 0% 100% / 0.92);
@@ -415,6 +418,7 @@
   --color-bg-window: hsl(0 0% 96.4%);
   --color-bg-overlay: hsl(0 0% 96.4%);
   --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+  --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   --color-bg-sidebar: hsl(0 0% 0% / 0.03);
   --color-bg-selected: hsl(0 0% 0% / 0.09);
   --color-text-primary: hsl(0 0% 0% / 0.85);
@@ -475,6 +479,7 @@
     --color-bg-window: hsl(0 0% 96.4%);
     --color-bg-overlay: hsl(0 0% 96.4%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   }
 }
 
@@ -483,6 +488,7 @@
     --color-bg-window: hsl(0 0% 12.5%);
     --color-bg-overlay: hsl(0 0% 12.5%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
   }
 }
 
@@ -492,6 +498,7 @@
     --color-bg-window: hsl(0 0% 96.4%);
     --color-bg-overlay: hsl(0 0% 96.4%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   }
 }
 
@@ -510,6 +517,7 @@
   --color-bg-window: hsl(0 0% 12.5%);
   --color-bg-overlay: hsl(0 0% 12.5%);
   --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+  --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
   --color-bg-sidebar: hsl(0 0% 100% / 0.04);
   --color-bg-selected: hsl(0 0% 100% / 0.14);
   --color-text-primary: hsl(0 0% 100% / 0.92);
@@ -577,6 +585,7 @@
     --color-bg-window: hsl(0 0% 12.5%);
     --color-bg-overlay: hsl(0 0% 12.5%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
   }
 }
 

@@ -101,6 +101,7 @@
     "allow-set-remote-sync-interval",
     "allow-set-repository-enabled",
     "allow-set-settings",
+    "allow-patch-sidebar-usage",
     "allow-start-live-usage",
     "allow-update-remote-host",
     {

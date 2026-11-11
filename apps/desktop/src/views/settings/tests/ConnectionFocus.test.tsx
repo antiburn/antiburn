@@ -208,6 +208,20 @@ it("keeps a row menu open through the full pointer click before Edit", async () 
   await waitFor(() => expect(trigger).toHaveFocus())
 })
 
+it("lets Escape cancel composition before dismissing the connection dialog", () => {
+  const onCancel = vi.fn()
+  render(
+    <ConnectionDialog title="Edit connection" onCancel={onCancel}>
+      <input aria-label="Connection name" />
+    </ConnectionDialog>,
+  )
+  const input = screen.getByRole("textbox", { name: "Connection name" })
+  fireEvent.keyDown(input, { key: "Escape", isComposing: true })
+  expect(onCancel).not.toHaveBeenCalled()
+  fireEvent.keyDown(input, { key: "Escape" })
+  expect(onCancel).toHaveBeenCalledOnce()
+})
+
 it("keeps a new row menu focused when delayed dialog cleanup runs after its opener is enabled", async () => {
   const frames: FrameRequestCallback[] = []
   const requestFrame = vi

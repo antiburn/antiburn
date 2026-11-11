@@ -51,6 +51,8 @@ export function hasShell(): boolean {
 
 /** What settings look like before anything has been stored, or without a shell. */
 export const DEFAULT_SETTINGS: AppSettings = {
+  sidebarUsagePins: null,
+  sidebarUsageAppearance: "dials",
   interfaceScalePercent: DEFAULT_INTERFACE_SCALE_PERCENT,
   theme: "system",
   activityWindowDays: 7,
@@ -75,7 +77,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   milestones5h: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   milestonesWeekly: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
   liveUsageEnabled: true,
-  liveUsageStarted: false,
+  liveUsageStarted: true,
   liveUsageHiddenProviders: [],
   disabledAgents: [],
   analyticsEnabled: true,
@@ -285,6 +287,20 @@ export async function setSettings(settings: AppSettings): Promise<AppSettings> {
   return invoke<AppSettings>("set_settings", { settings })
 }
 
+export type SidebarUsagePatch = {
+  sidebarUsagePins?: NonNullable<AppSettings["sidebarUsagePins"]>
+  sidebarUsageAppearance?: AppSettings["sidebarUsageAppearance"]
+}
+
+/** Patch sidebar preferences against the latest stored settings. */
+export async function patchSidebarUsage(
+  patch: SidebarUsagePatch,
+  current: AppSettings = DEFAULT_SETTINGS,
+): Promise<AppSettings> {
+  if (!hasShell()) return { ...current, ...patch }
+  return invoke<AppSettings>("patch_sidebar_usage", { patch })
+}
+
 /** Change only interface size using the shell's atomic preference update. */
 export async function setInterfaceScale(
   change: InterfaceScaleChange,
@@ -358,6 +374,22 @@ export type Interaction =
       provider: LiveUsageProvider
       state: LiveUsageState
       origin: SurfaceOrigin
+    }
+  | {
+      kind: "usageLimitsInteraction"
+      action:
+        | "opened"
+        | "closed"
+        | "pin_added"
+        | "pin_removed"
+        | "appearance_dials"
+        | "appearance_bars"
+        | "refresh_succeeded"
+        | "refresh_failed"
+        | "enable_succeeded"
+        | "enable_failed"
+        | "settings_opened"
+        | "settings_open_failed"
     }
   | { kind: "burnCheckAutoFixReviewed"; outcome: AutoFixReviewAnalyticsOutcome }
   | { kind: "burnCheckAutoFixConfirmed" }
@@ -613,13 +645,7 @@ export function refreshLiveUsage(): Promise<LiveUsageSummaryPayload> {
   }).then((summary) => summary ?? EMPTY_LIVE_USAGE)
 }
 
-/**
- * Start live usage from a deliberate click in the Overview.
- *
- * Before this, `settings.liveUsageStarted` stays false, so the credential
- * read it gates — and, on macOS, the Keychain prompt that read can
- * trigger — cannot run.
- */
+/** Enable live usage after the user turns it off. */
 export async function startLiveUsage(): Promise<AppSettings> {
   if (!hasShell()) return { ...DEFAULT_SETTINGS, liveUsageStarted: true }
   return invoke<AppSettings>("start_live_usage")

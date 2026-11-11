@@ -141,6 +141,9 @@ pub enum EventName {
     /// A production promotion panel was viewed or used.
     #[cfg(feature = "analytics")]
     PromotionInteraction,
+    /// A reader opened or used the pinned usage limits controls.
+    #[cfg(feature = "analytics")]
+    UsageLimitsInteraction,
     /// The reader saved a different application interface size preset.
     InterfaceScaleChanged,
     /// The first-run Overview reached a fixed funnel step.
@@ -215,6 +218,7 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::AppSearchOpened,
     EventName::AppSearchResultOpened,
     EventName::PromotionInteraction,
+    EventName::UsageLimitsInteraction,
     EventName::InterfaceScaleChanged,
     EventName::FirstRunStepReached,
     EventName::FirstRunAction,
@@ -269,6 +273,7 @@ impl EventName {
             EventName::AppSearchOpened => "antiburn.app_search_opened",
             EventName::AppSearchResultOpened => "antiburn.app_search_result_opened",
             EventName::PromotionInteraction => "antiburn.promotion_interaction",
+            EventName::UsageLimitsInteraction => "antiburn.usage_limits_interaction",
             EventName::InterfaceScaleChanged => "antiburn.interface_scale_changed",
             EventName::FirstRunStepReached => "antiburn.first_run_step_reached",
             EventName::FirstRunAction => "antiburn.first_run_action",
@@ -305,6 +310,7 @@ impl EventName {
             | EventName::NavigationHistoryMoved
             | EventName::AppSearchOpened
             | EventName::AppSearchResultOpened
+            | EventName::UsageLimitsInteraction
             | EventName::InterfaceScaleChanged
             | EventName::FirstRunAction
             | EventName::CheckEnablementSaved
@@ -806,6 +812,10 @@ pub enum Interaction {
         action: PromotionAction,
         origin: Origin,
     },
+    #[serde(rename = "usageLimitsInteraction")]
+    UsageLimitsUsed {
+        action: UsageLimitsAction,
+    },
 }
 
 /// A stable, closed analytics identity for a check.
@@ -972,6 +982,43 @@ pub enum PromotionAction {
     LearnMoreActivated,
     CommandCopied,
     Dismissed,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageLimitsAction {
+    Opened,
+    Closed,
+    PinAdded,
+    PinRemoved,
+    AppearanceDials,
+    AppearanceBars,
+    RefreshSucceeded,
+    RefreshFailed,
+    EnableSucceeded,
+    EnableFailed,
+    SettingsOpened,
+    SettingsOpenFailed,
+}
+
+#[cfg(feature = "analytics")]
+impl UsageLimitsAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Opened => "opened",
+            Self::Closed => "closed",
+            Self::PinAdded => "pin_added",
+            Self::PinRemoved => "pin_removed",
+            Self::AppearanceDials => "appearance_dials",
+            Self::AppearanceBars => "appearance_bars",
+            Self::RefreshSucceeded => "refresh_succeeded",
+            Self::RefreshFailed => "refresh_failed",
+            Self::EnableSucceeded => "enable_succeeded",
+            Self::EnableFailed => "enable_failed",
+            Self::SettingsOpened => "settings_opened",
+            Self::SettingsOpenFailed => "settings_open_failed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -1514,6 +1561,13 @@ impl Interaction {
                     detail: Some(campaign.as_str()),
                     label: Some(action.as_str()),
                     origin: Some(origin.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::UsageLimitsUsed { action } => (
+                EventName::UsageLimitsInteraction,
+                Facts {
+                    label: Some(action.as_str()),
                     ..Facts::default()
                 },
             ),
@@ -2549,6 +2603,43 @@ mod tests {
     }
 
     #[test]
+    fn usage_limits_interactions_resolve_to_closed_wire_labels() {
+        let actions = [
+            "opened",
+            "closed",
+            "pin_added",
+            "pin_removed",
+            "appearance_dials",
+            "appearance_bars",
+            "refresh_succeeded",
+            "refresh_failed",
+            "enable_succeeded",
+            "enable_failed",
+            "settings_opened",
+            "settings_open_failed",
+        ];
+        for action in actions {
+            let interaction: Interaction = serde_json::from_value(serde_json::json!({
+                "kind": "usageLimitsInteraction",
+                "action": action,
+            }))
+            .unwrap();
+            let (name, facts) = interaction.resolve();
+            assert_eq!(name.as_str(), "antiburn.usage_limits_interaction");
+            assert_eq!(facts.label, Some(action));
+            assert!(facts.detail.is_none());
+            assert!(name.is_user_oriented(&facts));
+        }
+        for invalid in [
+            serde_json::json!({"kind":"usageLimitsInteraction","action":"pin_account"}),
+            serde_json::json!({"kind":"usageLimitsInteraction","action":"opened","path":"/private"}),
+            serde_json::json!({"kind":"usageLimitsInteraction","action":"opened","account":"private"}),
+        ] {
+            assert!(serde_json::from_value::<Interaction>(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn memories_surface_resolves_to_its_wire_label() {
         let viewed: Interaction = serde_json::from_str(
             r#"{"kind":"surfaceViewed","surface":"memories","origin":"user"}"#,
@@ -3160,6 +3251,7 @@ mod tests {
                 | EventName::AppSearchOpened
                 | EventName::AppSearchResultOpened
                 | EventName::PromotionInteraction
+                | EventName::UsageLimitsInteraction
                 | EventName::InterfaceScaleChanged
                 | EventName::FirstRunStepReached
                 | EventName::FirstRunAction
@@ -3171,7 +3263,7 @@ mod tests {
         }
         assert_eq!(
             EVERY_EVENT.len(),
-            48,
+            49,
             "a variant was added to the match above but not to EVERY_EVENT"
         );
         assert!(EVERY_EVENT.iter().copied().all(listed));

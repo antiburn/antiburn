@@ -2704,21 +2704,13 @@ fn account_switches_bind_only_sessions_near_each_observation() {
 }
 
 #[test]
-fn live_usage_is_only_active_once_both_the_switch_and_the_start_click_agree() {
-    // The switch defaults on, but that alone must never be enough: the
-    // credential read this feature depends on — and, on macOS, the Keychain
-    // prompt it can trigger — must wait for a deliberate click in the
-    // Overview's usage area.
+fn live_usage_defaults_on_and_preserves_the_master_opt_out() {
     let mut settings = AppSettings::default();
-    assert!(settings.live_usage_enabled, "the default is on");
-    assert!(!settings.live_usage_started, "the default is not");
-    assert!(!settings.live_usage_active());
-
-    settings.live_usage_started = true;
+    assert!(settings.live_usage_enabled);
+    assert!(settings.live_usage_started);
     assert!(settings.live_usage_active());
-
     settings.live_usage_enabled = false;
-    assert!(!settings.live_usage_active(), "the opt-out still works");
+    assert!(!settings.live_usage_active());
 }
 
 #[test]

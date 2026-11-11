@@ -148,6 +148,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         } => {
             let _ = (campaign, action, origin);
         }
+        event::Interaction::UsageLimitsUsed { action } => {
+            let _ = action;
+        }
         event::Interaction::AppSearchOpened {} => {}
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;

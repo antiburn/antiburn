@@ -8,7 +8,7 @@ import type {
   LiveUsageWindowPayload,
 } from "../../lib/ipc"
 
-import { UsageLimitsBar } from "./UsageLimitsBar"
+import { UsageLimitsBar, ProviderRadial } from "./UsageLimitsBar"
 
 const invoke = vi.hoisted(() => vi.fn())
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
@@ -949,5 +949,37 @@ describe("UsageLimitsBar — grace period", () => {
     })
     expect(screen.getByRole("img", { name: /Claude at 42 percent/ })).toBeInTheDocument()
     expect(screen.queryByTestId("usage-limits-unavailable")).not.toBeInTheDocument()
+  })
+})
+
+describe("sidebar usage bar", () => {
+  it("marks pace and keeps the tooltip compact with optional account identity", () => {
+    const window = liveWindow({ elapsedFraction: 0.6 })
+    const props = {
+      provider: liveProvider({ accountEmail: "person@example.test" }),
+      displayName: "Claude · person@example.test",
+      status: { kind: "live" } as const,
+      activation: null,
+      compact: true,
+      appearance: "bars" as const,
+      selectedWindow: window,
+      onOpen: vi.fn(),
+    }
+    const { rerender } = render(<ProviderRadial {...props} />)
+    expect(screen.getByTestId("usage-bar-notch")).toHaveStyle({ left: "60%" })
+    expect(screen.getByTestId("usage-bar-notch")).toHaveClass("bg-label-tertiary")
+    fireEvent.focus(screen.getByRole("button"))
+    const tooltip = screen.getByRole("tooltip")
+    expect(tooltip).not.toHaveTextContent("person@example.test")
+    expect(tooltip).toHaveTextContent("42% used")
+    expect(tooltip).toHaveTextContent("42% used · 60% pace")
+    rerender(<ProviderRadial {...props} showAccount />)
+    expect(screen.getByRole("tooltip")).toHaveTextContent("person@example.test")
+    rerender(<ProviderRadial {...props} selectedWindow={{ ...window, usedPercent: 60 }} />)
+    expect(screen.getByTestId("usage-bar-notch")).toHaveClass("bg-system-red")
+    rerender(<ProviderRadial {...props} selectedWindow={{ ...window, usedPercent: 80 }} />)
+    expect(screen.getByTestId("usage-bar-notch")).toHaveClass("bg-system-red")
+    rerender(<ProviderRadial {...props} selectedWindow={liveWindow()} />)
+    expect(screen.queryByTestId("usage-bar-notch")).not.toBeInTheDocument()
   })
 })

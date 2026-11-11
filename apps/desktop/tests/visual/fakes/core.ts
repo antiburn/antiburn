@@ -53,6 +53,8 @@ const usageWindow = {
 }
 
 const settings = {
+  sidebarUsagePins: null,
+  sidebarUsageAppearance: "dials",
   interfaceScalePercent: 100,
   theme: "system",
   activityWindowDays: 7,
@@ -356,6 +358,8 @@ const nudge = {
   ],
 }
 
+let sidebarPreferences: Record<string, unknown> = {}
+
 function dataFor(command: string, args: Record<string, unknown> | undefined): unknown {
   if (command.includes("remote_")) return remoteFixtureCommand(command, args)
   const state = fixtureState()
@@ -394,15 +398,21 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
         ...settings,
         onboardingCompleted:
           new URLSearchParams(window.location.search).get("onboarding") === "complete",
-        liveUsageStarted:
-          new URLSearchParams(window.location.search).get("onboarding") === "complete",
+        liveUsageStarted: true,
+        liveUsageEnabled: new URLSearchParams(window.location.search).get("usage") !== "off",
         interfaceScalePercent:
           Number(new URLSearchParams(window.location.search).get("scale")) || 100,
+        ...sidebarPreferences,
       }
     case "get_main_window_visible":
       return true
     case "list_burn_check_snoozes":
       return []
+    case "start_live_usage":
+      return { ...settings, liveUsageEnabled: true, liveUsageStarted: true }
+    case "patch_sidebar_usage":
+      sidebarPreferences = { ...sidebarPreferences, ...(args?.patch as object) }
+      return dataFor("get_settings", undefined)
     case "set_settings":
       return args?.settings ?? settings
     case "set_interface_scale": {

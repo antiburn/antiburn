@@ -141,6 +141,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
             live_usage_started: true,
+            sidebar_usage_pins: None,
+            sidebar_usage_appearance: super::super::model::SidebarUsageAppearance::Dials,
             live_usage_hidden_providers: HiddenMeters::default(),
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
@@ -663,9 +665,9 @@ fn settings_repair_malformed_stored_presence_values() {
 
 #[test]
 fn migration_preserves_legacy_live_usage_activation() {
-    // A fresh install with no stored rows at all defaults to not started.
+    // A fresh install starts collection by default.
     let fresh = store();
-    assert!(!fresh.settings().unwrap().live_usage_started);
+    assert!(fresh.settings().unwrap().live_usage_started);
 
     // An install that finished setup before `internal:liveUsageStarted`
     // existed wrote only `onboardingCompleted`. Nothing should change for it:
@@ -742,7 +744,7 @@ fn v72_keeps_only_disabled_agents_that_have_sessions() {
          VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
     ));
 
-    assert_eq!(store.schema_version().unwrap(), 93);
+    assert_eq!(store.schema_version().unwrap(), 94);
     assert_eq!(
         store.settings().unwrap().disabled_agents.as_str(),
         "codex,cursor"
@@ -755,7 +757,7 @@ fn v72_clears_a_disabled_list_with_no_session_agents() {
         "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
     );
 
-    assert_eq!(store.schema_version().unwrap(), 93);
+    assert_eq!(store.schema_version().unwrap(), 94);
     assert!(!store.settings().unwrap().disabled_agents.any());
 }
 
@@ -785,4 +787,102 @@ fn cloud_preference_defaults_off_and_preserves_saved_folder_opt_out() {
     disabled.cloud_upload_enabled = false;
     store.save_settings(&disabled).unwrap();
     assert_eq!(store.settings().unwrap(), disabled);
+}
+
+#[test]
+fn sidebar_usage_preferences_preserve_order_scope_and_explicit_empty() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let mut settings = store.settings().unwrap();
+    assert!(settings.sidebar_usage_pins.is_none());
+    settings.sidebar_usage_appearance = super::super::model::SidebarUsageAppearance::Bars;
+    settings.sidebar_usage_pins = Some(vec![super::super::model::SidebarUsagePin {
+        account: "account:anthropic:test".into(),
+        provider: "anthropic".into(),
+        name: "Claude".into(),
+        window: "seven-day".into(),
+        scope: Some("sonnet".into()),
+        label: "Weekly".into(),
+    }]);
+    let mut second = settings.sidebar_usage_pins.as_ref().unwrap()[0].clone();
+    second.scope = Some("opus".into());
+    settings.sidebar_usage_pins.as_mut().unwrap().push(second);
+    store.save_settings(&settings).unwrap();
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.settings().unwrap(), settings);
+    settings.sidebar_usage_pins = Some(vec![]);
+    store.save_settings(&settings).unwrap();
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.settings().unwrap().sidebar_usage_pins, Some(vec![]));
+}
+
+#[test]
+fn usage_default_migration_preserves_explicit_opt_outs() {
+    for enabled in [true, false] {
+        let store = store();
+        let settings = AppSettings {
+            live_usage_started: false,
+            live_usage_enabled: enabled,
+            live_usage_hidden_providers: HiddenMeters::parse("anthropic"),
+            ..AppSettings::default()
+        };
+        store.save_settings(&settings).unwrap();
+        store
+            .lock()
+            .execute_batch(super::super::schema::MIGRATIONS[93])
+            .unwrap();
+        let saved = store.settings().unwrap();
+        assert!(saved.live_usage_started);
+        assert_eq!(saved.live_usage_active(), enabled);
+        assert_eq!(
+            saved.live_usage_hidden_providers,
+            settings.live_usage_hidden_providers
+        );
+    }
+}
+
+#[test]
+fn sidebar_patch_preserves_concurrent_settings_in_both_write_orders() {
+    use super::super::model::{SidebarUsageAppearance, SidebarUsagePatch};
+    for sidebar_first in [false, true] {
+        let store = store();
+        let mut stale_settings = store.settings().unwrap();
+        stale_settings.notifications_enabled = false;
+        stale_settings.analytics_enabled = false;
+        let sidebar = || {
+            store
+                .patch_sidebar_usage(SidebarUsagePatch {
+                    sidebar_usage_pins: Some(vec![]),
+                    sidebar_usage_appearance: Some(SidebarUsageAppearance::Bars),
+                })
+                .unwrap();
+        };
+        let preferences = || {
+            store
+                .replace_settings_preserving_interface_scale(&stale_settings, |_, _, _| Ok(()))
+                .unwrap();
+        };
+        if sidebar_first {
+            sidebar();
+            preferences();
+        } else {
+            preferences();
+            sidebar();
+        }
+        let saved = store.settings().unwrap();
+        assert!(!saved.notifications_enabled);
+        assert!(!saved.analytics_enabled);
+        assert_eq!(saved.sidebar_usage_pins, Some(vec![]));
+        assert_eq!(saved.sidebar_usage_appearance, SidebarUsageAppearance::Bars);
+        assert_eq!(store.settings_snapshot(), saved);
+        store
+            .patch_sidebar_usage(SidebarUsagePatch {
+                sidebar_usage_pins: None,
+                sidebar_usage_appearance: Some(SidebarUsageAppearance::Dials),
+            })
+            .unwrap();
+        assert_eq!(store.settings().unwrap().sidebar_usage_pins, Some(vec![]));
+    }
 }

@@ -138,6 +138,7 @@ macro_rules! with_app_commands {
             commands::set_popover_height => "set_popover_height",
             commands::set_repository_enabled => "set_repository_enabled",
             commands::set_settings => "set_settings",
+            commands::patch_sidebar_usage => "patch_sidebar_usage",
             jev::settings::set_typesafe_api_key => "set_typesafe_api_key",
             jev::settings::switch_system_one_connection => "switch_system_one_connection",
             jev::settings::set_check_enabled => "set_check_enabled",

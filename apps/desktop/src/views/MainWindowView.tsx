@@ -1,3 +1,4 @@
+import { SidebarUsage } from "../components/providerUsage/SidebarUsageLimits"
 import { Bot, Brain, Flame, Gauge, MessagesSquare, Settings } from "lucide-react"
 import { useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
@@ -292,11 +293,14 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             className="main-window-sidebar min-h-0 flex-1"
             beforeFooter={
               !sections ? (
-                <PromotionLauncher
-                  session={promotionSession}
-                  onOpen={closeNavigation}
-                  buttonRef={promotionLauncherRef}
-                />
+                <>
+                  <SidebarUsage live={usage.liveUsage} settled={usage.liveUsageSettled} />
+                  <PromotionLauncher
+                    session={promotionSession}
+                    onOpen={closeNavigation}
+                    buttonRef={promotionLauncherRef}
+                  />
+                </>
               ) : null
             }
             footer={

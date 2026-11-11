@@ -41,6 +41,18 @@ reports at the app-version boundary where this event ships. Missing identity,
 environment-disabled, unconfigured, and crashed-before-delivery cases remain
 unobserved; the event carries no properties beyond the standard envelope.
 
+### Sidebar Usage limits interactions
+
+`antiburn.usage_limits_interaction` measures explicit use of the pinned Usage
+limits sidebar and its modal. It records modal open/close, pin add/remove,
+dials/bars selection, and success/failure for refresh, live-usage enablement,
+and opening Usage settings. Automatic default pins, repeated appearance values,
+rendering, hover, and provider state changes emit nothing. Each label is from a
+fixed native enum. The event carries no provider, account, display name, usage
+reading, path, or error text. Async outcome events count completed operations;
+they do not count actions interrupted before a result. Reports must segment at
+the first app version that ships this event.
+
 Application interface size changes are implemented at the native persistence
 boundary. The product question is which supported sizes readers choose and
 whether they find the Settings, keyboard, or native-menu route. Reports use
@@ -1244,3 +1256,15 @@ Do not interpret the end of those event series as activation loss. Segment repor
 at the app version containing this change. Launches include background startup;
 visible surface and session interactions are the existing measures of deliberate use.
 No replacement event or new analytics payload is introduced.
+
+### Sidebar usage presentation — 2026-11-11
+
+Sidebar pins and Dials/Bars are local presentation preferences. Live usage now
+starts by default, including for previously unstarted profiles; explicit master
+and provider opt-outs remain intact. Existing usage observations can therefore
+start without a deliberate activation click. Segment comparisons at the app
+version that ships this default, and do not interpret background observations
+as deliberate use. `antiburn.usage_limits_interaction` records explicit modal,
+pin, display, refresh, enablement, and settings actions. Automatic default pins
+and background observations emit no interaction event. Account identities,
+window/model scopes, and pin labels remain in local settings.

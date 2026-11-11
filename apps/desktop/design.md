@@ -3,6 +3,7 @@ version: alpha
 name: antiburn Desktop
 description: "antiburn desktop design system (native-feeling, Tauri; ships macOS/Windows/Linux). Light and Dark are documented together: every colors entry carries both values. Use semantic Tailwind utilities for shared product chrome; promote recurring feature values to tokens and keep one-off visualization or geometry values local and documented."
 sources:
+  - src/components/providerUsage/sidebar-usage.css
   - src/styles/tokens.css
   - src/styles/base.css
   - src/styles/typography.css
@@ -65,6 +66,9 @@ colors:
   surface-overlay: # opaque search dialog and other floating surfaces
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
+  modal-scrim:
+    light: "hsl(0 0% 0% / 0.1)"
+    dark: "hsl(0 0% 0% / 0.24)"
   command-palette-scrim:
     light: "hsl(0 0% 0% / 0.04)"
     dark: "hsl(0 0% 0% / 0.12)"
@@ -1947,3 +1951,46 @@ uses 10% opacity at rest and 35% on hover; the opaque label glyph uses a 2.5px s
 on hover and keeps a transparent background.
 Use `type-title-2`, `type-body`, `type-callout`, and `type-footnote`. Commands
 use muted text, 4px horizontal and 8px vertical padding, and retain selectable wrapping. The panel remains non-modal.
+
+## Sidebar usage limits
+
+Usage limits sit above the promotion card and Settings. Compact dials use three
+columns; brand-tint bars use two. Indicators have 40px targets and scroll within
+a 160px maximum height. Empty selection uses a centered, content-width pin
+control with tertiary ink at 40% inner opacity. Fine pointers reveal it on
+sidebar hover; only control hover or focus brightens it and expands its label.
+Use duration-fast and duration-medium; keyboard focus reveals immediately and
+reduced motion disables transitions. The Usage limits dialog uses the existing
+provider meters, ghost pin/refresh/close controls, and a Sidebar display selector.
+
+Initial pins select up to three distinct vendors, with Claude and Codex first
+when their account-wide weekly limits are available. Their default pins use
+weekly limits; other vendors use their fullest available window. Multiple
+accounts from one vendor cannot crowd out a second vendor. Saved selections,
+including an explicit empty selection, take precedence over these defaults.
+
+The Usage limits empty state uses a centered 24px gauge in a 48px quiet
+surface-card circle, type-title-3 heading, and type-body secondary supporting
+copy. Keep 24px vertical padding and 12px gaps. Hide Sidebar display until
+readings exist. Off state offers Enable live usage; active empty or failed
+states offer Check again and Usage settings. Loading shows explanatory copy
+without actionable controls. Buttons retain 40px minimum targets; no entry
+animation or fabricated meter values. Live usage defaults on; explicit
+master and provider opt-outs survive upgrades.
+
+The Usage limits dialog initially focuses its dialog surface, keeping header
+actions and their tooltips quiet until interaction. Tab reaches Refresh first.
+Sidebar bars show a 1.5px pace tick, 10px tall across the 6px track,
+without an outline or horizontal transform, matching the modal meter markers.
+Both bar markers use label-tertiary below pace and system-red when the stated
+usage reaches or exceeds the elapsed fraction. Unknown usage stays muted. Use the selected window’s elapsed fraction;
+omit the tick when timing is unknown. The tooltip uses three compact lines: provider and window,
+used percentage and pace, then reset time. Use type-footnote (11px), 2px row
+gaps, standard tooltip padding, and no divider or minimum content width. Only
+the used percentage gets medium weight. Include account identity when multiple
+accounts need distinguishing; retain freshness or error notes when applicable. Open sidebar tooltips above
+their trigger, with viewport collision handling. Keep these readings static.
+
+Usage limits uses modal-scrim: neutral black at 10% in light mode and 24% in
+dark mode, including system appearance. Keep its opaque surface and existing
+shadow. Add no blur or backdrop animation. Search retains command-palette-scrim.

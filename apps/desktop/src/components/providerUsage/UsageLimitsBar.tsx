@@ -36,7 +36,7 @@ import { providerInitial } from "../../lib/presentation/providerUsage"
 import { SegmentedMeter } from "../ui/SegmentedMeter"
 import { SegmentFigure } from "../ui/SegmentFigure"
 import { Tooltip } from "../presentation/Tooltip"
-import { providerMark } from "./ProviderUsagePrimitives"
+import { ProviderGlyph, providerMark } from "./ProviderUsagePrimitives"
 import { UnavailableNote } from "./UnavailableNote"
 import { UsageRing } from "./UsageRing"
 import { useStableAccountNumbers } from "./useStableAccountNumbers"
@@ -220,7 +220,7 @@ export function UsageLimitsBar({
   )
 }
 
-function accountDisplayName(
+export function accountDisplayName(
   provider: LiveProviderUsagePayload,
   key: string,
   accountNumbers: ReadonlyMap<string, number>,
@@ -297,7 +297,7 @@ function RefreshingIndicator() {
  * name back, so that two providers with the same window label stay tellable
  * apart.
  */
-function ProviderGroup({
+export function ProviderGroup({
   provider,
   displayName,
   accountCount,
@@ -308,10 +308,12 @@ function ProviderGroup({
   activation,
   live = false,
   liveModels = [],
+  windowAction,
 }: {
   provider: LiveProviderUsagePayload
   displayName: string
   accountCount: number
+  windowAction?: (window: LiveUsageWindowPayload) => ReactNode
   status: LiveProviderStatus
   now: number
   /** The disclosure, on the topmost group only. */
@@ -357,16 +359,25 @@ function ProviderGroup({
         <p className="pb-1.5 type-footnote text-label-tertiary">{actionNote ?? graceNote}</p>
       )}
       <div className={cn("space-y-2.5", staleNote && "opacity-60")}>
-        {liveWindows(provider).map((window, index) => (
-          <WindowMeterRow
-            key={window.id}
-            window={window}
-            now={now}
-            resetOnHover
-            live={liveWindowSweeps(window, live, liveModels)}
-            row={index}
-          />
-        ))}
+        {liveWindows(provider, { includeIdleModelLimits: true })
+          .filter((window) => windowAction || liveWindows(provider).includes(window))
+          .map((window, index) => (
+            <div
+              key={`${window.id}:${window.scopeModel ?? ""}`}
+              className="flex items-center gap-2"
+            >
+              <div className="min-w-0 flex-1">
+                <WindowMeterRow
+                  window={window}
+                  now={now}
+                  resetOnHover={!windowAction}
+                  live={liveWindowSweeps(window, live, liveModels)}
+                  row={index}
+                />
+              </div>
+              {windowAction?.(window)}
+            </div>
+          ))}
       </div>
     </div>
   )
@@ -376,14 +387,24 @@ function ProviderGroup({
  * One provider's worst-window reading, as a ring and percentage. The radial
  * anchors the passive Usage preview while the pointer rests on it.
  */
-function ProviderRadial({
+export function ProviderRadial({
   provider,
   displayName,
   status,
   onHover,
   activation,
   live = false,
+  selectedWindow,
+  onOpen,
+  compact = false,
+  showAccount = false,
+  appearance = "dials",
 }: {
+  onOpen?: () => void
+  compact?: boolean
+  showAccount?: boolean
+  appearance?: "dials" | "bars"
+  selectedWindow?: LiveUsageWindowPayload
   provider: LiveProviderUsagePayload
   displayName: string
   status: LiveProviderStatus
@@ -392,11 +413,13 @@ function ProviderRadial({
   /** Sweep the ring while a session is live. */
   live?: boolean
 }) {
-  const percent = maxLiveUsedPercent(provider)
+  const Trigger = onOpen ? "button" : "div"
+  const percent = selectedWindow ? selectedWindow.usedPercent : maxLiveUsedPercent(provider)
   const window =
-    percent == null
+    selectedWindow ??
+    (percent == null
       ? undefined
-      : liveWindows(provider).find((window) => window.usedPercent === percent)
+      : liveWindows(provider).find((window) => window.usedPercent === percent))
   const expectedFraction = window ? liveWindowElapsed(window) : null
   const windowLabel = window ? liveWindowLabel(window) : null
   const elapsedPercent = expectedFraction == null ? null : Math.round(expectedFraction * 100)
@@ -415,7 +438,31 @@ function ProviderRadial({
   ]
     .filter(Boolean)
     .join(". ")
-  const tooltip = (
+  const tooltip = compact ? (
+    <div className="space-y-0.5 type-footnote">
+      <p className="wrap-anywhere text-label-secondary">
+        {provider.accountEmail && !showAccount
+          ? displayName.replace(` · ${provider.accountEmail}`, "")
+          : displayName}
+        {windowLabel && ` · ${windowLabel.replace(/ limit$/, "")}`}
+      </p>
+      <p className="text-label-secondary">
+        <SegmentFigure className="font-medium text-label">{figure}</SegmentFigure>
+        {elapsedPercent != null && (
+          <SegmentFigure>{` · ${elapsedPercent}% pace`}</SegmentFigure>
+        )}
+      </p>
+      {window?.resetsAt && (
+        <p className="text-label-secondary">
+          {liveResetLabel(window, Date.parse(provider.observedAt) || 0).replace(
+            /^resets/,
+            "Resets",
+          )}
+        </p>
+      )}
+      {graceNote && <p className="text-label-secondary">{graceNote}</p>}
+    </div>
+  ) : (
     <div className="space-y-0.5">
       <p className="font-medium text-label">
         {displayName}
@@ -429,31 +476,85 @@ function ProviderRadial({
           <SegmentFigure>{`${elapsedPercent}% would be on pace by now`}</SegmentFigure>
         </p>
       )}
+      {compact && window?.resetsAt && (
+        <p className="text-label-secondary">
+          {liveResetLabel(window, Date.parse(provider.observedAt) || 0)}
+        </p>
+      )}
       {graceNote && <p className="text-label-secondary">{graceNote}</p>}
     </div>
   )
   return (
-    <Tooltip label={tooltip} side="bottom" delayMs={1000}>
-      <div
-        role="img"
+    <Tooltip label={tooltip} side={compact ? "top" : "bottom"} delayMs={1000}>
+      <Trigger
+        type={onOpen ? "button" : undefined}
+        role={onOpen ? undefined : "img"}
+        onClick={onOpen}
+        data-usage-limits-trigger={onOpen ? "" : undefined}
+        aria-haspopup={onOpen ? "dialog" : undefined}
         tabIndex={0}
         onMouseEnter={(event) =>
           onHover?.(provider.provider, measureAnchorRegion(event.currentTarget))
         }
         onMouseLeave={() => onHover?.(null, null)}
         data-state={activation ?? "idle"}
-        className="flex shrink-0 items-center gap-1.5 rounded-full px-[var(--space-xs)] py-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected"
+        className={cn(
+          "items-center py-1 transition-[background-color] duration-[var(--duration-fast)] hover:bg-surface-secondary/50 data-[state=hovered]:bg-surface-secondary/50 data-[state=selected]:bg-surface-selected",
+          compact
+            ? cn(
+                "grid min-h-10 w-full min-w-0 rounded-control px-1",
+                appearance === "bars"
+                  ? "grid-cols-[20px_minmax(0,1fr)_max-content] gap-1"
+                  : "grid-cols-[20px_max-content] gap-0.5",
+              )
+            : "flex shrink-0 gap-1.5 rounded-full px-[var(--space-xs)]",
+        )}
         aria-label={ariaLabel}
       >
-        <UsageRing
-          percent={percent}
-          expectedFraction={expectedFraction}
-          mark={providerMark(provider.provider)}
-          glyph={providerInitial(displayName)}
-          size={RING_SIZE}
-          className={cn("block text-label-secondary", stale && "opacity-60")}
-          live={live}
-        />
+        {appearance === "bars" ? (
+          <>
+            <span className="flex h-[20px] w-full items-center justify-center">
+              <ProviderGlyph provider={provider.provider} displayName={displayName} size={14} />
+            </span>
+            <span
+              aria-hidden="true"
+              className="relative h-1.5 min-w-0 w-full rounded-control bg-surface-selected"
+            >
+              <span
+                className={cn(
+                  "block h-full rounded-control bg-brand-tint",
+                  stale && "opacity-60",
+                )}
+                style={{ width: `${Math.min(100, Math.max(0, percent ?? 0))}%` }}
+              />
+              {expectedFraction != null && Number.isFinite(expectedFraction) && (
+                <span
+                  data-testid="usage-bar-notch"
+                  className={cn(
+                    "absolute -top-0.5 h-2.5 w-[1.5px]",
+                    percent != null &&
+                      percent >= Math.min(1, Math.max(0, expectedFraction)) * 100
+                      ? "bg-system-red"
+                      : "bg-label-tertiary",
+                  )}
+                  style={{ left: `${Math.min(1, Math.max(0, expectedFraction)) * 100}%` }}
+                />
+              )}
+            </span>
+          </>
+        ) : (
+          <>
+            <UsageRing
+              percent={percent}
+              expectedFraction={expectedFraction}
+              mark={providerMark(provider.provider)}
+              glyph={providerInitial(displayName)}
+              size={compact ? 20 : RING_SIZE}
+              className={cn("block text-label-secondary", stale && "opacity-60")}
+              live={live}
+            />
+          </>
+        )}
         <span
           aria-hidden="true"
           className={cn(
@@ -466,7 +567,7 @@ function ProviderRadial({
             {roundedPercent != null ? `${roundedPercent}%` : "—"}
           </SegmentFigure>
         </span>
-      </div>
+      </Trigger>
     </Tooltip>
   )
 }
@@ -508,7 +609,7 @@ function UnavailableRadial({ entry }: { entry: UnavailableLiveProvider }) {
  * same eyebrow as `ProviderGroup`, then the failure and what it means in
  * place of the meters.
  */
-function UnavailableGroup({
+export function UnavailableGroup({
   entry,
   action,
 }: {

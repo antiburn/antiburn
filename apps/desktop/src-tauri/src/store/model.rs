@@ -973,6 +973,32 @@ fn visible_by_default() -> bool {
     true
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarUsagePin {
+    pub account: String,
+    pub provider: String,
+    pub name: String,
+    pub window: String,
+    pub scope: Option<String>,
+    pub label: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SidebarUsageAppearance {
+    #[default]
+    Dials,
+    Bars,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SidebarUsagePatch {
+    pub sidebar_usage_pins: Option<Vec<SidebarUsagePin>>,
+    pub sidebar_usage_appearance: Option<SidebarUsageAppearance>,
+}
+
 /// Every user preference the app persists, as one value.
 ///
 /// Stored key-by-key so adding a preference is additive; read and written as a
@@ -980,6 +1006,10 @@ fn visible_by_default() -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(default)]
+    pub sidebar_usage_pins: Option<Vec<SidebarUsagePin>>,
+    #[serde(default)]
+    pub sidebar_usage_appearance: SidebarUsageAppearance,
     pub theme: ThemePreference,
     /// The application interface size as one supported percentage preset.
     #[serde(default = "default_interface_scale_percent")]
@@ -1052,10 +1082,8 @@ pub struct AppSettings {
     /// [`AppSettings::live_usage_active`] for the second, unconditional gate
     /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
-    /// Whether the user activates provider usage in Settings.
-    /// False for a new install. Activation may trigger the macOS Keychain prompt.
-    /// Migration 93 preserves activation for legacy installations.
-    #[serde(default)]
+    /// Legacy activation compatibility flag. True by default and after migration 94.
+    #[serde(default = "visible_by_default")]
     pub live_usage_started: bool,
     /// The providers whose meter the reader turned off. See [`HiddenMeters`].
     ///
@@ -1139,8 +1167,10 @@ impl Default for AppSettings {
             // not sit behind a first-run choice. The switch is the opt-out
             // for a reader who wants no background traffic at all.
             live_usage_enabled: true,
-            // False: a new install has not clicked "Show live limits" yet.
-            live_usage_started: false,
+            // Collect usage on startup unless the user turns the master switch off.
+            live_usage_started: true,
+            sidebar_usage_pins: None,
+            sidebar_usage_appearance: SidebarUsageAppearance::default(),
             // Empty: every provider antiburn can meter is metered. A reader
             // who wants fewer meters says so one provider at a time.
             live_usage_hidden_providers: HiddenMeters::default(),
@@ -1178,16 +1208,9 @@ impl AppSettings {
 
     /// Whether live usage collection may actually run right now.
     ///
-    /// Two gates, both required, and both checked fresh on every pass rather
-    /// than latched: [`Self::live_usage_enabled`] (on by default; the
-    /// reader's opt-out) and [`Self::live_usage_started`] (off by default;
-    /// the reader's deliberate opt-in). The second gate exists so the
-    /// credential read this feature depends on — and, on macOS, the Keychain
-    /// prompt that read can trigger — never happens before the reader asks
-    /// for live limits. Every call site that might collect or fetch a live
-    /// usage source must go through this rather than reading
-    /// `live_usage_enabled` alone. App refreshes use
-    /// `usage_alerts::refresh_publish_and_evaluate`.
+    /// The master switch preserves the user's opt-out. The legacy activation
+    /// flag defaults to true and migration 94 enables it for existing installs.
+    /// Credential access can trigger a macOS Keychain prompt.
     pub fn live_usage_active(&self) -> bool {
         self.live_usage_enabled && self.live_usage_started
     }

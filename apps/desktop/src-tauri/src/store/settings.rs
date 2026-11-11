@@ -7,7 +7,8 @@ use rusqlite::{Connection, params};
 
 use super::{
     AppSettings, DisabledAgents, DiskSpaceDisplay, HiddenMeters, Milestones, NudgePlacement,
-    SessionBadgeMetric, Store, ThemePreference, WorkingWeek, bump_repository_policy_generation_in,
+    SessionBadgeMetric, SidebarUsagePatch, Store, ThemePreference, WorkingWeek,
+    bump_repository_policy_generation_in,
 };
 
 impl Store {
@@ -77,7 +78,22 @@ impl Store {
         Ok((previous, saved, result))
     }
 
-    /// Replace ordinary preferences without accepting a stale interface scale snapshot.
+    /// Patch sidebar preferences against the latest stored settings.
+    pub fn patch_sidebar_usage(
+        &self,
+        patch: SidebarUsagePatch,
+    ) -> Result<(AppSettings, AppSettings)> {
+        self.update_settings(|settings| {
+            if let Some(pins) = patch.sidebar_usage_pins {
+                settings.sidebar_usage_pins = Some(pins);
+            }
+            if let Some(appearance) = patch.sidebar_usage_appearance {
+                settings.sidebar_usage_appearance = appearance;
+            }
+        })
+    }
+
+    /// Preserve preferences that use dedicated atomic commands.
     pub fn replace_settings_preserving_interface_scale<T>(
         &self,
         settings: &AppSettings,
@@ -88,6 +104,8 @@ impl Store {
         let previous = read_settings(&tx)?;
         let mut saved = settings.clone();
         saved.interface_scale_percent = previous.interface_scale_percent;
+        saved.sidebar_usage_pins = previous.sidebar_usage_pins.clone();
+        saved.sidebar_usage_appearance = previous.sidebar_usage_appearance.clone();
         let saved = saved.normalized();
         write_settings(&tx, &previous, &saved)?;
         let result = apply(&tx, &previous, &saved)?;
@@ -250,6 +268,13 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
+        sidebar_usage_pins: stored
+            .get("sidebarUsagePins")
+            .and_then(|value| serde_json::from_str(value).ok()),
+        sidebar_usage_appearance: stored
+            .get("sidebarUsageAppearance")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default(),
         live_usage_started: stored
             .get("internal:liveUsageStarted")
             .map(|value| value == "true")
@@ -400,6 +425,14 @@ fn write_settings(
     put.execute(params![
         "liveUsageHiddenProviders",
         settings.live_usage_hidden_providers.as_str()
+    ])?;
+    put.execute(params![
+        "sidebarUsagePins",
+        serde_json::to_string(&settings.sidebar_usage_pins)?
+    ])?;
+    put.execute(params![
+        "sidebarUsageAppearance",
+        serde_json::to_string(&settings.sidebar_usage_appearance)?
     ])?;
     put.execute(params!["disabledAgents", settings.disabled_agents.as_str()])?;
     put.execute(params![

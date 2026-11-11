@@ -109,8 +109,8 @@ pub use model::{
     RETAIN_SESSION_DATA_FOREVER, RelationKind, RelationRecord, Remediation,
     RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
     RepositoryRecord, Revision, SessionActivityKey, SessionBadgeMetric, SessionKey, SessionRecord,
-    SourcePublishMode, SourcePublishOutcome, SourceVersionState, ThemePreference,
-    UsageEvidenceRecord, WorkingWeek,
+    SidebarUsagePatch, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
+    ThemePreference, UsageEvidenceRecord, WorkingWeek,
 };
 pub(crate) use remediation::{
     PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
