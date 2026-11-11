@@ -90,9 +90,7 @@ activation and reveal-time activation require separate macOS QA.
 ## Main window
 
 The main window uses a dedicated frontend entry and a retained renderer. An
-explicit launch creates it directly; its Overview is also where a fresh
-install's first-run setup happens, so there is no separate flow to create
-first. Background startup does not construct its webview. After first use,
+explicit launch creates it directly at Sessions, including on a fresh install. Background startup does not construct its webview. After first use,
 closing hides the window and preserves
 its renderer for the next open. Quit stops the application and all renderers.
 
@@ -179,22 +177,14 @@ includes the health handshake. See the
 [validation runbook](runbooks/main-window.md) for separate cold, first-open,
 warm, acknowledgement, and visible-content measurements.
 
-## First-run handoff and popover prewarm
+## Startup popover prewarm
 
-Finishing the first run — the Overview's own setup flow — performs a
-deliberate handoff into the menu bar:
+After normal shell initialization, the app requests one hidden popover renderer.
+It stays hidden after readiness, with a one-minute lease for the first menu-bar
+click. Startup does not show a setup-completion notification. Explicit launch
+opens Sessions; login launch follows normal background behavior.
 
-1. The shell shows the menu-bar-location notification. The default
-   app-presence settings keep both the menu-bar and macOS Dock icons visible.
-2. On the next main-loop turn, the shell requests one hidden popover renderer.
-   This moves renderer startup out of the first menu-bar click.
-3. The popover remains hidden after it reports readiness. Readiness starts a
-   one-minute handoff lease instead of revealing it.
-
-The main window stays open throughout: there is no separate window to hide or
-destroy, since the first run itself ran inside the main window's Overview.
-
-After the first run, General → Application applies visibility changes without
+General → Application applies visibility changes without
 a renderer restart. Hiding the tray icon unpins and hides the tray-owned
 popover. On macOS the store normalizes a malformed both-hidden state by
 restoring the Dock icon, and the Settings controls prevent creating that state
@@ -210,7 +200,7 @@ renderer instead of leaving an unbounded WebContent process.
 Clicks, cancellations, Pin, and stale replacement do not restart either
 deadline. A replacement generation inherits the original absolute deadline.
 
-### First click after the first run
+### First click after startup
 
 The first tray click reuses the prewarmed generation when it is ready or still
 loading within the stale threshold:
@@ -227,11 +217,11 @@ releases the old window label. The replacement carries the pending reveal, so
 no two renderers load in parallel.
 
 A second toggle while the active renderer still loads cancels the pending
-reveal. A first-run prewarm keeps its remaining absolute lease. A normal
+reveal. A startup prewarm keeps its remaining absolute lease. A normal
 popover load stays available for the next open request.
 
 Hiding the tray icon (`popover::hide_for_surface_handoff`) cancels and destroys
-a renderer that still belongs only to a first-run prewarm, the same way it
+a renderer that still belongs only to a startup prewarm, the same way it
 retires an ordinary popover. This prevents a hidden prewarm surface from
 surviving a tray icon that no longer owns it.
 
@@ -243,7 +233,7 @@ schedule destruction. The next open reuses the renderer and its loaded state.
 The renderer remains available until application shutdown or an explicit
 lifecycle reset.
 
-The first-run prewarm keeps its renderer for 60 seconds after readiness. A
+The startup prewarm keeps its renderer for 60 seconds after readiness. A
 prewarm that never becomes ready has a 65-second loading fail-safe. Cancelling
 a pending reveal does not extend or replace either absolute deadline. The
 first successful reveal consumes the one-shot lease and makes the renderer
@@ -256,7 +246,7 @@ conditions still hold:
 - it still names the current renderer generation;
 - the window is hidden.
 
-An unrevealed first-run prewarm expires at its absolute deadline even when
+An unrevealed startup prewarm expires at its absolute deadline even when
 Pin is enabled. After the first successful reveal, there is no eviction
 deadline for Pin to change.
 
@@ -331,8 +321,8 @@ Application shutdown uses the same native cancellation signal.
 | 5 seconds  | Mark an active renderer load stale; log a warning and permit one replacement on a later open request | Renderer build start             |
 | 300 ms     | Provisional main-window hidden health acknowledgement timeout                                        | Hidden retained open             |
 | 10 seconds | Provisional main-window recovery watchdog for each replacement generation                            | Recovery generation start        |
-| 60 seconds | Keep the one post-first-run handoff renderer available for the first menu-bar click                  | First-run prewarm readiness      |
-| 65 seconds | Destroy a first-run prewarm that never reports renderer readiness                                    | First-run prewarm build          |
+| 60 seconds | Keep the one startup renderer available for the first menu-bar click                                 | Startup prewarm readiness        |
+| 65 seconds | Destroy a startup prewarm that never reports renderer readiness                                      | Startup prewarm build            |
 | 5 seconds  | Refresh Insights processing status only while the pane has subscribers and remains visible           | Insights session start or resume |
 
 These values serve different purposes. The stale threshold is a recovery
@@ -347,7 +337,7 @@ shutdown, or build failure can end one earlier.
 The shell records content-free timing boundaries for each menu-bar open:
 
 - the open request and renderer generation;
-- whether the request uses the first-run prewarm;
+- whether the request uses the startup prewarm;
 - a renderer build that starts behind the request;
 - renderer readiness and reveal; and
 - the first settled activity and cached usage state.

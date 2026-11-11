@@ -5,7 +5,6 @@ import {
   onMainWindowNavigationTarget,
   peekMainWindowNavigationTarget,
   type MainWindowNavigationRequest,
-  type MainWindowSectionId,
   type MainWindowSessionIdentity,
 } from "../../lib/ipc"
 import type { MainViewId } from "../../lib/navigation/mainViews"
@@ -21,11 +20,6 @@ import { sessionKey, type SessionSubject } from "../../lib/sessionSubject"
 import type { MainActivitySession } from "./MainActivitySession"
 
 const HISTORY_LIMIT = 100
-const NATIVE_VIEW_IDS = {
-  overview: "overview",
-  activity: "activity",
-  burnChecks: "burnChecks",
-} as const satisfies Record<MainWindowSectionId, MainViewId>
 
 export type MainDestination = {
   section: MainViewId
@@ -45,19 +39,24 @@ export type MainWindowNavigationSnapshot = {
   requests: number
 }
 
-function normalizeDestination(destination: MainDestination): MainDestination {
-  if (destination.section === "activity") {
+function normalizeDestination(
+  destination: MainDestination,
+  activeFilters?: SessionFilters,
+): MainDestination {
+  if (destination.section === "overview" || destination.section === "activity") {
+    const legacyOverview = destination.section === "overview"
+    const filters = legacyOverview ? activeFilters : destination.filters
     return {
       section: "activity",
       filters: normalizeSessionFilters(
-        destination.filters ?? {
+        filters ?? {
           source: { kind: "all" },
           agents: [],
           result: "all",
           spend: "all",
         },
       ),
-      subject: destination.subject ?? null,
+      subject: legacyOverview ? null : (destination.subject ?? null),
     }
   }
   if (destination.section === "burnChecks") {
@@ -80,16 +79,16 @@ function destinationKey(destination: MainDestination): string {
 /** Own cross-window requests and the retained main window's bounded history. */
 export class MainWindowNavigationSession {
   private snapshot: MainWindowNavigationSnapshot = {
-    selected: "overview",
-    destination: { section: "overview" },
+    selected: "activity",
+    destination: { section: "activity" },
     destinationRevision: 0,
     canBack: false,
     canForward: false,
-    visited: ["overview"],
+    visited: ["activity"],
     requests: 0,
   }
   private readonly activity: MainActivitySession | undefined
-  private history: MainDestination[] = [{ section: "overview" }]
+  private history: MainDestination[] = [{ section: "activity" }]
   private index = 0
   private restoring = false
   private targetRevision = 0
@@ -102,6 +101,13 @@ export class MainWindowNavigationSession {
   private stop: (() => void) | null = null
 
   constructor(activity?: MainActivitySession) {
+    const initial = normalizeDestination({
+      section: "activity",
+      filters: activity?.getSnapshot().filters ?? { agents: [], result: "all", spend: "all" },
+      subject: null,
+    })
+    this.snapshot = { ...this.snapshot, destination: initial }
+    this.history = [initial]
     this.activity = activity
     if (!activity) return
     activity.onNavigation = (origin) => {
@@ -171,7 +177,7 @@ export class MainWindowNavigationSession {
     replace: boolean,
     origin: "user" | "automatic",
   ): void {
-    const normalized = normalizeDestination(destination)
+    const normalized = normalizeDestination(destination, this.activity?.getSnapshot().filters)
     if (destinationKey(normalized) === destinationKey(this.history[this.index]!)) {
       if (!replace) this.publish()
       return
@@ -375,7 +381,7 @@ export class MainWindowNavigationSession {
 
   private destinationForRequest(request: MainWindowNavigationRequest): MainDestination {
     if (request.destination.section !== "activity") {
-      return { section: NATIVE_VIEW_IDS[request.destination.section] }
+      return { section: request.destination.section }
     }
     const activity = this.activity?.getSnapshot()
     if (request.destination.remoteHostId) {

@@ -1,36 +1,12 @@
 import { getMainWindowVisible, onMainWindowVisibilityChanged } from "../ipc"
 import type { PromotionEnvironment } from "./PromotionSession"
 import { PROMOTION_LAUNCHER_OPENED_KEY, PROMOTION_SEEN_KEY } from "./PromotionSession"
-import { PromotionTiming, PROMOTION_FTUE_KEY } from "./PromotionTiming"
-import {
-  overviewProgress,
-  subscribeOverviewProgress,
-} from "../../views/main-window/overview/overviewProgressStore"
-
-const timing = new PromotionTiming({
-  read: () => localStorage.getItem(PROMOTION_FTUE_KEY),
-  write: (value) => localStorage.setItem(PROMOTION_FTUE_KEY, value),
-  now: () => Date.now(),
-})
-const ready = () => timing.ready(overviewProgress())
-
 export const promotionEnvironment: PromotionEnvironment = {
-  isManualReady: () => {
-    const progress = overviewProgress()
-    return (
-      progress.mode === "steady" || (progress.mode === "firstRun" && progress.flow === "done")
-    )
-  },
-  loadReady: async () => ready(),
+  isManualReady: () => true,
+  loadReady: async () => true,
   onReady: async (listener) => {
-    const sync = () => listener(ready())
-    const stop = subscribeOverviewProgress(sync)
-    window.addEventListener("focus", sync)
-    sync()
-    return () => {
-      stop()
-      window.removeEventListener("focus", sync)
-    }
+    listener(true)
+    return () => undefined
   },
   loadVisible: getMainWindowVisible,
   onVisible: onMainWindowVisibilityChanged,

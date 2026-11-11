@@ -959,7 +959,6 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     store.add_scan_root("/home/avery/work").unwrap();
     let settings = store
         .save_settings(&AppSettings {
-            onboarding_completed: true,
             ..AppSettings::default()
         })
         .unwrap();

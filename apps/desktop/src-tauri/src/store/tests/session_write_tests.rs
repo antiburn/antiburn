@@ -213,7 +213,7 @@ fn stale_discovery_does_not_supersede_a_current_dispatch() {
     let record = session("stale-discovery", 1000);
     let epoch = store.capture_destructive_write_epoch();
     store
-        .update_settings(|settings| settings.include_non_repo_folders = true)
+        .update_settings(|settings| settings.include_non_repo_folders = false)
         .unwrap();
     let current = source_guard(&store, &record, "file:/current");
     let stale = store
@@ -236,7 +236,7 @@ fn every_settings_transaction_path_fences_discovery_only_after_commit() {
         let epoch = store.capture_destructive_write_epoch();
         let guard = source_guard(&store, &record, "file:/session");
         let mut settings = store.settings().unwrap();
-        settings.include_non_repo_folders = true;
+        settings.include_non_repo_folders = false;
         match path {
             0 => {
                 store.replace_settings(&settings).unwrap();
@@ -258,13 +258,13 @@ fn every_settings_transaction_path_fences_discovery_only_after_commit() {
             }
             4 => {
                 store
-                    .update_settings(|saved| saved.include_non_repo_folders = true)
+                    .update_settings(|saved| saved.include_non_repo_folders = false)
                     .unwrap();
             }
             _ => {
                 store
                     .update_settings_with(|saved| {
-                        saved.include_non_repo_folders = true;
+                        saved.include_non_repo_folders = false;
                         Ok(())
                     })
                     .unwrap();
@@ -283,12 +283,12 @@ fn every_settings_transaction_path_fences_discovery_only_after_commit() {
             SessionCommitOutcome::Rejected(SessionCommitRejection::GlobalFenceChanged)
         );
         let epoch = store.capture_destructive_write_epoch();
-        settings.include_non_repo_folders = false;
+        settings.include_non_repo_folders = true;
         let failed = store
             .replace_settings_with_transition::<()>(&settings, |_, _, _| anyhow::bail!("rollback"));
         assert!(failed.is_err());
         assert_eq!(store.capture_destructive_write_epoch(), epoch);
-        assert!(store.settings_snapshot().include_non_repo_folders);
+        assert!(!store.settings_snapshot().include_non_repo_folders);
     }
 }
 

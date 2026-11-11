@@ -43,7 +43,6 @@ use crate::dto::{
     SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
     SessionRelation, SessionRelations, SubagentMember,
 };
-use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 pub(crate) mod local_usage;
 pub(crate) mod memories;
 pub(crate) mod quota;
@@ -518,51 +517,7 @@ pub async fn set_interface_scale(
     }
 }
 
-/// Mark the first run finished, as its result first shows.
-///
-/// The Overview's own first-run flow asks the reader nothing before it shows
-/// results. The settings-save path runs `apply_settings_transition`, which
-/// registers startup, requests a scan, and sends the menu-bar-home
-/// notification.
-#[tauri::command]
-pub async fn finish_first_run(app: tauri::AppHandle) -> CommandResult<AppSettings> {
-    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
-    let store = app.state::<Store>().inner().clone();
-    let (previous, saved) = run_blocking(move || {
-        store
-            .update_settings(|settings| {
-                settings.onboarding_completed = true;
-            })
-            .map_err(fail)
-    })
-    .await?;
-    apply_settings_transition_on_main(&app, &previous, &saved).await?;
-    app.state::<FirstRunGate>().finish();
-    // Only the save that finishes the first run records it, so a repeated
-    // call or a failed save never reports a finish.
-    if !previous.onboarding_completed && saved.onboarding_completed {
-        let analytics_app = app.clone();
-        run_blocking(move || {
-            crate::analytics::record_interaction(
-                &analytics_app,
-                crate::analytics::event::Interaction::FirstRunFinished {},
-            );
-            Ok(())
-        })
-        .await?;
-    }
-    Ok(saved)
-}
-
-/// Open the first-run gate up to `stage`, from the reader's own Next or Show
-/// press. The gate only ever opens further — see
-/// [`crate::first_run_gate::FirstRunGate::advance`].
-#[tauri::command]
-pub fn advance_first_run(app: tauri::AppHandle, stage: FirstRunStage) {
-    app.state::<FirstRunGate>().advance(stage);
-}
-
-/// Start live usage from a deliberate click in the Overview.
+/// Start live usage from a deliberate click in Settings.
 ///
 /// Before this, `AppSettings::live_usage_active` stays false, so the
 /// credential read it gates — and, on macOS, the Keychain prompt that read
@@ -604,36 +559,20 @@ pub async fn note_interaction(
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
-    // This transition means the current setup run is over. It can repeat only
-    // after an explicit restart. Each completion refreshes data and explains
-    // where the menu-bar app went.
-    let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
-
     if crate::startup_registration::should_reconcile_after_save(previous, saved) {
         crate::startup_registration::reconcile(app, saved.launch_at_login);
     }
     crate::app_presence::apply_transition(app, previous, saved);
 
-    // Finishing onboarding, widening the window past what the store holds,
+    // Widening the window past what the store holds,
     // resuming discovery, and changing the folder gate all want fresh data
     // immediately rather than at the next tick.
-    let wants_scan = finished_onboarding
-        || saved.activity_window_days > previous.activity_window_days
+    let wants_scan = saved.activity_window_days > previous.activity_window_days
         || (previous.discovery_paused && !saved.discovery_paused)
         || previous.include_non_repo_folders != saved.include_non_repo_folders;
     if wants_scan && !saved.discovery_paused {
         app.state::<ScanController>()
             .request(ScanTrigger::SettingsTransition);
-    }
-
-    // Say where antiburn went once the first run's result has shown, and warm
-    // the popover's hidden renderer so the first menu-bar click after that is
-    // instant. Done here, on the settings-save transition, so every path that
-    // finishes the first run — the ordinary one and an explicit restart —
-    // does both once.
-    if finished_onboarding {
-        crate::notifications::note_menu_bar_home(app);
-        crate::popover::prewarm(app);
     }
 
     if !saved.live_usage_active() {
@@ -2465,12 +2404,12 @@ pub async fn delete_session_data(
 /// Preferences, scan folders, and repository include choices are kept — this is
 /// "forget what you worked out", not "forget who I am".
 ///
-/// Shared by [`clear_local_index`] and the debug-only [`reset_first_run`], so
-/// the two wipes cannot drift apart.
-///
 /// Returns how many sessions were dropped, so a caller can report a number
 /// rather than a shrug.
 async fn wipe_local_session_data(app: &tauri::AppHandle) -> CommandResult<usize> {
+    app.state::<crate::insights_worker::WorkerHandle>()
+        .invalidate_index();
+    app.state::<ScanController>().invalidate_current_pass();
     let host_ids = crate::remote_sessions::host_ids(app)?;
     let action_app = app.clone();
     let (removed, revision) = run_blocking(move || {
@@ -2519,57 +2458,6 @@ async fn wipe_local_session_data(app: &tauri::AppHandle) -> CommandResult<usize>
 pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     wipe_local_session_data(&app).await
 }
-
-/// Debug tool: return the app to a new install's first run.
-///
-/// Runs the exact wipe [`clear_local_index`] runs, so the real scan and
-/// analysis pipeline reads every session again from zero; returns the main
-/// window to its default placement; clears the first-run and live-usage
-/// flags; and opens the main window at the Overview. Other preferences stay,
-/// as in [`clear_local_index`].
-///
-/// Not a `#[tauri::command]`: the debug tray is its only caller, so it is a
-/// plain function rather than an IPC surface a release build would still
-/// register and any webview could invoke.
-#[cfg(debug_assertions)]
-pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> {
-    // The gate goes back to the start before anything else runs, so the pass
-    // the wipe is about to request waits at the agents gate instead of running
-    // straight through on the stage this run already reached.
-    app.state::<FirstRunGate>().reset();
-    // A pass already waiting at a gate must end as cancelled rather than
-    // hold the scan slot forever once the gate has just gone back to
-    // Welcome.
-    app.state::<ScanController>().request_cancel();
-    let removed = wipe_local_session_data(&app).await;
-    removed?;
-    crate::main_window::on_main_value(&app, crate::main_window::reset_placement).await?;
-    let store = app.state::<Store>().inner().clone();
-    let (previous, saved) = run_blocking(move || {
-        store
-            .update_settings(|settings| {
-                settings.onboarding_completed = false;
-                settings.live_usage_started = false;
-            })
-            .map_err(fail)
-    })
-    .await?;
-    apply_settings_transition_on_main(&app, &previous, &saved).await?;
-    let _ = app.emit(FTUE_RESET_EVENT, ());
-    let opened = crate::main_window::on_main_value(&app, |app| {
-        crate::main_window::open_at_section(app, crate::main_window::MainWindowSection::Overview)
-    })
-    .await;
-    opened??;
-    Ok(())
-}
-
-/// Event asking the retained renderer to replay the Overview's demo FTUE run.
-/// Only [`reset_first_run`] emits it, hence the `cfg`; the webview's own
-/// listener matches this string as its own literal, since it cannot import a
-/// Rust constant.
-#[cfg(debug_assertions)]
-pub const FTUE_RESET_EVENT: &str = "ftue:reset";
 
 /* --------------------------------------------------------------------------
  * Folder permissions

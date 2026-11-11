@@ -68,7 +68,6 @@ impl CaptureHost for FixtureHost {
     }
     fn announce(&self, _: &SessionKey) {}
     fn report_changed(&self) {}
-    async fn wait_for_checks(&self) {}
     async fn wait_for_sources(&self) {
         self.idle_waiting.store(true, Ordering::SeqCst);
         std::future::pending::<()>().await;

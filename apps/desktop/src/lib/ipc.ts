@@ -55,13 +55,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: "system",
   activityWindowDays: 7,
   sessionDataRetentionDays: -1,
-  onboardingCompleted: false,
   launchAtLogin: true,
   trayIconVisible: true,
   dockIconVisible: true,
   autoUpdate: true,
   discoveryPaused: false,
-  includeNonRepoFolders: false,
+  includeNonRepoFolders: true,
+  cloudUploadEnabled: false,
   notificationsEnabled: true,
   notifyUpdateAvailable: true,
   notifyScanFailure: true,
@@ -176,7 +176,7 @@ export async function postTestNotification(): Promise<void> {
 
 /** The notification kinds the shell can post a sample of. */
 export type SampleNotificationKind =
-  "updateAvailable" | "scanFailure" | "diskSpaceLow" | "usageMilestone" | "menuBarHome" | "test"
+  "updateAvailable" | "scanFailure" | "diskSpaceLow" | "usageMilestone" | "test"
 
 /**
  * Posts a sample notification of one kind, with fixed figures, so the copy
@@ -389,20 +389,6 @@ export type Interaction =
        */
       agent?: string
     }
-  | {
-      kind: "firstRunStepReached"
-      step: FirstRunStep
-      /** The discovery pass's total session count. Only with `step: "found"`. */
-      sessions?: number
-      /** Which result first showed. Only with `step: "result"`. */
-      result?: FirstRunResult
-    }
-  | { kind: "firstRunAction"; action: FirstRunActionKind }
-  | {
-      kind: "stepSettingsViewed"
-      label: StepSettingsAnalyticsLabel
-      detail: StepSettingsDetail
-    }
 
 export type Surface =
   | "agents"
@@ -466,28 +452,6 @@ export type SessionFilterAction =
   | "source_remote_host_removed"
   | "cleared_all"
 
-/** A fixed step in the first-run Overview's funnel. */
-type FirstRunStep = "started" | "found" | "read" | "checked" | "result"
-/** Which result the first-run Overview showed. Only with `FirstRunStep` `"result"`. */
-export type FirstRunResult =
-  "empty" | "clean" | "fixes_found" | "checks_disabled" | "not_assessed"
-/** A deliberate action the first-run Overview can report. */
-type FirstRunActionKind =
-  | "folder_access_requested"
-  | "folder_access_granted"
-  | "include_non_repo_folders"
-  | "live_usage_started"
-  | "live_usage_skipped"
-  | "enhance_opened"
-
-/** A progress step whose settings became visible. Narrower than
- *  `StepSettingsStep` (the Overview's own type): `"fixes"` has no settings
- *  and never reaches this event. */
-type StepSettingsAnalyticsLabel = "agents" | "limits" | "sessions" | "checks"
-/** Which surface showed the step's settings. Settings → Agents, Sessions,
- *  and Checks report `settingsPaneViewed` instead. */
-type StepSettingsDetail = "first_run"
-
 function isNativePeekInteraction(interaction: Interaction): boolean {
   switch (interaction.kind) {
     case "surfaceViewed":
@@ -524,29 +488,6 @@ export function noteInteraction(interaction: Interaction): void {
     // Analytics must never surface an error into something the reader asked
     // for. A dropped event is not worth a line of user-facing text.
   })
-}
-
-/** Mark the first run finished, as its result first shows in the Overview. */
-export async function finishFirstRun(): Promise<AppSettings> {
-  if (!hasShell()) return { ...DEFAULT_SETTINGS, onboardingCompleted: true }
-  return invoke<AppSettings>("finish_first_run")
-}
-
-/** A stage of the first-run takeover's backend gate that the renderer
- *  opens. Rust `FirstRunStage` also has `Welcome`, where a first run starts,
- *  and `Done`, which `finish_first_run` sets. */
-export type FirstRunStage = "agents" | "sessions" | "checks"
-
-/**
- * Open the backend gate up to `stage`, so the scan pass and the evidence
- * worker waiting at it can proceed.
- *
- * The gate only moves forward: an earlier stage than the one already open is
- * a no-op on the backend, so a stray or repeated call is harmless.
- */
-export async function advanceFirstRun(stage: FirstRunStage): Promise<void> {
-  if (!hasShell()) return
-  await invoke("advance_first_run", { stage })
 }
 
 /**
@@ -971,19 +912,6 @@ const POPOVER_HIDDEN_EVENT = "popover:hidden"
 export async function onPopoverHidden(handler: () => void): Promise<UnlistenFn> {
   if (!hasShell()) return noShellUnlisten
   return listen(POPOVER_HIDDEN_EVENT, () => handler())
-}
-
-/**
- * Event the shell emits after the debug-only "Reset FTUE" tray item wipes the
- * local index. Mirrors `commands::FTUE_RESET_EVENT` in
- * `src-tauri/src/commands/mod.rs`.
- */
-const FTUE_RESET_EVENT = "ftue:reset"
-
-/** Subscribe to a debug-only FTUE reset. The result unsubscribes. */
-export async function onFtueReset(handler: () => void): Promise<UnlistenFn> {
-  if (!hasShell()) return noShellUnlisten
-  return listen(FTUE_RESET_EVENT, () => handler())
 }
 
 /** Event the shell emits after it refreshes the cached live-usage snapshot. */

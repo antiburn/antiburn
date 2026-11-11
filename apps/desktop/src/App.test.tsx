@@ -31,7 +31,6 @@ const settings = {
   theme: "system",
   activityWindowDays: 7,
   sessionDataRetentionDays: -1,
-  onboardingCompleted: false,
   launchAtLogin: false,
   autoUpdate: true,
 }

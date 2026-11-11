@@ -170,10 +170,6 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("sessionDataRetentionDays")
             .and_then(|value| value.parse().ok())
             .unwrap_or(defaults.session_data_retention_days),
-        onboarding_completed: stored
-            .get("onboardingCompleted")
-            .map(|value| value == "true")
-            .unwrap_or(defaults.onboarding_completed),
         launch_at_login: stored
             .get("launchAtLogin")
             .map(|value| value == "true")
@@ -198,6 +194,10 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("includeNonRepoFolders")
             .map(|value| value == "true")
             .unwrap_or(defaults.include_non_repo_folders),
+        cloud_upload_enabled: stored
+            .get("cloudUploadEnabled")
+            .map(|value| value == "true")
+            .unwrap_or(false),
         notifications_enabled: stored
             .get("notificationsEnabled")
             .map(|value| value == "true")
@@ -250,20 +250,10 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
-        // No stored answer means either a fresh install (default: not
-        // started) or an install that finished setup before this flag
-        // existed. The onboarding-completed value tells the two apart: an
-        // install that already finished setup keeps live usage active
-        // exactly as it was.
         live_usage_started: stored
             .get("internal:liveUsageStarted")
             .map(|value| value == "true")
-            .unwrap_or_else(|| {
-                stored
-                    .get("onboardingCompleted")
-                    .map(|value| value == "true")
-                    .unwrap_or(defaults.live_usage_started)
-            }),
+            .unwrap_or(defaults.live_usage_started),
         live_usage_hidden_providers: stored
             .get("liveUsageHiddenProviders")
             .map(|value| HiddenMeters::parse(value))
@@ -272,19 +262,10 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("disabledAgents")
             .map(|value| DisabledAgents::parse(value))
             .unwrap_or(defaults.disabled_agents.clone()),
-        // No stored answer means this database predates the setting. A fresh
-        // install takes the default. An install that already finished setup
-        // stays off until the reader enables it.
         analytics_enabled: stored
             .get("analyticsEnabled")
             .map(|value| value == "true")
-            .unwrap_or_else(|| {
-                let finished = stored
-                    .get("onboardingCompleted")
-                    .map(|value| value == "true")
-                    .unwrap_or(false);
-                !finished && defaults.analytics_enabled
-            }),
+            .unwrap_or(defaults.analytics_enabled),
         overview_limits_expanded: stored
             .get("overviewLimitsExpanded")
             .map(|value| value == "true")
@@ -339,10 +320,6 @@ fn write_settings(
         settings.session_data_retention_days.to_string()
     ])?;
     put.execute(params![
-        "onboardingCompleted",
-        bool_text(settings.onboarding_completed)
-    ])?;
-    put.execute(params![
         "launchAtLogin",
         bool_text(settings.launch_at_login)
     ])?;
@@ -362,6 +339,10 @@ fn write_settings(
     put.execute(params![
         "includeNonRepoFolders",
         bool_text(settings.include_non_repo_folders)
+    ])?;
+    put.execute(params![
+        "cloudUploadEnabled",
+        bool_text(settings.cloud_upload_enabled)
     ])?;
     put.execute(params![
         "notificationsEnabled",

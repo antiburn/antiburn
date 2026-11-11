@@ -12,7 +12,7 @@ import { openFolderAccessSettings, type AppInfo } from "../../../../lib/ipc"
 import { byteLabel } from "../../../../lib/presentation/scanStatusCopy"
 import type { LocalRepositoryItem } from "../../../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../../../lib/useFolderPermissionFlow"
-import { SettingsRow } from "../../../settings/SettingsSearchRows"
+import { SettingsRow, SettingsToggleRow } from "../../../settings/SettingsSearchRows"
 import { useAppSettings, type AppSettingsController } from "../../../settings/useAppSettings"
 import { RemoteHostsSection } from "./RemoteHostsSection"
 import {
@@ -184,8 +184,21 @@ export function SessionsStepSettings() {
 
   const sections = (
     <>
-      <MonitoringSection settings={settings} update={update} />
-      <RecentDaysSection settings={settings} update={update} />
+      <SectionGroup title="Antiburn Cloud">
+        <Card>
+          <SettingsToggleRow
+            searchId="cloudUpload"
+            description="Automatically upload sessions included by the settings below."
+            checked={settings.cloudUploadEnabled}
+            disabled={!loaded}
+            onChange={(next) => void update({ cloudUploadEnabled: next })}
+          />
+          <p className="border-t border-separator px-4 py-3 type-footnote text-label-secondary">
+            Uploads are not available in this build. This preference is saved on this device; no
+            sessions are uploaded.
+          </p>
+        </Card>
+      </SectionGroup>
 
       <RepositoriesSection
         repositories={repositories}
@@ -200,6 +213,9 @@ export function SessionsStepSettings() {
         onAddFolder={() => void handleLocate()}
         onRemoveFolder={(path) => void handleRemoveRoot(path)}
       />
+
+      <MonitoringSection settings={settings} update={update} />
+      <RecentDaysSection settings={settings} update={update} />
 
       <RemoteHostsSection
         remote={remote}

@@ -29,8 +29,6 @@ export interface AppSettings {
   activityWindowDays: number
   /** Days to keep local session data. `-1` keeps it until explicit deletion. */
   sessionDataRetentionDays: number
-  /** False until the first-run flow finishes. */
-  onboardingCompleted: boolean
   /** Recorded; applied by the platform at next launch. */
   launchAtLogin: boolean
   /** Whether the menu-bar or system-tray icon is visible. */
@@ -51,6 +49,8 @@ export interface AppSettings {
    * repository. Off keeps the repository-only scan gate.
    */
   includeNonRepoFolders: boolean
+  /** Stores Cloud intent; this build does not upload sessions. */
+  cloudUploadEnabled: boolean
   /**
    * The master switch for desktop notifications. Off means nothing is
    * delivered, whatever the per-kind preferences say.

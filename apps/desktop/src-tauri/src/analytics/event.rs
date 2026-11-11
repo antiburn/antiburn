@@ -1310,6 +1310,18 @@ pub enum RemoteSyncOrigin {
 
 #[cfg(feature = "analytics")]
 impl Interaction {
+    /// Keep historical decoding without emitting retired setup events.
+    #[cfg(feature = "analytics")]
+    pub fn is_retired(self) -> bool {
+        matches!(
+            self,
+            Self::FirstRunStepReached { .. }
+                | Self::FirstRunAction { .. }
+                | Self::FirstRunFinished { .. }
+                | Self::StepSettingsViewed { .. }
+        )
+    }
+
     /// The event and the facts this interaction becomes.
     pub fn resolve(self) -> (EventName, Facts) {
         match self {
@@ -2025,6 +2037,21 @@ pub fn arch() -> &'static str {
 
 #[cfg(all(test, feature = "analytics"))]
 mod tests {
+    #[cfg(feature = "analytics")]
+    #[test]
+    fn retired_setup_interactions_decode_but_cannot_emit() {
+        for value in [
+            serde_json::json!({"kind":"firstRunStepReached", "step":"started"}),
+            serde_json::json!({"kind":"firstRunAction", "action":"live_usage_started"}),
+            serde_json::json!({"kind":"firstRunFinished"}),
+            serde_json::json!({"kind":"stepSettingsViewed", "label":"agents", "detail":"first_run"}),
+        ] {
+            let interaction: super::Interaction = serde_json::from_value(value).unwrap();
+            assert!(interaction.is_retired());
+        }
+        assert!(!super::Interaction::AppSearchOpened {}.is_retired());
+    }
+
     use super::super::resources::schema::{
         CoverageBand, CpuBand, IoRateBand, MemoryBand, ResourceUsageSummary,
     };

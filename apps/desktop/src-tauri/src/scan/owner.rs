@@ -381,70 +381,64 @@ async fn run_with_titles(
                 Err(error) => writer.fail(error),
             }
         }
-        let can_read = app.is_none_or(|app| {
-            !policy.progress || app.state::<FirstRunGate>().stage() >= FirstRunStage::Sessions
-        });
-        if can_read {
-            while let Some(dispatch) = queue.dispatch() {
-                let work = dispatch.work;
-                ::tracing::trace!(event = "scan_preparation_dispatched", lane = ?dispatch.lane,
+        while let Some(dispatch) = queue.dispatch() {
+            let work = dispatch.work;
+            ::tracing::trace!(event = "scan_preparation_dispatched", lane = ?dispatch.lane,
                     generation = work.generation, ticket = work.ticket,
                     queue_wait_ms = work.enqueued_at.elapsed().as_millis() as u64,
                     dirty_wait_ms = work.dirtied_at.elapsed().as_millis() as u64,
                      activity = work.activity);
-                ::tracing::debug!(
-                    event = "scan_admission_dispatched",
-                    agent = work.payload.agent_type.slug(),
-                    queue_wait_ms = work.enqueued_at.elapsed().as_millis() as u64,
-                    activity_age_secs =
-                        work.activity.map(|at| unix_now().saturating_sub(at).max(0))
-                );
-                let activity_key = SessionActivityKey::new(
-                    work.payload.environment.key(),
-                    work.payload.agent_type.slug(),
-                    work.payload.source_label(),
-                );
-                let previous = match writer
-                    .store
-                    .session_records_for_activity_keys(std::slice::from_ref(&activity_key))
-                {
-                    Ok(records) => records.get(&activity_key).cloned(),
-                    Err(error) => {
-                        writer.fail(error);
-                        queue.release(&work.key, work.generation);
-                        continue;
-                    }
-                };
-                let previous_map = previous
-                    .iter()
-                    .map(|record| (activity_key.clone(), record.clone()))
-                    .collect();
+            ::tracing::debug!(
+                event = "scan_admission_dispatched",
+                agent = work.payload.agent_type.slug(),
+                queue_wait_ms = work.enqueued_at.elapsed().as_millis() as u64,
+                activity_age_secs = work.activity.map(|at| unix_now().saturating_sub(at).max(0))
+            );
+            let activity_key = SessionActivityKey::new(
+                work.payload.environment.key(),
+                work.payload.agent_type.slug(),
+                work.payload.source_label(),
+            );
+            let previous = match writer
+                .store
+                .session_records_for_activity_keys(std::slice::from_ref(&activity_key))
+            {
+                Ok(records) => records.get(&activity_key).cloned(),
+                Err(error) => {
+                    writer.fail(error);
+                    queue.release(&work.key, work.generation);
+                    continue;
+                }
+            };
+            let previous_map = previous
+                .iter()
+                .map(|record| (activity_key.clone(), record.clone()))
+                .collect();
+            #[cfg(test)]
+            let hooks = policy.hooks.clone();
+            let handle = tasks.spawn(async move {
                 #[cfg(test)]
-                let hooks = policy.hooks.clone();
-                let handle = tasks.spawn(async move {
-                    #[cfg(test)]
-                    if let Some(hooks) = hooks {
-                        hooks
-                            .wait(&work.payload, prepare::PreparationStage::Identity)
-                            .await;
-                    }
-                    let description = prepare_description_logs(vec![work.payload], &previous_map)
-                        .await
-                        .expect("identity preparation has no store writes")
-                        .pop();
-                    PreparedTask::Identity(description, previous)
-                });
-                owners.insert(
-                    handle.id(),
-                    TaskOwner {
-                        key: work.key,
-                        generation: work.generation,
-                        origin: work.origin,
-                        activity: work.activity,
-                        session_key: None,
-                    },
-                );
-            }
+                if let Some(hooks) = hooks {
+                    hooks
+                        .wait(&work.payload, prepare::PreparationStage::Identity)
+                        .await;
+                }
+                let description = prepare_description_logs(vec![work.payload], &previous_map)
+                    .await
+                    .expect("identity preparation has no store writes")
+                    .pop();
+                PreparedTask::Identity(description, previous)
+            });
+            owners.insert(
+                handle.id(),
+                TaskOwner {
+                    key: work.key,
+                    generation: work.generation,
+                    origin: work.origin,
+                    activity: work.activity,
+                    session_key: None,
+                },
+            );
         }
         if finite_closed && !queue.has_pass_work() && titles.is_closed() && titles.is_empty() {
             if !finalizing {
@@ -537,7 +531,7 @@ async fn run_with_titles(
                     _ => {}
                 }
             }
-            batch = finite.recv(), if !finite_closed && (queue.pending_len() <= PASS_PENDING_LIMIT - BATCH_SIZE || !can_read) => {
+            batch = finite.recv(), if !finite_closed && queue.pending_len() <= PASS_PENDING_LIMIT - BATCH_SIZE => {
                 match batch {
                     Some(batch) => {
                         found += batch.candidates.len();
@@ -748,7 +742,7 @@ async fn run_with_titles(
                     }
                     if policy.progress && last_progress.elapsed() >= READ_PROGRESS_THROTTLE {
                         let status = app.state::<ScanController>().update(|status| {
-                            if can_read { status.phase = ScanPhase::Reading; }
+                            status.phase = ScanPhase::Reading;
                             status.read = ReadProgress { completed, total: found.max(completed) };
                         });
                         let _ = app.emit(EVENT_PROGRESS, status);

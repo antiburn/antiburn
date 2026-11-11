@@ -38,7 +38,7 @@
 //! server, or backend, ever. Everything runs on this machine, as the reader.
 //! The provider limit figures on the Usage
 //! surface are read from a file an agent already wrote, and one switch, on
-//! by default once first-run setup is complete, runs that agent so it
+//! by default, runs that agent so it
 //! refreshes the file — the agent goes online on its own account, exactly as
 //! it would if the reader ran it, and this crate still only reads the file it
 //! leaves behind. The shell downloads a public pricing catalog from models.dev.
@@ -63,7 +63,6 @@ mod consent;
 mod diagnostics_export;
 mod disk_monitor;
 mod dto;
-mod first_run_gate;
 mod fork_lineage;
 mod global_click;
 mod hud;
@@ -327,20 +326,8 @@ pub fn run() {
                 "dark" => Some(tauri::Theme::Dark),
                 _ => None,
             });
-            if settings.onboarding_completed {
-                startup_registration::reconcile(app.handle(), settings.launch_at_login);
-            }
+            startup_registration::reconcile(app.handle(), settings.launch_at_login);
         }
-        // In memory only: a relaunch during a first run starts the gate,
-        // and the frontend, over from the live-limits step. A failed read
-        // opens the gate, so it cannot stop the scan and the checks on an
-        // existing install.
-        let onboarding_completed = app
-            .state::<store::Store>()
-            .settings()
-            .map(|settings| settings.onboarding_completed)
-            .unwrap_or(true);
-        app.manage(first_run_gate::FirstRunGate::new(onboarding_completed));
         app.manage(scan::ScanController::default());
         app.manage(session_lifecycle::SessionEvents::default());
         app.manage(Schedulers::default());
@@ -354,12 +341,9 @@ pub fn run() {
         app.manage(settings::PendingPane::default());
         app.manage(settings::SettingsWindowState::default());
         app.manage(WindowRebuildState::default());
-        app.manage(nudges::AnchorOverride::default());
         app.manage(antiburn_nudge::NotificationGate::default());
 
         tray::create(app.handle())?;
-        #[cfg(all(debug_assertions, target_os = "macos"))]
-        tray::install_debug_app_menu(app.handle())?;
         tray::install_usage_meter(app.handle());
         if let Ok(settings) = app.state::<store::Store>().settings() {
             app_presence::apply_at_launch(app.handle(), &settings);
@@ -375,13 +359,7 @@ pub fn run() {
         // takes it again. The watcher idles while the HUD is closed.
         hud::spawn_display_watcher(app.handle());
         #[cfg(target_os = "macos")]
-        if app
-            .state::<store::Store>()
-            .settings()
-            .is_ok_and(|settings| settings.onboarding_completed)
-        {
-            hud::restore_at_launch(app.handle());
-        }
+        hud::restore_at_launch(app.handle());
 
         // Registered before the update scheduler starts, so the first
         // automatic check can see whether there is anything to check with.
@@ -399,9 +377,7 @@ pub fn run() {
         // The notification window's manager and the chime player. The
         // webview itself is created only when policy delivers a nudge.
         nudges::init(app.handle())?;
-        // On macOS, ask for the Focus-status authorization when a
-        // completed setup already permits notifications. First runs wait:
-        // apply_settings_transition asks again when onboarding finishes.
+        // Request Focus authorization only when the saved preferences permit it.
         notifications::maybe_initialize_authorization(app.handle());
         // The live-usage registry: the sources that can prove a
         // provider's own limit figures, and the milestone ledger they
@@ -457,14 +433,9 @@ pub fn run() {
         // second process. The callback can now use every managed state.
         let repeated = app.state::<RepeatedLaunch>();
         repeated.setup_ready.store(true, Ordering::Release);
+        popover::prewarm(app.handle());
         let repeated_launch = repeated.pending.swap(false, Ordering::AcqRel);
-        // The menu-bar icon stays hidden during the first run, so a
-        // background launch then also opens the main window. Otherwise the
-        // app has no visible way in.
-        if launch_intent == launch_intent::LaunchIntent::Explicit
-            || repeated_launch
-            || !onboarding_completed
-        {
+        if launch_intent == launch_intent::LaunchIntent::Explicit || repeated_launch {
             let trigger =
                 if launch_intent == launch_intent::LaunchIntent::Explicit || !repeated_launch {
                     main_window::OpenTrigger::ColdLaunch
@@ -551,7 +522,7 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
-/// Open the ordinary main window. The first-run Overview is part of it.
+/// Open the ordinary main window at Sessions.
 pub(crate) fn open_launch_surface(
     app: &tauri::AppHandle,
     trigger: main_window::OpenTrigger,
@@ -809,8 +780,7 @@ mod tests {
         );
     }
 
-    /// Settings → Agents, Sessions, and Checks render the same step settings
-    /// as the main window's first run. The settings window gets the app's
+    /// Settings → Agents, Sessions, and Checks use the app's
     /// default set, so every command those panes call must be in it, or in
     /// a capability that names the settings window.
     #[test]
@@ -998,7 +968,7 @@ mod tests {
 
         use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
         use crate::insights_worker::{
-            PassFuture, WorkerHandle, WorkerLoopSignals, always_open_gate, worker_loop,
+            PassFuture, WorkerHandle, WorkerLoopSignals, continue_before_claim, worker_loop,
         };
         use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
 
@@ -1085,7 +1055,7 @@ mod tests {
                 &WorkerLoopSignals {
                     report_changed: &|| {},
                     backlog: &|_| {},
-                    gate: &always_open_gate,
+                    before_claim: &continue_before_claim,
                 },
                 &|_, _| {},
             )

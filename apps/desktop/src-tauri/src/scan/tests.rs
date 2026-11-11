@@ -2251,7 +2251,7 @@ fn source_refreshes_merge_separately_from_one_shot_triggers() {
     controller.request_source_refresh(AgentKind::OpenCode);
     controller.request(ScanTrigger::ManualRescan);
     assert!(matches!(
-        controller.take_pending_trigger(),
+        controller.take_pending_trigger().0,
         Some(ScanTrigger::ManualRescan)
     ));
     assert_eq!(
@@ -2943,7 +2943,7 @@ fn assert_scheduler_source_contract(source: &str) {
         .find("ledger.capture(&scope)")
         .expect("captures at start");
     let run = covered
-        .find("try_run_pass(app, None, trigger, scope).await?")
+        .find("try_run_pass(app, None, trigger, scope, history_dispatch).await?")
         .expect("runs the pass");
     let gate = covered
         .find("if pass_covers(&status) {")

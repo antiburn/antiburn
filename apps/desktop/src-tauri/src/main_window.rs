@@ -1219,24 +1219,6 @@ fn section_navigation_destination(
     })
 }
 
-/// Show and focus the retained main window, and route it straight to `section`.
-///
-/// For a native caller, not a webview under IPC — the debug-only tray reset
-/// is its only caller today, hence the `cfg`. It skips the caller-label check
-/// [`section_navigation_destination`] applies, because that check exists only
-/// to stop an untrusted webview from asking for a window it must not open.
-#[cfg(debug_assertions)]
-pub(crate) fn open_at_section(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
-    route_section_target(
-        app,
-        NavigationDestination {
-            section,
-            target: None,
-            remote_host_id: None,
-        },
-    )
-}
-
 fn route_section_target(app: &AppHandle, destination: NavigationDestination) -> Result<(), String> {
     let state = app.state::<MainWindowState>();
     let source = if destination.remote_host_id.is_some() {
@@ -1897,27 +1879,6 @@ pub fn close(window: &WebviewWindow) {
     flush_placement(window.app_handle());
     let _ = antiburn_main_window::conceal(window);
     emit_visibility_changed(window);
-}
-
-/// Debug tool: forget the saved placement, return the main window to its
-/// default size and position, and hide it, as for a new install.
-#[cfg(debug_assertions)]
-pub(crate) fn reset_placement(app: &AppHandle) {
-    debug_assert_main_thread();
-    let state = app.state::<MainWindowState>();
-    state.placement_generation.fetch_add(1, Ordering::AcqRel);
-    *lock(&state.placement) = None;
-    app.state::<Store>().remove_internal_value(PLACEMENT_KEY);
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
-    match antiburn_main_window::reset_placement(&window) {
-        Ok(placement) => *lock(&state.placement) = Some(placement),
-        Err(error) => {
-            ::tracing::warn!(event = "main_window_placement_reset_failed", error = %error);
-        }
-    }
-    close(&window);
 }
 
 /// Read whether the main window can present work without treating blur as hidden.

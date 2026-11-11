@@ -79,7 +79,6 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     let store = store();
     let defaults = store.settings().unwrap();
     assert_eq!(defaults, AppSettings::default());
-    assert!(!defaults.onboarding_completed);
     assert!(defaults.launch_at_login);
     assert!(defaults.tray_icon_visible);
     assert!(defaults.dock_icon_visible);
@@ -111,8 +110,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Off by default: the Focus-status check needs its own macOS
     // authorization prompt, so the reader opts in first.
     assert!(!defaults.nudges_respect_dnd);
-    // Off by default: the scan keeps only repository sessions.
-    assert!(!defaults.include_non_repo_folders);
+    // New settings include sessions from ordinary folders.
+    assert!(defaults.include_non_repo_folders);
+    assert!(!defaults.cloud_upload_enabled);
 
     let saved = store
         .save_settings(&AppSettings {
@@ -120,13 +120,13 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             interface_scale_percent: 125,
             activity_window_days: 14,
             session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
-            onboarding_completed: true,
             launch_at_login: true,
             tray_icon_visible: false,
             dock_icon_visible: true,
             auto_update: false,
             discovery_paused: true,
             include_non_repo_folders: true,
+            cloud_upload_enabled: true,
             notifications_enabled: false,
             notify_update_available: false,
             notify_scan_failure: true,
@@ -188,7 +188,6 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // The two display preferences keep separate answers: this reader closed
     // the limits section and opened the skills table.
     assert!(saved.skills_mcp_expanded);
-    assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
     assert!(saved.include_non_repo_folders);
     // Each notification preference is stored on its own key, so a reader who
@@ -203,7 +202,6 @@ fn an_explicit_launch_at_login_opt_out_overrides_the_default() {
     let store = store();
     let saved = store
         .save_settings(&AppSettings {
-            onboarding_completed: true,
             launch_at_login: false,
             ..AppSettings::default()
         })
@@ -255,7 +253,6 @@ fn settings_snapshot_tracks_commits_across_store_clones() {
     let saved = store
         .save_settings(&AppSettings {
             theme: ThemePreference::Dark,
-            onboarding_completed: true,
             ..AppSettings::default()
         })
         .unwrap();
@@ -342,7 +339,7 @@ fn settings_replace_wrappers_fence_only_folder_policy_changes() {
         generation
     );
 
-    settings.include_non_repo_folders = true;
+    settings.include_non_repo_folders = false;
     store.replace_settings(&settings).unwrap();
     assert_eq!(
         store.repository_policy_snapshot().unwrap().generation,
@@ -354,7 +351,7 @@ fn settings_replace_wrappers_fence_only_folder_policy_changes() {
         generation + 1
     );
 
-    settings.include_non_repo_folders = false;
+    settings.include_non_repo_folders = true;
     store.save_settings(&settings).unwrap();
     assert_eq!(
         store.repository_policy_snapshot().unwrap().generation,
@@ -370,9 +367,9 @@ fn settings_replace_with_fences_folder_policy_before_callback() {
     let generation = store.repository_policy_snapshot().unwrap().generation;
 
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 1),
-        (true, generation + 1),
-        (false, generation + 2),
+        (false, generation + 1),
+        (false, generation + 1),
+        (true, generation + 2),
     ] {
         let (_, saved, observed_generation) = store
             .replace_settings_with(
@@ -404,12 +401,12 @@ fn settings_transition_fences_folder_policy_before_callback() {
     let (previous, saved, ()) = store
         .replace_settings_with_transition(
             &AppSettings {
-                include_non_repo_folders: true,
+                include_non_repo_folders: false,
                 ..AppSettings::default()
             },
             |transaction, previous, saved| {
-                assert!(!previous.include_non_repo_folders);
-                assert!(saved.include_non_repo_folders);
+                assert!(previous.include_non_repo_folders);
+                assert!(!saved.include_non_repo_folders);
                 assert_eq!(super::settings::read_settings(transaction)?, *saved);
                 assert_eq!(
                     read_repository_policy_generation(transaction)?,
@@ -420,8 +417,8 @@ fn settings_transition_fences_folder_policy_before_callback() {
         )
         .unwrap();
 
-    assert!(!previous.include_non_repo_folders);
-    assert!(saved.include_non_repo_folders);
+    assert!(previous.include_non_repo_folders);
+    assert!(!saved.include_non_repo_folders);
     assert_eq!(
         store.repository_policy_snapshot().unwrap().generation,
         generation + 1
@@ -442,9 +439,9 @@ fn settings_scale_preserving_writes_fence_only_folder_policy_changes() {
     );
 
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 1),
-        (true, generation + 1),
-        (false, generation + 2),
+        (false, generation + 1),
+        (false, generation + 1),
+        (true, generation + 2),
     ] {
         let (_, saved, ()) = store
             .replace_settings_preserving_interface_scale(
@@ -481,9 +478,9 @@ fn settings_update_wrappers_fence_only_folder_policy_changes() {
     let generation = store.repository_policy_snapshot().unwrap().generation;
 
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 1),
-        (true, generation + 1),
-        (false, generation + 2),
+        (false, generation + 1),
+        (false, generation + 1),
+        (true, generation + 2),
     ] {
         let (_, saved, result) = store
             .update_settings_with(|settings| {
@@ -501,9 +498,9 @@ fn settings_update_wrappers_fence_only_folder_policy_changes() {
         );
     }
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 3),
-        (true, generation + 3),
-        (false, generation + 4),
+        (false, generation + 3),
+        (false, generation + 3),
+        (true, generation + 4),
     ] {
         store
             .update_settings(|settings| {
@@ -623,7 +620,7 @@ fn settings_policy_generation_failure_rolls_back_preferences() {
         ))
         .unwrap();
 
-    let result = store.update_settings(|settings| settings.include_non_repo_folders = true);
+    let result = store.update_settings(|settings| settings.include_non_repo_folders = false);
 
     assert!(
         result
@@ -665,7 +662,7 @@ fn settings_repair_malformed_stored_presence_values() {
 }
 
 #[test]
-fn live_usage_started_falls_back_to_onboarding_completed_for_older_installs() {
+fn migration_preserves_legacy_live_usage_activation() {
     // A fresh install with no stored rows at all defaults to not started.
     let fresh = store();
     assert!(!fresh.settings().unwrap().live_usage_started);
@@ -683,6 +680,10 @@ fn live_usage_started_falls_back_to_onboarding_completed_for_older_installs() {
             )
             .unwrap();
     }
+    older_install
+        .lock()
+        .execute_batch(super::super::schema::MIGRATIONS[92])
+        .unwrap();
     assert!(older_install.settings().unwrap().live_usage_started);
 }
 
@@ -701,7 +702,6 @@ fn updating_settings_merges_against_the_latest_stored_value() {
         .update_settings(|settings| {
             settings.activity_window_days = 14;
             settings.launch_at_login = false;
-            settings.onboarding_completed = true;
         })
         .unwrap();
 
@@ -711,7 +711,6 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert!(!saved.auto_update);
     assert_eq!(saved.activity_window_days, 14);
     assert!(!saved.launch_at_login);
-    assert!(saved.onboarding_completed);
     assert_eq!(store.settings().unwrap(), saved);
 }
 
@@ -743,7 +742,7 @@ fn v72_keeps_only_disabled_agents_that_have_sessions() {
          VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
     ));
 
-    assert_eq!(store.schema_version().unwrap(), 92);
+    assert_eq!(store.schema_version().unwrap(), 93);
     assert_eq!(
         store.settings().unwrap().disabled_agents.as_str(),
         "codex,cursor"
@@ -756,7 +755,7 @@ fn v72_clears_a_disabled_list_with_no_session_agents() {
         "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
     );
 
-    assert_eq!(store.schema_version().unwrap(), 92);
+    assert_eq!(store.schema_version().unwrap(), 93);
     assert!(!store.settings().unwrap().disabled_agents.any());
 }
 
@@ -769,4 +768,21 @@ fn v72_leaves_an_empty_or_missing_disabled_list_alone() {
     let missing = migrate_to_latest(V72_SESSIONS);
     assert_eq!(missing.internal_value("disabledAgents"), None);
     assert!(!missing.settings().unwrap().disabled_agents.any());
+}
+
+#[test]
+fn cloud_preference_defaults_off_and_preserves_saved_folder_opt_out() {
+    let store = store();
+    assert!(!store.settings().unwrap().cloud_upload_enabled);
+    let saved = AppSettings {
+        cloud_upload_enabled: true,
+        include_non_repo_folders: false,
+        ..AppSettings::default()
+    };
+    store.save_settings(&saved).unwrap();
+    assert_eq!(store.settings().unwrap(), saved);
+    let mut disabled = saved;
+    disabled.cloud_upload_enabled = false;
+    store.save_settings(&disabled).unwrap();
+    assert_eq!(store.settings().unwrap(), disabled);
 }

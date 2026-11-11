@@ -151,7 +151,9 @@ mod admission_tests {
             .unwrap()
             .unwrap();
         store
-            .update_settings(|settings| settings.include_non_repo_folders = true)
+            .update_settings(|settings| {
+                settings.include_non_repo_folders = !settings.include_non_repo_folders;
+            })
             .unwrap();
         assert!(
             !store

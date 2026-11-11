@@ -18,7 +18,6 @@ use tokio::task::JoinSet;
 use crate::analysis::{self, EvidencePass, PassOutcome, PassSignal, UnreadableReason};
 use crate::analytics::ingested_incidents::{self, IngestedIncidents};
 use crate::commands;
-use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::fork_lineage;
 use crate::scan::ScanController;
 use crate::store::{
@@ -77,6 +76,7 @@ struct Backlog {
 /// This handle wakes the worker.
 #[derive(Default)]
 pub struct WorkerHandle {
+    index_generation: std::sync::atomic::AtomicU64,
     wake: Notify,
     capture_wake: Notify,
     backlog: Mutex<Backlog>,
@@ -85,6 +85,14 @@ pub struct WorkerHandle {
 }
 
 impl WorkerHandle {
+    pub(crate) fn index_generation(&self) -> u64 {
+        self.index_generation.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn invalidate_index(&self) {
+        self.index_generation.fetch_add(1, Ordering::SeqCst);
+    }
+
     #[cfg(test)]
     pub(crate) fn with_active_backlog_for_test(store: &Store) -> Self {
         let handle = Self::default();
@@ -526,30 +534,23 @@ async fn run_worker(app: tauri::AppHandle) {
     };
     let publish_app = app.clone();
     let publication_drained =
-        move |generation| crate::usage_alerts::learn_after_first_publish(&publish_app, generation);
+        move |generation| crate::usage_alerts::learn_after_data_settles(&publish_app, generation);
     let analytics_app = app.clone();
     let report_ingested = move |agent: AgentKind, ingested: IngestedIncidents| {
         crate::analytics::record_provider_incidents_ingested(&analytics_app, agent, &ingested);
     };
-    // The worker does nothing until the reader's own "Run session checks"
-    // step starts it. Cloned once here so every call below only clones a
-    // cheap handle, not a state lookup, into its own future.
-    let gate = (*app.state::<FirstRunGate>()).clone();
-    let generation_gate = gate.clone();
-    let generation = move || generation_gate.generation();
-    let wait_for_check = move || -> GateFuture {
-        let gate = gate.clone();
-        Box::pin(async move {
-            gate.wait_until(FirstRunStage::Checks, || false).await;
-        })
-    };
+    let generation_app = app.clone();
+    let generation = move || generation_app.state::<WorkerHandle>().index_generation();
+    #[cfg(test)]
+    let wait_for_check = || -> BeforeClaimFuture { Box::pin(async {}) };
     let clock = || unix_now();
     let store = app.state::<Store>();
     let handle = app.state::<WorkerHandle>();
     let signals = WorkerLoopSignals {
         report_changed: &report_changed,
         backlog: &announce_backlog,
-        gate: &wait_for_check,
+        #[cfg(test)]
+        before_claim: &wait_for_check,
     };
     worker_loop_with_reports(
         &store,
@@ -576,11 +577,9 @@ fn source_refresh_agent_for_outcome(outcome: &PassOutcome, agent_slug: &str) -> 
 
 async fn run_live_worker(app: tauri::AppHandle) {
     let store = app.state::<Store>();
-    let gate = app.state::<FirstRunGate>();
     let mut next_lane = 0;
     let announce = |key: &SessionKey| announce_live_result(&app, key);
     loop {
-        gate.wait_until(FirstRunStage::Checks, || false).await;
         if !crate::installed_checks::live_delivery_ready(&app) {
             tokio::time::sleep(Duration::from_millis(250)).await;
             continue;
@@ -1218,13 +1217,13 @@ where
 }
 
 /// A future [`worker_loop_with_reports`] awaits before every claim. See
-/// [`WorkerLoopSignals::gate`].
-pub(crate) type GateFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
-
-/// A test-only gate that is always open, for a test that is not exercising
-/// the first-run gate itself.
+/// [`WorkerLoopSignals::before_claim`].
 #[cfg(test)]
-pub(crate) fn always_open_gate() -> GateFuture {
+pub(crate) type BeforeClaimFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// Continue a worker test without a scheduling pause.
+#[cfg(test)]
+pub(crate) fn continue_before_claim() -> BeforeClaimFuture {
     Box::pin(async {})
 }
 
@@ -1232,12 +1231,9 @@ pub(crate) fn always_open_gate() -> GateFuture {
 pub(crate) struct WorkerLoopSignals<'a> {
     pub report_changed: &'a (dyn Fn() + Send + Sync),
     pub backlog: &'a (dyn Fn(bool) + Send + Sync),
-    /// Resolves once the first-run gate has reached `Check`. Awaited inside
-    /// the loop, before every claim this worker makes: the debug reset can
-    /// set the stage back to `Welcome` while this loop is running, and the
-    /// worker must not claim anything in the gap. A test that wants no
-    /// gating passes a closure that returns an already-resolved future.
-    pub gate: &'a (dyn Fn() -> GateFuture + Send + Sync),
+    /// A scheduling hook for worker supervision tests.
+    #[cfg(test)]
+    pub before_claim: &'a (dyn Fn() -> BeforeClaimFuture + Send + Sync),
 }
 
 #[cfg(test)]
@@ -1292,15 +1288,14 @@ async fn worker_loop_with_reports(
     let mut authority_generation = (reports.generation)();
     let on_claimed = || activity.claimed(store);
     loop {
-        // Checked every iteration, not once before the loop starts: the
-        // debug reset can lower the stage while this loop is already
-        // running, and the next claim must wait for it to reopen.
+        // Discard cached authorities after an index reset.
         let generation = (reports.generation)();
         if generation != authority_generation {
             *authorities.lock().await = None;
             authority_generation = generation;
         }
-        (signals.gate)().await;
+        #[cfg(test)]
+        (signals.before_claim)().await;
         if generation != (reports.generation)() {
             continue;
         }

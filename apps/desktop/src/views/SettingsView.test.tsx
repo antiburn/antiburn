@@ -58,7 +58,6 @@ const SETTINGS = {
   theme: "system" as const,
   activityWindowDays: 7,
   sessionDataRetentionDays: -1,
-  onboardingCompleted: true,
   launchAtLogin: false,
   trayIconVisible: true,
   dockIconVisible: true,
@@ -254,7 +253,6 @@ describe("SettingsView", () => {
 
     emit("settings:changed", {
       ...SETTINGS,
-      onboardingCompleted: false,
       launchAtLogin: true,
     })
 

@@ -1188,6 +1188,9 @@ mod enabled {
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
+        if interaction.is_retired() {
+            return;
+        }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
             record_live_usage_state(app, provider, state);
             return;

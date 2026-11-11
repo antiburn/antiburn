@@ -34,9 +34,7 @@ import type { AppSettingsController } from "./useAppSettings"
  * Usage: where the plan limits come from, and the one switch that turns it
  * off.
  *
- * The limits sections come from `LimitsStepSettings`, which the first-run
- * Limits card also shows. Limits has no progress-nav row, so after the first
- * run these settings live only here.
+ * Provider usage requires an explicit action in this pane.
  */
 
 export type UsagePaneProps = AppSettingsController

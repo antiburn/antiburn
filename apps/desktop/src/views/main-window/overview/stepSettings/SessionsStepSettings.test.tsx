@@ -300,8 +300,8 @@ describe("SessionsStepSettings scanning", () => {
   })
 })
 
-describe("SessionsStepSettings folders without git", () => {
-  it("saves the switch and leaves it off by default", async () => {
+describe("SessionsStepSettings folders without Git", () => {
+  it("saves the switch and defaults on and persists an explicit opt-out", async () => {
     let stored = { ...DEFAULT_SETTINGS }
     invoke.mockImplementation((command: string, args?: { settings?: typeof stored }) => {
       switch (command) {
@@ -325,16 +325,16 @@ describe("SessionsStepSettings folders without git", () => {
     })
     render(<SessionsStepSettings />)
 
-    const toggle = await screen.findByRole("switch", { name: "Include folders without git" })
-    expect(toggle).not.toBeChecked()
+    const toggle = await screen.findByRole("switch", { name: "Include folders without Git" })
+    expect(toggle).toBeChecked()
 
     fireEvent.click(toggle)
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: expect.objectContaining({ includeNonRepoFolders: true }),
+        settings: expect.objectContaining({ includeNonRepoFolders: false }),
       }),
     )
-    await waitFor(() => expect(toggle).toBeChecked())
+    await waitFor(() => expect(toggle).not.toBeChecked())
   })
 })
 
@@ -414,5 +414,54 @@ describe("SessionsStepSettings scan folders", () => {
       expect(invoke).toHaveBeenCalledWith("add_scan_root", { path: "/home/avery/work" }),
     )
     expect(await screen.findByText("/home/avery/work")).toBeInTheDocument()
+  })
+})
+
+describe("SessionsStepSettings Cloud preference", () => {
+  it("saves local intent and keeps the existing eligibility controls together", async () => {
+    mockCommands({ set_settings: (args: { settings: unknown }) => args.settings })
+    const { container } = render(<SessionsStepSettings />)
+    const toggle = await screen.findByRole("switch", { name: "Upload sessions" })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    expect(toggle).not.toBeChecked()
+    expect(
+      screen.getByText("Automatically upload sessions included by the settings below."),
+    ).toBeVisible()
+    expect(screen.getByText(/Uploads are not available in this build/)).toBeVisible()
+    const controls = [...container.querySelectorAll("[data-settings-control]")].map((node) =>
+      node.getAttribute("data-settings-control"),
+    )
+    expect(controls.indexOf("cloudUpload")).toBeLessThan(controls.indexOf("sourceRepositories"))
+    expect(controls.indexOf("sourceRepositories")).toBeLessThan(
+      controls.indexOf("sourceNonRepoFolders"),
+    )
+    expect(controls.indexOf("sourceNonRepoFolders")).toBeLessThan(
+      controls.indexOf("sourceFolders"),
+    )
+    expect(controls.indexOf("sourceFolders")).toBeLessThan(controls.indexOf("monitoring"))
+    fireEvent.click(toggle)
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("set_settings", {
+        settings: expect.objectContaining({ cloudUploadEnabled: true }),
+      }),
+    )
+    await waitFor(() => expect(toggle).toBeChecked())
+  })
+
+  it("honors saved Cloud and non-Git preferences", async () => {
+    mockCommands({
+      get_settings: {
+        ...DEFAULT_SETTINGS,
+        cloudUploadEnabled: true,
+        includeNonRepoFolders: false,
+      },
+    })
+    render(<SessionsStepSettings />)
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "Upload sessions" })).toBeChecked(),
+    )
+    expect(
+      screen.getByRole("switch", { name: "Include folders without Git" }),
+    ).not.toBeChecked()
   })
 })
