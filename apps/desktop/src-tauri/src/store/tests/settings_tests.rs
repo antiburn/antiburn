@@ -51,7 +51,179 @@ fn consent_grants_round_trip_and_revoke_individually() {
 }
 
 #[test]
-fn deferred_permission_dirs_replace_the_previous_pass() {
+fn bounded_project_publication_preserves_deferrals_and_rejects_stale_results() {
+    let store = store();
+    let session = session("deferred", 100);
+    let (sessions, _) = store.upsert_sessions(&[session], &[]).unwrap();
+    let (key, incarnation) = &sessions[0];
+    let document = DeferredProtectedPath {
+        protected_dir: "Documents".into(),
+        cwd: "/home/avery/Documents/project".into(),
+    };
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    assert_eq!(
+        store
+            .publish_session_project_deferrals(
+                generation,
+                HashMap::from([(key.clone(), (*incarnation, Some(document.clone())))]),
+            )
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Published,
+    );
+    assert_eq!(
+        store
+            .publish_repository_refresh(generation, &[], Vec::new())
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Published,
+    );
+    store
+        .publish_session_project_deferrals(generation, HashMap::new())
+        .unwrap();
+    assert_eq!(
+        store.deferred_permission_dirs().unwrap(),
+        [DeferredPermissionDir {
+            dir: "Documents".into(),
+            path_count: 1,
+        }]
+    );
+
+    store.grant_dir("Documents").unwrap();
+    assert_eq!(
+        store
+            .publish_session_project_deferrals(
+                generation,
+                HashMap::from([(key.clone(), (*incarnation, Some(document)))]),
+            )
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Superseded,
+    );
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+    store.revoke_dir_grant("Documents").unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+}
+
+#[test]
+fn project_deferrals_track_exclusions_and_their_last_backing_session() {
+    let store = store();
+    let mut excluded = session("excluded", 100);
+    let mut surviving = session("surviving", 101);
+    let mut sibling = session("sibling", 102);
+    let excluded_path = "/home/avery/Documents/project";
+    let surviving_path = "/home/avery/Documents/project-other";
+    excluded.cwd = Some(format!("{excluded_path}/src"));
+    surviving.cwd = Some(surviving_path.into());
+    sibling.cwd = Some(surviving_path.into());
+    let (sessions, _) = store
+        .upsert_sessions(&[excluded.clone(), surviving.clone(), sibling.clone()], &[])
+        .unwrap();
+    let repository = RepositoryRecord {
+        key: "project".into(),
+        repo_name: "project".into(),
+        full_name: "avery/project".into(),
+        status: "permission_denied".into(),
+        repo_root: None,
+        suspected_path: Some(excluded_path.into()),
+        worktree_count: 0,
+        session_count: 1,
+        wsl_distro: None,
+        enabled: true,
+    };
+    let observation = |cwd: &str| DeferredProtectedPath {
+        cwd: cwd.into(),
+        protected_dir: "Documents".into(),
+    };
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    store
+        .publish_repository_refresh(
+            generation,
+            &[repository],
+            vec![RepositoryDeferral {
+                path: observation(surviving_path),
+                source: RepositoryDeferralSource::SessionCwd(surviving_path.into()),
+            }],
+        )
+        .unwrap();
+    store
+        .publish_session_project_deferrals(
+            generation,
+            sessions
+                .into_iter()
+                .map(|(key, incarnation)| {
+                    let path = if key == excluded.key {
+                        "/home/avery/Documents/indirect"
+                    } else {
+                        surviving_path
+                    };
+                    (key, (incarnation, Some(observation(path))))
+                })
+                .collect(),
+        )
+        .unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap()[0].path_count, 2);
+    store.set_repository_enabled("project", false).unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap()[0].path_count, 1);
+
+    store.delete_session(&surviving.key).unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap()[0].path_count, 1);
+    store.delete_session(&sibling.key).unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+
+    let (new_sessions, _) = store.upsert_sessions(&[surviving], &[]).unwrap();
+    let (new_key, _) = &new_sessions[0];
+    store
+        .publish_session_project_deferrals(
+            store.repository_policy_snapshot().unwrap().generation,
+            HashMap::from([(
+                new_key.clone(),
+                (Incarnation(0), Some(observation(surviving_path))),
+            )]),
+        )
+        .unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+}
+
+#[test]
+fn explicit_scan_root_removal_and_refresh_reconcile_project_deferrals() {
+    let store = store();
+    let desktop = "/home/avery/Desktop/code";
+    let documents = "/home/avery/Documents/code";
+    let deferral = |cwd: &str, dir: &str| RepositoryDeferral {
+        path: DeferredProtectedPath {
+            cwd: cwd.into(),
+            protected_dir: dir.into(),
+        },
+        source: RepositoryDeferralSource::ScanRoot,
+    };
+    store.add_scan_root(desktop).unwrap();
+    store.add_scan_root(documents).unwrap();
+    store
+        .publish_repository_refresh(
+            store.repository_policy_snapshot().unwrap().generation,
+            &[],
+            vec![
+                deferral(desktop, "Desktop"),
+                deferral(documents, "Documents"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap().len(), 2);
+    store.remove_scan_root(desktop).unwrap();
+    assert_eq!(
+        store.deferred_permission_dirs().unwrap()[0].dir,
+        "Documents"
+    );
+    store
+        .publish_repository_refresh(
+            store.repository_policy_snapshot().unwrap().generation,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+}
+
+#[test]
+fn the_first_owned_publication_replaces_legacy_deferral_counts() {
     let store = store();
 
     store
@@ -65,13 +237,18 @@ fn deferred_permission_dirs_replace_the_previous_pass() {
         Some(r#"[{"dir":"Documents","pathCount":3}]"#.to_string())
     );
 
-    // A later pass that defers nothing clears the list rather than leaving a
-    // stale directory asking for permission it no longer needs.
-    store.set_deferred_permission_dirs(&[]).unwrap();
+    store
+        .publish_repository_refresh(
+            store.repository_policy_snapshot().unwrap().generation,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
     assert_eq!(
         store.internal_value(crate::store::DEFERRED_PERMISSION_DIRS_KEY),
-        Some("[]".to_string())
+        Some("[]".into())
     );
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
 }
 
 #[test]

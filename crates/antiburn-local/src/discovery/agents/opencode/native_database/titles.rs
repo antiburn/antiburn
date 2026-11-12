@@ -8,7 +8,7 @@ pub(super) fn read(
     if ids.len() > 256 {
         return Vec::new();
     }
-    let Ok(connection) = Connection::open_with_flags(
+    let Ok(connection) = crate::discovery::source_fs::open_database(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) else {

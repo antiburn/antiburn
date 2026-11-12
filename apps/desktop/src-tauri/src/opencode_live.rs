@@ -24,6 +24,7 @@ use std::{
 use reqwest::{Client, ClientBuilder, RequestBuilder, redirect::Policy};
 use serde_json::Value;
 
+use antiburn_local::discovery::source_path_access;
 use antiburn_local::opencode_registration::MAX_REGISTRATION_BYTES;
 pub use antiburn_local::opencode_registration::{
     LocalEndpoint, RegistrationError, ServiceRegistration, decode_registration,
@@ -50,6 +51,9 @@ pub(crate) fn registration_path_with_roots(
 }
 
 pub fn read_registration(path: &Path) -> Result<ServiceRegistration, RegistrationError> {
+    if !source_path_access(path).is_allowed() {
+        return Err(RegistrationError::Io);
+    }
     let file = fs::File::open(path).map_err(|_| RegistrationError::Io)?;
     let mut bytes = Vec::new();
     file.take(MAX_REGISTRATION_BYTES as u64 + 1)
@@ -110,6 +114,26 @@ pub(super) async fn read_bounded(
 #[cfg(test)]
 mod local_http_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_registration_file_is_not_read() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("service.json");
+        let alias = temporary.path().join("alias.json");
+        fs::write(
+            &source,
+            br#"{"id":"fixture","pid":1,"url":"http://127.0.0.1:3456"}"#,
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+
+        assert!(read_registration(&source).is_ok());
+        assert!(matches!(
+            read_registration(&alias),
+            Err(RegistrationError::Io)
+        ));
+    }
 
     #[test]
     fn credentials_stay_on_the_registered_origin() {
@@ -302,9 +326,14 @@ async fn read_registration_async(
 }
 
 async fn verify_open_file(pid: u32, path: PathBuf) -> Result<(), DatabaseAssociationError> {
-    tokio::task::spawn_blocking(move || prove_open_file(pid, &path))
-        .await
-        .map_err(|_| DatabaseAssociationError::Binding)?
+    tokio::task::spawn_blocking(move || {
+        if !source_path_access(&path).is_allowed() {
+            return Err(DatabaseAssociationError::Binding);
+        }
+        prove_open_file(pid, &path)
+    })
+    .await
+    .map_err(|_| DatabaseAssociationError::Binding)?
 }
 
 #[cfg(target_os = "windows")]

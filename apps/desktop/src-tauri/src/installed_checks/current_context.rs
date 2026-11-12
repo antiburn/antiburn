@@ -7,13 +7,11 @@ use antiburn_checks::domain::Observation;
 use antiburn_checks::source::PublicationCursor;
 use antiburn_local::analysis::SourceFormat;
 use antiburn_local::model::AgentKind;
-use antiburn_local::repositories::ConsentGrants;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
 use crate::agent_config::ConfigContext;
 use crate::agent_config::current_context::{CurrentContextRequest, collect_current_context};
-use crate::consent::StoreConsentGrants;
 use crate::store::{SessionKey, Store};
 
 #[derive(Default)]
@@ -60,16 +58,22 @@ impl CurrentContextCapture {
         let Some(home) = self.native_home.as_deref() else {
             return Ok(unavailable("native_home_unavailable"));
         };
+        let policy = store.repository_policy_snapshot()?;
         let context = source_context(store, activation, cursor, observation, home)?;
-        let recorded_grants = StoreConsentGrants::new(store).granted_dirs();
+        if !store.repository_policy_is_current(policy.generation)? {
+            return Ok(unavailable("project_access_changed"));
+        }
         #[cfg(test)]
         {
             self.calls += 1;
         }
         let snapshot = collect_current_context(CurrentContextRequest::from_context(
             &context,
-            &recorded_grants,
+            &policy.granted_dirs,
         ));
+        if !store.repository_policy_is_current(policy.generation)? {
+            return Ok(unavailable("project_access_changed"));
+        }
         Ok(serde_json::from_value(serde_json::to_value(snapshot)?)?)
     }
 }
@@ -127,6 +131,7 @@ fn source_context(
         home_root: home.to_owned(),
         workspace_cwd: Some(PathBuf::from(cwd)),
         trusted_workspace_root: activation.project_root.clone(),
+        granted_dirs: Default::default(),
         native_environment: true,
         runtime_override_present: false,
         managed_configuration_present: false,

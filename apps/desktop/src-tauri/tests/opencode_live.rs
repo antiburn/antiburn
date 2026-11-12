@@ -42,7 +42,11 @@ fn config_authority_test_helpers_keep_their_fail_closed_contract() {
     assert!(authority.refresh().is_err());
     assert!(authority.for_location(directory.path()).is_err());
     assert!(authority.revalidation_only().entries().is_ok());
-    assert!(opencode_live::config::CurrentConfigAuthority::registered(directory.path()).is_err());
+    let admission = opencode_live::config::ConfigReadAdmission::new(|_| true);
+    assert!(
+        opencode_live::config::CurrentConfigAuthority::registered(directory.path(), admission)
+            .is_err()
+    );
 }
 
 fn read_http_request(stream: &mut TcpStream) -> String {
@@ -694,13 +698,13 @@ async fn a_verified_consumer_survives_an_invalid_first_location() {
             .unwrap();
     assert!(
         consumer
-            .capture_async(&directory.path().join("deleted"))
+            .capture_async(&directory.path().join("deleted"), None)
             .await
             .is_err()
     );
     assert!(
         consumer
-            .capture_async(directory.path())
+            .capture_async(directory.path(), None)
             .await
             .unwrap()
             .entries()
@@ -742,7 +746,7 @@ fn unix_binding_ignores_unrelated_file_descriptor_churn() {
 async fn async_registered_test_lookup_stays_unavailable() {
     let directory = tempfile::tempdir().unwrap();
     assert!(
-        opencode_live::config::CurrentConfigAuthority::registered_async(directory.path())
+        opencode_live::config::CurrentConfigAuthority::registered_async(directory.path(), None)
             .await
             .is_err()
     );

@@ -16,6 +16,10 @@ use super::process::headless_tokio_command;
 const WSL_NAMESPACE: &str = r"\\wsl.localhost";
 const WSL_LEGACY_NAMESPACE: &str = r"\\wsl$";
 static MOUNTED_USERS: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+#[cfg(windows)]
+static MOUNTED_SOURCE_HOMES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+#[cfg(windows)]
+static WSL_DISCOVERY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Execution and identity boundary for an agent session or repository.
 ///
@@ -182,10 +186,55 @@ pub struct WslEnvironmentInfo {
 /// Enumerate only currently mounted distributions. Reading the namespace and
 /// distro files does not start a stopped WSL VM.
 pub async fn discover_wsl_environments() -> Vec<WslEnvironmentInfo> {
-    if !cfg!(target_os = "windows") {
+    if !cfg!(windows) {
         return Vec::new();
     }
-    discover_wsl_environments_in(Path::new(WSL_NAMESPACE), Path::new(WSL_LEGACY_NAMESPACE)).await
+    let discovery =
+        discover_wsl_environments_in(Path::new(WSL_NAMESPACE), Path::new(WSL_LEGACY_NAMESPACE));
+    #[cfg(windows)]
+    let discovery = refresh_wsl_source_homes(&WSL_DISCOVERY_LOCK, &MOUNTED_SOURCE_HOMES, discovery);
+    discovery.await
+}
+
+#[cfg(any(windows, test))]
+async fn refresh_wsl_source_homes(
+    discovery_lock: &tokio::sync::Mutex<()>,
+    homes: &Mutex<Vec<PathBuf>>,
+    discovery: impl Future<Output = Vec<WslEnvironmentInfo>>,
+) -> Vec<WslEnvironmentInfo> {
+    let _lock = discovery_lock.lock().await;
+    // Clear the old homes before discovery can be cancelled.
+    replace_wsl_source_homes(homes, &[]);
+    let found = discovery.await;
+    replace_wsl_source_homes(homes, &found);
+    found
+}
+
+#[cfg(windows)]
+pub(crate) fn verified_wsl_source_home(path: &Path) -> Option<PathBuf> {
+    wsl_source_home_in(&MOUNTED_SOURCE_HOMES, path)
+}
+
+#[cfg(any(windows, test))]
+fn wsl_source_home_in(homes: &Mutex<Vec<PathBuf>>, path: &Path) -> Option<PathBuf> {
+    homes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|home| path.starts_with(home))
+        .cloned()
+}
+
+#[cfg(any(windows, test))]
+fn replace_wsl_source_homes(homes: &Mutex<Vec<PathBuf>>, found: &[WslEnvironmentInfo]) {
+    const MAX_MOUNTED_SOURCE_HOMES: usize = 128;
+    *homes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = found
+        .iter()
+        .take(MAX_MOUNTED_SOURCE_HOMES)
+        .map(|info| info.context.home.clone())
+        .collect();
 }
 
 async fn discover_wsl_environments_in(
@@ -660,6 +709,62 @@ mod tests {
             serde_json::from_str::<Wrapper>("{}").unwrap().environment,
             DiscoveryEnvironment::Native
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn mounted_source_homes_replace_stale_discovery_results() {
+        let homes = Mutex::new(Vec::new());
+        let distro = |distribution: &str, user: &str| WslEnvironmentInfo {
+            context: AgentContext {
+                environment: DiscoveryEnvironment::Wsl {
+                    distribution: distribution.into(),
+                    user: user.into(),
+                },
+                home: wsl_to_windows_path(distribution, &format!("/home/{user}")).unwrap(),
+                platform_home: PathBuf::from(format!("/home/{user}")),
+            },
+            distribution: distribution.into(),
+            user: user.into(),
+        };
+        let old = distro("Ubuntu", "dev");
+        let other = distro("Debian", "dev");
+        let updated = distro("Ubuntu", "newuser");
+        let source = old.context.home.join("session.jsonl");
+        replace_wsl_source_homes(&homes, &[old.clone(), other.clone()]);
+        assert_eq!(wsl_source_home_in(&homes, &source), Some(old.context.home));
+
+        replace_wsl_source_homes(&homes, std::slice::from_ref(&updated));
+        assert!(wsl_source_home_in(&homes, &source).is_none());
+        assert!(wsl_source_home_in(&homes, &other.context.home).is_none());
+        assert!(wsl_source_home_in(&homes, &updated.context.home).is_some());
+
+        replace_wsl_source_homes(&homes, &[]);
+        assert!(wsl_source_home_in(&homes, &updated.context.home).is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_wsl_discovery_drops_the_previous_source_home() {
+        let old_home = PathBuf::from("previous-home");
+        let source = old_home.join("session.jsonl");
+        let homes = Mutex::new(vec![old_home.clone()]);
+        let discovery_lock = tokio::sync::Mutex::new(());
+        assert_eq!(wsl_source_home_in(&homes, &source), Some(old_home));
+
+        let mut refresh = Box::pin(refresh_wsl_source_homes(
+            &discovery_lock,
+            &homes,
+            std::future::pending(),
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(refresh.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(refresh);
+
+        assert!(wsl_source_home_in(&homes, &source).is_none());
+        assert!(discovery_lock.try_lock().is_ok());
     }
 
     #[test]

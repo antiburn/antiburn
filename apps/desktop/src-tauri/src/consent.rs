@@ -31,16 +31,18 @@
 //! mean probing, which is the one thing that must not happen in the background.
 
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
+use antiburn_local::paths::protected::ProjectAccessDecision;
 use antiburn_local::paths::{home_dir, protected};
+use antiburn_local::platform::git;
 use antiburn_local::repositories::{ConsentGrants, probe_path_access};
 use async_trait::async_trait;
 use serde::Serialize;
 
-use crate::store::Store;
+use crate::store::{RepositoryPolicySnapshot, Store};
 
 /// Probe outcomes kept for diagnostics. Small on purpose: this answers "what
 /// happened the last few times we asked", it is not a log.
@@ -130,12 +132,23 @@ impl ProbeOutcome {
 /// one owner, and a consent view is built per pass.
 pub struct StoreConsentGrants<'a> {
     store: &'a Store,
+    policy: Option<&'a RepositoryPolicySnapshot>,
 }
 
 impl<'a> StoreConsentGrants<'a> {
     /// View the app database as a consent record.
     pub fn new(store: &'a Store) -> Self {
-        Self { store }
+        Self {
+            store,
+            policy: None,
+        }
+    }
+
+    pub fn for_policy(store: &'a Store, policy: &'a RepositoryPolicySnapshot) -> Self {
+        Self {
+            store,
+            policy: Some(policy),
+        }
     }
 
     /// Read `path` once and record what happened.
@@ -168,7 +181,18 @@ impl ConsentGrants for StoreConsentGrants<'_> {
     fn granted_dirs(&self) -> HashSet<String> {
         // A database error must never read as "the user granted everything", so
         // failure means the empty set: directories get deferred, not read.
-        self.store.granted_dirs().unwrap_or_default()
+        match self.policy {
+            Some(policy) => policy.granted_dirs.clone(),
+            None => self.store.granted_dirs().unwrap_or_default(),
+        }
+    }
+
+    fn is_current(&self) -> bool {
+        self.policy.is_none_or(|policy| {
+            self.store
+                .repository_policy_is_current(policy.generation)
+                .unwrap_or(false)
+        })
     }
 
     async fn discover_external_grants(&self, dir_names: &HashSet<String>) -> HashSet<String> {
@@ -187,7 +211,14 @@ impl ConsentGrants for StoreConsentGrants<'_> {
     }
 
     async fn revoke_grant_covering(&self, path: &Path) -> Option<String> {
-        let dir_name = protected::protected_dir_name(path)?;
+        let ProjectAccessDecision::DeferredProtected(dir_name) =
+            protected::project_access_decision(path, &HashSet::new())
+        else {
+            return None;
+        };
+        if !protected::protected_dir_names().contains(&dir_name.as_str()) {
+            return None;
+        }
         self.store.revoke_dir_grant(&dir_name).ok()?;
         Some(dir_name)
     }
@@ -206,6 +237,86 @@ impl ConsentGrants for StoreConsentGrants<'_> {
             probes.pop_front();
         }
         probes.push_back(record);
+    }
+}
+
+pub(crate) fn project_path_access(
+    store: &Store,
+    policy: &RepositoryPolicySnapshot,
+    path: &Path,
+) -> ProjectAccessDecision {
+    if !store
+        .repository_policy_is_current(policy.generation)
+        .unwrap_or(false)
+    {
+        return ProjectAccessDecision::DeferredUncertain;
+    }
+    let decision = protected::project_path_access(path, &policy.granted_dirs);
+    if decision.is_allowed()
+        && !store
+            .repository_policy_is_current(policy.generation)
+            .unwrap_or(false)
+    {
+        return ProjectAccessDecision::DeferredUncertain;
+    }
+    decision
+}
+
+pub(crate) fn git_project_access(
+    store: &Store,
+    policy: &RepositoryPolicySnapshot,
+    path: &Path,
+) -> ProjectAccessDecision {
+    if !store
+        .repository_policy_is_current(policy.generation)
+        .unwrap_or(false)
+    {
+        return ProjectAccessDecision::DeferredUncertain;
+    }
+    let decision = protected::git_project_access(path, &policy.granted_dirs);
+    if decision.is_allowed()
+        && !store
+            .repository_policy_is_current(policy.generation)
+            .unwrap_or(false)
+    {
+        return ProjectAccessDecision::DeferredUncertain;
+    }
+    decision
+}
+
+/// Check both ends of a linked worktree before resolving its main root.
+pub(crate) async fn guarded_main_repo_root(
+    root: &Path,
+    git_access: &(impl Fn(&Path) -> ProjectAccessDecision + Sync + ?Sized),
+    path_access: &(impl Fn(&Path) -> ProjectAccessDecision + Sync + ?Sized),
+) -> Result<PathBuf, (PathBuf, ProjectAccessDecision)> {
+    let access = git_access(root);
+    if access != ProjectAccessDecision::Allowed {
+        return Err((root.to_path_buf(), access));
+    }
+    if let Ok(Some(common_dir)) = git::git_common_dir_at(root).await
+        && common_dir.file_name().and_then(|name| name.to_str()) == Some(".git")
+        && let Some(main_root) = common_dir.parent()
+    {
+        let access = path_access(main_root);
+        if access != ProjectAccessDecision::Allowed {
+            return Err((main_root.to_path_buf(), access));
+        }
+        let resolved = tokio::fs::canonicalize(main_root)
+            .await
+            .unwrap_or_else(|_| main_root.to_path_buf());
+        let access = path_access(&resolved);
+        return if access.is_allowed() {
+            Ok(resolved)
+        } else {
+            Err((resolved, access))
+        };
+    }
+    let access = path_access(root);
+    if access.is_allowed() {
+        Ok(root.to_path_buf())
+    } else {
+        Err((root.to_path_buf(), access))
     }
 }
 

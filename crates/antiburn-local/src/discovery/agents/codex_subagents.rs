@@ -125,7 +125,7 @@ async fn list_subagents_from_rollouts(parent_transcript: &Path) -> Vec<PathBuf> 
     };
     let mut children = Vec::new();
     for dir in super::codex::log_dirs_for_rollout(parent_transcript).await {
-        let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        let Ok(mut entries) = crate::discovery::source_fs::asynchronous::read_dir(dir).await else {
             continue;
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
@@ -193,7 +193,9 @@ async fn list_subagents_in(
     let mut out = Vec::new();
     for (child_id, db_path) in rows {
         if let Some(path) = db_path
-            && tokio::fs::try_exists(&path).await.unwrap_or(false)
+            && crate::discovery::source_fs::asynchronous::try_exists(&path)
+                .await
+                .unwrap_or(false)
         {
             out.push(path);
             continue;
@@ -219,7 +221,9 @@ async fn locate_subagent_in(
         return None;
     }
     if let Some(path) = rollout_path_from_db_in(subagent_id, db_paths).await
-        && tokio::fs::try_exists(&path).await.unwrap_or(false)
+        && crate::discovery::source_fs::asynchronous::try_exists(&path)
+            .await
+            .unwrap_or(false)
     {
         return Some(path);
     }
@@ -260,7 +264,9 @@ async fn parent_thread_id(parent_transcript: &Path) -> Option<String> {
     if let Some(id) = thread_id_from_rollout_path(parent_transcript) {
         return Some(id);
     }
-    let content = tokio::fs::read_to_string(parent_transcript).await.ok()?;
+    let content = crate::discovery::source_fs::asynchronous::read_to_string(parent_transcript)
+        .await
+        .ok()?;
     let first_line = content.lines().next()?;
     extract_json_string_field(first_line, "id").map(str::to_string)
 }
@@ -294,7 +300,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 fn open_ro(path: &Path) -> Option<Connection> {
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )

@@ -204,11 +204,13 @@ fn windows_invalid_path_shapes_are_rejected_before_lookup() {
     ] {
         assert_eq!(
             admission.check(Path::new(path)),
-            Err("path_outside_allowed_root")
+            Err("path_outside_allowed_root"),
+            "{path}"
         );
         assert_eq!(
             admission.canonical_directory(Path::new(path)),
-            Err("path_outside_allowed_root")
+            Err("path_outside_allowed_root"),
+            "{path}"
         );
     }
 }
@@ -225,36 +227,39 @@ fn windows_ordinary_ambiguous_components_are_rejected_before_lookup() {
         (r"C:\synthetic\gate.\private.md", r"C:\synthetic"),
         (r"C:\synthetic\private.md ", r"C:\synthetic"),
         (r"C:\synthetic\private.md.", r"C:\synthetic"),
-        (r"\\server\share\gate \review", r"\\server\share"),
-        (r"\\server\share\gate.\review", r"\\server\share"),
     ] {
         let path = Path::new(path);
         let root = Path::new(root);
-        assert_eq!(admission.check(path), Err("path_outside_allowed_root"));
+        assert_eq!(
+            admission.check(path),
+            Err("path_outside_allowed_root"),
+            "{path:?}"
+        );
         assert_eq!(
             admission.canonical_directory(path),
-            Err("path_outside_allowed_root")
+            Err("path_outside_allowed_root"),
+            "{path:?}"
         );
         assert_eq!(
             admission.configured_root(path, root),
-            Err("path_outside_allowed_root")
+            Err("path_outside_allowed_root"),
+            "{path:?}"
         );
         assert_eq!(
             reads.read(path, root, false),
-            Err("path_outside_allowed_root")
+            Err("path_outside_allowed_root"),
+            "{path:?}"
         );
     }
-    assert_eq!(reads.files, 250);
+    assert_eq!(reads.files, 252);
     assert_eq!(reads.bytes, 1024 * 1024);
     for path in [
         r"\\?\C:\synthetic\gate \private.md",
         r"\\?\C:\synthetic\gate.\private.md",
-        r"\\?\UNC\server\share\gate \review",
-        r"\\?\UNC\server\share\gate.\review",
         r"C:\synthetic\gate space\private.md",
         r"C:\synthetic\gate.name\private.md",
     ] {
-        assert_eq!(admission.check(Path::new(path)), Ok(()));
+        assert_eq!(admission.check(Path::new(path)), Ok(()), "{path}");
     }
     for home in [
         r"C:\synthetic\home ",
@@ -268,13 +273,63 @@ fn windows_ordinary_ambiguous_components_are_rejected_before_lookup() {
         let admission = PathAdmission::new(Path::new(home), &grants);
         assert_eq!(
             admission.check(Path::new(r"C:\synthetic\repo")),
-            Err("home_unavailable")
+            Err("home_unavailable"),
+            "{home}"
         );
         assert_eq!(
             admission.canonical_directory(Path::new(r"C:\synthetic\repo")),
-            Err("home_unavailable")
+            Err("home_unavailable"),
+            "{home}"
         );
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_unc_project_paths_are_deferred_before_lookup() {
+    let home = Path::new(r"\\?\C:\synthetic\home");
+    let grants = HashSet::new();
+    let admission = PathAdmission::new(home, &grants);
+    let mut reads = read::ReadBudget::new(admission);
+    for (path, root) in [
+        (r"\\server\share\review", r"\\server\share"),
+        (r"\\server\share\gate \review", r"\\server\share"),
+        (r"\\server\share\gate.\review", r"\\server\share"),
+        (r"\\?\UNC\server\share\review", r"\\?\UNC\server\share"),
+        (
+            r"\\?\UNC\server\share\gate \review",
+            r"\\?\UNC\server\share",
+        ),
+        (
+            r"\\?\UNC\server\share\gate.\review",
+            r"\\?\UNC\server\share",
+        ),
+    ] {
+        let path = Path::new(path);
+        let root = Path::new(root);
+        assert_eq!(
+            admission.check(path),
+            Err("path_outside_allowed_root"),
+            "{path:?}"
+        );
+        assert_eq!(
+            admission.canonical_directory(path),
+            Err("path_outside_allowed_root"),
+            "{path:?}"
+        );
+        assert_eq!(
+            admission.configured_root(path, root),
+            Err("path_outside_allowed_root"),
+            "{path:?}"
+        );
+        assert_eq!(
+            reads.read(path, root, false),
+            Err("path_outside_allowed_root"),
+            "{path:?}"
+        );
+    }
+    assert_eq!(reads.files, 250);
+    assert_eq!(reads.bytes, 1024 * 1024);
 }
 
 #[cfg(windows)]

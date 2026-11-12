@@ -179,12 +179,15 @@ fn checked_definition_reader_and_parser_keep_the_file_size_bound() {
     let path = root.join("review/SKILL.md");
     let mut bytes = vec![b'x'; MAX_SKILL_FILE_BYTES];
     write(&path, &bytes);
-    assert_eq!(read_definition(&path, &root).unwrap().bytes, bytes);
+    assert_eq!(
+        read_definition(&path, &root, || Ok(())).unwrap().bytes,
+        bytes
+    );
     assert!(parse_frontmatter(&bytes, "review").is_some());
     bytes.push(b'x');
     write(&path, &bytes);
     assert!(matches!(
-        read_definition(&path, &root),
+        read_definition(&path, &root, || Ok(())),
         Err(ConfigUnavailableReason::FileTooLarge)
     ));
     assert!(parse_frontmatter(&bytes, "review").is_none());
@@ -197,13 +200,13 @@ fn checked_definition_reader_rejects_non_files_and_paths_outside_the_root() {
     let directory = root.join("review");
     std::fs::create_dir(&directory).unwrap();
     assert!(matches!(
-        read_definition(&directory, &root),
+        read_definition(&directory, &root, || Ok(())),
         Err(ConfigUnavailableReason::NonRegularFile)
     ));
     let path = root.join("outside/SKILL.md");
     write(&path, b"---\ndescription: Review code.\n---\n");
     assert!(matches!(
-        read_definition(&path, &directory),
+        read_definition(&path, &directory, || Ok(())),
         Err(ConfigUnavailableReason::UnsafePath)
     ));
 }
@@ -218,7 +221,10 @@ fn checked_definition_reader_keeps_ownership_metadata() {
     let path = root.join("review/SKILL.md");
     write(&path, b"---\ndescription: Review code.\n---\n");
     let ownership = file_ownership(&std::fs::metadata(&path).unwrap());
-    assert_eq!(read_definition(&path, &root).unwrap().ownership, ownership);
+    assert_eq!(
+        read_definition(&path, &root, || Ok(())).unwrap().ownership,
+        ownership
+    );
     assert_eq!(
         file_ownership(&std::fs::metadata(&path).unwrap()),
         ownership
@@ -239,13 +245,13 @@ fn metadata_identity_rejects_replacement_and_symlinked_definitions() {
     std::fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink(path.with_extension("old"), &path).unwrap();
     assert!(matches!(
-        read_definition(&path, &root),
+        read_definition(&path, &root, || Ok(())),
         Err(ConfigUnavailableReason::SymlinkTarget)
     ));
     let alias = root.join("alias");
     std::os::unix::fs::symlink(path.parent().unwrap(), &alias).unwrap();
     assert!(matches!(
-        read_definition(&alias.join("SKILL.old"), &root),
+        read_definition(&alias.join("SKILL.old"), &root, || Ok(())),
         Err(ConfigUnavailableReason::SymlinkTarget)
     ));
 }

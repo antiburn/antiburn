@@ -2120,7 +2120,15 @@ fn sync_report_callers_are_the_pinned_list() {
                 .nth(1)
                 .expect("IncrementalAdmission exists")
                 .replace("\n    ", "\n");
-            for method in ["commit", "delete_rejected"] {
+            let commit = function_body(&admission, "commit");
+            assert!(
+                commit
+                    .split_whitespace()
+                    .collect::<String>()
+                    .contains("self.commit_with_incarnation(guard,record,changed).await"),
+                "IncrementalAdmission::commit awaits the reporting implementation"
+            );
+            for method in ["commit_with_incarnation", "delete_rejected"] {
                 let body = function_body(&admission, method);
                 assert!(
                     body.contains(".report(") && body.contains(".await;"),

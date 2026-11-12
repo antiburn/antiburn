@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 #[cfg(not(windows))]
 use std::fs;
@@ -5,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use antiburn_local::analysis::SourceFormat;
 use antiburn_local::model::AgentKind;
+use antiburn_local::paths::protected;
 
 #[cfg(not(windows))]
 use super::filesystem::FileIdentity;
@@ -144,6 +146,7 @@ pub struct ConfigContext {
     pub home_root: PathBuf,
     pub workspace_cwd: Option<PathBuf>,
     pub trusted_workspace_root: Option<PathBuf>,
+    pub(crate) granted_dirs: HashSet<String>,
     pub native_environment: bool,
     pub runtime_override_present: bool,
     pub managed_configuration_present: bool,
@@ -161,6 +164,7 @@ impl ConfigContext {
             home_root: home_root.into(),
             workspace_cwd: workspace_root.clone(),
             trusted_workspace_root: workspace_root,
+            granted_dirs: HashSet::new(),
             native_environment: true,
             runtime_override_present: false,
             managed_configuration_present: false,
@@ -179,10 +183,56 @@ impl ConfigContext {
             home_root: home_root.into(),
             workspace_cwd: Some(workspace_cwd.into()),
             trusted_workspace_root: Some(trusted_workspace_root.into()),
+            granted_dirs: HashSet::new(),
             native_environment: true,
             runtime_override_present: false,
             managed_configuration_present: false,
         }
+    }
+
+    pub(super) fn check_path(&self, path: &Path) -> Result<(), ConfigUnavailableReason> {
+        if protected::project_path_access_in(Some(&self.home_root), path, &self.granted_dirs)
+            .is_allowed()
+        {
+            Ok(())
+        } else {
+            Err(ConfigUnavailableReason::UnsafePath)
+        }
+    }
+
+    pub(super) fn path_entry_exists(&self, path: &Path) -> Result<bool, ConfigUnavailableReason> {
+        if !protected::project_access_decision_in(Some(&self.home_root), path, &self.granted_dirs)
+            .is_allowed()
+        {
+            return Err(ConfigUnavailableReason::UnsafePath);
+        }
+        super::filesystem::path_entry_exists(path)
+    }
+
+    pub(super) fn canonical_path(&self, path: &Path) -> Result<PathBuf, ConfigUnavailableReason> {
+        self.canonical_path_with_admission(path, |_| Ok(()))
+    }
+
+    pub(super) fn canonical_path_with_admission(
+        &self,
+        path: &Path,
+        check: impl Fn(&Path) -> Result<(), ConfigUnavailableReason>,
+    ) -> Result<PathBuf, ConfigUnavailableReason> {
+        check(path)?;
+        self.check_path(path)?;
+        check(path)?;
+        let canonical = super::filesystem::canonical_root(path)?;
+        check(&canonical)?;
+        if !protected::project_access_decision_in(
+            Some(&self.home_root),
+            &canonical,
+            &self.granted_dirs,
+        )
+        .is_allowed()
+        {
+            return Err(ConfigUnavailableReason::UnsafePath);
+        }
+        Ok(canonical)
     }
 
     pub(super) fn validate_source_format(&self) -> Result<(), ConfigUnavailableReason> {

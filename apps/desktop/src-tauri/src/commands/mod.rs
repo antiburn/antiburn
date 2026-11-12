@@ -2826,7 +2826,7 @@ fn session_project_directory(store: &Store, key: &SessionKey) -> CommandResult<P
     }
     let path = stored_project_path(Some(&record))
         .ok_or_else(|| "The session has no local project directory".to_owned())?;
-    project_directory(&path)
+    authorized_project_directory(store, &path)
 }
 
 /// Resolve the folder from a stored session or an issued check action.
@@ -2850,7 +2850,7 @@ pub async fn open_project_folder(
                     .state::<RemediationController>()
                     .project_folder(&app.state::<Store>(), &action_id)
                     .map_err(|_| "The check's project folder is no longer available".to_owned())?;
-                project_directory(&path)?
+                authorized_project_directory(&app.state::<Store>(), &path)?
             }
         };
         reject_remote_cache_path(&app, &target)?;
@@ -2876,6 +2876,29 @@ pub(crate) fn reject_remote_cache_path(app: &tauri::AppHandle, target: &Path) ->
 
 fn is_remote_cache_path(target: &Path, remote_root: &Path) -> bool {
     presentable(target.to_path_buf()).starts_with(presentable(remote_root.to_path_buf()))
+}
+
+fn authorized_project_directory(store: &Store, path: &str) -> CommandResult<PathBuf> {
+    let policy = store.repository_policy_snapshot().map_err(fail)?;
+    if protected::project_path_access(Path::new(path), &policy.granted_dirs)
+        != protected::ProjectAccessDecision::Allowed
+    {
+        return Err("Allow this folder in Settings before opening its project".into());
+    }
+    if !store
+        .repository_policy_is_current(policy.generation)
+        .map_err(fail)?
+    {
+        return Err("Folder access changed; try again".into());
+    }
+    let directory = project_directory(path)?;
+    if !store
+        .repository_policy_is_current(policy.generation)
+        .map_err(fail)?
+    {
+        return Err("Folder access changed; try again".into());
+    }
+    Ok(directory)
 }
 
 fn project_directory(path: &str) -> CommandResult<PathBuf> {
@@ -3601,6 +3624,33 @@ mod project_folder_tests {
         for path in ["", "relative/folder", "https://example.com", "file:///tmp"] {
             assert!(project_directory(path).is_err());
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn project_open_defers_unsupported_locations_before_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let error =
+            authorized_project_directory(&store, "/Volumes/AntiburnSynthetic/project").unwrap_err();
+        assert_eq!(
+            error,
+            "Allow this folder in Settings before opening its project"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_open_does_not_follow_an_unverified_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let alias = dir.path().join("project-alias");
+        std::os::unix::fs::symlink("/Volumes/AntiburnSynthetic/project", &alias).unwrap();
+        let error = authorized_project_directory(&store, alias.to_str().unwrap()).unwrap_err();
+        assert_eq!(
+            error,
+            "Allow this folder in Settings before opening its project"
+        );
     }
 
     #[test]

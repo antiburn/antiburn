@@ -17,6 +17,11 @@ use std::process::Output;
 use super::environment::{self, DiscoveryEnvironment};
 use crate::paths::protected;
 
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_GIT_SPAWNS: std::cell::Cell<usize>;
+}
+
 /// Upper bound on a single logged text field, so a pathological command cannot
 /// flood the log.
 const MAX_LOGGED_TEXT_CHARS: usize = 4096;
@@ -46,6 +51,34 @@ fn truncate_text(value: impl AsRef<str>, max_chars: usize) -> String {
     let mut truncated = value.chars().take(max_chars).collect::<String>();
     truncated.push_str("...[truncated]");
     truncated
+}
+
+async fn guarded_run_git_output_at(
+    repo: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Result<Output> {
+    if !access(repo) {
+        bail!("project access deferred");
+    }
+    let output = run_git_output_at(Some(repo), args, envs).await?;
+    if !access(repo) {
+        bail!("project access deferred");
+    }
+    Ok(output)
+}
+
+async fn git_output_in_with_access(
+    repo: &Path,
+    args: &[&str],
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Result<String> {
+    let output = guarded_run_git_output_at(repo, args, &[], access).await?;
+    if !output.status.success() {
+        bail!("git command failed");
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
 
 /// Run a git command and return its stdout as a trimmed `String`.
@@ -105,6 +138,27 @@ pub async fn run_git_output_in_environment(
 ) -> Result<Output> {
     let mut cmd = environment::configure_command_for_environment(environment, "git", repo)?;
 
+    if repo.is_some() && matches!(environment, DiscoveryEnvironment::Native) {
+        // Project commands must not follow ambient configuration paths.
+        for key in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_CONFIG",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+        ] {
+            cmd.env_remove(key);
+        }
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1");
+        cmd.env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        );
+    }
+
     for (key, value) in envs {
         cmd.env(key, value);
     }
@@ -120,6 +174,8 @@ pub async fn run_git_output_in_environment(
         args = ?args,
         env_keys = ?env_keys
     );
+    #[cfg(test)]
+    let _ = TEST_GIT_SPAWNS.try_with(|count| count.set(count.get() + 1));
     let output = cmd
         .args(args)
         .output()
@@ -282,18 +338,35 @@ pub async fn resolve_repo_root_with_fallbacks(
     cwd: &Path,
     granted: &HashSet<String>,
 ) -> std::result::Result<RepoRootResolution, RepoRootResolutionDiagnostics> {
+    resolve_repo_root_with_fallbacks_with_access(cwd, &|path| is_probe_allowed(path, granted)).await
+}
+
+/// Recheck the caller's policy before every fallback filesystem or Git operation.
+pub async fn resolve_repo_root_with_fallbacks_with_access(
+    cwd: &Path,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> std::result::Result<RepoRootResolution, RepoRootResolutionDiagnostics> {
     let mut diagnostics = RepoRootResolutionDiagnostics {
         requested_cwd: cwd.to_path_buf(),
-        cwd_exists: tokio::fs::try_exists(cwd).await.unwrap_or(false),
+        cwd_exists: false,
         ..RepoRootResolutionDiagnostics::default()
     };
 
-    if is_probe_allowed(cwd, granted) {
+    if !access(cwd) {
+        diagnostics.consent_blocked = true;
+        return Err(diagnostics);
+    }
+    diagnostics.cwd_exists = tokio::fs::try_exists(cwd).await.unwrap_or(false);
+    if access(cwd) {
         match repo_root_at(cwd).await {
             Ok(repo_root) => {
                 diagnostics.resolved_via = Some("cwd");
                 diagnostics.alternative_repo_roots =
-                    alternative_repo_roots_for_repo(&repo_root).await;
+                    alternative_repo_roots_for_repo_with_access(&repo_root, access).await;
+                if !access(&repo_root) {
+                    diagnostics.consent_blocked = true;
+                    return Err(diagnostics);
+                }
                 return Ok(RepoRootResolution {
                     repo_root,
                     diagnostics,
@@ -305,17 +378,19 @@ pub async fn resolve_repo_root_with_fallbacks(
         diagnostics.consent_blocked = true;
     }
 
-    // Walking up to the nearest existing ancestor only ever calls `try_exists`,
-    // which the consent controls permit; the `git` invocation that follows is
-    // the part that needs the gate.
-    if let Some(existing_ancestor) = nearest_existing_ancestor(cwd).await {
+    // Admit each ancestor before checking whether it exists.
+    if let Some(existing_ancestor) = nearest_existing_ancestor(cwd, access).await {
         diagnostics.nearest_existing_ancestor = Some(existing_ancestor.clone());
-        if is_probe_allowed(&existing_ancestor, granted) {
+        if access(&existing_ancestor) {
             match repo_root_at(&existing_ancestor).await {
                 Ok(repo_root) => {
                     diagnostics.resolved_via = Some("existing_ancestor");
                     diagnostics.alternative_repo_roots =
-                        alternative_repo_roots_for_repo(&repo_root).await;
+                        alternative_repo_roots_for_repo_with_access(&repo_root, access).await;
+                    if !access(&repo_root) {
+                        diagnostics.consent_blocked = true;
+                        return Err(diagnostics);
+                    }
                     return Ok(RepoRootResolution {
                         repo_root,
                         diagnostics,
@@ -331,10 +406,14 @@ pub async fn resolve_repo_root_with_fallbacks(
     let candidate_repo_names = worktree_repo_name_candidates(cwd);
     diagnostics.candidate_repo_names = candidate_repo_names.clone();
     let candidate_owner_repo_roots =
-        candidate_owner_repo_roots(cwd, &candidate_repo_names, granted).await;
+        candidate_owner_repo_roots(cwd, &candidate_repo_names, access).await;
     diagnostics.candidate_owner_repo_roots = candidate_owner_repo_roots.clone();
 
     for candidate_repo_root in candidate_owner_repo_roots {
+        if !access(&candidate_repo_root) {
+            diagnostics.consent_blocked = true;
+            return Err(diagnostics);
+        }
         let worktrees = match worktree_list_at(&candidate_repo_root).await {
             Ok(worktrees) => worktrees,
             Err(_) => continue,
@@ -347,7 +426,11 @@ pub async fn resolve_repo_root_with_fallbacks(
             diagnostics.matched_worktree_owner_repo_root = Some(candidate_repo_root.clone());
             diagnostics.matched_worktree_path = Some(entry.path);
             diagnostics.alternative_repo_roots =
-                alternative_repo_roots_for_repo(&candidate_repo_root).await;
+                alternative_repo_roots_for_repo_with_access(&candidate_repo_root, access).await;
+            if !access(&candidate_repo_root) {
+                diagnostics.consent_blocked = true;
+                return Err(diagnostics);
+            }
             return Ok(RepoRootResolution {
                 repo_root: candidate_repo_root,
                 diagnostics,
@@ -358,10 +441,13 @@ pub async fn resolve_repo_root_with_fallbacks(
     Err(diagnostics)
 }
 
-async fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
+async fn nearest_existing_ancestor(
+    path: &Path,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Option<PathBuf> {
     let mut current = Some(path);
     while let Some(candidate) = current {
-        if tokio::fs::try_exists(candidate).await.unwrap_or(false) {
+        if access(candidate) && tokio::fs::try_exists(candidate).await.unwrap_or(false) {
             return Some(candidate.to_path_buf());
         }
         current = candidate.parent();
@@ -369,7 +455,7 @@ async fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
     None
 }
 
-async fn git_common_dir_at(repo: &Path) -> Result<Option<PathBuf>> {
+pub async fn git_common_dir_at(repo: &Path) -> Result<Option<PathBuf>> {
     let environment = environment::environment_from_mounted_path(repo).unwrap_or_default();
     let output = run_git_output_in_environment(
         &environment,
@@ -396,15 +482,31 @@ async fn git_common_dir_at(repo: &Path) -> Result<Option<PathBuf>> {
 /// parent is the true repo root. Returns `repo_root` unchanged when it is
 /// already the main repo or on any error.
 pub async fn canonical_main_repo_root(repo_root: &Path) -> PathBuf {
+    canonical_main_repo_root_with_access(repo_root, &|_| true)
+        .await
+        .unwrap_or_else(|| repo_root.to_path_buf())
+}
+
+pub async fn canonical_main_repo_root_with_access(
+    repo_root: &Path,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Option<PathBuf> {
+    if !access(repo_root) {
+        return None;
+    }
     if let Ok(Some(common_dir)) = git_common_dir_at(repo_root).await
         && common_dir.file_name().and_then(|name| name.to_str()) == Some(".git")
         && let Some(main_root) = common_dir.parent()
     {
-        return tokio::fs::canonicalize(main_root)
+        if !access(main_root) {
+            return None;
+        }
+        let root = tokio::fs::canonicalize(main_root)
             .await
             .unwrap_or_else(|_| main_root.to_path_buf());
+        return access(&root).then_some(root);
     }
-    repo_root.to_path_buf()
+    access(repo_root).then(|| repo_root.to_path_buf())
 }
 
 /// Number of worktrees (including the main working tree).
@@ -417,9 +519,19 @@ pub async fn worktree_count_at(repo: &Path) -> u32 {
 }
 
 async fn alternative_repo_roots_for_repo(repo: &Path) -> Vec<PathBuf> {
+    alternative_repo_roots_for_repo_with_access(repo, &|_| true).await
+}
+
+async fn alternative_repo_roots_for_repo_with_access(
+    repo: &Path,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Vec<PathBuf> {
     let mut roots = BTreeSet::new();
     roots.insert(repo.to_path_buf());
 
+    if !access(repo) {
+        return Vec::new();
+    }
     if let Ok(Some(common_dir)) = git_common_dir_at(repo).await
         && common_dir.file_name().and_then(|name| name.to_str()) == Some(".git")
         && let Some(main_repo_root) = common_dir.parent()
@@ -427,12 +539,18 @@ async fn alternative_repo_roots_for_repo(repo: &Path) -> Vec<PathBuf> {
         roots.insert(main_repo_root.to_path_buf());
     }
 
+    if !access(repo) {
+        return Vec::new();
+    }
     if let Ok(worktrees) = worktree_list_at(repo).await {
         for worktree in worktrees {
             roots.insert(worktree.path);
         }
     }
 
+    if !access(repo) {
+        return Vec::new();
+    }
     roots.into_iter().filter(|path| path != repo).collect()
 }
 
@@ -516,24 +634,18 @@ fn is_repo_name_candidate(value: &str) -> bool {
 async fn candidate_owner_repo_roots(
     cwd: &Path,
     repo_names: &[String],
-    granted: &HashSet<String>,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
 ) -> Vec<PathBuf> {
     let Some(home) = crate::paths::home_dir() else {
         return Vec::new();
     };
-    candidate_owner_repo_roots_in(&home, cwd, repo_names, granted).await
+    candidate_owner_repo_roots_in_with_access(&home, cwd, repo_names, access).await
 }
 
-// Skip probing inside consent-protected directories (e.g. ~/Documents on macOS)
-// the user has not granted access to — a `git` invocation whose working
-// directory sits inside one raises the native consent dialog, and so does
-// reading the directory itself.
-//
-// See [`protected::cwd_resolution_blocked`] for why an unmappable protected
-// path fails open.
+// Admit each candidate before metadata or Git access.
 #[must_use]
 fn is_probe_allowed(path: &Path, granted: &HashSet<String>) -> bool {
-    !protected::cwd_resolution_blocked(path, granted)
+    protected::git_project_access(path, granted).is_allowed()
 }
 
 /// Existing repositories under `home` that could own a since-deleted worktree
@@ -549,6 +661,18 @@ pub async fn candidate_owner_repo_roots_in(
     repo_names: &[String],
     granted: &HashSet<String>,
 ) -> Vec<PathBuf> {
+    candidate_owner_repo_roots_in_with_access(home, cwd, repo_names, &|path| {
+        is_probe_allowed(path, granted)
+    })
+    .await
+}
+
+async fn candidate_owner_repo_roots_in_with_access(
+    home: &Path,
+    cwd: &Path,
+    repo_names: &[String],
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Vec<PathBuf> {
     let mut candidates = BTreeSet::new();
 
     for repo_name in repo_names {
@@ -561,7 +685,7 @@ pub async fn candidate_owner_repo_roots_in(
             home.join("workspaces"),
         ] {
             let candidate = parent.join(repo_name);
-            if !is_probe_allowed(&candidate, granted) {
+            if !access(&candidate) {
                 continue;
             }
             if tokio::fs::try_exists(candidate.join(".git"))
@@ -573,10 +697,10 @@ pub async fn candidate_owner_repo_roots_in(
         }
     }
 
-    if let Some(existing_ancestor) = nearest_existing_ancestor(cwd).await {
+    if let Some(existing_ancestor) = nearest_existing_ancestor(cwd, access).await {
         let mut current = Some(existing_ancestor.as_path());
         while let Some(candidate) = current {
-            if is_probe_allowed(candidate, granted)
+            if access(candidate)
                 && tokio::fs::try_exists(candidate.join(".git"))
                     .await
                     .unwrap_or(false)
@@ -707,7 +831,15 @@ async fn resolve_push_remote() -> Result<Option<String>> {
 
 /// Return the URL for a named remote in a specific repository (if any).
 pub async fn remote_url_at(repo: &Path, remote: &str) -> Result<Option<String>> {
-    let output = run_git_output_at(Some(repo), &["remote", "get-url", remote], &[])
+    remote_url_at_with_access(repo, remote, &|_| true).await
+}
+
+pub async fn remote_url_at_with_access(
+    repo: &Path,
+    remote: &str,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Result<Option<String>> {
+    let output = guarded_run_git_output_at(repo, &["remote", "get-url", remote], &[], access)
         .await
         .context("failed to execute git remote get-url")?;
 
@@ -766,10 +898,18 @@ pub async fn repo_and_worktree_roots_at(repo: &Path) -> Vec<String> {
 /// 4) if exactly one remote exists, use it
 /// 5) otherwise return None
 pub async fn resolve_push_remote_at(repo: &Path) -> Result<Option<String>> {
-    let output = run_git_output_at(
-        Some(repo),
+    resolve_push_remote_at_with_access(repo, &|_| true).await
+}
+
+pub async fn resolve_push_remote_at_with_access(
+    repo: &Path,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Result<Option<String>> {
+    let output = guarded_run_git_output_at(
+        repo,
         &["symbolic-ref", "--quiet", "--short", "HEAD"],
         &[],
+        access,
     )
     .await
     .context("failed to execute git symbolic-ref")?;
@@ -786,14 +926,14 @@ pub async fn resolve_push_remote_at(repo: &Path) -> Result<Option<String>> {
     }
 
     let push_remote_key = format!("branch.{branch}.pushRemote");
-    if let Ok(Some(remote)) = config_get_at(repo, &push_remote_key).await
+    if let Ok(Some(remote)) = config_get_at_with_access(repo, &push_remote_key, access).await
         && !remote.is_empty()
         && remote != "."
     {
         return Ok(Some(remote));
     }
 
-    if let Ok(Some(remote)) = config_get_at(repo, "remote.pushDefault").await
+    if let Ok(Some(remote)) = config_get_at_with_access(repo, "remote.pushDefault", access).await
         && !remote.is_empty()
         && remote != "."
     {
@@ -801,14 +941,14 @@ pub async fn resolve_push_remote_at(repo: &Path) -> Result<Option<String>> {
     }
 
     let branch_remote_key = format!("branch.{branch}.remote");
-    if let Ok(Some(remote)) = config_get_at(repo, &branch_remote_key).await
+    if let Ok(Some(remote)) = config_get_at_with_access(repo, &branch_remote_key, access).await
         && !remote.is_empty()
         && remote != "."
     {
         return Ok(Some(remote));
     }
 
-    let remotes = match git_output_in(repo, &["remote"]).await {
+    let remotes = match git_output_in_with_access(repo, &["remote"], access).await {
         Ok(list) => list,
         Err(_) => return Ok(None),
     };
@@ -826,7 +966,14 @@ pub async fn resolve_push_remote_at(repo: &Path) -> Result<Option<String>> {
 /// Returns `None` if no remotes are configured. Returns an error only if
 /// the git commands themselves fail unexpectedly.
 pub async fn first_remote_url_at(repo: &Path) -> Result<Option<String>> {
-    let output = run_git_output_at(Some(repo), &["remote"], &[])
+    first_remote_url_at_with_access(repo, &|_| true).await
+}
+
+pub async fn first_remote_url_at_with_access(
+    repo: &Path,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Result<Option<String>> {
+    let output = guarded_run_git_output_at(repo, &["remote"], &[], access)
         .await
         .context("failed to execute git remote")?;
 
@@ -841,7 +988,7 @@ pub async fn first_remote_url_at(repo: &Path) -> Result<Option<String>> {
         _ => return Ok(None),
     };
 
-    let url_output = run_git_output_at(Some(repo), &["remote", "get-url", first], &[])
+    let url_output = guarded_run_git_output_at(repo, &["remote", "get-url", first], &[], access)
         .await
         .context("failed to execute git remote get-url")?;
 
@@ -860,20 +1007,27 @@ pub async fn first_remote_url_at(repo: &Path) -> Result<Option<String>> {
 /// first configured remote URL. This keeps repository identity working in repos
 /// where the current branch has not been wired to a remote yet.
 pub async fn preferred_remote_url_at(repo: &Path) -> Result<Option<String>> {
-    if let Some(remote) = resolve_push_remote_at(repo).await?
-        && let Some(url) = remote_url_at(repo, &remote).await?
+    preferred_remote_url_at_with_access(repo, &|_| true).await
+}
+
+pub async fn preferred_remote_url_at_with_access(
+    repo: &Path,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Result<Option<String>> {
+    if let Some(remote) = resolve_push_remote_at_with_access(repo, access).await?
+        && let Some(url) = remote_url_at_with_access(repo, &remote, access).await?
         && !url.trim().is_empty()
     {
         return Ok(Some(url));
     }
 
-    if let Some(url) = remote_url_at(repo, "origin").await?
+    if let Some(url) = remote_url_at_with_access(repo, "origin", access).await?
         && !url.trim().is_empty()
     {
         return Ok(Some(url));
     }
 
-    Ok(first_remote_url_at(repo)
+    Ok(first_remote_url_at_with_access(repo, access)
         .await?
         .filter(|url| !url.trim().is_empty()))
 }
@@ -996,7 +1150,15 @@ async fn config_get(key: &str) -> Result<Option<String>> {
 
 /// Read a git config value from a specific repo. Returns `Ok(None)` if unset.
 pub async fn config_get_at(repo: &Path, key: &str) -> Result<Option<String>> {
-    let output = run_git_output_at(Some(repo), &["config", "--get", key], &[])
+    config_get_at_with_access(repo, key, &|_| true).await
+}
+
+pub async fn config_get_at_with_access(
+    repo: &Path,
+    key: &str,
+    access: &(impl Fn(&Path) -> bool + Sync + ?Sized),
+) -> Result<Option<String>> {
+    let output = guarded_run_git_output_at(repo, &["config", "--get", key], &[], access)
         .await
         .context("failed to execute git config --get")?;
 
@@ -1142,6 +1304,83 @@ mod tests {
             .await
             .unwrap_or_else(|_| path.to_path_buf());
         portable_test_path(&canonical)
+    }
+
+    #[tokio::test]
+    async fn revoked_fallback_generation_stops_all_later_git_commands() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = init_temp_repo().await;
+        for (allowed_checks, expected_commands) in [(1, 0), (2, 1), (3, 2), (4, 3)] {
+            TEST_GIT_SPAWNS
+                .scope(std::cell::Cell::new(0), async {
+                    let checks = AtomicUsize::new(0);
+                    let result = resolve_repo_root_with_fallbacks_with_access(dir.path(), &|_| {
+                        checks.fetch_add(1, Ordering::SeqCst) < allowed_checks
+                    })
+                    .await;
+                    assert!(result.is_err());
+                    assert_eq!(
+                        TEST_GIT_SPAWNS.with(std::cell::Cell::get),
+                        expected_commands
+                    );
+                })
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn revoked_remote_generation_stops_compound_commands() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = init_temp_repo().await;
+        run_git(
+            dir.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.com/synthetic/repo.git",
+            ],
+        )
+        .await;
+        TEST_GIT_SPAWNS
+            .scope(std::cell::Cell::new(0), async {
+                let checks = AtomicUsize::new(0);
+                let result = first_remote_url_at_with_access(dir.path(), &|_| {
+                    checks.fetch_add(1, Ordering::SeqCst) < 2
+                })
+                .await;
+                assert!(result.is_err());
+                assert_eq!(TEST_GIT_SPAWNS.with(std::cell::Cell::get), 1);
+            })
+            .await;
+        TEST_GIT_SPAWNS
+            .scope(std::cell::Cell::new(0), async {
+                let checks = AtomicUsize::new(0);
+                let result = preferred_remote_url_at_with_access(dir.path(), &|_| {
+                    checks.fetch_add(1, Ordering::SeqCst) < 2
+                })
+                .await;
+                assert!(result.is_err());
+                assert_eq!(TEST_GIT_SPAWNS.with(std::cell::Cell::get), 1);
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn revoked_canonical_generation_discards_common_directory_result() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = init_temp_repo().await;
+        TEST_GIT_SPAWNS
+            .scope(std::cell::Cell::new(0), async {
+                let checks = AtomicUsize::new(0);
+                let result = canonical_main_repo_root_with_access(dir.path(), &|_| {
+                    checks.fetch_add(1, Ordering::SeqCst) == 0
+                })
+                .await;
+                assert!(result.is_none());
+                assert_eq!(TEST_GIT_SPAWNS.with(std::cell::Cell::get), 1);
+            })
+            .await;
     }
 
     /// Create a temporary git repo with one commit.
@@ -1971,12 +2210,11 @@ mod tests {
         assert!(is_probe_allowed(&unprotected, &HashSet::new()));
     }
 
-    #[tokio::test]
+    #[test]
     #[cfg(not(target_os = "macos"))]
-    async fn every_path_is_probeable_without_consent_controls() {
-        assert!(is_probe_allowed(
-            Path::new("/home/avery/Documents/repo"),
-            &HashSet::new()
-        ));
+    fn local_project_is_probeable_without_consent_controls() {
+        let home = TempDir::new().unwrap();
+        let project = home.path().join("Documents").join("repo");
+        assert!(is_probe_allowed(&project, &HashSet::new()));
     }
 }

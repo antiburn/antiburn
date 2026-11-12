@@ -1340,14 +1340,7 @@ fn repository_refresh_publishes_only_against_the_policy_generation_it_read() {
 
     assert_eq!(
         store
-            .publish_repository_refresh(
-                policy.generation,
-                &[],
-                &[crate::dto::DeferredPermissionDir {
-                    dir: "Documents".into(),
-                    path_count: 1,
-                }],
-            )
+            .publish_repository_refresh(policy.generation, &[], Vec::new(),)
             .unwrap(),
         RepositoryPolicyPublishOutcome::Superseded
     );
@@ -1364,7 +1357,7 @@ fn a_folder_grant_invalidates_an_in_flight_repository_refresh() {
 
     assert_eq!(
         store
-            .publish_repository_refresh(policy.generation, &[], &[])
+            .publish_repository_refresh(policy.generation, &[], Vec::new())
             .unwrap(),
         RepositoryPolicyPublishOutcome::Superseded
     );
@@ -1575,9 +1568,26 @@ fn forever_retention_is_a_no_op() {
 #[test]
 fn saving_retention_and_removing_expired_sessions_is_one_store_operation() {
     let store = store();
-    store
+    let (sessions, _) = store
         .upsert_sessions(&[session("expired", 1)], &crate::agents::evidence_cohort())
         .unwrap();
+    let (key, incarnation) = &sessions[0];
+    store
+        .publish_session_project_deferrals(
+            store.repository_policy_snapshot().unwrap().generation,
+            HashMap::from([(
+                key.clone(),
+                (
+                    *incarnation,
+                    Some(DeferredProtectedPath {
+                        cwd: "/home/avery/Documents/expired".into(),
+                        protected_dir: "Documents".into(),
+                    }),
+                ),
+            )]),
+        )
+        .unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap().len(), 1);
 
     let (_, saved, removed) = store
         .replace_settings_with(
@@ -1597,6 +1607,7 @@ fn saving_retention_and_removing_expired_sessions_is_one_store_operation() {
         SESSION_DATA_RETENTION_DAYS_30
     );
     assert_eq!(store.settings().unwrap(), saved);
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
 }
 
 #[test]

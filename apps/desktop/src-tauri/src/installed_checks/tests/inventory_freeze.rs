@@ -464,6 +464,9 @@ fn inventory_freeze_uses_recorded_grants_without_a_whole_scope_gate() {
     );
     fixture.store.grant_dir("Documents").unwrap();
     fixture.publish_in_cwd("native", "main", 3, &root);
+    assert!(host.catch_up().is_err());
+    assert_eq!(frozen(&fixture.store).len(), 1);
+    host.reconcile(&Admission::Ready).unwrap();
     host.catch_up().unwrap();
     let candidates = frozen(&fixture.store);
     assert_eq!(

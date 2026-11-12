@@ -37,6 +37,11 @@ pub trait ConsentGrants: Send + Sync {
     /// decision is exactly what raises the consent dialog.
     fn granted_dirs(&self) -> HashSet<String>;
 
+    /// Return false when the caller invalidates this discovery run.
+    fn is_current(&self) -> bool {
+        true
+    }
+
     /// Probe the named protected directories for grants made outside the
     /// application (for example through system settings) and return those that
     /// are now readable.
@@ -113,14 +118,15 @@ where
 
     for cwd in cwds {
         let cwd = cwd.as_ref();
-        match protected::protected_dir_name_in(home, Path::new(cwd)) {
-            Some(protected_dir) if !granted.contains(&protected_dir) => {
+        match protected::project_access_decision_in(Some(home), Path::new(cwd), granted) {
+            protected::ProjectAccessDecision::DeferredProtected(protected_dir) => {
                 deferred.push(DeferredProtectedPath {
                     cwd: cwd.to_string(),
                     protected_dir,
                 });
             }
-            _ => admitted.push(cwd.to_string()),
+            protected::ProjectAccessDecision::Allowed => admitted.push(cwd.to_string()),
+            protected::ProjectAccessDecision::DeferredUncertain => {}
         }
     }
 
@@ -180,9 +186,13 @@ mod tests {
 
     #[test]
     #[cfg(not(target_os = "macos"))]
-    fn platforms_without_consent_controls_defer_nothing() {
-        let home = PathBuf::from("/home/avery");
-        let documents = home.join("Documents/repo").display().to_string();
+    fn platforms_without_consent_controls_admit_local_cwds() {
+        let home = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\avery"
+        } else {
+            "/home/avery"
+        });
+        let documents = home.join("Documents").join("repo").display().to_string();
 
         let (admitted, deferred) =
             partition_cwds_by_grants(&home, [documents.clone()], &HashSet::new());

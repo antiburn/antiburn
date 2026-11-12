@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use antiburn_local::analysis::{ModelControlObservation, SourceFormat};
 use antiburn_local::model::AgentKind;
@@ -57,12 +57,15 @@ impl VendorRemediationPolicy for CodexPolicy {
         [
             home.join(".codex/managed_config.toml"),
             home.join(".codex/requirements.toml"),
-            PathBuf::from("/etc/codex/config.toml"),
-            PathBuf::from("/etc/codex/requirements.toml"),
-            PathBuf::from("/etc/codex/managed_config.toml"),
+            #[cfg(unix)]
+            Path::new("/etc/codex/config.toml").to_owned(),
+            #[cfg(unix)]
+            Path::new("/etc/codex/requirements.toml").to_owned(),
+            #[cfg(unix)]
+            Path::new("/etc/codex/managed_config.toml").to_owned(),
         ]
         .iter()
-        .any(|path| path.try_exists().unwrap_or(true))
+        .any(|path| super::managed_file_present(path))
     }
 
     fn workspace_precedence_supported(
@@ -72,9 +75,7 @@ impl VendorRemediationPolicy for CodexPolicy {
     ) -> bool {
         match (workspace_candidate, trusted_root) {
             (None, None) => true,
-            (Some(candidate), Some(root)) => candidate
-                .canonicalize()
-                .is_ok_and(|candidate| candidate.starts_with(root)),
+            (Some(candidate), Some(root)) => candidate.starts_with(root),
             _ => false,
         }
     }

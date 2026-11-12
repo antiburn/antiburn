@@ -143,7 +143,8 @@ async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
         return Vec::new();
     }
 
-    let mut entries = match tokio::fs::read_dir(&sessions_dir).await {
+    let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(&sessions_dir).await
+    {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),
     };
@@ -171,7 +172,7 @@ async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
 async fn find_session_file_by_id(dirs: &[PathBuf], session_id: &str) -> Option<PathBuf> {
     let suffix = format!("_{session_id}.jsonl");
     for dir in dirs {
-        let mut entries = match tokio::fs::read_dir(dir).await {
+        let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(dir).await {
             Ok(e) => e,
             Err(_) => continue,
         };

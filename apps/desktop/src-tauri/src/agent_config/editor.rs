@@ -15,7 +15,7 @@ use super::config::{
 };
 #[cfg(not(windows))]
 use super::config::{ConfigScope, PreparedChange};
-use super::filesystem::{canonical_root, read_checked};
+use super::filesystem::read_checked;
 #[cfg(not(windows))]
 use super::filesystem::{create_temporary, file_identity, file_ownership, map_write_error};
 use super::vendors::{VendorPolicy, vendor_for};
@@ -43,7 +43,7 @@ impl AgentConfigEditor {
         expected: Option<&str>,
     ) -> Result<EffectiveConfig, ConfigUnavailableReason> {
         let vendor = validate_read_context(context, setting, current_platform())?;
-        let home = canonical_root(&context.home_root)?;
+        let home = context.canonical_path(&context.home_root)?;
         let (workspace_cwd, trusted_workspace_root) = canonical_workspace(context)?;
         let target = vendor.resolve_target_for_value(
             setting,
@@ -96,7 +96,7 @@ impl AgentConfigEditor {
         if operation.expected_value == operation.proposed_value {
             return Err(ConfigUnavailableReason::InvalidTarget);
         }
-        let home = canonical_root(&context.home_root)?;
+        let home = context.canonical_path(&context.home_root)?;
         let (workspace_cwd, trusted_workspace_root) = canonical_workspace(context)?;
         let target = vendor.resolve_target_for_value(
             operation.setting,
@@ -634,12 +634,12 @@ fn canonical_workspace(
     let cwd = context
         .workspace_cwd
         .as_deref()
-        .map(canonical_root)
+        .map(|path| context.canonical_path(path))
         .transpose()?;
     let root = context
         .trusted_workspace_root
         .as_deref()
-        .map(canonical_root)
+        .map(|path| context.canonical_path(path))
         .transpose()?;
     match (&cwd, &root) {
         (None, None) => Ok((None, None)),

@@ -45,6 +45,7 @@ use std::time::Duration;
 use antiburn_local::discovery::{Explorers, WatchRoot};
 use antiburn_local::model::AgentKind;
 use antiburn_local::paths::home_dir;
+use antiburn_local::paths::protected::project_path_access;
 use antiburn_local::platform::environment::environment_from_mounted_path;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tauri::{AppHandle, Manager};
@@ -248,6 +249,10 @@ fn encoded_path_bytes(path: &Path) -> usize {
     path.as_os_str().as_encoded_bytes().len()
 }
 
+pub(super) fn source_path_allowed(path: &Path) -> bool {
+    project_path_access(path, &HashSet::new()).is_allowed()
+}
+
 /// Watch every root in `roots` that exists and is not already in `watched`.
 /// Returns the roots that exist but could not be watched.
 fn watch_new_roots(
@@ -257,7 +262,7 @@ fn watch_new_roots(
 ) -> Vec<PathBuf> {
     let mut failed = Vec::new();
     for root in roots {
-        if watched.contains(&root.path) || !root.path.exists() {
+        if watched.contains(&root.path) || !source_path_allowed(&root.path) || !root.path.exists() {
             continue;
         }
         let mode = if root.recursive {
@@ -289,7 +294,7 @@ async fn run_watcher_supervisor(
         let (ingress, events, overflow, mut failure) = event_ingress_channel();
         let mut watcher = match RecommendedWatcher::new(
             move |result: notify::Result<Event>| ingress.submit(result),
-            notify::Config::default(),
+            notify::Config::default().with_follow_symlinks(false),
         ) {
             Ok(watcher) => watcher,
             Err(_) => {
@@ -328,7 +333,11 @@ async fn run_watcher_supervisor(
         loop {
             tokio::select! {
                 () = tokio::time::sleep_until(next_recheck) => {
-                    forget_missing_roots(&mut watcher, &mut watched);
+                    if !forget_missing_roots(&mut watcher, &mut watched) {
+                        drop(watcher);
+                        let _ = debounce.await;
+                        break;
+                    }
                     let roots = all_watch_roots(&home);
                     let failed_roots = watch_new_roots(&mut watcher, &roots, &mut watched);
                     let retry_needed = !failed_roots.is_empty();
@@ -388,8 +397,12 @@ async fn sleep_until_retry_or_closed(
     }
 }
 
-/// Remove watches whose roots no longer exist.
-fn forget_missing_roots(watcher: &mut RecommendedWatcher, watched: &mut HashSet<PathBuf>) {
+/// Return false when a replaced path requires dropping the watcher.
+fn forget_missing_roots(watcher: &mut RecommendedWatcher, watched: &mut HashSet<PathBuf>) -> bool {
+    // Some watcher backends resolve the path again when removing a watch.
+    if watched.iter().any(|path| !source_path_allowed(path)) {
+        return false;
+    }
     let missing: Vec<PathBuf> = watched
         .iter()
         .filter(|path| !path.exists())
@@ -399,6 +412,7 @@ fn forget_missing_roots(watcher: &mut RecommendedWatcher, watched: &mut HashSet<
         let _ = watcher.unwatch(path);
         watched.remove(path);
     }
+    true
 }
 
 struct WatcherLifecycle {
@@ -1109,6 +1123,25 @@ mod tests {
             failed.is_empty(),
             "a missing root is skipped, not reported as a failure"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_native_source_alias_never_registers_a_watch() {
+        let home = tempfile::TempDir::new().unwrap();
+        let target = home.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let alias = home.path().join("agent-sessions");
+        std::os::unix::fs::symlink(target, &alias).unwrap();
+        let mut watcher = RecommendedWatcher::new(
+            |_: notify::Result<Event>| {},
+            notify::Config::default().with_follow_symlinks(false),
+        )
+        .unwrap();
+        let mut watched = HashSet::new();
+        let roots = [WatchRoot::recursive(alias)];
+        assert!(watch_new_roots(&mut watcher, &roots, &mut watched).is_empty());
+        assert!(watched.is_empty());
     }
 
     #[test]

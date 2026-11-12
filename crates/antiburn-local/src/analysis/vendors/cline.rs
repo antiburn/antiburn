@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, params};
 use serde_json::Value;
 
 use crate::analysis::framing::{MAX_RECORD_BYTES, PartialReason};
@@ -128,10 +128,7 @@ fn visit_bundle(
 ) -> anyhow::Result<SessionSummary> {
     let manifest = read_json(manifest_path)?;
     validate_manifest(&manifest, session_id, messages_path)?;
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
+    let conn = crate::discovery::open_native_companion_database(db_path)?;
     conn.execute_batch("BEGIN")?;
     validate_schema(&conn)?;
     let root =
@@ -576,6 +573,21 @@ mod tests {
         assert_eq!(session.events[0].tools[0].name, "Agent");
         assert_eq!(session.events[2].source, EventSource::Subagent);
         assert!(session.events.iter().all(|event| event.provider.is_none()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlinked_companion_sidecar_makes_the_bundle_partial() {
+        let (_temp, input) = bundle(true);
+        let RawSource::ClineBundle { db_path, .. } = &input.source else {
+            unreachable!();
+        };
+        let sidecar = db_path.with_extension("db-shm");
+        std::os::unix::fs::symlink(db_path, sidecar).unwrap();
+        let mut sink = SessionCollector::new("cline", "root_1");
+        ClineSessionReader.visit(&input, &mut sink).unwrap();
+        assert_eq!(sink.coverage(), RecordCoverage::Partial);
+        assert!(sink.into_session().unwrap().events.is_empty());
     }
 
     #[test]

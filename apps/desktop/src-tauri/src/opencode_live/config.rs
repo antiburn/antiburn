@@ -3,9 +3,11 @@
 use std::{
     fmt,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
+use antiburn_local::discovery::source_path_access;
 use reqwest::{Client, RequestBuilder};
 use serde_json::Value;
 
@@ -67,6 +69,29 @@ impl fmt::Display for AuthorityError {
 
 impl std::error::Error for AuthorityError {}
 
+#[derive(Clone)]
+pub(crate) struct ConfigReadAdmission(Arc<dyn Fn(&Path) -> bool + Send + Sync>);
+
+impl ConfigReadAdmission {
+    pub(crate) fn new(admitted: impl Fn(&Path) -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(admitted))
+    }
+
+    pub(crate) fn allows(&self, path: &Path) -> bool {
+        (self.0)(path)
+    }
+}
+
+fn check_location(
+    admission: Option<&ConfigReadAdmission>,
+    location: &Path,
+) -> Result<(), AuthorityError> {
+    if admission.is_some_and(|admission| !admission.allows(location)) {
+        return Err(AuthorityError::Unavailable);
+    }
+    Ok(())
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ConfigEntry {
     pub path: Option<PathBuf>,
@@ -92,7 +117,20 @@ struct DatabaseIdentity {
     created: std::time::SystemTime,
 }
 
+fn canonical_database_path(path: &Path) -> Result<PathBuf, AuthorityError> {
+    if !path.is_absolute() {
+        return Err(AuthorityError::InvalidRequest);
+    }
+    if !source_path_access(path).is_allowed() {
+        return Err(AuthorityError::Unavailable);
+    }
+    path.canonicalize().map_err(|_| AuthorityError::Unavailable)
+}
+
 fn database_identity(path: &Path) -> Result<DatabaseIdentity, AuthorityError> {
+    if !source_path_access(path).is_allowed() {
+        return Err(AuthorityError::Unavailable);
+    }
     let metadata = std::fs::metadata(path).map_err(|_| AuthorityError::Unavailable)?;
     if !metadata.is_file() {
         return Err(AuthorityError::Unavailable);
@@ -127,14 +165,19 @@ async fn blocking_io<T: Send + 'static>(
         .map_err(|_| AuthorityError::Unavailable)?
 }
 
-pub(crate) async fn canonical_location(location: PathBuf) -> Result<PathBuf, AuthorityError> {
+pub(crate) async fn canonical_location(
+    location: PathBuf,
+    admission: Option<ConfigReadAdmission>,
+) -> Result<PathBuf, AuthorityError> {
     blocking_io(move || {
+        check_location(admission.as_ref(), &location)?;
         if !location.is_absolute() {
             return Err(AuthorityError::InvalidRequest);
         }
         let location = location
             .canonicalize()
             .map_err(|_| AuthorityError::Unavailable)?;
+        check_location(admission.as_ref(), &location)?;
         if !location.is_dir() {
             return Err(AuthorityError::InvalidRequest);
         }
@@ -151,14 +194,9 @@ async fn capture_start(
     let database_path = database_path.to_path_buf();
     let snapshot_path = registration_path.clone();
     let (registration, database, database_identity) = blocking_io(move || {
-        if !database_path.is_absolute() {
-            return Err(AuthorityError::InvalidRequest);
-        }
+        let database = canonical_database_path(&database_path)?;
         let registration =
             read_registration(&snapshot_path).map_err(|_| AuthorityError::Unavailable)?;
-        let database = database_path
-            .canonicalize()
-            .map_err(|_| AuthorityError::Unavailable)?;
         let identity = database_identity(&database)?;
         Ok((registration, database, identity))
     })
@@ -196,7 +234,10 @@ impl VerifiedConfigConsumer {
         let (registration_path, candidates) = blocking_io(|| {
             let path =
                 super::default_registration_path().map_err(|_| AuthorityError::Unavailable)?;
-            Ok((path, registered_database_candidates()))
+            Ok((
+                path,
+                antiburn_local::discovery::agents::opencode::native_database_paths(),
+            ))
         })
         .await?;
         Self::from_candidates(&registration_path, &candidates, started).await
@@ -236,6 +277,7 @@ impl VerifiedConfigConsumer {
     pub(crate) async fn capture_async(
         &mut self,
         location: &Path,
+        admission: Option<ConfigReadAdmission>,
     ) -> Result<CurrentConfigAuthority, AuthorityError> {
         tokio::time::timeout(REQUEST_TIMEOUT, async {
             let proof = if self
@@ -262,6 +304,7 @@ impl VerifiedConfigConsumer {
                     location: location.into(),
                 },
                 proof,
+                admission,
             )
             .await
         })
@@ -309,6 +352,7 @@ pub(crate) struct CurrentConfigAuthority {
     identity: ConsumerIdentity,
     entries: Vec<ConfigEntry>,
     observed_at: Instant,
+    admission: Option<ConfigReadAdmission>,
 }
 
 impl fmt::Debug for CurrentConfigAuthority {
@@ -323,26 +367,36 @@ impl fmt::Debug for CurrentConfigAuthority {
 
 impl CurrentConfigAuthority {
     #[cfg(test)]
-    pub(crate) fn registered(_: &Path) -> Result<Self, AuthorityError> {
+    pub(crate) fn registered(_: &Path, _: ConfigReadAdmission) -> Result<Self, AuthorityError> {
         Err(AuthorityError::Unavailable)
     }
 
     /// Blocks the calling thread. Async callers must use a blocking worker.
     #[cfg(not(test))]
-    pub(crate) fn registered(location: &Path) -> Result<Self, AuthorityError> {
-        tauri::async_runtime::block_on(Self::registered_async(location))
+    pub(crate) fn registered(
+        location: &Path,
+        admission: ConfigReadAdmission,
+    ) -> Result<Self, AuthorityError> {
+        tauri::async_runtime::block_on(Self::registered_async(location, Some(admission)))
     }
 
     #[cfg(test)]
-    pub(crate) async fn registered_async(_: &Path) -> Result<Self, AuthorityError> {
+    pub(crate) async fn registered_async(
+        _: &Path,
+        _: Option<ConfigReadAdmission>,
+    ) -> Result<Self, AuthorityError> {
         Err(AuthorityError::Unavailable)
     }
 
     #[cfg(not(test))]
-    pub(crate) async fn registered_async(location: &Path) -> Result<Self, AuthorityError> {
+    pub(crate) async fn registered_async(
+        location: &Path,
+        admission: Option<ConfigReadAdmission>,
+    ) -> Result<Self, AuthorityError> {
+        check_location(admission.as_ref(), location)?;
         VerifiedConfigConsumer::registered_async()
             .await?
-            .capture_async(location)
+            .capture_async(location, admission)
             .await
     }
 
@@ -355,23 +409,33 @@ impl CurrentConfigAuthority {
     ) -> Result<Self, AuthorityError> {
         VerifiedConfigConsumer::from_candidates(registration_path, database_candidates, started)
             .await?
-            .capture_async(location)
+            .capture_async(location, None)
             .await
     }
 
     /// Blocks the calling thread. Async callers must use `capture_async`.
-    #[cfg(any(not(windows), test))]
+    #[cfg(test)]
     pub(crate) fn capture(request: &ConfigAuthorityRequest) -> Result<Self, AuthorityError> {
         tauri::async_runtime::block_on(Self::capture_async(request))
     }
 
+    #[cfg(test)]
     pub(crate) async fn capture_async(
         request: &ConfigAuthorityRequest,
     ) -> Result<Self, AuthorityError> {
+        Self::capture_admitted(request, None).await
+    }
+
+    async fn capture_admitted(
+        request: &ConfigAuthorityRequest,
+        admission: Option<ConfigReadAdmission>,
+    ) -> Result<Self, AuthorityError> {
+        check_location(admission.as_ref(), &request.location)?;
         tokio::time::timeout(REQUEST_TIMEOUT, async {
             Self::capture_verified(
                 request,
                 capture_start(&request.registration_path, &request.database_path).await?,
+                admission,
             )
             .await
         })
@@ -382,6 +446,7 @@ impl CurrentConfigAuthority {
     async fn capture_verified(
         request: &ConfigAuthorityRequest,
         proof: CaptureStart,
+        admission: Option<ConfigReadAdmission>,
     ) -> Result<Self, AuthorityError> {
         let CaptureStart {
             registration: before,
@@ -389,19 +454,21 @@ impl CurrentConfigAuthority {
             database,
             database_identity,
         } = proof;
-        let location = canonical_location(request.location.clone()).await?;
+        let location = canonical_location(request.location.clone(), admission.clone()).await?;
         validate_capture_files(
             request.clone(),
             before.clone(),
             database.clone(),
             database_identity,
             location.clone(),
+            admission.clone(),
         )
         .await?;
         let client = super::local_client()
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|_| AuthorityError::Unavailable)?;
+        check_location(admission.as_ref(), &request.location)?;
         let entries = fetch_config(&client, &before, &request.location).await?;
         let after_info = verify_database_association(
             &request.registration_path,
@@ -419,6 +486,7 @@ impl CurrentConfigAuthority {
             database.clone(),
             database_identity,
             location.clone(),
+            admission.clone(),
         )
         .await?;
         Ok(Self {
@@ -433,13 +501,17 @@ impl CurrentConfigAuthority {
             },
             entries,
             observed_at: Instant::now(),
+            admission,
         })
     }
 
     /// Blocks the calling thread. Async callers must use a blocking worker.
     #[cfg(not(windows))]
     pub(crate) fn refresh(&self) -> Result<Self, AuthorityError> {
-        let fresh = Self::capture(&self.request)?;
+        let fresh = tauri::async_runtime::block_on(Self::capture_admitted(
+            &self.request,
+            self.admission.clone(),
+        ))?;
         if self.identity != fresh.identity {
             return Err(AuthorityError::ChangedConsumer);
         }
@@ -454,7 +526,7 @@ impl CurrentConfigAuthority {
     pub(crate) async fn for_location_async(&self, location: &Path) -> Result<Self, AuthorityError> {
         let mut request = self.request.clone();
         request.location = location.into();
-        let fresh = Self::capture_async(&request).await?;
+        let fresh = Self::capture_admitted(&request, self.admission.clone()).await?;
         if self.identity.pid != fresh.identity.pid
             || self.identity.version != fresh.identity.version
             || self.identity.service_id != fresh.identity.service_id
@@ -475,6 +547,7 @@ impl CurrentConfigAuthority {
 
     pub(crate) fn is_expired(&self) -> bool {
         self.observed_at.elapsed() > MAX_RECEIPT_AGE
+            || check_location(self.admission.as_ref(), &self.request.location).is_err()
     }
 
     #[cfg(test)]
@@ -493,6 +566,7 @@ impl CurrentConfigAuthority {
             identity: self.identity.clone(),
             entries: Vec::new(),
             observed_at: self.observed_at,
+            admission: self.admission.clone(),
         }
     }
 
@@ -558,6 +632,7 @@ impl CurrentConfigAuthority {
             },
             entries: decode_entries(&serde_json::to_vec(&entries).unwrap()).unwrap(),
             observed_at: Instant::now(),
+            admission: None,
         }
     }
 }
@@ -568,17 +643,15 @@ async fn validate_capture_files(
     database: PathBuf,
     identity: DatabaseIdentity,
     location: PathBuf,
+    admission: Option<ConfigReadAdmission>,
 ) -> Result<(), AuthorityError> {
     blocking_io(move || {
+        check_location(admission.as_ref(), &request.location)?;
         if read_registration(&request.registration_path)
             .map_err(|_| AuthorityError::ChangedConsumer)?
             != registration
             || database_identity(&request.database_path)? != identity
-            || request
-                .database_path
-                .canonicalize()
-                .map_err(|_| AuthorityError::ChangedConsumer)?
-                != database
+            || canonical_database_path(&request.database_path)? != database
             || request
                 .location
                 .canonicalize()
@@ -615,14 +688,6 @@ async fn fetch_config(
             _ => AuthorityError::Unavailable,
         })?;
     decode_entries(&bytes)
-}
-
-#[cfg(not(test))]
-fn registered_database_candidates() -> Vec<PathBuf> {
-    antiburn_local::discovery::agents::opencode::native_database_paths()
-        .into_iter()
-        .filter(|path| path.is_file())
-        .collect()
 }
 
 fn validate_request(request: &reqwest::Request, location: &Path) -> Result<(), AuthorityError> {
@@ -691,7 +756,7 @@ mod tests {
         assert!(VerifiedConfigConsumer::registered_async().await.is_err());
         let temporary = tempfile::tempdir().unwrap();
         assert!(
-            CurrentConfigAuthority::registered_async(temporary.path())
+            CurrentConfigAuthority::registered_async(temporary.path(), None)
                 .await
                 .is_err()
         );
@@ -755,6 +820,29 @@ mod tests {
         );
         let many = json!(vec![json!({"type":"document","info":{}}); MAX_ENTRIES + 1]);
         assert!(decode_entries(&serde_json::to_vec(&many).unwrap()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_database_alias_cannot_supply_a_live_config_source() {
+        let temporary = tempfile::tempdir().unwrap();
+        let database = temporary.path().join("opencode.db");
+        let alias = temporary.path().join("alias.db");
+        std::fs::write(&database, b"synthetic data").unwrap();
+        std::os::unix::fs::symlink(&database, &alias).unwrap();
+
+        assert_eq!(
+            canonical_database_path(&database).unwrap(),
+            database.canonicalize().unwrap()
+        );
+        assert_eq!(
+            canonical_database_path(&alias),
+            Err(AuthorityError::Unavailable)
+        );
+        assert!(matches!(
+            database_identity(&alias),
+            Err(AuthorityError::Unavailable)
+        ));
     }
 
     #[test]

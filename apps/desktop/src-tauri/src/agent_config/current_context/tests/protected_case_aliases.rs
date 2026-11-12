@@ -41,15 +41,18 @@ fn protected_alias_matching_is_conservative_but_keeps_component_boundaries() {
     let home = Path::new("/Synthetic/Users/TéstHome");
     let grants = HashSet::new();
     let admission = PathAdmission::new(home, &grants);
+    assert_eq!(
+        admission.check(Path::new("/synthetic/users/tÉsthome/documents/rules.md")),
+        Err("protected_path_not_granted")
+    );
     for path in [
-        "/synthetic/users/tÉsthome/documents/rules.md",
         "/synthetic/users/Te\u{301}stHome/DoCuMeNtS/rules.md",
         "/synthetic/users/OtherHome/Documents/rules.md",
         "/Synthetic/Users/TéstHome/Documénts/rules.md",
     ] {
         assert_eq!(
             admission.check(Path::new(path)),
-            Err("protected_path_not_granted")
+            Err("path_outside_allowed_root")
         );
     }
     let documents_grant = HashSet::from(["Documents".to_owned()]);

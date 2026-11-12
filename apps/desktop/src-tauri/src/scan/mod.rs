@@ -99,7 +99,10 @@ use antiburn_local::discovery::{
     session_log_read, session_source_preview, session_source_tail,
 };
 use antiburn_local::model::AgentKind;
-use antiburn_local::paths::{home_dir, ignored_paths};
+use antiburn_local::paths::home_dir;
+#[cfg(test)]
+use antiburn_local::paths::ignored_paths;
+use antiburn_local::paths::protected::ProjectAccessDecision;
 use antiburn_local::platform::environment::{self, DiscoveryEnvironment};
 use antiburn_local::platform::git;
 use tauri::{AppHandle, Emitter, Manager};
@@ -252,6 +255,23 @@ fn uses_history_window(trigger: &ScanTrigger) -> bool {
         trigger,
         ScanTrigger::HistoricalScan | ScanTrigger::SourceRefresh { .. }
     )
+}
+
+fn retry_superseded_project_deferrals(controller: &ScanController, trigger: &ScanTrigger) {
+    controller.request(if uses_history_window(trigger) {
+        ScanTrigger::HistoricalScan
+    } else {
+        ScanTrigger::WatcherOverflow
+    });
+}
+
+fn pass_covers_work(
+    succeeded: bool,
+    cancelled: bool,
+    project_deferrals_superseded: bool,
+    index_generation_unchanged: bool,
+) -> bool {
+    succeeded && !cancelled && !project_deferrals_superseded && index_generation_unchanged
 }
 
 /// What one pass discovers: every agent, or only a burst-named subset.
@@ -1123,6 +1143,13 @@ async fn try_run_pass(
     .await;
 
     let controller = app.state::<ScanController>();
+    let project_deferrals_superseded = outcome
+        .as_ref()
+        .is_ok_and(|summary| summary.project_deferrals_superseded);
+    if project_deferrals_superseded {
+        retry_superseded_project_deferrals(&controller, &trigger);
+    }
+
     let cancelled = controller.cancelled();
     controller.update(|status| {
         status.running = false;
@@ -1152,12 +1179,15 @@ async fn try_run_pass(
     if outcome.is_ok() {
         storage_health::note_ok(app);
     }
-    let covered = outcome.is_ok()
-        && !cancelled
-        && index_generation
+    let covered = pass_covers_work(
+        outcome.is_ok(),
+        cancelled,
+        project_deferrals_superseded,
+        index_generation
             == app
                 .state::<crate::insights_worker::WorkerHandle>()
-                .index_generation();
+                .index_generation(),
+    );
     if covered {
         match (&trigger, &scope) {
             // The first current-window pass to cover everything clears the
@@ -1178,11 +1208,13 @@ async fn try_run_pass(
     ownership.release();
     history::push_progress(app, true);
     history::maybe_start_automatic_pass(app);
-    crate::usage_alerts::learn_after_data_settles(
-        app,
-        app.state::<crate::insights_worker::WorkerHandle>()
-            .index_generation(),
-    );
+    if !project_deferrals_superseded {
+        crate::usage_alerts::learn_after_data_settles(
+            app,
+            app.state::<crate::insights_worker::WorkerHandle>()
+                .index_generation(),
+        );
+    }
     let finished = controller.status();
     let duration_ms = pass_started_at.elapsed().as_millis() as u64;
     match &outcome {
@@ -1277,6 +1309,8 @@ struct PassSummary {
     list_changed: bool,
     /// [`Described::changed`]'s length: new or refreshed rows.
     re_described: usize,
+    /// A newer repository policy rejected this pass's deferred-project snapshot.
+    project_deferrals_superseded: bool,
 }
 
 /// The age limit discovery applies to a routine pass, in seconds.
@@ -1328,7 +1362,7 @@ async fn pass(
         .and_then(|days| history::window_secs(days, now))
         .unwrap_or(CURRENT_WINDOW_SECS);
 
-    let ignored = store.repository_policy_snapshot()?.ignored_paths;
+    let repository_policy = store.repository_policy_snapshot()?;
     let include_non_repo_folders = store.settings_snapshot().include_non_repo_folders;
     let home = home_dir().unwrap_or_default();
 
@@ -1351,7 +1385,7 @@ async fn pass(
             history: history_retention.is_some(),
             progress: full_pass,
             home,
-            ignored,
+            repository_policy,
             include_non_repo_folders,
             refresh_repositories: trigger.refreshes_repositories(),
         },
@@ -1364,6 +1398,7 @@ async fn pass(
         changed,
         list_changed,
         gate,
+        project_deferrals_superseded,
     } = &described;
     ::tracing::debug!(
         event = "scan_admission_finished",
@@ -1401,6 +1436,7 @@ async fn pass(
             sessions: records.len(),
             list_changed: *list_changed,
             re_described: changed.len(),
+            project_deferrals_superseded: *project_deferrals_superseded,
         });
     }
 
@@ -1408,6 +1444,7 @@ async fn pass(
         sessions: records.len(),
         list_changed: *list_changed,
         re_described: changed.len(),
+        project_deferrals_superseded: *project_deferrals_superseded,
     })
 }
 
@@ -1636,6 +1673,8 @@ struct Described {
     list_changed: bool,
     /// How the repository gate resolved every read session.
     gate: GateCounts,
+    /// A newer repository policy rejected this pass's deferred-project snapshot.
+    project_deferrals_superseded: bool,
 }
 
 enum AdmissionIo {
@@ -1746,23 +1785,35 @@ impl IncrementalAdmission<'_> {
         self.error.get_or_insert(error);
     }
 
+    #[cfg(test)]
     async fn commit(
         &mut self,
         guard: &SessionWriteGuard,
         record: &SessionRecord,
         changed: bool,
     ) -> bool {
+        self.commit_with_incarnation(guard, record, changed)
+            .await
+            .is_some()
+    }
+
+    async fn commit_with_incarnation(
+        &mut self,
+        guard: &SessionWriteGuard,
+        record: &SessionRecord,
+        changed: bool,
+    ) -> Option<crate::store::Incarnation> {
         self.outcomes
             .insert(record.key.clone(), AttemptOutcome::Failed);
         if self.io.cancelled() || self.store.capture_destructive_write_epoch() != self.write_fence {
-            return false;
+            return None;
         }
         let keys = [record.key.clone()];
         let returned = match self.store.sessions_with_missing_source_for(&keys) {
             Ok(returned) => returned,
             Err(error) => {
                 self.fail(error);
-                return false;
+                return None;
             }
         };
         if !changed && !returned.contains(&record.key) {
@@ -1772,12 +1823,12 @@ impl IncrementalAdmission<'_> {
                         record.key.clone(),
                         AttemptOutcome::Accepted(Box::new(record.clone()), false),
                     );
-                    true
+                    guard.stored_incarnation()
                 }
-                Ok(false) => false,
+                Ok(false) => None,
                 Err(error) => {
                     self.fail(error);
-                    false
+                    None
                 }
             };
         }
@@ -1785,7 +1836,7 @@ impl IncrementalAdmission<'_> {
             Ok((presence, _)) => presence.is_empty(),
             Err(error) => {
                 self.fail(error);
-                return false;
+                return None;
             }
         };
         let Some((incarnations, revision)) = (match self.io.checked(
@@ -1797,14 +1848,14 @@ impl IncrementalAdmission<'_> {
             Ok(SessionCommitOutcome::Rejected(_)) => None,
             Err(error) => {
                 self.fail(error);
-                return false;
+                return None;
             }
         }) else {
             ::tracing::warn!(
                 event = "scan_incremental_commit_stale",
                 session_id = %record.key.session_id,
             );
-            return false;
+            return None;
         };
         self.io.wake_workers();
         for observation in discovery_report(
@@ -1833,7 +1884,7 @@ impl IncrementalAdmission<'_> {
             ),
             record.clone(),
         );
-        true
+        Some(incarnations[0].1)
     }
 
     async fn delete_rejected(&mut self, guard: &SessionWriteGuard, key: &SessionKey) -> bool {
@@ -2157,6 +2208,7 @@ async fn describe_with_gate(
                 changed: Vec::new(),
                 list_changed: false,
                 gate: GateCounts::default(),
+                project_deferrals_superseded: false,
             };
         }
     };
@@ -2503,6 +2555,7 @@ async fn describe_with_gate(
         changed,
         list_changed,
         gate,
+        project_deferrals_superseded: false,
     }
 }
 
@@ -2552,28 +2605,71 @@ enum RepoAdmission {
     Rejected,
     /// Git cannot run, so the gate cannot decide. The string holds the error.
     GitUnavailable(String),
+    /// Project access is unavailable. The transcript can still be indexed.
+    DeferredProject(PathBuf, ProjectAccessDecision),
 }
 
 /// Apply the repository scan gate to one session with the CWD `cwd`.
+#[cfg(test)]
 async fn repo_admission(
     record: &SessionRecord,
     cwd: &str,
     include_non_repo_folders: bool,
 ) -> RepoAdmission {
+    let grants = std::collections::HashSet::new();
+    guarded_repo_admission(
+        record,
+        cwd,
+        include_non_repo_folders,
+        &|path| antiburn_local::paths::protected::git_project_access(path, &grants),
+        &|path| antiburn_local::paths::protected::project_path_access(path, &grants),
+    )
+    .await
+}
+
+async fn guarded_repo_admission(
+    record: &SessionRecord,
+    cwd: &str,
+    include_non_repo_folders: bool,
+    git_access: &(impl Fn(&std::path::Path) -> ProjectAccessDecision + Sync + ?Sized),
+    path_access: &(impl Fn(&std::path::Path) -> ProjectAccessDecision + Sync + ?Sized),
+) -> RepoAdmission {
     let cwd = std::path::Path::new(cwd);
+    let access = git_access(cwd);
+    if access != ProjectAccessDecision::Allowed {
+        return RepoAdmission::DeferredProject(cwd.to_path_buf(), access);
+    }
     match git::repo_root_if_any_at(cwd).await {
         Ok(Some(root)) => return RepoAdmission::Repository(root),
         // Only a CWD that Git reports as outside every repository can move
         // to a repository below it or stay as a folder.
         Ok(None) => {}
-        Err(error) => return git_error_admission(&error, git_runs(cwd).await),
+        Err(error) => {
+            let access = path_access(cwd);
+            if access != ProjectAccessDecision::Allowed {
+                return RepoAdmission::DeferredProject(cwd.to_path_buf(), access);
+            }
+            if is_git_project_permission_error(&error) {
+                return RepoAdmission::DeferredProject(
+                    cwd.to_path_buf(),
+                    ProjectAccessDecision::DeferredUncertain,
+                );
+            }
+            return git_error_admission(&error, git_runs(cwd).await);
+        }
     }
-    if record.source_kind == "file"
-        && let Some(root) =
-            scanner::infer_repo_root_below_cwd(std::path::Path::new(&record.source_label), cwd)
-                .await
-    {
-        return RepoAdmission::InferredRepository(root);
+    if record.source_kind == "file" {
+        match scanner::infer_repo_root_below_cwd_with_policy(
+            std::path::Path::new(&record.source_label),
+            cwd,
+            git_access,
+        )
+        .await
+        {
+            Ok(Some(root)) => return RepoAdmission::InferredRepository(root),
+            Ok(None) => {}
+            Err((path, access)) => return RepoAdmission::DeferredProject(path, access),
+        }
     }
     if include_non_repo_folders {
         RepoAdmission::Folder
@@ -2613,6 +2709,7 @@ fn apply_repo_admission(
             *changed_record = true;
             ControlFlow::Continue(Some(root))
         }
+        RepoAdmission::DeferredProject(..) => ControlFlow::Continue(None),
         RepoAdmission::Folder => {
             gate.folder += 1;
             ControlFlow::Continue(None)
@@ -2628,6 +2725,12 @@ fn apply_repo_admission(
             ControlFlow::Break(())
         }
     }
+}
+
+fn is_git_project_permission_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.starts_with("git rev-parse --show-toplevel failed:")
+        && (message.contains("Permission denied") || message.contains("Operation not permitted"))
 }
 
 /// File a session when Git fails for its CWD. A Git that cannot run at all

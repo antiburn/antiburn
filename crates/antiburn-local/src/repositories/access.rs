@@ -18,7 +18,11 @@ use super::consent::ConsentGrants;
 /// a permission error means "present but access-controlled". Used to avoid
 /// reporting a non-existent protected directory (for example
 /// `~/Documents/GitHub` on a machine that does not use it) as needing consent.
+#[cfg(test)]
 pub(super) async fn path_exists_without_prompting(path: &Path) -> bool {
+    if !crate::paths::protected::project_path_access(path, &Default::default()).is_allowed() {
+        return false;
+    }
     match tokio::fs::metadata(path).await {
         Ok(_) => true,
         Err(e) => e.kind() == ErrorKind::PermissionDenied,
@@ -33,6 +37,11 @@ pub(super) async fn path_exists_without_prompting(path: &Path) -> bool {
 /// observes a denial that already happened; it never probes an ungranted path,
 /// so it cannot raise a consent dialog.
 pub async fn verify_dir_access(consent: &dyn ConsentGrants, path: &Path) -> bool {
+    if !consent.is_current()
+        || !crate::paths::protected::project_path_access(path, &consent.granted_dirs()).is_allowed()
+    {
+        return false;
+    }
     let t0 = std::time::Instant::now();
     match tokio::fs::read_dir(path).await {
         Ok(_) => true,
