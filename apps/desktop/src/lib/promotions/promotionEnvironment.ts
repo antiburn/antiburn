@@ -1,12 +1,48 @@
-import { getMainWindowVisible, onMainWindowVisibilityChanged } from "../ipc"
+import {
+  getMainWindowVisible,
+  onMainWindowVisibilityChanged,
+  getPromotionReadiness,
+  onOnboardingChanged,
+} from "../ipc"
 import type { PromotionEnvironment } from "./PromotionSession"
 import { PROMOTION_LAUNCHER_OPENED_KEY, PROMOTION_SEEN_KEY } from "./PromotionSession"
+let manualReady = false
+let revision = 0
+async function refreshReadiness() {
+  const request = ++revision
+  const readiness = await getPromotionReadiness().catch(() => ({
+    manual: false,
+    automatic: false,
+  }))
+  if (request !== revision) return undefined
+  manualReady = readiness.manual
+  return readiness.automatic
+}
 export const promotionEnvironment: PromotionEnvironment = {
-  isManualReady: () => true,
-  loadReady: async () => true,
+  isManualReady: () => manualReady,
+  loadReady: async () => (await refreshReadiness()) ?? false,
   onReady: async (listener) => {
-    listener(true)
-    return () => undefined
+    let active = true
+    let refresh = 0
+    const sync = () => {
+      const request = ++refresh
+      void refreshReadiness().then((ready) => {
+        if (active && request === refresh && ready !== undefined) listener(ready)
+      })
+    }
+    const changed = () => {
+      manualReady = false
+      listener(false)
+      sync()
+    }
+    const stop = await onOnboardingChanged(changed).catch(() => () => {})
+    window.addEventListener("focus", sync)
+    sync()
+    return () => {
+      active = false
+      stop()
+      window.removeEventListener("focus", sync)
+    }
   },
   loadVisible: getMainWindowVisible,
   onVisible: onMainWindowVisibilityChanged,

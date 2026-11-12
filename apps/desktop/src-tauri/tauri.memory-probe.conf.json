@@ -17,5 +17,12 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["ai-antiburn-desktop-memory-probe"]
+      }
+    }
   }
 }

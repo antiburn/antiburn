@@ -13,6 +13,7 @@ import {
   type InterfaceScaleChange,
   type InterfaceScaleSource,
 } from "./interfaceScale"
+import type { OnboardingInteraction } from "./onboardingAnalytics"
 import type { SettingsPane } from "./settingsPanes"
 import type { FolderAccessOutcome, FolderPermissions, ProbeRecord } from "./types/repository"
 import type {
@@ -20,6 +21,7 @@ import type {
   AppInfo,
   AppSettings,
   InsightsBacklog,
+  OnboardingState,
   RepositoryItemPayload,
   ScanStatus,
   StorageHealthPayload,
@@ -301,6 +303,29 @@ export async function patchSidebarUsage(
   return invoke<AppSettings>("patch_sidebar_usage", { patch })
 }
 
+export async function getPromotionReadiness(): Promise<{
+  manual: boolean
+  automatic: boolean
+}> {
+  if (!hasShell()) return { manual: true, automatic: true }
+  return invoke("get_promotion_readiness")
+}
+
+export async function onOnboardingChanged(listener: () => void): Promise<UnlistenFn> {
+  if (!hasShell()) return noShellUnlisten
+  return listen("onboarding:changed", listener)
+}
+
+export async function getOnboardingState(): Promise<OnboardingState> {
+  if (!hasShell()) return "completed"
+  return invoke<OnboardingState>("get_onboarding_state")
+}
+
+export async function setOnboardingState(state: OnboardingState): Promise<OnboardingState> {
+  if (!hasShell()) return state
+  return invoke<OnboardingState>("set_onboarding_state", { state })
+}
+
 /** Change only interface size using the shell's atomic preference update. */
 export async function setInterfaceScale(
   change: InterfaceScaleChange,
@@ -369,6 +394,7 @@ export type Interaction =
       origin: SurfaceOrigin
     }
   | { kind: "settingsPaneViewed"; pane: SettingsPane }
+  | OnboardingInteraction
   | {
       kind: "liveUsageStateObserved"
       provider: LiveUsageProvider

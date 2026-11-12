@@ -10,8 +10,8 @@
     "dev:bundle": "node scripts/run-tauri.mjs build --debug --config src-tauri/tauri.debug.conf.json",
     "dev:cli": "node scripts/run-tauri.mjs dev --with-cli --config src-tauri/tauri.debug.conf.json",
     "dev:bundle:cli": "node scripts/run-tauri.mjs build --debug --with-cli --config src-tauri/tauri.debug.conf.json",
-    "dev:web": "vite",
-    "build": "node ../../scripts/assemble-agent-integrations.mjs && vite build",
+    "dev:web": "pnpm build:demo && vite",
+    "build": "node ../../scripts/assemble-agent-integrations.mjs && pnpm build:demo && vite build",
     "preview": "vite preview",
     "lint": "eslint .",
     "type-check": "tsc --build --force",
@@ -22,7 +22,8 @@
     "format:write": "prettier --write .",
     "knip": "knip --no-progress",
     "icons": "node scripts/generate-icons.mjs",
-    "tauri": "node scripts/run-tauri.mjs"
+    "tauri": "node scripts/run-tauri.mjs",
+    "build:demo": "node scripts/build-onboarding-demo.mjs"
   },
   "dependencies": {
     "@fontsource-variable/bitcount-prop-single": "^5.3.0",

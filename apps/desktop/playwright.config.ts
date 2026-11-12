@@ -14,7 +14,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "pnpm exec vite --config tests/visual/vite.config.ts",
+    command: "pnpm build:demo && pnpm exec vite --config tests/visual/vite.config.ts",
     url: "http://127.0.0.1:4174/tests/visual/",
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

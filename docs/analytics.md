@@ -8,7 +8,8 @@ the complete account of that: every field, every event, what is deliberately
 excluded, what antiburn cannot promise, and how to verify all of it yourself
 without trusting this page.
 
-Official release builds start with analytics on. This includes the launch event. The permanent opt-out is in **Settings →
+Official release builds start with analytics on. This includes launch and
+onboarding events. The permanent opt-out is in **Settings →
 Privacy**. Set `ANTIBURN_ANALYTICS_ENABLED=false` in the app's launch
 environment for a second, process-level opt-out.
 
@@ -598,6 +599,27 @@ later, and the table is not a courtesy when they are: a test
 in the code and not in this table, so what you are reading is enforced rather
 than maintained.
 
+### Desktop onboarding
+
+| Event                               | When it is captured                                                                                                                                                                                                                    | Event-specific properties                                                                                                                                                                                                                                                                                                         |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `antiburn.onboarding_screen_viewed` | An onboarding screen becomes visible. Returning to a screen or reopening a saved draft can produce another view.                                                                                                                       | `label` is `welcome`, `sessions`, `limits`, `hud`, `checks`, `cloud`, `cloud_unavailable` (legacy), `cloud_handoff`, `cloud_identity`, `cloud_folders`, `cloud_sync` (legacy), or `cloud_complete`.                                                                                                                               |
+| `antiburn.onboarding_action_taken`  | The onboarding flow accepts an explicit navigation or Cloud/local choice, or the shell dismisses the window at the reader's request. Cloud folder selection reports start; background sync does not add a screen or recovery controls. | `label` is the action's screen or the last saved screen on dismissal. `detail` is `get_started`, `continue`, `back`, `dismissed`, `use_locally`, `set_up_cloud`, `learn_more`, `sign_in`, `cancel`, `retry`, `add_folder`, `select_folder`, `start_sync`, `check_status` (legacy), `cancel_sync` (legacy), `done`, or `sign_out`. |
+| `antiburn.onboarding_cloud_outcome` | A Cloud operation reports a new status. Earlier versions also report reaching the unavailable screen.                                                                                                                                  | `detail` is `opening`, `waiting`, `returned`, `cancelled`, `expired`, `browser_failed`, `offline`, `credential_failed`, `signed_in`, `signed_out`, `unavailable`, `accepted`, `partial`, or `failed`.                                                                                                                             |
+| `antiburn.onboarding_completed`     | The desktop shell saves the change from incomplete to complete after the reader finishes onboarding.                                                                                                                                   | No event-specific properties.                                                                                                                                                                                                                                                                                                     |
+
+Onboarding events contain no session or folder information, identifiers beyond
+the standard analytics envelope, account details, or credentials. The Cloud
+outcome describes observed operation status. `returned` is a legacy marketing-return
+value; current Learn more opens a plain external link and emits no return or waiting
+outcome. `signed_in` requires native account verification. Authentication rejection
+and invalid responses emit `failed`; this value does not establish a sync attempt.
+Sync statuses `accepted` and `partial` are reserved until the separately gated sync
+backend records native outcomes. Production sync outcome recording is not implemented.
+Synthetic review fixtures do not report success outcomes.
+No callback URLs or authorization codes are collected. See the
+[onboarding measurement contract](analytics-measurement.md#desktop-onboarding).
+
 ## What the endpoint also records
 
 The first-party endpoint stores the request IP address and user-agent with each
@@ -707,7 +729,7 @@ The FTUE removal stops emissions of `antiburn.first_run_step_reached`,
 `antiburn.first_run_action`, `antiburn.first_run_finished`, and
 `antiburn.step_settings_viewed`. Their catalog entries describe historical data;
 they do not describe current product behavior. Existing event decoding remains
-compatible with queued historical records. Use launch, visible surface, scan,
-and session interaction events for the current Sessions-first experience.
-The settings migration preserves explicit analytics choices and the legacy
-analytics-off fallback before deleting `onboardingCompleted`.
+compatible with queued historical records. Desktop onboarding has its own
+event series. The earlier settings migration preserved explicit analytics
+choices and the legacy analytics-off fallback when it removed
+`onboardingCompleted`.

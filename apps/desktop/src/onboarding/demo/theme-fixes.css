@@ -1,0 +1,86 @@
+/* Match the parent scheme so transparent frames show the stage gradient. */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+.folder-selection-footer .folder-selection-primary,
+[data-theme="dark"] .folder-selection-footer .folder-selection-primary {
+  background: var(--primary-action);
+  border-color: var(--primary-action);
+  color: var(--primary-action-ink);
+}
+.folder-selection-footer .folder-selection-primary:hover,
+.folder-selection-footer .folder-selection-primary:focus-visible {
+  background: var(--primary-action-hover);
+  border-color: var(--primary-action-hover);
+}
+.folder-selection-footer .folder-selection-primary:active {
+  background: var(--primary-action-pressed);
+  border-color: var(--primary-action-pressed);
+}
+
+:root {
+  --primary-action: #202020;
+  --primary-action-hover: #383838;
+  --primary-action-pressed: #111111;
+  --primary-action-ink: white;
+}
+:root[data-theme="dark"] {
+  --primary-action: #eeeeee;
+  --primary-action-hover: #dddddd;
+  --primary-action-pressed: #cccccc;
+  --primary-action-ink: #202020;
+}
+
+.folder-selection .ui-push-button {
+  position: relative;
+  min-height: 36px;
+  height: auto;
+  padding: 6px 12px;
+  border-radius: 8px;
+}
+.folder-selection .ui-push-button::after {
+  content: "";
+  position: absolute;
+  inset: -2px 0;
+  min-height: 40px;
+}
+
+/* Show the onboarding window surface through the fixture frame. */
+.folder-selection {
+  background: transparent;
+}
+
+.folder-selection
+  :is(.folder-selection-add, .folder-selection-footer)
+  .ui-push-button:not(.folder-selection-primary) {
+  background: #fff;
+  color: #202020;
+  border: 1px solid #00000020;
+  font:
+    400 13px/1.4 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  box-shadow: none;
+}
+[data-theme="dark"]
+  .folder-selection
+  :is(.folder-selection-add, .folder-selection-footer)
+  .ui-push-button:not(.folder-selection-primary) {
+  background: #242427;
+  border-color: #ffffff20;
+  color: #eeeeef;
+}
+.folder-selection-add .ui-push-button:active {
+  transform: scale(0.98);
+}
+
+.folder-selection .ui-switch[data-state="checked"] {
+  background: hsl(17.6 100% 54%);
+}
+.folder-selection-footer {
+  border-top-width: 0;
+}

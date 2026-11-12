@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-start-sync"
+description = "Enables the cloud_start_sync command without any pre-configured scope."
+commands.allow = ["cloud_start_sync"]
+
+[[permission]]
+identifier = "deny-cloud-start-sync"
+description = "Denies the cloud_start_sync command without any pre-configured scope."
+commands.deny = ["cloud_start_sync"]

@@ -62,7 +62,8 @@ use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
 use crate::store::model::environment_key;
 use crate::store::{
-    AppSettings, RelationKind, RepositoryRecord, SessionKey, SessionRecord, Store, iso_from_epoch,
+    AppSettings, OnboardingState, RelationKind, RepositoryRecord, SessionKey, SessionRecord, Store,
+    iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -116,6 +117,9 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
             crate::popover::renderer_ready(&window, generation);
         }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
+        crate::onboarding_window::LABEL => {
+            crate::onboarding_window::renderer_ready(&window, generation)
+        }
         label => {
             ::tracing::debug!(event = "window_ready_ignored", window = label);
         }
@@ -377,6 +381,72 @@ pub fn restart_to_update(app: tauri::AppHandle) -> CommandResult<()> {
 pub async fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
     let store = app.state::<Store>().inner().clone();
     run_blocking(move || store.settings().map_err(fail)).await
+}
+
+#[tauri::command]
+pub async fn get_onboarding_state(app: tauri::AppHandle) -> CommandResult<OnboardingState> {
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || store.onboarding_state().map_err(fail)).await
+}
+
+#[tauri::command]
+pub async fn get_promotion_readiness(
+    app: tauri::AppHandle,
+) -> CommandResult<crate::store::PromotionReadiness> {
+    let store = app.state::<Store>().inner().clone();
+    let later_session = app
+        .state::<crate::onboarding_window::OnboardingWindowState>()
+        .promotion_later_session();
+    run_blocking(move || {
+        store
+            .promotion_readiness(
+                later_session,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )
+            .map_err(fail)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_onboarding_state(
+    app: tauri::AppHandle,
+    state: OnboardingState,
+) -> CommandResult<OnboardingState> {
+    let store = app.state::<Store>().inner().clone();
+    if state != OnboardingState::CloudUnavailable
+        && store.onboarding_state().map_err(fail)? == OnboardingState::CloudUnavailable
+    {
+        let _ = crate::cloud::cloud_cancel(app.clone()).await;
+    }
+    let record_app = app.clone();
+    let saved = run_blocking(move || {
+        let (previous, saved) = store.set_onboarding_state(state).map_err(fail)?;
+        if saved == OnboardingState::Completed {
+            record_app
+                .state::<crate::onboarding_window::OnboardingWindowState>()
+                .mark_completed();
+            if previous != OnboardingState::Completed {
+                crate::analytics::record_onboarding_completed(&record_app);
+                #[cfg(target_os = "macos")]
+                {
+                    let hud_app = record_app.clone();
+                    if let Err(error) = record_app
+                        .run_on_main_thread(move || crate::hud::restore_if_enabled(&hud_app))
+                    {
+                        ::tracing::warn!(event = "hud_onboarding_restore_failed", error = %error);
+                    }
+                }
+            }
+        }
+        Ok(saved)
+    })
+    .await?;
+    app.emit("onboarding:changed", ()).map_err(fail)?;
+    if state == OnboardingState::Completed {
+        crate::onboarding_window::finish(&app).await?;
+    }
+    Ok(saved)
 }
 
 /// Event carrying the stored settings to every window after a write.
@@ -2907,17 +2977,20 @@ mod project_folder_tests {
         assert!(!source.contains("on_main_value(&app, antiburn_hud::settle_after_drag)"));
         assert!(!source.contains("move |app| antiburn_hud::restore_dock(app, dock)"));
         let restore = include_str!("../hud.rs")
-            .split_once("pub fn restore_at_launch(")
-            .unwrap()
+            .split_once("pub fn restore_if_enabled(")
+            .expect("the automatic HUD restore entry point")
             .1;
-        let restore = restore.split_once("\n}").unwrap().0;
+        let restore = restore.split_once("\n}").expect("the restore body").0;
+        let notch = restore
+            .find("antiburn_hud::refresh_notch()")
+            .expect("restore reads the notch on the main thread");
         let dispatch = restore
             .find("spawn_blocking")
-            .expect("startup dispatches to a worker");
+            .expect("restore dispatches to a worker");
         let open = restore
             .find("antiburn_hud::open")
-            .expect("startup opens the HUD");
-        assert!(dispatch < open);
+            .expect("restore opens the HUD");
+        assert!(notch < dispatch && dispatch < open);
     }
 
     #[test]

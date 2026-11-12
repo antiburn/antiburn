@@ -160,6 +160,7 @@ tauri-plugin-prevent-default = "6"
 # Must be registered before other plugins so a repeated launch exits before it
 # can start another background scan scheduler.
 tauri-plugin-single-instance = "2"
+tauri-plugin-deep-link = "2"
 # Emits structured shell events through the process subscriber.
 tracing = "0.1"
 # RFC 3339 stamps for the store's own timestamps.
@@ -320,3 +321,4 @@ strip = true
 # same line as Tauri's transitive requirement.
 [patch.crates-io]
 tray-icon = { path = "vendor/tray-icon" }
+libsqlite3-sys = { path = "../../../crates/antiburn-local/vendor/libsqlite3-sys" }

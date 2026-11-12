@@ -88,3 +88,6 @@ harness = false
 [[bench]]
 name = "memory_baseline"
 harness = false
+
+[patch.crates-io]
+libsqlite3-sys = { path = "vendor/libsqlite3-sys" }

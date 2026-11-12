@@ -200,6 +200,7 @@ export const CROSS_WORKSPACE_INPUTS = {
   ".antiburn/checks/scope-creep.yml": ["checks", "shell"],
   ".antiburn/checks/skill-opportunities.yml": ["checks"],
   "apps/desktop/interface-scale.json": ["shell"],
+  "apps/desktop/src/onboarding/demo/csp.txt": ["shell"],
   "apps/desktop/src/views/main-window/burn-checks/tests/fixtures/installed-check-report.json":
     ["shell"],
   "apps/desktop/src/views/SettingsView.tsx": ["shell"],

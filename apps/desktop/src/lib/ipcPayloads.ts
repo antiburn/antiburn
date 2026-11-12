@@ -12,6 +12,16 @@
 /** How the app renders itself. `system` follows the OS appearance. */
 export type ThemePreference = "system" | "light" | "dark"
 
+export type OnboardingState =
+  | "welcome"
+  | "sessions"
+  | "limits"
+  | "hud"
+  | "checks"
+  | "cloud"
+  | "cloudUnavailable"
+  | "completed"
+
 /** Where the notification window appears. `menuBar` is macOS-only. */
 export type NudgePlacement = "menuBar" | "topRight"
 

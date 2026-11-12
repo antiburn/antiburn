@@ -30,14 +30,14 @@ function isStillPoster(bytes: Buffer): boolean {
     return false
   }
   if (["GIF87a", "GIF89a"].includes(bytes.toString("ascii", 0, 6)) && bytes.length >= 13) {
-    let at = 13 + (bytes[10] & 0x80 ? 3 * 2 ** ((bytes[10] & 7) + 1) : 0)
+    let at = 13 + (bytes.readUInt8(10) & 0x80 ? 3 * 2 ** ((bytes.readUInt8(10) & 7) + 1) : 0)
     let frames = 0
     while (at < bytes.length) {
       const block = bytes[at++]
       if (block === 0x3b) return frames === 1
       if (block === 0x2c) {
         if (at + 9 > bytes.length || ++frames > 1) return false
-        const flags = bytes[at + 8]
+        const flags = bytes.readUInt8(at + 8)
         at += 9 + (flags & 0x80 ? 3 * 2 ** ((flags & 7) + 1) : 0)
         if (at >= bytes.length) return false
         at++
@@ -45,7 +45,7 @@ function isStillPoster(bytes: Buffer): boolean {
         if (at >= bytes.length) return false
         at++
       } else return false
-      while (at < bytes.length && bytes[at] !== 0) at += 1 + bytes[at]
+      while (at < bytes.length && bytes[at] !== 0) at += 1 + bytes.readUInt8(at)
       if (at >= bytes.length) return false
       at++
     }
@@ -61,7 +61,7 @@ function isStillPoster(bytes: Buffer): boolean {
       const next = at + 8 + size + (size % 2)
       if (next > end) return false
       if (type === "ANIM" || type === "ANMF") return false
-      if (type === "VP8X" && (size < 10 || (bytes[at + 8] & 0x02) !== 0)) return false
+      if (type === "VP8X" && (size < 10 || (bytes.readUInt8(at + 8) & 0x02) !== 0)) return false
       at = next
     }
     return true

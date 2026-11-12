@@ -97,6 +97,8 @@ const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
 #[cfg(debug_assertions)]
+const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
+#[cfg(debug_assertions)]
 const MENU_BURN_CHECKS: &str = "burn-checks";
 #[cfg(debug_assertions)]
 const MENU_CODEX_ONLY: &str = "codex-only";
@@ -314,6 +316,8 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let separator = PredefinedMenuItem::separator(app)?;
     let view_items: [&dyn IsMenuItem<Wry>; 4] = [&separator, &zoom_in, &zoom_out, &actual_size];
     view_menu.append_items(&view_items)?;
+    #[cfg(debug_assertions)]
+    view_menu.append(&crate::cloud_dev::menu(app)?)?;
     app.set_menu(menu)?;
     Ok(())
 }
@@ -813,6 +817,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let hud_dev = build_hud_dev_menu(app)?;
     #[cfg(debug_assertions)]
     let hud_dev_item = hud_dev.menu;
+    #[cfg(debug_assertions)]
+    let cloud_dev = crate::cloud_dev::menu(app)?;
+    #[cfg(debug_assertions)]
+    let reset_onboarding = MenuItem::with_id(
+        app,
+        MENU_RESET_ONBOARDING,
+        "Reset onboarding",
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
@@ -843,6 +857,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &codex_only_item,
         #[cfg(debug_assertions)]
         &hud_dev_item,
+        #[cfg(debug_assertions)]
+        &cloud_dev,
+        #[cfg(debug_assertions)]
+        &reset_onboarding,
         &separator,
         &quit_item,
     ];
@@ -987,6 +1005,10 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 }
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
+    #[cfg(debug_assertions)]
+    if crate::cloud_dev::handle(app, event.id().as_ref()) {
+        return;
+    }
     match event.id().as_ref() {
         MENU_MAIN => {
             ::tracing::info!(event = "main_window_open_source", source = "tray_menu");
@@ -1033,6 +1055,12 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         MENU_ACTUAL_SIZE => {
             change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Reset)
+        }
+        #[cfg(debug_assertions)]
+        MENU_RESET_ONBOARDING => {
+            if let Err(error) = crate::onboarding_window::reset(app) {
+                ::tracing::error!(event = "onboarding_reset_failed", error = %error);
+            }
         }
         #[cfg(debug_assertions)]
         MENU_RANDOM_USAGE => {

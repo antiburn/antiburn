@@ -39,6 +39,7 @@ pub fn synthetic_sessions() -> Result<Option<Vec<ActivityEntry>>, String> {
 pub fn report_web_content(window: &tauri::WebviewWindow, generation: u64) {
     use objc2::runtime::AnyObject;
 
+    let label = window.label().to_owned();
     let result = window.with_webview(move |webview| {
         // SAFETY: Tauri supplies a live WKWebView on the main thread. This
         // feature is excluded from distributed builds.
@@ -54,15 +55,27 @@ pub fn report_web_content(window: &tauri::WebviewWindow, generation: u64) {
             }
         };
         if let Some(pid) = pid {
-            eprintln!("{}{}", PREFIX, web_content_event(generation, pid));
+            eprintln!("{}{}", PREFIX, web_content_event(&label, generation, pid));
         } else {
-            eprintln!("{PREFIX}{{\"event\":\"webcontent-unavailable\",\"window\":\"popover\",\"generation\":{generation}}}");
+            eprintln!(
+                "{PREFIX}{}",
+                serde_json::json!({
+                    "event": "webcontent-unavailable",
+                    "window": label,
+                    "generation": generation,
+                })
+            );
         }
     });
     if let Err(error) = result {
         eprintln!(
-            "{PREFIX}{{\"event\":\"webcontent-error\",\"window\":\"popover\",\"generation\":{generation},\"message\":{}}}",
-            serde_json::Value::String(error.to_string())
+            "{PREFIX}{}",
+            serde_json::json!({
+                "event": "webcontent-error",
+                "window": window.label(),
+                "generation": generation,
+                "message": error.to_string(),
+            })
         );
     }
 }
@@ -70,10 +83,14 @@ pub fn report_web_content(window: &tauri::WebviewWindow, generation: u64) {
 #[cfg(not(target_os = "macos"))]
 pub fn report_web_content(_window: &tauri::WebviewWindow, _generation: u64) {}
 
-fn web_content_event(generation: u64, pid: u32) -> String {
+fn web_content_event(window: &str, generation: u64, pid: u32) -> String {
     serde_json::to_string(&WebContentEvent {
-        event: "webcontent",
-        window: crate::popover::LABEL,
+        event: if window == crate::popover::LABEL {
+            "webcontent"
+        } else {
+            "webcontent-window"
+        },
+        window,
         generation,
         pid,
     })
@@ -103,6 +120,7 @@ fn generate_sessions(
             ActivityEntry {
                 agent: agent.to_string(),
                 session_id: format!("probe-{seed:08x}-{index:04}"),
+                remote_host_id: None,
                 repo: if shape.is_multiple_of(9) {
                     "deterministic-repository-with-a-long-display-name".to_string()
                 } else {
@@ -173,8 +191,25 @@ mod tests {
     }
 
     #[test]
+    fn web_content_diagnostic_uses_the_onboarding_label() {
+        let event = web_content_event(crate::onboarding_window::LABEL, 3, 48124);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&event).unwrap(),
+            serde_json::json!({
+                "event": "webcontent-window",
+                "window": "onboarding",
+                "generation": 3,
+                "pid": 48124
+            })
+        );
+    }
+
+    #[test]
     fn web_content_diagnostic_has_one_prefixed_json_payload() {
-        let line = format!("{PREFIX}{}", web_content_event(7, 48122));
+        let line = format!(
+            "{PREFIX}{}",
+            web_content_event(crate::popover::LABEL, 7, 48122)
+        );
         assert_eq!(line.lines().count(), 1);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&line[PREFIX.len()..]).unwrap(),

@@ -213,19 +213,20 @@ recordings are 50 fps, so every fourth frame is kept.
 5. Actual presentation marks the ID/revision pair as seen. Closing the panel
    does not immediately advance to another promotion.
 
-For new users, completing the main-window first-run experience starts a local
+For new users, completing native onboarding starts a persisted local
 24-hour delay. Automatic display also requires a later app session. Foreground
-return rechecks eligibility. Existing users without a timing record are eligible
-immediately after readiness checks. Resetting onboarding starts the delay again.
+return rechecks eligibility. Completed existing profiles without a native timing record are eligible
+immediately after readiness checks. The native process records whether onboarding
+was already complete at startup; renderer reloads cannot create a later app session. Resetting onboarding starts the delay again.
 A revision bump does not bypass this gate.
 
 Local state belongs to the app profile:
 
-| Key                                      | Purpose                                                                     |
-| ---------------------------------------- | --------------------------------------------------------------------------- |
-| `antiburn.promotions.seen.v1`            | JSON list of seen `id@revision` pairs. App version changes do not reset it. |
-| `antiburn.promotions.ftue.v1`            | First-run completion time used by the automatic delay.                      |
-| `antiburn.promotions.launcher-opened.v1` | Launcher activation history; does not control the NEW badge.                |
+| Key                                       | Purpose                                                                      |
+| ----------------------------------------- | ---------------------------------------------------------------------------- |
+| `antiburn.promotions.seen.v1`             | JSON list of seen `id@revision` pairs. App version changes do not reset it.  |
+| `internal:promotionOnboardingCompletedAt` | Native setting recording onboarding completion time for the automatic delay. |
+| `antiburn.promotions.launcher-opened.v1`  | Launcher activation history; does not control the NEW badge.                 |
 
 ### Sidebar selection and opening
 

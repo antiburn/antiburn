@@ -73,9 +73,30 @@ server, or backend.
 
 The main window opens Sessions immediately. Its sidebar contains Sessions,
 Checks, and Settings. Overview is no longer a navigation or search destination;
-legacy native Overview requests open Sessions. Fresh and existing installs open
-Sessions immediately, with Checks, search, and Settings available. Discovery and
-checks run through the normal background schedulers; there is no setup flow.
+legacy native Overview requests open Sessions. The new introduction opens in a separate native window until its local
+completion is saved. It resumes the last saved screen after closing and opens
+Sessions on completion. Checks, search, Settings, discovery, CLI installation,
+and integration startup remain independent of this introduction. Supported HUDs
+appear after completion unless an existing preference disables them.
+
+The introduction uses isolated example data to demonstrate Sessions, provider
+limits, the HUD, notifications, and Checks. Its Cloud action opens a coming-soon handoff with Learn more and local continuation.
+Native authentication is independently gated on verified backend configuration.
+After verified login, folder drafts and truthful completion states are available;
+production uploads remain disabled pending the service and consent contract.
+Agent readiness comes from native integration status. See the
+[Cloud desktop contract](../../docs/cloud/desktop-contract.md).
+
+`pnpm build:demo` builds current product components into a separate demo bundle.
+Build aliases replace native services with synthetic adapters. The introduction
+loads one sandboxed iframe on demand, pauses it when hidden, and destroys it
+when the native window closes. Shared product components do not need demo props.
+The demo controller and styles preserve the approved presentation; component
+updates still require visual and motion comparisons against that reference.
+
+`src/onboarding/demo/csp.txt` defines the demo policy for both its HTML and native
+asset response. Explicit bundled asset URLs support opaque-origin frames on
+WKWebView without enabling same-origin access or network connections.
 
 Settings → Sessions places Antiburn Cloud above Repositories, Include folders
 without Git, and Scan folders. New settings include non-Git folders; saved
@@ -624,3 +645,13 @@ free-form tracking properties. External URLs are currently limited to HTTPS
 pages in the antiburn GitHub repository, matching the native opener permission;
 adding another destination requires updating that scope and the shared link
 validator together.
+
+### Cloud Dev previews
+
+Debug builds also include **Reset onboarding** in the menu-bar icon's context menu. It restarts the full native onboarding flow at Welcome, replacing an open onboarding window. Sessions, preferences, and Cloud account state are preserved.
+
+Debug builds include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. **Full Walkthrough** opens a separate native window with an example account and folders. Sign in simulates a callback after a short wait; review the selected example folders and start syncing to see the prototype’s ongoing background-sync completion screen. Sync runs in the background; Done is available without waiting for a sync result. **Done** closes the preview. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
+
+The other entries open auth recovery, folder and agent-readiness states directly. Dedicated sync progress and recovery screens are not part of onboarding. Completion entries show local completion with each agent-readiness state. Reopening any menu entry resets that preview.
+
+The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding to test the real landing-page link. Release builds do not include the submenu.

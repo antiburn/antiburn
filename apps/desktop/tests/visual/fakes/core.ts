@@ -1,3 +1,4 @@
+import { emptyCloudSnapshot } from "../../../src/lib/cloud"
 import { AGENT_SLUGS, agentDisplayName } from "../../../src/lib/presentation/agents"
 import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
@@ -15,6 +16,7 @@ import {
 
 declare global {
   interface Window {
+    __ANTIBURN_ONBOARDING_CALLS__?: string[]
     __ANTIBURN_VISUAL_SETTINGS_CALLS__?: Array<{
       command: string
       args: Record<string, unknown> | undefined
@@ -404,6 +406,35 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
           Number(new URLSearchParams(window.location.search).get("scale")) || 100,
         ...sidebarPreferences,
       }
+    case "hud_island_available":
+      return new URLSearchParams(window.location.search).get("hud") !== "floating"
+    case "cloud_status":
+      return emptyCloudSnapshot
+    case "cloud_begin":
+      return emptyCloudSnapshot
+    case "cloud_cancel":
+      return { ...emptyCloudSnapshot, status: "cancelled" }
+    case "get_promotion_readiness": {
+      const params = new URLSearchParams(window.location.search)
+      const manual = params.get("onboarding") === "complete"
+      const age = params.get("promoAge")
+      const delayElapsed = age === null || Number(age) >= 24 * 60 * 60 * 1000
+      return {
+        manual,
+        automatic: manual && params.get("promoSession") !== "current" && delayElapsed,
+      }
+    }
+    case "get_onboarding_state":
+      return (
+        sessionStorage.getItem("onboarding-review-state") ??
+        new URLSearchParams(window.location.search).get("step") ??
+        "welcome"
+      )
+    case "set_onboarding_state":
+      sessionStorage.setItem("onboarding-review-state", String(args?.state))
+      return args?.state
+    case "get_onboarding_window_visible":
+      return true
     case "get_main_window_visible":
       return true
     case "list_burn_check_snoozes":
@@ -650,6 +681,10 @@ export function isTauri(): boolean {
 }
 
 export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (new URLSearchParams(window.location.search).get("surface") === "onboarding") {
+    window.__ANTIBURN_ONBOARDING_CALLS__ ??= []
+    window.__ANTIBURN_ONBOARDING_CALLS__.push(command)
+  }
   if (
     command.includes("system_one") ||
     command === "list_ollama_models" ||

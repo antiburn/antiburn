@@ -77,6 +77,9 @@ mod jev;
 pub mod published_evidence_reader;
 pub use jev::client::evaluate_custom as evaluate_custom_system_one;
 pub use jev::config as jev_config;
+mod cloud;
+#[cfg(debug_assertions)]
+mod cloud_dev;
 pub mod jev_cloudflare;
 pub mod jev_ollama;
 mod launch_intent;
@@ -85,6 +88,7 @@ mod main_window;
 mod memory_probe;
 mod notifications;
 mod nudges;
+mod onboarding_window;
 mod opencode_live;
 mod popover;
 mod popover_peek;
@@ -210,9 +214,18 @@ pub fn run() {
     let builder = antiburn_nudge::register(
         tauri::Builder::default()
             .manage(RepeatedLaunch::default())
+            .manage(cloud::PendingLinks::default())
             // Register first so a second process exits before it starts any
             // background scheduler or scan.
             .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+                for raw in &args {
+                    if raw.contains("://cloud/") {
+                        cloud::receive(app, raw.clone());
+                    }
+                }
+                if args.iter().any(|raw| raw.contains("://cloud/")) {
+                    return;
+                }
                 if launch_intent::from_args(&args) == launch_intent::LaunchIntent::Background {
                     return;
                 }
@@ -262,6 +275,10 @@ pub fn run() {
         app.manage(remediation::RemediationController::new(data_dir.clone()));
         let main_window_state = main_window::MainWindowState::load(&app.state::<store::Store>());
         app.manage(main_window_state);
+        let onboarding =
+            onboarding_window::OnboardingWindowState::load(&app.state::<store::Store>());
+        app.manage(onboarding);
+        cloud::initialize(app.handle());
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(jev::worker::WorkerHandle::default());
@@ -359,7 +376,7 @@ pub fn run() {
         // takes it again. The watcher idles while the HUD is closed.
         hud::spawn_display_watcher(app.handle());
         #[cfg(target_os = "macos")]
-        hud::restore_at_launch(app.handle());
+        hud::restore_if_enabled(app.handle());
 
         // Registered before the update scheduler starts, so the first
         // automatic check can see whether there is anything to check with.
@@ -468,6 +485,12 @@ pub fn run() {
         })
     });
     app.run(move |app, event| match event {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        RunEvent::Opened { urls } => {
+            for url in urls {
+                cloud::receive(app, url.to_string());
+            }
+        }
         RunEvent::ExitRequested { api, code, .. } if should_prevent_exit(code) => {
             api.prevent_exit();
         }
@@ -522,12 +545,19 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
-/// Open the ordinary main window at Sessions.
+/// Open onboarding until the reader completes it.
 pub(crate) fn open_launch_surface(
     app: &tauri::AppHandle,
     trigger: main_window::OpenTrigger,
 ) -> tauri::Result<()> {
-    main_window::open(app, trigger)
+    if app
+        .state::<onboarding_window::OnboardingWindowState>()
+        .completed()
+    {
+        main_window::open(app, trigger)
+    } else {
+        onboarding_window::open(app)
+    }
 }
 
 /// Stop every background task. Safe to call when none ever started.
@@ -584,6 +614,7 @@ fn close_policy(label: &str, quit_when_main_closes: bool) -> ClosePolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManagedWindow {
     Main,
+    Onboarding,
     Popover,
     Settings,
 }
@@ -592,6 +623,7 @@ impl ManagedWindow {
     fn rebuild_after_destroy(self, app: &tauri::AppHandle) {
         match self {
             Self::Main => main_window::rebuild_after_destroy(app),
+            Self::Onboarding => onboarding_window::rebuild_after_destroy(app),
             Self::Popover => popover::rebuild_after_destroy(app),
             Self::Settings => settings::rebuild_after_destroy(app),
         }
@@ -601,6 +633,7 @@ impl ManagedWindow {
 fn rebuild_after_destroy_for_label(label: &str) -> Option<ManagedWindow> {
     match label {
         main_window::LABEL => Some(ManagedWindow::Main),
+        onboarding_window::LABEL => Some(ManagedWindow::Onboarding),
         popover::LABEL => Some(ManagedWindow::Popover),
         settings::LABEL => Some(ManagedWindow::Settings),
         _ => None,
@@ -633,6 +666,21 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         && let Some(main_window) = window.app_handle().get_webview_window(main_window::LABEL)
     {
         main_window::emit_visibility_changed(&main_window);
+    }
+    if window.label() == onboarding_window::LABEL
+        && let Some(onboarding) = window
+            .app_handle()
+            .get_webview_window(onboarding_window::LABEL)
+    {
+        match event {
+            WindowEvent::Focused(_) | WindowEvent::Resized(_) => {
+                onboarding_window::emit_visibility_changed(&onboarding);
+            }
+            WindowEvent::CloseRequested { .. } => {
+                onboarding_window::on_close_requested(&onboarding)
+            }
+            _ => {}
+        }
     }
     if let Some(manager) = window
         .app_handle()
@@ -1115,6 +1163,10 @@ mod tests {
             ClosePolicy::Allow
         );
         assert_eq!(
+            close_policy(super::onboarding_window::LABEL, true),
+            ClosePolicy::Allow
+        );
+        assert_eq!(
             close_policy(antiburn_nudge::NUDGE_LABEL, false),
             ClosePolicy::HideNudge
         );
@@ -1124,6 +1176,10 @@ mod tests {
     fn only_managed_windows_select_their_deferred_rebuild_handler() {
         let cases = [
             (super::main_window::LABEL, super::ManagedWindow::Main),
+            (
+                super::onboarding_window::LABEL,
+                super::ManagedWindow::Onboarding,
+            ),
             (super::popover::LABEL, super::ManagedWindow::Popover),
             (super::settings::LABEL, super::ManagedWindow::Settings),
         ];

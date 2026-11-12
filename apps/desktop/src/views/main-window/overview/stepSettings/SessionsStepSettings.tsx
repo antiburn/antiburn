@@ -1,3 +1,5 @@
+import { CloudSession } from "../../../../onboarding/CloudSession"
+import { CloudAccount } from "../../../settings/CloudAccount"
 import { confirm } from "@tauri-apps/plugin-dialog"
 import { useCallback, useState, useSyncExternalStore } from "react"
 
@@ -150,6 +152,13 @@ function RetentionSection({
 
 export function SessionsStepSettings() {
   const { settings, update, loaded } = useAppSettings()
+  const [cloudSession] = useState(() => new CloudSession(undefined, false))
+  const cloud = useSyncExternalStore(
+    cloudSession.subscribe,
+    cloudSession.getSnapshot,
+    cloudSession.getSnapshot,
+  )
+  const cloudUnavailable = !cloud.cloud.authEnabled
   const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [session] = useState(() => new SourcesSession())
   const { repositories, scanRoots, permissions, scanning, remote } = useSyncExternalStore(
@@ -186,16 +195,34 @@ export function SessionsStepSettings() {
     <>
       <SectionGroup title="Antiburn Cloud">
         <Card>
+          <CloudAccount session={cloudSession} value={cloud} />
           <SettingsToggleRow
             searchId="cloudUpload"
-            description="Automatically upload sessions included by the settings below."
-            checked={settings.cloudUploadEnabled}
-            disabled={!loaded}
-            onChange={(next) => void update({ cloudUploadEnabled: next })}
+            description={
+              cloudUnavailable
+                ? "Available when Antiburn Cloud launches."
+                : "Saved preference only. Folder choices and upload consent will be reviewed separately."
+            }
+            checked={!cloudUnavailable && settings.cloudUploadEnabled}
+            disabled={!loaded || !cloud.loaded || cloudUnavailable}
+            dimmed={cloudUnavailable}
+            disabledTooltip={
+              !cloud.loaded
+                ? "Checking Cloud availability…"
+                : cloudUnavailable
+                  ? "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available."
+                  : undefined
+            }
+            onChange={(next) => {
+              if (loaded && cloud.loaded && !cloudUnavailable) {
+                void update({ cloudUploadEnabled: next })
+              }
+            }}
           />
           <p className="border-t border-separator px-4 py-3 type-footnote text-label-secondary">
-            Uploads are not available in this build. This preference is saved on this device; no
-            sessions are uploaded.
+            {cloudUnavailable
+              ? "Your sessions stay on this device. No sessions are uploaded."
+              : "Uploads are not available in this build. This preference is saved on this device; no sessions are uploaded."}
           </p>
         </Card>
       </SectionGroup>

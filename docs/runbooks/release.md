@@ -636,6 +636,19 @@ SHA is the supported rollback:
 antiburn-local = { git = "https://github.com/antiburn/antiburn", rev = "<full-sha>" } # antiburn-local-v<version>
 ```
 
+The consumer's workspace root must also select the vendored SQLite security
+backport at the same SHA:
+
+```toml
+[patch.crates-io]
+libsqlite3-sys = { git = "https://github.com/antiburn/antiburn", rev = "<full-sha>" }
+```
+
+Cargo ignores dependency-local patches. Updating only the engine SHA leaves
+consumers exposed to RUSTSEC-2026-0459. See the
+[backport notes](../../crates/antiburn-local/vendor/libsqlite3-sys/BACKPORT.md)
+for source-archive consumers, verification, and external-library exceptions.
+
 While this repository is private, downstream consumers authenticate on their
 own side; nothing about this repository or its workflows changes, and the
 `GITHUB_TOKEN` rule above stands. The recipe, so that the manifest already has

@@ -21,6 +21,7 @@
     "allow-add-scan-root",
     "allow-agent-session-locations",
     "allow-app-info",
+    "allow-get-promotion-readiness",
     "allow-cancel-checks-report",
     "allow-apply-prepared-burn-check-operation",
     "allow-cancel-scan",

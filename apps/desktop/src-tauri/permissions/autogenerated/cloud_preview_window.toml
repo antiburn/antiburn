@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-preview-window"
+description = "Enables the cloud_preview_window command without any pre-configured scope."
+commands.allow = ["cloud_preview_window"]
+
+[[permission]]
+identifier = "deny-cloud-preview-window"
+description = "Denies the cloud_preview_window command without any pre-configured scope."
+commands.deny = ["cloud_preview_window"]

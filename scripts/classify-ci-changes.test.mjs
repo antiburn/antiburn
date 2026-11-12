@@ -800,6 +800,7 @@ test("routes files that only the shell reads from outside its workspace to the s
   for (const [file, frontend] of [
     ["docs/analytics.md", false],
     ["apps/desktop/interface-scale.json", true],
+    ["apps/desktop/src/onboarding/demo/csp.txt", true],
     ["apps/desktop/src/views/SettingsView.tsx", true],
   ]) {
     const outputs = plan("ready", [file]);

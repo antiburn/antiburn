@@ -1,0 +1,12 @@
+[package]
+name = "sqlite-compat-consumer"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+[dependencies]
+antiburn-local = { path = "../.." }
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+sqlx = { version = "=0.8.6", default-features = false, features = ["sqlite", "runtime-tokio"] }
+tokio = { version = "1", features = ["macros", "rt"] }
+[patch.crates-io]
+libsqlite3-sys = { path = "../../vendor/libsqlite3-sys" }

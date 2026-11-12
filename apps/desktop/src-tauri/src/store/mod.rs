@@ -37,6 +37,7 @@ pub(crate) mod native_tool_results;
 pub use native_tool_results::{ToolResultBatch, ToolResultPublishOptions};
 pub(crate) mod burn_checks;
 pub mod model;
+mod onboarding;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
 mod remediation;
@@ -96,6 +97,7 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, named_params, params, params_from_iter};
 
 use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
+pub use onboarding::{OnboardingState, PromotionReadiness};
 pub(crate) use session_persistence::apply_session_retention_in;
 use session_persistence::*;
 pub use session_persistence::{FencedTurnRowStore, HygieneSummaryRow, iso_from_epoch, now_rfc3339};

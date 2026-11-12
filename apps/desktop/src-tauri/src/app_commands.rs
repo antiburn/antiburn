@@ -1,6 +1,14 @@
 macro_rules! with_app_commands {
     ($callback:ident) => {
         $callback! {
+            onboarding_window::cloud_preview_window => "cloud_preview_window",
+            cloud::cloud_status => "cloud_status",
+            cloud::cloud_begin => "cloud_begin",
+            cloud::cloud_cancel => "cloud_cancel",
+            cloud::cloud_sign_out => "cloud_sign_out",
+            cloud::cloud_save_draft => "cloud_save_draft",
+            cloud::cloud_start_sync => "cloud_start_sync",
+
             cli_install::get_cli_install_state => "get_cli_install_state",
             cli_install::test_cli_installation => "test_cli_installation",
             cli_install::repair_cli_installation => "repair_cli_installation",
@@ -57,6 +65,9 @@ macro_rules! with_app_commands {
             commands::get_session_hygiene => "get_session_hygiene",
             commands::local_usage::get_session_limit_allocations => "get_session_limit_allocations",
             commands::quota::get_session_quota => "get_session_quota",
+            commands::get_promotion_readiness => "get_promotion_readiness",
+            commands::get_onboarding_state => "get_onboarding_state",
+            onboarding_window::get_onboarding_window_visible => "get_onboarding_window_visible",
             commands::get_settings => "get_settings",
             jev::settings::get_check_availability => "get_check_availability",
             jev::settings::get_system_one_settings => "get_system_one_settings",
@@ -135,6 +146,7 @@ macro_rules! with_app_commands {
             hud_commands::tear_off_overlay => "tear_off_overlay",
             hud_commands::wake_overlay => "wake_overlay",
             commands::set_interface_scale => "set_interface_scale",
+            commands::set_onboarding_state => "set_onboarding_state",
             commands::set_popover_height => "set_popover_height",
             commands::set_repository_enabled => "set_repository_enabled",
             commands::set_settings => "set_settings",

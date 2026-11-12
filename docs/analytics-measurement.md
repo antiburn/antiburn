@@ -631,6 +631,61 @@ maintainer. Review this diagnostic by 2027-01-31.
 
 ## Event review contract
 
+### Desktop onboarding
+
+| Product question and decision                                                         | Metric and denominator                                                                                                                                                                             | Capture boundary                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Where do readers stop or go back? Improve screen order and navigation.                | Distinct reporting installations reaching each screen as a fraction of those with any onboarding screen view. Report Back by screen and dismissal by saved screen.                                 | The renderer reports each visible screen entry and accepted navigation action. The shell reports dismissal on explicit native close using the saved draft screen.                                                                                                                                                                     |
+| How often do readers choose Cloud setup? Prioritize whether to invest in Cloud setup. | Distinct reporting installations choosing Cloud or local use among installations that saw the Cloud introduction. A reader can choose both over time. Report unavailable outcomes separately.      | The onboarding window reports an accepted choice. Accepted Learn more and sign-in actions distinguish marketing and configured-auth cohorts. Native browser and auth transitions report outcomes. Sync outcomes will be recorded only after the separately gated backend is implemented; Learn more has no callback or waiting state. |
+| Do readers finish onboarding? Improve local completion reliability.                   | Distinct reporting installations with a saved completion among those reaching onboarding. Compare subsequent visible Sessions states separately to measure whether the reader reached useful data. | The native command reports one completion after saving the transition from incomplete to complete.                                                                                                                                                                                                                                    |
+
+The new event names and their fixed screen and action values are in the
+[public catalog](analytics.md#desktop-onboarding). The renderer sends one
+screen view per visible entry, including a return to the screen or reopening
+a saved draft. A re-render or animation emits nothing. Each accepted action
+emits at most one action event. Returning to a saved Cloud screen emits a view. Do not replay stored successful
+outcomes when reopening. Synthetic review fixtures do not emit successful outcomes. Dismissing
+the window preserves the draft. Minimize, loss of focus, and closure after a
+saved completion produce no dismissal. A failed completion save or a repeated
+completion request emits no completion event.
+
+Explicit actions refresh the analytics session timeout. Views and outcomes
+leave the timeout alone. Exclude onboarding from core-use, activation, and
+retention counts. Use the first supporting app version and segment by OS.
+Deduplicate delivery by `messageId`, use capture time, and allow late arrival.
+An installation can revisit onboarding across sessions. The standard rotating
+installation ID is the reporting unit. Process exit, analytics gates, and
+delivery loss can leave steps unobserved. These events contain no onboarding
+flow identifier, work data, counts, paths, accounts, or credentials. The
+legacy unavailable outcome measures the screen shown by earlier builds. Segment
+by app version and operating system. Onboarding makes no analytics-only requests.
+The native capture gate applies to every event.
+
+Cloud handoff, identity, folders, and completion use distinct fixed screen
+labels. A view is emitted only on visible entry, not per render or animation.
+Disabled controls emit no actions. Native close reports the saved host screen,
+not the nested Cloud screen. Minimize and browser focus changes are not returns.
+
+Measure Learn more among installations viewing handoff, and verified sign-in
+among those choosing sign-in. Separate these denominators: legacy marketing return is
+not authentication. Group authentication failures only by the closed outcome categories.
+Authentication rejection and invalid responses both emit `failed`; do not count this
+outcome as a sync failure. Measure Start syncing among installations viewing folders
+and Done among installations viewing completion. Start syncing opens completion
+immediately; background preparation, submission, and reconciliation do not block Done.
+There is no separate sync screen, Check status action, or Cancel sync action in
+onboarding. Background status updates do not create another screen view. Production
+sync outcomes are not recorded until the separately gated backend is implemented.
+Acceptance is not proof of completed uploads. Folder actions include no paths,
+names, or counts.
+
+Production authentication requires explicit backend verification and enablement.
+Sync has a separate backend and consent gate; authentication never enables uploads.
+Fixture success cannot establish production conversion. No attempt identifier is
+collected, so these are installation-level participation measures, not exact
+attempt conversion or latency. Callback URLs, authorization codes, credential
+contents, and account identity must not enter analytics or service error fields.
+
 ### Model-based check enablement and provider operations
 
 The native `ModelCheckLifecycle` contract keeps the existing
@@ -1250,12 +1305,13 @@ arbitrary payload properties.
 
 ## FTUE removal (2026-11-11)
 
-The current app has no setup funnel. First-run step, action, finish, and step-settings
+This revision removed the first-run Overview funnel. Its step, action, finish, and step-settings
 view events are retired; historical catalog rows above remain historical evidence.
 Do not interpret the end of those event series as activation loss. Segment reports
 at the app version containing this change. Launches include background startup;
 visible surface and session interactions are the existing measures of deliberate use.
-No replacement event or new analytics payload is introduced.
+That change introduced no replacement event. The later
+[desktop onboarding](#desktop-onboarding) contract has its own event series.
 
 ### Sidebar usage presentation — 2026-11-11
 

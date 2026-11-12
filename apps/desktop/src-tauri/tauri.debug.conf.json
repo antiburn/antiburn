@@ -6,16 +6,26 @@
       "capabilities": [
         "default",
         "main-window",
+        "onboarding",
         "popover-peek",
         "popover-peek-anchor",
         "checks-remediation",
         "checks-settings",
         "cli-settings",
-        "agent-integrations-settings"
+        "agent-integrations-settings",
+        "cloud-account",
+        "cloud-dev"
       ]
     }
   },
   "bundle": {
     "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["ai-antiburn-desktop-debug"]
+      }
+    }
   }
 }
