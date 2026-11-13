@@ -1,0 +1,759 @@
+import type { AppSettings } from "../../../lib/ipcPayloads"
+import * as example from "../prototypeFixtures"
+import { AGENT_SLUGS, agentDisplayName } from "../../../lib/presentation/agents"
+import type { AllowanceUsageSummaryPayload } from "../../../lib/providerUsageIpc"
+import { emitFixtureEvent } from "./event"
+import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
+import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
+import { fixtureCheckAvailability, fixtureChecksReport, setFixtureCheckEnabled } from "./checks"
+import {
+  fixtureProviderCommand,
+  openFixtureCheckDirectory,
+  readFixtureCheckDirectories,
+  readFixtureProviderSettings,
+  readFixtureSettingsAvailability,
+  setFixtureModelChecksEnabled,
+} from "./providers"
+
+declare global {
+  interface Window {
+    __ANTIBURN_ONBOARDING_CALLS__?: string[]
+    __ANTIBURN_VISUAL_SETTINGS_CALLS__?: Array<{
+      command: string
+      args: Record<string, unknown> | undefined
+    }>
+  }
+}
+
+type FixtureState = "populated" | "empty" | "loading" | "error" | "long"
+type FixtureFault = "session-analysis" | "scale-save" | "peek-data"
+
+const now = "2026-09-15T00:00:00.000Z"
+
+function fixtureState(): FixtureState {
+  const value = new URLSearchParams(window.location.search).get("state")
+  return value === "empty" || value === "loading" || value === "error" || value === "long"
+    ? value
+    : "populated"
+}
+
+function fixtureFault(): FixtureFault | null {
+  const override = window.__ANTIBURN_VISUAL_FAULT__
+  const value =
+    override === undefined ? new URLSearchParams(window.location.search).get("fault") : override
+  return value === "session-analysis" || value === "scale-save" || value === "peek-data"
+    ? value
+    : null
+}
+
+const usageWindow = {
+  tokensIn: 1_280_000,
+  tokensOut: 184_000,
+  cacheRead: 2_400_000,
+  estimatedUsd: 18.42,
+  costComplete: true,
+  sessionCount: 12,
+}
+
+const settings = {
+  sidebarUsagePins: null,
+  sidebarUsageAppearance: "dials",
+  interfaceScalePercent: 100,
+  theme: "system",
+  activityWindowDays: 7,
+  sessionDataRetentionDays: -1,
+  launchAtLogin: true,
+  trayIconVisible: true,
+  dockIconVisible: true,
+  includeNonRepoFolders: true,
+  cloudUploadEnabled: false,
+  autoUpdate: true,
+  discoveryPaused: false,
+  notificationsEnabled: true,
+  notifyUpdateAvailable: true,
+  notifyScanFailure: true,
+  nudgePlacement: "menuBar",
+  nudgeAutoDismissSecs: 10,
+  notificationSound: true,
+  nudgesRespectDnd: false,
+  diskSpaceDisplay: "whenLow",
+  diskSpaceThresholdGb: 50,
+  notifyDiskSpaceLow: true,
+  milestones5h: [50, 75, 90],
+  milestonesWeekly: [50, 75, 90],
+  liveUsageEnabled: true,
+  liveUsageStarted: true,
+  liveUsageHiddenProviders: [],
+  disabledAgents: [],
+  analyticsEnabled: true,
+  overviewLimitsExpanded: false,
+  skillsMcpExpanded: false,
+  sessionBadgeMetric: "cost",
+  sessionFilter: "all",
+  workingWeek: "seven",
+} satisfies AppSettings
+
+const liveUsage = {
+  providers: [
+    {
+      provider: "openai",
+      accountKey: "fixture-account",
+      displayName: "Codex",
+      sourceLabel: "Codex account",
+      freshness: "fresh",
+      support: "live",
+      windows: [
+        {
+          id: "five-hour",
+          role: "primaryShort",
+          kind: "rolling",
+          scopeModel: null,
+          usedPercent: 72,
+          startsAt: "2026-09-14T20:00:00.000Z",
+          resetsAt: "2026-09-15T01:00:00.000Z",
+          elapsedFraction: 0.8,
+          hasNonzeroUsageInCurrentPeriod: true,
+          forecast: {
+            unavailableReason: null,
+            confidence: "high",
+            consumptionRate: 14.2,
+            paceRatio: 1.1,
+            paceTrend: 1.03,
+            runwayAt: "2026-09-15T01:35:00.000Z",
+            usedToday: 53,
+          },
+        },
+        {
+          id: "seven-day",
+          role: "primaryLong",
+          kind: "weekly",
+          scopeModel: null,
+          usedPercent: 44,
+          startsAt: "2026-09-09T00:00:00.000Z",
+          resetsAt: "2026-09-16T00:00:00.000Z",
+          elapsedFraction: 6 / 7,
+          hasNonzeroUsageInCurrentPeriod: true,
+          forecast: {
+            unavailableReason: null,
+            confidence: "medium",
+            consumptionRate: 1.8,
+            paceRatio: 0.8,
+            paceTrend: 0.94,
+            runwayAt: "2026-09-21T05:00:00.000Z",
+            usedToday: 8,
+          },
+        },
+      ],
+      extraUsage: null,
+      resetCredits: { availableCount: 1 },
+      plan: { name: "Pro", tier: null },
+    },
+  ],
+  errors: [],
+  meters: [{ provider: "openai", displayName: "Codex", shown: true }],
+  generatedAt: now,
+}
+
+const endEpoch = Date.parse(now) / 1000
+const daySeconds = 86_400
+const allowanceUsage: AllowanceUsageSummaryPayload = {
+  accounts: [
+    {
+      provider: "openai",
+      displayName: "Codex",
+      accountKey: "fixture-account",
+      plan: { name: "Pro", tier: null },
+      utilization: {
+        utilizationPercent: 58,
+        weeklyWindowCount: 1,
+        shortWindowCount: 1,
+        modelWindowCount: 0,
+      },
+      chart: {
+        shortWindows: [
+          {
+            startsAtEpoch: endEpoch - 14_400,
+            resetsAtEpoch: endEpoch + 3_600,
+            peakPercent: 72,
+          },
+        ],
+        weeklyWindows: [
+          {
+            lane: "weekly",
+            startsAtEpoch: endEpoch - 6 * daySeconds,
+            resetsAtEpoch: endEpoch + daySeconds,
+            points: [
+              { atEpoch: endEpoch - 6 * daySeconds, percent: 0 },
+              { atEpoch: endEpoch, percent: 44 },
+            ],
+          },
+        ],
+        rolling: [
+          { atEpoch: endEpoch - 5 * daySeconds, percent: 30 },
+          { atEpoch: endEpoch, percent: 58 },
+        ],
+      },
+    },
+  ],
+  utilizationSpanDays: 30,
+  rangeStartEpoch: endEpoch - 30 * daySeconds,
+  rangeEndEpoch: endEpoch,
+  generatedAt: now,
+}
+
+const providerUsage = {
+  providers: [
+    {
+      provider: "openai",
+      accountKey: "fixture-account",
+      displayName: "Codex",
+      state: "live",
+      staleness: "fresh",
+      windows: {
+        today: usageWindow,
+        week: { ...usageWindow, estimatedUsd: 64.3, sessionCount: 37 },
+        monthToDate: { ...usageWindow, estimatedUsd: 211.8, sessionCount: 128 },
+        last30Days: { ...usageWindow, estimatedUsd: 419.2, sessionCount: 261 },
+      },
+      agents: [],
+      lastActivityAt: now,
+    },
+  ],
+  totals: {
+    today: usageWindow,
+    week: { ...usageWindow, estimatedUsd: 64.3 },
+    monthToDate: { ...usageWindow, estimatedUsd: 211.8 },
+    last30Days: { ...usageWindow, estimatedUsd: 419.2 },
+  },
+  agents: [],
+  generatedAt: now,
+}
+
+const entries = [
+  {
+    agent: "codex",
+    sessionId: "fixture-active-session",
+    repo: "antiburn",
+    timestamp: "2026-09-15T00:00:00.000Z",
+    isActive: true,
+    surface: "cli",
+    wslDistro: null,
+    title: "Make every interface scale reachable without clipping",
+    hasForkParent: false,
+    forkChildCount: 2,
+    cost: { inputUsd: 4.2, outputUsd: 2.1, cacheReadUsd: 0.3, totalUsd: 6.6 },
+    models: ["gpt-5.6"],
+    modelRuns: [{ model: "gpt-5.6", thinkingMode: "high" }],
+  },
+  {
+    agent: "claude-code",
+    sessionId: "fixture-long-session",
+    repo: "desktop-interface-scale-quality-assurance-and-regression-prevention",
+    timestamp: "2026-09-14T08:00:00.000Z",
+    isActive: false,
+    surface: "terminal",
+    wslDistro: null,
+    title:
+      "Review constrained window behaviour with intentionally long titles, labels, provider names, and supporting descriptions",
+    hasForkParent: true,
+    forkChildCount: 0,
+    cost: null,
+    models: ["claude-sonnet"],
+    modelRuns: [{ model: "claude-sonnet" }],
+  },
+]
+
+function vendorFixture() {
+  return new URLSearchParams(window.location.search).get("vendors")
+}
+
+function vendorCounts() {
+  return AGENT_SLUGS.map((agent, index) => ({
+    agent,
+    sessions: vendorFixture() === "mixed" && index > 2 ? 0 : 1,
+    done: true,
+  }))
+}
+
+function fixtureEntries(state: FixtureState) {
+  if (vendorFixture())
+    return vendorCounts()
+      .filter((row) => row.sessions > 0)
+      .map((row, index) => ({
+        ...entries[0]!,
+        agent: row.agent,
+        sessionId: `vendor-fixture-${row.agent}`,
+        title: `${agentDisplayName(row.agent)} icon audit session`,
+        repo: "vendor-icon-audit",
+        timestamp: new Date(Date.parse(now) - index * 60_000).toISOString(),
+        isActive: false,
+        hasForkParent: false,
+        forkChildCount: 0,
+        cost: null,
+        models: [],
+        modelRuns: [],
+      }))
+  if (hasRemoteFixture()) {
+    return [
+      ...entries,
+      ...entries.map((entry, index) => ({
+        ...entry,
+        sessionId: `remote-${index}`,
+        title: index === 0 ? "Review remote changes" : "Inspect build results",
+        remoteHostId: remoteFixtureIds[index],
+        isActive: false,
+      })),
+    ]
+  }
+  if (state !== "long") return entries
+  return entries.map((entry, index) =>
+    index === 1
+      ? {
+          ...entry,
+          repo: "desktop-interface-scale-quality-assurance-and-regression-prevention-with-a-deliberately-long-repository-name",
+          title:
+            "Review constrained window behaviour with intentionally long titles, labels, provider names, and supporting descriptions that must wrap without hiding a reachable action or spilling outside the resized window.",
+        }
+      : entry,
+  )
+}
+
+const hudDetail = {
+  reason: "show",
+  bars: [
+    {
+      key: "openai:five-hour",
+      label: "Codex 5-hour",
+      percent: 72,
+      resetsAt: "2026-09-15T01:00:00.000Z",
+      color: "var(--color-burn)",
+      expectedFraction: 0.8,
+    },
+    {
+      key: "openai:week",
+      label: "Codex weekly",
+      percent: 44,
+      resetsAt: "2026-09-16T00:00:00.000Z",
+      color: "var(--color-system-blue)",
+      expectedFraction: 0.5,
+    },
+  ],
+  now: Date.parse(now),
+  noMeterSelected: false,
+}
+
+const nudge = {
+  id: "fixture-usage-milestone",
+  kind: "usageMilestone",
+  tone: "warning",
+  title: "Codex 5-hour window is 72% used",
+  subtitle: "You are on pace to reach your limit before it resets.",
+  description:
+    "This deterministic fixture keeps the notification content long enough to exercise wrapping and expanded actions.",
+  recommendations: [
+    "Save a checkpoint before the next large task.",
+    "Switch to a lighter model for routine edits.",
+  ],
+  actions: [
+    { id: "dismiss", label: "Dismiss", primary: false },
+    {
+      id: "open-usage",
+      label: "Open usage",
+      primary: true,
+      target: { type: "providerUsage", provider: "openai", accountKey: "fixture-account" },
+    },
+  ],
+}
+
+function dataFor(command: string, args: Record<string, unknown> | undefined): unknown {
+  if (command.includes("remote_")) return remoteFixtureCommand(command, args)
+  const state = fixtureState()
+  const fault = fixtureFault()
+  const empty = state === "empty"
+  const error = state === "error"
+  const loading = state === "loading"
+  if (loading && command.startsWith("get_")) return new Promise(() => undefined)
+  if (error && command === "get_live_usage") {
+    return {
+      providers: [],
+      errors: [
+        {
+          provider: "openai",
+          reason: "authentication",
+          message: "Fixture authentication error",
+        },
+      ],
+      meters: [],
+      generatedAt: now,
+    }
+  }
+  if (fault === "session-analysis" && command === "get_session_analysis")
+    return Promise.reject(new Error("Fixture session analysis failure"))
+  if (fault === "scale-save" && command === "set_interface_scale")
+    return Promise.reject(new Error("Fixture interface scale save failure"))
+  if (fault === "peek-data" && command === "get_popover_peek_data")
+    return Promise.reject(new Error("Fixture preview data failure"))
+  switch (command) {
+    case "get_agent_integrations":
+      return []
+    case "agent_session_locations":
+      return []
+    case "get_settings":
+      return {
+        ...settings,
+        liveUsageStarted: true,
+        liveUsageEnabled: new URLSearchParams(window.location.search).get("usage") !== "off",
+        interfaceScalePercent:
+          Number(new URLSearchParams(window.location.search).get("scale")) || 100,
+      }
+    case "get_onboarding_state":
+      return (
+        sessionStorage.getItem("onboarding-review-state") ??
+        new URLSearchParams(window.location.search).get("step") ??
+        "welcome"
+      )
+    case "set_onboarding_state":
+      sessionStorage.setItem("onboarding-review-state", String(args?.state))
+      return args?.state
+    case "get_onboarding_window_visible":
+      return true
+    case "get_main_window_visible":
+      return true
+    case "list_burn_check_snoozes":
+      return []
+    case "start_live_usage":
+      return { ...settings, liveUsageEnabled: true, liveUsageStarted: true }
+    case "set_settings":
+      return args?.settings ?? settings
+    case "set_interface_scale": {
+      const change = args?.change as { kind?: string; percent?: number } | undefined
+      const percent =
+        change?.kind === "set" ? change.percent : change?.kind === "increase" ? 125 : 100
+      return { ...settings, interfaceScalePercent: percent }
+    }
+    case "app_info":
+      return {
+        appVersion: "0.5.2",
+        debugBuild: true,
+        arch: "arm64",
+        pricingCatalogVersion: "fixture",
+        schemaVersion: 1,
+        dataDir: "/fixture",
+        indexedSessions: 128,
+        databaseBytes: 58_720_256,
+        updatesSupported: false,
+        analyticsSupported: false,
+        analyticsEnvironmentDisabled: false,
+        analyticsOperator: null,
+      }
+    case "list_recent_sessions":
+      return empty ? [] : fixtureEntries(state)
+    case "get_provider_usage":
+      return empty
+        ? { providers: [], totals: providerUsage.totals, agents: [], generatedAt: now }
+        : providerUsage
+    case "get_allowance_usage":
+      return empty ? { ...allowanceUsage, accounts: [] } : allowanceUsage
+    case "get_live_usage":
+    case "refresh_live_usage":
+      if (new URLSearchParams(window.location.search).has("bars")) {
+        const params = new URLSearchParams(window.location.search)
+        const requested = Number(params.get("bars"))
+        const count = [1, 3, 4, 6, 12].includes(requested) ? requested : 1
+        const vendors = [
+          { provider: "openai", displayName: "Codex", sourceLabel: "Codex account" },
+          { provider: "anthropic", displayName: "Claude", sourceLabel: "Claude Code" },
+          { provider: "google", displayName: "Gemini", sourceLabel: "Gemini CLI" },
+        ]
+        const windows = liveUsage.providers[0]!.windows
+        const providers = Array.from({ length: count }, (_, index) => {
+          const vendor = vendors[index % vendors.length]!
+          const window = windows[index % windows.length]!
+          const accountKey = `fixture-${vendor.provider}-${Math.floor(index / vendors.length)}`
+          return {
+            ...liveUsage.providers[0]!,
+            ...vendor,
+            accountKey,
+            windows: [{ ...window, id: `${window.id}-${accountKey}` }],
+          }
+        })
+        return {
+          ...liveUsage,
+          providers,
+          meters: vendors.map((vendor) => ({ ...vendor, shown: true })),
+        }
+      }
+      if (state === "long" && new URLSearchParams(window.location.search).has("island")) {
+        return {
+          ...liveUsage,
+          providers: Array.from({ length: 6 }, (_, index) => ({
+            ...liveUsage.providers[0],
+            accountKey: `fixture-account-${index}`,
+            displayName: `Codex account ${index + 1} with a long descriptive label`,
+            windows: liveUsage.providers[0]!.windows.map((window) => ({
+              ...window,
+              id: `${window.id}-${index}`,
+            })),
+          })),
+        }
+      }
+      return empty ? { providers: [], errors: [], meters: [], generatedAt: now } : liveUsage
+    case "get_session_limit_allocations":
+      return { allocations: [], generatedAt: now }
+    case "get_storage_health":
+      return { failing: false, message: null }
+    case "count_agent_memories":
+      return empty ? 0 : 12
+    case "get_scan_status": {
+      const counts = vendorFixture() ? vendorCounts() : null
+      const retainedSessions = empty
+        ? 0
+        : counts
+          ? counts.reduce((total, row) => total + row.sessions, 0)
+          : 128
+      return {
+        running: false,
+        completedAgents: counts?.length ?? 2,
+        totalAgents: counts?.length ?? 2,
+        sessions: counts ? retainedSessions : 128,
+        finishedAt: now,
+        cancelled: false,
+        error: null,
+        agents: empty
+          ? []
+          : counts
+            ? counts
+                .filter((row) => row.sessions > 0)
+                .map((row) => ({
+                  agent: row.agent,
+                  lastCompletedAt: now,
+                  sessionsSeen: row.sessions,
+                }))
+            : [
+                { agent: "codex", lastCompletedAt: now, sessionsSeen: 87 },
+                { agent: "claude-code", lastCompletedAt: now, sessionsSeen: 41 },
+              ],
+        listChanged: false,
+        reDescribed: 2,
+        phase: "saving",
+        foundByAgent:
+          counts && !empty
+            ? counts
+            : [
+                { agent: "claude-code", sessions: empty ? 0 : 41, done: true },
+                { agent: "codex", sessions: empty ? 0 : 87, done: true },
+                { agent: "cursor", sessions: 0, done: true },
+              ],
+        read: { completed: retainedSessions, total: retainedSessions },
+        gate: { kept: retainedSessions, outsideRepository: 0, excluded: 0, unreadable: 0 },
+      }
+    }
+    case "get_folder_permissions":
+      return { deferred: [], granted: [], supported: false }
+    case "default_scan_roots":
+      return ["/Users/fixture/.codex", "/Users/fixture/.claude"]
+    case "list_scan_roots":
+      return ["/Users/fixture/projects"]
+    case "list_repositories":
+      return empty
+        ? []
+        : [
+            {
+              key: "fixture-repo",
+              repoName: "antiburn",
+              fullName: "fixture/antiburn",
+              status: "ready",
+              repoRoot: "/Users/fixture/antiburn",
+              suspectedPath: null,
+              worktreeCount: 1,
+              sessionCount: 48,
+              wslDistro: null,
+              enabled: true,
+            },
+          ]
+    case "get_checks_report":
+      return fixtureChecksReport()
+    case "list_burn_check_targets":
+      return { targets: [], samples: [], truncated: false }
+    case "get_burn_check_aggregate_wins":
+      return { wins: [] }
+    case "get_burn_check_remediation_progress":
+      return { attempts: [] }
+    case "get_check_availability":
+      return readFixtureSettingsAvailability(fixtureCheckAvailability())
+    case "get_system_one_settings":
+      return readFixtureProviderSettings()
+    case "test_system_one_connection":
+    case "save_system_one_connection":
+    case "switch_system_one_connection":
+    case "remove_system_one_credential":
+    case "remove_system_one_connection":
+    case "retry_system_one_connection_operation":
+    case "remove_typesafe_api_key":
+    case "list_ollama_models":
+      return fixtureProviderCommand(command, args)
+    case "list_installed_check_directories":
+      return readFixtureCheckDirectories()
+    case "open_installed_check_directory":
+      return openFixtureCheckDirectory(args)
+    case "set_smart_burn_checks_enabled":
+      return setFixtureModelChecksEnabled(fixtureCheckAvailability(), args)
+    case "set_check_enabled":
+      return setFixtureCheckEnabled(args)
+    case "get_latest_session_activity":
+      return Math.floor(Date.parse(now) / 1000)
+    case "is_overlay_work_active":
+      return true
+    case "hud_island_state":
+      return fixtureIsland()
+    case "get_hud_token_map":
+      return fixtureTokenMap()
+    case "get_hud_detail_state":
+      return {
+        ...hudDetail,
+        ...(empty ? { bars: [], noMeterSelected: true } : {}),
+        map: fixtureDetailMap(),
+        spend: fixtureTokenMap() ? "$0.12 per minute" : null,
+        target:
+          new URLSearchParams(window.location.search).get("detail") === "session"
+            ? "fixture-map-0"
+            : "usage",
+        subagent: "fixture-worker",
+      }
+    case "get_popover_peek_state":
+      return {
+        generation: 1,
+        target: { kind: "provider", provider: "openai", utcOffsetMinutes: 0 },
+        rendererReady: true,
+        visible: true,
+        awaitingRetargetCommit: false,
+        awaitingPresentation: false,
+        awaitingConcealment: false,
+      }
+    case "get_popover_peek_data":
+      return {
+        kind: "provider",
+        summary: providerUsage,
+        live: empty ? { providers: [], errors: [], meters: [], generatedAt: now } : liveUsage,
+      }
+    case "nudge_ready":
+      queueMicrotask(() =>
+        emitFixtureEvent(
+          "nudge:show",
+          state === "long"
+            ? {
+                ...nudge,
+                title:
+                  "Codex 5-hour window is 72% used while a deliberately long fixture title tests notification wrapping",
+              }
+            : nudge,
+        ),
+      )
+      return undefined
+    default:
+      return undefined
+  }
+}
+
+export function isTauri(): boolean {
+  return true
+}
+
+export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const allowed = new Set([
+    "get_agent_integrations",
+    "agent_session_locations",
+    "get_settings",
+    "get_main_window_visible",
+    "list_burn_check_snoozes",
+    "start_live_usage",
+    "app_info",
+    "list_recent_sessions",
+    "get_provider_usage",
+    "get_allowance_usage",
+    "get_live_usage",
+    "refresh_live_usage",
+    "get_session_limit_allocations",
+    "get_storage_health",
+    "count_agent_memories",
+    "get_scan_status",
+    "get_checks_report",
+    "list_burn_check_targets",
+    "get_burn_check_aggregate_wins",
+    "get_burn_check_remediation_progress",
+    "get_check_availability",
+    "get_latest_session_activity",
+    "is_overlay_work_active",
+    "hud_island_state",
+    "get_hud_token_map",
+    "get_hud_detail_state",
+    "get_popover_peek_state",
+    "get_popover_peek_data",
+    "nudge_ready",
+    "get_session_analysis",
+    "get_session_hygiene",
+  ])
+  if (!allowed.has(command)) throw new Error(`Demo command is unavailable: ${command}`)
+  if (command === "get_live_usage" || command === "refresh_live_usage") {
+    return {
+      ...example.liveUsage,
+      providers: example.liveUsage.providers.slice(0, 2).map((provider) => ({
+        ...provider,
+        windows: provider.windows.map((window, index) => ({
+          ...window,
+          usedPercent: index ? 44 : 72,
+        })),
+      })),
+    } as T
+  }
+  if (command === "get_provider_usage") return example.usage as T
+  if (command === "get_session_analysis") return example.analysis(String(args?.sessionId)) as T
+  if (command === "get_checks_report") return example.report as T
+  if (command === "get_session_hygiene")
+    return ((args?.sessions ?? []) as { sessionId: string }[]).map((session) =>
+      example.hygiene(session.sessionId),
+    ) as T
+  if (command === "list_burn_check_targets") {
+    const targets = example.targets(args?.detector as Parameters<typeof example.targets>[0])
+    return {
+      targets,
+      samples: targets.flatMap((target) => target.samples),
+      truncated: false,
+    } as T
+  }
+
+  if (new URLSearchParams(window.location.search).get("surface") === "onboarding") {
+    window.__ANTIBURN_ONBOARDING_CALLS__ ??= []
+    window.__ANTIBURN_ONBOARDING_CALLS__.push(command)
+  }
+  if (
+    command.includes("system_one") ||
+    command === "list_ollama_models" ||
+    command === "remove_typesafe_api_key"
+  ) {
+    window.__ANTIBURN_VISUAL_PROVIDER_CALLS__ ??= []
+    window.__ANTIBURN_VISUAL_PROVIDER_CALLS__.push(command)
+    window.__ANTIBURN_VISUAL_PROVIDER_REQUESTS__ ??= []
+    window.__ANTIBURN_VISUAL_PROVIDER_REQUESTS__.push({ command, args })
+  }
+  if (["open_settings_window", "set_settings", "set_interface_scale"].includes(command)) {
+    window.__ANTIBURN_VISUAL_SETTINGS_CALLS__ ??= []
+    window.__ANTIBURN_VISUAL_SETTINGS_CALLS__.push({ command, args })
+  }
+  if (
+    command === "tear_off_overlay" ||
+    command === "hud_drag_ended" ||
+    command === "expand_hud_island"
+  ) {
+    window.__ANTIBURN_VISUAL_HUD_DRAGS__ ??= []
+    window.__ANTIBURN_VISUAL_HUD_DRAGS__.push(command)
+  }
+  if (command === "resize_overlay_window") {
+    window.__ANTIBURN_VISUAL_HUD_RESIZES__ ??= []
+    window.__ANTIBURN_VISUAL_HUD_RESIZES__.push({
+      ...(args ?? {}),
+      bodyPresent: document.querySelector('[data-testid="island-body"]') !== null,
+    })
+  }
+  return dataFor(command, args) as T
+}

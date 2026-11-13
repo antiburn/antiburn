@@ -277,6 +277,40 @@ fn cline_bundle_fingerprint_includes_database_and_child_artifacts() {
 }
 
 #[test]
+#[cfg(unix)]
+fn companion_fingerprints_omit_database_and_sidecars_if_any_path_is_unsafe() {
+    let temp = tempfile::TempDir::new().unwrap();
+    for (source, database) in [
+        (
+            ".cline/data/tasks/root/root.json",
+            ".cline/data/db/sessions.db",
+        ),
+        (
+            ".copilot/session-state/session/events.jsonl",
+            ".copilot/session-state/session-store.db",
+        ),
+    ] {
+        let source = temp.path().join(source);
+        let database = temp.path().join(database);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+        std::fs::write(&source, "transcript").unwrap();
+        std::fs::write(&database, "database").unwrap();
+        let unsafe_wal = database.with_extension("db-wal");
+        std::os::unix::fs::symlink(&database, unsafe_wal).unwrap();
+        let shm = database.with_extension("db-shm");
+        std::fs::write(&shm, "shared memory").unwrap();
+
+        let source = SessionSource::File(source);
+        let before = fingerprint_of(&source);
+        assert!(!before.contains(database.file_name().unwrap().to_str().unwrap()));
+        std::fs::write(&database, "database changed").unwrap();
+        std::fs::write(shm, "shared memory changed").unwrap();
+        assert_eq!(before, fingerprint_of(&source));
+    }
+}
+
+#[test]
 fn copilot_cli_events_use_the_v1_cli_source_format() {
     let source = SessionSource::File(std::path::PathBuf::from(
         "/Users/test/.copilot/session-state/11111111-1111-4111-8111-111111111111/events.jsonl",

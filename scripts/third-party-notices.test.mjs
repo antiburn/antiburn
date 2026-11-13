@@ -239,3 +239,18 @@ test("combines locked Rust production graphs without losing package notices", ()
   assert.match(generated, /Parser license text/);
   assert.match(generated, /Array deque license text/);
 });
+
+test("retains the vendored SQLite binding inventory and license", () => {
+  const crate = { name: "libsqlite3-sys", version: "0.30.1", source: null };
+  const report = {
+    crates: [{ package: crate, license: "MIT" }],
+    licenses: [{ text: "SQLite binding MIT license", used_by: [{ crate }] }],
+  };
+  assert.equal(rustPackages([report])[0].name, "libsqlite3-sys");
+  assert.deepEqual(legalBodies([], [report]), [
+    {
+      text: "SQLite binding MIT license\n",
+      packages: ["libsqlite3-sys@0.30.1"],
+    },
+  ]);
+});

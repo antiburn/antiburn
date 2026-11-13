@@ -64,9 +64,14 @@ fn definition_path(
             "This check does not have a local YAML file to open.",
         ));
     }
-    if protected::cwd_resolution_blocked(path, granted) {
+    if !protected::project_access_decision(path, granted).is_allowed() {
         return Err(DefinitionOpenError::unavailable(
             "Allow access to this folder in Settings → Sources, then try again.",
+        ));
+    }
+    if !protected::project_path_access(path, granted).is_allowed() {
+        return Err(DefinitionOpenError::unavailable(
+            "The check file path was replaced or cannot be accessed. Refresh Checks before opening it.",
         ));
     }
     let metadata = std::fs::symlink_metadata(path)
@@ -82,7 +87,7 @@ fn definition_path(
             "The check file cannot be accessed. Check its folder permissions and try again.",
         )
     })?;
-    if protected::cwd_resolution_blocked(&resolved, granted) {
+    if !protected::project_access_decision(&resolved, granted).is_allowed() {
         return Err(DefinitionOpenError::unavailable(
             "Allow access to this folder in Settings → Sources, then try again.",
         ));
@@ -129,7 +134,8 @@ pub(crate) async fn open_installed_check_definition(
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let definitions = super::metadata(&worker_app);
-        let granted = worker_app.state::<Store>().granted_dirs().map_err(|_| {
+        let store = worker_app.state::<Store>();
+        let policy = store.repository_policy_snapshot().map_err(|_| {
             DefinitionOpenError::unavailable(
                 "Folder access settings are unavailable. Try again after refreshing Checks.",
             )
@@ -137,8 +143,16 @@ pub(crate) async fn open_installed_check_definition(
         open_definition_file(
             &definitions,
             &source_reference,
-            &granted,
-            |path| crate::commands::reject_remote_cache_path(&worker_app, path).map_err(|_| ()),
+            &policy.granted_dirs,
+            |path| {
+                if !store
+                    .repository_policy_is_current(policy.generation)
+                    .unwrap_or(false)
+                {
+                    return Err(());
+                }
+                crate::commands::reject_remote_cache_path(&worker_app, path).map_err(|_| ())
+            },
             |path| {
                 worker_app
                     .opener()

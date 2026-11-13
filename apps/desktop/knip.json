@@ -1,6 +1,10 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/styles.css"],
+  "entry": [
+    "src/styles.css",
+    "src/onboarding/demo/main.tsx",
+    "src/onboarding/demo/adapters/{core,event,window,dpi,webviewWindow,dialog,clipboard}.ts"
+  ],
   "project": ["src/**/*.{ts,tsx,css}"],
   "ignoreDependencies": ["@tauri-apps/cli"]
 }

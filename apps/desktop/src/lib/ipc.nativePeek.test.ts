@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { noteInteraction, type Interaction } from "./ipc"
+import {
+  noteOnboardingAction,
+  noteOnboardingCloudUnavailable,
+  noteOnboardingScreenViewed,
+} from "./onboardingAnalytics"
 
 const tauriInvoke = vi.hoisted(() => vi.fn())
 
@@ -44,6 +49,20 @@ describe("native peek analytics", () => {
   it("does not widen the native command beyond preview observations", () => {
     noteInteraction({ kind: "sessionOpened", agent: "codex", environment: "native" })
     noteInteraction({ kind: "surfaceViewed", surface: "activity", origin: "user" })
+    noteOnboardingScreenViewed("cloud")
+    noteOnboardingAction("cloud", "set_up_cloud")
+    noteOnboardingCloudUnavailable()
+
+    expect(nativeInvoke).not.toHaveBeenCalled()
+    expect(tauriInvoke).not.toHaveBeenCalled()
+  })
+
+  it("keeps onboarding analytics inert in a browser without the shell", () => {
+    Reflect.deleteProperty(window, "__ANTIBURN_NATIVE_PEEK__")
+
+    noteOnboardingScreenViewed("cloud")
+    noteOnboardingAction("cloud", "set_up_cloud")
+    noteOnboardingCloudUnavailable()
 
     expect(nativeInvoke).not.toHaveBeenCalled()
     expect(tauriInvoke).not.toHaveBeenCalled()

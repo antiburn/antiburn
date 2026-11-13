@@ -23,3 +23,6 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = "3"
 time = "0.3"
+
+[patch.crates-io]
+libsqlite3-sys = { path = "../antiburn-local/vendor/libsqlite3-sys" }

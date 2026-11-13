@@ -6,15 +6,13 @@
 //! so the whole policy is here rather than spread across the callers:
 //!
 //! - **Every kind is enumerated here.** An automatic update, a failed scan,
-//!   low disk space, a crossed usage milestone, where the app went after setup,
+//!   low disk space, a crossed usage milestone,
 //!   and the settings pane's own test. Each is information the reader needs.
 //!   Nothing else in the app posts a notification.
 //! - **Every kind is gated twice** — once by the master preference and once by
 //!   its own ([`allowed`]). All default on, because a notification surface
 //!   that has to be discovered before it says anything is a surface nobody
-//!   discovers. Two kinds bypass the master switch, both because the reader
-//!   just pressed the button that causes them: [`Kind::Test`] ("Show test") and
-//!   [`Kind::MenuBarHome`] ("Start using antiburn").
+//!   discovers. The test button bypasses the master switch.
 //! - **Nothing repeats.** A scan failure is announced once per run of the app,
 //!   not once per tick ([`NotificationState::claim_scan_failure`]), and a
 //!   version is announced once, not every six hours
@@ -69,9 +67,6 @@ pub enum Kind {
     DiskSpaceLow,
     /// A live usage window crossed a milestone the reader asked about.
     UsageMilestone,
-    /// The first run finished and its window went away. Says where the app is
-    /// now, once, in the reader's whole time with it.
-    MenuBarHome,
     /// The settings pane's "Show test" button.
     Test,
 }
@@ -84,7 +79,6 @@ impl Kind {
             "scanFailure" => Self::ScanFailure,
             "diskSpaceLow" => Self::DiskSpaceLow,
             "usageMilestone" => Self::UsageMilestone,
-            "menuBarHome" => Self::MenuBarHome,
             "test" => Self::Test,
             _ => return None,
         })
@@ -98,16 +92,9 @@ impl Kind {
 /// master back on restores the reader's earlier choices rather than a
 /// default).
 ///
-/// Two kinds ignore it, and for the same reason: they are the direct
-/// consequence of a button the reader pressed a second earlier, not something
-/// antiburn decided to say. [`Kind::Test`] exists so a reader can see what a
-/// notification looks like *before* deciding to allow them. [`Kind::MenuBarHome`]
-/// fires once in the app's whole life, as the first run finishes, and it
-/// is the only thing that says where the application just went — suppressing it
-/// would leave a reader who turned notifications off mid-first-run with no
-/// explanation of where the application remains available.
+/// The test button bypasses the switch so users can preview a notification.
 pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
-    if kind == Kind::Test || kind == Kind::MenuBarHome {
+    if kind == Kind::Test {
         return true;
     }
     settings.notifications_enabled
@@ -120,7 +107,7 @@ pub fn allowed(settings: &AppSettings, kind: Kind) -> bool {
             Kind::UsageMilestone => {
                 settings.milestones_5h.any() || settings.milestones_weekly.any()
             }
-            Kind::MenuBarHome | Kind::Test => true,
+            Kind::Test => true,
         }
 }
 
@@ -249,7 +236,6 @@ fn deliver(
         Kind::ScanFailure => (NudgeKind::ScanFailure, NudgeTone::Warning),
         Kind::DiskSpaceLow => (NudgeKind::DiskSpaceLow, NudgeTone::Warning),
         Kind::UsageMilestone => (NudgeKind::UsageMilestone, NudgeTone::Info),
-        Kind::MenuBarHome => (NudgeKind::MenuBarLocation, NudgeTone::Success),
         Kind::Test => (NudgeKind::Test, NudgeTone::Info),
     };
     let tone = tone_override.unwrap_or(default_tone);
@@ -391,41 +377,6 @@ fn usage_milestone_tone(content: &crate::provider_usage::live::MilestoneContent)
 /// telling somebody where to look and "menu bar" is not where a Windows reader
 /// should be looking. Linux panels vary enough that "system tray" is the
 /// closest true thing to say.
-#[cfg(target_os = "macos")]
-const HOME_NOUN: &str = "menu bar";
-#[cfg(not(target_os = "macos"))]
-const HOME_NOUN: &str = "system tray";
-
-#[cfg(target_os = "macos")]
-const HIDDEN_TRAY_HOME_TITLE: &str = "antiburn is available from the Dock";
-#[cfg(not(target_os = "macos"))]
-const HIDDEN_TRAY_HOME_TITLE: &str = "antiburn is ready";
-
-/// Deliberately no direction — no "above", no "up there". This notice is
-/// normally anchored right under the menu-bar item, but the anchor is
-/// macOS-only and needs a tray rectangle the backend will not always report; on
-/// the fallback path it appears at the platform's notification corner instead,
-/// and any wording that pointed somewhere would be wrong exactly there. A test
-/// below pins that.
-pub fn menu_bar_home_message() -> NotificationCopy {
-    NotificationCopy::new(
-        format!("antiburn is in your {HOME_NOUN}"),
-        "Click here to see coding sessions.",
-        "antiburn runs in the background at all times.",
-    )
-}
-
-fn application_home_message(tray_visible: bool) -> NotificationCopy {
-    if tray_visible {
-        return menu_bar_home_message();
-    }
-    NotificationCopy::new(
-        HIDDEN_TRAY_HOME_TITLE,
-        "Click here to open antiburn.",
-        "antiburn runs in the background at all times.",
-    )
-}
-
 pub fn test_message() -> NotificationCopy {
     NotificationCopy::new(
         "antiburn notifications are working",
@@ -527,33 +478,6 @@ pub fn note_usage_milestone(
     true
 }
 
-/// Say where antiburn went once the first run's result has shown.
-///
-/// Ungated (see [`allowed`]) and forced to hang off the menu-bar item whatever
-/// the reader's placement preference says: a notification that answers "where
-/// is it" by appearing in the opposite corner of the screen from the answer
-/// would be worse than none. Called only from the settings-save transition
-/// that finishes the first run, so it appears after each setup run, including
-/// an explicit restart. Its copy and action follow the entry point that
-/// remains visible.
-pub fn note_menu_bar_home(app: &AppHandle) {
-    let tray_visible = app
-        .try_state::<Store>()
-        .map(|store| store.settings_snapshot())
-        .is_none_or(|settings| settings.tray_shown());
-    if tray_visible {
-        crate::nudges::anchor_next_to_the_tray(app);
-    }
-    deliver(
-        app,
-        Kind::MenuBarHome,
-        Delivery::Preview,
-        application_home_message(tray_visible),
-        Some(("show", "Show me", None)),
-        None,
-    );
-}
-
 /// Post the settings pane's test notification. Bypasses the master switch —
 /// the reader pressed the button — but is otherwise the same delivery path as
 /// every real kind, so what they see is what they will get.
@@ -608,20 +532,6 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
             let tone = usage_milestone_tone(&content);
             (usage_milestone_message(&content), None, Some(tone))
         }
-        Kind::MenuBarHome => {
-            let tray_visible = app
-                .try_state::<Store>()
-                .map(|store| store.settings_snapshot())
-                .is_none_or(|settings| settings.tray_shown());
-            if tray_visible {
-                crate::nudges::anchor_next_to_the_tray(app);
-            }
-            (
-                application_home_message(tray_visible),
-                Some(("show", "Show me", None)),
-                None,
-            )
-        }
         Kind::Test => (test_message(), None, None),
     };
     deliver(app, kind, Delivery::Preview, copy, extra_action, tone);
@@ -629,10 +539,8 @@ pub fn note_sample(app: &AppHandle, kind: Kind) {
 
 /// Request the macOS Focus-status authorization, at most once per process.
 ///
-/// The request runs only when setup is complete, the master notification
-/// preference is on, and the reader opted in to the Focus check — so the
-/// permission sheet cannot appear over the first-run window, and never
-/// appears for a reader who did not ask for the check. Repeat calls are
+/// The request runs only when notifications and the Focus check are enabled.
+/// Repeat calls are
 /// free: the gate keeps a once-flag. The other platforms need no
 /// authorization. The gate self-skips for unbundled dev binaries, which
 /// cannot hold the signed entitlement.
@@ -645,11 +553,7 @@ pub fn maybe_initialize_authorization(app: &AppHandle) {
         let ready = app
             .try_state::<Store>()
             .map(|store| store.settings_snapshot())
-            .is_some_and(|settings| {
-                settings.onboarding_completed
-                    && settings.notifications_enabled
-                    && settings.nudges_respect_dnd
-            });
+            .is_some_and(|settings| settings.notifications_enabled && settings.nudges_respect_dnd);
         if !ready {
             return;
         }
@@ -687,7 +591,6 @@ mod tests {
             ("scanFailure", Kind::ScanFailure),
             ("diskSpaceLow", Kind::DiskSpaceLow),
             ("usageMilestone", Kind::UsageMilestone),
-            ("menuBarHome", Kind::MenuBarHome),
             ("test", Kind::Test),
         ] {
             assert_eq!(Kind::from_id(id), Some(kind));
@@ -701,14 +604,6 @@ mod tests {
         assert!(copy.subtitle.contains("0.2.0"));
         assert!(copy.description.contains("Select Install"));
         assert!(copy.description.contains("Open About"));
-    }
-
-    #[test]
-    fn hidden_tray_home_copy_points_back_to_the_application() {
-        let copy = application_home_message(false);
-        assert_eq!(copy.title, HIDDEN_TRAY_HOME_TITLE);
-        assert_eq!(copy.subtitle, "Click here to open antiburn.");
-        assert!(!copy.title.contains(HOME_NOUN));
     }
 
     #[test]
@@ -761,15 +656,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_reader_pressed_kinds_bypass_the_master_switch() {
+    fn only_the_test_button_bypass_the_master_switch() {
         let settings = AppSettings {
             notifications_enabled: false,
             ..settings()
         };
-        // Both are the direct consequence of a button pressed a second
-        // earlier: "Show test", and "Start using antiburn".
         assert!(allowed(&settings, Kind::Test));
-        assert!(allowed(&settings, Kind::MenuBarHome));
         for kind in [
             Kind::UpdateAvailable,
             Kind::ScanFailure,

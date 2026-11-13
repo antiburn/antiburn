@@ -24,20 +24,25 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use antiburn_local::paths::{home_dir, ignored_paths, protected};
+use antiburn_local::paths::protected::{self, ProjectAccessDecision};
+use antiburn_local::paths::{home_dir, ignored_paths};
 use antiburn_local::platform::git;
 use antiburn_local::repositories::{
-    ConsentGrants, DeferredProtectedPath, LocatedRepo, dedup_deferred_by_cwd, merge_located_repos,
-    normalize_remote_url, parse_repo_name_from_url, partition_cwds_by_grants, repo_root_identity,
-    scan_roots_for_repos, verify_dir_access,
+    ConsentGrants, DeferredProtectedPath, LocatedRepo, merge_located_repos, normalize_remote_url,
+    parse_repo_name_from_url, repo_root_identity, scan_roots_for_repos, verify_dir_access,
 };
 use anyhow::Context;
 use tauri::{AppHandle, Manager};
 
-use crate::consent::StoreConsentGrants;
+use crate::consent::{
+    StoreConsentGrants, git_project_access, guarded_main_repo_root, project_path_access,
+};
 use crate::dto::{DeferredPermissionDir, RepositoryItem};
 use crate::scan::IGNORE_SCOPE;
-use crate::store::{DisabledAgents, RepositoryPolicyPublishOutcome, RepositoryRecord, Store};
+use crate::store::{
+    DisabledAgents, RepositoryDeferral, RepositoryDeferralSource, RepositoryPolicyPublishOutcome,
+    RepositoryPolicySnapshot, RepositoryRecord, Store,
+};
 
 /// Owners the forward scan runs for, most sessions first. A machine that works
 /// across many owners still gets its session-located repositories in full; the
@@ -93,7 +98,29 @@ pub async fn refresh(app: &AppHandle) -> anyhow::Result<()> {
 }
 
 async fn refresh_from_store(store: &Store) -> anyhow::Result<()> {
-    let policy = store.repository_policy_snapshot()?;
+    retry_repository_refresh(store, |policy| refresh_once(store, policy)).await
+}
+
+async fn retry_repository_refresh<F>(
+    store: &Store,
+    mut refresh: impl FnMut(RepositoryPolicySnapshot) -> F,
+) -> anyhow::Result<()>
+where
+    F: Future<Output = anyhow::Result<RepositoryPolicyPublishOutcome>>,
+{
+    for _ in 0..2 {
+        let policy = store.repository_policy_snapshot()?;
+        if refresh(policy).await? == RepositoryPolicyPublishOutcome::Published {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("repository refresh was superseded by a policy change");
+}
+
+async fn refresh_once(
+    store: &Store,
+    policy: RepositoryPolicySnapshot,
+) -> anyhow::Result<RepositoryPolicyPublishOutcome> {
     let mut ignored = policy.ignored_paths.clone();
     // Import exclusions written by earlier versions into the persisted
     // repository records during this refresh.
@@ -110,64 +137,30 @@ async fn refresh_from_store(store: &Store) -> anyhow::Result<()> {
     let known: Vec<RepositoryRecord> = store.repositories()?;
     let scan_roots: Vec<PathBuf> = store.scan_roots()?.into_iter().map(PathBuf::from).collect();
 
-    // What the user has already allowed. Read, never probed: confirming a grant
-    // means reading the directory, which is the very thing that prompts.
-    let consent = StoreConsentGrants::new(store);
-    let granted = policy.granted_dirs.clone();
-
-    let cwds: Vec<String> = distinct_cwds(&sessions);
-    // `deferred` names the protected directories this pass deliberately left
-    // untouched, so the interface can offer the user a way to grant them.
-    let (located, deferred) = locate_from_cwds(&cwds, &known, &granted, &consent).await;
+    let access = RefreshAccess {
+        store,
+        policy: &policy,
+        consent: StoreConsentGrants::for_policy(store, &policy),
+    };
+    let cwds = distinct_cwds(&sessions);
+    let (located, mut deferred) = locate_from_cwds(&cwds, &known, &ignored, &access).await;
     let counted = count_sessions(located, &sessions);
 
     let owners = top_owners(&counted);
-    let (scanned, scan_deferred) = forward_scan(&owners, &scan_roots, &consent).await;
-    let mut deferred = merge_deferred(deferred, scan_deferred);
-
-    // A read this pass may have observed that a recorded grant is stale and
-    // dropped it. The deferred list was derived before that happened, so it
-    // still describes a world where the folder was reachable. Re-derive it
-    // against what is true now — partitioning is pure, so this costs nothing
-    // and saves the reader a pass spent wondering where their repositories
-    // went.
-    let granted_now = store.repository_policy_snapshot()?.granted_dirs;
-    if granted_now != granted
-        && let Some(home) = home_dir()
-    {
-        let (_, still_blocked) = partition_cwds_by_grants(&home, &cwds, &granted_now);
-        deferred = merge_deferred(deferred, still_blocked);
-    }
-
+    let (scanned, scan_deferred) = forward_scan(&owners, &scan_roots, &access.consent).await;
+    // Forward discovery reports the configured scan root as the deferred path.
+    deferred.extend(scan_deferred.into_iter().map(|path| RepositoryDeferral {
+        path,
+        source: RepositoryDeferralSource::ScanRoot,
+    }));
     let merged = merge_located_repos(counted.into_iter().map(|(repo, _)| repo).collect(), scanned);
-    let mut records = Vec::with_capacity(merged.len());
-    for repo in &merged {
-        records.push(to_record(repo, &sessions, &known, &ignored).await);
-    }
+    let mut records = merged
+        .iter()
+        .map(|repo| to_record(repo, &sessions, &known, &ignored))
+        .collect();
     retain_disabled(&mut records, known);
-    surface_orphaned_opt_outs(&mut records, &ignored, &granted).await;
-    publish_refresh(
-        store,
-        policy.generation,
-        &records,
-        &summarize_deferred(&deferred),
-    )?;
-    Ok(())
-}
-
-fn publish_refresh(
-    store: &Store,
-    expected_generation: u64,
-    records: &[RepositoryRecord],
-    deferred: &[DeferredPermissionDir],
-) -> anyhow::Result<()> {
-    match store.publish_repository_refresh(expected_generation, records, deferred)? {
-        RepositoryPolicyPublishOutcome::Published => {}
-        RepositoryPolicyPublishOutcome::Superseded => {
-            anyhow::bail!("repository refresh was superseded by a policy change")
-        }
-    }
-    Ok(())
+    surface_orphaned_opt_outs(&mut records, &ignored, &access).await;
+    store.publish_repository_refresh(policy.generation, &records, deferred)
 }
 
 /// Refresh only the stored session counts after local session deletion.
@@ -198,34 +191,38 @@ pub fn refresh_session_counts(store: &Store) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Combine two deferred lists, keeping each working directory once.
-fn merge_deferred(
-    mut first: Vec<DeferredProtectedPath>,
-    second: Vec<DeferredProtectedPath>,
-) -> Vec<DeferredProtectedPath> {
-    first.extend(second);
-    dedup_deferred_by_cwd(&mut first);
-    first
+pub(crate) fn reportable_project_deferral(
+    path: &Path,
+    decision: ProjectAccessDecision,
+) -> Option<DeferredProtectedPath> {
+    let ProjectAccessDecision::DeferredProtected(protected_dir) = decision else {
+        return None;
+    };
+    protected::protected_dir_names()
+        .contains(&protected_dir.as_str())
+        .then(|| DeferredProtectedPath {
+            cwd: path.to_string_lossy().into_owned(),
+            protected_dir,
+        })
 }
 
-/// Reduce deferred paths to one entry per protected directory, since that is
-/// the granularity the operating system grants at and therefore the only
-/// granularity worth asking the user about.
-fn summarize_deferred(deferred: &[DeferredProtectedPath]) -> Vec<DeferredPermissionDir> {
-    let mut order: Vec<String> = Vec::new();
-    let mut counts: HashMap<String, u32> = HashMap::new();
+/// Summarize each promptable directory and count each affected path once.
+pub(crate) fn summarize_deferred<'a>(
+    deferred: impl IntoIterator<Item = &'a DeferredProtectedPath>,
+) -> Vec<DeferredPermissionDir> {
+    let mut counts = std::collections::BTreeMap::new();
+    let mut seen = HashSet::new();
     for entry in deferred {
-        if !counts.contains_key(&entry.protected_dir) {
-            order.push(entry.protected_dir.clone());
+        if seen.insert((
+            &entry.protected_dir,
+            repo_root_identity(Path::new(&entry.cwd)),
+        )) {
+            *counts.entry(entry.protected_dir.clone()).or_insert(0u32) += 1;
         }
-        *counts.entry(entry.protected_dir.clone()).or_insert(0) += 1;
     }
-    order
+    counts
         .into_iter()
-        .map(|dir| DeferredPermissionDir {
-            path_count: counts.get(&dir).copied().unwrap_or(0),
-            dir,
-        })
+        .map(|(dir, path_count)| DeferredPermissionDir { dir, path_count })
         .collect()
 }
 
@@ -239,7 +236,7 @@ fn summarize_deferred(deferred: &[DeferredProtectedPath]) -> Vec<DeferredPermiss
 async fn surface_orphaned_opt_outs(
     records: &mut Vec<RepositoryRecord>,
     ignored: &HashSet<String>,
-    granted: &HashSet<String>,
+    access: &RefreshAccess<'_>,
 ) {
     let listed: HashSet<String> = records
         .iter()
@@ -256,7 +253,14 @@ async fn surface_orphaned_opt_outs(
     paths.sort();
     for path in paths {
         let root = Path::new(path);
-        if listed.contains(&repo_root_identity(root)) || !root.is_dir() {
+        if !access.consent.is_current() {
+            break;
+        }
+        if listed.contains(&repo_root_identity(root)) {
+            continue;
+        }
+        let readable = access.path(root).is_allowed();
+        if readable && !root.is_dir() {
             continue;
         }
         let folder_name = root
@@ -264,19 +268,12 @@ async fn surface_orphaned_opt_outs(
             .and_then(|name| name.to_str())
             .unwrap_or("repository")
             .to_string();
-        // An opted-out repository inside an ungranted protected directory keeps
-        // its row, named after its folder: reading its remote would mean running
-        // git in there, and the row exists precisely so the user can act on a
-        // repository antiburn is not otherwise touching.
-        let remote_name = if protected::cwd_resolution_blocked(root, granted) {
-            None
-        } else {
-            git::first_remote_url_at(root)
+        let remote_name =
+            git::first_remote_url_at_with_access(root, &|path| access.git(path).is_allowed())
                 .await
                 .ok()
                 .flatten()
-                .and_then(|url| parse_repo_name_from_url(&normalize_remote_url(&url)))
-        };
+                .and_then(|url| parse_repo_name_from_url(&normalize_remote_url(&url)));
         let (repo_name, full_name) = match remote_name {
             Some(name) => (name.rsplit('/').next().unwrap_or(&name).to_string(), name),
             None => (folder_name.clone(), folder_name),
@@ -285,9 +282,14 @@ async fn surface_orphaned_opt_outs(
             key: repo_root_identity(root),
             repo_name,
             full_name,
-            status: "accessible".to_string(),
-            repo_root: Some(path.clone()),
-            suspected_path: None,
+            status: if readable {
+                "accessible"
+            } else {
+                "permission_denied"
+            }
+            .to_string(),
+            repo_root: readable.then(|| path.clone()),
+            suspected_path: (!readable).then(|| path.clone()),
             worktree_count: 0,
             session_count: 0,
             wsl_distro: None,
@@ -404,157 +406,147 @@ fn distinct_cwds(sessions: &[crate::store::SessionRecord]) -> Vec<String> {
     cwds
 }
 
-/// What may be done with a repository root an earlier pass already resolved.
-#[derive(Debug, PartialEq, Eq)]
-enum KnownRootAccess {
-    /// Outside every protected directory. Readable, nothing to ask.
-    Open,
-    /// Inside a directory the user granted. Read it — and let a denial, if the
-    /// grant has since been revoked, be what drops the grant.
-    Verify,
-    /// Inside a directory the user has *not* granted. Do not touch it: a record
-    /// can outlive the grant it was found under, and reading it then is exactly
-    /// the unannounced dialog this whole design exists to prevent.
-    Blocked(String),
+struct RefreshAccess<'a> {
+    store: &'a Store,
+    policy: &'a RepositoryPolicySnapshot,
+    consent: StoreConsentGrants<'a>,
 }
 
-/// Decide which of the three applies. Pure, and home-explicit so it behaves the
-/// same in a test on any platform.
-fn classify_known_root(home: &Path, root: &Path, granted: &HashSet<String>) -> KnownRootAccess {
-    match protected::protected_dir_name_in(home, root) {
-        None => KnownRootAccess::Open,
-        Some(dir) if granted.contains(&dir) => KnownRootAccess::Verify,
-        Some(dir) => KnownRootAccess::Blocked(dir),
+impl RefreshAccess<'_> {
+    fn path(&self, path: &Path) -> ProjectAccessDecision {
+        project_path_access(self.store, self.policy, path)
+    }
+
+    fn git(&self, path: &Path) -> ProjectAccessDecision {
+        git_project_access(self.store, self.policy, path)
+    }
+
+    async fn verify(&self, path: &Path) -> bool {
+        self.path(path).is_allowed() && verify_dir_access(&self.consent, path).await
     }
 }
 
-/// Resolve working directories to canonical repository roots, reusing roots the
-/// last pass already established.
-///
-/// `granted` names the consent-protected directories the user has allowed.
-/// Working directories under any other protected directory are returned as
-/// deferred rather than resolved: this pass runs in the background, and both a
-/// directory read and a `git` process whose working directory sits inside one
-/// would raise a permission dialog with nothing on screen to explain it.
+/// Resolve new roots and carry known repository identity through deferrals.
 async fn locate_from_cwds(
     cwds: &[String],
     known: &[RepositoryRecord],
-    granted: &HashSet<String>,
-    consent: &dyn ConsentGrants,
-) -> (Vec<LocatedRepo>, Vec<DeferredProtectedPath>) {
-    let mut by_key: HashMap<String, LocatedRepo> = HashMap::new();
-    let mut deferred: Vec<DeferredProtectedPath> = Vec::new();
-    let mut resolved = 0usize;
-    let mut unresolved: Vec<&str> = Vec::new();
-    // Without a home directory nothing can be classified as protected, which is
-    // how the engine's own guards fail open.
-    let home = home_dir();
-
+    ignored: &HashSet<String>,
+    access: &RefreshAccess<'_>,
+) -> (Vec<LocatedRepo>, Vec<RepositoryDeferral>) {
+    let mut by_key = HashMap::new();
+    let mut deferred = Vec::new();
+    let mut resolved = 0;
+    let mut known_access = HashMap::new();
     for cwd in cwds {
-        // Already under a repository the last pass found: answered from the
-        // store, so no filesystem access and no consent question to ask.
-        if let Some(record) = known.iter().find(|record| {
+        if !access.consent.is_current() {
+            break;
+        }
+        if project_path_is_ignored(ignored, cwd) {
+            continue;
+        }
+        let mut defer = |path: &Path, decision| {
+            if let Some(path) = reportable_project_deferral(path, decision) {
+                deferred.push(RepositoryDeferral {
+                    path,
+                    source: RepositoryDeferralSource::SessionCwd(cwd.clone()),
+                });
+            }
+        };
+        let cwd_path = Path::new(cwd);
+        let cwd_access = protected::project_access_decision(cwd_path, &access.policy.granted_dirs);
+        defer(cwd_path, cwd_access.clone());
+        if let Some((record, root)) = known.iter().find_map(|record| {
             record
                 .repo_root
                 .as_deref()
-                .is_some_and(|root| under(cwd, root))
+                .or(record.suspected_path.as_deref())
+                .filter(|root| under(cwd, root))
+                .map(|root| (record, Path::new(root)))
         }) {
-            let Some(root) = record.repo_root.as_deref() else {
-                continue;
-            };
-            if by_key.contains_key(&record.key) {
+            let decision = known_access
+                .entry(&record.key)
+                .or_insert_with(|| access.path(root));
+            defer(Path::new(cwd), decision.clone());
+            if record.repo_root.is_some() || !decision.is_allowed() {
+                if by_key.contains_key(&record.key) {
+                    continue;
+                }
+                let dir_accessible = decision.is_allowed()
+                    && (protected::project_access_decision(root, &HashSet::new()).is_allowed()
+                        || access.verify(root).await);
+                by_key.insert(
+                    record.key.clone(),
+                    LocatedRepo {
+                        remote_url: String::new(),
+                        repo_root: root.to_path_buf(),
+                        dir_accessible,
+                        worktree_count: record.worktree_count,
+                        session_count: 0,
+                    },
+                );
                 continue;
             }
-            // A protected root is the one case the store cannot answer for:
-            // the grant it was found under can be revoked without telling us,
-            // and assuming otherwise keeps reporting a repository as readable
-            // long after the system stopped allowing it.
-            let root_path = PathBuf::from(root);
-            let access = match home.as_deref() {
-                Some(home) => classify_known_root(home, &root_path, granted),
-                None => KnownRootAccess::Open,
-            };
-            let dir_accessible = match access {
-                KnownRootAccess::Open => true,
-                KnownRootAccess::Verify => verify_dir_access(consent, &root_path).await,
-                KnownRootAccess::Blocked(protected_dir) => {
-                    deferred.push(DeferredProtectedPath {
-                        cwd: root_path.to_string_lossy().to_string(),
-                        protected_dir,
-                    });
-                    false
-                }
-            };
-            by_key.insert(
-                record.key.clone(),
-                LocatedRepo {
-                    remote_url: String::new(),
-                    repo_root: root_path,
-                    dir_accessible,
-                    worktree_count: record.worktree_count,
-                    session_count: 0,
-                },
-            );
-            continue;
         }
 
-        unresolved.push(cwd);
-    }
-
-    // Everything past this point shells out to git, so consent is settled first.
-    let (admitted, blocked) = match home.as_deref() {
-        Some(home) => partition_cwds_by_grants(home, unresolved, granted),
-        None => (
-            unresolved.into_iter().map(str::to_string).collect(),
-            Vec::new(),
-        ),
-    };
-    deferred.extend(blocked);
-
-    for cwd in &admitted {
+        if !cwd_access.is_allowed() {
+            continue;
+        }
+        let cwd = cwd_path;
         if resolved >= MAX_NEW_ROOTS_PER_PASS {
             continue;
         }
         resolved += 1;
-
-        let Ok(root) = git::repo_root_at(Path::new(cwd)).await else {
+        let decision = access.git(cwd);
+        if !decision.is_allowed() {
+            defer(cwd, decision);
+            continue;
+        }
+        let Ok(root) = git::repo_root_at(cwd).await else {
             continue;
         };
-        let root = git::canonical_main_repo_root(&root).await;
-        // A worktree outside the protected directories can still be owned by a
-        // main repository inside one, so the root gets its own check before the
-        // reads below.
-        if protected::cwd_resolution_blocked(&root, granted) {
-            if let Some(protected_dir) = protected::protected_dir_name(&root) {
-                deferred.push(DeferredProtectedPath {
-                    cwd: root.to_string_lossy().to_string(),
-                    protected_dir,
-                });
+        let root = match guarded_main_repo_root(&root, &|path| access.git(path), &|path| {
+            access.path(path)
+        })
+        .await
+        {
+            Ok(root) => root,
+            Err((path, decision)) => {
+                defer(&path, decision);
+                continue;
             }
-            continue;
-        }
+        };
         let key = repo_root_identity(&root);
-        if by_key.contains_key(&key) {
+        if by_key.contains_key(&key) || project_path_is_ignored(ignored, &root.to_string_lossy()) {
             continue;
         }
-        let remote = git::preferred_remote_url_at(&root)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
+        let decision = access.git(&root);
+        if !decision.is_allowed() {
+            defer(&root, decision);
+            continue;
+        }
+        let remote =
+            git::preferred_remote_url_at_with_access(&root, &|path| access.git(path).is_allowed())
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+        let dir_accessible = access.verify(&root).await;
+        let worktree_count = if access.git(&root).is_allowed() {
+            git::worktree_count_at(&root).await
+        } else {
+            0
+        };
         by_key.insert(
             key,
             LocatedRepo {
                 remote_url: normalize_remote_url(&remote),
-                repo_root: root.clone(),
-                dir_accessible: verify_dir_access(consent, &root).await,
-                worktree_count: git::worktree_count_at(&root).await,
+                repo_root: root,
+                dir_accessible,
+                worktree_count,
                 session_count: 0,
             },
         );
     }
-
-    dedup_deferred_by_cwd(&mut deferred);
     (by_key.into_values().collect(), deferred)
 }
 
@@ -612,6 +604,9 @@ async fn forward_scan(
     let mut located = Vec::new();
     let mut deferred = Vec::new();
     for owner in owners {
+        if !consent.is_current() {
+            break;
+        }
         // `probe_protected: false` — a background pass must never be able to
         // raise the operating system's consent dialog. Roots the user has
         // already granted are walked normally; the rest come back deferred.
@@ -623,25 +618,40 @@ async fn forward_scan(
 }
 
 /// Shape one located repository into the record the store keeps.
-async fn to_record(
+fn to_record(
     repo: &LocatedRepo,
     sessions: &[crate::store::SessionRecord],
     known: &[RepositoryRecord],
     ignored: &HashSet<String>,
 ) -> RepositoryRecord {
     let root = repo.repo_root.to_string_lossy().to_string();
-    let key = repo_root_identity(&repo.repo_root);
-    let name = parse_repo_name_from_url(&repo.remote_url).unwrap_or_else(|| {
-        repo.repo_root
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| root.clone())
+    let identity = repo_root_identity(&repo.repo_root);
+    let previous = known.iter().find(|record| {
+        record.key == identity
+            || record
+                .repo_root
+                .as_deref()
+                .or(record.suspected_path.as_deref())
+                .is_some_and(|path| repo_root_identity(Path::new(path)) == identity)
     });
+    let key = previous
+        .map(|record| record.key.clone())
+        .unwrap_or(identity);
+    let name = parse_repo_name_from_url(&repo.remote_url)
+        .or_else(|| previous.map(|record| record.repo_name.clone()))
+        .unwrap_or_else(|| {
+            repo.repo_root
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| root.clone())
+        });
     let full_name = match git::parse_owner_from_url(&repo.remote_url) {
         Some(owner) => format!("{owner}/{name}"),
         // A clone with no usable remote is still a real repository on this
         // machine; it just has no owner-qualified name to show.
-        None => name.clone(),
+        None => previous
+            .map(|record| record.full_name.clone())
+            .unwrap_or_else(|| name.clone()),
     };
     let session_count = if repo.session_count > 0 {
         repo.session_count
@@ -659,11 +669,9 @@ async fn to_record(
 
     // Selection is the reader's, so a rescan inherits it; a repository seen for
     // the first time starts from the engine's opt-out list.
-    let enabled = known
-        .iter()
-        .find(|record| record.key == key)
+    let enabled = previous
         .map(|record| record.enabled)
-        .unwrap_or_else(|| !ignored_paths::set_contains(ignored, &root));
+        .unwrap_or_else(|| !project_path_is_ignored(ignored, &root));
 
     let wsl_distro =
         antiburn_local::platform::environment::environment_from_mounted_path(&repo.repo_root)
@@ -690,9 +698,42 @@ async fn to_record(
 /// True when `path` is `root` or sits beneath it, comparing with `/` on every
 /// platform so a Windows working directory still matches its root.
 fn under(path: &str, root: &str) -> bool {
-    let path = ignored_paths::normalize(path).replace('\\', "/");
-    let root = ignored_paths::normalize(root).replace('\\', "/");
+    let path = repo_root_identity(Path::new(path));
+    let root = repo_root_identity(Path::new(root));
     path == root || path.starts_with(&format!("{root}/"))
+}
+
+pub(crate) fn project_path_is_ignored(ignored: &HashSet<String>, path: &str) -> bool {
+    fn identity(path: &str) -> String {
+        let path = repo_root_identity(Path::new(path));
+        #[cfg(target_os = "macos")]
+        {
+            let path = path.to_lowercase();
+            for alias in ["/var", "/tmp", "/etc"] {
+                if path == alias
+                    || path
+                        .strip_prefix(alias)
+                        .is_some_and(|part| part.starts_with('/'))
+                {
+                    return format!("/private{path}");
+                }
+            }
+            path
+        }
+        #[cfg(not(target_os = "macos"))]
+        path
+    }
+    if ignored.is_empty() {
+        return false;
+    }
+    let path = identity(path);
+    ignored.iter().any(|root| {
+        let root = identity(root);
+        path == root
+            || path
+                .strip_prefix(&root)
+                .is_some_and(|part| part.starts_with('/'))
+    })
 }
 
 #[cfg(test)]
@@ -826,46 +867,49 @@ mod tests {
         assert_eq!(counts.get("wsl"), Some(&1));
     }
 
-    /// An opted-out path whose record is gone entirely (an earlier build
-    /// dropped it) is resurrected as a disabled row from the opt-out store,
-    /// so the exclusion is always visible and reversible.
-    /// The rule a background pass must never break: a repository record can
-    /// outlive the grant it was found under, and reading it then is the
-    /// unannounced dialog this design exists to prevent.
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn a_known_root_is_only_read_while_its_grant_still_stands() {
-        let home = Path::new("/Users/avery");
-        let documents = home.join("Documents/GitHub/repo");
-        let plain = home.join("dev/repo");
+    #[tokio::test]
+    async fn a_recovered_suspected_repository_supplies_its_git_owner() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        for args in [
+            &["init"][..],
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/avery/project.git",
+            ],
+        ] {
+            let output = git::run_git_output_at(Some(&root), args, &[])
+                .await
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let policy = store.repository_policy_snapshot().unwrap();
+        let access = RefreshAccess {
+            store: &store,
+            policy: &policy,
+            consent: StoreConsentGrants::for_policy(&store, &policy),
+        };
+        let mut suspected = repo_record(&repo_root_identity(&root), true);
+        suspected.repo_root = None;
+        suspected.suspected_path = Some(root.to_string_lossy().into_owned());
+        let (located, _) = locate_from_cwds(
+            &[root.to_string_lossy().into_owned()],
+            &[suspected],
+            &HashSet::new(),
+            &access,
+        )
+        .await;
 
-        // Outside the protected directories the store's answer stands.
-        assert_eq!(
-            classify_known_root(home, &plain, &HashSet::new()),
-            KnownRootAccess::Open
-        );
-
-        // Granted: read it, so a revoked grant is observed and dropped.
-        assert_eq!(
-            classify_known_root(home, &documents, &HashSet::from(["Documents".to_string()])),
-            KnownRootAccess::Verify
-        );
-
-        // Not granted: never touched, however stale the record.
-        assert_eq!(
-            classify_known_root(home, &documents, &HashSet::new()),
-            KnownRootAccess::Blocked("Documents".to_string())
-        );
-
-        // A grant covers one directory, not every protected one.
-        assert_eq!(
-            classify_known_root(
-                home,
-                &home.join("Desktop/repo"),
-                &HashSet::from(["Documents".to_string()])
-            ),
-            KnownRootAccess::Blocked("Desktop".to_string())
-        );
+        let counted = count_sessions(located, &[]);
+        assert_eq!(top_owners(&counted), ["avery"]);
     }
 
     #[tokio::test]
@@ -879,7 +923,14 @@ mod tests {
 
         let mut records = vec![repo_record("widgets", true)];
         let ignored = load_ignored_paths(dir.path()).unwrap();
-        surface_orphaned_opt_outs(&mut records, &ignored, &HashSet::new()).await;
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let policy = store.repository_policy_snapshot().unwrap();
+        let access = RefreshAccess {
+            store: &store,
+            policy: &policy,
+            consent: StoreConsentGrants::for_policy(&store, &policy),
+        };
+        surface_orphaned_opt_outs(&mut records, &ignored, &access).await;
 
         assert_eq!(records.len(), 2);
         let orphan = &records[1];
@@ -889,7 +940,7 @@ mod tests {
 
         // Idempotent: a second pass sees the row listed and adds nothing.
         let mut again = records.clone();
-        surface_orphaned_opt_outs(&mut again, &ignored, &HashSet::new()).await;
+        surface_orphaned_opt_outs(&mut again, &ignored, &access).await;
         assert_eq!(again.len(), 2);
     }
 
@@ -1050,23 +1101,82 @@ mod tests {
         assert!(store.recent_sessions(0, 10).unwrap().is_empty());
     }
 
-    #[test]
-    fn superseded_refresh_is_reported_and_does_not_publish_its_results() {
+    #[tokio::test]
+    async fn refresh_retries_with_new_policy_after_a_grant_is_revoked() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        store.add_scan_root("/home/avery/Documents/work").unwrap();
+        store.grant_dir("Documents").unwrap();
+        let mut attempts = 0;
+
+        let mut attempt = |policy: RepositoryPolicySnapshot| {
+            attempts += 1;
+            if policy.granted_dirs.contains("Documents") {
+                store.revoke_dir_grant("Documents")?;
+                return store.publish_repository_refresh(
+                    policy.generation,
+                    &[repo_record("stale", true)],
+                    Vec::new(),
+                );
+            }
+            assert!(store.repositories()?.is_empty());
+            store.publish_repository_refresh(
+                policy.generation,
+                &[repo_record("fresh", true)],
+                vec![RepositoryDeferral {
+                    path: DeferredProtectedPath {
+                        cwd: "/home/avery/Documents/work".into(),
+                        protected_dir: "Documents".into(),
+                    },
+                    source: RepositoryDeferralSource::ScanRoot,
+                }],
+            )
+        };
+        retry_repository_refresh(&store, |policy| std::future::ready(attempt(policy)))
+            .await
+            .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(store.repositories().unwrap()[0].key, "fresh");
+        let deferred = store.deferred_permission_dirs().unwrap();
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].dir, "Documents");
+        assert_eq!(deferred[0].path_count, 1);
+    }
+
+    #[tokio::test]
+    async fn twice_superseded_refresh_reports_failure_without_publishing() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory(dir.path()).unwrap();
         let existing = repo_record("existing", true);
         store
             .replace_repositories(std::slice::from_ref(&existing))
             .unwrap();
-        let stale_generation = store.repository_policy_snapshot().unwrap().generation;
-        store.set_deferred_permission_dirs(&[]).unwrap();
+        store.grant_dir("Documents").unwrap();
+        store.grant_dir("Downloads").unwrap();
+        let mut grants = ["Documents", "Downloads"].into_iter();
 
-        let result = publish_refresh(&store, stale_generation, &[repo_record("stale", true)], &[]);
+        let mut attempt = |policy: RepositoryPolicySnapshot| {
+            store.revoke_dir_grant(grants.next().unwrap())?;
+            store.publish_repository_refresh(
+                policy.generation,
+                &[repo_record("stale", true)],
+                Vec::new(),
+            )
+        };
+        let error = retry_repository_refresh(&store, |policy| std::future::ready(attempt(policy)))
+            .await
+            .unwrap_err();
 
-        assert!(result.is_err());
+        assert_eq!(
+            error.to_string(),
+            "repository refresh was superseded by a policy change"
+        );
+        assert!(grants.next().is_none());
         let repositories = store.repositories().unwrap();
         assert_eq!(repositories.len(), 1);
         assert_eq!(repositories[0].key, "existing");
+        assert!(store.deferred_permission_dirs().unwrap().is_empty());
     }
 
     #[test]
@@ -1095,6 +1205,24 @@ mod tests {
     fn windows_working_directories_match_their_root() {
         assert!(under(r"C:\work\widgets\src", r"C:\work\widgets"));
         assert!(!under(r"C:\work\widgets-legacy", r"C:\work\widgets"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ignored_paths_match_fixed_macos_aliases_in_both_directions() {
+        for alias in ["/var", "/tmp", "/etc"] {
+            let ordinary = format!("{alias}/synthetic/project");
+            let canonical = format!("/private{ordinary}");
+            for (stored, cwd) in [(&ordinary, &canonical), (&canonical, &ordinary)] {
+                let ignored = HashSet::from([stored.clone()]);
+                assert!(project_path_is_ignored(&ignored, &format!("{cwd}/src")));
+                assert!(!project_path_is_ignored(&ignored, &format!("{cwd}-other")));
+            }
+        }
+        assert!(!project_path_is_ignored(
+            &HashSet::from(["/various/synthetic".into()]),
+            "/private/various/synthetic",
+        ));
     }
 
     #[test]

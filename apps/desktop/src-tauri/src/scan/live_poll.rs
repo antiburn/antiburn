@@ -105,6 +105,9 @@ fn changed_paths(seen: &mut HashMap<PathBuf, FileStamp>, active: &[PathBuf]) -> 
 }
 
 fn stat(path: &Path) -> Option<FileStamp> {
+    if !super::watch::source_path_allowed(path) {
+        return None;
+    }
     let metadata = std::fs::metadata(path).ok()?;
     let modified = metadata.modified().ok()?;
     Some((metadata.len(), modified))

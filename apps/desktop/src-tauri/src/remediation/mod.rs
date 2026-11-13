@@ -545,7 +545,7 @@ impl RemediationController {
                             && opencode_subject(finding.finding.cause()).is_some()
                             && trusted_workspace(store, cwd).ok().flatten().is_some()
                     })
-                    .and_then(|cwd| authorities.get(cwd));
+                    .and_then(|cwd| authorities.get(store, cwd));
                 self.resolve_opencode_target(store, finding, options.home, authority)?
             } else {
                 self.resolve_target(store, finding, display.agent, options.home)?
@@ -747,7 +747,9 @@ impl RemediationController {
             .then(|| opencode_current::resource_location(store, resource))
             .flatten()
             .filter(|cwd| trusted_workspace(store, cwd).ok().flatten().is_some());
-            let authority = location.as_deref().and_then(|cwd| authorities.get(cwd));
+            let authority = location
+                .as_deref()
+                .and_then(|cwd| authorities.get(store, cwd));
             let target = self.resolve_resource_target_at_location(
                 store,
                 resource,
@@ -983,13 +985,40 @@ impl RemediationController {
         action_id: &str,
         location: &Path,
     ) -> Result<AutoFixReview, ControllerError> {
+        let policy = store
+            .repository_policy_snapshot()
+            .map_err(|_| ControllerError::Internal)?;
+        if !antiburn_local::paths::protected::project_path_access(location, &policy.granted_dirs)
+            .is_allowed()
+            || !store
+                .repository_policy_is_current(policy.generation)
+                .unwrap_or(false)
+        {
+            return Err(ControllerError::AutoFixUnavailable(
+                AutoFixUnavailableReason::SafetyCheckFailed,
+            ));
+        }
+        let generation = policy.generation;
+        let admission = opencode_current::config_read_admission(
+            store,
+            policy,
+            antiburn_local::paths::home_dir(),
+        );
         let receipt =
             crate::agent_config::opencode_config_authority::CurrentConfigAuthority::registered(
-                location,
+                location, admission,
             )
             .map_err(|_| {
                 ControllerError::AutoFixUnavailable(AutoFixUnavailableReason::SafetyCheckFailed)
             })?;
+        if !store
+            .repository_policy_is_current(generation)
+            .unwrap_or(false)
+        {
+            return Err(ControllerError::AutoFixUnavailable(
+                AutoFixUnavailableReason::SafetyCheckFailed,
+            ));
+        }
         self.prepare_auto_fix_with_receipt_at(store, action_id, now_epoch(), Some(&receipt))
     }
 
@@ -1029,7 +1058,7 @@ impl RemediationController {
                 AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
             )
         })?;
-        let context = refreshed_config_context(&config.context);
+        let context = refreshed_config_context(store, &config.context)?;
         let prepared = if target.agent == AgentKind::OpenCode {
             let receipt = authority.ok_or(ControllerError::AutoFixUnavailable(
                 AutoFixUnavailableReason::UnsupportedOrUnprovenTarget,
@@ -1492,18 +1521,23 @@ impl RemediationController {
                 current_editor_platform(),
             )
             && (finding.workspace_candidate().is_none() || project_root.is_some())
-            && workspace_precedence_supported(
-                agent,
-                finding.workspace_candidate(),
-                project_root.as_deref(),
-            )
         {
             let Some(mut context) = config_context(
                 agent,
                 home,
                 finding.workspace_candidate(),
                 project_root.as_deref(),
-            ) else {
+                &store
+                    .granted_dirs()
+                    .map_err(|_| ControllerError::Internal)?,
+            )
+            .filter(|context| {
+                workspace_precedence_supported(
+                    agent,
+                    context.workspace_cwd.as_deref(),
+                    context.trusted_workspace_root.as_deref(),
+                )
+            }) else {
                 return Ok((
                     identity.group_key,
                     CachedTarget {
@@ -1768,8 +1802,15 @@ impl RemediationController {
                 current_editor_platform(),
             )
             && workspace_precedence_supported(resource.agent, project_root, project_root)
-            && let Some(mut config_context) =
-                config_context(resource.agent, home, project_root, project_root)
+            && let Some(mut config_context) = config_context(
+                resource.agent,
+                home,
+                project_root,
+                project_root,
+                &store
+                    .granted_dirs()
+                    .map_err(|_| ControllerError::Internal)?,
+            )
         {
             config_context.runtime_override_present = runtime_override_present(resource.agent);
             config_context.managed_configuration_present =
@@ -1972,7 +2013,7 @@ impl RemediationController {
         let effective = self
             .editor
             .effective_for_value(
-                &refreshed_config_context(&config.context),
+                &refreshed_config_context(store, &config.context)?,
                 config.operation.setting,
                 config
                     .operation
@@ -2021,7 +2062,7 @@ impl RemediationController {
         context: &ConfigContext,
     ) -> Result<bool, ControllerError> {
         let Ok(effective) = self.editor.effective_for_value(
-            &refreshed_config_context(context),
+            &refreshed_config_context(store, context)?,
             config.operation.setting,
             config
                 .operation
@@ -2056,10 +2097,10 @@ impl RemediationController {
         context: &ConfigContext,
         creates_file: bool,
     ) -> Result<bool, ControllerError> {
-        let Ok(prepared) = self
-            .editor
-            .prepare_operation(&refreshed_config_context(context), &config.operation)
-        else {
+        let Ok(prepared) = self.editor.prepare_operation(
+            &refreshed_config_context(store, context)?,
+            &config.operation,
+        ) else {
             return Ok(false);
         };
         let selector_qualifier =

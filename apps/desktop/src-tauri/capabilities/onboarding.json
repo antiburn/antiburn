@@ -1,0 +1,26 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "onboarding",
+  "description": "Allow the onboarding window to read its presentation settings and save local progress.",
+  "windows": ["onboarding"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "allow-get-settings",
+    "allow-set-interface-scale",
+    "allow-get-onboarding-state",
+    "allow-set-onboarding-state",
+    "allow-get-onboarding-window-visible",
+    "allow-note-interaction",
+    "allow-window-ready",
+    "allow-hud-island-available",
+    "allow-cloud-begin",
+    "allow-cloud-cancel",
+    "allow-cloud-save-draft",
+    "allow-cloud-start-sync",
+    "dialog:allow-open",
+    "allow-get-agent-integrations"
+  ]
+}

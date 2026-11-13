@@ -92,7 +92,8 @@ impl AgentExplorer for KiroExplorer {
         if directory.file_name().and_then(|value| value.to_str()) != Some("cli") {
             return Vec::new();
         }
-        let mut entries = match tokio::fs::read_dir(directory).await {
+        let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(directory).await
+        {
             Ok(entries) => entries,
             Err(_) => return Vec::new(),
         };
@@ -102,7 +103,7 @@ impl AgentExplorer for KiroExplorer {
             if !is_kiro_session_file(&path) || path == parent_transcript {
                 continue;
             }
-            let Ok(bytes) = tokio::fs::read(&path).await else {
+            let Ok(bytes) = crate::discovery::source_fs::asynchronous::read(&path).await else {
                 continue;
             };
             let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
@@ -148,7 +149,8 @@ async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec
     for root in roots {
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
-            let mut entries = match tokio::fs::read_dir(&dir).await {
+            let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(&dir).await
+            {
                 Ok(entries) => entries,
                 Err(_) => continue,
             };
@@ -171,10 +173,11 @@ async fn discover_recent_in(roots: &[PathBuf], now: i64, since_secs: i64) -> Vec
                     continue;
                 }
 
-                let metadata = match tokio::fs::metadata(&path).await {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
+                let metadata =
+                    match crate::discovery::source_fs::asynchronous::metadata(&path).await {
+                        Ok(m) => m,
+                        Err(_) => continue,
+                    };
                 let modified = match metadata.modified() {
                     Ok(m) => m,
                     Err(_) => continue,
@@ -245,7 +248,11 @@ async fn companion_mtime_epoch(path: &Path) -> Option<i64> {
     } else {
         return None;
     };
-    let modified = tokio::fs::metadata(companion).await.ok()?.modified().ok()?;
+    let modified = crate::discovery::source_fs::asynchronous::metadata(companion)
+        .await
+        .ok()?
+        .modified()
+        .ok()?;
     modified
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -278,12 +285,13 @@ fn is_kiro_session_file(path: &Path) -> bool {
         && file_name.ends_with(".json")
         && let Some(id) = path.file_stem().and_then(|name| name.to_str())
     {
-        return is_uuid(id) && parent.join(format!("{id}.jsonl")).is_file();
+        return is_uuid(id)
+            && crate::discovery::source_fs::is_file(parent.join(format!("{id}.jsonl")));
     }
 
     if file_name == "session.json"
         && let Some(parent) = path.parent()
-        && parent.join("messages.jsonl").is_file()
+        && crate::discovery::source_fs::is_file(parent.join("messages.jsonl"))
         && parent
             .file_name()
             .and_then(|name| name.to_str())
@@ -328,7 +336,7 @@ async fn session_id_for_file(path: &Path, canonical: bool) -> String {
             .to_string();
     }
 
-    if let Ok(content) = tokio::fs::read_to_string(path).await
+    if let Ok(content) = crate::discovery::source_fs::asynchronous::read_to_string(path).await
         && let Ok(value) = serde_json::from_str::<Value>(&content)
     {
         if let Some(id) = value.get("sessionId").and_then(|v| v.as_str()) {

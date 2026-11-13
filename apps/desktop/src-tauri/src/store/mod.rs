@@ -37,8 +37,12 @@ pub(crate) mod native_tool_results;
 pub use native_tool_results::{ToolResultBatch, ToolResultPublishOptions};
 pub(crate) mod burn_checks;
 pub mod model;
+mod onboarding;
+mod project_deferrals;
 pub(crate) mod provider_limit;
 pub(crate) mod provider_usage_history;
+use project_deferrals::{ProjectDeferrals, reconcile_stored as reconcile_project_deferrals};
+pub(crate) use project_deferrals::{RepositoryDeferral, RepositoryDeferralSource};
 mod remediation;
 mod retired_checks_migration;
 pub(crate) mod revision_sql;
@@ -92,10 +96,12 @@ use antiburn_local::analysis::{
     query_source_resume, query_turn_content_offset_selected, query_turn_facts, query_turn_rows,
 };
 use antiburn_local::discovery::ACTIVE_SESSION_WINDOW_SECS;
+use antiburn_local::repositories::DeferredProtectedPath;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, named_params, params, params_from_iter};
 
 use crate::dto::{BurnCheckSnoozePayload, DeferredPermissionDir};
+pub use onboarding::{OnboardingState, PromotionReadiness};
 pub(crate) use session_persistence::apply_session_retention_in;
 use session_persistence::*;
 pub use session_persistence::{FencedTurnRowStore, HygieneSummaryRow, iso_from_epoch, now_rfc3339};
@@ -109,8 +115,8 @@ pub use model::{
     RETAIN_SESSION_DATA_FOREVER, RelationKind, RelationRecord, Remediation,
     RemediationEvidenceGuard, RemediationRecord, RemediationResult, RemediationState,
     RepositoryRecord, Revision, SessionActivityKey, SessionBadgeMetric, SessionKey, SessionRecord,
-    SourcePublishMode, SourcePublishOutcome, SourceVersionState, ThemePreference,
-    UsageEvidenceRecord, WorkingWeek,
+    SidebarUsagePatch, SourcePublishMode, SourcePublishOutcome, SourceVersionState,
+    ThemePreference, UsageEvidenceRecord, WorkingWeek,
 };
 pub(crate) use remediation::{
     PassiveRemediation, RemediationContribution, RemediationDisplaySnapshot,
@@ -152,7 +158,7 @@ fn decode_secret(encoded: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut secret = [0_u8; 32];
-    for (index, pair) in encoded.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let high = (pair[0] as char).to_digit(16)? as u8;
         let low = (pair[1] as char).to_digit(16)? as u8;
         secret[index] = high << 4 | low;
@@ -1086,19 +1092,37 @@ impl Store {
         if path.is_empty() {
             return Ok(());
         }
-        self.lock().execute(
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let changed = tx.execute(
             "INSERT INTO scan_root (path, added_at) VALUES (?1, ?2)
              ON CONFLICT(path) DO NOTHING",
             params![path, now_rfc3339()],
         )?;
+        if changed > 0 {
+            bump_repository_policy_generation_in(&tx)?;
+        }
+        tx.commit()?;
+        if changed > 0 {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
         Ok(())
     }
 
     /// Forget a scan root. Idempotent.
     pub fn remove_scan_root(&self, path: &str) -> Result<()> {
         let path = path.trim_end_matches(['/', '\\']);
-        self.lock()
-            .execute("DELETE FROM scan_root WHERE path = ?1", params![path])?;
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        let changed = tx.execute("DELETE FROM scan_root WHERE path = ?1", params![path])?;
+        if changed > 0 {
+            reconcile_project_deferrals(&tx)?;
+            bump_repository_policy_generation_in(&tx)?;
+        }
+        tx.commit()?;
+        if changed > 0 {
+            self.destructive_write_epoch.fetch_add(1, Ordering::Release);
+        }
         Ok(())
     }
 
@@ -1112,10 +1136,7 @@ impl Store {
     /// trusted as-is: confirming a grant means reading the directory, which is
     /// the very thing that prompts.
     pub fn granted_dirs(&self) -> Result<HashSet<String>> {
-        let connection = self.lock();
-        let mut statement = connection.prepare("SELECT dir_name FROM consent_grant")?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
+        read_granted_dirs_in(&self.lock())
     }
 
     /// Record that the user granted access to a protected directory.
@@ -1129,6 +1150,17 @@ impl Store {
                  WHERE consent_grant.granted_at <> excluded.granted_at",
             params![dir_name, now_rfc3339()],
         )?;
+        if let Some(mut observations) = ProjectDeferrals::read(&tx)? {
+            observations.reconcile(&tx)?;
+            observations.write(&tx)?;
+        } else {
+            let mut deferred = read_deferred_permission_dirs_in(&tx)?;
+            let previous_count = deferred.len();
+            deferred.retain(|entry| entry.dir != dir_name);
+            if deferred.len() != previous_count {
+                write_deferred_permission_dirs_in(&tx, &deferred)?;
+            }
+        }
         if changed > 0 {
             bump_repository_policy_generation_in(&tx)?;
         }
@@ -1162,35 +1194,19 @@ impl Store {
     pub fn repository_policy_snapshot(&self) -> Result<RepositoryPolicySnapshot> {
         let connection = self.lock();
         let generation = read_repository_policy_generation(&connection)?;
-        let mut ignored_statement = connection.prepare(
-            "SELECT COALESCE(repo_root, suspected_path) FROM repository WHERE enabled = 0",
-        )?;
-        let ignored_paths = ignored_statement
-            .query_map([], |row| row.get::<_, Option<String>>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .map(|path| antiburn_local::paths::ignored_paths::normalize(&path))
-            .collect();
-        let mut grant_statement = connection.prepare("SELECT dir_name FROM consent_grant")?;
-        let granted_dirs = grant_statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<HashSet<_>>>()?;
-        let deferred_dirs = connection
-            .query_row(
-                "SELECT value FROM setting WHERE key = ?1",
-                params![DEFERRED_PERMISSION_DIRS_KEY],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .and_then(|value| serde_json::from_str(&value).ok())
-            .unwrap_or_default();
+        let ignored_paths = ignored_repository_paths_in(&connection)?;
+        let granted_dirs = read_granted_dirs_in(&connection)?;
+        let deferred_dirs = read_deferred_permission_dirs_in(&connection)?;
         Ok(RepositoryPolicySnapshot {
             generation,
             ignored_paths,
             granted_dirs,
             deferred_dirs,
         })
+    }
+
+    pub(crate) fn repository_policy_is_current(&self, generation: u64) -> Result<bool> {
+        Ok(read_repository_policy_generation(&self.lock())? == generation)
     }
 
     /* Anonymised application events. */
@@ -1373,18 +1389,37 @@ impl Store {
     ///
     /// An internal scalar rather than a table: it is derived state, replaced
     /// whole on every pass, and only ever read back as one list.
+    #[cfg(test)]
     pub fn set_deferred_permission_dirs(&self, dirs: &[DeferredPermissionDir]) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
-        tx.execute(
-            "INSERT INTO setting (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![DEFERRED_PERMISSION_DIRS_KEY, serde_json::to_string(dirs)?],
-        )?;
+        write_deferred_permission_dirs_in(&tx, dirs)?;
         bump_repository_policy_generation_in(&tx)?;
         tx.commit()?;
         self.destructive_write_epoch.fetch_add(1, Ordering::Release);
         Ok(())
+    }
+
+    /// Retain deferred folders observed by a bounded scan under the current policy.
+    pub(crate) fn publish_session_project_deferrals(
+        &self,
+        expected_generation: u64,
+        changes: HashMap<SessionKey, (Incarnation, Option<DeferredProtectedPath>)>,
+    ) -> Result<RepositoryPolicyPublishOutcome> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        if read_repository_policy_generation(&tx)? != expected_generation {
+            return Ok(RepositoryPolicyPublishOutcome::Superseded);
+        }
+        if !changes.is_empty() {
+            let mut observations = ProjectDeferrals::read(&tx)?.unwrap_or_default();
+            if observations.update_sessions(changes) {
+                observations.reconcile(&tx)?;
+                observations.write(&tx)?;
+            }
+        }
+        tx.commit()?;
+        Ok(RepositoryPolicyPublishOutcome::Published)
     }
 
     /// The protected directories the last pass declined to read.
@@ -1393,10 +1428,7 @@ impl Store {
     /// consequence is a missing prompt, where the alternative — failing the
     /// whole permissions query — would take the recovery interface down with it.
     pub fn deferred_permission_dirs(&self) -> Result<Vec<DeferredPermissionDir>> {
-        Ok(self
-            .internal_value(DEFERRED_PERMISSION_DIRS_KEY)
-            .and_then(|value| serde_json::from_str(&value).ok())
-            .unwrap_or_default())
+        read_deferred_permission_dirs_in(&self.lock())
     }
 
     /* --------------------------------------------------------------------
@@ -2157,6 +2189,7 @@ impl Store {
         )?;
         tx.execute("DELETE FROM scan_state", [])?;
         tx.execute("UPDATE repository SET session_count = 0", [])?;
+        reconcile_project_deferrals(&tx)?;
         tx.commit()?;
         self.destructive_write_epoch.fetch_add(1, Ordering::Release);
         let mut state = self
@@ -2181,6 +2214,9 @@ impl Store {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
         let removed = delete_session_in(&tx, key)?;
+        if removed.is_some() && key.environment_key == "native" {
+            reconcile_project_deferrals(&tx)?;
+        }
         tx.commit()?;
         self.bump_session_key_fence(key);
         self.destructive_write_epoch.fetch_add(1, Ordering::Release);
@@ -3410,6 +3446,9 @@ impl Store {
         for key in &keys {
             delete_session_in(&tx, key)?;
         }
+        if !keys.is_empty() {
+            reconcile_project_deferrals(&tx)?;
+        }
         tx.commit()?;
         for key in &keys {
             self.bump_session_key_fence(key);
@@ -3453,11 +3492,11 @@ impl Store {
 
     /// Publish repository and deferred-folder results only if the policy used
     /// to build them is still current. Both result sets share one commit.
-    pub fn publish_repository_refresh(
+    pub(crate) fn publish_repository_refresh(
         &self,
         expected_generation: u64,
         records: &[RepositoryRecord],
-        deferred: &[DeferredPermissionDir],
+        deferred: Vec<RepositoryDeferral>,
     ) -> Result<RepositoryPolicyPublishOutcome> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
@@ -3465,22 +3504,10 @@ impl Store {
             return Ok(RepositoryPolicyPublishOutcome::Superseded);
         }
         replace_repositories_in(&tx, records)?;
-        let deferred_json = serde_json::to_string(deferred)?;
-        let previous_deferred: Option<String> = tx
-            .query_row(
-                "SELECT value FROM setting WHERE key = ?1",
-                params![DEFERRED_PERMISSION_DIRS_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if previous_deferred.as_deref() != Some(&deferred_json) {
-            bump_repository_policy_generation_in(&tx)?;
-        }
-        tx.execute(
-            "INSERT INTO setting (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![DEFERRED_PERMISSION_DIRS_KEY, deferred_json],
-        )?;
+        let mut observations = ProjectDeferrals::read(&tx)?.unwrap_or_default();
+        observations.replace_repositories(deferred);
+        observations.reconcile(&tx)?;
+        observations.write(&tx)?;
         let policy_changed = read_repository_policy_generation(&tx)? != expected_generation;
         tx.commit()?;
         if policy_changed {
@@ -3532,6 +3559,9 @@ impl Store {
             params![key, enabled],
         )?;
         if changed > 0 {
+            if !enabled {
+                reconcile_project_deferrals(&tx)?;
+            }
             bump_repository_policy_generation_in(&tx)?;
         }
         tx.commit()?;
@@ -3625,7 +3655,7 @@ fn relations_in(connection: &Connection, key: &SessionKey) -> Result<Vec<Relatio
     Ok(relations)
 }
 
-fn read_repository_policy_generation(connection: &Connection) -> Result<u64> {
+pub(super) fn read_repository_policy_generation(connection: &Connection) -> Result<u64> {
     let value = connection
         .query_row(
             "SELECT value FROM setting WHERE key = ?1",
@@ -3636,6 +3666,37 @@ fn read_repository_policy_generation(connection: &Connection) -> Result<u64> {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(0);
     Ok(value)
+}
+
+pub(super) fn read_granted_dirs_in(connection: &Connection) -> Result<HashSet<String>> {
+    let mut statement = connection.prepare("SELECT dir_name FROM consent_grant")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
+}
+
+fn read_deferred_permission_dirs_in(connection: &Connection) -> Result<Vec<DeferredPermissionDir>> {
+    Ok(connection
+        .query_row(
+            "SELECT value FROM setting WHERE key = ?1",
+            params![DEFERRED_PERMISSION_DIRS_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default())
+}
+
+fn write_deferred_permission_dirs_in(
+    connection: &Connection,
+    dirs: &[DeferredPermissionDir],
+) -> Result<()> {
+    connection.execute(
+        "INSERT INTO setting (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value
+           WHERE setting.value <> excluded.value",
+        params![DEFERRED_PERMISSION_DIRS_KEY, serde_json::to_string(dirs)?],
+    )?;
+    Ok(())
 }
 
 fn bump_repository_policy_generation_in(connection: &Connection) -> Result<()> {
@@ -3695,7 +3756,7 @@ fn replace_repositories_in(
     Ok(())
 }
 
-fn ignored_repository_paths_in(connection: &Connection) -> Result<HashSet<String>> {
+pub(crate) fn ignored_repository_paths_in(connection: &Connection) -> Result<HashSet<String>> {
     let mut statement = connection
         .prepare("SELECT COALESCE(repo_root, suspected_path) FROM repository WHERE enabled = 0")?;
     let paths = statement

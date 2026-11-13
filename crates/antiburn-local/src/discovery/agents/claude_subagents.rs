@@ -29,7 +29,7 @@ impl SubagentMeta {
     pub fn read_from_transcript(path: &Path) -> Option<Self> {
         use std::io::Read;
 
-        let file = std::fs::File::open(path.with_extension("meta.json")).ok()?;
+        let file = crate::discovery::source_fs::open(path.with_extension("meta.json")).ok()?;
         let mut content = Vec::new();
         file.take(SUBAGENT_META_MAX_BYTES + 1)
             .read_to_end(&mut content)
@@ -68,7 +68,7 @@ pub(super) fn list_subagents_blocking(parent_transcript: &Path) -> Vec<PathBuf> 
     let Some(dir) = subagents_dir(parent_transcript) else {
         return Vec::new();
     };
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    let Ok(entries) = crate::discovery::source_fs::read_dir(&dir) else {
         return Vec::new();
     };
     let mut out: Vec<PathBuf> = entries
@@ -102,7 +102,7 @@ pub(super) async fn locate_subagent(
     }
     let dir = subagents_dir(parent_transcript)?;
     let candidate = dir.join(format!("{subagent_id}.jsonl"));
-    tokio::fs::try_exists(&candidate)
+    crate::discovery::source_fs::asynchronous::try_exists(&candidate)
         .await
         .unwrap_or(false)
         .then_some(candidate)
@@ -154,7 +154,9 @@ pub(super) async fn subagent_label(path: &Path) -> String {
         }
     }
     // No extractable title → the persona, then a generic label.
-    let content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+    let content = crate::discovery::source_fs::asynchronous::read_to_string(path)
+        .await
+        .unwrap_or_default();
     for line in content.lines().take(SUBAGENT_LABEL_SCAN_LINES) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
             && let Some(a) = v.get("attributionAgent").and_then(|x| x.as_str())

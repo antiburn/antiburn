@@ -95,9 +95,9 @@ const MENU_OPEN_POPOVER: &str = "open-popover";
 const MENU_PIN: &str = "pin";
 const MENU_SETTINGS: &str = "settings";
 #[cfg(debug_assertions)]
-const MENU_RESET_FIRST_RUN: &str = "reset-first-run";
-#[cfg(debug_assertions)]
 const MENU_RANDOM_USAGE: &str = "random-usage";
+#[cfg(debug_assertions)]
+const MENU_RESET_ONBOARDING: &str = "reset-onboarding";
 #[cfg(debug_assertions)]
 const MENU_BURN_CHECKS: &str = "burn-checks";
 #[cfg(debug_assertions)]
@@ -145,8 +145,6 @@ const UNPIN_LABEL: &str = "Unpin Window";
 const OPEN_LABEL: &str = "Open antiburn";
 #[cfg(target_os = "linux")]
 const OPEN_POPOVER_LABEL: &str = "Open Usage Popover";
-#[cfg(debug_assertions)]
-const RESET_FIRST_RUN_LABEL: &str = "Reset First Run";
 #[cfg(debug_assertions)]
 const RANDOM_USAGE_LABEL: &str = "Simulate Random Usage";
 #[cfg(debug_assertions)]
@@ -282,30 +280,6 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon> {
     Ok(tray)
 }
 
-/// Debug-only: add a Debug menu with "Reset First Run" to the macOS menu
-/// bar. The menu-bar icon is hidden during the first run, so its own reset
-/// item is out of reach then. Both items use the same ID, and Tauri sends
-/// every menu event to [`on_menu_event`], so one handler serves both.
-#[cfg(all(debug_assertions, target_os = "macos"))]
-pub fn install_debug_app_menu(app: &AppHandle) -> tauri::Result<()> {
-    let menu = Menu::default(app)?;
-    let reset_first_run_item = MenuItem::with_id(
-        app,
-        MENU_RESET_FIRST_RUN,
-        RESET_FIRST_RUN_LABEL,
-        true,
-        None::<&str>,
-    )?;
-    menu.append(&tauri::menu::Submenu::with_items(
-        app,
-        "Debug",
-        true,
-        &[&reset_first_run_item],
-    )?)?;
-    app.set_menu(menu)?;
-    Ok(())
-}
-
 #[cfg(target_os = "macos")]
 fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::default(app)?;
@@ -342,6 +316,8 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let separator = PredefinedMenuItem::separator(app)?;
     let view_items: [&dyn IsMenuItem<Wry>; 4] = [&separator, &zoom_in, &zoom_out, &actual_size];
     view_menu.append_items(&view_items)?;
+    #[cfg(debug_assertions)]
+    view_menu.append(&crate::cloud_dev::menu(app)?)?;
     app.set_menu(menu)?;
     Ok(())
 }
@@ -811,14 +787,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let actual_size_item =
         MenuItem::with_id(app, MENU_ACTUAL_SIZE, "Actual Size", true, None::<&str>)?;
     #[cfg(debug_assertions)]
-    let reset_first_run_item = MenuItem::with_id(
-        app,
-        MENU_RESET_FIRST_RUN,
-        RESET_FIRST_RUN_LABEL,
-        true,
-        None::<&str>,
-    )?;
-    #[cfg(debug_assertions)]
     let random_usage_item = CheckMenuItem::with_id(
         app,
         MENU_RANDOM_USAGE,
@@ -849,6 +817,16 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let hud_dev = build_hud_dev_menu(app)?;
     #[cfg(debug_assertions)]
     let hud_dev_item = hud_dev.menu;
+    #[cfg(debug_assertions)]
+    let cloud_dev = crate::cloud_dev::menu(app)?;
+    #[cfg(debug_assertions)]
+    let reset_onboarding = MenuItem::with_id(
+        app,
+        MENU_RESET_ONBOARDING,
+        "Reset onboarding",
+        true,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit_item = MenuItem::with_id(app, MENU_QUIT, "Quit antiburn", true, None::<&str>)?;
     let main_item = MenuItem::with_id(app, MENU_MAIN, OPEN_LABEL, true, None::<&str>)?;
@@ -871,7 +849,6 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &zoom_out_item,
         &actual_size_item,
         #[cfg(debug_assertions)]
-        &reset_first_run_item,
         #[cfg(debug_assertions)]
         &random_usage_item,
         #[cfg(debug_assertions)]
@@ -880,6 +857,10 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &codex_only_item,
         #[cfg(debug_assertions)]
         &hud_dev_item,
+        #[cfg(debug_assertions)]
+        &cloud_dev,
+        #[cfg(debug_assertions)]
+        &reset_onboarding,
         &separator,
         &quit_item,
     ];
@@ -1024,6 +1005,10 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 }
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
+    #[cfg(debug_assertions)]
+    if crate::cloud_dev::handle(app, event.id().as_ref()) {
+        return;
+    }
     match event.id().as_ref() {
         MENU_MAIN => {
             ::tracing::info!(event = "main_window_open_source", source = "tray_menu");
@@ -1072,13 +1057,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             change_interface_scale(app, crate::interface_scale::InterfaceScaleChange::Reset)
         }
         #[cfg(debug_assertions)]
-        MENU_RESET_FIRST_RUN => {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(error) = commands::reset_first_run(app).await {
-                    ::tracing::error!(event = "first_run_reset_failed", trigger = "tray", error);
-                }
-            });
+        MENU_RESET_ONBOARDING => {
+            if let Err(error) = crate::onboarding_window::reset(app) {
+                ::tracing::error!(event = "onboarding_reset_failed", error = %error);
+            }
         }
         #[cfg(debug_assertions)]
         MENU_RANDOM_USAGE => {

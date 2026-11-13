@@ -9,7 +9,7 @@ const NOTICES_PATH = resolve(ROOT, "THIRD_PARTY_NOTICES");
 const GENERATED_START = "----- BEGIN GENERATED DEPENDENCY NOTICES -----";
 const GENERATED_END = "----- END GENERATED DEPENDENCY NOTICES -----";
 const LEGAL_FILE = /^(licen[cs]e|copying|notice|copyright)(?:[._-].*)?$/i;
-const VENDORED_RUST_CRATES = new Set(["tray-icon"]);
+const VENDORED_RUST_CRATES = new Set(["tray-icon", "libsqlite3-sys"]);
 const FRONTEND_LICENSE_OVERRIDES = new Map([
   [
     "react-remove-scroll-bar@2.3.8",

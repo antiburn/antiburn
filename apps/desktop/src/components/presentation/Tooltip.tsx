@@ -38,6 +38,7 @@ export interface SharedTooltipOwner {
 }
 
 export const SharedTooltipOwnerContext = createContext<SharedTooltipOwner | null>(null)
+export const TooltipPortalContext = createContext<HTMLElement | null>(null)
 
 function setRef<T>(ref: Ref<T> | undefined, value: T | null): void | (() => void) {
   if (typeof ref === "function") return ref(value)
@@ -86,6 +87,7 @@ function StandaloneTooltip({
   interactive,
 }: Required<TooltipProps>) {
   const [open, setOpen] = useState(false)
+  const portalContainer = useContext(TooltipPortalContext)
 
   const rootProps = interactive ? { open, onOpenChange: setOpen } : {}
 
@@ -102,11 +104,12 @@ function StandaloneTooltip({
         <TooltipPrimitive.Trigger asChild {...triggerProps}>
           {children}
         </TooltipPrimitive.Trigger>
-        <TooltipPrimitive.Portal>
+        <TooltipPrimitive.Portal container={portalContainer ?? undefined}>
           <TooltipPrimitive.Content
             side={side}
             sideOffset={4}
             collisionPadding={8}
+            collisionBoundary={portalContainer ?? undefined}
             className="ui-tooltip max-w-[220px] whitespace-normal"
           >
             {label}

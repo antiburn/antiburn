@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use antiburn_local::analysis::{
@@ -13,13 +13,18 @@ use antiburn_local::insights::{
     EfficiencyReportAccumulator, ReportCatalogs, ReportContext, ReportWindow,
 };
 use antiburn_local::model::AgentKind;
+use antiburn_local::paths::protected;
 use antiburn_local::pricing::ModelTokens;
 use antiburn_local::remediation::{Finding, FindingAssessment, ModelVerificationObservation};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, named_params, params};
 
+use crate::agent_config::opencode_config_authority::ConfigReadAdmission;
 use crate::remediation::WatchDefinition;
-use crate::store::{RemediationRecord, open_read_only};
+use crate::store::{
+    RemediationRecord, ignored_repository_paths_in, open_read_only, read_granted_dirs_in,
+    read_repository_policy_generation,
+};
 #[cfg(test)]
 use antiburn_local::remediation::SAVINGS_METHOD_REVISION;
 
@@ -232,7 +237,54 @@ fn reduce_with_selection_on_snapshot(
     if coverage.discovered != coverage.ready {
         resource_builder.mark_window_incomplete();
     }
-    let repository_roots = trusted_repository_roots(&transaction, &mut resource_builder)?;
+    let policy_generation = read_repository_policy_generation(&transaction)?;
+    let granted_dirs = read_granted_dirs_in(&transaction)?;
+    let ignored_paths = ignored_repository_paths_in(&transaction)?;
+    let repository_roots = trusted_repository_roots(
+        &transaction,
+        resource_home,
+        &granted_dirs,
+        &mut resource_builder,
+    )?;
+    let mut admission_connection = None;
+    let mut canonical_cwds = BTreeMap::new();
+    let mut project_root_for_cwd = |cwd: &str| {
+        let path = Path::new(cwd);
+        if repository_roots.is_empty()
+            || crate::repositories::project_path_is_ignored(&ignored_paths, cwd)
+            || !protected::project_access_decision_in(resource_home, path, &granted_dirs)
+                .is_allowed()
+        {
+            return None;
+        }
+        if let Some(root) = trusted_repository_for_cwd(path, &repository_roots) {
+            return Some(root);
+        }
+        if let Some(root) = canonical_cwds.get(cwd) {
+            return *root;
+        }
+        if canonical_cwds.len() >= MAX_RESOURCE_INVENTORY_CONTEXTS {
+            return None;
+        }
+        let connection = admission_connection
+            .get_or_insert_with(|| open_read_only(data_dir, REPORT_BUSY_TIMEOUT).ok());
+        let current = || {
+            connection.as_ref().is_some_and(|connection| {
+                read_repository_policy_generation(connection)
+                    .is_ok_and(|generation| generation == policy_generation)
+            })
+        };
+        let root = canonical_resource_cwd(path, resource_home, &granted_dirs, current)
+            .filter(|canonical| {
+                !crate::repositories::project_path_is_ignored(
+                    &ignored_paths,
+                    &canonical.to_string_lossy(),
+                )
+            })
+            .and_then(|canonical| trusted_repository_for_cwd(&canonical, &repository_roots));
+        canonical_cwds.insert(cwd.to_owned(), root);
+        root
+    };
     let mut inventory_contexts = BTreeMap::new();
     let mut inventory_sources = BTreeMap::new();
     let depth_cap = u128::from(accumulator.catalogs().depth_cap_tokens);
@@ -260,9 +312,7 @@ fn reduce_with_selection_on_snapshot(
             let initial_context_json: Option<String> = row.get(4)?;
             let cwd: Option<String> = row.get(5)?;
             let agent_kind = crate::agents::kind_from_slug(&agent);
-            let project_root = cwd
-                .as_deref()
-                .and_then(|cwd| trusted_repository_for_cwd(Path::new(cwd), &repository_roots));
+            let project_root = cwd.as_deref().and_then(&mut project_root_for_cwd);
             let initial_context = initial_context_json
                 .as_deref()
                 .map(serde_json::from_str::<InitialContextBreakdown>)
@@ -378,9 +428,7 @@ fn reduce_with_selection_on_snapshot(
                 .transpose()
                 .context("stored initial context is invalid")?;
             let cwd: Option<String> = row.get(4)?;
-            let project_root = cwd
-                .as_deref()
-                .and_then(|cwd| trusted_repository_for_cwd(Path::new(cwd), &repository_roots));
+            let project_root = cwd.as_deref().and_then(&mut project_root_for_cwd);
             if project_root.is_none() {
                 resource_builder.mark_scan_failed(agent_kind);
             }
@@ -413,19 +461,48 @@ fn reduce_with_selection_on_snapshot(
     );
     ensure_not_cancelled(cancel)?;
     drop(transaction);
-    drop(connection);
+    let connection = Arc::new(Mutex::new(connection));
+    let policy_current = move || {
+        connection.lock().is_ok_and(|connection| {
+            read_repository_policy_generation(&connection)
+                .is_ok_and(|generation| generation == policy_generation)
+        })
+    };
     if let Some(home) = resource_home {
+        let current = policy_current.clone();
+        let scan_home = home.to_owned();
+        let scan_granted = granted_dirs.clone();
+        let admission = ConfigReadAdmission::new(move |path| {
+            current()
+                && !crate::repositories::project_path_is_ignored(
+                    &ignored_paths,
+                    &path.to_string_lossy(),
+                )
+                && protected::project_path_access_in(Some(&scan_home), path, &scan_granted)
+                    .is_allowed()
+        });
         scan_resource_inventories(
             &mut resource_builder,
             home,
+            &granted_dirs,
             inventory_sources,
             inventory_contexts,
+            || !cancel.load(Ordering::Acquire) && policy_current(),
+            &admission,
         );
+        if !policy_current() {
+            resource_builder = resources::ResourceAssessmentBuilder::default();
+            resource_builder.mark_window_incomplete();
+            for agent in resources::resource_assessment_agents() {
+                resource_builder.mark_scan_failed(agent);
+            }
+        }
     } else {
         for agent in resources::resource_assessment_agents() {
             resource_builder.mark_scan_failed(agent);
         }
     }
+    ensure_not_cancelled(cancel)?;
     let resources = resource_builder.finish_with_selection(&report, &enabled_detectors);
     debug_assert!(
         [
@@ -450,6 +527,8 @@ fn reduce_with_selection_on_snapshot(
 
 fn trusted_repository_roots(
     connection: &rusqlite::Connection,
+    home: Option<&Path>,
+    granted: &HashSet<String>,
     resource_builder: &mut resources::ResourceAssessmentBuilder,
 ) -> Result<Vec<PathBuf>> {
     let mut statement = connection.prepare(
@@ -467,9 +546,11 @@ fn trusted_repository_roots(
             resource_builder.mark_window_incomplete();
             continue;
         };
-        match PathBuf::from(root).canonicalize() {
-            Ok(root) => roots.push(root),
-            Err(_) => resource_builder.mark_window_incomplete(),
+        let root = PathBuf::from(root);
+        if protected::project_access_decision_in(home, &root, granted).is_allowed() {
+            roots.push(root);
+        } else {
+            resource_builder.mark_window_incomplete();
         }
     }
     if roots.len() > MAX_RESOURCE_REPOSITORIES {
@@ -479,32 +560,73 @@ fn trusted_repository_roots(
 }
 
 fn trusted_repository_for_cwd<'a>(cwd: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
-    let cwd = cwd.canonicalize().ok()?;
+    #[cfg(windows)]
+    let cwd = antiburn_local::repositories::repo_root_identity(cwd);
     roots
         .iter()
-        .filter(|root| cwd.starts_with(root))
+        .filter(|root| {
+            #[cfg(windows)]
+            {
+                let root = antiburn_local::repositories::repo_root_identity(root);
+                cwd == root
+                    || cwd
+                        .strip_prefix(&root)
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            }
+            #[cfg(not(windows))]
+            cwd.starts_with(root)
+        })
         .max_by_key(|root| root.components().count())
         .map(PathBuf::as_path)
+}
+
+fn canonical_resource_cwd(
+    cwd: &Path,
+    home: Option<&Path>,
+    granted: &HashSet<String>,
+    mut policy_current: impl FnMut() -> bool,
+) -> Option<PathBuf> {
+    if !policy_current()
+        || !protected::project_path_access_in(home, cwd, granted).is_allowed()
+        || !policy_current()
+    {
+        return None;
+    }
+    let canonical = cwd.canonicalize().ok()?;
+    (policy_current() && protected::project_path_access_in(home, &canonical, granted).is_allowed())
+        .then_some(canonical)
 }
 
 fn scan_resource_inventories(
     builder: &mut resources::ResourceAssessmentBuilder,
     home: &Path,
+    granted: &HashSet<String>,
     sources: BTreeMap<(AgentKind, resources::ResourceSourceKey), SourceFormat>,
     contexts: BTreeMap<(AgentKind, resources::ResourceSourceKey, PathBuf, PathBuf), SourceFormat>,
+    policy_current: impl Fn() -> bool,
+    admission: &ConfigReadAdmission,
 ) {
     let mut authorities =
         crate::agent_config::opencode_config_authority::CurrentConfigAuthorities::default();
     for ((agent, _), source_format) in sources {
+        if !policy_current() {
+            return;
+        }
         if agent == AgentKind::OpenCode {
             continue;
         }
         let mut context = crate::agent_config::ConfigContext::native(agent, home, None);
+        context.granted_dirs = granted.clone();
         context.source_format = Some(source_format);
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
             crate::remediation::managed_configuration_present(agent, home);
-        match crate::agent_config::advisory_resource_inventory(&context, []) {
+        match crate::agent_config::ResourceInventory::discover_with_admission(
+            &context,
+            [],
+            None,
+            Some((admission, &policy_current)),
+        ) {
             Ok(inventory) => builder.observe_inventory_for_source(inventory, None, source_format),
             Err(_) => builder.mark_scan_failed(agent),
         }
@@ -517,23 +639,29 @@ fn scan_resource_inventories(
             .insert(source_key, source_format);
     }
     for ((agent, cwd, root), formats) in grouped_contexts {
-        let Some(mut context) =
-            crate::remediation::config_context(agent, home, Some(&cwd), Some(&root))
-        else {
-            builder.mark_scan_failed(agent);
-            continue;
-        };
+        if !policy_current() {
+            return;
+        }
+        let mut context =
+            crate::agent_config::ConfigContext::native_workspace(agent, home, &cwd, &root);
+        context.granted_dirs = granted.clone();
         context.source_format = formats.values().next().copied();
         context.runtime_override_present = crate::remediation::runtime_override_present(agent);
         context.managed_configuration_present =
             crate::remediation::managed_configuration_present(agent, home);
-        if agent == AgentKind::OpenCode {
-            authorities.capture(&cwd);
+        let authority = if agent == AgentKind::OpenCode {
+            authorities.capture(&cwd, admission)
+        } else {
+            None
+        };
+        if !policy_current() {
+            return;
         }
-        match crate::agent_config::ResourceInventory::discover_with_authority(
+        match crate::agent_config::ResourceInventory::discover_with_admission(
             &context,
             [],
-            authorities.get(&cwd),
+            authority,
+            Some((admission, &policy_current)),
         ) {
             Ok(inventory) => {
                 for source_format in formats.into_values() {
@@ -3425,6 +3553,56 @@ pub(crate) mod tests {
 
     mod resource_assessment_integration {
         use super::*;
+
+        #[cfg(windows)]
+        #[test]
+        fn session_cwd_matches_the_verbatim_repository_root() {
+            let roots = vec![
+                PathBuf::from(r"\\?\C:\Users\avery\project"),
+                PathBuf::from(r"\\?\C:\Users\avery\project\nested"),
+            ];
+            let cwd = Path::new(r"c:\Users\Avery\project\nested\src");
+            assert_eq!(
+                trusted_repository_for_cwd(cwd, &roots),
+                Some(roots[1].as_path()),
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn repository_attribution_does_not_follow_a_cwd_symlink() {
+            let temp = TempDir::new().unwrap();
+            let home = temp.path();
+            let root = home.join("project");
+            std::fs::create_dir(&root).unwrap();
+            let alias = home.join("alias");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            assert_eq!(
+                canonical_resource_cwd(&alias, Some(home), &HashSet::new(), || true),
+                None,
+            );
+        }
+
+        #[test]
+        fn stale_grants_stop_canonical_resource_fallback_before_probing() {
+            let temp = TempDir::new().unwrap();
+            let home = temp.path();
+            let cwd = home.join("Documents/project");
+            std::fs::create_dir_all(&cwd).unwrap();
+            let store = Store::open(home).unwrap();
+            store.grant_dir("Documents").unwrap();
+            let snapshot = store.repository_policy_snapshot().unwrap();
+            let reader = open_read_only(home, REPORT_BUSY_TIMEOUT).unwrap();
+            let current =
+                || read_repository_policy_generation(&reader).unwrap() == snapshot.generation;
+            assert!(
+                canonical_resource_cwd(&cwd, Some(home), &snapshot.granted_dirs, current).is_some()
+            );
+            store.revoke_dir_grant("Documents").unwrap();
+            assert!(
+                canonical_resource_cwd(&cwd, Some(home), &snapshot.granted_dirs, current).is_none()
+            );
+        }
 
         #[test]
         fn the_report_window_adds_current_config_candidates_to_the_resource_assessment() {

@@ -6,19 +6,37 @@ use std::sync::{Arc, RwLock};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 pub(super) struct DirectoryWatcher {
-    watcher: RecommendedWatcher,
+    watcher: Option<RecommendedWatcher>,
+    on_change: Arc<dyn Fn() + Send + Sync>,
     directories: Arc<RwLock<Vec<PathBuf>>>,
     rebind: Arc<AtomicBool>,
     watched: BTreeSet<PathBuf>,
 }
 
 impl DirectoryWatcher {
-    pub(super) fn new(on_change: impl Fn() + Send + 'static) -> notify::Result<Self> {
+    pub(super) fn new(on_change: impl Fn() + Send + Sync + 'static) -> notify::Result<Self> {
         let directories = Arc::new(RwLock::new(Vec::new()));
         let rebind = Arc::new(AtomicBool::new(false));
-        let targets = Arc::clone(&directories);
-        let changed = Arc::clone(&rebind);
-        let watcher = RecommendedWatcher::new(
+        let on_change: Arc<dyn Fn() + Send + Sync> = Arc::new(on_change);
+        let watcher = Self::backend(&directories, &rebind, &on_change)?;
+        Ok(Self {
+            watcher: Some(watcher),
+            on_change,
+            directories,
+            rebind,
+            watched: BTreeSet::new(),
+        })
+    }
+
+    fn backend(
+        directories: &Arc<RwLock<Vec<PathBuf>>>,
+        rebind: &Arc<AtomicBool>,
+        on_change: &Arc<dyn Fn() + Send + Sync>,
+    ) -> notify::Result<RecommendedWatcher> {
+        let targets = Arc::clone(directories);
+        let changed = Arc::clone(rebind);
+        let on_change = Arc::clone(on_change);
+        RecommendedWatcher::new(
             move |result: notify::Result<Event>| {
                 match result {
                     Ok(event) => {
@@ -47,29 +65,46 @@ impl DirectoryWatcher {
                 on_change();
             },
             notify::Config::default(),
-        )?;
-        Ok(Self {
-            watcher,
-            directories,
-            rebind,
-            watched: BTreeSet::new(),
-        })
+        )
     }
 
-    pub(super) fn refresh(&mut self, directories: &[PathBuf]) -> bool {
-        let desired = watch_paths(directories);
+    pub(super) fn refresh(
+        &mut self,
+        directories: &[PathBuf],
+        admitted: impl Fn(&Path) -> bool,
+    ) -> bool {
+        let desired = watch_paths(directories, &admitted, Path::is_dir);
         let replaced = self.rebind.swap(false, Ordering::AcqRel);
         *self.directories.write().expect("installed watch targets") = directories.to_vec();
         if desired == self.watched && !replaced {
             return false;
         }
-        let previous = self.watched.clone();
-        for path in &self.watched {
-            let _ = self.watcher.unwatch(path);
+        let previous = std::mem::take(&mut self.watched);
+        if !previous.is_empty() {
+            // The macOS backend resolves paths during unwatch. Drop it without a path lookup.
+            self.watcher = None;
         }
-        self.watched.clear();
+        if desired.is_empty() {
+            return replaced || !previous.is_empty();
+        }
+        if self.watcher.is_none() {
+            match Self::backend(&self.directories, &self.rebind, &self.on_change) {
+                Ok(watcher) => self.watcher = Some(watcher),
+                Err(_) => {
+                    ::tracing::error!(
+                        event = "installed_check_watch_failed",
+                        reason = "watch_rebind_failed"
+                    );
+                    return !previous.is_empty();
+                }
+            }
+        }
+        let watcher = self.watcher.as_mut().expect("installed watch backend");
         for path in desired {
-            match self.watcher.watch(&path, RecursiveMode::NonRecursive) {
+            if !admitted(&path) {
+                continue;
+            }
+            match watcher.watch(&path, RecursiveMode::NonRecursive) {
                 Ok(()) => {
                     self.watched.insert(path);
                 }
@@ -85,19 +120,23 @@ impl DirectoryWatcher {
     }
 }
 
-pub(super) fn watch_paths(directories: &[PathBuf]) -> BTreeSet<PathBuf> {
+pub(super) fn watch_paths(
+    directories: &[PathBuf],
+    admitted: impl Fn(&Path) -> bool,
+    is_directory: impl Fn(&Path) -> bool,
+) -> BTreeSet<PathBuf> {
     let mut paths = BTreeSet::new();
     for directory in directories {
-        for path in directory.ancestors().take(3) {
-            if path.is_dir() {
-                paths.insert(path.to_path_buf());
+        for (distance, path) in directory.ancestors().enumerate() {
+            if !admitted(path) {
+                break;
             }
-        }
-        if let Some(base) = directory.ancestors().nth(2)
-            && !base.is_dir()
-            && let Some(parent) = base.ancestors().skip(1).find(|parent| parent.is_dir())
-        {
-            paths.insert(parent.to_path_buf());
+            if is_directory(path) {
+                paths.insert(path.to_path_buf());
+                if distance >= 2 {
+                    break;
+                }
+            }
         }
     }
     paths

@@ -15,7 +15,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
-use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::provider_usage;
 use crate::provider_usage::codex_rollout_history::{self, RolloutImportBatch};
 use crate::provider_usage::live::working_week::WorkingClock;
@@ -57,14 +56,7 @@ const ROLLOUT_CONTINUATION_DELAY: Duration = Duration::from_millis(250);
 /// seconds rather than a handful of `TICK`s.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
-    let gate = app.state::<FirstRunGate>().inner().clone();
     tauri::async_runtime::spawn(async move {
-        // During the first run, the Codex history import starts when the
-        // reader opens the Sessions step, not after the startup delay. Its
-        // readings are then ready when the checks step publishes the turns.
-        let mut first_run_kick = gate.stage() != FirstRunStage::Done;
-        let sessions_step = gate.wait_until(FirstRunStage::Sessions, || false);
-        tokio::pin!(sessions_step);
         let mut interval =
             tokio::time::interval_at(tokio::time::Instant::now() + STARTUP_DELAY, TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -73,13 +65,6 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let mut imported = 0usize;
         loop {
             let batch = tokio::select! {
-                reached = &mut sessions_step, if first_run_kick => {
-                    first_run_kick = false;
-                    if reached {
-                        rollout_due = Some(tokio::time::Instant::now());
-                    }
-                    continue;
-                }
                 _ = interval.tick() => {
                     rollout_due = None;
                     let app = app.clone();
@@ -334,14 +319,17 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch 
 /// Mirrors `LIMIT_ESTIMATES_CHANGED_EVENT` in `src/lib/ipc.ts`.
 pub(crate) const LIMIT_ESTIMATES_CHANGED_EVENT: &str = "limit-estimates:changed";
 
-/// Run one factor learning pass, if the first run lets learning price turns.
+/// Learn only after discovery and evidence processing settle.
 ///
 /// Returns `true` when the pass ran and at least one lane has a factor.
 pub(crate) fn learn_limit_factors(app: &AppHandle, store: &Store) -> bool {
-    if app
-        .try_state::<FirstRunGate>()
-        .is_some_and(|gate| !gate.limit_learning_ready())
-    {
+    let (Some(scan), Some(worker)) = (
+        app.try_state::<crate::scan::ScanController>(),
+        app.try_state::<crate::insights_worker::WorkerHandle>(),
+    ) else {
+        return false;
+    };
+    if !evidence_ready_for_learning(&scan, &worker, store) {
         return false;
     }
     let now = crate::scan::unix_now();
@@ -349,6 +337,19 @@ pub(crate) fn learn_limit_factors(app: &AppHandle, store: &Store) -> bool {
     crate::analytics::record_limit_factor_observed(app, &learned);
     crate::analytics::record_quota_window_closed(app, store, &touched, now);
     !learned.is_empty()
+}
+
+fn evidence_ready_for_learning(
+    scan: &crate::scan::ScanController,
+    worker: &crate::insights_worker::WorkerHandle,
+    store: &Store,
+) -> bool {
+    scan.first_current_pass_done()
+        && crate::scan::history::discovery_complete(store, scan)
+        && !worker.backlog_active()
+        && store
+            .pending_evidence_count(&crate::agents::evidence_cohort())
+            .is_ok_and(|pending| pending == 0)
 }
 
 /// Learn factors now, and tell the webviews to read the estimates again.
@@ -363,17 +364,25 @@ fn learn_and_notify(app: &AppHandle) {
     }
 }
 
-/// Learn factors once the first run publishes its turns.
-///
-/// The insights worker passes the publication's first-run generation when its
-/// backlog drains. Stale generations and batches before Checks cannot start learning.
-pub(crate) fn learn_after_first_publish(app: &AppHandle, generation: u64) {
-    if !app.state::<FirstRunGate>().mark_turns_published(generation) {
+/// Retry learning after a scan or publication batch settles.
+/// Ignore callbacks from an index that was cleared.
+pub(crate) fn learn_after_data_settles(app: &AppHandle, generation: u64) {
+    if app
+        .state::<crate::insights_worker::WorkerHandle>()
+        .index_generation()
+        != generation
+    {
         return;
     }
     let app = app.clone();
     drop(tauri::async_runtime::spawn_blocking(move || {
-        learn_and_notify(&app);
+        if app
+            .state::<crate::insights_worker::WorkerHandle>()
+            .index_generation()
+            == generation
+        {
+            learn_and_notify(&app);
+        }
     }));
 }
 
@@ -384,13 +393,6 @@ fn run_rollout_import(app: &AppHandle, _blocking: blocking::Thread) -> RolloutIm
 }
 
 fn run_rollout_import_inner(app: &AppHandle) -> RolloutImportBatch {
-    // The first run reads no session files before the Sessions step.
-    if app
-        .try_state::<FirstRunGate>()
-        .is_some_and(|gate| gate.stage() < FirstRunStage::Sessions)
-    {
-        return RolloutImportBatch::default();
-    }
     let Some(store) = app.try_state::<Store>() else {
         return RolloutImportBatch::default();
     };
@@ -761,6 +763,34 @@ fn milestone_snapshot(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn learning_waits_for_discovery_and_worker_drain_and_resets_with_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path()).unwrap();
+        let scan = crate::scan::ScanController::default();
+        let worker = crate::insights_worker::WorkerHandle::default();
+        assert!(!super::evidence_ready_for_learning(&scan, &worker, &store));
+        scan.mark_current_pass_done();
+        assert!(!super::evidence_ready_for_learning(&scan, &worker, &store));
+        let retention_days = store.settings_snapshot().session_data_retention_days;
+        crate::scan::history::mark_done(&store, retention_days);
+        assert!(super::evidence_ready_for_learning(&scan, &worker, &store));
+        let busy = crate::insights_worker::WorkerHandle::with_active_backlog_for_test(&store);
+        assert!(!super::evidence_ready_for_learning(&scan, &busy, &store));
+        let generation = worker.index_generation();
+        worker.invalidate_index();
+        scan.invalidate_current_pass();
+        assert_ne!(generation, worker.index_generation());
+        assert!(!super::evidence_ready_for_learning(&scan, &worker, &store));
+
+        crate::scan::history::reset_done(&store);
+        let mut settings = store.settings().unwrap();
+        settings.session_data_retention_days = crate::store::model::CURRENT_WINDOW_DAYS as i32;
+        store.save_settings(&settings).unwrap();
+        scan.mark_current_pass_done();
+        assert!(super::evidence_ready_for_learning(&scan, &worker, &store));
+    }
+
     use super::*;
     use crate::dto::{
         LiveProviderUsage, LiveUsageFreshness, LiveUsageSourceError, LiveUsageSummary,

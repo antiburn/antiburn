@@ -5,9 +5,13 @@ fn publish_current(
     state: &InstalledChecks,
 ) -> Vec<InventoryEvent> {
     let mut events = Vec::new();
-    publish_inventory(state, &host.store, &host.definitions, |event| {
-        events.push(event)
-    })
+    publish_inventory(
+        state,
+        &host.store,
+        &host.definitions,
+        host.inventory_generation,
+        |event| events.push(event),
+    )
     .unwrap();
     events
 }
@@ -138,7 +142,7 @@ async fn watched_removal_updates_both_consumers_and_keeps_history_and_incurred_u
             let _ = sender.send(());
         })
         .unwrap();
-        watcher.refresh(&host.watch_directories);
+        watcher.refresh(&host.watch_directories, |_| true);
         std::fs::remove_file(fixture.global.join("failed-retry-loop.yml")).unwrap();
         receiver
             .recv_timeout(Duration::from_secs(5))

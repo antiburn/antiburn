@@ -181,7 +181,7 @@ test("small viewport keeps the panel and footer reachable", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Learn more" })).toBeVisible()
 })
 
-test("new users wait 24 hours after FTUE before automatic display", async ({ page }) => {
+test("new users wait 24 hours after onboarding before automatic display", async ({ page }) => {
   await page.goto(
     "/tests/visual/?surface=main&theme=dark&state=populated&onboarding=complete&promoAge=0",
   )
@@ -196,12 +196,27 @@ test("new users wait 24 hours after FTUE before automatic display", async ({ pag
   await expect(page.locator(".promotion-panel")).toBeVisible()
 })
 
-test("MAIN-window FTUE never displays or marks a promo seen", async ({ page }) => {
+test("automatic promotion waits for a later native process but manual opening stays available", async ({
+  page,
+}) => {
+  await page.goto(
+    "/tests/visual/?surface=main&theme=dark&state=populated&onboarding=complete&promoAge=86400000&promoSession=current",
+  )
+  await expect(page.locator(".main-window")).toBeVisible()
+  await expect(page.locator(".promotion-panel")).toBeHidden()
+  await page.getByRole("button", { name: "Claude Mod, new", exact: true }).click()
+  await expect(page.locator(".promotion-panel")).toBeVisible()
+})
+
+test("incomplete native onboarding keeps Sessions usable without displaying or marking a promo seen", async ({
+  page,
+}) => {
   await page.goto("/tests/visual/?surface=main&theme=dark&state=populated")
-  await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeDisabled()
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("antiburn.promotions.ftue.v1")))
-    .not.toBeNull()
+  await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeEnabled()
+  await expect(page.getByRole("tab", { name: "Sessions", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  )
   await expect(page.locator(".promotion-panel")).toHaveCount(0)
   expect(
     await page.evaluate(() => localStorage.getItem("antiburn.promotions.seen.v1")),
@@ -394,7 +409,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(reopened).toBeVisible()
     await expect(reopened).toBeFocused()
     await expect(reopened.locator(".promotion-launcher-badge")).toHaveCount(1)
-    await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute(
+    await expect(page.getByRole("tab", { name: "Sessions", exact: true })).toHaveAttribute(
       "aria-selected",
       "true",
     )
@@ -417,7 +432,7 @@ for (const theme of ["light", "dark"] as const) {
   })
 }
 
-test("automatic viewing retains NEW and an incomplete FTUE hides the launcher", async ({
+test("automatic viewing retains NEW and incomplete onboarding blocks manual opening", async ({
   page,
 }) => {
   await page.goto("/tests/visual/?surface=main&state=populated&onboarding=complete")
@@ -432,6 +447,14 @@ test("automatic viewing retains NEW and an incomplete FTUE hides the launcher", 
   ).toBeNull()
   await page.goto("/tests/visual/?surface=main&state=populated&onboarding=firstRun")
   await expect(page.locator(".main-window")).toBeVisible()
-  await expect(page.getByRole("button", { name: /Claude Mod/ })).toHaveCount(0)
+  const launcher = page.getByRole("button", { name: "Claude Mod, new", exact: true })
+  await expect(launcher).toBeVisible()
+  await launcher.click()
   await expect(panel).toBeHidden()
+  expect(
+    await page.evaluate(() => localStorage.getItem("antiburn.promotions.launcher-opened.v1")),
+  ).toBeNull()
+  expect(
+    await page.evaluate(() => localStorage.getItem("antiburn.promotions.seen.v1")),
+  ).toBeNull()
 })

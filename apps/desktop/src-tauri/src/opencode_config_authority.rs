@@ -1,7 +1,9 @@
 //! Share consumer discovery without sharing location failures.
 
 use crate::opencode_live::config::{AuthorityError, VerifiedConfigConsumer, canonical_location};
-pub(crate) use crate::opencode_live::config::{ConfigEntry, CurrentConfigAuthority};
+pub(crate) use crate::opencode_live::config::{
+    ConfigEntry, ConfigReadAdmission, CurrentConfigAuthority,
+};
 
 use std::{
     collections::BTreeMap,
@@ -70,36 +72,48 @@ impl CurrentConfigAuthorities {
     }
 
     /// Blocks the calling thread. Call this outside the store snapshot transaction.
-    pub(crate) fn capture(&mut self, location: &Path) -> Option<&CurrentConfigAuthority> {
-        self.try_capture(location).ok()
+    pub(crate) fn capture(
+        &mut self,
+        location: &Path,
+        admission: &ConfigReadAdmission,
+    ) -> Option<&CurrentConfigAuthority> {
+        self.try_capture(location, admission).ok()
     }
 
     pub(crate) fn try_capture(
         &mut self,
         location: &Path,
+        admission: &ConfigReadAdmission,
     ) -> Result<&CurrentConfigAuthority, CaptureUnavailable> {
-        tauri::async_runtime::block_on(self.try_capture_async(location))
+        tauri::async_runtime::block_on(self.try_capture_async(location, admission))
     }
 
     pub(crate) async fn capture_async(
         &mut self,
         location: &Path,
+        admission: &ConfigReadAdmission,
     ) -> Option<&CurrentConfigAuthority> {
-        self.try_capture_async(location).await.ok()
+        self.try_capture_async(location, admission).await.ok()
     }
 
     async fn try_capture_async(
         &mut self,
         location: &Path,
+        admission: &ConfigReadAdmission,
     ) -> Result<&CurrentConfigAuthority, CaptureUnavailable> {
+        let capture_admission = admission.clone();
         self.capture_with(
             location,
+            admission,
             VerifiedConfigConsumer::registered_async,
             |mut consumer, location, remaining| async move {
-                let receipt = tokio::time::timeout(remaining, consumer.capture_async(&location))
-                    .await
-                    .map_err(|_| CaptureUnavailable::Budget)
-                    .and_then(|result| result.map_err(|_| CaptureUnavailable::Location));
+                let receipt = tokio::time::timeout(
+                    remaining,
+                    consumer.capture_async(&location, Some(capture_admission)),
+                )
+                .await
+                .map_err(|_| CaptureUnavailable::Budget)
+                .and_then(|result| result.map_err(|_| CaptureUnavailable::Location));
                 (consumer, receipt)
             },
         )
@@ -109,6 +123,7 @@ impl CurrentConfigAuthorities {
     async fn capture_with<D, DF, C, CF>(
         &mut self,
         location: &Path,
+        admission: &ConfigReadAdmission,
         discover: D,
         capture: C,
     ) -> Result<&CurrentConfigAuthority, CaptureUnavailable>
@@ -125,11 +140,16 @@ impl CurrentConfigAuthorities {
     {
         let lookup_started = Instant::now();
         let key = location.to_path_buf();
-        let location =
-            tokio::time::timeout(MAX_CAPTURE_DURATION, canonical_location(location.into()))
-                .await
-                .map_err(|_| CaptureUnavailable::Budget)?
-                .map_err(|_| CaptureUnavailable::Location)?;
+        let location = tokio::time::timeout(
+            MAX_CAPTURE_DURATION,
+            canonical_location(location.into(), Some(admission.clone())),
+        )
+        .await
+        .map_err(|_| CaptureUnavailable::Budget)?
+        .map_err(|_| CaptureUnavailable::Location)?;
+        if !admission.allows(&location) {
+            return Err(CaptureUnavailable::Location);
+        }
         if self.cached_fresh(&key, &location) {
             self.sequence = self.sequence.saturating_add(1);
             self.captures
@@ -158,9 +178,15 @@ impl CurrentConfigAuthorities {
             }
         }
         let remaining = self.remaining(lookup_started)?;
+        if !admission.allows(&location) {
+            return Err(CaptureUnavailable::Location);
+        }
         let consumer = self.consumer.take().expect("consumer discovery succeeded");
         let (consumer, receipt) = capture(consumer, location.clone(), remaining).await;
         self.consumer = Some(consumer);
+        if !admission.allows(&location) {
+            return Err(CaptureUnavailable::Location);
+        }
         self.retain(key.clone(), receipt)?;
         self.cached_result(&key)
     }
@@ -272,6 +298,7 @@ impl CurrentConfigAuthorities {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, location: &Path) -> Option<&CurrentConfigAuthority> {
         self.cached_result(location)
             .ok()
@@ -283,11 +310,16 @@ impl CurrentConfigAuthorities {
 mod tests {
     use super::*;
 
+    fn allow_fixture() -> ConfigReadAdmission {
+        ConfigReadAdmission::new(|_| true)
+    }
+
     async fn fixture_capture(cache: &mut CurrentConfigAuthorities, location: &Path) -> bool {
         let seed_path = location.to_path_buf();
         cache
             .capture_with(
                 location,
+                &allow_fixture(),
                 || async move { Ok(VerifiedConfigConsumer::fixture(&seed_path)) },
                 |consumer, path, _| async move {
                     (
@@ -314,6 +346,7 @@ mod tests {
                 cache
                     .capture_with(
                         &temporary.path().join("deleted"),
+                        &allow_fixture(),
                         || async { panic!("invalid cwd must not discover") },
                         |_, _, _| async { panic!("invalid cwd must not capture") }
                     )
@@ -327,6 +360,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_location_revoked_during_discovery_is_never_sent_to_the_consumer() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let temporary = tempfile::tempdir().unwrap();
+        let allowed = Arc::new(AtomicBool::new(true));
+        let policy = Arc::clone(&allowed);
+        let admission = ConfigReadAdmission::new(move |_| policy.load(Ordering::Acquire));
+        let mut cache = CurrentConfigAuthorities::default();
+        let result = cache
+            .capture_with(
+                temporary.path(),
+                &admission,
+                || async {
+                    allowed.store(false, Ordering::Release);
+                    Ok(VerifiedConfigConsumer::fixture(temporary.path()))
+                },
+                |_, _, _| async { panic!("revoked location must not be sent to the consumer") },
+            )
+            .await;
+        assert_eq!(result.err(), Some(CaptureUnavailable::Location));
+        assert!(cache.captures.is_empty());
+    }
+
+    #[tokio::test]
     async fn first_config_failure_keeps_the_discovered_consumer() {
         let temporary = tempfile::tempdir().unwrap();
         let first = temporary.path().join("first");
@@ -336,6 +396,7 @@ mod tests {
             cache
                 .capture_with(
                     &first,
+                    &allow_fixture(),
                     || async { Ok(VerifiedConfigConsumer::fixture(temporary.path())) },
                     |consumer, _, _| async { (consumer, Err(CaptureUnavailable::Location)) }
                 )
@@ -348,6 +409,7 @@ mod tests {
             cache
                 .capture_with(
                     temporary.path(),
+                    &allow_fixture(),
                     || async { panic!("consumer must survive a location failure") },
                     |consumer, path, _| async move {
                         (
@@ -372,6 +434,7 @@ mod tests {
             cache
                 .capture_with(
                     temporary.path(),
+                    &allow_fixture(),
                     || async { Err(AuthorityError::Unavailable) },
                     |_, _, _| async { panic!("unavailable consumer must not capture") }
                 )
@@ -383,6 +446,7 @@ mod tests {
             cache
                 .capture_with(
                     temporary.path(),
+                    &allow_fixture(),
                     || async { panic!("discovery must not repeat") },
                     |_, _, _| async { panic!("unavailable consumer must not capture") }
                 )
@@ -413,6 +477,7 @@ mod tests {
             cache
                 .capture_with(
                     &location,
+                    &allow_fixture(),
                     || async { panic!("refresh must not discover") },
                     |consumer, path, _| async move {
                         (
@@ -455,7 +520,7 @@ mod tests {
             CurrentConfigAuthorities::default(),
             CurrentConfigAuthorities::for_worker(),
         ] {
-            assert_eq!(cache.capture_with(temporary.path(), || async { Ok(VerifiedConfigConsumer::fixture(temporary.path())) }, |consumer, path, _| async move {
+            assert_eq!(cache.capture_with(temporary.path(), &allow_fixture(), || async { Ok(VerifiedConfigConsumer::fixture(temporary.path())) }, |consumer, path, _| async move {
                 (consumer, Ok(CurrentConfigAuthority::fixture(&path, serde_json::json!([
                     {"type":"document","info":{"large":"x".repeat(MAX_CAPTURE_BYTES / 64)}}
                 ]))))
@@ -466,6 +531,7 @@ mod tests {
                 cache
                     .capture_with(
                         &next,
+                        &allow_fixture(),
                         || async { panic!("budget exhaustion must not rediscover") },
                         |consumer, path, _| async move {
                             (
@@ -495,6 +561,7 @@ mod tests {
             cache
                 .capture_with(
                     &next,
+                    &allow_fixture(),
                     || async { panic!("budget must stop discovery") },
                     |_, _, _| async { panic!("budget must stop capture") }
                 )

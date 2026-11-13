@@ -43,7 +43,6 @@ use crate::dto::{
     SessionHygieneRequest, SessionIdentity, SessionLimitAllocation, SessionLimitAllocationSummary,
     SessionRelation, SessionRelations, SubagentMember,
 };
-use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 pub(crate) mod local_usage;
 pub(crate) mod memories;
 pub(crate) mod quota;
@@ -63,7 +62,8 @@ use crate::scan::{self, ScanController, ScanTrigger};
 use crate::settings;
 use crate::store::model::environment_key;
 use crate::store::{
-    AppSettings, RelationKind, RepositoryRecord, SessionKey, SessionRecord, Store, iso_from_epoch,
+    AppSettings, OnboardingState, RelationKind, RepositoryRecord, SessionKey, SessionRecord, Store,
+    iso_from_epoch,
 };
 
 /// Anything that goes wrong becomes a string the webview can show.
@@ -117,6 +117,9 @@ pub fn window_ready(window: tauri::WebviewWindow, generation: u64) {
             crate::popover::renderer_ready(&window, generation);
         }
         crate::settings::LABEL => crate::settings::renderer_ready(&window, generation),
+        crate::onboarding_window::LABEL => {
+            crate::onboarding_window::renderer_ready(&window, generation)
+        }
         label => {
             ::tracing::debug!(event = "window_ready_ignored", window = label);
         }
@@ -380,6 +383,72 @@ pub async fn get_settings(app: tauri::AppHandle) -> CommandResult<AppSettings> {
     run_blocking(move || store.settings().map_err(fail)).await
 }
 
+#[tauri::command]
+pub async fn get_onboarding_state(app: tauri::AppHandle) -> CommandResult<OnboardingState> {
+    let store = app.state::<Store>().inner().clone();
+    run_blocking(move || store.onboarding_state().map_err(fail)).await
+}
+
+#[tauri::command]
+pub async fn get_promotion_readiness(
+    app: tauri::AppHandle,
+) -> CommandResult<crate::store::PromotionReadiness> {
+    let store = app.state::<Store>().inner().clone();
+    let later_session = app
+        .state::<crate::onboarding_window::OnboardingWindowState>()
+        .promotion_later_session();
+    run_blocking(move || {
+        store
+            .promotion_readiness(
+                later_session,
+                time::OffsetDateTime::now_utc().unix_timestamp(),
+            )
+            .map_err(fail)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn set_onboarding_state(
+    app: tauri::AppHandle,
+    state: OnboardingState,
+) -> CommandResult<OnboardingState> {
+    let store = app.state::<Store>().inner().clone();
+    if state != OnboardingState::CloudUnavailable
+        && store.onboarding_state().map_err(fail)? == OnboardingState::CloudUnavailable
+    {
+        let _ = crate::cloud::cloud_cancel(app.clone()).await;
+    }
+    let record_app = app.clone();
+    let saved = run_blocking(move || {
+        let (previous, saved) = store.set_onboarding_state(state).map_err(fail)?;
+        if saved == OnboardingState::Completed {
+            record_app
+                .state::<crate::onboarding_window::OnboardingWindowState>()
+                .mark_completed();
+            if previous != OnboardingState::Completed {
+                crate::analytics::record_onboarding_completed(&record_app);
+                #[cfg(target_os = "macos")]
+                {
+                    let hud_app = record_app.clone();
+                    if let Err(error) = record_app
+                        .run_on_main_thread(move || crate::hud::restore_if_enabled(&hud_app))
+                    {
+                        ::tracing::warn!(event = "hud_onboarding_restore_failed", error = %error);
+                    }
+                }
+            }
+        }
+        Ok(saved)
+    })
+    .await?;
+    app.emit("onboarding:changed", ()).map_err(fail)?;
+    if state == OnboardingState::Completed {
+        crate::onboarding_window::finish(&app).await?;
+    }
+    Ok(saved)
+}
+
 /// Event carrying the stored settings to every window after a write.
 ///
 /// Preferences are written from the settings window but *rendered* in the
@@ -443,6 +512,19 @@ pub async fn set_settings(
         Ok(())
     })
     .await?;
+    Ok(saved)
+}
+
+/// Change sidebar preferences without replacing other settings.
+#[tauri::command]
+pub async fn patch_sidebar_usage(
+    app: tauri::AppHandle,
+    patch: crate::store::SidebarUsagePatch,
+) -> CommandResult<AppSettings> {
+    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
+    let store = app.state::<Store>().inner().clone();
+    let (_, saved) = run_blocking(move || store.patch_sidebar_usage(patch).map_err(fail)).await?;
+    crate::interface_scale::emit_settings_changed(&app, &saved).map_err(fail)?;
     Ok(saved)
 }
 
@@ -518,57 +600,7 @@ pub async fn set_interface_scale(
     }
 }
 
-/// Mark the first run finished, as its result first shows.
-///
-/// The Overview's own first-run flow asks the reader nothing before it shows
-/// results. The settings-save path runs `apply_settings_transition`, which
-/// registers startup, requests a scan, and sends the menu-bar-home
-/// notification.
-#[tauri::command]
-pub async fn finish_first_run(app: tauri::AppHandle) -> CommandResult<AppSettings> {
-    let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
-    let store = app.state::<Store>().inner().clone();
-    let (previous, saved) = run_blocking(move || {
-        store
-            .update_settings(|settings| {
-                settings.onboarding_completed = true;
-            })
-            .map_err(fail)
-    })
-    .await?;
-    apply_settings_transition_on_main(&app, &previous, &saved).await?;
-    app.state::<FirstRunGate>().finish();
-    // Only the save that finishes the first run records it, so a repeated
-    // call or a failed save never reports a finish.
-    if !previous.onboarding_completed && saved.onboarding_completed {
-        let analytics_app = app.clone();
-        run_blocking(move || {
-            crate::analytics::record_interaction(
-                &analytics_app,
-                crate::analytics::event::Interaction::FirstRunFinished {},
-            );
-            Ok(())
-        })
-        .await?;
-    }
-    Ok(saved)
-}
-
-/// Open the first-run gate up to `stage`, from the reader's own Next or Show
-/// press. The gate only ever opens further — see
-/// [`crate::first_run_gate::FirstRunGate::advance`].
-#[tauri::command]
-pub fn advance_first_run(app: tauri::AppHandle, stage: FirstRunStage) {
-    app.state::<FirstRunGate>().advance(stage);
-}
-
-/// Start live usage from a deliberate click in the Overview.
-///
-/// Before this, `AppSettings::live_usage_active` stays false, so the
-/// credential read it gates — and, on macOS, the Keychain prompt that read
-/// can trigger — cannot run. Setting the flag through the settings-save path
-/// runs `apply_settings_transition`, which syncs the tray meter the same way
-/// any other transition into "live usage active" does.
+/// Enable live usage after the user turns it off.
 #[tauri::command]
 pub async fn start_live_usage(app: tauri::AppHandle) -> CommandResult<AppSettings> {
     let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
@@ -577,6 +609,7 @@ pub async fn start_live_usage(app: tauri::AppHandle) -> CommandResult<AppSetting
         store
             .update_settings(|settings| {
                 settings.live_usage_started = true;
+                settings.live_usage_enabled = true;
             })
             .map_err(fail)
     })
@@ -604,36 +637,20 @@ pub async fn note_interaction(
 }
 
 fn apply_settings_transition(app: &tauri::AppHandle, previous: &AppSettings, saved: &AppSettings) {
-    // This transition means the current setup run is over. It can repeat only
-    // after an explicit restart. Each completion refreshes data and explains
-    // where the menu-bar app went.
-    let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
-
     if crate::startup_registration::should_reconcile_after_save(previous, saved) {
         crate::startup_registration::reconcile(app, saved.launch_at_login);
     }
     crate::app_presence::apply_transition(app, previous, saved);
 
-    // Finishing onboarding, widening the window past what the store holds,
+    // Widening the window past what the store holds,
     // resuming discovery, and changing the folder gate all want fresh data
     // immediately rather than at the next tick.
-    let wants_scan = finished_onboarding
-        || saved.activity_window_days > previous.activity_window_days
+    let wants_scan = saved.activity_window_days > previous.activity_window_days
         || (previous.discovery_paused && !saved.discovery_paused)
         || previous.include_non_repo_folders != saved.include_non_repo_folders;
     if wants_scan && !saved.discovery_paused {
         app.state::<ScanController>()
             .request(ScanTrigger::SettingsTransition);
-    }
-
-    // Say where antiburn went once the first run's result has shown, and warm
-    // the popover's hidden renderer so the first menu-bar click after that is
-    // instant. Done here, on the settings-save transition, so every path that
-    // finishes the first run — the ordinary one and an explicit restart —
-    // does both once.
-    if finished_onboarding {
-        crate::notifications::note_menu_bar_home(app);
-        crate::popover::prewarm(app);
     }
 
     if !saved.live_usage_active() {
@@ -2465,12 +2482,12 @@ pub async fn delete_session_data(
 /// Preferences, scan folders, and repository include choices are kept — this is
 /// "forget what you worked out", not "forget who I am".
 ///
-/// Shared by [`clear_local_index`] and the debug-only [`reset_first_run`], so
-/// the two wipes cannot drift apart.
-///
 /// Returns how many sessions were dropped, so a caller can report a number
 /// rather than a shrug.
 async fn wipe_local_session_data(app: &tauri::AppHandle) -> CommandResult<usize> {
+    app.state::<crate::insights_worker::WorkerHandle>()
+        .invalidate_index();
+    app.state::<ScanController>().invalidate_current_pass();
     let host_ids = crate::remote_sessions::host_ids(app)?;
     let action_app = app.clone();
     let (removed, revision) = run_blocking(move || {
@@ -2519,57 +2536,6 @@ async fn wipe_local_session_data(app: &tauri::AppHandle) -> CommandResult<usize>
 pub async fn clear_local_index(app: tauri::AppHandle) -> CommandResult<usize> {
     wipe_local_session_data(&app).await
 }
-
-/// Debug tool: return the app to a new install's first run.
-///
-/// Runs the exact wipe [`clear_local_index`] runs, so the real scan and
-/// analysis pipeline reads every session again from zero; returns the main
-/// window to its default placement; clears the first-run and live-usage
-/// flags; and opens the main window at the Overview. Other preferences stay,
-/// as in [`clear_local_index`].
-///
-/// Not a `#[tauri::command]`: the debug tray is its only caller, so it is a
-/// plain function rather than an IPC surface a release build would still
-/// register and any webview could invoke.
-#[cfg(debug_assertions)]
-pub(crate) async fn reset_first_run(app: tauri::AppHandle) -> CommandResult<()> {
-    // The gate goes back to the start before anything else runs, so the pass
-    // the wipe is about to request waits at the agents gate instead of running
-    // straight through on the stage this run already reached.
-    app.state::<FirstRunGate>().reset();
-    // A pass already waiting at a gate must end as cancelled rather than
-    // hold the scan slot forever once the gate has just gone back to
-    // Welcome.
-    app.state::<ScanController>().request_cancel();
-    let removed = wipe_local_session_data(&app).await;
-    removed?;
-    crate::main_window::on_main_value(&app, crate::main_window::reset_placement).await?;
-    let store = app.state::<Store>().inner().clone();
-    let (previous, saved) = run_blocking(move || {
-        store
-            .update_settings(|settings| {
-                settings.onboarding_completed = false;
-                settings.live_usage_started = false;
-            })
-            .map_err(fail)
-    })
-    .await?;
-    apply_settings_transition_on_main(&app, &previous, &saved).await?;
-    let _ = app.emit(FTUE_RESET_EVENT, ());
-    let opened = crate::main_window::on_main_value(&app, |app| {
-        crate::main_window::open_at_section(app, crate::main_window::MainWindowSection::Overview)
-    })
-    .await;
-    opened??;
-    Ok(())
-}
-
-/// Event asking the retained renderer to replay the Overview's demo FTUE run.
-/// Only [`reset_first_run`] emits it, hence the `cfg`; the webview's own
-/// listener matches this string as its own literal, since it cannot import a
-/// Rust constant.
-#[cfg(debug_assertions)]
-pub const FTUE_RESET_EVENT: &str = "ftue:reset";
 
 /* --------------------------------------------------------------------------
  * Folder permissions
@@ -2860,7 +2826,7 @@ fn session_project_directory(store: &Store, key: &SessionKey) -> CommandResult<P
     }
     let path = stored_project_path(Some(&record))
         .ok_or_else(|| "The session has no local project directory".to_owned())?;
-    project_directory(&path)
+    authorized_project_directory(store, &path)
 }
 
 /// Resolve the folder from a stored session or an issued check action.
@@ -2884,7 +2850,7 @@ pub async fn open_project_folder(
                     .state::<RemediationController>()
                     .project_folder(&app.state::<Store>(), &action_id)
                     .map_err(|_| "The check's project folder is no longer available".to_owned())?;
-                project_directory(&path)?
+                authorized_project_directory(&app.state::<Store>(), &path)?
             }
         };
         reject_remote_cache_path(&app, &target)?;
@@ -2910,6 +2876,29 @@ pub(crate) fn reject_remote_cache_path(app: &tauri::AppHandle, target: &Path) ->
 
 fn is_remote_cache_path(target: &Path, remote_root: &Path) -> bool {
     presentable(target.to_path_buf()).starts_with(presentable(remote_root.to_path_buf()))
+}
+
+fn authorized_project_directory(store: &Store, path: &str) -> CommandResult<PathBuf> {
+    let policy = store.repository_policy_snapshot().map_err(fail)?;
+    if protected::project_path_access(Path::new(path), &policy.granted_dirs)
+        != protected::ProjectAccessDecision::Allowed
+    {
+        return Err("Allow this folder in Settings before opening its project".into());
+    }
+    if !store
+        .repository_policy_is_current(policy.generation)
+        .map_err(fail)?
+    {
+        return Err("Folder access changed; try again".into());
+    }
+    let directory = project_directory(path)?;
+    if !store
+        .repository_policy_is_current(policy.generation)
+        .map_err(fail)?
+    {
+        return Err("Folder access changed; try again".into());
+    }
+    Ok(directory)
 }
 
 fn project_directory(path: &str) -> CommandResult<PathBuf> {
@@ -3011,17 +3000,20 @@ mod project_folder_tests {
         assert!(!source.contains("on_main_value(&app, antiburn_hud::settle_after_drag)"));
         assert!(!source.contains("move |app| antiburn_hud::restore_dock(app, dock)"));
         let restore = include_str!("../hud.rs")
-            .split_once("pub fn restore_at_launch(")
-            .unwrap()
+            .split_once("pub fn restore_if_enabled(")
+            .expect("the automatic HUD restore entry point")
             .1;
-        let restore = restore.split_once("\n}").unwrap().0;
+        let restore = restore.split_once("\n}").expect("the restore body").0;
+        let notch = restore
+            .find("antiburn_hud::refresh_notch()")
+            .expect("restore reads the notch on the main thread");
         let dispatch = restore
             .find("spawn_blocking")
-            .expect("startup dispatches to a worker");
+            .expect("restore dispatches to a worker");
         let open = restore
             .find("antiburn_hud::open")
-            .expect("startup opens the HUD");
-        assert!(dispatch < open);
+            .expect("restore opens the HUD");
+        assert!(notch < dispatch && dispatch < open);
     }
 
     #[test]
@@ -3632,6 +3624,33 @@ mod project_folder_tests {
         for path in ["", "relative/folder", "https://example.com", "file:///tmp"] {
             assert!(project_directory(path).is_err());
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn project_open_defers_unsupported_locations_before_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let error =
+            authorized_project_directory(&store, "/Volumes/AntiburnSynthetic/project").unwrap_err();
+        assert_eq!(
+            error,
+            "Allow this folder in Settings before opening its project"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_open_does_not_follow_an_unverified_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        let alias = dir.path().join("project-alias");
+        std::os::unix::fs::symlink("/Volumes/AntiburnSynthetic/project", &alias).unwrap();
+        let error = authorized_project_directory(&store, alias.to_str().unwrap()).unwrap_err();
+        assert_eq!(
+            error,
+            "Allow this folder in Settings before opening its project"
+        );
     }
 
     #[test]

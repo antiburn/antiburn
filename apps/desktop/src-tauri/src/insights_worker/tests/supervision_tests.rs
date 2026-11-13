@@ -445,7 +445,7 @@ async fn a_first_item_error_announces_idle_without_a_processed_row() {
                     task_reports.fetch_add(1, Ordering::SeqCst);
                 },
                 backlog: &|active| task_states.lock().unwrap().push(active),
-                gate: &always_open_gate,
+                before_claim: &continue_before_claim,
             },
             &|_, _| {},
         )
@@ -470,7 +470,7 @@ struct LearningBatchState {
 fn spawn_learning_worker(
     store: Store,
     handle: Arc<WorkerHandle>,
-    gate: FirstRunGate,
+    gate: PublicationObserver,
     state: Arc<LearningBatchState>,
     abort_first: bool,
 ) -> tokio::task::JoinHandle<()> {
@@ -498,7 +498,7 @@ fn spawn_learning_worker(
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|active| state.backlog.lock().unwrap().push(active),
-                gate: &always_open_gate,
+                before_claim: &continue_before_claim,
             },
             &WorkerLoopReports {
                 ingested: &|_, _| {},
@@ -522,8 +522,7 @@ async fn assert_learning_waits_for_an_accepted_publication(abort_first: bool) {
         )
         .unwrap();
     let handle = Arc::new(WorkerHandle::default());
-    let gate = FirstRunGate::new(false);
-    gate.advance(FirstRunStage::Checks);
+    let gate = PublicationObserver::default();
     let state = Arc::new(LearningBatchState::default());
     let mut task = spawn_learning_worker(
         store.clone(),
@@ -594,8 +593,7 @@ async fn a_busy_old_publication_cannot_enable_learning_after_reset_and_a_failed_
         )
         .unwrap();
     let handle = Arc::new(WorkerHandle::default());
-    let gate = FirstRunGate::new(false);
-    gate.advance(FirstRunStage::Checks);
+    let gate = PublicationObserver::default();
     let old_generation = gate.generation();
     let gate_calls = Arc::new(AtomicUsize::new(0));
     let blocked = Arc::new(Notify::new());
@@ -620,14 +618,11 @@ async fn a_busy_old_publication_cannot_enable_learning_after_reset_and_a_failed_
             let pass = published_pass(record);
             Box::pin(async move { pass }) as PassFuture
         };
-        let wait_gate = task_gate.clone();
-        let wait_for_gate = move || -> GateFuture {
+        let wait_for_gate = move || -> BeforeClaimFuture {
             let call = task_gate_calls.fetch_add(1, Ordering::SeqCst);
-            let gate = wait_gate.clone();
             let blocked = Arc::clone(&task_blocked);
             let release = Arc::clone(&task_release);
             Box::pin(async move {
-                gate.wait_until(FirstRunStage::Checks, || false).await;
                 if call == 1 {
                     blocked.notify_one();
                     release.notified().await;
@@ -643,7 +638,7 @@ async fn a_busy_old_publication_cannot_enable_learning_after_reset_and_a_failed_
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|active| task_states.lock().unwrap().push(active),
-                gate: &wait_for_gate,
+                before_claim: &wait_for_gate,
             },
             &WorkerLoopReports {
                 ingested: &|_, _| {},
@@ -675,7 +670,6 @@ async fn a_busy_old_publication_cannot_enable_learning_after_reset_and_a_failed_
             &crate::agents::evidence_cohort(),
         )
         .unwrap();
-    gate.advance(FirstRunStage::Checks);
     release.notify_one();
     wait_until(|| !handle.backlog_active() && !drained.lock().unwrap().is_empty()).await;
     assert_eq!(*drained.lock().unwrap(), vec![old_generation]);
@@ -717,8 +711,7 @@ async fn a_busy_old_publication_cannot_enable_learning_after_reset_and_a_failed_
 async fn late_old_publication_and_drain_preserve_the_current_generation_marker() {
     let store = store();
     let handle = WorkerHandle::default();
-    let gate = FirstRunGate::new(false);
-    gate.advance(FirstRunStage::Checks);
+    let gate = PublicationObserver::default();
     let old_generation = gate.generation();
     let drained = Mutex::new(Vec::new());
     let publication_drained = |generation| {
@@ -728,7 +721,7 @@ async fn late_old_publication_and_drain_preserve_the_current_generation_marker()
     let signals = WorkerLoopSignals {
         report_changed: &|| {},
         backlog: &|_| {},
-        gate: &always_open_gate,
+        before_claim: &continue_before_claim,
     };
     let activity = BacklogActivity {
         busy: AtomicBool::new(false),
@@ -750,7 +743,6 @@ async fn late_old_publication_and_drain_preserve_the_current_generation_marker()
 
     gate.reset();
     store.clear_local_session_data().unwrap();
-    gate.advance(FirstRunStage::Checks);
     let current_generation = gate.generation();
     publication_drained(old_generation);
     assert!(!gate.limit_learning_ready());
@@ -804,7 +796,7 @@ async fn cancelling_a_busy_worker_clears_its_backlog_count_and_announces_idle() 
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|active| task_states.lock().unwrap().push(active),
-                gate: &always_open_gate,
+                before_claim: &continue_before_claim,
             },
             &|_, _| {},
         )
@@ -895,4 +887,27 @@ async fn repeated_worker_failures_use_a_capped_restart_delay() {
     }
     supervisor.abort();
     assert!(supervisor.await.unwrap_err().is_cancelled());
+}
+
+#[derive(Clone, Default)]
+struct PublicationObserver(Arc<Mutex<(u64, bool)>>);
+
+impl PublicationObserver {
+    fn generation(&self) -> u64 {
+        self.0.lock().unwrap().0
+    }
+    fn reset(&self) {
+        let mut state = self.0.lock().unwrap();
+        state.0 += 1;
+        state.1 = false;
+    }
+    fn mark_turns_published(&self, generation: u64) {
+        let mut state = self.0.lock().unwrap();
+        if state.0 == generation {
+            state.1 = true;
+        }
+    }
+    fn limit_learning_ready(&self) -> bool {
+        self.0.lock().unwrap().1
+    }
 }

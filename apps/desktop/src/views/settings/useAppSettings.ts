@@ -7,7 +7,10 @@ import {
   getSettings,
   onSettingsChanged,
   setSettings,
+  patchSidebarUsage,
+  type SidebarUsagePatch,
   setInterfaceScale,
+  startLiveUsage,
   type AppSettings,
 } from "../../lib/ipc"
 import type { InterfaceScaleChange } from "../../lib/interfaceScale"
@@ -25,7 +28,7 @@ import type { InterfaceScaleChange } from "../../lib/interfaceScale"
  */
 export interface AppSettingsController {
   settings: AppSettings
-  /** False until the first read resolves. */
+  /** False until saved settings are available. */
   loaded: boolean
   /** Merge a change into the stored preferences. */
   update: (change: SettingsChange) => Promise<void>
@@ -48,18 +51,27 @@ const settingsStore = createExternalStore<SettingsSnapshot>({
       applyTheme(stored.theme)
       return { settings: stored, loaded: true }
     } catch {
-      return { settings: DEFAULT_SETTINGS, loaded: true }
+      return { settings: DEFAULT_SETTINGS, loaded: false }
     }
   },
   // Writes can come from another window (the main window and the popover
   // share the same settings store); the broadcast keeps this window's copy —
   // and its theme — current too.
-  subscribe: (set) =>
-    onSettingsChanged((stored) => {
+  subscribe: async (set) => {
+    const stop = await onSettingsChanged((stored) => {
       settingsRevision += 1
       applyTheme(stored.theme)
       set({ settings: stored, loaded: true })
-    }),
+    }).catch(() => null)
+    const retry = () => {
+      if (!settingsStore.getSnapshot().loaded) void settingsStore.refresh()
+    }
+    window.addEventListener("focus", retry)
+    return () => {
+      window.removeEventListener("focus", retry)
+      stop?.()
+    }
+  },
 })
 
 /** Save scale through its atomic command and publish the confirmed preference. */
@@ -69,34 +81,52 @@ export async function saveInterfaceScale(change: InterfaceScaleChange): Promise<
   if (revision === settingsRevision) settingsStore.set({ settings: saved, loaded: true })
 }
 
-export function useAppSettings(): AppSettingsController {
+/** Publish activation only after the native settings transaction succeeds. */
+export async function enableLiveUsage(): Promise<void> {
+  const revision = ++settingsRevision
+  const saved = await startLiveUsage()
+  if (revision === settingsRevision) settingsStore.set({ settings: saved, loaded: true })
+}
+
+export function useAppSettings(): AppSettingsController & {
+  updateSidebar: (change: SidebarUsagePatch) => Promise<void>
+} {
   const { settings, loaded } = useSyncExternalStore(
     settingsStore.subscribe,
     settingsStore.getSnapshot,
   )
 
-  const update = useCallback(async (change: SettingsChange) => {
-    if (!settingsStore.getSnapshot().loaded) return
-    // Optimistic, so a switch does not lag behind the pointer; the stored
-    // answer replaces it a moment later and wins any disagreement. Reads the
-    // current value from the store rather than closing over it, so this
-    // callback stays referentially stable across every settings change.
-    const current = settingsStore.getSnapshot().settings
-    const next = { ...current, ...change }
-    const revision = ++settingsRevision
-    applyTheme(next.theme)
-    settingsStore.set({ settings: next, loaded: true })
-    try {
-      const saved = await setSettings(next)
-      if (revision !== settingsRevision) return
-      applyTheme(saved.theme)
-      settingsStore.set({ settings: saved, loaded: true })
-    } catch {
-      if (revision !== settingsRevision) return
-      applyTheme(current.theme)
-      settingsStore.set({ settings: current, loaded: true })
-    }
-  }, [])
+  const save = useCallback(
+    async (change: SettingsChange, persist: (next: AppSettings) => Promise<AppSettings>) => {
+      if (!settingsStore.getSnapshot().loaded) return
+      // Optimistic, so a switch does not lag behind the pointer; the stored
+      // answer replaces it a moment later and wins any disagreement. Reads the
+      // current value from the store rather than closing over it, so this
+      // callback stays referentially stable across every settings change.
+      const current = settingsStore.getSnapshot().settings
+      const next = { ...current, ...change }
+      const revision = ++settingsRevision
+      applyTheme(next.theme)
+      settingsStore.set({ settings: next, loaded: true })
+      try {
+        const saved = await persist(next)
+        if (revision !== settingsRevision) return
+        applyTheme(saved.theme)
+        settingsStore.set({ settings: saved, loaded: true })
+      } catch {
+        if (revision !== settingsRevision) return
+        applyTheme(current.theme)
+        settingsStore.set({ settings: current, loaded: true })
+      }
+    },
+    [],
+  )
 
-  return { settings, loaded, update }
+  const update = useCallback((change: SettingsChange) => save(change, setSettings), [save])
+  const updateSidebar = useCallback(
+    (change: SidebarUsagePatch) => save(change, (next) => patchSidebarUsage(change, next)),
+    [save],
+  )
+
+  return { settings, loaded, update, updateSidebar }
 }

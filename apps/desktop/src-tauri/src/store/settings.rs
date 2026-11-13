@@ -7,7 +7,8 @@ use rusqlite::{Connection, params};
 
 use super::{
     AppSettings, DisabledAgents, DiskSpaceDisplay, HiddenMeters, Milestones, NudgePlacement,
-    SessionBadgeMetric, Store, ThemePreference, WorkingWeek, bump_repository_policy_generation_in,
+    SessionBadgeMetric, SidebarUsagePatch, Store, ThemePreference, WorkingWeek,
+    bump_repository_policy_generation_in,
 };
 
 impl Store {
@@ -77,7 +78,22 @@ impl Store {
         Ok((previous, saved, result))
     }
 
-    /// Replace ordinary preferences without accepting a stale interface scale snapshot.
+    /// Patch sidebar preferences against the latest stored settings.
+    pub fn patch_sidebar_usage(
+        &self,
+        patch: SidebarUsagePatch,
+    ) -> Result<(AppSettings, AppSettings)> {
+        self.update_settings(|settings| {
+            if let Some(pins) = patch.sidebar_usage_pins {
+                settings.sidebar_usage_pins = Some(pins);
+            }
+            if let Some(appearance) = patch.sidebar_usage_appearance {
+                settings.sidebar_usage_appearance = appearance;
+            }
+        })
+    }
+
+    /// Preserve preferences that use dedicated atomic commands.
     pub fn replace_settings_preserving_interface_scale<T>(
         &self,
         settings: &AppSettings,
@@ -88,6 +104,8 @@ impl Store {
         let previous = read_settings(&tx)?;
         let mut saved = settings.clone();
         saved.interface_scale_percent = previous.interface_scale_percent;
+        saved.sidebar_usage_pins = previous.sidebar_usage_pins.clone();
+        saved.sidebar_usage_appearance = previous.sidebar_usage_appearance.clone();
         let saved = saved.normalized();
         write_settings(&tx, &previous, &saved)?;
         let result = apply(&tx, &previous, &saved)?;
@@ -170,10 +188,6 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("sessionDataRetentionDays")
             .and_then(|value| value.parse().ok())
             .unwrap_or(defaults.session_data_retention_days),
-        onboarding_completed: stored
-            .get("onboardingCompleted")
-            .map(|value| value == "true")
-            .unwrap_or(defaults.onboarding_completed),
         launch_at_login: stored
             .get("launchAtLogin")
             .map(|value| value == "true")
@@ -198,6 +212,10 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("includeNonRepoFolders")
             .map(|value| value == "true")
             .unwrap_or(defaults.include_non_repo_folders),
+        cloud_upload_enabled: stored
+            .get("cloudUploadEnabled")
+            .map(|value| value == "true")
+            .unwrap_or(false),
         notifications_enabled: stored
             .get("notificationsEnabled")
             .map(|value| value == "true")
@@ -250,20 +268,17 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("liveUsageEnabled")
             .map(|value| value == "true")
             .unwrap_or(defaults.live_usage_enabled),
-        // No stored answer means either a fresh install (default: not
-        // started) or an install that finished setup before this flag
-        // existed. The onboarding-completed value tells the two apart: an
-        // install that already finished setup keeps live usage active
-        // exactly as it was.
+        sidebar_usage_pins: stored
+            .get("sidebarUsagePins")
+            .and_then(|value| serde_json::from_str(value).ok()),
+        sidebar_usage_appearance: stored
+            .get("sidebarUsageAppearance")
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or_default(),
         live_usage_started: stored
             .get("internal:liveUsageStarted")
             .map(|value| value == "true")
-            .unwrap_or_else(|| {
-                stored
-                    .get("onboardingCompleted")
-                    .map(|value| value == "true")
-                    .unwrap_or(defaults.live_usage_started)
-            }),
+            .unwrap_or(defaults.live_usage_started),
         live_usage_hidden_providers: stored
             .get("liveUsageHiddenProviders")
             .map(|value| HiddenMeters::parse(value))
@@ -272,19 +287,10 @@ pub(super) fn read_settings(connection: &Connection) -> Result<AppSettings> {
             .get("disabledAgents")
             .map(|value| DisabledAgents::parse(value))
             .unwrap_or(defaults.disabled_agents.clone()),
-        // No stored answer means this database predates the setting. A fresh
-        // install takes the default. An install that already finished setup
-        // stays off until the reader enables it.
         analytics_enabled: stored
             .get("analyticsEnabled")
             .map(|value| value == "true")
-            .unwrap_or_else(|| {
-                let finished = stored
-                    .get("onboardingCompleted")
-                    .map(|value| value == "true")
-                    .unwrap_or(false);
-                !finished && defaults.analytics_enabled
-            }),
+            .unwrap_or(defaults.analytics_enabled),
         overview_limits_expanded: stored
             .get("overviewLimitsExpanded")
             .map(|value| value == "true")
@@ -339,10 +345,6 @@ fn write_settings(
         settings.session_data_retention_days.to_string()
     ])?;
     put.execute(params![
-        "onboardingCompleted",
-        bool_text(settings.onboarding_completed)
-    ])?;
-    put.execute(params![
         "launchAtLogin",
         bool_text(settings.launch_at_login)
     ])?;
@@ -362,6 +364,10 @@ fn write_settings(
     put.execute(params![
         "includeNonRepoFolders",
         bool_text(settings.include_non_repo_folders)
+    ])?;
+    put.execute(params![
+        "cloudUploadEnabled",
+        bool_text(settings.cloud_upload_enabled)
     ])?;
     put.execute(params![
         "notificationsEnabled",
@@ -419,6 +425,14 @@ fn write_settings(
     put.execute(params![
         "liveUsageHiddenProviders",
         settings.live_usage_hidden_providers.as_str()
+    ])?;
+    put.execute(params![
+        "sidebarUsagePins",
+        serde_json::to_string(&settings.sidebar_usage_pins)?
+    ])?;
+    put.execute(params![
+        "sidebarUsageAppearance",
+        serde_json::to_string(&settings.sidebar_usage_appearance)?
     ])?;
     put.execute(params!["disabledAgents", settings.disabled_agents.as_str()])?;
     put.execute(params![

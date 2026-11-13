@@ -560,29 +560,19 @@ fn lossy_display_paths_never_replace_native_path_authority() {
     let home = fixture
         .root
         .join(std::ffi::OsString::from_vec(b"home-\xff".to_vec()));
+    let display_home = PathBuf::from(home.to_string_lossy().into_owned());
+    assert_ne!(home, display_home);
     std::fs::create_dir_all(home.join(".antiburn/checks")).unwrap();
-    let context = context(
-        &fixture.store,
-        home,
-        RemoteCache {
-            path: fixture.remote.clone(),
-            canonical: fixture.remote.clone(),
-        },
-    )
-    .unwrap();
-    let (rows, bindings) = scan(&context, &Bindings::new()).unwrap();
-    assert!(rows[0].path.contains(char::REPLACEMENT_CHARACTER));
-    let binding = bindings.get(rows[0].reference.as_ref().unwrap());
+    std::fs::create_dir_all(display_home.join(".antiburn/checks")).unwrap();
+    let remote = || RemoteCache {
+        path: fixture.remote.clone(),
+        canonical: fixture.remote.clone(),
+    };
+
+    assert!(context(&fixture.store, display_home, remote()).is_ok());
     assert_eq!(
-        open_directory(
-            binding,
-            &context,
-            || true,
-            |_| panic!("A lossy display path is not an opener argument")
-        )
-        .unwrap_err()
-        .outcome,
-        BurnCheckDirectoryOpenOutcome::Unavailable
+        context(&fixture.store, home, remote()).err().as_deref(),
+        Some(READ_ERROR)
     );
 }
 
@@ -670,40 +660,16 @@ fn open_rechecks_current_repository_membership_enabled_state_policy_and_director
 
 #[cfg(unix)]
 #[test]
-fn a_preexisting_directory_symlink_can_open_but_changed_targets_get_new_references() {
+fn a_preexisting_directory_symlink_does_not_issue_an_open_reference() {
     let fixture = Fixture::new();
-    let first = fixture.root.join("first");
-    let second = fixture.root.join("second");
-    std::fs::create_dir(&first).unwrap();
-    std::fs::create_dir(&second).unwrap();
+    let target = fixture.root.join("target");
+    std::fs::create_dir(&target).unwrap();
     std::fs::create_dir(fixture.home.join(".antiburn")).unwrap();
-    std::os::unix::fs::symlink(&first, fixture.global()).unwrap();
+    std::os::unix::fs::symlink(&target, fixture.global()).unwrap();
     let (rows, bindings) = fixture.scan();
-    let reference = rows[0].reference.as_ref().unwrap();
-    open_directory(
-        bindings.get(reference),
-        &fixture.context(),
-        || true,
-        |path| {
-            assert_eq!(Path::new(&path), first);
-            Ok(())
-        },
-    )
-    .unwrap();
-    std::fs::remove_file(fixture.global()).unwrap();
-    std::os::unix::fs::symlink(&second, fixture.global()).unwrap();
-    assert!(
-        open_directory(
-            bindings.get(reference),
-            &fixture.context(),
-            || true,
-            |_| panic!("Redirected directory")
-        )
-        .is_err()
-    );
-    let (rows, next) = scan(&fixture.context(), &bindings).unwrap();
-    assert_ne!(rows[0].reference.as_ref(), Some(reference));
-    assert!(!next.contains_key(reference));
+    assert_eq!(rows[0].state, DirectoryState::Unavailable);
+    assert!(rows[0].reference.is_none());
+    assert!(bindings.is_empty());
 }
 
 #[test]
@@ -751,117 +717,25 @@ fn unresolvable_or_non_directory_home_policy_fails_closed_without_creating_folde
 
 #[cfg(unix)]
 #[test]
-fn changed_or_unresolvable_home_alias_invalidates_the_captured_policy() {
+fn a_symlinked_home_invalidates_the_captured_policy() {
     let fixture = Fixture::new();
     let actual_home = fixture.root.join("actual-home");
-    let other_home = fixture.root.join("other-home");
-    std::fs::rename(&fixture.home, &actual_home).unwrap();
-    std::fs::create_dir(&other_home).unwrap();
-    std::os::unix::fs::symlink(&actual_home, &fixture.home).unwrap();
     let captured = fixture.context();
     assert!(policy_is_current(&fixture.store, &captured));
-    std::fs::remove_file(&fixture.home).unwrap();
-    assert!(!policy_is_current(&fixture.store, &captured));
-    std::os::unix::fs::symlink(&other_home, &fixture.home).unwrap();
-    assert!(!policy_is_current(&fixture.store, &captured));
-    assert_eq!(fixture.context().canonical_home, other_home);
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn symlinked_home_checks_both_home_paths_and_revoked_grants_block_each_issued_folder() {
-    let fixture = Fixture::new();
-    let actual_home = fixture.root.join("actual-home");
     std::fs::rename(&fixture.home, &actual_home).unwrap();
     std::os::unix::fs::symlink(&actual_home, &fixture.home).unwrap();
-    let global_target = actual_home.join("Documents/check-files");
-    std::fs::create_dir_all(&global_target).unwrap();
-    std::fs::write(global_target.join("synthetic.yml"), "").unwrap();
-    std::fs::create_dir(actual_home.join(".antiburn")).unwrap();
-    std::os::unix::fs::symlink(&global_target, fixture.global()).unwrap();
-    let project_root = actual_home.join("Documents/project");
-    fixture
-        .store
-        .replace_repositories(&[repository(&project_root)])
-        .unwrap();
-    let ungranted = fixture.context();
-    assert_eq!(ungranted.home, fixture.home);
-    assert_eq!(ungranted.canonical_home, actual_home);
-    for name in protected::protected_dir_names() {
-        assert!(ungranted.blocked(&fixture.home.join(name).join("project")));
-        assert!(ungranted.blocked(&actual_home.join(name).join("project")));
-    }
-    let (rows, bindings) = scan(&ungranted, &Bindings::new()).unwrap();
-    assert_eq!(rows.len(), 2);
+    assert!(!policy_is_current(&fixture.store, &captured));
     assert!(
-        rows.iter()
-            .all(|row| row.state == DirectoryState::Unavailable
-                && row.file_count.is_none()
-                && row.reference.is_none()
-                && row.message == Some(ACCESS_MESSAGE))
-    );
-    assert!(bindings.is_empty());
-    assert!(!project_root.exists());
-    assert!(fixture.store.granted_dirs().unwrap().is_empty());
-    let project_checks = project_root.join(".antiburn/checks");
-    std::fs::create_dir_all(&project_checks).unwrap();
-    fixture.store.grant_dir("Documents").unwrap();
-    let granted = fixture.context();
-    let (rows, bindings) = scan(&granted, &Bindings::new()).unwrap();
-    assert!(
-        rows.iter()
-            .all(|row| row.state == DirectoryState::Ready && row.reference.is_some())
-    );
-    assert_eq!(rows[0].file_count, Some(1));
-    assert_eq!(rows[1].file_count, Some(0));
-    let global_binding = bindings.get(rows[0].reference.as_ref().unwrap()).unwrap();
-    assert_eq!(global_binding.candidate.path, fixture.global());
-    assert_eq!(global_binding.canonical, global_target);
-    assert_ne!(global_binding.candidate.path, global_binding.canonical);
-    let mut opened = Vec::new();
-    for row in &rows {
-        open_directory(
-            bindings.get(row.reference.as_ref().unwrap()),
-            &granted,
-            || policy_is_current(&fixture.store, &granted),
-            |path| {
-                opened.push(PathBuf::from(path));
-                Ok(())
+        context(
+            &fixture.store,
+            fixture.home.clone(),
+            RemoteCache {
+                path: fixture.remote.clone(),
+                canonical: fixture.remote.clone(),
             },
         )
-        .unwrap();
-    }
-    assert_eq!(opened, [global_target, project_checks]);
-    assert_eq!(
-        fixture.store.granted_dirs().unwrap(),
-        HashSet::from(["Documents".into()])
+        .is_err()
     );
-    fixture.store.revoke_dir_grant("Documents").unwrap();
-    let revoked = fixture.context();
-    assert!(!policy_is_current(&fixture.store, &granted));
-    let (unavailable, new_bindings) = scan(&revoked, &bindings).unwrap();
-    assert!(
-        unavailable
-            .iter()
-            .all(|row| row.state == DirectoryState::Unavailable
-                && row.file_count.is_none()
-                && row.reference.is_none())
-    );
-    assert!(new_bindings.is_empty());
-    for row in &rows {
-        assert_eq!(
-            open_directory(
-                bindings.get(row.reference.as_ref().unwrap()),
-                &revoked,
-                || true,
-                |_| panic!("A revoked grant must prevent the opener")
-            )
-            .unwrap_err()
-            .outcome,
-            BurnCheckDirectoryOpenOutcome::Unavailable
-        );
-    }
-    assert!(fixture.store.granted_dirs().unwrap().is_empty());
 }
 
 #[cfg(target_os = "macos")]
@@ -903,18 +777,10 @@ fn ungranted_paths_are_not_inspected_and_revoked_or_canonical_target_grants_bloc
         Some(ACCESS_MESSAGE)
     );
     fixture.store.grant_dir("Documents").unwrap();
-    let granted = fixture.context();
-    let (rows, bindings) = scan(&granted, &Bindings::new()).unwrap();
-    fixture.store.revoke_dir_grant("Documents").unwrap();
-    assert!(
-        open_directory(
-            bindings.get(rows[0].reference.as_ref().unwrap()),
-            &fixture.context(),
-            || true,
-            |_| panic!("Canonical target grant")
-        )
-        .is_err()
-    );
+    let (rows, bindings) = fixture.scan();
+    assert_eq!(rows[0].state, DirectoryState::Unavailable);
+    assert!(rows[0].reference.is_none());
+    assert_eq!(bindings.len(), 1);
 }
 
 #[test]

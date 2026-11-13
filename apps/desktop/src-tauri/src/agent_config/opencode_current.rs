@@ -6,7 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(not(windows))]
 use super::filesystem::{path_entry_exists, read_checked};
+use super::inventory::InventoryAdmission;
 use super::opencode_config_authority::{ConfigEntry, CurrentConfigAuthority};
 use super::vendors::OperationSelector;
 use super::{ConfigContext, ConfigScope, ConfigSetting, ConfigUnavailableReason};
@@ -359,38 +361,44 @@ pub(crate) fn resolve(
     authority: &CurrentConfigAuthority,
     subject: OpenCodeConfigSubject,
 ) -> Result<OpenCodeResolvedTarget, ConfigUnavailableReason> {
-    let entries = validated_entries(context, authority)?;
-    let mut snapshot = inputs::dependencies(context, entries)?;
+    let (entries, _, _) = validated_entries(context, authority, None)?;
+    let mut snapshot = inputs::dependencies(context, entries, None)?;
     resolve_with_inputs(context, authority, subject, entries, &mut snapshot)
 }
 
 fn validated_entries<'a>(
     context: &ConfigContext,
     authority: &'a CurrentConfigAuthority,
-) -> Result<&'a [ConfigEntry], ConfigUnavailableReason> {
+    admission: Option<InventoryAdmission<'_>>,
+) -> Result<(&'a [ConfigEntry], PathBuf, Option<PathBuf>), ConfigUnavailableReason> {
     if context.agent != antiburn_local::model::AgentKind::OpenCode || !context.native_environment {
         return Err(ConfigUnavailableReason::UnsupportedEnvironment);
     }
-    let cwd = context
-        .workspace_cwd
-        .as_deref()
-        .ok_or(ConfigUnavailableReason::UnsafePath)?
-        .canonicalize()
-        .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
+    let cwd = context.canonical_path_with_admission(
+        context
+            .workspace_cwd
+            .as_deref()
+            .ok_or(ConfigUnavailableReason::UnsafePath)?,
+        |path| inputs::check_admission(admission, path),
+    )?;
     if authority.location() != cwd {
         return Err(ConfigUnavailableReason::InvalidPrecedence);
     }
-    if let Some(root) = &context.trusted_workspace_root {
-        let root = root
-            .canonicalize()
-            .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
-        if !cwd.starts_with(root) {
+    let root = if let Some(root) = &context.trusted_workspace_root {
+        let root = context
+            .canonical_path_with_admission(root, |path| inputs::check_admission(admission, path))?;
+        if !cwd.starts_with(&root) {
             return Err(ConfigUnavailableReason::UnsafePath);
         }
-    }
-    authority
+        Some(root)
+    } else {
+        None
+    };
+    inputs::check_admission(admission, authority.location())?;
+    let entries = authority
         .entries()
-        .map_err(|_| ConfigUnavailableReason::RuntimeOverride)
+        .map_err(|_| ConfigUnavailableReason::RuntimeOverride)?;
+    Ok((entries, cwd, root))
 }
 
 fn resolve_with_inputs(
@@ -420,9 +428,12 @@ fn resolve_with_inputs(
             authority,
             subject.clone(),
             path,
-            OperationSelector::OpenCodeSkillAdvertising(id.clone()),
-            Value::Bool(value),
+            (
+                OperationSelector::OpenCodeSkillAdvertising(id.clone()),
+                Value::Bool(value),
+            ),
             snapshot.dependencies.clone(),
+            snapshot.admission,
         );
     }
     let mut winner = None;
@@ -496,9 +507,9 @@ fn resolve_with_inputs(
         authority,
         subject,
         path,
-        selector,
-        value,
+        (selector, value),
         snapshot.dependencies.clone(),
+        snapshot.admission,
     )
 }
 
@@ -507,25 +518,25 @@ fn target(
     authority: &CurrentConfigAuthority,
     subject: OpenCodeConfigSubject,
     path: PathBuf,
-    selector: OperationSelector,
-    value: Value,
+    (selector, value): (OperationSelector, Value),
     dependencies: Vec<Dependency>,
+    admission: Option<InventoryAdmission<'_>>,
 ) -> Result<OpenCodeResolvedTarget, ConfigUnavailableReason> {
-    let home = context
-        .home_root
-        .canonicalize()
-        .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
+    let check = |path: &Path| inputs::check_admission(admission, path);
+    check(&path)?;
+    context.check_path(&path)?;
+    let home = context.canonical_path_with_admission(&context.home_root, check)?;
     let workspace = context
         .trusted_workspace_root
         .as_deref()
-        .map(|root| root.canonicalize())
-        .transpose()
-        .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
+        .map(|root| context.canonical_path_with_admission(root, check))
+        .transpose()?;
     let (safety_root, scope) = if let Some(root) = workspace.filter(|root| path.starts_with(root)) {
         (root, ConfigScope::Project)
     } else if path.starts_with(&home) {
         (home, ConfigScope::Global)
     } else {
+        check(authority.location())?;
         let root = authority
             .entries()
             .map_err(|_| ConfigUnavailableReason::RuntimeOverride)?
@@ -539,12 +550,13 @@ fn target(
                     Some("/etc/opencode" | "/Library/Application Support/opencode")
                 )
             })
-            .ok_or(ConfigUnavailableReason::UnsafePath)?
-            .canonicalize()
-            .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
-        (root, ConfigScope::Global)
+            .ok_or(ConfigUnavailableReason::UnsafePath)?;
+        (
+            context.canonical_path_with_admission(root, check)?,
+            ConfigScope::Global,
+        )
     };
-    super::filesystem::checked_metadata(&path, &safety_root)?;
+    super::filesystem::checked_metadata_with_admission(&path, &safety_root, &|| check(&path))?;
     Ok(OpenCodeResolvedTarget {
         authority: authority.clone(),
         context: context.clone(),
@@ -571,7 +583,7 @@ fn dependency(path: &Path) -> Result<Dependency, ConfigUnavailableReason> {
             .map_err(|_| ConfigUnavailableReason::UnsafePath)?
             .is_dir()
         {
-            Some(directory_digest(&inputs::directory_entries(path)?)?)
+            Some(directory_digest(&inputs::directory_entries(path)?, None)?)
         } else {
             let parent = path.parent().ok_or(ConfigUnavailableReason::UnsafePath)?;
             let file = read_checked(path, parent)?;
@@ -588,15 +600,21 @@ fn dependency(path: &Path) -> Result<Dependency, ConfigUnavailableReason> {
     })
 }
 
-fn directory_digest(paths: &[PathBuf]) -> Result<[u8; 32], ConfigUnavailableReason> {
+fn directory_digest(
+    paths: &[PathBuf],
+    admission: Option<InventoryAdmission<'_>>,
+) -> Result<[u8; 32], ConfigUnavailableReason> {
     let mut listing = Vec::new();
-    for path in paths.iter().filter(|path| {
-        path.is_dir()
+    for path in paths {
+        inputs::check_admission(admission, path)?;
+        let relevant = std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
             || path.extension().is_some_and(|extension| extension == "md")
             || path
                 .file_name()
-                .is_some_and(|name| name == "opencode.json" || name == "opencode.jsonc")
-    }) {
+                .is_some_and(|name| name == "opencode.json" || name == "opencode.jsonc");
+        if !relevant {
+            continue;
+        }
         let name = path.to_str().ok_or(ConfigUnavailableReason::UnsafePath)?;
         listing.extend_from_slice(&name.len().to_le_bytes());
         listing.extend_from_slice(name.as_bytes());

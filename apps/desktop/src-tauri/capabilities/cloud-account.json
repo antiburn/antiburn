@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "cloud-account",
+  "description": "Only account and onboarding surfaces may inspect or disconnect the Cloud account.",
+  "windows": ["main", "settings", "onboarding"],
+  "permissions": ["allow-cloud-status", "allow-cloud-sign-out"]
+}

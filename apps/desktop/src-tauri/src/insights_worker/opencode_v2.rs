@@ -28,7 +28,6 @@ use super::{LEASE_SECS, SessionKey, Store, unix_now};
 use crate::store::native_tool_results::opencode_v2_status::OpenCodeV2SourceStatus;
 use crate::{
     commands,
-    first_run_gate::{FirstRunGate, FirstRunStage},
     opencode_live::{self, stream::EventStream},
     store::native_tool_results::source_delivery::opencode_v2::{
         OpenCodeV2AdmittedSource, OpenCodeV2CaptureClaim, OpenCodeV2CaptureStart,
@@ -74,7 +73,6 @@ trait CaptureHost: Send + Sync {
     fn registration_path(&self) -> anyhow::Result<PathBuf>;
     fn announce(&self, key: &SessionKey);
     fn report_changed(&self);
-    async fn wait_for_checks(&self);
     async fn wait_for_sources(&self) {
         std::future::pending::<()>().await;
     }
@@ -118,12 +116,6 @@ impl CaptureHost for AppCaptureHost {
     fn report_changed(&self) {
         let _ = self.app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
     }
-    async fn wait_for_checks(&self) {
-        self.app
-            .state::<FirstRunGate>()
-            .wait_until(FirstRunStage::Checks, || self.stopping())
-            .await;
-    }
     async fn wait_for_sources(&self) {
         self.app
             .state::<super::WorkerHandle>()
@@ -154,7 +146,6 @@ async fn run_capture_driver(host: Arc<dyn CaptureHost>, timing: CaptureTiming) {
     let trace = Arc::new(CaptureFailureTrace::default());
     let mut status_report_failed = false;
     while !host.stopping() {
-        host.wait_for_checks().await;
         if !host.ready() {
             tokio::time::sleep(timing.settings_check).await;
             continue;

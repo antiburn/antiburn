@@ -818,7 +818,7 @@ describe("MainActivitySession", () => {
 
     await vi.waitFor(() => expect(session.getSnapshot().subject).toBeNull())
     expect(navigation.getSnapshot()).toEqual(
-      expect.objectContaining({ selected: "overview", canBack: false, canForward: false }),
+      expect.objectContaining({ selected: "activity", canBack: false, canForward: false }),
     )
   })
 

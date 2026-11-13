@@ -274,7 +274,7 @@ pub(super) async fn rollout_origin(path: &Path) -> RolloutOrigin {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
     let fallback_id = super::codex_subagents::thread_id_from_rollout_path(path);
-    let Ok(file) = tokio::fs::File::open(path).await else {
+    let Ok(file) = crate::discovery::source_fs::asynchronous::open(path).await else {
         return RolloutOrigin {
             thread_id: fallback_id,
             ..Default::default()
@@ -645,7 +645,7 @@ fn collect_dirs_with_jsonl_blocking(root: &Path, found: &mut Vec<PathBuf>) {
 /// directly holds a `.jsonl` file. `(Vec::new(), false)` for a directory that
 /// cannot be read (missing, permission denied).
 fn list_dir_jsonl_split(dir: &Path) -> (Vec<PathBuf>, bool) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = crate::discovery::source_fs::read_dir(dir) else {
         return (Vec::new(), false);
     };
     let mut subdirs = Vec::new();
@@ -921,7 +921,7 @@ fn thread_title_schema(conn: &Connection) -> ThreadTitleSchema {
 }
 
 fn query_thread_titles(path: &Path, session_ids: &[String]) -> StateDbTitles {
-    let Ok(conn) = Connection::open_with_flags(
+    let Ok(conn) = crate::discovery::source_fs::open_database(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) else {
@@ -1007,7 +1007,9 @@ struct SessionIndexRow {
 }
 
 async fn read_session_title_from_index(path: &Path, session_id: &str) -> Option<String> {
-    let content = tokio::fs::read_to_string(path).await.ok()?;
+    let content = crate::discovery::source_fs::asynchronous::read_to_string(path)
+        .await
+        .ok()?;
     let mut latest_title = None;
 
     for line in content.lines() {
@@ -1035,7 +1037,10 @@ async fn indexed_session_titles_in(
     let mut resolved = HashMap::new();
     let mut state_fallbacks = HashMap::new();
     for path in state_db_paths(home, codex_home) {
-        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        if !crate::discovery::source_fs::asynchronous::try_exists(&path)
+            .await
+            .unwrap_or(false)
+        {
             continue;
         }
         let ids = session_ids.to_vec();
@@ -1078,7 +1083,7 @@ async fn indexed_session_titles_in(
 }
 
 fn query_index_titles(path: &Path, wanted: &HashSet<String>) -> HashMap<String, String> {
-    let Ok(file) = std::fs::File::open(path) else {
+    let Ok(file) = crate::discovery::source_fs::open(path) else {
         return HashMap::new();
     };
     let mut latest = HashMap::new();
@@ -1116,7 +1121,7 @@ pub(super) async fn find_session_file_by_id(dirs: &[PathBuf], session_id: &str) 
     // One blocking task for the whole filename scan, not one per readdir step.
     tokio::task::spawn_blocking(move || {
         for dir in &dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
+            let Ok(entries) = crate::discovery::source_fs::read_dir(dir) else {
                 continue;
             };
             for entry in entries.flatten() {

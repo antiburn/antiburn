@@ -3,6 +3,9 @@ version: alpha
 name: antiburn Desktop
 description: "antiburn desktop design system (native-feeling, Tauri; ships macOS/Windows/Linux). Light and Dark are documented together: every colors entry carries both values. Use semantic Tailwind utilities for shared product chrome; promote recurring feature values to tokens and keep one-off visualization or geometry values local and documented."
 sources:
+  - src/onboarding/onboarding.css
+  - src/onboarding/cloud.css
+  - src/components/providerUsage/sidebar-usage.css
   - src/styles/tokens.css
   - src/styles/base.css
   - src/styles/typography.css
@@ -24,7 +27,57 @@ sources:
   - src/views/main-window/quota/quota.css
   - src/views/main-window/overview/stepSettings/remote-hosts.css
   - src/views/main-window/overview/stepSettings/agent-settings.css
+  - src/onboarding/demo/runtime.css
+  - src/onboarding/demo/theme-fixes.css
 colors:
+  onboarding-paper:
+    light: "hsl(0 0% 100%)"
+    dark: "hsl(240 4% 14.7%)"
+  onboarding-ink:
+    light: "hsl(0 0% 12.5%)"
+    dark: "hsl(240 3% 93.5%)"
+  onboarding-muted:
+    light: "hsl(240 2% 39%)"
+    dark: "hsl(240 3.6% 68%)"
+  onboarding-action:
+    light: "hsl(0 0% 12.5%)"
+    dark: "hsl(0 0% 93.3%)"
+  onboarding-action-ink:
+    light: "hsl(0 0% 100%)"
+    dark: "hsl(0 0% 12.5%)"
+  onboarding-action-hover:
+    light: "hsl(0 0% 22%)"
+    dark: "hsl(0 0% 86.6%)"
+  onboarding-action-pressed:
+    light: "hsl(0 0% 6.6%)"
+    dark: "hsl(0 0% 80%)"
+  onboarding-edge:
+    light: "hsl(0 0% 0% / 0.125)"
+    dark: "hsl(0 0% 100% / 0.125)"
+  onboarding-stage-glow:
+    light: "hsl(35 100% 94.3%)"
+    dark: "hsl(27 30% 21.3%)"
+  onboarding-stage-start:
+    light: "hsl(26 53% 88.2%)"
+    dark: "hsl(259 4% 16%)"
+  onboarding-stage-end:
+    light: "hsl(26 53% 88.2%)"
+    dark: "hsl(11 15% 19%)"
+  onboarding-agent-label:
+    light: "hsl(28 6% 48%)"
+    dark: "hsl(27 7% 64%)"
+  onboarding-glow:
+    light: "hsl(39 99% 95.4%)"
+    dark: "hsl(27 28% 21.3%)"
+  onboarding-gradient-start:
+    light: "hsl(32 70% 92.1%)"
+    dark: "hsl(17 8% 17.4%)"
+  onboarding-gradient-middle:
+    light: "hsl(23 55% 85%)"
+    dark: "hsl(14 13% 11.3%)"
+  onboarding-gradient-end:
+    light: "hsl(23 55% 85%)"
+    dark: "hsl(20 10% 5.6%)"
   # Concrete token colors use modern HSL function syntax.
   # Use the shortest value that keeps the same 8-bit RGB channels.
   # Hue uses at most one decimal. Saturation and lightness use at most two decimals.
@@ -65,6 +118,9 @@ colors:
   surface-overlay: # opaque search dialog and other floating surfaces
     light: "hsl(0 0% 96.4%)"
     dark: "hsl(0 0% 12.5%)"
+  modal-scrim:
+    light: "hsl(0 0% 0% / 0.1)"
+    dark: "hsl(0 0% 0% / 0.24)"
   command-palette-scrim:
     light: "hsl(0 0% 0% / 0.04)"
     dark: "hsl(0 0% 0% / 0.12)"
@@ -430,6 +486,11 @@ fonts:
   sans: "-apple-system, BlinkMacSystemFont, SF Pro Text, system-ui, sans-serif"
   mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" # via `font-mono`
 typography:
+  cloud-folder-title:
+    { fontSize: 24px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.4px" }
+  onboarding-title:
+    { fontSize: 28px, fontWeight: 600, lineHeight: 1.4, letterSpacing: "-0.4px" }
+  onboarding-body: { fontSize: 17px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0" }
   display: { fontSize: 40px, fontWeight: 400, lineHeight: 1.4, letterSpacing: "0.36px" }
   hero-figure: { fontSize: 32px, fontWeight: 800, lineHeight: 1.4, letterSpacing: "-0.96px" } # a headline number; pair with font-mono
   # class .type-<name> · [fontSize, fontWeight, lineHeight, letterSpacing] · family = fonts.sans
@@ -469,6 +530,7 @@ sizes:
   # (src/components/session/SessionDetailPresentation.tsx)
   # lets the context chart fill the tab, with a min-h-48 floor.
 rounded:
+  onboarding: 8px # onboarding action corners
   small: 4px
   control: 5px
   popover: 10px # outer corner for macOS floating popover and notification surfaces
@@ -493,6 +555,19 @@ motion:
   --duration-hud-island-close: 240ms # the notch retraction; opacity fades over the final duration-quick
   --duration-slow: 300ms # a meter or bar that fills
   --ease-out-quart: cubic-bezier(0.23, 1, 0.32, 1)
+  --cloud-copy-duration: 400ms
+  --cloud-card-duration: 450ms
+  --cloud-card-first: 900ms
+  --cloud-card-second: 2800ms
+  --cloud-question-1-start: 1350ms
+  --cloud-question-2-start: 3250ms
+  --cloud-character-interval: 30ms
+  --cloud-character-duration: 1ms
+  --cloud-status-first: 400ms
+  --cloud-status-second: 1000ms
+  --cloud-sync-pulse-duration: 2000ms
+  --cloud-identity-handoff: 2960ms
+  --cloud-identity-handoff-reduced: 2400ms
   # Recipes, for the timings the tokens above do not carry. Animation timings
   # stay with the keyframes that own them.
   button: "opacity 120ms ease-out; :active opacity 0.85, no transform"
@@ -1947,3 +2022,75 @@ uses 10% opacity at rest and 35% on hover; the opaque label glyph uses a 2.5px s
 on hover and keeps a transparent background.
 Use `type-title-2`, `type-body`, `type-callout`, and `type-footnote`. Commands
 use muted text, 4px horizontal and 8px vertical padding, and retain selectable wrapping. The panel remains non-modal.
+
+## Sidebar usage limits
+
+Usage limits sit above the promotion card and Settings. Compact dials use three
+columns; brand-tint bars use two. Indicators have 40px targets and scroll within
+a 160px maximum height. Empty selection uses a centered, content-width pin
+control with tertiary ink at 40% inner opacity. Fine pointers reveal it on
+sidebar hover; only control hover or focus brightens it and expands its label.
+Use duration-fast and duration-medium; keyboard focus reveals immediately and
+reduced motion disables transitions. The Usage limits dialog uses the existing
+provider meters, ghost pin/refresh/close controls, and a Sidebar display selector.
+
+Initial pins select up to three distinct vendors, with Claude and Codex first
+when their account-wide weekly limits are available. Their default pins use
+weekly limits; other vendors use their fullest available window. Multiple
+accounts from one vendor cannot crowd out a second vendor. Saved selections,
+including an explicit empty selection, take precedence over these defaults.
+
+The Usage limits empty state uses a centered 24px gauge in a 48px quiet
+surface-card circle, type-title-3 heading, and type-body secondary supporting
+copy. Keep 24px vertical padding and 12px gaps. Hide Sidebar display until
+readings exist. Off state offers Enable live usage; active empty or failed
+states offer Check again and Usage settings. Loading shows explanatory copy
+without actionable controls. Buttons retain 40px minimum targets; no entry
+animation or fabricated meter values. Live usage defaults on; explicit
+master and provider opt-outs survive upgrades.
+
+The Usage limits dialog initially focuses its dialog surface, keeping header
+actions and their tooltips quiet until interaction. Tab reaches Refresh first.
+Sidebar bars show a 1.5px pace tick, 10px tall across the 6px track,
+without an outline or horizontal transform, matching the modal meter markers.
+Both bar markers use label-tertiary below pace and system-red when the stated
+usage reaches or exceeds the elapsed fraction. Unknown usage stays muted. Use the selected window’s elapsed fraction;
+omit the tick when timing is unknown. The tooltip uses three compact lines: provider and window,
+used percentage and pace, then reset time. Use type-footnote (11px), 2px row
+gaps, standard tooltip padding, and no divider or minimum content width. Only
+the used percentage gets medium weight. Include account identity when multiple
+accounts need distinguishing; retain freshness or error notes when applicable. Open sidebar tooltips above
+their trigger, with viewport collision handling. Keep these readings static.
+
+Usage limits uses modal-scrim: neutral black at 10% in light mode and 24% in
+dark mode, including system appearance. Keep its opaque surface and existing
+shadow. Add no blur or backdrop animation. Search retains command-palette-scrim.
+
+## Onboarding
+
+The 860 × 620 onboarding window uses onboarding paper, ink, edge and action tokens. The welcome logo uses a 0 14px 18px shadow in hsl(25 46% 24% / 0.125). Its copy overrides the base leading with semantic onboarding tokens: title 34px, body 25px, and support 12px/17px. The welcome stage uses the onboarding glow and gradient tokens. Teaching stages use the onboarding stage glow and start/end tokens. The welcome agent label uses onboarding agent label ink. The action uses rounded-onboarding and the hover and pressed action tokens. The copy uses the onboarding title and body type styles; the support uses type-callout. The stage occupies 360px, copy 180px and footer 80px. Examples use isolated synthetic data.
+
+The onboarding welcome vendor marks use monochrome black in light mode and white in dark mode. The app icon retains its color. Teaching frames stay hidden until the themed scene commits; playback starts at readiness. Readiness does not depend on animation frames from a concealed iframe. The demo menu bar reserves its left side for native window controls.
+
+## Cloud onboarding
+
+The separate Cloud setup uses the onboarding semantic palette, existing control and
+popover radii, and existing motion durations. The badge reserves the native title
+bar area. The centered handoff and identity cards lead to a selected-by-default folder
+draft and truthful sync and integration status. Reduced motion removes entrances.
+Folder row and card geometry is local to `src/onboarding/cloud.css`; no data or
+authentication state comes from the teaching iframe.
+
+Cloud completion retains the approved 360/180/80 layout, 600px prompt container,
+20px card gap, promotion radius, and staged copy/status/card/character motion.
+The full question occupies its final layout and has one accessible label.
+`--shadow-cloud-prompt` is `0 2px 4px rgb(0 0 0 / 0.04), 0 10px 24px -6px rgb(0 0 0 / 0.12)` in Light and
+`0 2px 5px rgb(0 0 0 / 0.16), 0 12px 26px -6px rgb(0 0 0 / 0.3)` in Dark.
+The folder footer has no separator. Hidden windows pause Cloud entrances;
+reduced motion shows all text immediately. Verified identity advances automatically after the prototype’s identity handoff delay; hidden windows suspend the delay.
+
+Cloud completion status matches the approved prototype: a 6px green dot in a 10px icon column, an 8px text gap, and a green 12px tick only for a ready agent. Accepted/running sync pulses opacity from 1 to 0.4 with `--cloud-sync-pulse-duration`; hidden windows pause it and reduced motion disables it. The inactive dot uses onboarding-muted. Terminal sync states do not pulse. The completion heading uses “Sessions syncing! Your agent is ready” for all completion states. The footer reports the actual sync and agent status, including the selected folder count and “Agent setup / Ask from your coding agent” when ready.
+
+Cloud folder rows match the prototype with a 72px minimum height, 18px folder icon, session count, and a selected-by-default switch. The list has a 280px maximum height. No per-row remove button or Not now footer action is shown. Native counts use known repository metadata; unavailable counts are explicit. Start syncing transitions directly to completion without waiting for acceptance. Done stays available during background preparation, submission and reconciliation; no dedicated sync or recovery screen is shown.
+
+The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding, and an 18px reserved status line to match the prototype. Auth handoff has the prototype footer separator; Learn more keeps its approved plain footer. Identity uses a circular 64px image and a 24px green badge with a 3px paper border and contrasting action ink.

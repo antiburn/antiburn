@@ -21,3 +21,6 @@ sha2 = "0.11"
 
 [dev-dependencies]
 antiburn-checks = { path = "../antiburn-checks" }
+
+[patch.crates-io]
+libsqlite3-sys = { path = "../antiburn-local/vendor/libsqlite3-sys" }

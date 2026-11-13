@@ -65,9 +65,49 @@ server, or backend.
   version. Development builds do not register it.
 - **Analytics:** Official release builds send closed product events through the
   [analytics channel](src-tauri/src/analytics). Events contain no session or
-  instruction content. The first-run Overview explains analytics, and Settings →
+  instruction content. Settings →
   Privacy provides the opt-out. Default source and development builds exclude
   the analytics client.
+
+## Sessions navigation and Cloud preference
+
+The main window opens Sessions immediately. Its sidebar contains Sessions,
+Checks, and Settings. Overview is no longer a navigation or search destination;
+legacy native Overview requests open Sessions. The new introduction opens in a separate native window until its local
+completion is saved. It resumes the last saved screen after closing and opens
+Sessions on completion. Checks, search, Settings, discovery, CLI installation,
+and integration startup remain independent of this introduction. Supported HUDs
+appear after completion unless an existing preference disables them.
+
+The introduction uses isolated example data to demonstrate Sessions, provider
+limits, the HUD, notifications, and Checks. Its Cloud action opens a coming-soon handoff with Learn more and local continuation.
+Native authentication is independently gated on verified backend configuration.
+After verified login, folder drafts and truthful completion states are available;
+production uploads remain disabled pending the service and consent contract.
+Agent readiness comes from native integration status. See the
+[Cloud desktop contract](../../docs/cloud/desktop-contract.md).
+
+`pnpm build:demo` builds current product components into a separate demo bundle.
+Build aliases replace native services with synthetic adapters. The introduction
+loads one sandboxed iframe on demand, pauses it when hidden, and destroys it
+when the native window closes. Shared product components do not need demo props.
+The demo controller and styles preserve the approved presentation; component
+updates still require visual and motion comparisons against that reference.
+
+`src/onboarding/demo/csp.txt` defines the demo policy for both its HTML and native
+asset response. Explicit bundled asset URLs support opaque-origin frames on
+WKWebView without enabling same-origin access or network connections.
+
+Settings → Sessions places Antiburn Cloud above Repositories, Include folders
+without Git, and Scan folders. New settings include non-Git folders; saved
+preferences, including an explicit opt-out, remain unchanged. Upload sessions
+saves a device-local preference that defaults off. This build does not upload
+sessions, authenticate with Antiburn Cloud, or queue history for later upload.
+
+Before uploads can be enabled, the pipeline must retain the original working
+folder separately from inferred repository associations. The Cloud contract
+also needs decisions on history, payload fields, retention/deletion, remote
+sessions, authentication, and disconnect behavior.
 
 ## Layout
 
@@ -198,7 +238,7 @@ cargo nextest run --manifest-path apps/desktop/src-tauri/Cargo.toml --offline --
 ```
 
 See [`docs/debugging.md`](../../docs/debugging.md) for development modes,
-debug-profile isolation, developer tools, logs, first-run tests, sample
+debug-profile isolation, developer tools, logs, fresh-install tests, sample
 notifications, and the updater simulator.
 
 ## What keeps the app local
@@ -283,7 +323,7 @@ checks, recovery, bounds, and privacy.
 ## Shell behavior
 
 See [Desktop window renderer lifecycle](../../docs/window-renderer-lifecycle.md)
-for the shared readiness handshake, first-run prewarm, popover eviction,
+for the shared readiness handshake, startup prewarm, popover eviction,
 Settings teardown, and the memory rules behind those policies.
 
 - **Main window.** Explicit launch opens the main window directly, on a fresh
@@ -298,8 +338,8 @@ Settings teardown, and the memory rules behind those policies.
   1100×600 logical pixels with a normal minimum of 1000×560. The initial outer
   frame is capped at 85% of each usable display dimension. Saved user sizes
   retain their dimensions within the available work area. The navigation shell
-  uses a persistent 220px sidebar with dense desktop rows. Burn checks is the
-  default section. Sessions shows the session list and selected detail. The
+  uses a persistent 220px sidebar with dense desktop rows. Sessions opens by
+  default and shows the session list and selected detail. The
   sidebar Settings action opens the existing Settings window. Command+,
   (Control+, on Windows and Linux) opens it from the main window and popover;
   see the [main-window validation runbook](../../docs/runbooks/main-window.md).
@@ -334,14 +374,11 @@ Settings teardown, and the memory rules behind those policies.
   means "keep this on screen while I work", and a relaunch ends that work.
   Pinning also re-shows the popover, because opening the tray menu is what
   took focus away from it in the first place.
-- **First run.** No separate window: the main window opens at launch, at its
-  ordinary default size, and its Overview is the whole setup experience —
-  finding sessions, reading them, and running checks, with its own welcome
-  pitch and privacy line shown until the first step docks. There is nothing
-  to discover before the main window itself, and the tray click behaves
-  normally throughout, opening the popover like any other launch. Finishing
-  the first run fires the existing notification that identifies the menu-bar
-  companion and warms the popover's hidden renderer for the first click.
+- **Startup.** There is no FTUE, setup completion flag, or replay action.
+  Explicit launch opens Sessions. Login launch follows normal background behavior.
+  Start at login defaults on in packaged builds; saved opt-outs remain respected,
+  and development builds never register a login item. Provider usage still requires
+  an explicit action in Settings → Usage.
 - **Settings.** An ordinary decorated window, created on demand and destroyed
   on close. A source list on the left, one pane on the right; ordinary preference
   controls write through immediately. Decision-provider drafts save explicitly;
@@ -353,7 +390,7 @@ Settings teardown, and the memory rules behind those policies.
   Windows and Linux keep the ordinary application launcher as their recovery
   route when the system-tray icon is hidden. Closing the main window then exits
   the app instead of leaving an invisible resident process.
-- **Popover lifetime.** Finishing the first run starts one hidden renderer.
+- **Popover lifetime.** Normal startup prewarms one hidden renderer.
   After it becomes ready, the handoff renderer stays warm for up to 60
   seconds. The first reveal consumes that lease; later dismissals hide the
   resident renderer without scheduling destruction.
@@ -375,11 +412,10 @@ Settings teardown, and the memory rules behind those policies.
   CPU, memory, and disk I/O are product constraints: background work must be no
   more frequent or intensive than the visible feature requires. See the policy
   at the top of `src-tauri/src/scan/mod.rs`.
-- **Notifications.** Six kinds, all posted by the shell and never by the webview
+- **Notifications.** Five kinds, all posted by the shell and never by the webview
   (which is granted no notification permission): an automatic update, a failed
-  scan, low disk space, a crossed usage milestone, the first-run menu-bar
-  location, and the settings pane's own test. The test and first-run location
-  bypass the master switch because both follow a direct reader action. Other
+  scan, low disk space, a crossed usage milestone, and the settings pane's own
+  test. The test bypasses the master switch because it follows a direct action. Other
   kinds use the master preference and their own gate, and nothing repeats. See
   the policy at the top of
   `src-tauri/src/notifications.rs`. Delivery is antiburn's own always-on-top
@@ -467,8 +503,8 @@ and Enter-to-detail-region focus. Controlled `selection` and `onSelectionChange`
 own navigation history. `detailOwnsViewport` embeds a view with an existing scroll container.
 
 Sessions uses `MainActivitySession`, an independent external store. Its list subscription loads
-the shared session index while the main window is visible, so Overview, the sidebar, and the
-Sessions section consume one bounded list and one refresh lifecycle. It coalesces shell events
+the shared session index while the main window is visible. Sessions and the Agents page
+consume one bounded list and one refresh lifecycle. It coalesces shell events
 and rejects stale responses. The detail subscription loads cached usage for the visible Sessions
 surface and loads quota and analysis only for the selected subject. Native `main:visibility-changed` events and the initial
 `get_main_window_visible` snapshot suspend list and detail work on hide or minimize; blur does
@@ -483,16 +519,6 @@ menu-bar callers retain their defaults. Session removal reports a typed lifecycl
 observation; the projection bridge emits `session:index-changed` with cause
 `removed` so both windows refresh their local views. See the
 [session lifecycle contract](../../docs/session-lifecycle-events.md).
-
-Overview uses the same main-window session list for its recent sessions. Its
-Subscription chart and utilization figures use the Limits account lanes,
-resolved periods, shared meter allocation, and learned estimates through the
-same quota query. The overview summarizes account-wide weekly and five-hour
-lanes; model-specific lanes remain available in Limits. Utilization covers
-periods overlapping the latest 60 calendar days, including an incomplete
-current period. Unknown periods do not count as zero. The daily chart shows
-30 days and compares them with the preceding 30 days. Limit hits use separate
-provider-refusal evidence; a full meter alone does not establish a refusal.
 
 Burn checks uses `BurnChecksSession`, a second independent external store. It owns a distinct
 Checks report consumer, combines section activity with main-window visibility, and loads target
@@ -527,9 +553,7 @@ opening is immediate. Reduced motion uses a 100ms fade.
 Its **NEW** badge remains visible for as long as the promo card is available, including
 after activation and app restarts. Activation history is still saved separately under
 `antiburn.promotions.launcher-opened.v1`; it does not control the badge.
-The launcher stays available after activation. It is hidden during FTUE and becomes
-available immediately after completion, including the same app session. This deliberate
-opening bypasses the automatic cooldown; automatic display retains its existing timing.
+The launcher stays available after activation and does not wait for setup.
 **What’s new** is reserved for a future recent-changes panel. Add each promotion in `src/promotions/<id>/promo.yaml` with relative assets in that
 folder. The Vite catalog validates the YAML and imports media as hashed assets.
 The Claude Mod definition provides announcement and setup examples.
@@ -545,13 +569,8 @@ Theme changes select the source and poster together and reset media failure stat
 Both Claude Mod themes use label-free animated WebPs at 800 × 416 with matching
 PNG posters. No command executes.
 
-Automatic display waits for onboarding and foreground visibility. New users never
-receive a promo during the MAIN-window FTUE or in the same app session. Completion
-of the final guided step starts a 24-hour delay, saved locally under
-`antiburn.promotions.ftue.v1`. A later app session becomes eligible after that delay;
-returning focus checks eligibility again. Existing users without this timing record
-remain eligible immediately. A reset FTUE starts the delay again. Revision bumps
-respect this timing gate too. Seen history
+Automatic display requires foreground visibility and the promotion's own eligibility.
+There is no setup completion delay. Seen history
 is local and keyed by ID and revision; increment the revision only when the
 promotion should announce again. An ignored, generated dummy exercises different
 content, a static image, and an app action. Its YAML and assets are never committed and are excluded from
@@ -571,8 +590,8 @@ localStorage.removeItem("antiburn.promotions.seen.v1")
 The sidebar’s NEW badge needs no reset: it remains visible while the promo card
 is available. Launcher activation history does not control its visibility.
 
-The seen-key command clears only promotion history for that app profile. Onboarding must be
-complete and the main window must be in the foreground. App version changes
+The seen-key command clears only promotion history for that app profile.
+The main window must be in the foreground. App version changes
 do not reset this history. To announce again after a future update, increment
 `revision` in the promotion YAML. The new ID/revision pair is shown once.
 
@@ -626,3 +645,13 @@ free-form tracking properties. External URLs are currently limited to HTTPS
 pages in the antiburn GitHub repository, matching the native opener permission;
 adding another destination requires updating that scope and the shared link
 validator together.
+
+### Cloud Dev previews
+
+Debug builds also include **Reset onboarding** in the menu-bar icon's context menu. It restarts the full native onboarding flow at Welcome, replacing an open onboarding window. Sessions, preferences, and Cloud account state are preserved.
+
+Debug builds include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. **Full Walkthrough** opens a separate native window with an example account and folders. Sign in simulates a callback after a short wait; review the selected example folders and start syncing to see the prototype’s ongoing background-sync completion screen. Sync runs in the background; Done is available without waiting for a sync result. **Done** closes the preview. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
+
+The other entries open auth recovery, folder and agent-readiness states directly. Dedicated sync progress and recovery screens are not part of onboarding. Completion entries show local completion with each agent-readiness state. Reopening any menu entry resets that preview.
+
+The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding to test the real landing-page link. Release builds do not include the submenu.

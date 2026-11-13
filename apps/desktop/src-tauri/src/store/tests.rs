@@ -959,7 +959,6 @@ fn clearing_local_data_forgets_session_records_and_keeps_the_readers_choices() {
     store.add_scan_root("/home/avery/work").unwrap();
     let settings = store
         .save_settings(&AppSettings {
-            onboarding_completed: true,
             ..AppSettings::default()
         })
         .unwrap();
@@ -1341,14 +1340,7 @@ fn repository_refresh_publishes_only_against_the_policy_generation_it_read() {
 
     assert_eq!(
         store
-            .publish_repository_refresh(
-                policy.generation,
-                &[],
-                &[crate::dto::DeferredPermissionDir {
-                    dir: "Documents".into(),
-                    path_count: 1,
-                }],
-            )
+            .publish_repository_refresh(policy.generation, &[], Vec::new(),)
             .unwrap(),
         RepositoryPolicyPublishOutcome::Superseded
     );
@@ -1365,7 +1357,7 @@ fn a_folder_grant_invalidates_an_in_flight_repository_refresh() {
 
     assert_eq!(
         store
-            .publish_repository_refresh(policy.generation, &[], &[])
+            .publish_repository_refresh(policy.generation, &[], Vec::new())
             .unwrap(),
         RepositoryPolicyPublishOutcome::Superseded
     );
@@ -1576,9 +1568,26 @@ fn forever_retention_is_a_no_op() {
 #[test]
 fn saving_retention_and_removing_expired_sessions_is_one_store_operation() {
     let store = store();
-    store
+    let (sessions, _) = store
         .upsert_sessions(&[session("expired", 1)], &crate::agents::evidence_cohort())
         .unwrap();
+    let (key, incarnation) = &sessions[0];
+    store
+        .publish_session_project_deferrals(
+            store.repository_policy_snapshot().unwrap().generation,
+            HashMap::from([(
+                key.clone(),
+                (
+                    *incarnation,
+                    Some(DeferredProtectedPath {
+                        cwd: "/home/avery/Documents/expired".into(),
+                        protected_dir: "Documents".into(),
+                    }),
+                ),
+            )]),
+        )
+        .unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap().len(), 1);
 
     let (_, saved, removed) = store
         .replace_settings_with(
@@ -1598,6 +1607,7 @@ fn saving_retention_and_removing_expired_sessions_is_one_store_operation() {
         SESSION_DATA_RETENTION_DAYS_30
     );
     assert_eq!(store.settings().unwrap(), saved);
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
 }
 
 #[test]
@@ -2705,21 +2715,13 @@ fn account_switches_bind_only_sessions_near_each_observation() {
 }
 
 #[test]
-fn live_usage_is_only_active_once_both_the_switch_and_the_start_click_agree() {
-    // The switch defaults on, but that alone must never be enough: the
-    // credential read this feature depends on — and, on macOS, the Keychain
-    // prompt it can trigger — must wait for a deliberate click in the
-    // Overview's usage area.
+fn live_usage_defaults_on_and_preserves_the_master_opt_out() {
     let mut settings = AppSettings::default();
-    assert!(settings.live_usage_enabled, "the default is on");
-    assert!(!settings.live_usage_started, "the default is not");
-    assert!(!settings.live_usage_active());
-
-    settings.live_usage_started = true;
+    assert!(settings.live_usage_enabled);
+    assert!(settings.live_usage_started);
     assert!(settings.live_usage_active());
-
     settings.live_usage_enabled = false;
-    assert!(!settings.live_usage_active(), "the opt-out still works");
+    assert!(!settings.live_usage_active());
 }
 
 #[test]

@@ -17,7 +17,7 @@ pub const FINGERPRINT_HEAD_BYTES: usize = 64 * 1024;
 pub fn claude_sidecar_fingerprint(transcript: &Path) -> std::io::Result<String> {
     use std::io::Read;
 
-    let file = match std::fs::File::open(transcript.with_extension("meta.json")) {
+    let file = match crate::discovery::source_fs::open(transcript.with_extension("meta.json")) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok("missing".to_owned());
@@ -68,22 +68,35 @@ pub(crate) fn devin_acp_companion_records(
     db_path: &Path,
     keys: &HashSet<(String, String, String)>,
 ) -> (Vec<DevinAcpCompanion>, bool) {
+    devin_acp_companion_records_in(&devin_acp_directories(db_path), keys)
+}
+
+fn devin_acp_companion_records_in(
+    directories: &[std::path::PathBuf],
+    keys: &HashSet<(String, String, String)>,
+) -> (Vec<DevinAcpCompanion>, bool) {
     let mut records = Vec::new();
     let mut scanned_files = 0;
     let mut partial = false;
-    'directories: for directory in devin_acp_directories(db_path) {
-        let Ok(entries) = std::fs::read_dir(directory) else {
-            continue;
+    'directories: for directory in directories {
+        let entries = match crate::discovery::source_fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => {
+                partial = true;
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                partial = true;
+                continue;
+            };
             if records.len() >= DEVIN_ACP_MAX_RECORDS || scanned_files >= DEVIN_ACP_MAX_FILES {
                 partial = true;
                 break 'directories;
             }
             let path = entry.path();
-            if !entry.file_type().ok().is_some_and(|kind| kind.is_file()) {
-                continue;
-            }
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -91,10 +104,36 @@ pub(crate) fn devin_acp_companion_records(
             if !(name.ends_with(".json") || name.ends_with(".ndjson")) {
                 continue;
             }
-            scanned_files += 1;
-            let Ok(file) = std::fs::File::open(path) else {
-                continue;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => {
+                    partial = true;
+                    continue;
+                }
             };
+            if file_type.is_symlink() {
+                partial = true;
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            scanned_files += 1;
+            let file = match crate::discovery::source_fs::open(path) {
+                Ok(file) => file,
+                Err(_) => {
+                    partial = true;
+                    continue;
+                }
+            };
+            match file.metadata() {
+                Ok(metadata) if metadata.len() > DEVIN_ACP_MAX_BYTES_PER_FILE => partial = true,
+                Ok(_) => {}
+                Err(_) => {
+                    partial = true;
+                    continue;
+                }
+            }
             let mut reader = BufReader::new(file).take(DEVIN_ACP_MAX_BYTES_PER_FILE);
             let mut line = Vec::new();
             loop {
@@ -464,9 +503,12 @@ fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<St
             let directory = path.parent()?;
             let session_id = path.file_stem()?.to_str()?;
             let database = root.join("data/db/sessions.db");
-            let mut paths = vec![path.clone(), database.clone()];
+            let mut paths = vec![path.clone()];
+            if super::native_companion_database_paths(&database).is_ok() {
+                paths.push(database.clone());
+            }
             paths.push(directory.join(format!("{session_id}.messages.json")));
-            if let Ok(connection) = rusqlite::Connection::open_with_flags(
+            if let Ok(connection) = crate::discovery::source_fs::open_database(
                 database,
                 rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
                     | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -495,10 +537,14 @@ fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<St
         SourceFormat::KiroCliV3Bundle => {
             vec![path.clone(), path.parent()?.join("messages.jsonl")]
         }
-        SourceFormat::CopilotCliJsonl if path.file_name()?.to_str()? == "events.jsonl" => vec![
-            path.clone(),
-            path.parent()?.parent()?.join("session-store.db"),
-        ],
+        SourceFormat::CopilotCliJsonl if path.file_name()?.to_str()? == "events.jsonl" => {
+            let database = path.parent()?.parent()?.join("session-store.db");
+            let mut paths = vec![path.clone()];
+            if super::native_companion_database_paths(&database).is_ok() {
+                paths.push(database);
+            }
+            paths
+        }
         _ => return None,
     };
     paths.sort();
@@ -513,7 +559,7 @@ fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<St
 }
 
 fn file_fingerprint(path: &Path) -> String {
-    let Ok(metadata) = std::fs::metadata(path) else {
+    let Ok(metadata) = crate::discovery::source_fs::metadata(path) else {
         return "-".to_owned();
     };
     let mtime = metadata
@@ -540,7 +586,9 @@ impl SourceStat {
     }
 
     pub async fn from_path(path: &Path) -> Option<Self> {
-        let metadata = tokio::fs::metadata(path).await.ok()?;
+        let metadata = crate::discovery::source_fs::asynchronous::metadata(path)
+            .await
+            .ok()?;
         Some(Self::from_path_metadata(&metadata))
     }
 
@@ -724,6 +772,51 @@ mod tests {
             },
             head_hash: Some(head_hash_of(bytes)),
         }
+    }
+
+    #[test]
+    fn missing_optional_acp_directories_are_not_partial() {
+        let root = TempDir::new().unwrap();
+        let missing = root.path().join("acp-messages");
+
+        let (records, partial) = devin_acp_companion_records_in(&[missing], &HashSet::new());
+
+        assert!(records.is_empty());
+        assert!(!partial);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn denied_acp_directory_symlink_marks_companions_partial() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = TempDir::new().unwrap();
+        let directory = root.path().join("acp-messages");
+        symlink(target.path(), &directory).unwrap();
+
+        let (records, partial) = devin_acp_companion_records_in(&[directory], &HashSet::new());
+
+        assert!(records.is_empty());
+        assert!(partial);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skipped_acp_file_symlink_marks_companions_partial() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let directory = root.path().join("acp-messages");
+        std::fs::create_dir(&directory).unwrap();
+        let target = root.path().join("target.json");
+        std::fs::write(&target, b"{}\n").unwrap();
+        symlink(target, directory.join("child.json")).unwrap();
+
+        let (records, partial) = devin_acp_companion_records_in(&[directory], &HashSet::new());
+
+        assert!(records.is_empty());
+        assert!(partial);
     }
 
     #[test]

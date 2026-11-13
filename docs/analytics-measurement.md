@@ -41,6 +41,18 @@ reports at the app-version boundary where this event ships. Missing identity,
 environment-disabled, unconfigured, and crashed-before-delivery cases remain
 unobserved; the event carries no properties beyond the standard envelope.
 
+### Sidebar Usage limits interactions
+
+`antiburn.usage_limits_interaction` measures explicit use of the pinned Usage
+limits sidebar and its modal. It records modal open/close, pin add/remove,
+dials/bars selection, and success/failure for refresh, live-usage enablement,
+and opening Usage settings. Automatic default pins, repeated appearance values,
+rendering, hover, and provider state changes emit nothing. Each label is from a
+fixed native enum. The event carries no provider, account, display name, usage
+reading, path, or error text. Async outcome events count completed operations;
+they do not count actions interrupted before a result. Reports must segment at
+the first app version that ships this event.
+
 Application interface size changes are implemented at the native persistence
 boundary. The product question is which supported sizes readers choose and
 whether they find the Settings, keyboard, or native-menu route. Reports use
@@ -225,14 +237,14 @@ is intent only; no installation outcome is observable in this event contract.
 
 ### Visible use and value (implemented)
 
-| Event/change                                       | Trigger and safe dimensions                                                                                                                                                                                                                                                                  | Owner and volume rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `surface_viewed`                                   | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, `settings`, or `quota`. `detail`: `user` or `automatic`.                                                                                          | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                                                                                                                                                                                                                                        |
-| `settings_pane_viewed`                             | Requested pane is selected and visible. `label`: the nine Settings pane IDs.                                                                                                                                                                                                                 | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                                                                                                                                                                                                                                            |
-| `step_settings_viewed`                             | A progress step's settings become visible in the first-run takeover's "Show settings" disclosure. `label`: `agents`, `limits`, `sessions`, or `checks`; `detail`: `first_run`.                                                                                                               | `StepSettingsDisclosure`. One per exposure (one open), not per re-render. `limits` only ever reports `first_run`.                                                                                                                                                                                                                                                                                                                                                                            |
-| `surface_state_observed`                           | Data state presented on a visible surface. Same surface vocabulary; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response.                                                                      | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`.                                                                                                                                                                                                               |
-| `live_usage_state_observed`                        | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `login_recovering`, `rate_limited`, `unavailable`, `no_credentials`, `sign_in_required`, or `not_signed_in`. | Map existing presentation states without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `login_recovering` means refresh may recover without a new sign-in. `no_credentials` means Claude Desktop is installed but Claude Code and Pi have no login. `sign_in_required` means a login exists but needs `/login`; `not_signed_in` means Claude Code is installed with no login. Send no account, plan, balance, quota value, or raw response. |
-| `first_run_step_reached`, `first_run_finished` | The first-run Overview reaches a fixed step (`started`, `found`, `read`, `checked`, or `result`), or its completion is saved. `found` carries a session-count bucket; `result` carries a closed result category. Completion has no properties.                                                                                                                                                                                               | `overviewProgressStore` reports each step at most once per first run. The native `finish_first_run` command reports completion only after saving the incomplete-to-complete transition. Failed saves emit no finish. See the First-run Overview funnel contract below; retired onboarding events remain separate.                                                                                                                                                                                                                                       |
+| Event/change                                   | Trigger and safe dimensions                                                                                                                                                                                                                                                                  | Owner and volume rule                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `surface_viewed`                               | Successful reveal or visible navigation. `label`: `activity`, `session_detail`, `provider_preview`, `checks_preview`, `hud`, `hud_detail`, `settings`, or `quota`. `detail`: `user` or `automatic`.                                                                                          | Shell visibility transition plus surface controllers. One per actual transition; no event for prewarm, repeated show requests, data refresh, or hidden navigation. Only deliberate transitions qualify as engagement.                                                                                                                                                                                                                                                                        |
+| `settings_pane_viewed`                         | Requested pane is selected and visible. `label`: the nine Settings pane IDs.                                                                                                                                                                                                                 | `SettingsWindowSession`, including first opening and external pane requests. One per visible pane transition, with duplicate requests suppressed.                                                                                                                                                                                                                                                                                                                                            |
+| `step_settings_viewed`                         | A progress step's settings become visible in the first-run takeover's "Show settings" disclosure. `label`: `agents`, `limits`, `sessions`, or `checks`; `detail`: `first_run`.                                                                                                               | `StepSettingsDisclosure`. One per exposure (one open), not per re-render. `limits` only ever reports `first_run`.                                                                                                                                                                                                                                                                                                                                                                            |
+| `surface_state_observed`                       | Data state presented on a visible surface. Same surface vocabulary; `detail`: `ready`, `empty`, `error`, or `loading_timeout`. Ready means a usable payload, not merely a mounted component or successful IPC response.                                                                      | Surface controllers after both visibility and data readiness. At most once per distinct state per surface exposure; ignore stale asynchronous results. Use a documented 10-second visible initial-load timeout, canceled when hidden; later ready data can still emit `ready`.                                                                                                                                                                                                               |
+| `live_usage_state_observed`                    | A provider state is presented on Activity, a provider preview, or a user-opened HUD. `label`: `anthropic`, `openai`, or `google`; `detail`: `fresh`, `stale`, `authentication`, `login_recovering`, `rate_limited`, `unavailable`, `no_credentials`, `sign_in_required`, or `not_signed_in`. | Map existing presentation states without an analytics-only provider request. Deduplicate each provider/state within a deliberate visit. `login_recovering` means refresh may recover without a new sign-in. `no_credentials` means Claude Desktop is installed but Claude Code and Pi have no login. `sign_in_required` means a login exists but needs `/login`; `not_signed_in` means Claude Code is installed with no login. Send no account, plan, balance, quota value, or raw response. |
+| `first_run_step_reached`, `first_run_finished` | The first-run Overview reaches a fixed step (`started`, `found`, `read`, `checked`, or `result`), or its completion is saved. `found` carries a session-count bucket; `result` carries a closed result category. Completion has no properties.                                               | `overviewProgressStore` reports each step at most once per first run. The native `finish_first_run` command reports completion only after saving the incomplete-to-complete transition. Failed saves emit no finish. See the First-run Overview funnel contract below; retired onboarding events remain separate.                                                                                                                                                                            |
 
 `surface_state_observed` also needs a closed `properties.origin` value of `user`
 or `automatic`, inherited from its exposure. This optional wire field lets
@@ -618,6 +630,61 @@ states `sign_in_required` and `not_signed_in`. Owner: the live-usage
 maintainer. Review this diagnostic by 2027-01-31.
 
 ## Event review contract
+
+### Desktop onboarding
+
+| Product question and decision                                                         | Metric and denominator                                                                                                                                                                             | Capture boundary                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Where do readers stop or go back? Improve screen order and navigation.                | Distinct reporting installations reaching each screen as a fraction of those with any onboarding screen view. Report Back by screen and dismissal by saved screen.                                 | The renderer reports each visible screen entry and accepted navigation action. The shell reports dismissal on explicit native close using the saved draft screen.                                                                                                                                                                     |
+| How often do readers choose Cloud setup? Prioritize whether to invest in Cloud setup. | Distinct reporting installations choosing Cloud or local use among installations that saw the Cloud introduction. A reader can choose both over time. Report unavailable outcomes separately.      | The onboarding window reports an accepted choice. Accepted Learn more and sign-in actions distinguish marketing and configured-auth cohorts. Native browser and auth transitions report outcomes. Sync outcomes will be recorded only after the separately gated backend is implemented; Learn more has no callback or waiting state. |
+| Do readers finish onboarding? Improve local completion reliability.                   | Distinct reporting installations with a saved completion among those reaching onboarding. Compare subsequent visible Sessions states separately to measure whether the reader reached useful data. | The native command reports one completion after saving the transition from incomplete to complete.                                                                                                                                                                                                                                    |
+
+The new event names and their fixed screen and action values are in the
+[public catalog](analytics.md#desktop-onboarding). The renderer sends one
+screen view per visible entry, including a return to the screen or reopening
+a saved draft. A re-render or animation emits nothing. Each accepted action
+emits at most one action event. Returning to a saved Cloud screen emits a view. Do not replay stored successful
+outcomes when reopening. Synthetic review fixtures do not emit successful outcomes. Dismissing
+the window preserves the draft. Minimize, loss of focus, and closure after a
+saved completion produce no dismissal. A failed completion save or a repeated
+completion request emits no completion event.
+
+Explicit actions refresh the analytics session timeout. Views and outcomes
+leave the timeout alone. Exclude onboarding from core-use, activation, and
+retention counts. Use the first supporting app version and segment by OS.
+Deduplicate delivery by `messageId`, use capture time, and allow late arrival.
+An installation can revisit onboarding across sessions. The standard rotating
+installation ID is the reporting unit. Process exit, analytics gates, and
+delivery loss can leave steps unobserved. These events contain no onboarding
+flow identifier, work data, counts, paths, accounts, or credentials. The
+legacy unavailable outcome measures the screen shown by earlier builds. Segment
+by app version and operating system. Onboarding makes no analytics-only requests.
+The native capture gate applies to every event.
+
+Cloud handoff, identity, folders, and completion use distinct fixed screen
+labels. A view is emitted only on visible entry, not per render or animation.
+Disabled controls emit no actions. Native close reports the saved host screen,
+not the nested Cloud screen. Minimize and browser focus changes are not returns.
+
+Measure Learn more among installations viewing handoff, and verified sign-in
+among those choosing sign-in. Separate these denominators: legacy marketing return is
+not authentication. Group authentication failures only by the closed outcome categories.
+Authentication rejection and invalid responses both emit `failed`; do not count this
+outcome as a sync failure. Measure Start syncing among installations viewing folders
+and Done among installations viewing completion. Start syncing opens completion
+immediately; background preparation, submission, and reconciliation do not block Done.
+There is no separate sync screen, Check status action, or Cancel sync action in
+onboarding. Background status updates do not create another screen view. Production
+sync outcomes are not recorded until the separately gated backend is implemented.
+Acceptance is not proof of completed uploads. Folder actions include no paths,
+names, or counts.
+
+Production authentication requires explicit backend verification and enablement.
+Sync has a separate backend and consent gate; authentication never enables uploads.
+Fixture success cannot establish production conversion. No attempt identifier is
+collected, so these are installation-level participation measures, not exact
+attempt conversion or latency. Callback URLs, authorization codes, credential
+contents, and account identity must not enter analytics or service error fields.
 
 ### Model-based check enablement and provider operations
 
@@ -1235,3 +1302,25 @@ arbitrary payload properties.
   build containing this producer; earlier Settings views are not a baseline for
   installation success. Validate fixed payloads, completed success/failure paths,
   no-analytics builds, opt-out gates and the event catalog contract.
+
+## FTUE removal (2026-11-11)
+
+This revision removed the first-run Overview funnel. Its step, action, finish, and step-settings
+view events are retired; historical catalog rows above remain historical evidence.
+Do not interpret the end of those event series as activation loss. Segment reports
+at the app version containing this change. Launches include background startup;
+visible surface and session interactions are the existing measures of deliberate use.
+That change introduced no replacement event. The later
+[desktop onboarding](#desktop-onboarding) contract has its own event series.
+
+### Sidebar usage presentation — 2026-11-11
+
+Sidebar pins and Dials/Bars are local presentation preferences. Live usage now
+starts by default, including for previously unstarted profiles; explicit master
+and provider opt-outs remain intact. Existing usage observations can therefore
+start without a deliberate activation click. Segment comparisons at the app
+version that ships this default, and do not interpret background observations
+as deliberate use. `antiburn.usage_limits_interaction` records explicit modal,
+pin, display, refresh, enablement, and settings actions. Automatic default pins
+and background observations emit no interaction event. Account identities,
+window/model scopes, and pin labels remain in local settings.

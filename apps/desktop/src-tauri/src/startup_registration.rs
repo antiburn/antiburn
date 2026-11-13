@@ -46,12 +46,9 @@ fn action_for(desired: bool, state: RegistrationState) -> RegistrationAction {
 
 /// Whether a settings write should touch the platform registration.
 ///
-/// A first-run toggle only records intent. The platform is changed once the
-/// flow finishes, or when an already-onboarded reader changes the preference.
+/// Apply a changed preference without waiting for another launch.
 pub(crate) fn should_reconcile_after_save(previous: &AppSettings, saved: &AppSettings) -> bool {
-    let finished_onboarding = !previous.onboarding_completed && saved.onboarding_completed;
-    let preference_changed = previous.launch_at_login != saved.launch_at_login;
-    saved.onboarding_completed && (finished_onboarding || preference_changed)
+    previous.launch_at_login != saved.launch_at_login
 }
 
 /// Apply the desired registration without making a settings write fail.
@@ -286,28 +283,8 @@ mod tests {
     }
 
     #[test]
-    fn onboarding_defers_registration_until_the_flow_finishes() {
+    fn settings_reconcile_only_when_the_preference_changes() {
         let previous = AppSettings {
-            launch_at_login: false,
-            ..AppSettings::default()
-        };
-        let toggled = AppSettings {
-            launch_at_login: true,
-            ..previous.clone()
-        };
-        assert!(!should_reconcile_after_save(&previous, &toggled));
-
-        let finished = AppSettings {
-            onboarding_completed: true,
-            ..toggled.clone()
-        };
-        assert!(should_reconcile_after_save(&toggled, &finished));
-    }
-
-    #[test]
-    fn a_completed_install_reconciles_only_when_the_preference_changes() {
-        let previous = AppSettings {
-            onboarding_completed: true,
             ..AppSettings::default()
         };
         let unrelated = AppSettings {

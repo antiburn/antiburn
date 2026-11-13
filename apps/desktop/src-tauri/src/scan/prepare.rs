@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 
 use super::*;
+use crate::consent::{git_project_access, guarded_main_repo_root, project_path_access};
+use crate::store::RepositoryPolicySnapshot;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9,6 +11,7 @@ pub(super) enum PreparationStage {
     Filter,
     Title,
     Git,
+    DeferralPublication,
     Fingerprint,
     FingerprintCommit,
 }
@@ -26,13 +29,16 @@ pub(super) struct PreparationHooks {
 #[cfg(test)]
 impl PreparationHooks {
     pub async fn wait(&self, log: &SessionLog, stage: PreparationStage) {
+        self.wait_for_label(&log.source_label(), stage).await;
+    }
+
+    pub async fn wait_for_label(&self, label: &str, stage: PreparationStage) {
         if stage != self.stage {
             return;
         }
-        let label = log.source_label();
-        if self.blocked.contains(&label) {
+        if self.blocked.contains(label) {
             self.entered
-                .send(label.clone())
+                .send(label.to_owned())
                 .expect("barrier receiver stays open");
             self.release
                 .acquire()
@@ -40,7 +46,7 @@ impl PreparationHooks {
                 .expect("barrier stays open")
                 .forget();
         }
-        if self.panic.contains(&label) && self.panic_once.swap(false, Ordering::SeqCst) {
+        if self.panic.contains(label) && self.panic_once.swap(false, Ordering::SeqCst) {
             panic!("synthetic preparation panic");
         }
     }
@@ -60,10 +66,22 @@ pub(super) enum PreparationOutcome {
         record: Box<SessionRecord>,
         changed: bool,
     },
+    ProjectDeferred {
+        record: Box<SessionRecord>,
+        changed: bool,
+        path: PathBuf,
+        access: ProjectAccessDecision,
+    },
     Rejected(SessionKey),
     OutsideWindow,
     Deferred(String),
     Skipped,
+}
+
+pub(super) struct PreparationPolicy<'a> {
+    pub(super) store: &'a Store,
+    pub(super) repository: &'a RepositoryPolicySnapshot,
+    pub(super) include_non_repo_folders: bool,
 }
 
 /// Prepare one candidate under the caller's fixed cutoff and policy snapshot.
@@ -102,13 +120,19 @@ pub(super) async fn prepare_description(
             gate: GateCounts::default(),
         };
     };
+    let store = Store::open_in_memory(&home).unwrap();
+    let mut repository = store.repository_policy_snapshot().unwrap();
+    repository.ignored_paths = ignored;
     prepare_description_with_read(
         description,
         home,
-        ignored,
         previous,
         cutoff,
-        include_non_repo_folders,
+        PreparationPolicy {
+            store: &store,
+            repository: &repository,
+            include_non_repo_folders,
+        },
         None,
     )
     .await
@@ -117,10 +141,9 @@ pub(super) async fn prepare_description(
 pub(super) async fn prepare_description_with_read(
     description: DescriptionLog,
     home: PathBuf,
-    ignored: HashSet<String>,
     previous: Option<SessionRecord>,
     cutoff: Option<i64>,
-    include_non_repo_folders: bool,
+    policy: PreparationPolicy<'_>,
     #[cfg(test)] hooks: Option<Arc<PreparationHooks>>,
 ) -> PreparedDescription {
     let DescriptionLog { log, key, read } = description;
@@ -175,14 +198,7 @@ pub(super) async fn prepare_description_with_read(
             if let Some(hooks) = &hooks {
                 hooks.wait(&log, PreparationStage::Git).await;
             }
-            admit_record(
-                record,
-                changed,
-                &ignored,
-                include_non_repo_folders,
-                &mut gate,
-            )
-            .await
+            admit_record(record, changed, previous.as_ref(), &policy, &mut gate).await
         }
         DescribeOutcome::Subagent(key) => {
             gate.subagent += 1;
@@ -211,35 +227,106 @@ async fn indexed_title_for_candidate(log: &SessionLog, session_id: &str) -> Opti
 async fn admit_record(
     mut record: Box<SessionRecord>,
     mut changed: bool,
-    ignored: &HashSet<String>,
-    include_non_repo_folders: bool,
+    previous: Option<&SessionRecord>,
+    policy: &PreparationPolicy<'_>,
     gate: &mut GateCounts,
 ) -> PreparationOutcome {
+    let ignored = &policy.repository.ignored_paths;
+    let git_access =
+        |path: &std::path::Path| git_project_access(policy.store, policy.repository, path);
+    let path_access =
+        |path: &std::path::Path| project_path_access(policy.store, policy.repository, path);
+    if record.cwd.is_none()
+        && record.source_kind == "file"
+        && record.key.agent == AgentKind::Claude.slug()
+    {
+        match scanner::resolve_claude_project_cwd_with_policy(
+            std::path::Path::new(&record.source_label),
+            &AgentKind::Claude,
+            &path_access,
+        )
+        .await
+        {
+            Ok(Some(cwd)) => {
+                record.cwd = Some(cwd.to_string_lossy().into_owned());
+                changed = true;
+            }
+            Ok(None) => {}
+            Err((project, access)) => {
+                return defer_project(record, changed, previous, project, access, ignored, gate);
+            }
+        }
+    }
     let Some(cwd) = record.cwd.clone() else {
         gate.missing_cwd += 1;
         return PreparationOutcome::Rejected(record.key);
     };
-    if ignored_paths::set_contains(ignored, &cwd) {
+    if repositories::project_path_is_ignored(ignored, &cwd) {
         gate.ignored += 1;
         return PreparationOutcome::Rejected(record.key);
     }
-    let admission = repo_admission(&record, &cwd, include_non_repo_folders).await;
-    let root = match apply_prepared_admission(admission, &mut record, &mut changed, gate) {
-        ControlFlow::Continue(root) => root,
-        ControlFlow::Break(outcome) => return outcome,
+    let admission = guarded_repo_admission(
+        &record,
+        &cwd,
+        policy.include_non_repo_folders,
+        &git_access,
+        &path_access,
+    )
+    .await;
+    let root = match admission {
+        RepoAdmission::DeferredProject(path, access) => {
+            return defer_project(record, changed, previous, path, access, ignored, gate);
+        }
+        admission => match apply_prepared_admission(admission, &mut record, &mut changed, gate) {
+            ControlFlow::Continue(root) => root,
+            ControlFlow::Break(outcome) => return outcome,
+        },
     };
     if let Some(root) = root {
-        let root = git::canonical_main_repo_root(&root).await;
-        if ignored_paths::is_session_ignored(
-            ignored,
-            record.cwd.as_deref().or(Some(&cwd)),
-            &root.to_string_lossy(),
-        ) {
+        let root = match guarded_main_repo_root(&root, &git_access, &path_access).await {
+            Ok(root) => root,
+            Err((path, access)) => {
+                return defer_project(record, changed, previous, path, access, ignored, gate);
+            }
+        };
+        if repositories::project_path_is_ignored(ignored, &root.to_string_lossy())
+            || record
+                .cwd
+                .as_deref()
+                .is_some_and(|cwd| repositories::project_path_is_ignored(ignored, cwd))
+        {
             gate.ignored += 1;
             return PreparationOutcome::Rejected(record.key);
         }
     }
     PreparationOutcome::Accepted { record, changed }
+}
+
+fn defer_project(
+    mut record: Box<SessionRecord>,
+    changed: bool,
+    previous: Option<&SessionRecord>,
+    path: PathBuf,
+    access: ProjectAccessDecision,
+    ignored: &HashSet<String>,
+    gate: &mut GateCounts,
+) -> PreparationOutcome {
+    let previous_cwd = previous.and_then(|record| record.cwd.as_deref());
+    if repositories::project_path_is_ignored(ignored, &path.to_string_lossy())
+        || previous_cwd.is_some_and(|cwd| repositories::project_path_is_ignored(ignored, cwd))
+    {
+        gate.ignored += 1;
+        return PreparationOutcome::Rejected(record.key);
+    }
+    if let Some(cwd) = previous_cwd {
+        record.cwd = Some(cwd.to_owned());
+    }
+    PreparationOutcome::ProjectDeferred {
+        record,
+        changed,
+        path,
+        access,
+    }
 }
 
 fn apply_prepared_admission(
@@ -422,6 +509,111 @@ mod tests {
         let (reused, changed) = accepted(second);
         assert!(!changed);
         assert_eq!(*reused, previous);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn claude_cwd_inference_retries_with_the_current_folder_grant() {
+        const HOME_ENV: &str = "ANTIBURN_TEST_CLAUDE_GRANT_HOME";
+        let Some(home) = std::env::var_os(HOME_ENV).map(PathBuf::from) else {
+            let directory = tempfile::tempdir().unwrap();
+            let home = directory.path().canonicalize().unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "scan::prepare::tests::claude_cwd_inference_retries_with_the_current_folder_grant",
+                    "--nocapture",
+                ])
+                .env(HOME_ENV, &home)
+                .env("HOME", &home)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "isolated Claude grant regression failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+
+        let cwd = home.join("Documents/project");
+        std::fs::create_dir_all(&cwd).unwrap();
+        git_command(&cwd, &["init", "-q"]);
+        let slug = cwd.to_str().unwrap().replace('/', "-");
+        let project = home.join(".claude/projects").join(slug);
+        std::fs::create_dir_all(&project).unwrap();
+        let source = project.join(format!("{SESSION_ID}.jsonl"));
+        std::fs::write(
+            &source,
+            json!({
+                "type": "user",
+                "sessionId": SESSION_ID,
+                "timestamp": EVENT_TIME,
+                "message": {"role": "user", "content": "Inspect the project"},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let log = SessionLog {
+            agent_type: AgentKind::Claude,
+            source: SessionSource::File(source),
+            updated_at: Some(event_epoch()),
+            environment: DiscoveryEnvironment::Native,
+        };
+        let DescribeOutcome::Session(record) = describe_one(log, &home, None).await else {
+            panic!("expected the Claude transcript to describe a session");
+        };
+        assert!(record.cwd.is_none());
+
+        let store = Store::open_in_memory(&home).unwrap();
+        let snapshot = store.repository_policy_snapshot().unwrap();
+        let denied = admit_record(
+            record.clone(),
+            false,
+            None,
+            &PreparationPolicy {
+                store: &store,
+                repository: &snapshot,
+                include_non_repo_folders: false,
+            },
+            &mut GateCounts::default(),
+        )
+        .await;
+        let PreparationOutcome::ProjectDeferred {
+            record: previous,
+            access: ProjectAccessDecision::DeferredProtected(folder),
+            ..
+        } = denied
+        else {
+            panic!("expected missing cwd to defer for Documents, got {denied:?}");
+        };
+        assert_eq!(folder, "Documents");
+        assert!(previous.cwd.is_none());
+
+        store.grant_dir("Documents").unwrap();
+        let snapshot = store.repository_policy_snapshot().unwrap();
+        let allowed = admit_record(
+            record,
+            false,
+            Some(&previous),
+            &PreparationPolicy {
+                store: &store,
+                repository: &snapshot,
+                include_non_repo_folders: false,
+            },
+            &mut GateCounts::default(),
+        )
+        .await;
+        let PreparationOutcome::Accepted {
+            record: recovered,
+            changed: true,
+        } = allowed
+        else {
+            panic!("expected a recovered cwd after the grant, got {allowed:?}");
+        };
+        assert_eq!(recovered.cwd.as_deref(), cwd.to_str());
     }
 
     #[tokio::test]

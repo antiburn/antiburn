@@ -363,7 +363,7 @@ fn blocking_preparation_traces_promote_slow_slot_wait_or_work_at_one_second() {
     });
     let events = captured.events("burn_check_blocking_preparation");
     assert_eq!(events.len(), 16);
-    for (events, (stage, succeeded)) in events.chunks_exact(4).zip([
+    for (events, (stage, succeeded)) in events.as_chunks::<4>().0.iter().zip([
         ("work_probe", true),
         ("work_probe", false),
         ("preparation_start", true),

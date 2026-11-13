@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent_config::inventory::ensure_inventory_current;
 use crate::agent_config::{
     AdvisoryResource, EnabledState, InventoryIssue, InventoryIssueReason, ResourceInventory,
     ResourceKind, ResourceProvenance, ResourceScope,
@@ -8,10 +9,16 @@ use std::collections::BTreeSet;
 pub(crate) fn current_inventory(
     context: &ConfigContext,
     authority: &CurrentConfigAuthority,
+    admission: Option<InventoryAdmission<'_>>,
 ) -> Result<ResourceInventory, ConfigUnavailableReason> {
-    let entries = validated_entries(context, authority)?;
-    let mut snapshot = inputs::dependencies(context, entries)?;
-    inventory_with_inputs(context, authority, entries, &mut snapshot)
+    let (entries, cwd, root) = validated_entries(context, authority, admission)?;
+    let mut context = context.clone();
+    context.workspace_cwd = Some(cwd);
+    context.trusted_workspace_root = root;
+    let mut snapshot = inputs::dependencies(&context, entries, admission)?;
+    let inventory = inventory_with_inputs(&context, authority, entries, &mut snapshot)?;
+    ensure_inventory_current(admission)?;
+    Ok(inventory)
 }
 
 fn inventory_with_inputs(
@@ -77,9 +84,12 @@ fn inventory_with_inputs(
             authority,
             OpenCodeConfigSubject::SkillAdvertising(id.clone()),
             path,
-            OperationSelector::OpenCodeSkillAdvertising(id.clone()),
-            Value::Bool(advertised),
+            (
+                OperationSelector::OpenCodeSkillAdvertising(id.clone()),
+                Value::Bool(advertised),
+            ),
             Vec::new(),
+            snapshot.admission,
         )?;
         resources.push(resource(
             id,
@@ -169,8 +179,8 @@ mod tests {
                 &cwd,
                 &cwd,
             );
-            let entries = validated_entries(&context, &authority).unwrap();
-            let mut snapshot = inputs::dependencies(&context, entries).unwrap();
+            let (entries, _, _) = validated_entries(&context, &authority, None).unwrap();
+            let mut snapshot = inputs::dependencies(&context, entries, None).unwrap();
             let directory_reads = snapshot.directory_reads;
             let file_reads = snapshot.file_reads;
             let inventory =
@@ -219,7 +229,7 @@ mod tests {
                 &cwd,
                 &cwd,
             );
-            let result = current_inventory(&context, &authority).map(|inventory| {
+            let result = current_inventory(&context, &authority, None).map(|inventory| {
                 inventory
                     .resources
                     .iter()

@@ -12,6 +12,16 @@
 /** How the app renders itself. `system` follows the OS appearance. */
 export type ThemePreference = "system" | "light" | "dark"
 
+export type OnboardingState =
+  | "welcome"
+  | "sessions"
+  | "limits"
+  | "hud"
+  | "checks"
+  | "cloud"
+  | "cloudUnavailable"
+  | "completed"
+
 /** Where the notification window appears. `menuBar` is macOS-only. */
 export type NudgePlacement = "menuBar" | "topRight"
 
@@ -21,16 +31,25 @@ export type DiskSpaceDisplay = "always" | "whenLow" | "never"
 /** Selected usage-milestone percentages for one window class. */
 export type Milestones = number[]
 
+export interface SidebarUsagePin {
+  account: string
+  provider: string
+  name: string
+  window: string
+  scope: string | null
+  label: string
+}
+
 /** Every persisted preference. Mirrors Rust `AppSettings`. */
 export interface AppSettings {
+  sidebarUsagePins: SidebarUsagePin[] | null
+  sidebarUsageAppearance: "dials" | "bars"
   theme: ThemePreference
   interfaceScalePercent: number
   /** Calendar days of activity the popover list shows. */
   activityWindowDays: number
   /** Days to keep local session data. `-1` keeps it until explicit deletion. */
   sessionDataRetentionDays: number
-  /** False until the first-run flow finishes. */
-  onboardingCompleted: boolean
   /** Recorded; applied by the platform at next launch. */
   launchAtLogin: boolean
   /** Whether the menu-bar or system-tray icon is visible. */
@@ -51,6 +70,8 @@ export interface AppSettings {
    * repository. Off keeps the repository-only scan gate.
    */
   includeNonRepoFolders: boolean
+  /** Stores Cloud intent; this build does not upload sessions. */
+  cloudUploadEnabled: boolean
   /**
    * The master switch for desktop notifications. Off means nothing is
    * delivered, whatever the per-kind preferences say.
@@ -83,8 +104,7 @@ export interface AppSettings {
   /** Weekly-window milestones. */
   milestonesWeekly: Milestones
   /**
-   * The per-feature online opt-out for live usage limits. On by default, once
-   * first-run setup is complete.
+   * The per-feature online opt-out for live usage limits. On by default.
    *
    * On, antiburn asks each provider directly for the reader's current usage,
    * periodically, using the credentials the reader's own coding tools already
@@ -95,13 +115,7 @@ export interface AppSettings {
    * setting for a reader who wants no background traffic at all.
    */
   liveUsageEnabled: boolean
-  /**
-   * Whether the reader has started live usage from the Overview.
-   *
-   * False for a new install until a deliberate click in the Overview's usage
-   * area runs `start_live_usage`. That click, not setup finishing, is what
-   * may trigger the macOS Keychain prompt the credential read needs.
-   */
+  /** Legacy activation compatibility flag. Defaults to true. */
   liveUsageStarted: boolean
   /**
    * Canonical ids of the providers whose meter the reader turned off.

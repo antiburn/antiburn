@@ -1,5 +1,8 @@
 use super::*;
-use crate::agent_config::opencode_config_authority::CurrentConfigAuthority;
+use crate::agent_config::opencode_config_authority::{
+    CaptureUnavailable, ConfigReadAdmission, CurrentConfigAuthority,
+};
+use crate::store::RepositoryPolicySnapshot;
 
 pub(crate) struct AuthorityCache(
     crate::agent_config::opencode_config_authority::CurrentConfigAuthorities,
@@ -14,23 +17,65 @@ impl AuthorityCache {
         Self(crate::agent_config::opencode_config_authority::CurrentConfigAuthorities::default())
     }
 
-    pub(super) fn get(&mut self, cwd: &Path) -> Option<&CurrentConfigAuthority> {
-        self.0.capture(cwd)
+    pub(super) fn get(&mut self, store: &Store, cwd: &Path) -> Option<&CurrentConfigAuthority> {
+        let policy = store.repository_policy_snapshot().ok()?;
+        let admission = config_read_admission(store, policy, antiburn_local::paths::home_dir());
+        self.0.capture(cwd, &admission)
     }
 
-    pub(crate) async fn get_async(&mut self, cwd: &Path) -> Option<&CurrentConfigAuthority> {
-        self.0.capture_async(cwd).await
+    pub(crate) async fn get_async(
+        &mut self,
+        store: &Store,
+        generation: u64,
+        home: &Path,
+        cwd: &Path,
+    ) -> Option<&CurrentConfigAuthority> {
+        let policy = store.repository_policy_snapshot().ok()?;
+        if policy.generation != generation {
+            return None;
+        }
+        let admission = config_read_admission(store, policy, Some(home.to_owned()));
+        self.0.capture_async(cwd, &admission).await
     }
 
     pub(super) fn get_for_recovery(
         &mut self,
+        store: &Store,
+        generation: u64,
         cwd: &Path,
-    ) -> Result<
-        &CurrentConfigAuthority,
-        crate::agent_config::opencode_config_authority::CaptureUnavailable,
-    > {
-        self.0.try_capture(cwd)
+    ) -> Result<&CurrentConfigAuthority, CaptureUnavailable> {
+        let policy = store
+            .repository_policy_snapshot()
+            .map_err(|_| CaptureUnavailable::Location)?;
+        if policy.generation != generation {
+            return Err(CaptureUnavailable::Location);
+        }
+        let admission = config_read_admission(store, policy, antiburn_local::paths::home_dir());
+        self.0.try_capture(cwd, &admission)
     }
+}
+
+pub(super) fn config_read_admission(
+    store: &Store,
+    policy: RepositoryPolicySnapshot,
+    home: Option<PathBuf>,
+) -> ConfigReadAdmission {
+    let store = store.clone();
+    ConfigReadAdmission::new(move |path| {
+        store
+            .repository_policy_is_current(policy.generation)
+            .unwrap_or(false)
+            && !crate::repositories::project_path_is_ignored(
+                &policy.ignored_paths,
+                &path.to_string_lossy(),
+            )
+            && antiburn_local::paths::protected::project_path_access_in(
+                home.as_deref(),
+                path,
+                &policy.granted_dirs,
+            )
+            .is_allowed()
+    })
 }
 
 pub(super) fn resource_location(
@@ -131,7 +176,7 @@ impl RemediationController {
         let Some(subject) = opencode_subject(finding.cause()) else {
             return Ok(None);
         };
-        let context = refreshed_config_context(&context);
+        let context = refreshed_config_context(store, &context)?;
         let Ok(resolved) = self.editor.resolve_opencode(&context, authority, subject) else {
             return Ok(None);
         };

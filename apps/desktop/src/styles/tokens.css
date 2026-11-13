@@ -21,6 +21,23 @@
    ========================================================================== */
 
 @theme {
+  --color-onboarding-paper: var(--color-onboarding-paper-val);
+  --color-onboarding-ink: var(--color-onboarding-ink-val);
+  --color-onboarding-muted: var(--color-onboarding-muted-val);
+  --color-onboarding-action: var(--color-onboarding-action-val);
+  --color-onboarding-action-ink: var(--color-onboarding-action-ink-val);
+  --color-onboarding-action-hover: var(--color-onboarding-action-hover-val);
+  --color-onboarding-action-pressed: var(--color-onboarding-action-pressed-val);
+  --color-onboarding-edge: var(--color-onboarding-edge-val);
+  --color-onboarding-glow: var(--color-onboarding-glow-val);
+  --color-onboarding-stage-glow: var(--color-onboarding-stage-glow-val);
+  --color-onboarding-stage-start: var(--color-onboarding-stage-start-val);
+  --color-onboarding-stage-end: var(--color-onboarding-stage-end-val);
+  --color-onboarding-agent-label: var(--color-onboarding-agent-label-val);
+  --color-onboarding-gradient-start: var(--color-onboarding-gradient-start-val);
+  --color-onboarding-gradient-middle: var(--color-onboarding-gradient-middle-val);
+  --color-onboarding-gradient-end: var(--color-onboarding-gradient-end-val);
+
   --color-surface: var(--color-bg-primary);
   --color-surface-secondary: var(--color-bg-secondary);
   --color-surface-tertiary: var(--color-bg-tertiary);
@@ -42,6 +59,7 @@
   --color-surface-window: var(--color-bg-window);
   --color-surface-overlay: var(--color-bg-overlay);
   --color-command-palette-scrim: var(--color-command-palette-scrim-val);
+  --color-modal-scrim: var(--color-modal-scrim-val);
   /* Source-list / sidebar material for any multi-pane window. */
   --color-surface-sidebar: var(--color-bg-sidebar);
   /* Soft selected-row fill for any list or source list. Distinct from
@@ -138,6 +156,8 @@
    * ./session-analysis-colors.css. */
 
   /* Corner radii */
+  --radius-full: 9999px;
+  --radius-onboarding: 8px;
   --radius-control: 5px;
   --radius-popover: 10px;
   --radius-promotion: 16px;
@@ -158,6 +178,23 @@
 
 /* --- Light (default) --- */
 :root {
+  --color-onboarding-paper-val: hsl(0 0% 100%);
+  --color-onboarding-ink-val: hsl(0 0% 12.5%);
+  --color-onboarding-muted-val: hsl(240 2% 39%);
+  --color-onboarding-action-val: hsl(0 0% 12.5%);
+  --color-onboarding-action-ink-val: hsl(0 0% 100%);
+  --color-onboarding-action-hover-val: hsl(0 0% 22%);
+  --color-onboarding-action-pressed-val: hsl(0 0% 6.6%);
+  --color-onboarding-edge-val: hsl(0 0% 0% / 0.125);
+  --color-onboarding-stage-glow-val: hsl(35 100% 94.3%);
+  --color-onboarding-stage-start-val: hsl(26 53% 88.2%);
+  --color-onboarding-stage-end-val: hsl(26 53% 88.2%);
+  --color-onboarding-agent-label-val: hsl(28 6% 48%);
+  --color-onboarding-glow-val: hsl(39 99% 95.4%);
+  --color-onboarding-gradient-start-val: hsl(32 70% 92.1%);
+  --color-onboarding-gradient-middle-val: hsl(23 55% 85%);
+  --color-onboarding-gradient-end-val: hsl(23 55% 85%);
+
   --shadow-promotion-val: var(--shadow-popover);
   color-scheme: light dark;
 
@@ -180,6 +217,7 @@
   --color-bg-window: hsl(0 0% 96.4%);
   --color-bg-overlay: hsl(0 0% 96.4%);
   --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+  --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   --color-bg-sidebar: hsl(0 0% 0% / 0.03);
   --color-bg-selected: hsl(0 0% 0% / 0.09);
 
@@ -310,6 +348,23 @@
 /* --- Dark --- */
 @media (prefers-color-scheme: dark) {
   :root {
+    --color-onboarding-paper-val: hsl(240 4% 14.7%);
+    --color-onboarding-ink-val: hsl(240 3% 93.5%);
+    --color-onboarding-muted-val: hsl(240 3.6% 68%);
+    --color-onboarding-action-val: hsl(0 0% 93.3%);
+    --color-onboarding-action-ink-val: hsl(0 0% 12.5%);
+    --color-onboarding-action-hover-val: hsl(0 0% 86.6%);
+    --color-onboarding-action-pressed-val: hsl(0 0% 80%);
+    --color-onboarding-edge-val: hsl(0 0% 100% / 0.125);
+    --color-onboarding-stage-glow-val: hsl(27 30% 21.3%);
+    --color-onboarding-stage-start-val: hsl(259 4% 16%);
+    --color-onboarding-stage-end-val: hsl(11 15% 19%);
+    --color-onboarding-agent-label-val: hsl(27 7% 64%);
+    --color-onboarding-glow-val: hsl(27 28% 21.3%);
+    --color-onboarding-gradient-start-val: hsl(17 8% 17.4%);
+    --color-onboarding-gradient-middle-val: hsl(14 13% 11.3%);
+    --color-onboarding-gradient-end-val: hsl(20 10% 5.6%);
+
     --shadow-promotion-val: 6px 0 18px rgb(0 0 0 / 0.32), 0 2px 6px rgb(0 0 0 / 0.18);
     /* Matches the explicit dark theme. At 0.40 the popover surface let a light
        desktop behind the window through, and the secondary label fell to
@@ -327,6 +382,7 @@
     --color-bg-window: hsl(0 0% 12.5%);
     --color-bg-overlay: hsl(0 0% 12.5%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
     --color-bg-sidebar: hsl(0 0% 100% / 0.04);
     --color-bg-selected: hsl(0 0% 100% / 0.14);
     --color-text-primary: hsl(0 0% 100% / 0.92);
@@ -399,6 +455,23 @@
 
 /* --- Explicit theme override, for platforms with no live system tokens --- */
 :root[data-theme="light"] {
+  --color-onboarding-paper-val: hsl(0 0% 100%);
+  --color-onboarding-ink-val: hsl(0 0% 12.5%);
+  --color-onboarding-muted-val: hsl(240 2% 39%);
+  --color-onboarding-action-val: hsl(0 0% 12.5%);
+  --color-onboarding-action-ink-val: hsl(0 0% 100%);
+  --color-onboarding-action-hover-val: hsl(0 0% 22%);
+  --color-onboarding-action-pressed-val: hsl(0 0% 6.6%);
+  --color-onboarding-edge-val: hsl(0 0% 0% / 0.125);
+  --color-onboarding-stage-glow-val: hsl(35 100% 94.3%);
+  --color-onboarding-stage-start-val: hsl(26 53% 88.2%);
+  --color-onboarding-stage-end-val: hsl(26 53% 88.2%);
+  --color-onboarding-agent-label-val: hsl(28 6% 48%);
+  --color-onboarding-glow-val: hsl(39 99% 95.4%);
+  --color-onboarding-gradient-start-val: hsl(32 70% 92.1%);
+  --color-onboarding-gradient-middle-val: hsl(23 55% 85%);
+  --color-onboarding-gradient-end-val: hsl(23 55% 85%);
+
   --shadow-promotion-val: var(--shadow-popover);
   --color-stats-edge-val: hsl(0 0% 0% / 0.04);
   --color-bg-primary: hsl(0 0% 100% / 0.85);
@@ -415,6 +488,7 @@
   --color-bg-window: hsl(0 0% 96.4%);
   --color-bg-overlay: hsl(0 0% 96.4%);
   --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+  --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   --color-bg-sidebar: hsl(0 0% 0% / 0.03);
   --color-bg-selected: hsl(0 0% 0% / 0.09);
   --color-text-primary: hsl(0 0% 0% / 0.85);
@@ -475,6 +549,7 @@
     --color-bg-window: hsl(0 0% 96.4%);
     --color-bg-overlay: hsl(0 0% 96.4%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   }
 }
 
@@ -483,6 +558,7 @@
     --color-bg-window: hsl(0 0% 12.5%);
     --color-bg-overlay: hsl(0 0% 12.5%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
   }
 }
 
@@ -492,10 +568,28 @@
     --color-bg-window: hsl(0 0% 96.4%);
     --color-bg-overlay: hsl(0 0% 96.4%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.04);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.1);
   }
 }
 
 :root[data-theme="dark"] {
+  --color-onboarding-paper-val: hsl(240 4% 14.7%);
+  --color-onboarding-ink-val: hsl(240 3% 93.5%);
+  --color-onboarding-muted-val: hsl(240 3.6% 68%);
+  --color-onboarding-action-val: hsl(0 0% 93.3%);
+  --color-onboarding-action-ink-val: hsl(0 0% 12.5%);
+  --color-onboarding-action-hover-val: hsl(0 0% 86.6%);
+  --color-onboarding-action-pressed-val: hsl(0 0% 80%);
+  --color-onboarding-edge-val: hsl(0 0% 100% / 0.125);
+  --color-onboarding-stage-glow-val: hsl(27 30% 21.3%);
+  --color-onboarding-stage-start-val: hsl(259 4% 16%);
+  --color-onboarding-stage-end-val: hsl(11 15% 19%);
+  --color-onboarding-agent-label-val: hsl(27 7% 64%);
+  --color-onboarding-glow-val: hsl(27 28% 21.3%);
+  --color-onboarding-gradient-start-val: hsl(17 8% 17.4%);
+  --color-onboarding-gradient-middle-val: hsl(14 13% 11.3%);
+  --color-onboarding-gradient-end-val: hsl(20 10% 5.6%);
+
   --shadow-promotion-val: 6px 0 18px rgb(0 0 0 / 0.32), 0 2px 6px rgb(0 0 0 / 0.18);
   --color-stats-edge-val: hsl(0 0% 100% / 0.05);
   --color-bg-primary: hsl(0 0% 11.7% / 0.92);
@@ -510,6 +604,7 @@
   --color-bg-window: hsl(0 0% 12.5%);
   --color-bg-overlay: hsl(0 0% 12.5%);
   --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+  --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
   --color-bg-sidebar: hsl(0 0% 100% / 0.04);
   --color-bg-selected: hsl(0 0% 100% / 0.14);
   --color-text-primary: hsl(0 0% 100% / 0.92);
@@ -577,6 +672,7 @@
     --color-bg-window: hsl(0 0% 12.5%);
     --color-bg-overlay: hsl(0 0% 12.5%);
     --color-command-palette-scrim-val: hsl(0 0% 0% / 0.12);
+    --color-modal-scrim-val: hsl(0 0% 0% / 0.24);
   }
 }
 
@@ -603,5 +699,38 @@
   :root[data-theme="light"],
   :root[data-theme="dark"] {
     --color-accent-val: -apple-system-accent-color;
+  }
+}
+
+:root {
+  --onboarding-logo-shadow: 0 14px 18px hsl(25 46% 24% / 0.125);
+  --onboarding-title-leading: 34px;
+  --onboarding-body-leading: 25px;
+  --onboarding-support-size: 12px;
+  --onboarding-support-leading: 17px;
+}
+
+:root {
+  --cloud-copy-duration: 400ms;
+  --cloud-card-duration: 450ms;
+  --cloud-card-first: 900ms;
+  --cloud-card-second: 2800ms;
+  --cloud-question-1-start: 1350ms;
+  --cloud-question-2-start: 3250ms;
+  --cloud-character-interval: 30ms;
+  --cloud-character-duration: 1ms;
+  --cloud-status-first: 400ms;
+  --cloud-status-second: 1000ms;
+  --cloud-sync-pulse-duration: 2000ms;
+  --cloud-identity-handoff: 2960ms;
+  --cloud-identity-handoff-reduced: 2400ms;
+  --shadow-cloud-prompt: 0 2px 4px rgb(0 0 0 / 0.04), 0 10px 24px -6px rgb(0 0 0 / 0.12);
+}
+:root[data-theme="dark"] {
+  --shadow-cloud-prompt: 0 2px 5px rgb(0 0 0 / 0.16), 0 12px 26px -6px rgb(0 0 0 / 0.3);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --shadow-cloud-prompt: 0 2px 5px rgb(0 0 0 / 0.16), 0 12px 26px -6px rgb(0 0 0 / 0.3);
   }
 }

@@ -1,33 +1,45 @@
-import { getMainWindowVisible, onMainWindowVisibilityChanged } from "../ipc"
+import {
+  getMainWindowVisible,
+  onMainWindowVisibilityChanged,
+  getPromotionReadiness,
+  onOnboardingChanged,
+} from "../ipc"
 import type { PromotionEnvironment } from "./PromotionSession"
 import { PROMOTION_LAUNCHER_OPENED_KEY, PROMOTION_SEEN_KEY } from "./PromotionSession"
-import { PromotionTiming, PROMOTION_FTUE_KEY } from "./PromotionTiming"
-import {
-  overviewProgress,
-  subscribeOverviewProgress,
-} from "../../views/main-window/overview/overviewProgressStore"
-
-const timing = new PromotionTiming({
-  read: () => localStorage.getItem(PROMOTION_FTUE_KEY),
-  write: (value) => localStorage.setItem(PROMOTION_FTUE_KEY, value),
-  now: () => Date.now(),
-})
-const ready = () => timing.ready(overviewProgress())
-
+let manualReady = false
+let revision = 0
+async function refreshReadiness() {
+  const request = ++revision
+  const readiness = await getPromotionReadiness().catch(() => ({
+    manual: false,
+    automatic: false,
+  }))
+  if (request !== revision) return undefined
+  manualReady = readiness.manual
+  return readiness.automatic
+}
 export const promotionEnvironment: PromotionEnvironment = {
-  isManualReady: () => {
-    const progress = overviewProgress()
-    return (
-      progress.mode === "steady" || (progress.mode === "firstRun" && progress.flow === "done")
-    )
-  },
-  loadReady: async () => ready(),
+  isManualReady: () => manualReady,
+  loadReady: async () => (await refreshReadiness()) ?? false,
   onReady: async (listener) => {
-    const sync = () => listener(ready())
-    const stop = subscribeOverviewProgress(sync)
+    let active = true
+    let refresh = 0
+    const sync = () => {
+      const request = ++refresh
+      void refreshReadiness().then((ready) => {
+        if (active && request === refresh && ready !== undefined) listener(ready)
+      })
+    }
+    const changed = () => {
+      manualReady = false
+      listener(false)
+      sync()
+    }
+    const stop = await onOnboardingChanged(changed).catch(() => () => {})
     window.addEventListener("focus", sync)
     sync()
     return () => {
+      active = false
       stop()
       window.removeEventListener("focus", sync)
     }

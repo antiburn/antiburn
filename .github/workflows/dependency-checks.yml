@@ -80,6 +80,7 @@ jobs:
             echo "::endgroup::"
           }
           deny crates/antiburn-local
+          deny crates/antiburn-checks-store --config ../antiburn-local/deny.toml
           deny crates/antiburn-remote --config ../antiburn-local/deny.toml
           if [[ "$DESKTOP" == "true" ]]; then
             deny apps/desktop/src-tauri

@@ -3,7 +3,7 @@
 //! This is the one place antiburn sends anything of its own beyond the update
 //! check. The properties below define its privacy boundary.
 //!
-//! - **Official builds start enabled.** App launch and fixed first-run-step
+//! - **Official builds start enabled.** App launch and fixed onboarding
 //!   events can be sent before setup finishes. Settings and
 //!   `ANTIBURN_ANALYTICS_ENABLED=false` provide independent opt-outs.
 //! - **A build with no endpoint sends nothing.** See [`config`]; every build
@@ -148,6 +148,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         } => {
             let _ = (campaign, action, origin);
         }
+        event::Interaction::UsageLimitsUsed { action } => {
+            let _ = action;
+        }
         event::Interaction::AppSearchOpened {} => {}
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
@@ -155,6 +158,13 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
         }
+        event::Interaction::OnboardingScreenViewed { screen } => {
+            let _ = screen;
+        }
+        event::Interaction::OnboardingActionTaken { screen, action } => {
+            let _ = (screen, action);
+        }
+        event::Interaction::OnboardingCloudUnavailable {} => {}
         event::Interaction::FirstRunStepReached {
             step,
             sessions,
@@ -170,6 +180,40 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
             let _ = (label, detail);
         }
     }
+}
+
+pub(crate) fn record_cloud_status(app: &tauri::AppHandle, status: event::OnboardingCloudStatus) {
+    #[cfg(feature = "analytics")]
+    record(
+        app,
+        event::EventName::OnboardingCloudOutcome,
+        event::Facts {
+            detail: Some(status.as_str()),
+            ..event::Facts::default()
+        },
+    );
+    #[cfg(not(feature = "analytics"))]
+    let _ = (app, status);
+}
+
+pub(crate) fn record_onboarding_completed(app: &tauri::AppHandle) {
+    record(
+        app,
+        event::EventName::OnboardingCompleted,
+        event::Facts::default(),
+    );
+}
+
+pub(crate) fn record_onboarding_dismissed(
+    app: &tauri::AppHandle,
+    state: crate::store::OnboardingState,
+) {
+    #[cfg(feature = "analytics")]
+    if let Some(facts) = event::onboarding_dismissed_facts(state) {
+        record(app, event::EventName::OnboardingActionTaken, facts);
+    }
+    #[cfg(not(feature = "analytics"))]
+    let _ = (app, state);
 }
 
 pub fn record_model_check_lifecycle(app: &tauri::AppHandle, lifecycle: event::ModelCheckLifecycle) {
@@ -1188,6 +1232,9 @@ mod enabled {
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
+        if interaction.is_retired() {
+            return;
+        }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
             record_live_usage_state(app, provider, state);
             return;

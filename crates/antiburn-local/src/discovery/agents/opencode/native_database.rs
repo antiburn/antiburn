@@ -85,8 +85,10 @@ pub(super) async fn locate_session_source(id: String) -> super::DirectSessionSou
     let cancelled = guard.0.clone();
     tokio::task::spawn_blocking(move || {
         let (paths, paths_failed) = super::native_database_paths_with_failures();
-        let saw_database =
-            paths_failed || paths.iter().any(|path| path.try_exists().unwrap_or(true));
+        let saw_database = paths_failed
+            || paths
+                .iter()
+                .any(|path| crate::discovery::source_fs::try_exists(path).unwrap_or(true));
         if valid_session_id(&id)
             && let Ok(mut selected) =
                 source_selection::select_at_paths(&paths, HashSet::from([id.clone()]), cancelled)
@@ -294,14 +296,14 @@ fn query_recent_db_session_sources_at_path(
     cutoff: i64,
     cancelled: Arc<AtomicBool>,
 ) -> DbSourceRead {
-    match std::fs::metadata(db_path) {
+    match crate::discovery::source_fs::metadata(db_path) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return DbSourceRead::NotPresent;
         }
         Err(_) => return DbSourceRead::Failed("metadata"),
     }
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     );
@@ -466,7 +468,7 @@ fn render_db_session_blocking(db_path: &Path, root_session_id: &str) -> Option<S
 }
 
 pub(super) fn db_fork_parent_blocking(db_path: &Path, session_id: &str) -> Option<String> {
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -667,7 +669,7 @@ pub(super) fn db_session_metadata_blocking(
     root_session_id: &str,
     source_format: crate::analysis::SourceFormat,
 ) -> Option<crate::discovery::scanner::SessionMetadata> {
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -725,10 +727,10 @@ pub(super) fn db_session_metadata_blocking(
 }
 
 fn query_db_records_for_root(db_path: &Path, root_session_id: &str) -> Option<DbRecords> {
-    if !db_path.exists() {
+    if !crate::discovery::source_fs::exists(db_path) {
         return None;
     }
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -757,7 +759,7 @@ fn infer_db_fork_observation(
     child_session_id: &str,
     child_records: &DbRecords,
 ) -> Option<ForkObservation> {
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -969,10 +971,10 @@ pub(super) fn db_session_source_format(
     db_path: &Path,
     session_id: &str,
 ) -> Option<crate::analysis::SourceFormat> {
-    if !db_path.exists() || !valid_session_id(session_id) {
+    if !crate::discovery::source_fs::exists(db_path) || !valid_session_id(session_id) {
         return None;
     }
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -984,11 +986,11 @@ pub(super) fn db_session_fingerprint_blocking(
     db_path: &Path,
     root_session_id: &str,
 ) -> Option<(u64, u64)> {
-    if !db_path.exists() {
+    if !crate::discovery::source_fs::exists(db_path) {
         return None;
     }
     let expected_identity = database_identity_at_path(db_path)?;
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -1145,7 +1147,7 @@ pub fn db_session_fingerprint_snapshot_with_identity(
     cancelled: &dyn Fn() -> bool,
 ) -> Option<(String, (u64, u64))> {
     verify_path_identity(db_path, expected_identity)?;
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         db_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -1363,7 +1365,7 @@ fn database_identity(conn: &Connection) -> Option<String> {
 }
 
 pub(crate) fn database_identity_at_path(path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
+    let file = crate::discovery::source_fs::open(path).ok()?;
     crate::discovery::SourceStat::from_open_std_file(&file)?.identity
 }
 
@@ -1420,7 +1422,7 @@ fn sqlite_connection_matches_path(conn: &Connection) -> Option<()> {
     if result != rusqlite::ffi::SQLITE_OK || sqlite_handle.is_null() {
         return None;
     }
-    let path_file = std::fs::File::open(path).ok()?;
+    let path_file = crate::discovery::source_fs::open(path).ok()?;
     let mut opened = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
     let mut current = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
     if unsafe { GetFileInformationByHandle(sqlite_handle, opened.as_mut_ptr()) } == 0

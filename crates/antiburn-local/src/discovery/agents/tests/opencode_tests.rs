@@ -2500,3 +2500,16 @@ async fn test_indexed_session_title_returns_none_when_db_absent() {
 
     assert!(fetch_title(root, "ses_missing").await.is_none());
 }
+
+#[test]
+#[cfg(unix)]
+fn native_database_candidates_retain_failure_and_accessible_siblings() {
+    let dir = tempfile::tempdir().unwrap();
+    let safe = dir.path().join("opencode.db");
+    let denied = dir.path().join("opencode-unsafe.db");
+    std::fs::write(&safe, "synthetic").unwrap();
+    std::os::unix::fs::symlink("/Volumes/synthetic-never-probed/db", &denied).unwrap();
+    let (paths, failed) = super::admit_database_paths([safe.clone(), denied]);
+    assert_eq!(paths, vec![safe]);
+    assert!(failed);
+}

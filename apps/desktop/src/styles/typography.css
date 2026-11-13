@@ -108,3 +108,20 @@
   font-weight: 800;
   letter-spacing: -0.96px;
 }
+
+.type-onboarding-title {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+.type-onboarding-body {
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.type-cloud-folder-title {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}

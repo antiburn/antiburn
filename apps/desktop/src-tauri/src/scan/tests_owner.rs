@@ -6,6 +6,23 @@ use tokio::sync::Semaphore;
 #[path = "tests/live_admission.rs"]
 mod live_admission;
 
+#[test]
+fn cursor_discovery_snapshot_carries_only_current_grants() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(temp.path()).unwrap();
+    store.grant_dir("Documents").unwrap();
+    let policy = store.repository_policy_snapshot().unwrap();
+    let access = project_access_snapshot(&store, &policy);
+    assert!(access.is_current());
+    assert!(access.granted_dirs().contains("Documents"));
+    store.revoke_dir_grant("Documents").unwrap();
+    assert!(!access.is_current());
+    let policy = store.repository_policy_snapshot().unwrap();
+    let access = project_access_snapshot(&store, &policy);
+    assert!(access.is_current());
+    assert!(!access.granted_dirs().contains("Documents"));
+}
+
 fn fixture_log(home: &std::path::Path, id: &str) -> SessionLog {
     let project = home.join(".claude/projects/synthetic");
     std::fs::create_dir_all(&project).unwrap();
@@ -50,10 +67,14 @@ fn writer(store: &Store) -> IncrementalAdmission<'_> {
     }
 }
 
-fn policy(home: &std::path::Path, hooks: Option<Arc<PreparationHooks>>) -> OwnerPolicy {
+fn policy(
+    store: &Store,
+    home: &std::path::Path,
+    hooks: Option<Arc<PreparationHooks>>,
+) -> OwnerPolicy {
     OwnerPolicy {
         home: home.to_path_buf(),
-        ignored: HashSet::new(),
+        repository_policy: store.repository_policy_snapshot().unwrap(),
         cutoff: Some(0),
         include_non_repo_folders: true,
         progress: false,
@@ -68,6 +89,169 @@ fn batch(logs: Vec<SessionLog>) -> DiscoveryBatch {
         candidates: logs,
         complete: false,
     }
+}
+
+#[test]
+fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
+    let historical = ScanController::default();
+    super::super::retry_superseded_project_deferrals(
+        &historical,
+        &ScanTrigger::SourceRefresh {
+            agents: vec![AgentKind::Claude.slug()],
+        },
+    );
+    assert!(matches!(
+        historical
+            .pending_trigger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref(),
+        Some(ScanTrigger::HistoricalScan)
+    ));
+
+    let current = ScanController::default();
+    super::super::retry_superseded_project_deferrals(&current, &ScanTrigger::Tick);
+    assert!(matches!(
+        current
+            .pending_trigger
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref(),
+        Some(ScanTrigger::WatcherOverflow)
+    ));
+    assert!(!super::super::pass_covers_work(true, false, true, true));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn deferred_project_indexes_transcript_without_invoking_git() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(home.path()).unwrap();
+    let log = fixture_log(home.path(), "deferred-project");
+    let alias = home.path().join("project-alias");
+    let target = home.path().join("real-project");
+    std::fs::create_dir(&target).unwrap();
+    std::os::unix::fs::symlink(target, &alias).unwrap();
+    let SessionSource::File(transcript) = &log.source else {
+        unreachable!();
+    };
+    let mut event: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(transcript).unwrap()).unwrap();
+    event["cwd"] = serde_json::json!(alias);
+    std::fs::write(transcript, format!("{event}\n")).unwrap();
+    let mut policy = policy(&store, home.path(), None);
+    policy.include_non_repo_folders = false;
+    let mut writer = writer(&store);
+    let (sender, finite) = mpsc::channel(1);
+    let (_live_sender, live) = mpsc::channel(1);
+    sender.send(batch(vec![log])).await.unwrap();
+    drop(sender);
+
+    let events = crate::trace_capture::LogCapture::default();
+    let _capture = tracing::subscriber::set_default(events.clone());
+    let described = run(finite, live, None, &policy, &mut writer).await;
+    writer.finish().unwrap();
+
+    assert!(events.events("git_command_started").is_empty());
+    assert!(described.rejected.is_empty());
+    assert_eq!(described.gate.no_repo, 0);
+    assert_eq!(described.records.len(), 1);
+    let key = SessionKey::new("native", AgentKind::Claude.slug(), "deferred-project");
+    let record = store.session(&key).unwrap().unwrap();
+    assert_eq!(record.cwd.as_deref(), alias.to_str());
+    assert_eq!(
+        record.updated_at_epoch,
+        described.records[0].updated_at_epoch
+    );
+    assert!(record.source_fingerprint.is_some());
+}
+
+#[tokio::test]
+async fn superseded_project_deferral_publication_is_reported_after_policy_changes_mid_pass() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(home.path()).unwrap();
+    let log = fixture_log(home.path(), "superseded-project-deferral");
+
+    let (entered, mut arrivals) = mpsc::unbounded_channel();
+    let hooks = Arc::new(PreparationHooks {
+        stage: PreparationStage::DeferralPublication,
+        blocked: HashSet::from(["superseded-project-deferral".to_owned()]),
+        panic: HashSet::new(),
+        panic_once: AtomicBool::new(false),
+        entered,
+        release: Semaphore::new(0),
+    });
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
+    let mut writer = writer(&store);
+    let (sender, finite) = mpsc::channel(1);
+    let (_live_sender, live) = mpsc::channel(1);
+    sender.send(batch(vec![log])).await.unwrap();
+    drop(sender);
+
+    let change_policy = async {
+        arrivals.recv().await.unwrap();
+        store.grant_dir("Documents").unwrap();
+        hooks.release.add_permits(1);
+    };
+    let (described, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(run(finite, live, None, &policy, &mut writer), change_policy)
+    })
+    .await
+    .unwrap();
+    writer.finish().unwrap();
+
+    assert!(described.project_deferrals_superseded);
+}
+
+#[tokio::test]
+async fn stale_queued_project_result_skips_git_and_preserves_existing_record() {
+    let home = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(home.path()).unwrap();
+    store.grant_dir("Documents").unwrap();
+    let log = fixture_log(home.path(), "stale-project");
+    let (sender, finite) = mpsc::channel(1);
+    let (_live_sender, live) = mpsc::channel(1);
+    sender.send(batch(vec![log.clone()])).await.unwrap();
+    drop(sender);
+    let initial_policy = policy(&store, home.path(), None);
+    let mut initial_writer = writer(&store);
+    run(finite, live, None, &initial_policy, &mut initial_writer).await;
+    initial_writer.finish().unwrap();
+    let key = SessionKey::new("native", AgentKind::Claude.slug(), "stale-project");
+    let previous = store.session(&key).unwrap().unwrap();
+
+    let (entered, mut arrivals) = mpsc::unbounded_channel();
+    let hooks = Arc::new(PreparationHooks {
+        stage: PreparationStage::Git,
+        blocked: HashSet::from([log.source_label()]),
+        panic: HashSet::new(),
+        panic_once: AtomicBool::new(false),
+        entered,
+        release: Semaphore::new(0),
+    });
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
+    let mut writer = writer(&store);
+    let (sender, finite) = mpsc::channel(1);
+    let (_live_sender, live) = mpsc::channel(1);
+    sender.send(batch(vec![log])).await.unwrap();
+    drop(sender);
+    let control = async {
+        arrivals.recv().await.unwrap();
+        store.revoke_dir_grant("Documents").unwrap();
+        hooks.release.add_permits(1);
+    };
+    let events = crate::trace_capture::LogCapture::default();
+    let _capture = tracing::subscriber::set_default(events.clone());
+    let (described, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(run(finite, live, None, &policy, &mut writer), control)
+    })
+    .await
+    .unwrap();
+
+    assert!(events.events("git_command_started").is_empty());
+    assert!(described.records.is_empty());
+    assert!(described.rejected.is_empty());
+    assert_eq!(store.session(&key).unwrap(), Some(previous));
 }
 
 #[tokio::test]
@@ -167,7 +351,7 @@ async fn opencode_admission_barrier(
         entered,
         release: Semaphore::new(0),
     });
-    let policy = policy(home.path(), Some(hooks.clone()));
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
     let mut writer = writer(&store);
     let (sender, finite) = mpsc::channel(1);
     let (live_sender, live) = mpsc::channel(1);
@@ -271,7 +455,7 @@ async fn recover_at(store: &Store, home: &std::path::Path, epoch: i64) {
         unreachable!()
     };
     now.store(epoch, Ordering::Release);
-    let policy = policy(home, None);
+    let policy = policy(store, home, None);
     let (sender, finite) = mpsc::channel(1);
     let (_live_sender, live) = mpsc::channel(1);
     drop(sender);
@@ -489,7 +673,7 @@ async fn barrier_live_commit(stage: PreparationStage) {
         entered,
         release: Semaphore::new(0),
     });
-    let policy = policy(home.path(), Some(hooks.clone()));
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
     let mut writer = writer(&store);
     let (finite_sender, finite) = mpsc::channel(2);
     let (live_sender, live) = mpsc::channel(2);
@@ -550,7 +734,7 @@ async fn live_commits_before_discovery_closes_and_outside_the_finite_agent_scope
     let home = tempfile::tempdir().unwrap();
     let store = Store::open_in_memory(home.path()).unwrap();
     let mut writer = writer(&store);
-    let policy = policy(home.path(), None);
+    let policy = policy(&store, home.path(), None);
     let (finite_sender, finite) = mpsc::channel(2);
     let (live_sender, live) = mpsc::channel(2);
     let control = async {
@@ -585,7 +769,7 @@ async fn finite_owner_waits_for_title_producer_handoff() {
     let home = tempfile::tempdir().unwrap();
     let store = Store::open_in_memory(home.path()).unwrap();
     let mut writer = writer(&store);
-    let policy = policy(home.path(), None);
+    let policy = policy(&store, home.path(), None);
     let (finite_sender, finite) = mpsc::channel(1);
     let (live_sender, live) = mpsc::channel(1);
     let (title_sender, titles) = mpsc::channel(1);
@@ -636,7 +820,7 @@ async fn continuous_equal_and_backward_live_hints_do_not_extend_finite_completio
         entered,
         release: Semaphore::new(0),
     });
-    let policy = policy(home.path(), Some(hooks.clone()));
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
     let mut writer = writer(&store);
     let (finite_sender, finite) = mpsc::channel(2);
     let (live_sender, live) = mpsc::channel(2);
@@ -692,7 +876,7 @@ async fn panic_releases_physical_identity_for_a_pending_dirty_refresh() {
         entered,
         release: Semaphore::new(0),
     });
-    let policy = policy(home.path(), Some(hooks.clone()));
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
     let mut writer = writer(&store);
     let (finite_sender, finite) = mpsc::channel(2);
     let (live_sender, live) = mpsc::channel(2);
@@ -730,7 +914,7 @@ async fn cancellation_aborts_blocked_preparation_and_fences_late_results() {
         entered,
         release: Semaphore::new(0),
     });
-    let policy = policy(home.path(), Some(hooks.clone()));
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
     let mut writer = writer(&store);
     let AdmissionIo::Test { cancel, .. } = &writer.io else {
         unreachable!()

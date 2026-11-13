@@ -528,6 +528,66 @@ async fn discovery_batches_are_bounded_activity_ordered_and_complete() {
     assert_eq!(batches.last().map(|batch| batch.complete), Some(true));
 }
 
+static PROJECT_ACCESS_BATCH_OVERRIDE_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+struct ProjectAccessBatchOverrideExplorer;
+
+#[async_trait]
+impl AgentExplorer for ProjectAccessBatchOverrideExplorer {
+    async fn discover_recent(&self, _now: i64, _since_secs: i64) -> Vec<SessionLog> {
+        vec![]
+    }
+
+    async fn discover_recent_batches(
+        &self,
+        agent: AgentKind,
+        _now: i64,
+        _since_secs: i64,
+        _batch_size: usize,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        PROJECT_ACCESS_BATCH_OVERRIDE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut logs = vec![sample_session(agent, "custom-batch")];
+        send_discovery_batches(agent, &mut logs, 1, true, &sender).await;
+    }
+
+    fn owns_path(&self, _path_lower: &str) -> bool {
+        false
+    }
+}
+
+fn project_access_batch_override_lookup(_agent: &AgentKind) -> &'static dyn AgentExplorer {
+    &ProjectAccessBatchOverrideExplorer
+}
+
+#[tokio::test]
+async fn project_access_discovery_preserves_explorer_batch_overrides() {
+    PROJECT_ACCESS_BATCH_OVERRIDE_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+    let explorer = Explorers::new(project_access_batch_override_lookup);
+    let access = ProjectAccessSnapshot::new(Default::default(), || true);
+    let discovery = explorer.discover_recent_batches_for_agents_with_project_access(
+        &[AgentKind::Codex],
+        100,
+        60,
+        1,
+        access,
+        sender,
+    );
+    let collect = async { receiver.recv().await };
+    let (_, batch) = tokio::join!(discovery, collect);
+
+    assert_eq!(
+        PROJECT_ACCESS_BATCH_OVERRIDE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert!(matches!(
+        &batch.unwrap().candidates[0].source,
+        SessionSource::Inline { label, .. } if label == "custom-batch"
+    ));
+}
+
 #[tokio::test]
 async fn discovery_batches_wait_for_capacity_and_stop_when_receiver_closes() {
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);

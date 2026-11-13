@@ -633,14 +633,17 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
             .find(|ancestor| ancestor.file_name().is_some_and(|name| name == ".cline"))?;
         let directory = path.parent()?;
         let database = root.join("data/db/sessions.db");
-        let mut paths = vec![path.to_path_buf(), database.clone()];
-        paths.extend(database_sidecars(&database));
+        let mut paths = vec![path.to_path_buf()];
+        paths.extend(
+            antiburn_local::discovery::native_companion_database_paths(&database)
+                .ok()
+                .into_iter()
+                .flatten(),
+        );
         let session_id = file_name.strip_suffix(".json").unwrap_or(file_name);
         paths.push(directory.join(format!("{session_id}.messages.json")));
-        if let Ok(connection) = rusqlite::Connection::open_with_flags(
-            &database,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) && let Ok(mut statement) = connection.prepare(
+        if let Ok(connection) = antiburn_local::discovery::open_native_companion_database(&database)
+            && let Ok(mut statement) = connection.prepare(
             "SELECT agent_id, parent_session_id, messages_path FROM sessions WHERE is_subagent = 1",
         ) && let Ok(rows) = statement.query_map([], |row| {
             Ok((
@@ -673,13 +676,16 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
             .and_then(|name| name.to_str())
             == Some("session-state")
     {
-        let mut paths = vec![
-            path.to_path_buf(),
-            path.parent()?.parent()?.join("session-store.db"),
-        ];
-        paths.extend(database_sidecars(paths.get(1)?));
+        let database = path.parent()?.parent()?.join("session-store.db");
+        let mut paths = vec![path.to_path_buf()];
+        paths.extend(
+            antiburn_local::discovery::native_companion_database_paths(&database)
+                .ok()
+                .into_iter()
+                .flatten(),
+        );
         let session_id = path.parent()?.file_name()?.to_string_lossy();
-        if let Some(state) = database_state(paths.get(1)?, &format!("copilot:{session_id}")) {
+        if let Some(state) = database_state(&database, &format!("copilot:{session_id}")) {
             paths.push(state);
         }
         paths
@@ -709,19 +715,8 @@ fn bundle_fingerprint(path: &std::path::Path) -> Option<String> {
         .map(|value| format!("bundle-v1:{value}"))
 }
 
-fn database_sidecars(database: &std::path::Path) -> Vec<std::path::PathBuf> {
-    ["-wal", "-shm"]
-        .into_iter()
-        .map(|suffix| std::path::PathBuf::from(format!("{}{}", database.display(), suffix)))
-        .collect()
-}
-
 fn database_state(database: &std::path::Path, scope: &str) -> Option<std::path::PathBuf> {
-    let connection = rusqlite::Connection::open_with_flags(
-        database,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
+    let connection = antiburn_local::discovery::open_native_companion_database(database).ok()?;
     let (query, parameter) = scope.split_once(':')?;
     let state = match query {
         "cline" => connection

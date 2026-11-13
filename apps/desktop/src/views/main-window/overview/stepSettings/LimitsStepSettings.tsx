@@ -32,7 +32,7 @@ import {
   SettingsSectionGroup,
   SettingsToggleRow,
 } from "../../../settings/SettingsSearchRows"
-import { useAppSettings, type AppSettingsController } from "../../../settings/useAppSettings"
+import { type AppSettingsController } from "../../../settings/useAppSettings"
 
 type WorkingWeek = AppSettings["workingWeek"]
 
@@ -83,17 +83,11 @@ export function PlanLimitsSection({
   update,
 }: Pick<AppSettingsController, "settings" | "update">) {
   const on = Boolean(settings?.liveUsageEnabled && settings?.liveUsageStarted)
-  // Live usage never ran at all until a reader passed the first-run gate (or
-  // skipped it, which also leaves it unstarted). The switch must read as off
-  // then, even though `liveUsageEnabled` defaults to true, or a Skip in the
-  // takeover would show it on with nothing behind it.
+  // The switch stays off until the user activates provider usage.
   const liveUsageStarted = settings?.liveUsageStarted ?? false
   const planLimitsOn = on
 
-  // Turning the switch on starts live usage first, the same gate the
-  // first-run takeover uses, so the Keychain prompt it can trigger on macOS
-  // only ever follows a deliberate click. A failed start leaves the switch
-  // off, since it derives from `liveUsageStarted` rather than its own state.
+  // A failed activation leaves the switch off.
   async function handlePlanLimitsChange(next: boolean): Promise<void> {
     if (!next) {
       await update({ liveUsageEnabled: false })
@@ -302,18 +296,5 @@ function meterNote({
     on,
     meter.carrierLabel,
     meter.desktopAppLabel,
-  )
-}
-
-export function LimitsStepSettings() {
-  const { settings, update } = useAppSettings()
-  const live = useLiveUsage()
-
-  return (
-    <>
-      <PlanLimitsSection settings={settings} update={update} />
-      <WorkingWeekSection settings={settings} update={update} />
-      <UsageMetersSection settings={settings} update={update} live={live} />
-    </>
   )
 }

@@ -51,7 +51,179 @@ fn consent_grants_round_trip_and_revoke_individually() {
 }
 
 #[test]
-fn deferred_permission_dirs_replace_the_previous_pass() {
+fn bounded_project_publication_preserves_deferrals_and_rejects_stale_results() {
+    let store = store();
+    let session = session("deferred", 100);
+    let (sessions, _) = store.upsert_sessions(&[session], &[]).unwrap();
+    let (key, incarnation) = &sessions[0];
+    let document = DeferredProtectedPath {
+        protected_dir: "Documents".into(),
+        cwd: "/home/avery/Documents/project".into(),
+    };
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    assert_eq!(
+        store
+            .publish_session_project_deferrals(
+                generation,
+                HashMap::from([(key.clone(), (*incarnation, Some(document.clone())))]),
+            )
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Published,
+    );
+    assert_eq!(
+        store
+            .publish_repository_refresh(generation, &[], Vec::new())
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Published,
+    );
+    store
+        .publish_session_project_deferrals(generation, HashMap::new())
+        .unwrap();
+    assert_eq!(
+        store.deferred_permission_dirs().unwrap(),
+        [DeferredPermissionDir {
+            dir: "Documents".into(),
+            path_count: 1,
+        }]
+    );
+
+    store.grant_dir("Documents").unwrap();
+    assert_eq!(
+        store
+            .publish_session_project_deferrals(
+                generation,
+                HashMap::from([(key.clone(), (*incarnation, Some(document)))]),
+            )
+            .unwrap(),
+        RepositoryPolicyPublishOutcome::Superseded,
+    );
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+    store.revoke_dir_grant("Documents").unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+}
+
+#[test]
+fn project_deferrals_track_exclusions_and_their_last_backing_session() {
+    let store = store();
+    let mut excluded = session("excluded", 100);
+    let mut surviving = session("surviving", 101);
+    let mut sibling = session("sibling", 102);
+    let excluded_path = "/home/avery/Documents/project";
+    let surviving_path = "/home/avery/Documents/project-other";
+    excluded.cwd = Some(format!("{excluded_path}/src"));
+    surviving.cwd = Some(surviving_path.into());
+    sibling.cwd = Some(surviving_path.into());
+    let (sessions, _) = store
+        .upsert_sessions(&[excluded.clone(), surviving.clone(), sibling.clone()], &[])
+        .unwrap();
+    let repository = RepositoryRecord {
+        key: "project".into(),
+        repo_name: "project".into(),
+        full_name: "avery/project".into(),
+        status: "permission_denied".into(),
+        repo_root: None,
+        suspected_path: Some(excluded_path.into()),
+        worktree_count: 0,
+        session_count: 1,
+        wsl_distro: None,
+        enabled: true,
+    };
+    let observation = |cwd: &str| DeferredProtectedPath {
+        cwd: cwd.into(),
+        protected_dir: "Documents".into(),
+    };
+    let generation = store.repository_policy_snapshot().unwrap().generation;
+    store
+        .publish_repository_refresh(
+            generation,
+            &[repository],
+            vec![RepositoryDeferral {
+                path: observation(surviving_path),
+                source: RepositoryDeferralSource::SessionCwd(surviving_path.into()),
+            }],
+        )
+        .unwrap();
+    store
+        .publish_session_project_deferrals(
+            generation,
+            sessions
+                .into_iter()
+                .map(|(key, incarnation)| {
+                    let path = if key == excluded.key {
+                        "/home/avery/Documents/indirect"
+                    } else {
+                        surviving_path
+                    };
+                    (key, (incarnation, Some(observation(path))))
+                })
+                .collect(),
+        )
+        .unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap()[0].path_count, 2);
+    store.set_repository_enabled("project", false).unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap()[0].path_count, 1);
+
+    store.delete_session(&surviving.key).unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap()[0].path_count, 1);
+    store.delete_session(&sibling.key).unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+
+    let (new_sessions, _) = store.upsert_sessions(&[surviving], &[]).unwrap();
+    let (new_key, _) = &new_sessions[0];
+    store
+        .publish_session_project_deferrals(
+            store.repository_policy_snapshot().unwrap().generation,
+            HashMap::from([(
+                new_key.clone(),
+                (Incarnation(0), Some(observation(surviving_path))),
+            )]),
+        )
+        .unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+}
+
+#[test]
+fn explicit_scan_root_removal_and_refresh_reconcile_project_deferrals() {
+    let store = store();
+    let desktop = "/home/avery/Desktop/code";
+    let documents = "/home/avery/Documents/code";
+    let deferral = |cwd: &str, dir: &str| RepositoryDeferral {
+        path: DeferredProtectedPath {
+            cwd: cwd.into(),
+            protected_dir: dir.into(),
+        },
+        source: RepositoryDeferralSource::ScanRoot,
+    };
+    store.add_scan_root(desktop).unwrap();
+    store.add_scan_root(documents).unwrap();
+    store
+        .publish_repository_refresh(
+            store.repository_policy_snapshot().unwrap().generation,
+            &[],
+            vec![
+                deferral(desktop, "Desktop"),
+                deferral(documents, "Documents"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(store.deferred_permission_dirs().unwrap().len(), 2);
+    store.remove_scan_root(desktop).unwrap();
+    assert_eq!(
+        store.deferred_permission_dirs().unwrap()[0].dir,
+        "Documents"
+    );
+    store
+        .publish_repository_refresh(
+            store.repository_policy_snapshot().unwrap().generation,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+}
+
+#[test]
+fn the_first_owned_publication_replaces_legacy_deferral_counts() {
     let store = store();
 
     store
@@ -65,13 +237,18 @@ fn deferred_permission_dirs_replace_the_previous_pass() {
         Some(r#"[{"dir":"Documents","pathCount":3}]"#.to_string())
     );
 
-    // A later pass that defers nothing clears the list rather than leaving a
-    // stale directory asking for permission it no longer needs.
-    store.set_deferred_permission_dirs(&[]).unwrap();
+    store
+        .publish_repository_refresh(
+            store.repository_policy_snapshot().unwrap().generation,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
     assert_eq!(
         store.internal_value(crate::store::DEFERRED_PERMISSION_DIRS_KEY),
-        Some("[]".to_string())
+        Some("[]".into())
     );
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
 }
 
 #[test]
@@ -79,7 +256,6 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     let store = store();
     let defaults = store.settings().unwrap();
     assert_eq!(defaults, AppSettings::default());
-    assert!(!defaults.onboarding_completed);
     assert!(defaults.launch_at_login);
     assert!(defaults.tray_icon_visible);
     assert!(defaults.dock_icon_visible);
@@ -111,8 +287,9 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // Off by default: the Focus-status check needs its own macOS
     // authorization prompt, so the reader opts in first.
     assert!(!defaults.nudges_respect_dnd);
-    // Off by default: the scan keeps only repository sessions.
-    assert!(!defaults.include_non_repo_folders);
+    // New settings include sessions from ordinary folders.
+    assert!(defaults.include_non_repo_folders);
+    assert!(!defaults.cloud_upload_enabled);
 
     let saved = store
         .save_settings(&AppSettings {
@@ -120,13 +297,13 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             interface_scale_percent: 125,
             activity_window_days: 14,
             session_data_retention_days: SESSION_DATA_RETENTION_DAYS_90,
-            onboarding_completed: true,
             launch_at_login: true,
             tray_icon_visible: false,
             dock_icon_visible: true,
             auto_update: false,
             discovery_paused: true,
             include_non_repo_folders: true,
+            cloud_upload_enabled: true,
             notifications_enabled: false,
             notify_update_available: false,
             notify_scan_failure: true,
@@ -141,6 +318,8 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
             milestones_weekly: Milestones::none(),
             live_usage_enabled: true,
             live_usage_started: true,
+            sidebar_usage_pins: None,
+            sidebar_usage_appearance: super::super::model::SidebarUsageAppearance::Dials,
             live_usage_hidden_providers: HiddenMeters::default(),
             disabled_agents: DisabledAgents::parse("windsurf,kiro"),
             analytics_enabled: false,
@@ -188,7 +367,6 @@ fn settings_default_before_anything_is_written_and_round_trip_after() {
     // The two display preferences keep separate answers: this reader closed
     // the limits section and opened the skills table.
     assert!(saved.skills_mcp_expanded);
-    assert!(saved.onboarding_completed);
     assert!(saved.discovery_paused);
     assert!(saved.include_non_repo_folders);
     // Each notification preference is stored on its own key, so a reader who
@@ -203,7 +381,6 @@ fn an_explicit_launch_at_login_opt_out_overrides_the_default() {
     let store = store();
     let saved = store
         .save_settings(&AppSettings {
-            onboarding_completed: true,
             launch_at_login: false,
             ..AppSettings::default()
         })
@@ -255,7 +432,6 @@ fn settings_snapshot_tracks_commits_across_store_clones() {
     let saved = store
         .save_settings(&AppSettings {
             theme: ThemePreference::Dark,
-            onboarding_completed: true,
             ..AppSettings::default()
         })
         .unwrap();
@@ -342,7 +518,7 @@ fn settings_replace_wrappers_fence_only_folder_policy_changes() {
         generation
     );
 
-    settings.include_non_repo_folders = true;
+    settings.include_non_repo_folders = false;
     store.replace_settings(&settings).unwrap();
     assert_eq!(
         store.repository_policy_snapshot().unwrap().generation,
@@ -354,7 +530,7 @@ fn settings_replace_wrappers_fence_only_folder_policy_changes() {
         generation + 1
     );
 
-    settings.include_non_repo_folders = false;
+    settings.include_non_repo_folders = true;
     store.save_settings(&settings).unwrap();
     assert_eq!(
         store.repository_policy_snapshot().unwrap().generation,
@@ -370,9 +546,9 @@ fn settings_replace_with_fences_folder_policy_before_callback() {
     let generation = store.repository_policy_snapshot().unwrap().generation;
 
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 1),
-        (true, generation + 1),
-        (false, generation + 2),
+        (false, generation + 1),
+        (false, generation + 1),
+        (true, generation + 2),
     ] {
         let (_, saved, observed_generation) = store
             .replace_settings_with(
@@ -404,12 +580,12 @@ fn settings_transition_fences_folder_policy_before_callback() {
     let (previous, saved, ()) = store
         .replace_settings_with_transition(
             &AppSettings {
-                include_non_repo_folders: true,
+                include_non_repo_folders: false,
                 ..AppSettings::default()
             },
             |transaction, previous, saved| {
-                assert!(!previous.include_non_repo_folders);
-                assert!(saved.include_non_repo_folders);
+                assert!(previous.include_non_repo_folders);
+                assert!(!saved.include_non_repo_folders);
                 assert_eq!(super::settings::read_settings(transaction)?, *saved);
                 assert_eq!(
                     read_repository_policy_generation(transaction)?,
@@ -420,8 +596,8 @@ fn settings_transition_fences_folder_policy_before_callback() {
         )
         .unwrap();
 
-    assert!(!previous.include_non_repo_folders);
-    assert!(saved.include_non_repo_folders);
+    assert!(previous.include_non_repo_folders);
+    assert!(!saved.include_non_repo_folders);
     assert_eq!(
         store.repository_policy_snapshot().unwrap().generation,
         generation + 1
@@ -442,9 +618,9 @@ fn settings_scale_preserving_writes_fence_only_folder_policy_changes() {
     );
 
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 1),
-        (true, generation + 1),
-        (false, generation + 2),
+        (false, generation + 1),
+        (false, generation + 1),
+        (true, generation + 2),
     ] {
         let (_, saved, ()) = store
             .replace_settings_preserving_interface_scale(
@@ -481,9 +657,9 @@ fn settings_update_wrappers_fence_only_folder_policy_changes() {
     let generation = store.repository_policy_snapshot().unwrap().generation;
 
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 1),
-        (true, generation + 1),
-        (false, generation + 2),
+        (false, generation + 1),
+        (false, generation + 1),
+        (true, generation + 2),
     ] {
         let (_, saved, result) = store
             .update_settings_with(|settings| {
@@ -501,9 +677,9 @@ fn settings_update_wrappers_fence_only_folder_policy_changes() {
         );
     }
     for (include_non_repo_folders, expected_generation) in [
-        (true, generation + 3),
-        (true, generation + 3),
-        (false, generation + 4),
+        (false, generation + 3),
+        (false, generation + 3),
+        (true, generation + 4),
     ] {
         store
             .update_settings(|settings| {
@@ -623,7 +799,7 @@ fn settings_policy_generation_failure_rolls_back_preferences() {
         ))
         .unwrap();
 
-    let result = store.update_settings(|settings| settings.include_non_repo_folders = true);
+    let result = store.update_settings(|settings| settings.include_non_repo_folders = false);
 
     assert!(
         result
@@ -665,10 +841,10 @@ fn settings_repair_malformed_stored_presence_values() {
 }
 
 #[test]
-fn live_usage_started_falls_back_to_onboarding_completed_for_older_installs() {
-    // A fresh install with no stored rows at all defaults to not started.
+fn migration_preserves_legacy_live_usage_activation() {
+    // A fresh install starts collection by default.
     let fresh = store();
-    assert!(!fresh.settings().unwrap().live_usage_started);
+    assert!(fresh.settings().unwrap().live_usage_started);
 
     // An install that finished setup before `internal:liveUsageStarted`
     // existed wrote only `onboardingCompleted`. Nothing should change for it:
@@ -683,6 +859,10 @@ fn live_usage_started_falls_back_to_onboarding_completed_for_older_installs() {
             )
             .unwrap();
     }
+    older_install
+        .lock()
+        .execute_batch(super::super::schema::MIGRATIONS[92])
+        .unwrap();
     assert!(older_install.settings().unwrap().live_usage_started);
 }
 
@@ -701,7 +881,6 @@ fn updating_settings_merges_against_the_latest_stored_value() {
         .update_settings(|settings| {
             settings.activity_window_days = 14;
             settings.launch_at_login = false;
-            settings.onboarding_completed = true;
         })
         .unwrap();
 
@@ -711,7 +890,6 @@ fn updating_settings_merges_against_the_latest_stored_value() {
     assert!(!saved.auto_update);
     assert_eq!(saved.activity_window_days, 14);
     assert!(!saved.launch_at_login);
-    assert!(saved.onboarding_completed);
     assert_eq!(store.settings().unwrap(), saved);
 }
 
@@ -743,7 +921,7 @@ fn v72_keeps_only_disabled_agents_that_have_sessions() {
          VALUES ('disabledAgents', 'amp-code, Cursor,,codex,pi,cursor');"
     ));
 
-    assert_eq!(store.schema_version().unwrap(), 92);
+    assert_eq!(store.schema_version().unwrap(), 94);
     assert_eq!(
         store.settings().unwrap().disabled_agents.as_str(),
         "codex,cursor"
@@ -756,7 +934,7 @@ fn v72_clears_a_disabled_list_with_no_session_agents() {
         "INSERT INTO setting (key, value) VALUES ('disabledAgents', 'amp-code,pi');",
     );
 
-    assert_eq!(store.schema_version().unwrap(), 92);
+    assert_eq!(store.schema_version().unwrap(), 94);
     assert!(!store.settings().unwrap().disabled_agents.any());
 }
 
@@ -769,4 +947,119 @@ fn v72_leaves_an_empty_or_missing_disabled_list_alone() {
     let missing = migrate_to_latest(V72_SESSIONS);
     assert_eq!(missing.internal_value("disabledAgents"), None);
     assert!(!missing.settings().unwrap().disabled_agents.any());
+}
+
+#[test]
+fn cloud_preference_defaults_off_and_preserves_saved_folder_opt_out() {
+    let store = store();
+    assert!(!store.settings().unwrap().cloud_upload_enabled);
+    let saved = AppSettings {
+        cloud_upload_enabled: true,
+        include_non_repo_folders: false,
+        ..AppSettings::default()
+    };
+    store.save_settings(&saved).unwrap();
+    assert_eq!(store.settings().unwrap(), saved);
+    let mut disabled = saved;
+    disabled.cloud_upload_enabled = false;
+    store.save_settings(&disabled).unwrap();
+    assert_eq!(store.settings().unwrap(), disabled);
+}
+
+#[test]
+fn sidebar_usage_preferences_preserve_order_scope_and_explicit_empty() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    let mut settings = store.settings().unwrap();
+    assert!(settings.sidebar_usage_pins.is_none());
+    settings.sidebar_usage_appearance = super::super::model::SidebarUsageAppearance::Bars;
+    settings.sidebar_usage_pins = Some(vec![super::super::model::SidebarUsagePin {
+        account: "account:anthropic:test".into(),
+        provider: "anthropic".into(),
+        name: "Claude".into(),
+        window: "seven-day".into(),
+        scope: Some("sonnet".into()),
+        label: "Weekly".into(),
+    }]);
+    let mut second = settings.sidebar_usage_pins.as_ref().unwrap()[0].clone();
+    second.scope = Some("opus".into());
+    settings.sidebar_usage_pins.as_mut().unwrap().push(second);
+    store.save_settings(&settings).unwrap();
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.settings().unwrap(), settings);
+    settings.sidebar_usage_pins = Some(vec![]);
+    store.save_settings(&settings).unwrap();
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(store.settings().unwrap().sidebar_usage_pins, Some(vec![]));
+}
+
+#[test]
+fn usage_default_migration_preserves_explicit_opt_outs() {
+    for enabled in [true, false] {
+        let store = store();
+        let settings = AppSettings {
+            live_usage_started: false,
+            live_usage_enabled: enabled,
+            live_usage_hidden_providers: HiddenMeters::parse("anthropic"),
+            ..AppSettings::default()
+        };
+        store.save_settings(&settings).unwrap();
+        store
+            .lock()
+            .execute_batch(super::super::schema::MIGRATIONS[93])
+            .unwrap();
+        let saved = store.settings().unwrap();
+        assert!(saved.live_usage_started);
+        assert_eq!(saved.live_usage_active(), enabled);
+        assert_eq!(
+            saved.live_usage_hidden_providers,
+            settings.live_usage_hidden_providers
+        );
+    }
+}
+
+#[test]
+fn sidebar_patch_preserves_concurrent_settings_in_both_write_orders() {
+    use super::super::model::{SidebarUsageAppearance, SidebarUsagePatch};
+    for sidebar_first in [false, true] {
+        let store = store();
+        let mut stale_settings = store.settings().unwrap();
+        stale_settings.notifications_enabled = false;
+        stale_settings.analytics_enabled = false;
+        let sidebar = || {
+            store
+                .patch_sidebar_usage(SidebarUsagePatch {
+                    sidebar_usage_pins: Some(vec![]),
+                    sidebar_usage_appearance: Some(SidebarUsageAppearance::Bars),
+                })
+                .unwrap();
+        };
+        let preferences = || {
+            store
+                .replace_settings_preserving_interface_scale(&stale_settings, |_, _, _| Ok(()))
+                .unwrap();
+        };
+        if sidebar_first {
+            sidebar();
+            preferences();
+        } else {
+            preferences();
+            sidebar();
+        }
+        let saved = store.settings().unwrap();
+        assert!(!saved.notifications_enabled);
+        assert!(!saved.analytics_enabled);
+        assert_eq!(saved.sidebar_usage_pins, Some(vec![]));
+        assert_eq!(saved.sidebar_usage_appearance, SidebarUsageAppearance::Bars);
+        assert_eq!(store.settings_snapshot(), saved);
+        store
+            .patch_sidebar_usage(SidebarUsagePatch {
+                sidebar_usage_pins: None,
+                sidebar_usage_appearance: Some(SidebarUsageAppearance::Dials),
+            })
+            .unwrap();
+        assert_eq!(store.settings().unwrap().sidebar_usage_pins, Some(vec![]));
+    }
 }

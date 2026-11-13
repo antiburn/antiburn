@@ -135,6 +135,8 @@ async fn read_inventory(
 struct DirectoryContext {
     home: PathBuf,
     canonical_home: PathBuf,
+    store: Store,
+    generation: u64,
     granted: HashSet<String>,
     candidates: Vec<Candidate>,
     remote: RemoteCache,
@@ -147,8 +149,18 @@ struct RemoteCache {
 
 impl DirectoryContext {
     fn blocked(&self, path: &Path) -> bool {
-        protected::cwd_resolution_blocked_in(&self.home, path, &self.granted)
-            || protected::cwd_resolution_blocked_in(&self.canonical_home, path, &self.granted)
+        !self
+            .store
+            .repository_policy_is_current(self.generation)
+            .unwrap_or(false)
+            || !protected::project_access_decision_in(
+                Some(&self.canonical_home),
+                path,
+                &self.granted,
+            )
+            .is_allowed()
+            || !protected::project_path_access_in(Some(&self.home), path, &self.granted)
+                .is_allowed()
     }
 
     fn remote(&self, path: &Path) -> bool {
@@ -239,7 +251,7 @@ fn known_native_repositories(store: &Store) -> Result<BTreeMap<PathBuf, bool>, S
 }
 
 fn resolve_home(home: &Path) -> Result<PathBuf, String> {
-    if !home.is_absolute() {
+    if !protected::project_path_access_in(Some(home), home, &HashSet::new()).is_allowed() {
         return Err(READ_ERROR.into());
     }
     let canonical = std::fs::canonicalize(home).map_err(|_| READ_ERROR.to_owned())?;
@@ -254,30 +266,33 @@ fn resolve_home(home: &Path) -> Result<PathBuf, String> {
 
 fn context(store: &Store, home: PathBuf, remote: RemoteCache) -> Result<DirectoryContext, String> {
     let canonical_home = resolve_home(&home)?;
-    let granted = store.granted_dirs().map_err(|_| READ_ERROR.to_owned())?;
+    let policy = store
+        .repository_policy_snapshot()
+        .map_err(|_| READ_ERROR.to_owned())?;
     let candidates = candidates(&home, known_native_repositories(store)?)?;
     Ok(DirectoryContext {
         home,
         canonical_home,
-        granted,
+        store: store.clone(),
+        generation: policy.generation,
+        granted: policy.granted_dirs,
         candidates,
         remote,
     })
 }
 
 fn policy_is_current(store: &Store, context: &DirectoryContext) -> bool {
-    if !resolve_home(&context.home).is_ok_and(|home| home == context.canonical_home) {
+    if !store
+        .repository_policy_is_current(context.generation)
+        .unwrap_or(false)
+        || !resolve_home(&context.home).is_ok_and(|home| home == context.canonical_home)
+    {
         return false;
     }
-    let Ok(granted) = store.granted_dirs() else {
-        return false;
-    };
     let Ok(repositories) = known_native_repositories(store) else {
         return false;
     };
-    granted == context.granted
-        && candidates(&context.home, repositories)
-            .is_ok_and(|candidates| candidates == context.candidates)
+    candidates(&context.home, repositories).is_ok_and(|candidates| candidates == context.candidates)
 }
 
 fn remote_cache(app: &tauri::AppHandle) -> Result<RemoteCache, String> {
@@ -329,13 +344,13 @@ fn inspect(
     candidate: &Candidate,
     context: &DirectoryContext,
 ) -> Result<(PathBuf, usize), DirectoryOpenError> {
-    if context.blocked(&candidate.path) {
-        return Err(DirectoryOpenError::unavailable(ACCESS_MESSAGE));
-    }
     if context.remote(&candidate.path) {
         return Err(DirectoryOpenError::unavailable(
             "Cached remote folders are not local check folders.",
         ));
+    }
+    if context.blocked(&candidate.path) {
+        return Err(DirectoryOpenError::unavailable(ACCESS_MESSAGE));
     }
     let canonical =
         std::fs::canonicalize(&candidate.path).map_err(DirectoryOpenError::inaccessible)?;
@@ -361,8 +376,9 @@ fn inspect(
             "The check folder listing is incomplete. Check folder access and limits, then refresh.",
         )
     })?;
-    if std::fs::canonicalize(&candidate.path).map_err(DirectoryOpenError::inaccessible)?
-        != canonical
+    if context.blocked(&candidate.path)
+        || std::fs::canonicalize(&candidate.path).map_err(DirectoryOpenError::inaccessible)?
+            != canonical
     {
         return Err(DirectoryOpenError::unavailable(
             "The check folder changed. Refresh and try again.",
@@ -492,13 +508,13 @@ fn open_directory(
             "This repository is no longer available for check files. Refresh and try again.",
         ));
     }
-    if context.blocked(&binding.candidate.path) {
-        return Err(DirectoryOpenError::unavailable(ACCESS_MESSAGE));
-    }
     if context.remote(&binding.candidate.path) {
         return Err(DirectoryOpenError::unavailable(
             "Cached remote folders are not local check folders.",
         ));
+    }
+    if context.blocked(&binding.candidate.path) {
+        return Err(DirectoryOpenError::unavailable(ACCESS_MESSAGE));
     }
     let canonical =
         std::fs::canonicalize(&binding.candidate.path).map_err(DirectoryOpenError::inaccessible)?;

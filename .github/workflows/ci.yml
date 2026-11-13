@@ -290,6 +290,25 @@ jobs:
           # nightly. This keeps the repository in its 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !endsWith(matrix.name, '-arm64') }}
 
+      - name: Test SQLite WAL initialization backport
+        shell: bash
+        working-directory: crates/antiburn-local/vendor/libsqlite3-sys
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            clang -O0 wal-regression.c -o "$RUNNER_TEMP/wal-regression.exe"
+            "$RUNNER_TEMP/wal-regression.exe"
+          else
+            cc -O0 wal-regression.c -o "$RUNNER_TEMP/wal-regression" -lpthread -ldl -lm
+            "$RUNNER_TEMP/wal-regression"
+          fi
+
+      - name: Test external SQLx consumer
+        shell: bash
+        working-directory: crates/antiburn-local
+        run: |
+          cargo tree --manifest-path tests/sqlite-compat/Cargo.toml --locked -i libsqlite3-sys --prefix none | grep 'libsqlite3-sys v0.30.1 .*vendor'
+          cargo run --manifest-path tests/sqlite-compat/Cargo.toml --locked
+
       - name: Install nextest
         uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2
         with:

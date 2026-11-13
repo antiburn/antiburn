@@ -151,7 +151,9 @@ mod admission_tests {
             .unwrap()
             .unwrap();
         store
-            .update_settings(|settings| settings.include_non_repo_folders = true)
+            .update_settings(|settings| {
+                settings.include_non_repo_folders = !settings.include_non_repo_folders;
+            })
             .unwrap();
         assert!(
             !store
@@ -648,10 +650,15 @@ pub(crate) fn apply_session_retention_in(
     drop(statement);
 
     let mut removed = 0;
+    let mut removed_native = false;
     for key in keys {
         if delete_session_in(connection, &key)?.is_some() {
             removed += 1;
+            removed_native |= key.environment_key == "native";
         }
+    }
+    if removed_native {
+        reconcile_project_deferrals(connection)?;
     }
     Store::prune_burn_check_candidate_payloads_in(connection, cutoff)?;
     Store::apply_provider_usage_retention_in(connection, retention_days, now_epoch)?;

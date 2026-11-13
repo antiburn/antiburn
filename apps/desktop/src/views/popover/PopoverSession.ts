@@ -122,7 +122,7 @@ const USAGE_VISIBLE_POLL_MS = 60_000
 const SESSION_LIMIT_ALLOCATION_REFRESH_MIN_MS = 30_000
 
 function liveUsageActive(settings: AppSettings | null): boolean {
-  return Boolean(settings?.liveUsageEnabled && settings.onboardingCompleted)
+  return Boolean(settings?.liveUsageEnabled && settings.liveUsageStarted)
 }
 
 /**
