@@ -325,6 +325,7 @@ fn run_record_pass_with(
             record.key.session_id.clone(),
             record.wsl_distro.clone(),
             analysis::ClaimedSource {
+                path: (record.source_kind == "file").then(|| record.source_label.clone().into()),
                 fingerprint: record.source_fingerprint.clone(),
                 generation: 0,
             },

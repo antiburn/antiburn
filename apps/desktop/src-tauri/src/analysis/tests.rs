@@ -31,6 +31,7 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
         AgentKind::Claude,
         "session",
         ClaimedSource {
+            path: None,
             fingerprint: Some("sv1:stale-discovery-claim".to_owned()),
             generation: 1,
         },
@@ -1851,10 +1852,12 @@ fn an_inline_source_records_matching_and_mismatching_generations() {
     let content = claude_record("inline", 1_760_000_000);
     let fingerprint = inline_fingerprint(&content);
     let matching = ClaimedSource {
+        path: None,
         fingerprint: Some(fingerprint),
         generation: 9,
     };
     let mismatching = ClaimedSource {
+        path: None,
         fingerprint: Some("sv1:different".to_string()),
         generation: 9,
     };
@@ -2440,4 +2443,175 @@ fn source_change_telemetry_uses_bounded_reason_labels() {
         super::source_changed_reason_label(SourceChangedReason::ResumeTailMismatch),
         "resume-tail-mismatch"
     );
+}
+
+#[tokio::test]
+async fn duplicate_rollouts_use_the_claimed_file_and_keep_change_detection() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let first = temp.path().join("rollout-first-synthetic.jsonl");
+    let second = temp.path().join("rollout-second-synthetic.jsonl");
+    std::fs::write(&first, codex_record()).unwrap();
+    std::fs::write(&second, codex_record() + "\n").unwrap();
+
+    for path in [&first, &second] {
+        use antiburn_local::discovery::source_version::{
+            FINGERPRINT_HEAD_BYTES, FingerprintInputs, SourceStat, head_hash_of,
+        };
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).unwrap();
+        let stat = SourceStat::from_open_std_file(&file).unwrap();
+        let mut head = Vec::new();
+        (&mut file)
+            .take(FINGERPRINT_HEAD_BYTES as u64)
+            .read_to_end(&mut head)
+            .unwrap();
+        let fingerprint = FingerprintInputs {
+            stat,
+            head_hash: Some(head_hash_of(&head)),
+        }
+        .fingerprint();
+        let pass = analyze_for_evidence(
+            AgentKind::Codex,
+            "synthetic",
+            None,
+            ClaimedSource {
+                path: Some(path.clone()),
+                fingerprint: Some(fingerprint.clone()),
+                generation: 0,
+            },
+            PassSignal::new(),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(pass.outcome, PassOutcome::Published);
+        assert_eq!(pass.analysis.source_path.as_deref(), path.to_str());
+
+        std::fs::write(path, codex_record() + "\n\n\n").unwrap();
+        let changed = analyze_for_evidence(
+            AgentKind::Codex,
+            "synthetic",
+            None,
+            ClaimedSource {
+                path: Some(path.clone()),
+                fingerprint: Some(fingerprint),
+                generation: 0,
+            },
+            PassSignal::new(),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(changed.outcome, PassOutcome::SourceChanged);
+    }
+
+    std::fs::remove_file(&first).unwrap();
+    let missing = analyze_for_evidence(
+        AgentKind::Codex,
+        "synthetic",
+        None,
+        ClaimedSource {
+            path: Some(first.clone()),
+            fingerprint: None,
+            generation: 0,
+        },
+        PassSignal::new(),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(missing.outcome, PassOutcome::SourceMissing);
+    assert_eq!(missing.analysis.source_path.as_deref(), first.to_str());
+    assert!(second.is_file());
+}
+
+#[tokio::test]
+async fn other_vendor_files_publish_from_the_selected_duplicate() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../crates/antiburn-local/tests/fixtures");
+    for (agent, relative, fixture) in [
+        (
+            AgentKind::Pi,
+            ".pi/agent/sessions/project/2026_synthetic.jsonl",
+            "native_tool_facts/pi.jsonl",
+        ),
+        (
+            AgentKind::Omp,
+            ".omp/agent/sessions/project/2026_synthetic.jsonl",
+            "native_tool_facts/pi.jsonl",
+        ),
+        (
+            AgentKind::AmpCode,
+            ".local/share/amp/threads/T-synthetic-39.json",
+            "source_contracts/amp_export_v39.json",
+        ),
+        (
+            AgentKind::Cursor,
+            ".cursor/projects/project/agent-transcripts/synthetic.jsonl",
+            "cursor_characterization/agent_content_blocks.jsonl",
+        ),
+        (
+            AgentKind::Copilot,
+            ".copilot/session-state/11111111-1111-4111-8111-111111111111/events.jsonl",
+            "source_contracts/copilot_interleaved.jsonl",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let content = std::fs::read(fixtures.join(fixture)).unwrap();
+        let first = temp.path().join("first").join(relative);
+        let second = temp.path().join("second").join(relative);
+        for path in [&first, &second] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, &content).unwrap();
+            if agent == AgentKind::Copilot {
+                let database = path
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("session-store.db");
+                let connection = rusqlite::Connection::open(database).unwrap();
+                connection.execute_batch(
+                    "PRAGMA user_version = 7;
+                     CREATE TABLE sessions (session_id TEXT, shutdown_model TEXT);
+                     CREATE TABLE request_usage (
+                         session_id TEXT, request_id TEXT, agent_id TEXT,
+                         parent_tool_call_id TEXT, model TEXT,
+                         input_tokens INTEGER, output_tokens INTEGER,
+                         cache_read_tokens INTEGER, cache_write_tokens INTEGER
+                     );
+                     INSERT INTO sessions VALUES ('11111111-1111-4111-8111-111111111111', 'synthetic-main');
+                     INSERT INTO request_usage VALUES ('11111111-1111-4111-8111-111111111111', 'request-1', NULL, NULL, 'synthetic-main', 10, 5, 2, 1);"
+                ).unwrap();
+            }
+        }
+        let session_id = match agent {
+            AgentKind::AmpCode => "T-synthetic-39",
+            AgentKind::Cursor => "cursor-agent-content",
+            AgentKind::Copilot => "11111111-1111-4111-8111-111111111111",
+            _ => "facts",
+        };
+        for path in [&first, &second] {
+            let pass = analyze_for_evidence(
+                agent,
+                session_id,
+                None,
+                ClaimedSource {
+                    path: Some(path.clone()),
+                    fingerprint: None,
+                    generation: 0,
+                },
+                PassSignal::new(),
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(pass.outcome, PassOutcome::Published, "{agent:?}");
+            assert_eq!(
+                pass.analysis.source_path.as_deref(),
+                path.to_str(),
+                "{agent:?}"
+            );
+        }
+    }
 }
