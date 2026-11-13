@@ -1892,6 +1892,7 @@ async fn file_source_identity_survives_real_publication_and_revision_reconciliat
                 AgentKind::Claude,
                 &session_id,
                 analysis::ClaimedSource {
+                    path: None,
                     fingerprint,
                     generation: source_generation,
                 },
@@ -2410,4 +2411,19 @@ fn a_publish_with_no_incidents_still_succeeds_and_ingests_nothing() {
     let outcome = apply_outcome(&store, &claim, &pass, 100).unwrap();
     assert!(outcome.applied);
     assert!(outcome.ingested.is_none());
+}
+
+#[tokio::test]
+async fn worker_pins_file_claims_to_the_scanned_source() {
+    for kind in ["file", "provider_db", "inline"] {
+        let mut source = record("duplicate-rollout");
+        source.source_kind = kind.into();
+        let expected = (kind == "file").then(|| std::path::PathBuf::from(&source.source_label));
+        let analyzer = |_, _, _, claimed: analysis::ClaimedSource, _, _, _| {
+            assert_eq!(claimed.path, expected);
+            assert_eq!(claimed.fingerprint, source.source_fingerprint);
+            Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
+        };
+        run_record_pass_with(&source, PassSignal::new(), 1, store(), &analyzer).await;
+    }
 }

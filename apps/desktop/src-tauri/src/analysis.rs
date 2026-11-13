@@ -62,6 +62,8 @@ mod grouped_source;
 pub const MIN_ORCHESTRATED_SUBAGENTS: u32 = 2;
 
 pub struct ClaimedSource {
+    /// The scan-selected file remains authoritative when session IDs repeat.
+    pub path: Option<std::path::PathBuf>,
     pub fingerprint: Option<String>,
     pub generation: i64,
 }
@@ -2200,12 +2202,27 @@ pub async fn analyze_for_evidence(
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
     fork_parent_session_id: Option<String>,
 ) -> EvidencePass {
-    let Some(source) = locate(agent, session_id, wsl_distro).await else {
-        return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
+    let source = match &claimed.path {
+        Some(path) => SessionSource::File(path.clone()),
+        None => {
+            let Some(source) = locate(agent, session_id, wsl_distro).await else {
+                return unavailable_evidence_pass(PassOutcome::SourceMissing, None, None);
+            };
+            source
+        }
     };
-    let mut paths = Explorers::DISK
-        .list_subagents_in_environment(&agent, session_id, wsl_distro)
-        .await;
+    let mut paths = match &claimed.path {
+        Some(path) => {
+            Explorers::DISK
+                .list_subagents_for_transcript(&agent, path)
+                .await
+        }
+        None => {
+            Explorers::DISK
+                .list_subagents_in_environment(&agent, session_id, wsl_distro)
+                .await
+        }
+    };
     paths.sort();
     let mut children = Vec::new();
     for path in paths {
