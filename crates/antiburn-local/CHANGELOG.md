@@ -17,6 +17,18 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+### Added
+
+- The `kiro` agent now also discovers **Kiro Crew** session logs under
+  `~/.kiro/crew/sessions/<name>.jsonl` (the autonomous-layer front-end), in
+  addition to the existing Kiro IDE and Kiro CLI sources. All Kiro surfaces
+  continue to report under the single `kiro` agent. New discovery root
+  `~/.kiro/crew/sessions`; `cron_*`, lock, and `.index/` files are skipped. New
+  `SourceFormat::KiroCrewJsonl` (`kiro_crew_jsonl`), appended last so existing
+  variants keep their index-based (postcard) encoding. Crew logs carry no
+  per-turn token usage, so the reader records model identity only — no usage,
+  cost, prompt, message, or tool-payload retention.
+
 ### Removed
 
 - Removed the Ignored Instructions, Skill Opportunities, Over-exploring, and

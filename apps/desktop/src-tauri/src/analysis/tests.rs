@@ -51,6 +51,25 @@ async fn evidence_pass_rejects_a_file_that_changed_after_discovery() {
 }
 
 #[test]
+fn kiro_crew_format_requires_a_direct_session_log() {
+    let format = |path| source_format(AgentKind::Kiro, &SessionSource::File(path));
+    let root = std::path::PathBuf::from("/home/tester/.kiro/crew/sessions");
+
+    assert_eq!(
+        format(root.join("crew-session.jsonl")),
+        SourceFormat::KiroCrewJsonl
+    );
+    assert_eq!(
+        format(root.join(".index/crew-session.jsonl")),
+        SourceFormat::KiroSessionJson
+    );
+    assert_eq!(
+        format(root.join("cron_worker.jsonl")),
+        SourceFormat::KiroSessionJson
+    );
+}
+
+#[test]
 fn cached_total_tokens_sums_every_model_and_component() {
     let json = r#"{
         "claude-opus-4-6": {"input_tokens": 10, "output_tokens": 20, "cache_read_tokens": 5, "cache_creation_tokens": 3},
