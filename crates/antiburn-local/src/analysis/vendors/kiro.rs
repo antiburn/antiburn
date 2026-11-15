@@ -182,9 +182,9 @@ fn visit_crew(input: &SessionInput, sink: &mut dyn RecordSink) -> anyhow::Result
     Ok(VisitOutcome::Unvalidated)
 }
 
-/// Crew record roles that are known and carry no model turn: the user's
-/// prompt, tool results, and dashboard-side events (errors, attached files,
-/// injected context, cards, system notices, MCP OAuth prompts).
+/// Lists the Crew record roles that carry no model turn: the user's prompt,
+/// tool results, and dashboard-side events (errors, attached files, injected
+/// context, cards, system notices, MCP OAuth prompts).
 const CREW_NON_MODEL_ROLES: &[&str] = &[
     "user",
     "tool",
