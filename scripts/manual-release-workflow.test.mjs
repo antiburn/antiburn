@@ -99,7 +99,19 @@ test("engine releases skip only the desktop dependency checks", () => {
   assert.equal(input.type, "boolean");
   assert.equal(input.default, true);
   const steps = checks.jobs["dependency-checks"].steps;
+  const fetch = steps.find(
+    (step) => step.name === "Fetch desktop dependencies for notices",
+  );
+  const notices = steps.find((step) => step.run === "pnpm notices:check");
+  assert.equal(fetch.if, "${{ !inputs.desktop }}");
+  for (const path of ["apps/desktop/src-tauri", "apps/cli"]) {
+    assert.ok(
+      fetch.run.includes(`cargo fetch --locked --manifest-path ${path}/Cargo.toml`),
+    );
+  }
+  assert.ok(steps.indexOf(fetch) < steps.indexOf(notices));
   for (const step of steps) {
+    if (step === fetch) continue;
     const desktop = step["working-directory"] === "apps/desktop/src-tauri";
     assert.equal(
       /inputs\.desktop/.test(step.if ?? ""),
@@ -107,9 +119,7 @@ test("engine releases skip only the desktop dependency checks", () => {
       `${step.name} desktop condition`,
     );
   }
-  assert.ok(
-    steps.some((step) => step.run === "pnpm notices:check" && !step.if),
-  );
+  assert.equal(notices.if, undefined);
   assert.equal(workflow.jobs["dependency-checks"].with.desktop, undefined);
   const engine = readWorkflow("release-engine.yml");
   assert.deepEqual(engine.jobs["dependency-checks"].with, {

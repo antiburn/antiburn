@@ -17,7 +17,7 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
-## [0.15.0] - 2026-11-16
+## [0.15.1] - 2026-11-16
 
 ### Added
 
