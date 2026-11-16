@@ -169,6 +169,7 @@ jobs:
           git archive --format=tar HEAD:crates/antiburn-local | tar -x -C "$stage"
           git archive --format=tar HEAD -- \
             docs/check-coverage.md docs/session-coverage.md docs/support.md \
+            plugins/antiburn-live/hooks/catalog.ts \
             | tar -x -C "$stage"
           # Include the project licence and notice in the source tarball.
           cp LICENSE NOTICE THIRD_PARTY_NOTICES "$stage/"

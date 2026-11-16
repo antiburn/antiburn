@@ -17,6 +17,29 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-16
+
+### Added
+
+- Add bounded OpenCode V2 stored session reads and live evidence capture for the
+  characterized `2.0.32` service. Live capture requires proof that the registered
+  local service has the selected database open. WSL stored reads do not enable
+  native live checks.
+- Expose typed public events and tool outcomes for check consumers. Native
+  routes expose only the messages, calls, results, and response cycles their
+  sources can prove. The separate Cursor Desktop snapshot route supplies
+  ordered tool results and user-slot context for admitted main sessions.
+
+### Changed
+
+- Advance the parser to revision 67, the metrics schema to revision 10, and
+  the resume snapshot to revision 25. Embedders should apply the revision
+  checks before reusing cached metrics or resuming from a saved snapshot.
+- Defer automatic Git and project inspection in protected folders until access
+  is granted. Sessions with deferred project details can still be indexed when
+  their transcripts are available. A path recorded in a transcript does not
+  grant access to the project.
+
 ### Removed
 
 - Removed the Ignored Instructions, Skill Opportunities, Over-exploring, and

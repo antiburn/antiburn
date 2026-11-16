@@ -4,15 +4,23 @@
 //! differ from `ReportCatalogs::default()`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use antiburn_local::checks::{ModelFamily, REGISTRY_REVISION, ReportCatalogs};
 use serde_json::Value;
 
-const CATALOG_MODULE: &str = include_str!("../../../plugins/antiburn-live/hooks/catalog.ts");
-
 /// Reads the JSON that the mod module holds between its two marker comments.
 fn catalog() -> Value {
-    let (_, rest) = CATALOG_MODULE
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = if manifest_dir.join("docs").is_dir() {
+        manifest_dir.to_path_buf()
+    } else {
+        manifest_dir.join("../..")
+    };
+    let path = root.join("plugins/antiburn-live/hooks/catalog.ts");
+    let module = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let (_, rest) = module
         .split_once("/* catalog:begin */")
         .expect("catalog.ts must have the begin marker");
     let (json, _) = rest
