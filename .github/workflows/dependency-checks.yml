@@ -87,5 +87,12 @@ jobs:
             deny apps/cli --config ../desktop/src-tauri/deny.toml
           fi
 
+      # The frozen notices report reads desktop and CLI dependencies on every run.
+      - name: Fetch desktop dependencies for notices
+        if: ${{ !inputs.desktop }}
+        run: |
+          cargo fetch --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+          cargo fetch --locked --manifest-path apps/cli/Cargo.toml
+
       - name: Verify third-party notices
         run: pnpm notices:check
