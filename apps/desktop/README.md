@@ -69,7 +69,7 @@ server, or backend.
   Privacy provides the opt-out. Default source and development builds exclude
   the analytics client.
 
-## Sessions navigation and Cloud preference
+## Sessions navigation and optional Cloud builds
 
 The main window opens Sessions immediately. Its sidebar contains Sessions,
 Checks, and Settings. Overview is no longer a navigation or search destination;
@@ -80,11 +80,12 @@ and integration startup remain independent of this introduction. Supported HUDs
 appear after completion unless an existing preference disables them.
 
 The introduction uses isolated example data to demonstrate Sessions, provider
-limits, the HUD, notifications, and Checks. Its Cloud action opens a coming-soon handoff with Learn more and local continuation.
-Native authentication is independently gated on verified backend configuration.
-After verified login, folder drafts and truthful completion states are available;
-production uploads remain disabled pending the service and consent contract.
-Agent readiness comes from native integration status. See the
+limits, the HUD, notifications, and Checks. Ordinary builds finish after Checks.
+Cloud is unreleased and requires the explicit, non-default Rust feature `cloud`.
+Environment values cannot enable the feature. Ordinary builds register no Cloud
+commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
+Manual Cloud builds also require valid build-time service configuration before
+they can connect. See the
 [Cloud desktop contract](../../docs/cloud/desktop-contract.md).
 
 `pnpm build:demo` builds current product components into a separate demo bundle.
@@ -98,16 +99,12 @@ updates still require visual and motion comparisons against that reference.
 asset response. Explicit bundled asset URLs support opaque-origin frames on
 WKWebView without enabling same-origin access or network connections.
 
-Settings → Sessions places Antiburn Cloud above Repositories, Include folders
-without Git, and Scan folders. New settings include non-Git folders; saved
-preferences, including an explicit opt-out, remain unchanged. Upload sessions
-saves a device-local preference that defaults off. This build does not upload
-sessions, authenticate with Antiburn Cloud, or queue history for later upload.
-
-Before uploads can be enabled, the pipeline must retain the original working
-folder separately from inferred repository associations. The Cloud contract
-also needs decisions on history, payload fields, retention/deletion, remote
-sessions, authentication, and disconnect behavior.
+Manual Cloud builds place the Cloud account controls in Settings → Sessions,
+above Repositories. Connecting remains available after the introduction.
+Folder choices and the legacy Upload sessions preference do not authorize
+capture. Full native content needs a separate confirmation for the selected
+account and destination. Attachments remain separate. Native capture transport
+is disabled; no sessions are queued or uploaded.
 
 ## Layout
 
@@ -650,7 +647,7 @@ validator together.
 
 Debug builds also include **Reset onboarding** in the menu-bar icon's context menu. It restarts the full native onboarding flow at Welcome, replacing an open onboarding window. Sessions, preferences, and Cloud account state are preserved.
 
-Debug builds include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. **Full Walkthrough** opens a separate native window with an example account and folders. Sign in simulates a callback after a short wait; review the selected example folders and start syncing to see the prototype’s ongoing background-sync completion screen. Sync runs in the background; Done is available without waiting for a sync result. **Done** closes the preview. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
+Debug builds with the explicit `cloud` feature include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. Ordinary debug and production builds omit it. **Full Walkthrough** opens a separate native window with an example account and folders. Connecting simulates a callback after a short wait. The preview does not connect to a service or upload native content. **Done** closes it. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
 
 The other entries open auth recovery, folder and agent-readiness states directly. Dedicated sync progress and recovery screens are not part of onboarding. Completion entries show local completion with each agent-readiness state. Reopening any menu entry resets that preview.
 

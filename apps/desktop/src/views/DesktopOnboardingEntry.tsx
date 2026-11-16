@@ -1,9 +1,11 @@
 import { useState, useSyncExternalStore } from "react"
 import { DesktopOnboardingSession } from "../lib/DesktopOnboardingSession"
 import { isMacOS } from "../lib/platform"
+import { appInfoStore } from "../lib/appInfoStore"
 import { OnboardingView } from "../onboarding/OnboardingView"
 
 export function DesktopOnboardingEntry() {
+  const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [session] = useState(() => new DesktopOnboardingSession())
   const snapshot = useSyncExternalStore(
     session.subscribe,
@@ -48,6 +50,7 @@ export function DesktopOnboardingEntry() {
         </main>
       ) : (
         <OnboardingView
+          cloudEnabled={info?.cloudEnabled === true}
           step={snapshot.state}
           onStepChange={(step) => void session.change(step)}
           onComplete={() => void session.change("completed")}

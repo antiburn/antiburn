@@ -1,75 +1,54 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Read;
-use std::time::Duration;
+use std::{io::Read, time::Duration};
 use url::Url;
+
+pub const CLIENT_ID: &str = "antiburn-desktop";
+pub const SCOPE: &str = "capture:write";
+pub const MAX_ACCESS_SECONDS: u64 = 900;
+pub const MAX_GRANT_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 #[derive(Clone)]
 pub struct Config {
+    pub issuer: String,
+    pub resource: String,
     pub authorization: Url,
     pub token: Url,
-    pub profile: Url,
+    pub session: Url,
     pub revocation: Url,
-    pub client_id: String,
-    pub callback: String,
 }
 
 impl Config {
-    pub fn from_build(scheme: &str) -> Option<Self> {
-        if option_env!("ANTIBURN_CLOUD_AUTH_VERIFIED") != Some("enabled") {
-            return None;
-        }
+    pub fn from_build() -> Option<Self> {
         Self::parse(
-            option_env!("ANTIBURN_CLOUD_AUTHORIZATION_URL")?,
-            option_env!("ANTIBURN_CLOUD_TOKEN_URL")?,
-            option_env!("ANTIBURN_CLOUD_PROFILE_URL")?,
-            option_env!("ANTIBURN_CLOUD_REVOCATION_URL")?,
-            option_env!("ANTIBURN_CLOUD_CLIENT_ID")?,
-            option_env!("ANTIBURN_CLOUD_CALLBACK_URI")?,
-            scheme,
+            option_env!("ANTIBURN_CLOUD_ISSUER")?,
+            option_env!("ANTIBURN_CLOUD_RESOURCE")?,
         )
     }
 
-    pub fn parse(
-        authorization: &str,
-        token: &str,
-        profile: &str,
-        revocation: &str,
-        client_id: &str,
-        callback: &str,
-        scheme: &str,
-    ) -> Option<Self> {
-        let endpoint = |value: &str| {
+    pub fn parse(issuer: &str, resource: &str) -> Option<Self> {
+        fn canonical(value: &str) -> Option<Url> {
             let url = Url::parse(value).ok()?;
             (url.scheme() == "https"
                 && url.host_str().is_some()
                 && url.username().is_empty()
                 && url.password().is_none()
+                && url.query().is_none()
                 && url.fragment().is_none()
-                && url.query().is_none())
-            .then_some(url)
-        };
-        let authorization = endpoint(authorization)?;
-        let token = endpoint(token)?;
-        let profile = endpoint(profile)?;
-        let revocation = endpoint(revocation)?;
-        if [&token, &profile, &revocation]
-            .iter()
-            .any(|url| url.origin() != authorization.origin())
-            || client_id.is_empty()
-            || client_id.len() > 256
-            || callback != format!("{scheme}://cloud/auth")
-        {
-            return None;
+                && url.path() == "/"
+                && url.as_str() == value)
+                .then_some(url)
         }
+        let issuer_url = canonical(issuer)?;
+        let resource_url = canonical(resource)?;
         Some(Self {
-            authorization,
-            token,
-            profile,
-            revocation,
-            client_id: client_id.to_owned(),
-            callback: callback.to_owned(),
+            issuer: issuer.to_owned(),
+            resource: resource.to_owned(),
+            authorization: issuer_url.join("oauth/authorize").ok()?,
+            token: issuer_url.join("oauth/token").ok()?,
+            revocation: issuer_url.join("oauth/revoke").ok()?,
+            session: resource_url.join("v1/desktop/session").ok()?,
         })
     }
 }
@@ -83,13 +62,90 @@ pub enum Failure {
     CredentialFailed,
     Cancelled,
     Unavailable,
+    ReauthRequired,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct User {
+    pub id: String,
+    pub display_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    Personal,
+    Team,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub kind: WorkspaceKind,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Session {
+    pub user: User,
+    pub grant_id: String,
+    pub device_id: String,
+    pub workspace: Workspace,
+    pub audience: String,
+    pub actions: Vec<String>,
+    pub expires_at: i64,
+}
+
+impl Session {
+    pub fn validate(&self, config: &Config, now: i64) -> Result<(), Failure> {
+        let bounded = |value: &str, max: usize| {
+            !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+        };
+        if !bounded(&self.user.id, 256)
+            || !bounded(&self.user.display_name, 100)
+            || !bounded(&self.grant_id, 256)
+            || !bounded(&self.device_id, 256)
+            || !bounded(&self.workspace.id, 256)
+            || !bounded(&self.workspace.name, 100)
+            || self.audience != config.resource
+            || self.actions != [SCOPE]
+            || self.expires_at <= now
+            || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
+        {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    pub fn same_grant(&self, other: &Self) -> bool {
+        self.user.id == other.user.id
+            && self.grant_id == other.grant_id
+            && self.device_id == other.device_id
+            && self.workspace.id == other.workspace.id
+            && self.workspace.kind == other.workspace.kind
+            && self.audience == other.audience
+            && self.actions == other.actions
+            && self.expires_at == other.expires_at
+    }
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
     pub id: String,
     pub login: String,
+}
+
+impl From<&Session> for Identity {
+    fn from(value: &Session) -> Self {
+        Self {
+            id: value.user.id.clone(),
+            login: value.user.display_name.clone(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -100,54 +156,77 @@ pub struct Tokens {
     pub token_type: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Attempt {
     pub state: String,
-    pub verifier: Option<String>,
+    pub verifier: String,
+    pub callback: String,
     pub expires_at: i64,
+    pub epoch: String,
+    pub generation: u64,
 }
 
-#[derive(Default, Clone, Serialize, Deserialize)]
-pub struct Secrets {
-    pub pending: Option<Attempt>,
-    pub refresh_token: Option<String>,
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Credential {
+    pub epoch: String,
+    pub issuer: String,
+    pub resource: String,
+    pub refresh_token: String,
+    pub session: Option<Session>,
 }
 
 pub trait Vault: Send + Sync {
-    fn read(&self) -> Result<Secrets, Failure>;
-    fn write(&self, secrets: &Secrets) -> Result<(), Failure>;
+    fn read(&self) -> Result<Option<Credential>, Failure>;
+    fn write(&self, credential: Option<&Credential>) -> Result<(), Failure>;
 }
 
-pub struct KeyringVault(pub String);
+pub struct KeyringVault {
+    service: String,
+    account: String,
+}
+impl KeyringVault {
+    pub fn new(service: String, directory: &std::path::Path) -> Self {
+        let namespace =
+            URL_SAFE_NO_PAD.encode(Sha256::digest(directory.as_os_str().as_encoded_bytes()));
+        Self {
+            service,
+            account: format!("cloud-grant-v2-{namespace}"),
+        }
+    }
+}
 impl Vault for KeyringVault {
-    fn read(&self) -> Result<Secrets, Failure> {
-        let entry = keyring::Entry::new(&self.0, "cloud-session-v1")
+    fn read(&self) -> Result<Option<Credential>, Failure> {
+        let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|_| Failure::CredentialFailed)?;
         match entry.get_password() {
-            Ok(value) => serde_json::from_str(&value).map_err(|_| Failure::CredentialFailed),
-            Err(keyring::Error::NoEntry) => Ok(Secrets::default()),
+            Ok(value) => serde_json::from_str(&value)
+                .map(Some)
+                .map_err(|_| Failure::CredentialFailed),
+            Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err(Failure::CredentialFailed),
         }
     }
-    fn write(&self, secrets: &Secrets) -> Result<(), Failure> {
-        let entry = keyring::Entry::new(&self.0, "cloud-session-v1")
+    fn write(&self, credential: Option<&Credential>) -> Result<(), Failure> {
+        let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|_| Failure::CredentialFailed)?;
-        if secrets.pending.is_none() && secrets.refresh_token.is_none() {
-            return match entry.delete_credential() {
+        match credential {
+            Some(credential) => entry
+                .set_password(
+                    &serde_json::to_string(credential).map_err(|_| Failure::CredentialFailed)?,
+                )
+                .map_err(|_| Failure::CredentialFailed),
+            None => match entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
                 Err(_) => Err(Failure::CredentialFailed),
-            };
+            },
         }
-        let value = serde_json::to_string(secrets).map_err(|_| Failure::CredentialFailed)?;
-        entry
-            .set_password(&value)
-            .map_err(|_| Failure::CredentialFailed)
     }
 }
 
 pub trait Transport: Send + Sync {
     fn exchange(&self, config: &Config, fields: &[(&str, &str)]) -> Result<Tokens, Failure>;
-    fn profile(&self, config: &Config, access: &str) -> Result<Identity, Failure>;
+    fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
 
@@ -160,17 +239,15 @@ fn client() -> Result<reqwest::blocking::Client, Failure> {
         .build()
         .map_err(|_| Failure::Offline)
 }
+
 fn decode<T: serde::de::DeserializeOwned>(
     response: reqwest::blocking::Response,
 ) -> Result<T, Failure> {
     let status = response.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED
-        || status == reqwest::StatusCode::FORBIDDEN
-        || status == reqwest::StatusCode::BAD_REQUEST
-    {
+    if [400, 401, 403].contains(&status.as_u16()) {
         return Err(Failure::Rejected);
     }
-    if !status.is_success() {
+    if status != reqwest::StatusCode::OK {
         return Err(Failure::Offline);
     }
     let mut bytes = Vec::new();
@@ -183,6 +260,7 @@ fn decode<T: serde::de::DeserializeOwned>(
     }
     serde_json::from_slice(&bytes).map_err(|_| Failure::InvalidResponse)
 }
+
 impl Transport for HttpTransport {
     fn exchange(&self, config: &Config, fields: &[(&str, &str)]) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
@@ -197,29 +275,20 @@ impl Transport for HttpTransport {
             || tokens.refresh_token.is_empty()
             || tokens.access_token.len() > 16_384
             || tokens.refresh_token.len() > 16_384
-            || !(60..=86_400).contains(&tokens.expires_in)
+            || !(1..=MAX_ACCESS_SECONDS).contains(&tokens.expires_in)
         {
             return Err(Failure::InvalidResponse);
         }
         Ok(tokens)
     }
-    fn profile(&self, config: &Config, access: &str) -> Result<Identity, Failure> {
-        let identity: Identity = decode(
+    fn session(&self, config: &Config, access: &str) -> Result<Session, Failure> {
+        decode(
             client()?
-                .get(config.profile.clone())
+                .get(config.session.clone())
                 .bearer_auth(access)
                 .send()
                 .map_err(|_| Failure::Offline)?,
-        )?;
-        if identity.id.is_empty()
-            || identity.id.len() > 256
-            || identity.login.is_empty()
-            || identity.login.len() > 100
-            || identity.login.chars().any(char::is_control)
-        {
-            return Err(Failure::InvalidResponse);
-        }
-        Ok(identity)
+        )
     }
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure> {
         let response = client()?
@@ -227,11 +296,11 @@ impl Transport for HttpTransport {
             .form(&[
                 ("token", refresh),
                 ("token_type_hint", "refresh_token"),
-                ("client_id", &config.client_id),
+                ("client_id", CLIENT_ID),
             ])
             .send()
             .map_err(|_| Failure::Offline)?;
-        if response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
             Ok(())
         } else {
             Err(Failure::Offline)
@@ -244,38 +313,39 @@ pub fn random() -> Result<String, Failure> {
     getrandom::fill(&mut bytes).map_err(|_| Failure::Unavailable)?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
+
 pub fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
 pub enum Callback {
-    Marketing,
     Code(String),
     Cancelled,
 }
-pub fn validate_callback(raw: &str, scheme: &str, attempt: &Attempt, now: i64) -> Option<Callback> {
-    if raw.len() > 8192 || now >= attempt.expires_at {
-        return None;
-    }
-    let url = Url::parse(raw).ok()?;
-    let path = if attempt.verifier.is_some() {
-        "/auth"
-    } else {
-        "/return"
-    };
-    if url.scheme() != scheme
-        || url.host_str() != Some("cloud")
-        || url.path() != path
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some()
-        || url.fragment().is_some()
+
+pub fn validate_callback(
+    target: &str,
+    host: &str,
+    config: &Config,
+    attempt: &Attempt,
+    now: i64,
+) -> Option<Callback> {
+    if target.len() > 8192
+        || now >= attempt.expires_at
+        || !target.starts_with("/cloud/callback?")
+        || target.contains('#')
+        || host
+            != attempt
+                .callback
+                .strip_prefix("http://")?
+                .strip_suffix("/cloud/callback")?
     {
         return None;
     }
+    let query = target.strip_prefix("/cloud/callback?")?;
     let mut fields = std::collections::HashMap::new();
-    for (key, value) in url.query_pairs() {
-        if !["state", "code", "error"].contains(&key.as_ref())
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if !["state", "code", "error", "iss"].contains(&key.as_ref())
             || fields
                 .insert(key.into_owned(), value.into_owned())
                 .is_some()
@@ -283,11 +353,11 @@ pub fn validate_callback(raw: &str, scheme: &str, attempt: &Attempt, now: i64) -
             return None;
         }
     }
-    if fields.get("state") != Some(&attempt.state) {
+    if fields.get("state") != Some(&attempt.state)
+        || fields.get("iss") != Some(&config.issuer)
+        || fields.len() != 3
+    {
         return None;
-    }
-    if attempt.verifier.is_none() {
-        return (fields.len() == 1).then_some(Callback::Marketing);
     }
     match (fields.get("code"), fields.get("error")) {
         (Some(code), None)

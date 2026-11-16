@@ -11,6 +11,16 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
+it("finishes ordinary onboarding without showing a Cloud entry point", () => {
+  const onComplete = vi.fn()
+  const onStepChange = vi.fn()
+  render(<OnboardingView step="checks" onStepChange={onStepChange} onComplete={onComplete} />)
+  fireEvent.click(screen.getByRole("button", { name: "Done" }))
+  expect(onComplete).toHaveBeenCalledOnce()
+  expect(onStepChange).not.toHaveBeenCalled()
+  expect(screen.queryByRole("button", { name: /cloud/i })).not.toBeInTheDocument()
+})
+
 it("navigates from welcome and offers local completion without a Cloud operation", () => {
   const onStepChange = vi.fn()
   const onComplete = vi.fn()
@@ -20,7 +30,12 @@ it("navigates from welcome and offers local completion without a Cloud operation
   fireEvent.click(screen.getByRole("button", { name: /get started/i }))
   expect(onStepChange).toHaveBeenCalledWith("sessions")
   view.rerender(
-    <OnboardingView step="cloud" onStepChange={onStepChange} onComplete={onComplete} />,
+    <OnboardingView
+      cloudEnabled
+      step="cloud"
+      onStepChange={onStepChange}
+      onComplete={onComplete}
+    />,
   )
   fireEvent.click(screen.getByRole("button", { name: /set up cloud/i }))
   expect(onStepChange).toHaveBeenCalledWith("cloudUnavailable")

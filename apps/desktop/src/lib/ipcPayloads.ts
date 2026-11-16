@@ -165,6 +165,7 @@ export interface AppSettings {
 /** Where the app came from. Mirrors Rust `AppInfo`. */
 export interface AppInfo {
   appVersion: string
+  cloudEnabled?: boolean
   /** True when the binary enables Rust debug assertions. */
   debugBuild: boolean
   /** CPU architecture this binary was compiled for, e.g. `aarch64`. */

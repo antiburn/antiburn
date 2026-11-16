@@ -1,12 +1,19 @@
 macro_rules! with_app_commands {
     ($callback:ident) => {
         $callback! {
+            #[cfg(feature = "cloud")]
             onboarding_window::cloud_preview_window => "cloud_preview_window",
+            #[cfg(feature = "cloud")]
             cloud::cloud_status => "cloud_status",
+            #[cfg(feature = "cloud")]
             cloud::cloud_begin => "cloud_begin",
+            #[cfg(feature = "cloud")]
             cloud::cloud_cancel => "cloud_cancel",
+            #[cfg(feature = "cloud")]
             cloud::cloud_sign_out => "cloud_sign_out",
+            #[cfg(feature = "cloud")]
             cloud::cloud_save_draft => "cloud_save_draft",
+            #[cfg(feature = "cloud")]
             cloud::cloud_start_sync => "cloud_start_sync",
 
             cli_install::get_cli_install_state => "get_cli_install_state",

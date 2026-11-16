@@ -1,136 +1,118 @@
 # Cloud desktop contract
 
-Antiburn Cloud is not live. This client ships with **Learn more**, opening
-[the Cloud waiting-list signup](https://antiburn.com/cloud/) in the system browser.
-Public builds do not enable Cloud authentication or uploads.
-Learn more adds no query parameters or callback, creates no pending attempt,
-accesses no credential storage, and has no waiting or cancellation state. Authentication and uploads
-have separate gates. The desktop includes the handoff, verified identity,
-folder draft, auth recovery, and completion screens. Sync runs in the background without a dedicated screen. Test fixtures supply
-unavailable service states; they never enable production uploads.
+Cloud is unreleased. It uses a browser-approved desktop connection, not a general
+OAuth or OpenID Connect service. Ordinary builds include no Cloud commands,
+capabilities, callback scheme, account controls, or Cloud onboarding step. Local
+sessions and Checks do not need Cloud.
 
-## Authentication release gate
+## Manual build gate
 
-The native build enables authentication only when all these build-time values
-are present, valid, and the verified gate is explicitly selected:
+Cloud requires the explicit, non-default Cargo feature `cloud`. Neither an
+environment variable nor the `distribution` feature enables it. Existing
+production build commands do not select it.
 
-| Variable                           | Requirement                                                  |
-| ---------------------------------- | ------------------------------------------------------------ |
-| `ANTIBURN_CLOUD_AUTH_VERIFIED`     | Exactly `enabled`, only after backend integration acceptance |
-| `ANTIBURN_CLOUD_AUTHORIZATION_URL` | HTTPS authorization endpoint                                 |
-| `ANTIBURN_CLOUD_TOKEN_URL`         | HTTPS token endpoint                                         |
-| `ANTIBURN_CLOUD_PROFILE_URL`       | HTTPS authenticated identity endpoint                        |
-| `ANTIBURN_CLOUD_REVOCATION_URL`    | HTTPS refresh-token revocation endpoint                      |
-| `ANTIBURN_CLOUD_CLIENT_ID`         | Nonempty public desktop client identifier, at most 256 bytes |
-| `ANTIBURN_CLOUD_CALLBACK_URI`      | Exactly the registered scheme followed by `://cloud/auth`    |
-
-Endpoints must share an origin and exclude credentials, fragments and query
-strings. Redirects are not followed. Requests time out after 15 seconds;
-responses are limited to 64 KiB. No client secret ships in the application.
-
-The production scheme is `antiburn`. A review/debug build uses its application
-identifier with periods replaced by hyphens, and its bundle configuration must
-register that exact scheme. Checked-in debug and memory-probe configurations
-register distinct schemes. Never reuse the production scheme for reviews.
-The deep-link crate supplies build-time bundle registration only. Its runtime
-plugin is deliberately not installed: it broadcasts raw callback URLs to
-renderers. macOS open-URL events and Windows/Linux single-instance command-line
-arguments go directly to the native Cloud controller. Early callbacks enter a
-bounded native queue until initialization finishes.
-
-The native browser URL requests authorization code flow with PKCE S256, random
-32-byte state, and `openid profile offline_access`. The backend brokers GitHub
-login and must not request repository or upload permission. The registered
-callback carries `state` plus a short-lived, single-use `code`; denial carries
-`error=access_denied`. Duplicate query keys, additional fields, wrong routes,
-fragments, wrong states, expired attempts, and superseded attempts are rejected.
-Attempts expire after 10 minutes and are saved in OS credential storage before
-browser launch. These attempts and callbacks apply only to enabled authentication.
-Learn more leaves the Cloud screen available for local continuation; neither
-returning to the app nor an obsolete marketing callback authenticates an account.
-
-The token endpoint accepts form-encoded `grant_type=authorization_code`, `code`,
-`code_verifier`, `client_id`, and `redirect_uri`. Refresh uses
-`grant_type=refresh_token`, `refresh_token`, and `client_id`. Successful JSON:
-
-```json
-{
-  "access_token": "synthetic-access",
-  "refresh_token": "synthetic-rotation",
-  "expires_in": 600,
-  "token_type": "Bearer"
-}
+```sh
+cd apps/desktop
+pnpm tauri dev --features cloud --config src-tauri/tauri.debug.conf.json
 ```
 
-Access lifetime must be 60–86400 seconds. Each refresh returns a rotated refresh
-token; the client saves it before verifying the profile so ordinary offline
-errors do not lose the rotation. Profile uses Bearer authentication and returns:
+A manual Cloud build does not establish service compatibility or permit
+production use. The browser connection and capture transport need separate
+acceptance. Native capture transport stays disabled.
 
-```json
-{ "id": "synthetic-account", "login": "example" }
-```
+## Browser approval
 
-Initial sign-in verifies the profile before saving a refresh credential; an offline
-profile response cannot leave a resumable, unverified login. Only the authenticated
-profile establishes display identity. Successful secure
-storage and profile verification are both required for the signed-in screen.
-Access tokens stay in native memory. Refresh tokens and pending PKCE material
-share one atomic, bundle-scoped OS-vault entry. There is no plaintext fallback.
-Requests serialize; cancellation generations prevent late results from restoring
-an identity. A cancelled verification clears and revokes its new credentials.
-Definitive rejection requires fresh login; ordinary offline failures retain the
-refresh credential. Local sign-out deletes the vault entry independently of
-remote revocation. A vault deletion failure is shown as a failure and retains
-native material for retry; the client still attempts remote revocation.
+The connection opens in the system browser. It uses S256 PKCE and a random
+32-byte state. Before browser launch, the client binds an ephemeral port on
+literal `127.0.0.1`. Its exact callback URI is
+`http://127.0.0.1:<port>/cloud/callback`.
 
-Revocation receives form-encoded `token`, `token_type_hint=refresh_token`, and
-`client_id`. Success is any 2xx. The renderer receives only bounded status,
-expiry, display identity and its folder draft. URLs, codes, states, verifiers and
-tokens never enter renderer events, local database, logs or analytics. Identity
-and folder paths do not enter analytics. The separate onboarding window keeps
-the existing durable completion and exact Sessions acknowledgment contract.
-Legacy `cloudUnavailable` progress now opens the Cloud handoff.
+The listener accepts only loopback peers, GET, HTTP/1.1, the exact callback path,
+and one Host matching the bound IP and port. It rejects request bodies, Origin,
+duplicate Host headers, absolute request targets, encoded path variants,
+fragments, unknown query fields, and duplicate query keys. Reads and header size
+are bounded. Both state and issuer must match the pending transaction.
 
-## Sync gate and consent decisions
+Attempts expire after ten minutes. Cancellation, logout, another connection
+attempt, and a process restart invalidate the old attempt. A restarted process
+does not restore an ephemeral listener or reuse its verifier.
 
-Production `syncEnabled` is always false. `cloud_start_sync` rejects requests,
-including direct IPC calls. Login, folder selection and the existing device-local
-Upload sessions preference do not grant upload consent. Found and newly added folders start
-selected, are persisted separately from scan settings, and never enqueue work.
-No production upload client or automatic resume is enabled in this change.
+The browser must name the workspace, permitted action, and device before the user
+approves the connection. The approved scope covers this first-party desktop
+client only. It does not grant general API-client or third-party authorization.
+The exact public request and response schemas need interoperability acceptance;
+provisional client helpers do not establish a supported service contract.
 
-Before a sync implementation can be enabled, approve all of:
+## Credential and logout safety
 
-- Eligible sessions and exact payload fields; summary-only versus transcript content.
-- Original working-folder identity, independent of inferred repositories.
-- Historical versus future scope and remote-session eligibility. Found folders are selected by default; this preference does not authorize uploads.
-- Explicit consent text and confirmation, consent version, and account binding.
-- Retention, deletion, disconnect, and cancellation behavior.
+Opaque access tokens stay in native memory for at most 15 minutes. Only the OS keyring stores rotating refresh
+tokens. There is no plaintext or database fallback. The connection has a fixed
+one-year deadline. Refresh does not extend that deadline.
 
-The renderer port defines the required operation lifecycle without defining an
-upload payload. Capability discovery must return a reviewed consent version and
-explicit enabled status. `prepareSync` durably records a random request identity
-and consented selection **before** transport submission. `start` sends that
-identity as an idempotency key. Acceptance returns an operation identity and
-bounded completed/total counters. `reconcile` queries the existing request
-identity; it must never create an operation. Lost responses are ambiguous and
-must reconcile before any resubmission. Partial and failed outcomes preserve the
-selection. Cancellation is confirmed by service result. A reopened pending
-request reconciles status only; it never restarts uploads. The production port
-rejects prepare/start and supplies unavailable status until this contract is
-implemented and reviewed. Controlled fixtures exercise the other outcomes.
+A process-wide mutex serializes credential operations. One lifetime OS lock owns
+the vault namespace. A second process cannot write credentials until that owner
+exits. The vault namespace includes the application identifier and state
+directory. Atomic state-file replacement uses a separate stable lock file. State
+contains only a random generation, a closed state, and a revocation flag, never a
+credential, callback, or verifier.
 
-## Validation and rollout
+Before sending a refresh, the client flushes a reauth-required marker. An
+uncertain response, process exit, invalid response, keyring failure, or failed
+session verification must not retry the predecessor. Successful rotation needs
+the same connection ID, account, workspace, audience, action, and fixed deadline.
+Generation checks before and after storage prevent late results from restoring a
+cancelled account.
 
-Run desktop type checking, scoped ESLint, CloudSession and onboarding unit tests,
-then `cloud.spec.ts` and the existing onboarding browser journeys. The visual
-harness `surface=cloud` is excluded from the product bundle. Native Cloud tests
-use in-memory vaults, controlled transport failures and an ephemeral loopback
-server; no production endpoint or real credential is used. Native packaged
-cold/warm callbacks and OS vault behavior still need acceptance on each supported
-platform before the auth gate is selected. Hosted backend deployment and the consent/upload policy remain outside this
-client change.
+Settings keeps the connection action available after onboarding. Native sign-out
+first flushes a new signed-out generation. Browser cancellation changes only the
+pending browser-attempt generation; it does not cancel an established connection
+or its refresh. Sign-out revokes only this client's current
+grant, not every connection on the account. A failed remote response stays visible
+as unconfirmed revocation. A keyring deletion failure is also visible, but the
+durable local marker still blocks login restoration after a restart. Cleanup-only
+keyring records may retry revocation; they cannot restore an authenticated
+session. Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
 
-## Background sync onboarding
+Callback URLs, codes, tokens, PKCE material, and raw provider errors do not enter
+renderer events, logs, or analytics. Identity and folder paths do not enter
+analytics. Logout, auth failure, and cancellation do not delete, rebuild, or
+retarget saved capture bytes.
 
-Start syncing goes directly from folders to completion. Done remains available while the request is prepared, submitted or reconciled. Partial, failed, ambiguous and cancelled results do not open a progress or recovery screen. Closing onboarding detaches its view; it does not cancel an already requested background handoff. Production transport remains gated and must own durable background work independently of the webview.
+## Destination and content consent
+
+Unknown current membership data blocks destination selection. The desktop does
+not infer membership from local settings.
+
+The initial connection path supports personal workspaces only. It blocks an
+explicit team request instead of silently replacing it with personal. The general
+destination policy is personal for zero teams, automatic for one team, and
+an explicit account-bound saved team default for several teams. A removed default
+blocks capture until the user chooses again. Neither a new account nor a changed
+destination can reuse a previous content confirmation or retarget a saved
+capture.
+
+Login, folder selection, and the legacy local Upload sessions preference do not
+grant content consent. The UI requires a separate full-content confirmation:
+messages, private thinking, tool calls and results, and session metadata can leave
+the device and may contain secrets or file text. Attachment files need separate
+consent; this scoped UI does not read or upload them.
+
+`syncEnabled` is false. Direct `cloud_start_sync` requests reject without reading
+or queueing native content. HTTP 202, upload completion, and a background
+operation ID do not prove integrity acceptance. Saved compressed retry bytes must
+remain until the service confirms integrity for that exact capture and manifest,
+or the user explicitly cancels the capture.
+
+## Validation
+
+Native checks use synthetic sessions, in-memory keyrings, temporary state files,
+separate test processes, and loopback sockets. They must cover PKCE, callback
+guards, generation fences, restart, uncertain refresh, keyring failure, fixed
+deadlines, logout, and cross-process locking. Tests must not read user provider
+folders or real credentials.
+
+Run native formatting, Clippy, and focused Nextest checks with `--features cloud`.
+Also check the ordinary build with `--no-default-features`. Frontend checks cover
+Cloud stores, consent, ordinary-build entry-point exclusion, and searchable
+Settings controls. System-browser and OS-keyring acceptance on each supported
+platform remains separate from synthetic checks.

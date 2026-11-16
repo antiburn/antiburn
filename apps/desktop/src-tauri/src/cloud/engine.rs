@@ -1,0 +1,368 @@
+use super::{
+    AuthStatus,
+    auth::{self, Attempt, Callback, Config, Credential, Failure, Session, Transport, Vault},
+    loopback::Listener,
+    state::{Guard, Phase, Record, StateStore},
+};
+
+struct Access {
+    token: String,
+    expires_at: i64,
+    epoch: String,
+    session: Session,
+}
+
+pub struct Engine {
+    pub config: Option<Config>,
+    pub vault: Box<dyn Vault>,
+    pub transport: Box<dyn Transport>,
+    pub state: StateStore,
+    pub attempt: Option<Attempt>,
+    access: Option<Access>,
+    pub status: AuthStatus,
+    pub revocation_pending: bool,
+    pub generation: u64,
+}
+
+impl Engine {
+    pub fn new(
+        config: Option<Config>,
+        vault: Box<dyn Vault>,
+        transport: Box<dyn Transport>,
+        state: StateStore,
+    ) -> Self {
+        Self {
+            config,
+            vault,
+            transport,
+            state,
+            attempt: None,
+            access: None,
+            status: AuthStatus::Idle,
+            revocation_pending: false,
+            generation: 0,
+        }
+    }
+
+    pub fn session(&self) -> Option<&Session> {
+        self.access.as_ref().map(|access| &access.session)
+    }
+
+    fn read_state(&mut self) -> Result<(Guard, Record), Failure> {
+        let state = self.state.lock().and_then(|mut guard| {
+            let record = guard.read()?;
+            Ok((guard, record))
+        });
+        if state.is_err() {
+            self.access = None;
+        }
+        state
+    }
+
+    pub fn begin(
+        &mut self,
+        now: i64,
+        generation: u64,
+    ) -> Result<(String, Listener, Attempt), Failure> {
+        let config = self.config.clone().ok_or(Failure::Unavailable)?;
+        let (mut guard, record) = self.read_state()?;
+        if record.revocation_pending || record.phase == Phase::Active {
+            return Err(Failure::Unavailable);
+        }
+        if self.vault.read()?.is_some() {
+            return Err(Failure::ReauthRequired);
+        }
+        // An explicit sign-in replaces any pending listener, including one lost on restart.
+        self.attempt = None;
+        self.vault.write(None)?;
+        let listener = Listener::bind()?;
+        let record = guard.replace(Phase::Pending, false)?;
+        let attempt = Attempt {
+            state: auth::random()?,
+            verifier: auth::random()?,
+            callback: listener.callback().to_owned(),
+            expires_at: now + 600,
+            epoch: record.epoch,
+            generation,
+        };
+        let mut url = config.authorization.clone();
+        url.query_pairs_mut().extend_pairs([
+            ("response_type", "code"),
+            ("client_id", auth::CLIENT_ID),
+            ("redirect_uri", &attempt.callback),
+            ("scope", auth::SCOPE),
+            ("resource", &config.resource),
+            ("state", &attempt.state),
+            ("code_challenge", &auth::challenge(&attempt.verifier)),
+            ("code_challenge_method", "S256"),
+        ]);
+        self.access = None;
+        self.attempt = Some(attempt.clone());
+        self.status = AuthStatus::Opening;
+        Ok((url.to_string(), listener, attempt))
+    }
+
+    pub fn cancel(&mut self, generation: u64) -> Result<(), Failure> {
+        if let Some(attempt) = self.attempt.take() {
+            let (mut guard, record) = self.read_state()?;
+            if record.epoch == attempt.epoch && record.phase == Phase::Pending {
+                guard.replace(Phase::SignedOut, false)?;
+            }
+        }
+        if self.access.is_none() && generation > 0 {
+            self.status = AuthStatus::Cancelled;
+        }
+        Ok(())
+    }
+
+    pub fn callback(
+        &mut self,
+        attempt: &Attempt,
+        callback: Callback,
+        now: i64,
+        current: impl Fn() -> bool,
+    ) -> Result<(), Failure> {
+        let (mut guard, mut record) = self.read_state()?;
+        if !current()
+            || now >= attempt.expires_at
+            || record.phase != Phase::Pending
+            || record.epoch != attempt.epoch
+            || self.attempt.as_ref().is_none_or(|pending| {
+                pending.epoch != attempt.epoch || pending.generation != attempt.generation
+            })
+        {
+            return Err(Failure::Cancelled);
+        }
+        self.attempt = None;
+        let Callback::Code(code) = callback else {
+            guard.replace(Phase::SignedOut, false)?;
+            self.status = AuthStatus::Cancelled;
+            return Ok(());
+        };
+        record.phase = Phase::ReauthRequired;
+        guard.write(&record)?;
+        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+        let tokens = self.transport.exchange(
+            config,
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("code_verifier", &attempt.verifier),
+                ("client_id", auth::CLIENT_ID),
+                ("redirect_uri", &attempt.callback),
+                ("resource", &config.resource),
+            ],
+        )?;
+        self.accept(&mut guard, record, tokens, None, now, current)
+    }
+
+    fn accept(
+        &mut self,
+        guard: &mut Guard,
+        mut record: Record,
+        tokens: auth::Tokens,
+        previous: Option<&Credential>,
+        now: i64,
+        current: impl Fn() -> bool,
+    ) -> Result<(), Failure> {
+        let config = self.config.clone().ok_or(Failure::Unavailable)?;
+        let session = self
+            .transport
+            .session(&config, &tokens.access_token)
+            .and_then(|session| {
+                session.validate(&config, now)?;
+                if previous.is_some_and(|previous| {
+                    previous
+                        .session
+                        .as_ref()
+                        .is_none_or(|saved| !saved.same_grant(&session))
+                        || previous.refresh_token == tokens.refresh_token
+                }) {
+                    return Err(Failure::InvalidResponse);
+                }
+                Ok(session)
+            });
+        if !current() || session.is_err() {
+            self.discard_tokens(guard, record, &config, &tokens)?;
+            return Err(if current() {
+                Failure::ReauthRequired
+            } else {
+                Failure::Cancelled
+            });
+        }
+        let session = session?;
+        let credential = Credential {
+            epoch: record.epoch.clone(),
+            issuer: config.issuer.clone(),
+            resource: config.resource.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+            session: Some(session.clone()),
+        };
+        if self.vault.write(Some(&credential)).is_err() {
+            self.discard_tokens(guard, record, &config, &tokens)?;
+            return Err(Failure::CredentialFailed);
+        }
+        if !current() {
+            self.discard_tokens(guard, record, &config, &tokens)?;
+            return Err(Failure::Cancelled);
+        }
+        record.phase = Phase::Active;
+        guard.write(&record)?;
+        // Check again after durable writes. Logout can invalidate work during an OS-vault call.
+        if !current() {
+            self.discard_tokens(guard, record, &config, &tokens)?;
+            return Err(Failure::Cancelled);
+        }
+        self.access = Some(Access {
+            token: tokens.access_token,
+            expires_at: now
+                .saturating_add(tokens.expires_in as i64)
+                .min(session.expires_at),
+            epoch: record.epoch,
+            session,
+        });
+        self.status = AuthStatus::SignedIn;
+        Ok(())
+    }
+
+    fn discard_tokens(
+        &mut self,
+        guard: &mut Guard,
+        mut record: Record,
+        config: &Config,
+        tokens: &auth::Tokens,
+    ) -> Result<(), Failure> {
+        self.access = None;
+        record.phase = Phase::SignedOut;
+        record.revocation_pending = true;
+        guard.write(&record)?;
+        self.revocation_pending = true;
+        // This record can revoke a connection, but cannot restore an authenticated session.
+        let cleanup = Credential {
+            epoch: record.epoch.clone(),
+            issuer: config.issuer.clone(),
+            resource: config.resource.clone(),
+            refresh_token: tokens.refresh_token.clone(),
+            session: None,
+        };
+        let saved = self.vault.write(Some(&cleanup));
+        if self.transport.revoke(config, &tokens.refresh_token).is_ok() {
+            self.vault.write(None)?;
+            record.revocation_pending = false;
+            guard.write(&record)?;
+            self.revocation_pending = false;
+        } else {
+            saved?;
+        }
+        Ok(())
+    }
+
+    pub fn refresh(&mut self, now: i64, current: impl Fn() -> bool) -> Result<(), Failure> {
+        let Some(config) = self.config.clone() else {
+            return Ok(());
+        };
+        let (mut guard, mut record) = self.read_state()?;
+        self.revocation_pending = record.revocation_pending;
+        if record.phase != Phase::Active {
+            self.access = None;
+            self.status = match record.phase {
+                Phase::SignedOut if record.revocation_pending => AuthStatus::RevocationUnconfirmed,
+                Phase::SignedOut => AuthStatus::SignedOut,
+                Phase::ReauthRequired => AuthStatus::ReauthRequired,
+                Phase::Pending
+                    if self.attempt.as_ref().is_some_and(|attempt| {
+                        attempt.epoch == record.epoch && attempt.expires_at > now
+                    }) =>
+                {
+                    AuthStatus::Waiting
+                }
+                Phase::Pending => {
+                    guard.replace(Phase::SignedOut, false)?;
+                    self.attempt = None;
+                    AuthStatus::Expired
+                }
+                Phase::Active => unreachable!(),
+            };
+            return Ok(());
+        }
+        if !current() {
+            self.access = None;
+            return Err(Failure::Cancelled);
+        }
+        if self.access.as_ref().is_some_and(|access| {
+            access.epoch == record.epoch
+                && access.expires_at > now + 30
+                && access.session.expires_at > now
+                && !access.token.is_empty()
+        }) {
+            self.status = AuthStatus::SignedIn;
+            return Ok(());
+        }
+        self.access = None;
+        // Persist this before transport. A crash or an uncertain reply must not reuse a predecessor.
+        record.phase = Phase::ReauthRequired;
+        guard.write(&record)?;
+        let credential = self.vault.read()?.ok_or(Failure::ReauthRequired)?;
+        if credential.epoch != record.epoch
+            || credential.issuer != config.issuer
+            || credential.resource != config.resource
+            || credential
+                .session
+                .as_ref()
+                .is_none_or(|session| session.validate(&config, now).is_err())
+        {
+            return Err(Failure::ReauthRequired);
+        }
+        let tokens = self
+            .transport
+            .exchange(
+                &config,
+                &[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", &credential.refresh_token),
+                    ("client_id", auth::CLIENT_ID),
+                    ("resource", &config.resource),
+                ],
+            )
+            .map_err(|_| Failure::ReauthRequired)?;
+        self.accept(&mut guard, record, tokens, Some(&credential), now, current)
+    }
+
+    pub fn sign_out(&mut self) -> Result<(), Failure> {
+        self.access = None;
+        self.attempt = None;
+        let mut guard = self.state.lock()?;
+        let previous = guard.read().unwrap_or(Record {
+            phase: Phase::SignedOut,
+            revocation_pending: true,
+            ..Record::default()
+        });
+        // This marker blocks restored credentials even when the keyring or revocation fails.
+        let mut record = guard.replace(Phase::SignedOut, true)?;
+        self.status = AuthStatus::RevocationUnconfirmed;
+        self.revocation_pending = true;
+        let credential = self.vault.read()?;
+        if previous.revocation_pending && credential.is_none() {
+            return Ok(());
+        }
+        if let Some(credential) = credential {
+            let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+            if credential.issuer != config.issuer || credential.resource != config.resource {
+                return Err(Failure::CredentialFailed);
+            }
+            if self
+                .transport
+                .revoke(config, &credential.refresh_token)
+                .is_err()
+            {
+                return Ok(());
+            }
+        }
+        self.vault.write(None)?;
+        record.revocation_pending = false;
+        guard.write(&record)?;
+        self.revocation_pending = false;
+        self.status = AuthStatus::SignedOut;
+        Ok(())
+    }
+}

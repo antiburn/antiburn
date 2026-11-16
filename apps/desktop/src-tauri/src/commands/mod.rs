@@ -316,6 +316,7 @@ pub async fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
         Ok(AppInfo {
             app_version: app.package_info().version.to_string(),
             debug_build: cfg!(debug_assertions),
+            cloud_enabled: cfg!(feature = "cloud"),
             arch: std::env::consts::ARCH.to_string(),
             pricing_catalog_version: crate::runtime_pricing::catalog_version(&app),
             schema_version: store.schema_version().map_err(fail)?,
@@ -414,6 +415,7 @@ pub async fn set_onboarding_state(
     state: OnboardingState,
 ) -> CommandResult<OnboardingState> {
     let store = app.state::<Store>().inner().clone();
+    #[cfg(feature = "cloud")]
     if state != OnboardingState::CloudUnavailable
         && store.onboarding_state().map_err(fail)? == OnboardingState::CloudUnavailable
     {

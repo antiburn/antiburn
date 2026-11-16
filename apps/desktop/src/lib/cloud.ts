@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-dialog"
-import { hasShell } from "./ipc"
+import { appInfo, hasShell } from "./ipc"
 import { listen } from "./tauriEvents"
 
 export type CloudStatus =
@@ -18,6 +18,13 @@ export type CloudStatus =
   | "invalid_response"
   | "credential_failed"
   | "unavailable"
+  | "reauth_required"
+  | "revocation_unconfirmed"
+export interface CloudWorkspace {
+  id: string
+  name: string
+  kind: "personal" | "team"
+}
 export type CloudScreen = "handoff" | "identity" | "folders" | "complete"
 interface CloudFolder {
   sessionCount?: number | null
@@ -29,12 +36,21 @@ export interface CloudDraft {
   screen: CloudScreen
   folders: CloudFolder[]
 }
+export interface CaptureConsent {
+  version: "native-full-content-v1"
+  destinationId: string
+  fullContent: true
+  attachments: false
+}
 export interface CloudSnapshot {
   authEnabled: boolean
   syncEnabled: boolean
   status: CloudStatus
   identity: { id: string; login: string; avatar?: string } | null
   expiresAt?: number | null
+  grantExpiresAt?: number | null
+  destination?: CloudWorkspace | null
+  revocationPending?: boolean
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
@@ -56,8 +72,8 @@ export interface CloudPort {
   signOut(): Promise<CloudSnapshot>
   pick(): Promise<string[]>
   agent(): Promise<AgentReadiness>
-  prepareSync(folders: CloudFolder[], requestId: string): Promise<void>
-  start(folders: CloudFolder[], requestId: string): Promise<SyncResult>
+  prepareSync(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<void>
+  start(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<SyncResult>
   reconcile(requestId: string): Promise<SyncResult>
   cancelSync(requestId: string): Promise<SyncResult>
 }
@@ -68,20 +84,26 @@ export const emptyCloudSnapshot: CloudSnapshot = {
   identity: null,
   draft: { screen: "handoff", folders: [] },
 }
+async function cloudBuildEnabled() {
+  return hasShell() && (await appInfo())?.cloudEnabled === true
+}
+async function cloudCommand(command: string, args?: Record<string, unknown>) {
+  if (!(await cloudBuildEnabled())) return emptyCloudSnapshot
+  return args ? invoke<CloudSnapshot>(command, args) : invoke<CloudSnapshot>(command)
+}
 export const nativeCloudPort: CloudPort = {
-  read: () => (hasShell() ? invoke("cloud_status") : Promise.resolve(emptyCloudSnapshot)),
-  watch: (listener) =>
-    hasShell()
+  read: () => cloudCommand("cloud_status"),
+  watch: async (listener) =>
+    (await cloudBuildEnabled())
       ? listen<CloudSnapshot>("cloud:changed", (event) => listener(event.payload))
-      : Promise.resolve(() => {}),
-  begin: () =>
-    hasShell()
-      ? invoke("cloud_begin")
-      : Promise.resolve({ ...emptyCloudSnapshot, status: "unavailable" }),
-  cancel: () => invoke("cloud_cancel"),
-  save: (value, foldersEdited = true) => invoke("cloud_save_draft", { value, foldersEdited }),
-  signOut: () => invoke("cloud_sign_out"),
+      : () => {},
+  begin: () => cloudCommand("cloud_begin"),
+  cancel: () => cloudCommand("cloud_cancel"),
+  save: (value, foldersEdited = true) =>
+    cloudCommand("cloud_save_draft", { value, foldersEdited }),
+  signOut: () => cloudCommand("cloud_sign_out"),
   pick: async () => {
+    if (!(await cloudBuildEnabled())) return []
     const selected = await open({
       directory: true,
       multiple: true,
@@ -90,7 +112,7 @@ export const nativeCloudPort: CloudPort = {
     return selected === null ? [] : Array.isArray(selected) ? selected : [selected]
   },
   agent: async () => {
-    if (!hasShell()) return "unavailable"
+    if (!(await cloudBuildEnabled())) return "unavailable"
     const statuses = await invoke<{ phase: string }[]>("get_agent_integrations")
     if (statuses.some((value) => value.phase === "active")) return "ready"
     if (
@@ -107,7 +129,7 @@ export const nativeCloudPort: CloudPort = {
     throw new Error("Cloud sync is unavailable.")
   },
   start: async () => {
-    await invoke("cloud_start_sync")
+    if (await cloudBuildEnabled()) await invoke("cloud_start_sync")
     return { status: "unavailable" }
   },
   reconcile: () => Promise.resolve({ status: "unavailable" }),

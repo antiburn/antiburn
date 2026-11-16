@@ -46,6 +46,7 @@ export type AppSearchResult = {
   aliases: readonly string[]
   target: AppSearchTarget
   platform?: "macos"
+  feature?: "cloud"
 }
 export type AppSearchGroup = { label: string; results: AppSearchResult[] }
 
@@ -85,6 +86,7 @@ export const APP_SEARCH_CATALOG: readonly AppSearchResult[] = [
       control: control as SettingsControlId,
     },
     ...("platform" in entry ? { platform: entry.platform } : {}),
+    ...("feature" in entry ? { feature: entry.feature } : {}),
   })),
   ...Object.entries(CHECK_DEFINITIONS).map(([check, { label, aliases }]) => ({
     id: `check:${check}`,
@@ -100,6 +102,7 @@ export function searchApp(
   platform: Platform = detectPlatform(),
   checksAvailable = true,
   installedChecks: CheckAvailability["installedChecks"] = [],
+  cloudEnabled = false,
 ): AppSearchResult[] {
   const normalized = query.trim().toLocaleLowerCase().slice(0, 200)
   const words = normalized.split(/\s+/).filter(Boolean)
@@ -117,6 +120,7 @@ export function searchApp(
     .filter(
       (result) =>
         (!("platform" in result) || !result.platform || result.platform === platform) &&
+        (!("feature" in result) || result.feature !== "cloud" || cloudEnabled) &&
         (result.target.kind !== "check" ||
           isCheckAvailable(result.target.check, checksAvailable)),
     )
@@ -150,8 +154,9 @@ export function groupAppResults(
   platform?: Platform,
   checksAvailable = true,
   installedChecks: CheckAvailability["installedChecks"] = [],
+  cloudEnabled = false,
 ): AppSearchGroup[] {
-  const results = searchApp(query, platform, checksAvailable, installedChecks)
+  const results = searchApp(query, platform, checksAvailable, installedChecks, cloudEnabled)
   const best = query.trim() ? results[0] : undefined
   const remaining = results.filter((result) => result !== best)
   const groups: AppSearchGroup[] = best ? [{ label: "Best match", results: [best] }] : []

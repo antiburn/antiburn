@@ -34,7 +34,12 @@ describe("Cloud Dev simulation", () => {
     await port.begin()
     await vi.advanceTimersByTimeAsync(1800)
     expect((await port.read()).identity?.login).toBe("example")
-    await port.start([], "test")
+    await port.start([], "test", {
+      version: "native-full-content-v1",
+      destinationId: "cloud-dev-personal",
+      fullContent: true,
+      attachments: false,
+    })
     await vi.advanceTimersByTimeAsync(1500)
     expect((await port.read()).pendingSync?.result.status).toBe("syncing")
     await port.cancelSync("test")

@@ -53,6 +53,7 @@ const signedIn: CloudSnapshot = {
   authEnabled: true,
   status: "signed_in",
   identity: { id: "synthetic", login: "example" },
+  destination: { id: "synthetic-personal", name: "Personal", kind: "personal" },
   draft: { screen: "folders", folders: [{ path: "/Example/Project", selected: false }] },
 }
 const settle = async () => {
@@ -154,6 +155,7 @@ it("finishes onboarding while the background request is pending and submits only
   const session = new CloudSession(port)
   const stop = session.subscribe(vi.fn())
   await settle()
+  session.setFullContentConsent(true)
   const pending = session.startSync()
   await settle()
   expect(session.getSnapshot()).toMatchObject({
@@ -181,6 +183,7 @@ it("keeps ambiguous background requests on completion without resubmitting", asy
   const session = new CloudSession(port)
   const stop = session.subscribe(vi.fn())
   await settle()
+  session.setFullContentConsent(true)
   await session.startSync()
   await session.startSync()
   expect(session.getSnapshot()).toMatchObject({
@@ -399,6 +402,7 @@ it("routes an accepted operation directly to completion and keeps later failures
   const session = new CloudSession(port, false)
   const stop = session.subscribe(vi.fn())
   await settle()
+  session.setFullContentConsent(true)
   await session.startSync()
   expect(session.getSnapshot().screen).toBe("complete")
   emit({
@@ -450,11 +454,63 @@ it("does not submit a prepared request after account changes", async () => {
   const session = new CloudSession(port)
   const stop = session.subscribe(vi.fn())
   await settle()
+  session.setFullContentConsent(true)
   const pending = session.startSync()
   emit({ ...emptyCloudSnapshot, status: "signed_out" })
   resolve()
   await pending
   expect(port.start).not.toHaveBeenCalled()
   expect(session.getSnapshot().screen).toBe("handoff")
+  stop()
+})
+
+it("requires full-content consent and binds it to the current destination", async () => {
+  const { port, emit } = fixture({
+    ...signedIn,
+    syncEnabled: true,
+    draft: { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
+  })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  await session.startSync()
+  expect(port.start).not.toHaveBeenCalled()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(port.start).toHaveBeenCalledWith(
+    [{ path: "/Example/Project", selected: true }],
+    expect.any(String),
+    {
+      version: "native-full-content-v1",
+      destinationId: "synthetic-personal",
+      fullContent: true,
+      attachments: false,
+    },
+  )
+  emit({ ...signedIn, destination: { id: "team-a", name: "Example team", kind: "team" } })
+  expect(session.getSnapshot().fullContentConsent).toBe(false)
+  stop()
+})
+
+it("does not submit a prepared capture to a changed destination", async () => {
+  const { port, emit } = fixture({
+    ...signedIn,
+    syncEnabled: true,
+    draft: { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
+  })
+  let finishPrepare!: () => void
+  port.prepareSync = () =>
+    new Promise((resolve) => {
+      finishPrepare = resolve
+    })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const pending = session.startSync()
+  emit({ ...signedIn, destination: { id: "team-a", name: "Example team", kind: "team" } })
+  finishPrepare()
+  await pending
+  expect(port.start).not.toHaveBeenCalled()
   stop()
 })

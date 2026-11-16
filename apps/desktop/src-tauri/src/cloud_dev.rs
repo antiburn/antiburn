@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn preview_capability_has_no_cloud_or_onboarding_mutations() {
         let capability: serde_json::Value =
-            serde_json::from_str(include_str!("../capabilities/cloud-dev.json")).unwrap();
+            serde_json::from_str(include_str!("../cloud-capabilities/dev.json")).unwrap();
         assert_eq!(capability["windows"], serde_json::json!([LABEL]));
         for permission in capability["permissions"].as_array().unwrap() {
             let permission = permission.as_str().unwrap();

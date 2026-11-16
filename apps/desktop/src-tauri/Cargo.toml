@@ -40,6 +40,9 @@ name = "antiburn_desktop"
 path = "src/lib.rs"
 
 [features]
+default = []
+# Manual development builds only. Distribution builds do not select Cloud.
+cloud = ["tauri/dynamic-acl"]
 # Set only by packaged distribution builds. Release-profile development runs
 # deliberately omit it so they cannot change the machine's login items.
 distribution = []
@@ -160,7 +163,6 @@ tauri-plugin-prevent-default = "6"
 # Must be registered before other plugins so a repeated launch exits before it
 # can start another background scan scheduler.
 tauri-plugin-single-instance = "2"
-tauri-plugin-deep-link = "2"
 # Emits structured shell events through the process subscriber.
 tracing = "0.1"
 # RFC 3339 stamps for the store's own timestamps.

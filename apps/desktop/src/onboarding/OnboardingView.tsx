@@ -15,6 +15,7 @@ export interface OnboardingViewProps {
   hudSupported?: boolean
   hudVariant?: "notch" | "floating" | "unsupported"
   visible?: boolean
+  cloudEnabled?: boolean
 }
 
 const order: OnboardingStep[] = ["welcome", "sessions", "limits", "hud", "checks", "cloud"]
@@ -307,7 +308,7 @@ function Demo({
 }
 
 export function OnboardingView({
-  step,
+  step: requestedStep,
   onStepChange,
   onComplete,
   busy = false,
@@ -315,7 +316,12 @@ export function OnboardingView({
   hudSupported = false,
   hudVariant,
   visible = true,
+  cloudEnabled = false,
 }: OnboardingViewProps) {
+  const step =
+    !cloudEnabled && (requestedStep === "cloud" || requestedStep === "cloudUnavailable")
+      ? "checks"
+      : requestedStep
   if (step === "cloudUnavailable")
     return (
       <CloudOnboarding
@@ -416,15 +422,18 @@ export function OnboardingView({
             <button
               className="onboarding-primary"
               disabled={busy}
-              onClick={() =>
-                onStepChange(step === "cloud" ? "cloudUnavailable" : order[index + 1]!)
-              }
+              onClick={() => {
+                if (step === "checks" && !cloudEnabled) onComplete()
+                else onStepChange(step === "cloud" ? "cloudUnavailable" : order[index + 1]!)
+              }}
             >
               {step === "welcome"
                 ? "Get started"
                 : step === "cloud"
                   ? "Set up Cloud"
-                  : "Continue"}
+                  : step === "checks" && !cloudEnabled
+                    ? "Done"
+                    : "Continue"}
             </button>
           }
         </div>

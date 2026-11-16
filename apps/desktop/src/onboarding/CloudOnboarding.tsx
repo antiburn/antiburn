@@ -1,4 +1,3 @@
-import { siGithub } from "simple-icons"
 import { ToggleSwitch } from "../components/ui/ToggleSwitch"
 import { useState, useSyncExternalStore, type CSSProperties } from "react"
 import { ArrowUp, ArrowUpRight, Check, Cloud, Folder, Plus, UserRound } from "lucide-react"
@@ -6,6 +5,7 @@ import appIcon from "../assets/app-icon.png"
 import { type CloudPort } from "../lib/cloud"
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import { CloudSession, cloudStatusMessage } from "./CloudSession"
+import { CloudCaptureConsent } from "./CloudCaptureConsent"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -85,7 +85,7 @@ export function CloudOnboarding({
             </h1>
             <p className="type-onboarding-body text-onboarding-muted">
               {value.cloud.authEnabled
-                ? "Continue with GitHub in your browser."
+                ? "Approve this desktop connection in your browser."
                 : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
@@ -110,18 +110,7 @@ export function CloudOnboarding({
                     : session.retry())
                 }
               >
-                {value.cloud.authEnabled && (
-                  <svg
-                    width="18"
-                    height="18"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
-                    aria-hidden
-                  >
-                    <path d={siGithub.path} />
-                  </svg>
-                )}
-                {value.cloud.authEnabled ? "Sign in with GitHub" : "Learn more"}
+                {value.cloud.authEnabled ? "Connect in browser" : "Learn more"}
                 <ArrowUpRight size={16} aria-hidden />
               </button>
             )}
@@ -238,6 +227,7 @@ export function CloudOnboarding({
               "Cloud sync is coming soon. Your folder selection is saved, but nothing will upload."
             )}
           </p>
+          <CloudCaptureConsent session={session} value={value} />
         </section>
       ) : (
         <>
@@ -390,6 +380,7 @@ export function CloudOnboarding({
                 disabled={
                   disabled ||
                   !value.cloud.syncEnabled ||
+                  !value.fullContentConsent ||
                   !value.cloud.draft.folders.some((folder) => folder.selected)
                 }
                 onClick={() => void session.startSync()}

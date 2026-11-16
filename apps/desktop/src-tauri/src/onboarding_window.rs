@@ -381,6 +381,7 @@ mod tests {
 }
 
 #[tauri::command]
+#[cfg(feature = "cloud")]
 pub(crate) fn cloud_preview_window(window: WebviewWindow, action: &str) -> Result<(), String> {
     if !cfg!(debug_assertions) || window.label() != "cloud-dev" {
         return Err("Cloud preview is unavailable.".to_owned());

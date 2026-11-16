@@ -57,6 +57,11 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
         ? "idle"
         : (scenario as CloudStatus),
     identity: signedIn ? identity : null,
+    destination: {
+      id: "cloud-dev-personal",
+      name: "Example personal workspace",
+      kind: "personal",
+    },
     draft: {
       screen: completion
         ? "complete"

@@ -18,6 +18,7 @@ export interface CloudViewSnapshot {
   busy: boolean
   error: string | null
   loaded: boolean
+  fullContentConsent: boolean
 }
 const messages = {
   idle: "",
@@ -29,12 +30,16 @@ const messages = {
   cancelled: "Browser handoff cancelled. You can try again or continue locally.",
   expired: "This browser link expired. Try again to open a new link.",
   browser_failed: "Your browser could not open. Try again or continue locally.",
-  offline:
-    "Cloud could not connect. Your saved credentials are kept. Try again when you’re online.",
+  offline: "Cloud could not connect. No sessions were uploaded.",
   rejected: "Your session was not accepted. Sign in again to continue.",
   invalid_response: "Cloud returned an unexpected response. Try again later.",
-  credential_failed: "Secure credential storage is unavailable. Unlock it and try again.",
+  credential_failed:
+    "Secure connection state is unavailable. Unlock credential storage, or sign out and connect again.",
   unavailable: "Cloud is not available in this build. You can continue locally.",
+  reauth_required:
+    "Revoke the previous connection in Settings, then connect again. The refresh response is not safe to retry.",
+  revocation_unconfirmed:
+    "Signed out locally. Cloud has not confirmed revocation. Retry revocation when you are online.",
 } as const
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 
@@ -47,6 +52,7 @@ export class CloudSession {
     busy: false,
     error: null,
     loaded: false,
+    fullContentConsent: false,
   }
   private listeners = new Set<() => void>()
   private stop: (() => void) | undefined
@@ -118,7 +124,8 @@ export class CloudSession {
   private receive(value: CloudSnapshot) {
     this.revision++
     const accountChanged = value.identity?.id !== this.snapshot.cloud.identity?.id
-    if (!value.identity || accountChanged) this.requestId = null
+    const destinationChanged = value.destination?.id !== this.snapshot.cloud.destination?.id
+    if (!value.identity || accountChanged || destinationChanged) this.requestId = null
     const screen = value.identity
       ? value.draft.screen === "handoff"
         ? "identity"
@@ -129,6 +136,9 @@ export class CloudSession {
       cloud: value,
       screen: value.identity && value.pendingSync ? "complete" : screen,
       loaded: true,
+      ...(!value.identity || accountChanged || destinationChanged
+        ? { fullContentConsent: false }
+        : {}),
       ...(value.identity && value.pendingSync
         ? { sync: value.pendingSync.result }
         : !value.identity || accountChanged
@@ -275,6 +285,7 @@ export class CloudSession {
   cancel = () => this.run("cancel", this.port.cancel)
   cancelSilently = () => this.run(null, this.port.cancel)
   signOut = () => this.run("sign_out", this.port.signOut)
+  setFullContentConsent = (fullContentConsent: boolean) => this.publish({ fullContentConsent })
   go = async (screen: CloudDraft["screen"], action: "back" | "continue" = "continue") => {
     if (screen !== "handoff" && !this.snapshot.cloud.identity) return
     await this.run(action, () =>
@@ -318,6 +329,8 @@ export class CloudSession {
       this.snapshot.screen !== "folders" ||
       !this.snapshot.cloud.syncEnabled ||
       !this.snapshot.cloud.identity ||
+      !this.snapshot.cloud.destination ||
+      !this.snapshot.fullContentConsent ||
       !selected.length
     )
       return
@@ -325,16 +338,27 @@ export class CloudSession {
     const generation = this.generation
     const revision = this.revision
     const account = this.snapshot.cloud.identity.id
+    const destinationId = this.snapshot.cloud.destination.id
+    const consent = {
+      version: "native-full-content-v1" as const,
+      destinationId,
+      fullContent: true as const,
+      attachments: false as const,
+    }
     const existing = this.requestId
     const requestId = this.requestId ?? crypto.randomUUID()
     this.requestId = requestId
     this.publish({ screen: "complete", busy: false, sync: { status: "starting" }, error: null })
     try {
-      if (!existing) await this.port.prepareSync(selected, requestId)
-      if (this.snapshot.cloud.identity?.id !== account) return
+      if (!existing) await this.port.prepareSync(selected, requestId, consent)
+      if (
+        this.snapshot.cloud.identity?.id !== account ||
+        this.snapshot.cloud.destination?.id !== destinationId
+      )
+        return
       const sync = existing
         ? await this.port.reconcile(existing)
-        : await this.port.start(selected, requestId)
+        : await this.port.start(selected, requestId, consent)
       if (this.active && generation === this.generation && revision === this.revision)
         this.publish({ sync, busy: false, screen: "complete" })
     } catch {
