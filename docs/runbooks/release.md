@@ -609,6 +609,8 @@ application release.
    attests provenance, and drafts the release. Main CI tests the repository
    tree; this step proves that the tarball is complete on its own. The engine
    release does not repeat the desktop platform matrix.
+   The catalog parity test runs in repository CI and depends on the plugin
+   checkout. The source tarball excludes that test.
 4. Review the draft: verify its checksum and provenance, inspect its contents,
    and read the release notes. The workflow already tests the extracted archive.
    To reproduce that gate locally, extract into an empty directory, enter

@@ -17,29 +17,36 @@ version and refuses the release if there is none.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-16
+
+### Added
+
+- Read stored sessions from OpenCode 2.0.32. Live checks require a registered
+  local service with the selected database open. WSL supports stored reads.
+- Read typed messages, calls, and tool results where the session source provides
+  them. Supported Cursor Desktop sessions provide ordered tool results.
+
+### Changed
+
+- Index available transcripts while waiting for access to protected project
+  folders. Git and project details appear after access is granted.
+- Rebuild cached metrics or resume snapshots whose format revisions no longer
+  match the engine's current revisions.
+
 ### Removed
 
 - Removed the Ignored Instructions, Skill Opportunities, Over-exploring, and
   Scope Creep native checks. Their `checks` modules and the
   `analysis::ignored_instructions` compatibility export are no longer public.
   Removed their `DetectorId` and `FindingCause` variants, finding constructors,
-  and check-specific evidence types. The nine remaining detector keys, indices
-  0 through 8, order, and mask bits are unchanged.
-- Removed `analysis::session_scope` and `checks::sampling`. No surviving
-  repository production caller uses these old scope and scheduling contracts.
-  This is an intentional public API removal, not a compatibility wrapper.
-- Removed legacy Jev check planning, work-item packing, orchestration, reduction,
-  reuse, and evidence-store APIs. This includes `JevCheck`, `JevSessionContext`,
-  `JevCheckPlan`, `JevWorkItem`, `JevRequestBatch`, `JevEvidenceStore`, and their
-  runner and packing functions. Removed the retired-only `classification`,
-  `compact_ids`, `exact_facts`, `obligations`, and `text_ranges` modules.
-  System One request/response types, capabilities, prompt rendering, and
-  validation remain available under `analysis::jev`.
+  and check-specific evidence types.
+- Removed `analysis::session_scope`, `checks::sampling`, and the legacy Jev check
+  orchestration and evidence-store APIs. System One request and response types
+  remain available under `analysis::jev`.
 - Removed `SessionContentEvidence.instructions`. Shared
   `analysis::jev_evidence::prepare_session_content` now takes three arguments:
   session ID, source format, and published content. Removed `FindingDisplay`
-  fields `certainty` and `instruction_provenance`. Shared native normalization,
-  source admission, selected-content APIs, `digest`, and `instructions` remain.
+  fields `certainty` and `instruction_provenance`.
 
 ## [0.14.1] - 2026-10-14
 

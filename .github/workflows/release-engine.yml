@@ -166,7 +166,9 @@ jobs:
           mkdir -p "$stage" dist
           # `HEAD` rather than "$TAG": the checkout is the tagged commit either
           # way, and this does not depend on the tag ref surviving the fetch.
-          git archive --format=tar HEAD:crates/antiburn-local | tar -x -C "$stage"
+          # Run the catalog parity test in repository CI.
+          git archive --format=tar HEAD:crates/antiburn-local -- \
+            . ':(exclude)tests/live_catalog_drift.rs' | tar -x -C "$stage"
           git archive --format=tar HEAD -- \
             docs/check-coverage.md docs/session-coverage.md docs/support.md \
             | tar -x -C "$stage"
