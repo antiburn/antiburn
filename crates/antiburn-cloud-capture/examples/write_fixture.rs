@@ -1,0 +1,117 @@
+use antiburn_cloud_capture::*;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+fn main() -> Result<()> {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/cloud/capture-v1")
+        .canonicalize()?;
+    let candidate = discover_claude(&fixtures.join("project"), &Limits::default())?
+        .into_iter()
+        .find(|candidate| candidate.source_id() == "main")
+        .ok_or(Error::InvalidSource)?;
+    let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)?;
+    let mut spool = Spool::open(&temporary.path().join("spool"), Limits::default())?;
+    let entry = spool.capture(
+        CaptureIdentity {
+            capture_id: "fixture-main".into(),
+            account_id: "synthetic-account".into(),
+            destination_id: "synthetic-destination".into(),
+            source_id: "main".into(),
+        },
+        &candidate,
+        BTreeMap::new(),
+        &mut Reservation,
+    )?;
+    let reference = fixtures.join("reference");
+    fs::create_dir_all(&reference)?;
+    let manifest = entry.manifest.ok_or(Error::CorruptSpool)?;
+    fs::write(
+        reference.join("main.capture.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )?;
+    fs::copy(
+        temporary.path().join("spool/fixture-main/chunk-00000.gz"),
+        reference.join("main.chunk-00000.gz"),
+    )?;
+    let paths = [
+        "project/main.jsonl",
+        "project/fork.jsonl",
+        "project/unknown.jsonl",
+        "project/main/subagents/agent-worker.jsonl",
+        "project/main/subagents/agent-worker.meta.json",
+        "project/main/subagents/agent-fork.jsonl",
+        "project/main/subagents/agent-fork.meta.json",
+        "project/audit.jsonl",
+        "project/unowned.txt",
+        "reference/main.capture.json",
+        "reference/main.chunk-00000.gz",
+    ];
+    let mut files = Vec::new();
+    for path in paths {
+        let bytes = fs::read(fixtures.join(path))?;
+        files.push(serde_json::json!({
+            "path": path,
+            "bytes": bytes.len(),
+            "sha256": Sha256::digest(&bytes).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        }));
+    }
+    fs::write(
+        fixtures.join("manifest.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "fixture_version": FIXTURE_VERSION,
+            "capture_version": CAPTURE_VERSION,
+            "synthetic": true,
+            "files": files,
+        }))?,
+    )?;
+    Ok(())
+}
+
+struct Reservation;
+
+impl Transport for Reservation {
+    fn reserve(
+        &mut self,
+        _: &CaptureIdentity,
+        _: u64,
+    ) -> std::result::Result<String, TransportError> {
+        Ok("synthetic-reservation".into())
+    }
+
+    fn negotiate(
+        &mut self,
+        _: &str,
+        _: &CaptureManifest,
+    ) -> std::result::Result<ServerStatus, TransportError> {
+        Err(TransportError::Rejected)
+    }
+
+    fn status(
+        &mut self,
+        _: &str,
+        _: &CaptureManifest,
+    ) -> std::result::Result<ServerStatus, TransportError> {
+        Err(TransportError::Rejected)
+    }
+
+    fn upload_part(
+        &mut self,
+        _: &str,
+        _: &CaptureIdentity,
+        _: &Chunk,
+        _: &mut dyn std::io::Read,
+    ) -> std::result::Result<(), TransportError> {
+        Err(TransportError::Rejected)
+    }
+
+    fn complete(
+        &mut self,
+        _: &str,
+        _: &CaptureManifest,
+    ) -> std::result::Result<(), TransportError> {
+        Err(TransportError::Rejected)
+    }
+}

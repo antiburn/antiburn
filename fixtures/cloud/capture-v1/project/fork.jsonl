@@ -1,0 +1,2 @@
+{"type":"session","sessionId":"fork","version":"2.1.278","forkedFrom":{"sessionId":"main"}}
+{"type":"assistant","uuid":"independent-fork-record","sessionId":"fork","version":"2.1.278","message":{"role":"assistant","content":"Synthetic independent fork."}}

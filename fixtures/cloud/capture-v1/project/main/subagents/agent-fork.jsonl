@@ -1,0 +1,2 @@
+{"type":"assistant","uuid":"worker-record","parentUuid":null,"sessionId":"main","agentId":"worker","isSidechain":true,"version":"2.1.278","message":{"role":"assistant","content":[{"type":"text","text":"Synthetic child response."}]}}
+{"type":"assistant","uuid":"fork-record","parentUuid":"worker-record","sessionId":"main","agentId":"fork","isSidechain":true,"version":"2.1.309","message":{"role":"assistant","content":[{"type":"text","text":"Synthetic fork response."}]}}

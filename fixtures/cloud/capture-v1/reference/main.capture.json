@@ -1,0 +1,39 @@
+{
+  "capture_version": "antiburn-native-capture-v1",
+  "identity": {
+    "capture_id": "fixture-main",
+    "account_id": "synthetic-account",
+    "destination_id": "synthetic-destination",
+    "source_id": "main"
+  },
+  "compression": "gzip-mtime0-os255-level6",
+  "chunk_expanded_bytes": 8388608,
+  "expanded_bytes": 876,
+  "expanded_sha256": "1af1e5784bbc68fab105959da136a448a1e1e490bacb1769e68c6a831d1c089b",
+  "files": [
+    {
+      "name": "transcript.jsonl",
+      "role": "native_transcript",
+      "offset": 0,
+      "bytes": 390,
+      "sha256": "d435bab180bea7840ae99a76912980d7c1a172265e18fc4256016089b0e04f44"
+    },
+    {
+      "name": "capture-metadata.json",
+      "role": "capture_metadata",
+      "offset": 390,
+      "bytes": 486,
+      "sha256": "7736e6c91cbeeacfe5aa36249a9c68db12940d84d65e7993954cacaf8e1f34dc"
+    }
+  ],
+  "chunks": [
+    {
+      "index": 0,
+      "expanded_offset": 0,
+      "expanded_bytes": 876,
+      "expanded_sha256": "1af1e5784bbc68fab105959da136a448a1e1e490bacb1769e68c6a831d1c089b",
+      "compressed_bytes": 406,
+      "compressed_sha256": "abe4b7f0452b21e928e05a1dc90ae2f333ad1cc0ec89aa986cdab42ff4b8c9ae"
+    }
+  ]
+}

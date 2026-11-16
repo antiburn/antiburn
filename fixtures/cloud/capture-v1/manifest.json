@@ -1,0 +1,62 @@
+{
+  "capture_version": "antiburn-native-capture-v1",
+  "files": [
+    {
+      "bytes": 390,
+      "path": "project/main.jsonl",
+      "sha256": "d435bab180bea7840ae99a76912980d7c1a172265e18fc4256016089b0e04f44"
+    },
+    {
+      "bytes": 256,
+      "path": "project/fork.jsonl",
+      "sha256": "ea53cbccf29d9d0c504d6a5393510bd005104cd6cc490ff429f20bfb1d75d928"
+    },
+    {
+      "bytes": 181,
+      "path": "project/unknown.jsonl",
+      "sha256": "0e1c332ccb6e8937ff232ff2807a6458ff16e8ba5668458f8ebd0bb003c34928"
+    },
+    {
+      "bytes": 233,
+      "path": "project/main/subagents/agent-worker.jsonl",
+      "sha256": "ee96988b0d64d95429706cafa253ee3c7b98b7b907bcbfef787de3b0ceb3ec3c"
+    },
+    {
+      "bytes": 86,
+      "path": "project/main/subagents/agent-worker.meta.json",
+      "sha256": "ad8c1cc19927fbe1d8c81140fa4d5cc24cc25016ce96e07f3e24dcce47f3d52b"
+    },
+    {
+      "bytes": 472,
+      "path": "project/main/subagents/agent-fork.jsonl",
+      "sha256": "f1246c949e4aa1e56c87825f718925c282cc245ed5fd1807e792f6816b3cf5ed"
+    },
+    {
+      "bytes": 119,
+      "path": "project/main/subagents/agent-fork.meta.json",
+      "sha256": "580535d10f5d6bb8f028f0b1a27c5aa805951b111e49438f2ba1d72a1a3f5bba"
+    },
+    {
+      "bytes": 93,
+      "path": "project/audit.jsonl",
+      "sha256": "5c75d4fd3c7ee8fae9a05b52254928ad010ceaf40f19ff68d0e464381b56172f"
+    },
+    {
+      "bytes": 62,
+      "path": "project/unowned.txt",
+      "sha256": "da2479885e97b701d96148e598a752714e1a21fc300b0ca2fc1adacb84165ac2"
+    },
+    {
+      "bytes": 1167,
+      "path": "reference/main.capture.json",
+      "sha256": "bb85f00fd31b55850f28be5cac6a9ba3027fa640c820b14e4db45f56a96e50b6"
+    },
+    {
+      "bytes": 406,
+      "path": "reference/main.chunk-00000.gz",
+      "sha256": "abe4b7f0452b21e928e05a1dc90ae2f333ad1cc0ec89aa986cdab42ff4b8c9ae"
+    }
+  ],
+  "fixture_version": "claude-native-capture-fixtures-v1",
+  "synthetic": true
+}
