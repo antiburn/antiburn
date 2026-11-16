@@ -602,21 +602,21 @@ application release.
    `dependency-checks` workflow with `desktop: false`; the desktop app
    checks run only for app releases). It then
    packages a deterministic source tarball with `LICENSE`, `NOTICE`,
-   `THIRD_PARTY_NOTICES`, the three coverage-test inputs under `docs/`
-   (`check-coverage.md`, `session-coverage.md`, and `support.md`), and
-   `plugins/antiburn-live/hooks/catalog.ts` for the catalog parity test. It extracts
+   `THIRD_PARTY_NOTICES`, and the three coverage-test inputs under `docs/`
+   (`check-coverage.md`, `session-coverage.md`, and `support.md`). It extracts
    the archive into an isolated directory and requires `cargo test --locked`
    to pass before it inventories the dependency tree, verifies its checksums,
    attests provenance, and drafts the release. Main CI tests the repository
    tree; this step proves that the tarball is complete on its own. The engine
    release does not repeat the desktop platform matrix.
+   The catalog parity test runs in repository CI and depends on the plugin
+   checkout. The source tarball excludes that test.
 4. Review the draft: verify its checksum and provenance, inspect its contents,
    and read the release notes. The workflow already tests the extracted archive.
    To reproduce that gate locally, extract into an empty directory, enter
    `antiburn-local-<version>`, and run `cargo test --locked`. Coverage tests read
-   bundled `docs/` files in the archive and repository-level docs in a checkout.
-   The catalog parity test uses the same layout rule. Missing inputs fail the
-   tests. (While the repository is private, the
+   bundled `docs/` files in the archive and repository-level docs in a checkout;
+   missing inputs fail the tests. (While the repository is private, the
    two provenance steps skip themselves — attestation persistence is plan-gated
    on private repositories — and activate automatically once the repository is
    public; a private-repository draft has no provenance bundle to verify.)

@@ -21,24 +21,17 @@ version and refuses the release if there is none.
 
 ### Added
 
-- Add bounded OpenCode V2 stored session reads and live evidence capture for the
-  characterized `2.0.32` service. Live capture requires proof that the registered
-  local service has the selected database open. WSL stored reads do not enable
-  native live checks.
-- Expose typed public events and tool outcomes for check consumers. Native
-  routes expose only the messages, calls, results, and response cycles their
-  sources can prove. The separate Cursor Desktop snapshot route supplies
-  ordered tool results and user-slot context for admitted main sessions.
+- Read stored sessions from OpenCode 2.0.32. Live checks require a registered
+  local service with the selected database open. WSL supports stored reads.
+- Read typed messages, calls, and tool results where the session source provides
+  them. Supported Cursor Desktop sessions provide ordered tool results.
 
 ### Changed
 
-- Advance the parser to revision 67, the metrics schema to revision 10, and
-  the resume snapshot to revision 25. Embedders should apply the revision
-  checks before reusing cached metrics or resuming from a saved snapshot.
-- Defer automatic Git and project inspection in protected folders until access
-  is granted. Sessions with deferred project details can still be indexed when
-  their transcripts are available. A path recorded in a transcript does not
-  grant access to the project.
+- Index available transcripts while waiting for access to protected project
+  folders. Git and project details appear after access is granted.
+- Rebuild cached metrics or resume snapshots whose format revisions no longer
+  match the engine's current revisions.
 
 ### Removed
 
@@ -46,23 +39,14 @@ version and refuses the release if there is none.
   Scope Creep native checks. Their `checks` modules and the
   `analysis::ignored_instructions` compatibility export are no longer public.
   Removed their `DetectorId` and `FindingCause` variants, finding constructors,
-  and check-specific evidence types. The nine remaining detector keys, indices
-  0 through 8, order, and mask bits are unchanged.
-- Removed `analysis::session_scope` and `checks::sampling`. No surviving
-  repository production caller uses these old scope and scheduling contracts.
-  This is an intentional public API removal, not a compatibility wrapper.
-- Removed legacy Jev check planning, work-item packing, orchestration, reduction,
-  reuse, and evidence-store APIs. This includes `JevCheck`, `JevSessionContext`,
-  `JevCheckPlan`, `JevWorkItem`, `JevRequestBatch`, `JevEvidenceStore`, and their
-  runner and packing functions. Removed the retired-only `classification`,
-  `compact_ids`, `exact_facts`, `obligations`, and `text_ranges` modules.
-  System One request/response types, capabilities, prompt rendering, and
-  validation remain available under `analysis::jev`.
+  and check-specific evidence types.
+- Removed `analysis::session_scope`, `checks::sampling`, and the legacy Jev check
+  orchestration and evidence-store APIs. System One request and response types
+  remain available under `analysis::jev`.
 - Removed `SessionContentEvidence.instructions`. Shared
   `analysis::jev_evidence::prepare_session_content` now takes three arguments:
   session ID, source format, and published content. Removed `FindingDisplay`
-  fields `certainty` and `instruction_provenance`. Shared native normalization,
-  source admission, selected-content APIs, `digest`, and `instructions` remain.
+  fields `certainty` and `instruction_provenance`.
 
 ## [0.14.1] - 2026-10-14
 
