@@ -12,12 +12,15 @@ use serde_json::Value;
 /// Reads the JSON that the mod module holds between its two marker comments.
 fn catalog() -> Value {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = if manifest_dir.join("docs").is_dir() {
-        manifest_dir.to_path_buf()
+    let path = if manifest_dir.join("docs").is_dir() {
+        manifest_dir.join("plugins/antiburn-live/hooks/catalog.ts")
     } else {
-        manifest_dir.join("../..")
+        Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/antiburn-live/hooks/catalog.ts"
+        ))
+        .to_path_buf()
     };
-    let path = root.join("plugins/antiburn-live/hooks/catalog.ts");
     let module = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
     let (_, rest) = module
