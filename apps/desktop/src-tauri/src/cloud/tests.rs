@@ -29,22 +29,24 @@ fn config() -> Config {
     Config::parse("https://auth.example/", "https://api.example/").unwrap()
 }
 
-fn session() -> Session {
+pub(super) fn session() -> Session {
     Session {
         user: auth::User {
             id: "synthetic-user".into(),
             display_name: "Example".into(),
         },
         grant_id: "synthetic-grant".into(),
-        device_id: "synthetic-device".into(),
+        device_name: "Example desktop".into(),
         workspace: Workspace {
             id: "synthetic-personal".into(),
             name: "Personal".into(),
             kind: WorkspaceKind::Personal,
         },
-        audience: "https://api.example/".into(),
-        actions: vec!["capture:write".into()],
+        resource: "https://api.example/".into(),
+        scope: "capture:write".into(),
+        iss: "https://auth.example/".into(),
         expires_at: 10_000,
+        access_expires_at: 901,
     }
 }
 
@@ -57,6 +59,9 @@ struct FakeTransport {
     generation: Option<Arc<AtomicU64>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
     revocations: AtomicU64,
+    revoked: Mutex<Vec<String>>,
+    token_grant: Mutex<Option<String>>,
+    fail_revoke_for: Mutex<Option<String>>,
     seen: Mutex<Vec<String>>,
 }
 
@@ -78,6 +83,18 @@ impl Transport for Arc<FakeTransport> {
             refresh_token: format!("synthetic-refresh-{count}"),
             expires_in: 60,
             token_type: "Bearer".into(),
+            grant_id: self
+                .token_grant
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| session().grant_id),
+            user_id: session().user.id,
+            workspace_id: session().workspace.id,
+            grant_expires_at: "1970-01-01T02:46:40Z".into(),
+            scope: auth::SCOPE.into(),
+            resource: config().resource,
+            iss: config().issuer,
         })
     }
     fn session(&self, _: &Config, _: &str) -> Result<Session, Failure> {
@@ -92,9 +109,12 @@ impl Transport for Arc<FakeTransport> {
         }
         Ok(session())
     }
-    fn revoke(&self, _: &Config, _: &str) -> Result<(), Failure> {
+    fn revoke(&self, _: &Config, refresh: &str) -> Result<(), Failure> {
         self.revocations.fetch_add(1, Ordering::AcqRel);
-        if self.fail_revoke.load(Ordering::Acquire) {
+        self.revoked.lock().unwrap().push(refresh.to_owned());
+        if self.fail_revoke.load(Ordering::Acquire)
+            || self.fail_revoke_for.lock().unwrap().as_deref() == Some(refresh)
+        {
             return Err(Failure::Offline);
         }
         Ok(())
@@ -407,11 +427,131 @@ fn cloud_fixed_grant_deadline_does_not_slide_on_refresh() {
     value.expires_at += 1;
     assert!(!session().same_grant(&value));
     value = session();
-    value.audience = "https://other.example/".into();
+    value.resource = "https://other.example/".into();
     assert_eq!(
         value.validate(&config(), 100),
         Err(Failure::InvalidResponse)
     );
+}
+
+#[test]
+fn cloud_refresh_uses_the_grant_deadline_not_the_previous_access_deadline() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    fixture
+        .vault
+        .value
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .session
+        .as_mut()
+        .unwrap()
+        .access_expires_at = 120;
+    fixture.restart();
+    fixture.engine.refresh(200, || true).unwrap();
+    assert!(fixture.engine.session().is_some());
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_rejected_refresh_keeps_both_grant_proofs_and_requires_original_revocation() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    *fixture.transport.token_grant.lock().unwrap() = Some("another-grant".into());
+    *fixture.transport.fail_revoke_for.lock().unwrap() = Some("synthetic-refresh-0".into());
+    assert_eq!(
+        fixture.engine.refresh(200, || true),
+        Err(Failure::ReauthRequired)
+    );
+    let cleanup = fixture.vault.read().unwrap().unwrap();
+    assert_eq!(cleanup.refresh_token, "synthetic-refresh-0");
+    assert_eq!(cleanup.cleanup_refresh_tokens, ["synthetic-refresh-1"]);
+    assert!(cleanup.session.is_none());
+    fixture.restart();
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.engine.cleanup.blocks_connection());
+    assert!(fixture.vault.read().unwrap().is_some());
+    *fixture.transport.fail_revoke_for.lock().unwrap() = None;
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.engine.cleanup == state::Cleanup::None);
+    assert!(fixture.vault.read().unwrap().is_none());
+    assert_eq!(
+        *fixture.transport.revoked.lock().unwrap(),
+        [
+            "synthetic-refresh-0",
+            "synthetic-refresh-1",
+            "synthetic-refresh-0",
+            "synthetic-refresh-1",
+            "synthetic-refresh-0",
+            "synthetic-refresh-1",
+        ]
+    );
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn cloud_state_write_failure_still_retains_both_cleanup_proofs() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let directory = fixture.directory.path().to_owned();
+    let blocked = directory.clone();
+    let transport = Arc::new(FakeTransport {
+        calls: AtomicU64::new(1),
+        token_grant: Mutex::new(Some("another-grant".into())),
+        on_session: Some(Arc::new(move || {
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        })),
+        ..FakeTransport::default()
+    });
+    fixture.engine.transport = Box::new(transport);
+    let result = fixture.engine.refresh(200, || true);
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(result, Err(Failure::CredentialFailed));
+    let cleanup = fixture.vault.read().unwrap().unwrap();
+    assert_eq!(cleanup.refresh_token, "synthetic-refresh-0");
+    assert_eq!(cleanup.cleanup_refresh_tokens, ["synthetic-refresh-1"]);
+    assert!(cleanup.session.is_none());
+    fixture.restart();
+    fixture.engine.refresh(201, || true).unwrap();
+    assert!(fixture.engine.session().is_none());
+    fixture.engine.sign_out().unwrap();
+    assert_eq!(
+        *fixture.transport.revoked.lock().unwrap(),
+        ["synthetic-refresh-0", "synthetic-refresh-1",]
+    );
+    assert!(fixture.vault.read().unwrap().is_none());
+}
+
+#[test]
+fn cloud_stale_browser_cancel_does_not_abandon_a_newer_attempt() {
+    let mut fixture = Fixture::new();
+    let (_, _listener, attempt) = fixture.engine.begin(100, 2).unwrap();
+    fixture.engine.cancel(1).unwrap();
+    assert_eq!(
+        fixture.engine.attempt.as_ref().unwrap().state,
+        attempt.state
+    );
+    fixture.engine.refresh(101, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::Waiting);
+    fixture.engine.cancel(3).unwrap();
+    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+}
+
+#[test]
+fn cloud_reordered_account_cleanup_cannot_restore_an_older_generation() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    assert!(fixture.engine.allows_account_cleanup(2, 2));
+    fixture.engine.sign_out().unwrap();
+    fixture.engine.generation = 2;
+    assert!(!fixture.engine.allows_account_cleanup(1, 2));
+    assert!(!fixture.engine.allows_account_cleanup(1, 1));
+    assert_eq!(fixture.engine.generation, 2);
+    fixture.engine.begin(200, 3).unwrap();
 }
 
 #[test]
@@ -542,6 +682,7 @@ fn cloud_lock_serializes_separate_processes() {
 fn cloud_snapshot_does_not_include_native_secrets() {
     let value = Snapshot {
         auth_enabled: true,
+        capture_enabled: true,
         sync_enabled: false,
         status: AuthStatus::SignedIn,
         identity: Some(Identity::from(&session())),
@@ -553,6 +694,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         local_reset_available: false,
         remote_revocation_unconfirmed: false,
         setup_error: None,
+        pending_sync: None,
         draft: Draft::default(),
     };
     let encoded = serde_json::to_string(&value).unwrap();

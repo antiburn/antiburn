@@ -53,6 +53,10 @@ impl Engine {
         self.access.as_ref().map(|access| &access.session)
     }
 
+    pub fn allows_account_cleanup(&self, requested: u64, latest: u64) -> bool {
+        requested == latest && requested >= self.generation
+    }
+
     fn read_state(&mut self) -> Result<(Guard, Record), Failure> {
         let state = self.state.lock().and_then(|mut guard| {
             let record = guard.read()?;
@@ -114,6 +118,13 @@ impl Engine {
     }
 
     pub fn cancel(&mut self, generation: u64) -> Result<(), Failure> {
+        if self
+            .attempt
+            .as_ref()
+            .is_some_and(|attempt| attempt.generation > generation)
+        {
+            return Ok(());
+        }
         if let Some(attempt) = self.attempt.take() {
             let (mut guard, record) = self.read_state()?;
             if record.epoch == attempt.epoch && record.phase == Phase::Pending {
@@ -196,11 +207,14 @@ impl Engine {
         current: impl Fn() -> bool,
     ) -> Result<(), Failure> {
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
-        let session = self
-            .transport
-            .session(&config, &tokens.access_token)
+        let session = tokens
+            .validate(&config, now)
+            .and_then(|()| self.transport.session(&config, &tokens.access_token))
             .and_then(|session| {
                 session.validate(&config, now)?;
+                if !tokens.matches_session(&session) {
+                    return Err(Failure::InvalidResponse);
+                }
                 if previous.is_some_and(|previous| {
                     previous
                         .session
@@ -213,7 +227,7 @@ impl Engine {
                 Ok(session)
             });
         if !current() || session.is_err() {
-            self.discard_tokens(guard, record, &config, &tokens)?;
+            self.discard_tokens(guard, record, &config, &tokens, previous)?;
             return Err(if current() {
                 Failure::ReauthRequired
             } else {
@@ -226,14 +240,15 @@ impl Engine {
             issuer: config.issuer.clone(),
             resource: config.resource.clone(),
             refresh_token: tokens.refresh_token.clone(),
+            cleanup_refresh_tokens: Vec::new(),
             session: Some(session.clone()),
         };
         if self.vault.write(Some(&credential)).is_err() {
-            self.discard_tokens(guard, record, &config, &tokens)?;
+            self.discard_tokens(guard, record, &config, &tokens, previous)?;
             return Err(Failure::CredentialFailed);
         }
         if !current() {
-            self.discard_tokens(guard, record, &config, &tokens)?;
+            self.discard_tokens(guard, record, &config, &tokens, previous)?;
             return Err(Failure::Cancelled);
         }
         record.phase = Phase::Active;
@@ -242,14 +257,15 @@ impl Engine {
         self.cleanup = record.cleanup;
         // Check again after durable writes. Logout can invalidate work during an OS-vault call.
         if !current() {
-            self.discard_tokens(guard, record, &config, &tokens)?;
+            self.discard_tokens(guard, record, &config, &tokens, previous)?;
             return Err(Failure::Cancelled);
         }
         self.access = Some(Access {
             token: tokens.access_token,
             expires_at: now
                 .saturating_add(tokens.expires_in as i64)
-                .min(session.expires_at),
+                .min(session.expires_at)
+                .min(session.access_expires_at),
             epoch: record.epoch,
             session,
         });
@@ -263,33 +279,54 @@ impl Engine {
         mut record: Record,
         config: &Config,
         tokens: &auth::Tokens,
+        previous: Option<&Credential>,
     ) -> Result<(), Failure> {
         self.access = None;
         record.phase = Phase::SignedOut;
         record.cleanup = Cleanup::Revoke {
             prior_unconfirmed: record.cleanup.prior_unconfirmed(),
         };
-        guard.write(&record)?;
-        self.cleanup = record.cleanup;
-        // This record can revoke a connection, but cannot restore an authenticated session.
+        // Save logout-only proofs before a state-write failure can discard them.
+        let primary = previous.map_or(&tokens.refresh_token, |credential| {
+            &credential.refresh_token
+        });
         let cleanup = Credential {
             epoch: record.epoch.clone(),
             issuer: config.issuer.clone(),
             resource: config.resource.clone(),
-            refresh_token: tokens.refresh_token.clone(),
+            refresh_token: primary.clone(),
+            cleanup_refresh_tokens: if primary == &tokens.refresh_token {
+                Vec::new()
+            } else {
+                vec![tokens.refresh_token.clone()]
+            },
             session: None,
         };
-        let saved = self.vault.write(Some(&cleanup));
-        if self.transport.revoke(config, &tokens.refresh_token).is_ok() {
-            record.cleanup = Cleanup::DeleteCredential {
-                prior_unconfirmed: record.cleanup.prior_unconfirmed(),
+        if self.vault.write(Some(&cleanup)).is_err() {
+            record.cleanup = Cleanup::Revoke {
+                prior_unconfirmed: true,
             };
-            guard.write(&record)?;
-            self.finish_local_deletion(guard, record)?;
-        } else {
-            saved?;
+            let marked = guard.write(&record);
+            self.cleanup = record.cleanup;
+            let _ = self.transport.revoke(config, &tokens.refresh_token);
+            marked?;
+            return Err(Failure::CredentialFailed);
         }
-        Ok(())
+        self.cleanup = record.cleanup;
+        guard.write(&record)?;
+        let mut confirmed = true;
+        for proof in std::iter::once(&cleanup.refresh_token).chain(&cleanup.cleanup_refresh_tokens)
+        {
+            confirmed &= self.transport.revoke(config, proof).is_ok();
+        }
+        if !confirmed {
+            return Ok(());
+        }
+        record.cleanup = Cleanup::DeleteCredential {
+            prior_unconfirmed: record.cleanup.prior_unconfirmed(),
+        };
+        guard.write(&record)?;
+        self.finish_local_deletion(guard, record)
     }
 
     fn finish_local_deletion(
@@ -365,12 +402,13 @@ impl Engine {
         self.cleanup = record.cleanup;
         let credential = self.vault.read()?.ok_or(Failure::ReauthRequired)?;
         if credential.epoch != record.epoch
+            || !credential.cleanup_refresh_tokens.is_empty()
             || credential.issuer != config.issuer
             || credential.resource != config.resource
             || credential
                 .session
                 .as_ref()
-                .is_none_or(|session| session.validate(&config, now).is_err())
+                .is_none_or(|session| session.validate_grant(&config, now).is_err())
         {
             return Err(Failure::ReauthRequired);
         }
@@ -429,11 +467,13 @@ impl Engine {
             if credential.issuer != config.issuer || credential.resource != config.resource {
                 return Err(Failure::CredentialFailed);
             }
-            if self
-                .transport
-                .revoke(config, &credential.refresh_token)
-                .is_err()
+            let mut confirmed = true;
+            for proof in
+                std::iter::once(&credential.refresh_token).chain(&credential.cleanup_refresh_tokens)
             {
+                confirmed &= self.transport.revoke(config, proof).is_ok();
+            }
+            if !confirmed {
                 return Ok(());
             }
         }

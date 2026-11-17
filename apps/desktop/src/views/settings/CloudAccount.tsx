@@ -8,6 +8,7 @@ import {
 import { CloudCaptureConsent } from "../../onboarding/CloudCaptureConsent"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
+import { personalCloudDestination } from "../../lib/cloudDestination"
 
 export function CloudAccount({
   session,
@@ -134,7 +135,9 @@ export function CloudAccount({
         description={
           value.cloud.setupError ??
           (value.cloud.identity
-            ? "Choose folders for this account. Folder choices alone do not authorize capture."
+            ? value.cloud.captureEnabled
+              ? "Choose native Claude projects/<project> source directories directly, not repositories. Antiburn does not infer sources from working directories or suggest repositories. Source choices alone do not authorize capture."
+              : "Choose folders for this account. Folder choices alone do not authorize capture."
             : "Connect to Cloud before choosing folders.")
         }
         trailing={
@@ -168,6 +171,39 @@ export function CloudAccount({
       {value.cloud.identity && (
         <>
           <CloudCaptureConsent session={session} value={value} />
+          {value.cloud.captureEnabled && (
+            <div className="flex flex-col items-start gap-2 px-4 pb-3">
+              <button
+                className="ui-push-button"
+                disabled={
+                  value.busy ||
+                  !value.loaded ||
+                  value.cloud.status !== "signed_in" ||
+                  !personalCloudDestination(value.cloud.destination ?? null) ||
+                  !!value.cloud.setupError ||
+                  value.sync.status === "cancelled" ||
+                  !value.fullContentConsent ||
+                  !value.cloud.draft.folders.some((folder) => folder.selected)
+                }
+                onClick={() => void session.startSync()}
+              >
+                {value.sync.status === "upload_unavailable" && value.error
+                  ? "Retry source listing"
+                  : "Save capture request"}
+              </button>
+              <p className="type-footnote text-label-secondary" role="status">
+                {value.sync.status === "upload_unavailable"
+                  ? "Capture request saved on this device. Upload unavailable."
+                  : value.sync.status === "starting"
+                    ? "Saving capture request. Upload unavailable."
+                    : value.sync.status === "ambiguous"
+                      ? "Could not confirm the capture request. Try Save capture request again. Upload unavailable."
+                      : value.sync.status === "cancelled"
+                        ? "Capture request cancelled. Upload unavailable."
+                        : "Upload unavailable."}
+              </p>
+            </div>
+          )}
           <p className="px-4 pb-3 type-footnote text-label-secondary">
             Sign out revokes this desktop connection only. It does not sign out your browser or
             delete saved captures.

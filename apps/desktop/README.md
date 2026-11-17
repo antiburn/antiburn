@@ -103,11 +103,16 @@ Manual Cloud builds place the Cloud account controls in Settings → Sessions,
 above Repositories. Connecting remains available after the introduction.
 Folder choices and the legacy Upload sessions preference do not authorize
 capture. Full native content needs a separate confirmation for the selected
-account, destination, and explicitly selected folders. Suggested folders start
-unselected. Settings keeps folder choices separate for each account and personal
+account, destination, and explicitly selected folders. This scoped path selects
+native Claude `projects/<project>` source directories directly, not repository
+paths or inferred working directories. Settings keeps folder choices separate for each account and personal
 destination. Signing out revokes only the current desktop connection; it does
-not sign out the browser or delete saved captures. Attachments remain separate. Native capture transport
-is disabled; no sessions are queued or uploaded.
+not sign out the browser or delete saved captures. Attachments remain separate.
+On supported Unix platforms, **Save capture request** keeps a durable selection
+with stable local IDs and reports **Upload unavailable**. It lists source names,
+not transcript content. Native capture reservation and upload transport remain
+unavailable, so no native content is captured or uploaded. There is no automatic
+future upload promise. Windows has no native capture fallback.
 
 ## Layout
 

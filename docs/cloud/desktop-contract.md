@@ -11,14 +11,20 @@ Cloud requires the explicit, non-default Cargo feature `cloud`. Neither an
 environment variable nor the `distribution` feature enables it. Existing
 production build commands do not select it.
 
+`ANTIBURN_CLOUD_ISSUER` and `ANTIBURN_CLOUD_RESOURCE` are build-time canonical
+HTTPS origins with a trailing slash. Both must match the service's fixed values.
+The resource origin owns the four native routes. Without valid configuration,
+authentication remains unavailable. Use an approved development service only.
+
 ```sh
 cd apps/desktop
 pnpm tauri dev --features cloud --config src-tauri/tauri.debug.conf.json
 ```
 
-A manual Cloud build does not establish service compatibility or permit
-production use. The browser connection and capture transport need separate
-acceptance. Native capture transport stays disabled.
+A manual Cloud build does not permit production use. System-browser and native
+credential-storage acceptance remain separate from synthetic checks. Native
+source requests can be saved, but the build has no capture reservation or upload
+transport.
 
 ## Browser approval
 
@@ -45,8 +51,13 @@ reset.
 The browser must name the workspace, permitted action, and device before the user
 approves the connection. The approved scope covers this first-party desktop
 client only. It does not grant general API-client or third-party authorization.
-The exact public request and response schemas need interoperability acceptance;
-provisional client helpers do not establish a supported service contract.
+Token responses bind opaque credentials to a grant, user, personal workspace,
+fixed grant deadline, `capture:write`, resource, and issuer. The flat session
+response supplies those same bindings, nullable display name, workspace name,
+device display label, and access deadline. Deadlines use RFC 3339 strings.
+Native validation compares the token and session bindings before saving a
+refresh credential. A changed grant, account, destination, or fixed deadline
+cannot restore the saved connection.
 
 Native requests use the configured API origin:
 
@@ -77,9 +88,14 @@ credential, callback, or verifier.
 Before sending a refresh, the client flushes a reauth-required marker. An
 uncertain response, process exit, invalid response, keyring failure, or failed
 session verification must not retry the predecessor. Successful rotation needs
-the same connection ID, account, workspace, audience, action, and fixed deadline.
+the same grant ID, account, workspace, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.
+Rejected refresh responses save the original and returned proofs for logout
+before updating local state. These cleanup credentials cannot restore an
+authenticated session. Cleanup requires confirmation for both proofs. A failed
+secure-storage write keeps an unconfirmed warning and attempts to revoke the
+returned proof.
 
 Settings keeps the connection action available after onboarding. Native sign-out
 first flushes a new signed-out generation. Browser cancellation changes only the
@@ -120,11 +136,12 @@ capture. Changing selected sources clears the content confirmation too. Displaye
 count updates do not change that selection or its confirmation.
 
 Settings keeps folder choices separate for each account and personal destination.
-Suggested folders start unselected. Choosing folders in the native picker or
-selecting a suggested folder is an explicit source choice. A database read or
-write failure reports an error instead of treating setup as saved. Indexed
-repository counts are not proof that a session has an original working directory
-inside a selected root.
+This scoped path requires explicit native Claude `projects/<project>` source
+directories. It does not discover sources from a repository path, an inferred
+working directory, or the current directory. Choose the source directories in
+the native picker. Path aliases and unsupported platforms fail without a
+fallback. A database read or write failure reports an error instead of treating
+setup as saved. Folder-load errors do not hide account cleanup controls.
 
 Login, folder selection, and the legacy local Upload sessions preference do not
 grant content consent. The UI requires a separate full-content confirmation:
@@ -132,11 +149,34 @@ messages, private thinking, tool calls and results, and session metadata can lea
 the device and may contain secrets or file text. Attachment files need separate
 consent; this scoped UI does not read or upload them.
 
-`syncEnabled` is false. Direct `cloud_start_sync` requests reject without reading
-or queueing native content. HTTP 202, upload completion, and a background
-operation ID do not prove integrity acceptance. Saved compressed retry bytes must
-remain until the service confirms integrity for that exact capture and manifest,
-or the user explicitly cancels the capture.
+`syncEnabled` is false. On supported Unix platforms, `captureEnabled` permits
+**Save capture request** after explicit source selection and full-content
+confirmation. The native host saves the consent version, account, destination,
+and exact root selection before listing source names. The capture library lists
+bounded native candidates without reading transcript or companion content. The
+host freezes their local capture IDs and scoped source IDs. A source scope stays
+stable for the same account and local root when an access grant changes.
+
+These requests report **Upload unavailable**. No native content is captured or
+uploaded. There is no automatic future upload promise. A retry keeps the saved
+request and source IDs and does not rescan a completed selection. Reconciliation
+reads saved request state only. Account changes, logout, and grant replacement
+do not retarget requests or delete spools. Explicit request cancellation marks
+that selection cancelled; it does not delete remote data or unrelated captures.
+
+One native host mutex and the capture library's spool lock serialize access.
+This build starts no uploader. It permits up to 128 saved requests, 100 roots per
+request, and 512 selected sources per request. Full storage blocks new requests
+without removing old records. Source-request listing is not native ownership,
+capture-byte, or service-acceptance proof. The library's synthetic exporter and
+spool tests establish their separate byte contract.
+
+HTTP 202, upload completion, and a background operation ID do not prove integrity
+acceptance. A later upload integration must persist the accepted source
+fingerprint and terminal request in one checked transaction before it
+acknowledges the library's accepted receipt. That host path is not enabled here.
+Saved compressed retry bytes remain governed by the
+[capture contract](capture-v1.md).
 
 ## Validation
 

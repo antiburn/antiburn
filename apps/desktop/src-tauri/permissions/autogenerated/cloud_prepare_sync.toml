@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-prepare-sync"
+description = "Enables the cloud_prepare_sync command without any pre-configured scope."
+commands.allow = ["cloud_prepare_sync"]
+
+[[permission]]
+identifier = "deny-cloud-prepare-sync"
+description = "Denies the cloud_prepare_sync command without any pre-configured scope."
+commands.deny = ["cloud_prepare_sync"]

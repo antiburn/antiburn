@@ -588,6 +588,13 @@ immediately; background preparation, submission, and reconciliation do not block
 There is no separate sync screen, Check status action, or Cancel sync action in
 onboarding. Background status updates do not create another screen view. Production
 sync outcomes are not recorded until the separately gated backend is implemented.
+Manual native capture preparation uses **Save capture request** with the existing
+`start_sync` action value. Count it as intent, not a stored-request or upload
+outcome. Its screen label is the screen where the action occurred, including
+completion for an explicit source-listing retry. The displayed **Upload unavailable** state emits no success event.
+Settings preparation is an intentional measurement gap until a separate closed
+outcome contract is reviewed. Keep request IDs, source scopes, roots, account
+details, and content out of analytics.
 Acceptance is not proof of completed uploads. Folder actions include no paths,
 names, or counts.
 

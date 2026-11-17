@@ -36,7 +36,7 @@ function fixture(initial: CloudSnapshot = emptyCloudSnapshot) {
     }),
     pick: vi.fn(async () => ["/Example/Project"]),
     agent: vi.fn(async () => "unavailable" as const),
-    prepareSync: async () => {},
+    prepareSync: vi.fn(async () => {}),
     start: vi.fn(async () => ({
       status: "accepted" as const,
       operationId: "synthetic-op",
@@ -520,6 +520,7 @@ it("requires full-content consent and binds it to the current destination", asyn
       destinationId: "synthetic-personal",
       fullContent: true,
       attachments: false,
+      selectedRoots: ["/Example/Project"],
     },
   )
   emit({ ...signedIn, destination: { id: "team-a", name: "Example team", kind: "team" } })
@@ -646,5 +647,276 @@ it("blocks a team destination without selecting personal instead", async () => {
   await session.startSync()
   expect(port.start).not.toHaveBeenCalled()
   expect(session.getSnapshot().cloud.destination).toEqual(team)
+  stop()
+})
+
+const nativeCapture: CloudSnapshot = {
+  ...signedIn,
+  captureEnabled: true,
+  syncEnabled: false,
+  draft: {
+    screen: "complete",
+    folders: [
+      { path: "/Example/claude/projects/z", selected: true },
+      { path: "/Example/claude/projects/a", selected: true },
+      { path: "/Example/claude/projects/ignored", selected: false },
+    ],
+  },
+}
+
+it("saves a native capture request after onboarding with exact sorted selected roots", async () => {
+  const { port } = fixture(nativeCapture)
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  await session.startSync()
+  expect(port.prepareSync).not.toHaveBeenCalled()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  const folders = nativeCapture.draft.folders.filter((folder) => folder.selected)
+  const consent = {
+    version: "native-full-content-v1",
+    accountId: "synthetic",
+    destinationId: "synthetic-personal",
+    fullContent: true,
+    attachments: false,
+    selectedRoots: ["/Example/claude/projects/a", "/Example/claude/projects/z"],
+  }
+  expect(port.prepareSync).toHaveBeenCalledExactlyOnceWith(folders, expect.any(String), consent)
+  expect(port.start).toHaveBeenCalledWith(
+    folders,
+    vi.mocked(port.prepareSync).mock.calls[0]![1],
+    consent,
+  )
+  expect(session.getSnapshot().sync).toEqual({ status: "upload_unavailable" })
+  stop()
+})
+
+it("retries native preparation with the same request ID after an unconfirmed save", async () => {
+  const { port } = fixture(nativeCapture)
+  vi.mocked(port.prepareSync).mockRejectedValueOnce(new Error("write failed"))
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(session.getSnapshot().sync.status).toBe("ambiguous")
+  await session.startSync()
+  const calls = vi.mocked(port.prepareSync).mock.calls
+  expect(calls).toHaveLength(2)
+  expect(calls[1]![1]).toBe(calls[0]![1])
+  expect(port.start).toHaveBeenCalledOnce()
+  stop()
+})
+
+it("retries native source listing with the saved request ID without preparing it again", async () => {
+  const { port } = fixture(nativeCapture)
+  vi.mocked(port.start).mockRejectedValueOnce(new Error("response lost"))
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  vi.mocked(port.reconcile).mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  await session.startSync()
+  expect(port.prepareSync).toHaveBeenCalledOnce()
+  expect(port.start).toHaveBeenCalledTimes(2)
+  expect(vi.mocked(port.start).mock.calls[0]![1]).toBe(vi.mocked(port.start).mock.calls[1]![1])
+  expect(port.reconcile).not.toHaveBeenCalled()
+  expect(session.getSnapshot().sync).toEqual({ status: "upload_unavailable" })
+  stop()
+})
+
+it("clears consent before a delayed source edit can finish during preparation", async () => {
+  const { port } = fixture(nativeCapture)
+  let finishPrepare!: () => void
+  let finishSave!: (value: CloudSnapshot) => void
+  port.prepareSync = vi.fn(
+    () =>
+      new Promise<void>((done) => {
+        finishPrepare = done
+      }),
+  )
+  port.save = vi.fn(
+    () =>
+      new Promise<CloudSnapshot>((done) => {
+        finishSave = done
+      }),
+  )
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const preparation = session.startSync()
+  const edit = session.selectFolder(nativeCapture.draft.folders[0]!.path, false)
+  expect(session.getSnapshot().fullContentConsent).toBe(false)
+  finishPrepare()
+  await preparation
+  expect(port.start).not.toHaveBeenCalled()
+  finishSave({
+    ...nativeCapture,
+    draft: {
+      ...nativeCapture.draft,
+      folders: nativeCapture.draft.folders.map((folder, index) => ({
+        ...folder,
+        selected: index === 0 ? false : folder.selected,
+      })),
+    },
+  })
+  await edit
+  stop()
+})
+
+it("reports listing failure after the native prepare event and retries the same saved request", async () => {
+  const { port, emit } = fixture(nativeCapture)
+  port.prepareSync = vi.fn(async (_folders, requestId) => {
+    emit({
+      ...nativeCapture,
+      pendingSync: { requestId, result: { status: "upload_unavailable" } },
+    })
+  })
+  vi.mocked(port.start).mockRejectedValueOnce(new Error("listing failed"))
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(session.getSnapshot()).toMatchObject({
+    sync: { status: "upload_unavailable" },
+    error: expect.stringContaining("Could not finish listing sources"),
+  })
+  const id = vi.mocked(port.prepareSync).mock.calls[0]![1]
+  await session.startSync()
+  expect(port.prepareSync).toHaveBeenCalledOnce()
+  expect(port.start).toHaveBeenLastCalledWith(expect.any(Array), id, expect.any(Object))
+  expect(port.start).toHaveBeenCalledTimes(2)
+  expect(session.getSnapshot().error).toBeNull()
+  stop()
+})
+
+it("restores a saved native request without content consent or a new submission", async () => {
+  const { port } = fixture({
+    ...nativeCapture,
+    pendingSync: { requestId: "saved-capture", result: { status: "upload_unavailable" } },
+  })
+  vi.mocked(port.reconcile).mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  expect(port.reconcile).toHaveBeenCalledExactlyOnceWith("saved-capture")
+  expect(port.prepareSync).not.toHaveBeenCalled()
+  expect(port.start).not.toHaveBeenCalled()
+  expect(session.getSnapshot()).toMatchObject({
+    screen: "complete",
+    sync: { status: "upload_unavailable" },
+    fullContentConsent: false,
+  })
+  stop()
+})
+
+it.each(["signed_out", "reauth_required", "credential_failed"] as const)(
+  "blocks a native save outside the current signed-in context: %s",
+  async (status) => {
+    const { port } = fixture({ ...nativeCapture, status })
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    await settle()
+    session.setFullContentConsent(true)
+    await session.startSync()
+    expect(port.prepareSync).not.toHaveBeenCalled()
+    stop()
+  },
+)
+
+it("blocks a native save when setup could not load", async () => {
+  const { port } = fixture({ ...nativeCapture, setupError: "Could not read Cloud setup." })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(port.prepareSync).not.toHaveBeenCalled()
+  stop()
+})
+
+it("does not start native capture after the window closes during preparation", async () => {
+  const { port } = fixture(nativeCapture)
+  let finish!: () => void
+  port.prepareSync = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const pending = session.startSync()
+  stop()
+  finish()
+  await pending
+  expect(port.start).not.toHaveBeenCalled()
+})
+
+it("does not reuse an earlier confirmation after consent is cleared and checked again", async () => {
+  const { port } = fixture(nativeCapture)
+  let finish!: () => void
+  port.prepareSync = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const pending = session.startSync()
+  session.setFullContentConsent(false)
+  session.setFullContentConsent(true)
+  finish()
+  await pending
+  expect(port.start).not.toHaveBeenCalled()
+  stop()
+})
+
+it("fences late native results and creates a new request for changed roots", async () => {
+  const { port, emit } = fixture(nativeCapture)
+  let finish!: (result: Awaited<ReturnType<CloudPort["start"]>>) => void
+  vi.mocked(port.start).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const pending = session.startSync()
+  await settle()
+  emit({
+    ...nativeCapture,
+    draft: {
+      screen: "complete",
+      folders: [{ path: "/Example/claude/projects/new", selected: true }],
+    },
+  })
+  finish({ status: "upload_unavailable" })
+  await pending
+  expect(session.getSnapshot().fullContentConsent).toBe(false)
+  expect(session.getSnapshot().sync).toEqual({ status: "unavailable" })
+  session.setFullContentConsent(true)
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  await session.startSync()
+  const calls = vi.mocked(port.prepareSync).mock.calls
+  expect(calls).toHaveLength(2)
+  expect(calls[1]![1]).not.toBe(calls[0]![1])
+  expect(calls[1]![2].selectedRoots).toEqual(["/Example/claude/projects/new"])
   stop()
 })

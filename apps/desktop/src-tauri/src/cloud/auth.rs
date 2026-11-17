@@ -92,26 +92,35 @@ pub struct Workspace {
 pub struct Session {
     pub user: User,
     pub grant_id: String,
-    pub device_id: String,
+    pub device_name: String,
     pub workspace: Workspace,
-    pub audience: String,
-    pub actions: Vec<String>,
+    pub resource: String,
+    pub scope: String,
+    pub iss: String,
     pub expires_at: i64,
+    pub access_expires_at: i64,
 }
 
 impl Session {
     pub fn validate(&self, config: &Config, now: i64) -> Result<(), Failure> {
-        let bounded = |value: &str, max: usize| {
-            !value.is_empty() && value.len() <= max && !value.chars().any(char::is_control)
-        };
+        self.validate_grant(config, now)?;
+        if self.access_expires_at <= now || self.access_expires_at > self.expires_at {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    pub fn validate_grant(&self, config: &Config, now: i64) -> Result<(), Failure> {
         if !bounded(&self.user.id, 256)
-            || !bounded(&self.user.display_name, 100)
+            || !bounded(&self.user.display_name, 256)
             || !bounded(&self.grant_id, 256)
-            || !bounded(&self.device_id, 256)
+            || !bounded(&self.device_name, 100)
             || !bounded(&self.workspace.id, 256)
-            || !bounded(&self.workspace.name, 100)
-            || self.audience != config.resource
-            || self.actions != [SCOPE]
+            || !bounded(&self.workspace.name, 256)
+            || self.workspace.kind != WorkspaceKind::Personal
+            || self.resource != config.resource
+            || self.scope != SCOPE
+            || self.iss != config.issuer
             || self.expires_at <= now
             || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
         {
@@ -123,11 +132,11 @@ impl Session {
     pub fn same_grant(&self, other: &Self) -> bool {
         self.user.id == other.user.id
             && self.grant_id == other.grant_id
-            && self.device_id == other.device_id
             && self.workspace.id == other.workspace.id
             && self.workspace.kind == other.workspace.kind
-            && self.audience == other.audience
-            && self.actions == other.actions
+            && self.resource == other.resource
+            && self.scope == other.scope
+            && self.iss == other.iss
             && self.expires_at == other.expires_at
     }
 }
@@ -148,12 +157,112 @@ impl From<&Session> for Identity {
     }
 }
 
-#[derive(Deserialize)]
+fn bounded(value: &str, maximum: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
+}
+
+fn deadline(value: &str) -> Result<i64, Failure> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .map(|value| value.unix_timestamp())
+        .map_err(|_| Failure::InvalidResponse)
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_in: u64,
     pub token_type: String,
+    pub grant_id: String,
+    pub user_id: String,
+    pub workspace_id: String,
+    pub grant_expires_at: String,
+    pub scope: String,
+    pub resource: String,
+    pub iss: String,
+}
+
+impl Tokens {
+    fn validate_secrets(&self) -> Result<(), Failure> {
+        if self.token_type != "Bearer"
+            || !bounded(&self.access_token, 16_384)
+            || !bounded(&self.refresh_token, 16_384)
+            || self.access_token == self.refresh_token
+            || !(1..=MAX_ACCESS_SECONDS).contains(&self.expires_in)
+        {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self, config: &Config, now: i64) -> Result<(), Failure> {
+        self.validate_secrets()?;
+        let expires_at = deadline(&self.grant_expires_at)?;
+        if !bounded(&self.grant_id, 256)
+            || !bounded(&self.user_id, 256)
+            || !bounded(&self.workspace_id, 256)
+            || self.scope != SCOPE
+            || self.resource != config.resource
+            || self.iss != config.issuer
+            || expires_at <= now
+            || expires_at > now.saturating_add(MAX_GRANT_SECONDS)
+        {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    pub fn matches_session(&self, session: &Session) -> bool {
+        self.grant_id == session.grant_id
+            && self.user_id == session.user.id
+            && self.workspace_id == session.workspace.id
+            && deadline(&self.grant_expires_at).ok() == Some(session.expires_at)
+            && self.scope == session.scope
+            && self.resource == session.resource
+            && self.iss == session.iss
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionResponse {
+    user_id: String,
+    display_name: Option<String>,
+    workspace_id: String,
+    workspace_name: String,
+    grant_id: String,
+    device_name: String,
+    scope: String,
+    resource: String,
+    grant_expires_at: String,
+    access_expires_at: String,
+    iss: String,
+}
+
+impl TryFrom<SessionResponse> for Session {
+    type Error = Failure;
+
+    fn try_from(value: SessionResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
+            user: User {
+                id: value.user_id,
+                display_name: value.display_name.unwrap_or_else(|| "Cloud account".into()),
+            },
+            grant_id: value.grant_id,
+            device_name: value.device_name,
+            workspace: Workspace {
+                id: value.workspace_id,
+                name: value.workspace_name,
+                kind: WorkspaceKind::Personal,
+            },
+            resource: value.resource,
+            scope: value.scope,
+            iss: value.iss,
+            expires_at: deadline(&value.grant_expires_at)?,
+            access_expires_at: deadline(&value.access_expires_at)?,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -173,6 +282,8 @@ pub struct Credential {
     pub issuer: String,
     pub resource: String,
     pub refresh_token: String,
+    #[serde(default)]
+    pub cleanup_refresh_tokens: Vec<String>,
     pub session: Option<Session>,
 }
 
@@ -200,9 +311,20 @@ impl Vault for KeyringVault {
         let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|_| Failure::CredentialFailed)?;
         match entry.get_password() {
-            Ok(value) => serde_json::from_str(&value)
-                .map(Some)
-                .map_err(|_| Failure::CredentialFailed),
+            Ok(value) => {
+                let credential: Credential =
+                    serde_json::from_str(&value).map_err(|_| Failure::CredentialFailed)?;
+                if credential.cleanup_refresh_tokens.len() > 1
+                    || !bounded(&credential.refresh_token, 16_384)
+                    || credential
+                        .cleanup_refresh_tokens
+                        .iter()
+                        .any(|proof| !bounded(proof, 16_384))
+                {
+                    return Err(Failure::CredentialFailed);
+                }
+                Ok(Some(credential))
+            }
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err(Failure::CredentialFailed),
         }
@@ -283,25 +405,18 @@ impl Transport for HttpTransport {
                 .send()
                 .map_err(|_| Failure::Offline)?,
         )?;
-        if !tokens.token_type.eq_ignore_ascii_case("bearer")
-            || tokens.access_token.is_empty()
-            || tokens.refresh_token.is_empty()
-            || tokens.access_token.len() > 16_384
-            || tokens.refresh_token.len() > 16_384
-            || !(1..=MAX_ACCESS_SECONDS).contains(&tokens.expires_in)
-        {
-            return Err(Failure::InvalidResponse);
-        }
+        tokens.validate_secrets()?;
         Ok(tokens)
     }
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure> {
-        decode(
+        let response: SessionResponse = decode(
             client()?
                 .get(config.session.clone())
                 .bearer_auth(access)
                 .send()
                 .map_err(|_| Failure::Offline)?,
-        )
+        )?;
+        response.try_into()
     }
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure> {
         let response = client()?

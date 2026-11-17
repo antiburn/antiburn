@@ -73,6 +73,9 @@ export class CloudSession {
   private visible = true
   private viewed: CloudScreen | null = null
   private requestId: string | null = null
+  private preparedRequestId: string | null = null
+  private syncInFlight = false
+  private consentRevision = 0
   private readonly port: CloudPort
   private readonly analytics: boolean
   private readonly holdIdentity: boolean
@@ -134,26 +137,39 @@ export class CloudSession {
   private receive(value: CloudSnapshot) {
     this.revision++
     const accountChanged = value.identity?.id !== this.snapshot.cloud.identity?.id
-    const destinationChanged = value.destination?.id !== this.snapshot.cloud.destination?.id
+    const destinationChanged =
+      value.destination?.id !== this.snapshot.cloud.destination?.id ||
+      value.destination?.kind !== this.snapshot.cloud.destination?.kind
     const sourcesChanged = selectedFoldersKey(value) !== selectedFoldersKey(this.snapshot.cloud)
-    if (!value.identity || accountChanged || destinationChanged || sourcesChanged)
+    const contextChanged =
+      !value.identity ||
+      accountChanged ||
+      destinationChanged ||
+      sourcesChanged ||
+      value.status !== "signed_in" ||
+      !!value.setupError
+    if (contextChanged) {
       this.requestId = null
+      this.preparedRequestId = null
+      this.consentRevision++
+    }
     const screen = value.identity
       ? value.draft.screen === "handoff"
         ? "identity"
         : value.draft.screen
       : "handoff"
-    if (value.identity && value.pendingSync) this.requestId = value.pendingSync.requestId
+    if (value.identity && value.pendingSync) {
+      this.requestId = value.pendingSync.requestId
+      this.preparedRequestId = value.pendingSync.requestId
+    }
     this.publish({
       cloud: value,
       screen: value.identity && value.pendingSync ? "complete" : screen,
       loaded: true,
-      ...(!value.identity || accountChanged || destinationChanged || sourcesChanged
-        ? { fullContentConsent: false }
-        : {}),
+      ...(contextChanged ? { fullContentConsent: false } : {}),
       ...(value.identity && value.pendingSync
         ? { sync: value.pendingSync.result }
-        : !value.identity || accountChanged
+        : contextChanged
           ? { sync: { status: "unavailable" as const } }
           : {}),
     })
@@ -298,7 +314,10 @@ export class CloudSession {
   cancelSilently = () => this.run(null, this.port.cancel)
   signOut = () => this.run("sign_out", this.port.signOut)
   resetLocal = () => this.run(null, this.port.resetLocal)
-  setFullContentConsent = (fullContentConsent: boolean) => this.publish({ fullContentConsent })
+  setFullContentConsent = (fullContentConsent: boolean) => {
+    if (fullContentConsent !== this.snapshot.fullContentConsent) this.consentRevision++
+    this.publish({ fullContentConsent })
+  }
   private saveDraft(draft: CloudDraft, foldersEdited = true) {
     const { identity, destination } = this.snapshot.cloud
     const personal = personalCloudDestination(destination ?? null)
@@ -342,11 +361,13 @@ export class CloudSession {
         }
       }
       if (!changed) return this.snapshot.cloud
+      this.setFullContentConsent(false)
       return this.saveDraft({ ...this.snapshot.cloud.draft, folders })
     })
   }
-  selectFolder = (path: string, selected: boolean) =>
-    this.run("select_folder", () =>
+  selectFolder = (path: string, selected: boolean) => {
+    this.setFullContentConsent(false)
+    return this.run("select_folder", () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
         folders: this.snapshot.cloud.draft.folders.map((folder) =>
@@ -354,31 +375,43 @@ export class CloudSession {
         ),
       }),
     )
-  removeFolder = (path: string) =>
-    this.run(null, () =>
+  }
+  removeFolder = (path: string) => {
+    this.setFullContentConsent(false)
+    return this.run(null, () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
         folders: this.snapshot.cloud.draft.folders.filter((folder) => folder.path !== path),
       }),
     )
+  }
   startSync = async () => {
     const selected = this.snapshot.cloud.draft.folders.filter((folder) => folder.selected)
     const selectionKey = selectedFoldersKey(this.snapshot.cloud)
     const destination = personalCloudDestination(this.snapshot.cloud.destination ?? null)
     if (
       this.snapshot.busy ||
-      this.snapshot.screen !== "folders" ||
-      !this.snapshot.cloud.syncEnabled ||
+      this.syncInFlight ||
+      (!this.snapshot.cloud.captureEnabled && this.snapshot.screen !== "folders") ||
+      !(this.snapshot.cloud.captureEnabled || this.snapshot.cloud.syncEnabled) ||
+      this.snapshot.cloud.status !== "signed_in" ||
+      !!this.snapshot.cloud.setupError ||
       !this.snapshot.cloud.identity ||
       !destination ||
       !this.snapshot.fullContentConsent ||
+      this.snapshot.cloud.pendingSync?.result.status === "cancelled" ||
       !selected.length
     )
       return
-    if (this.analytics) noteCloudAction("folders", "start_sync")
+    if (this.analytics)
+      noteCloudAction(
+        this.snapshot.cloud.captureEnabled ? this.snapshot.screen : "folders",
+        "start_sync",
+      )
     const generation = this.generation
     const revision = this.revision
     const account = this.snapshot.cloud.identity.id
+    const nativeCapture = this.snapshot.cloud.captureEnabled === true
     const destinationId = destination.id
     const consent = {
       version: "native-full-content-v1" as const,
@@ -386,28 +419,59 @@ export class CloudSession {
       destinationId,
       fullContent: true as const,
       attachments: false as const,
+      selectedRoots: selected.map((folder) => folder.path).sort(),
     }
-    const existing = this.requestId
     const requestId = this.requestId ?? crypto.randomUUID()
     this.requestId = requestId
+    const existing = this.preparedRequestId === requestId
+    const consentRevision = this.consentRevision
+    const current = () =>
+      this.active &&
+      generation === this.generation &&
+      this.requestId === requestId &&
+      this.snapshot.cloud.status === "signed_in" &&
+      !this.snapshot.cloud.setupError &&
+      this.snapshot.cloud.identity?.id === account &&
+      personalCloudDestination(this.snapshot.cloud.destination ?? null)?.id === destinationId &&
+      selectedFoldersKey(this.snapshot.cloud) === selectionKey &&
+      this.snapshot.fullContentConsent &&
+      consentRevision === this.consentRevision &&
+      !(
+        this.snapshot.cloud.pendingSync?.requestId === requestId &&
+        this.snapshot.cloud.pendingSync.result.status === "cancelled"
+      )
+    this.syncInFlight = true
     this.publish({ screen: "complete", busy: false, sync: { status: "starting" }, error: null })
     try {
-      if (!existing) await this.port.prepareSync(selected, requestId, consent)
-      if (
-        this.snapshot.cloud.identity?.id !== account ||
-        this.snapshot.cloud.destination?.id !== destinationId ||
-        selectedFoldersKey(this.snapshot.cloud) !== selectionKey ||
-        !this.snapshot.fullContentConsent
-      )
-        return
-      const sync = existing
-        ? await this.port.reconcile(existing)
-        : await this.port.start(selected, requestId, consent)
-      if (this.active && generation === this.generation && revision === this.revision)
+      if (!existing) {
+        await this.port.prepareSync(selected, requestId, consent)
+        if (!current()) return
+        this.preparedRequestId = requestId
+      }
+      if (!current()) return
+      const sync =
+        existing && !nativeCapture
+          ? await this.port.reconcile(requestId)
+          : await this.port.start(selected, requestId, consent)
+      if (current() && (nativeCapture || revision === this.revision))
         this.publish({ sync, busy: false, screen: "complete" })
     } catch {
-      if (this.active && generation === this.generation && revision === this.revision)
-        this.publish({ sync: { status: "ambiguous" }, busy: false, screen: "complete" })
+      if (current() && (nativeCapture || revision === this.revision)) {
+        const saved = nativeCapture && this.preparedRequestId === requestId
+        this.publish({
+          sync: { status: saved ? "upload_unavailable" : "ambiguous" },
+          busy: false,
+          screen: "complete",
+          ...(saved
+            ? {
+                error:
+                  "Could not finish listing sources. Your request is saved. Retry source listing.",
+              }
+            : {}),
+        })
+      }
+    } finally {
+      this.syncInFlight = false
     }
   }
 }

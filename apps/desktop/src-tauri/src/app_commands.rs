@@ -17,6 +17,12 @@ macro_rules! with_app_commands {
             cloud::cloud_save_draft => "cloud_save_draft",
             #[cfg(feature = "cloud")]
             cloud::cloud_start_sync => "cloud_start_sync",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_prepare_sync => "cloud_prepare_sync",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_reconcile_sync => "cloud_reconcile_sync",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_cancel_sync => "cloud_cancel_sync",
 
             cli_install::get_cli_install_state => "get_cli_install_state",
             cli_install::test_cli_installation => "test_cli_installation",

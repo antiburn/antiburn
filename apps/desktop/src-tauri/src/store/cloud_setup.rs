@@ -12,7 +12,22 @@ impl Store {
                 workspace_id TEXT NOT NULL,
                 draft_json TEXT NOT NULL CHECK(length(draft_json) <= 524288),
                 PRIMARY KEY (account_id, workspace_id)
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS cloud_source_scope (
+                account_id TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                source_scope_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY (account_id, root_path)
+            );
+            CREATE TABLE IF NOT EXISTS cloud_capture_request (
+                request_id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                record_json TEXT NOT NULL CHECK(length(record_json) <= 1048576)
+            );
+            CREATE INDEX IF NOT EXISTS cloud_capture_request_owner
+                ON cloud_capture_request(account_id, destination_id, created_at);",
         )?;
         transaction.commit()?;
         Ok(())

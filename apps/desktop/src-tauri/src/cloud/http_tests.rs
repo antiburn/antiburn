@@ -170,3 +170,110 @@ fn cloud_http_logout_sends_only_refresh_proof_and_requires_synchronous_204() {
         );
     }
 }
+
+fn token_json() -> serde_json::Value {
+    serde_json::json!({
+        "access_token": "synthetic-desktop-access",
+        "refresh_token": "synthetic-desktop-refresh",
+        "token_type": "Bearer", "expires_in": 60,
+        "grant_id": "grant-synthetic", "user_id": "account-synthetic",
+        "workspace_id": "personal-synthetic",
+        "grant_expires_at": "1970-01-01T02:46:40Z",
+        "scope": "capture:write", "resource": "https://api.example/",
+        "iss": "https://auth.example/"
+    })
+}
+
+fn session_json() -> serde_json::Value {
+    serde_json::json!({
+        "user_id": "account-synthetic", "display_name": null,
+        "workspace_id": "personal-synthetic", "workspace_name": "Example personal workspace",
+        "grant_id": "grant-synthetic", "device_name": "Example desktop",
+        "scope": "capture:write", "resource": "https://api.example/",
+        "grant_expires_at": "1970-01-01T02:46:40Z",
+        "access_expires_at": "1970-01-01T00:03:00Z",
+        "iss": "https://auth.example/"
+    })
+}
+
+#[test]
+fn cloud_http_frozen_token_and_flat_session_responses_bind_exact_authority() {
+    let (config, worker) = server(200, &token_json().to_string());
+    let tokens = HttpTransport
+        .exchange(
+            &config,
+            &TokenRequest::AuthorizationCode {
+                code: "synthetic",
+                code_verifier: "synthetic",
+            },
+        )
+        .unwrap();
+    worker.join().unwrap().native_only();
+    tokens.validate(&config, 100).unwrap();
+    let (config, worker) = server(200, &session_json().to_string());
+    let session = HttpTransport
+        .session(&config, &tokens.access_token)
+        .unwrap();
+    worker.join().unwrap().native_only();
+    session.validate(&config, 100).unwrap();
+    assert!(tokens.matches_session(&session));
+    assert_eq!(session.user.display_name, "Cloud account");
+    assert_eq!(session.access_expires_at, 180);
+    for field in [
+        "grant_id",
+        "user_id",
+        "workspace_id",
+        "scope",
+        "resource",
+        "iss",
+        "grant_expires_at",
+    ] {
+        let mut changed = token_json();
+        changed[field] = "different".into();
+        let changed: super::auth::Tokens = serde_json::from_value(changed).unwrap();
+        assert!(!changed.matches_session(&session), "{field}");
+    }
+}
+
+#[test]
+fn cloud_http_rejects_invalid_token_bounds_and_old_or_malformed_session_shapes() {
+    for expires in [
+        serde_json::json!(-1),
+        serde_json::json!(0),
+        serde_json::json!(901),
+    ] {
+        let mut body = token_json();
+        body["expires_in"] = expires;
+        let (config, worker) = server(200, &body.to_string());
+        assert!(matches!(
+            HttpTransport.exchange(
+                &config,
+                &TokenRequest::RefreshToken {
+                    refresh_token: "synthetic"
+                }
+            ),
+            Err(Failure::InvalidResponse)
+        ));
+        worker.join().unwrap();
+    }
+    for body in [
+        serde_json::json!({"user":{"id":"old"},"device_id":"old"}),
+        {
+            let mut value = session_json();
+            value["grant_expires_at"] = "not-a-deadline".into();
+            value
+        },
+        {
+            let mut value = session_json();
+            value["access_expires_at"] = 100.into();
+            value
+        },
+    ] {
+        let (config, worker) = server(200, &body.to_string());
+        assert!(matches!(
+            HttpTransport.session(&config, "synthetic"),
+            Err(Failure::InvalidResponse)
+        ));
+        worker.join().unwrap();
+    }
+}

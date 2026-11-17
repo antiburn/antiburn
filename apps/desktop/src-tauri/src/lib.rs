@@ -949,7 +949,7 @@ mod tests {
                 .iter()
                 .filter(|name| name.starts_with("cloud_"))
                 .count(),
-            if cfg!(feature = "cloud") { 8 } else { 0 }
+            if cfg!(feature = "cloud") { 11 } else { 0 }
         );
     }
 

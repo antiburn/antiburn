@@ -9,6 +9,7 @@ function fixture(destination: CloudWorkspace | null) {
   const value: CloudViewSnapshot = {
     cloud: {
       ...emptyCloudSnapshot,
+      status: "signed_in",
       identity: { id: "synthetic-account", login: "Example account" },
       destination,
       draft: {
@@ -73,4 +74,19 @@ it("requires an explicit source selection before full-content consent", () => {
   render(<CloudCaptureConsent session={session} value={value} />)
   expect(screen.getByRole("checkbox")).toBeDisabled()
   expect(screen.getByText(/Select folders before confirming/)).toBeVisible()
+})
+
+it("describes a native request without claiming to read content or upload it", () => {
+  const { session, value } = fixture({ id: "personal", name: "Personal", kind: "personal" })
+  value.cloud.captureEnabled = true
+  render(<CloudCaptureConsent session={session} value={value} />)
+  const consent = screen.getByRole("checkbox", {
+    name: /authorize a full-content capture request/,
+  })
+  expect(consent).toBeEnabled()
+  expect(screen.getByText(/Upload is unavailable/)).toBeVisible()
+  expect(
+    screen.getByText(/does not confirm that any source content was read or captured/),
+  ).toBeVisible()
+  expect(screen.queryByRole("checkbox", { name: /agree to upload/ })).not.toBeInTheDocument()
 })

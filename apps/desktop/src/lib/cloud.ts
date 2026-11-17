@@ -44,10 +44,12 @@ export interface CaptureConsent extends CloudDestinationBinding {
   version: "native-full-content-v1"
   fullContent: true
   attachments: false
+  selectedRoots: string[]
 }
 export interface CloudSnapshot {
   authEnabled: boolean
   syncEnabled: boolean
+  captureEnabled?: boolean
   status: CloudStatus
   identity: { id: string; login: string; avatar?: string } | null
   expiresAt?: number | null
@@ -63,7 +65,16 @@ export interface CloudSnapshot {
 }
 export type AgentReadiness = "pending" | "ready" | "unavailable" | "failed"
 export type SyncResult =
-  | { status: "unavailable" | "idle" | "starting" | "ambiguous" | "failed" | "cancelled" }
+  | {
+      status:
+        | "unavailable"
+        | "upload_unavailable"
+        | "idle"
+        | "starting"
+        | "ambiguous"
+        | "failed"
+        | "cancelled"
+    }
   | {
       status: "accepted" | "syncing" | "partial" | "complete"
       operationId: string
@@ -92,6 +103,7 @@ export interface CloudPort {
 export const emptyCloudSnapshot: CloudSnapshot = {
   authEnabled: false,
   syncEnabled: false,
+  captureEnabled: false,
   status: "idle",
   identity: null,
   draft: { screen: "handoff", folders: [] },
@@ -102,6 +114,13 @@ async function cloudBuildEnabled() {
 async function cloudCommand(command: string, args?: Record<string, unknown>) {
   if (!(await cloudBuildEnabled())) return emptyCloudSnapshot
   return args ? invoke<CloudSnapshot>(command, args) : invoke<CloudSnapshot>(command)
+}
+async function cloudSyncCommand(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<SyncResult> {
+  if (!(await cloudBuildEnabled())) return { status: "unavailable" }
+  return invoke<SyncResult>(command, args)
 }
 export const nativeCloudPort: CloudPort = {
   read: () => cloudCommand("cloud_status"),
@@ -120,7 +139,7 @@ export const nativeCloudPort: CloudPort = {
     const selected = await open({
       directory: true,
       multiple: true,
-      title: "Choose folders for Cloud",
+      title: "Choose Claude projects/<project> source directories",
     })
     return selected === null ? [] : Array.isArray(selected) ? selected : [selected]
   },
@@ -138,13 +157,10 @@ export const nativeCloudPort: CloudPort = {
       return "pending"
     return "unavailable"
   },
-  prepareSync: async () => {
-    throw new Error("Cloud sync is unavailable.")
+  prepareSync: async (folders, requestId, consent) => {
+    await cloudSyncCommand("cloud_prepare_sync", { folders, requestId, consent })
   },
-  start: async () => {
-    if (await cloudBuildEnabled()) await invoke("cloud_start_sync")
-    return { status: "unavailable" }
-  },
-  reconcile: () => Promise.resolve({ status: "unavailable" }),
-  cancelSync: () => Promise.resolve({ status: "unavailable" }),
+  start: (_folders, requestId) => cloudSyncCommand("cloud_start_sync", { requestId }),
+  reconcile: (requestId) => cloudSyncCommand("cloud_reconcile_sync", { requestId }),
+  cancelSync: (requestId) => cloudSyncCommand("cloud_cancel_sync", { requestId }),
 }

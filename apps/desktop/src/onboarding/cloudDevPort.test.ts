@@ -40,6 +40,7 @@ describe("Cloud Dev simulation", () => {
       destinationId: "cloud-dev-personal",
       fullContent: true,
       attachments: false,
+      selectedRoots: [],
     })
     await vi.advanceTimersByTimeAsync(1500)
     expect((await port.read()).pendingSync?.result.status).toBe("syncing")

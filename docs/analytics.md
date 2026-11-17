@@ -617,6 +617,12 @@ and invalid responses emit `failed`; this value does not establish a sync attemp
 Sync statuses `accepted` and `partial` are reserved until the separately gated sync
 backend records native outcomes. Production sync outcome recording is not implemented.
 Synthetic review fixtures do not report success outcomes.
+In manual Cloud builds, **Save capture request** uses the existing `start_sync`
+action value in onboarding. It measures the explicit request only, not durable
+storage, source listing, content capture, or upload acceptance. **Upload
+unavailable** emits no success outcome. Settings capture actions currently emit
+no dedicated outcome event. No request IDs, source IDs, roots, or content enter
+these events.
 No callback URLs or authorization codes are collected. See the
 [onboarding measurement contract](analytics-measurement.md#desktop-onboarding).
 

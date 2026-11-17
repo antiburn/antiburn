@@ -29,6 +29,9 @@ function fixture(initial?: CloudSnapshot) {
     value = { ...value, draft }
     return value
   })
+  const prepareSync = vi.fn(async () => {})
+  const start = vi.fn(async () => ({ status: "upload_unavailable" as const }))
+  const reconcile = vi.fn(async () => ({ status: "upload_unavailable" as const }))
   const session = new CloudSession(
     {
       ...nativeCloudPort,
@@ -41,11 +44,23 @@ function fixture(initial?: CloudSnapshot) {
       resetLocal,
       signOut,
       save,
+      prepareSync,
+      start,
+      reconcile,
     },
     false,
     true,
   )
-  return { session, resetLocal, signOut, save, emit: (next: CloudSnapshot) => publish(next) }
+  return {
+    session,
+    resetLocal,
+    signOut,
+    save,
+    prepareSync,
+    start,
+    reconcile,
+    emit: (next: CloudSnapshot) => publish(next),
+  }
 }
 
 function Account({ session }: { session: CloudSession }) {
@@ -148,4 +163,68 @@ it("keeps revocation available when folder setup cannot load", async () => {
   expect(screen.getByRole("checkbox")).toBeDisabled()
   fireEvent.click(logout)
   await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
+})
+
+const nativeCapture: CloudSnapshot = {
+  ...emptyCloudSnapshot,
+  authEnabled: true,
+  captureEnabled: true,
+  status: "signed_in",
+  identity: { id: "synthetic-account", login: "Example" },
+  destination: { id: "personal", name: "Personal", kind: "personal" },
+  draft: {
+    screen: "complete",
+    folders: [{ path: "/Example/claude/projects/project", selected: true }],
+  },
+}
+
+it("saves a native capture request from Settings after onboarding without claiming upload", async () => {
+  const { session, prepareSync, start } = fixture(nativeCapture)
+  render(<Account session={session} />)
+  const save = await screen.findByRole("button", { name: "Save capture request" })
+  expect(save).toBeDisabled()
+  expect(screen.getByText(/Choose native Claude projects\/<project>/)).toBeVisible()
+  fireEvent.click(
+    screen.getByRole("checkbox", { name: /authorize a full-content capture request/ }),
+  )
+  expect(save).toBeEnabled()
+  fireEvent.click(save)
+  await waitFor(() => expect(start).toHaveBeenCalledOnce())
+  expect(prepareSync).toHaveBeenCalledOnce()
+  expect(
+    await screen.findByText("Capture request saved on this device. Upload unavailable."),
+  ).toBeVisible()
+  expect(screen.queryByText(/Sessions syncing/)).not.toBeInTheDocument()
+})
+
+it.each([
+  { draft: { screen: "complete" as const, folders: [] } },
+  { destination: null },
+  { destination: { id: "team", name: "Team", kind: "team" as const } },
+  { status: "reauth_required" as const },
+  { setupError: "Could not read Cloud setup." },
+])(
+  "disables native saves without selected sources and current personal context: %j",
+  async (patch) => {
+    const { session, prepareSync } = fixture({ ...nativeCapture, ...patch })
+    render(<Account session={session} />)
+    const save = await screen.findByRole("button", { name: "Save capture request" })
+    expect(save).toBeDisabled()
+    expect(screen.getByRole("checkbox")).toBeDisabled()
+    fireEvent.click(save)
+    expect(prepareSync).not.toHaveBeenCalled()
+  },
+)
+
+it("clears native save confirmation when source selection changes", async () => {
+  const { session, start } = fixture(nativeCapture)
+  render(<Account session={session} />)
+  const save = await screen.findByRole("button", { name: "Save capture request" })
+  const consent = screen.getByRole("checkbox")
+  fireEvent.click(consent)
+  expect(save).toBeEnabled()
+  fireEvent.click(screen.getByRole("switch"))
+  await waitFor(() => expect(consent).not.toBeChecked())
+  expect(save).toBeDisabled()
+  expect(start).not.toHaveBeenCalled()
 })

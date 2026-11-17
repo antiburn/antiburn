@@ -10,6 +10,9 @@
     "allow-cloud-sign-out",
     "allow-cloud-reset-local",
     "allow-cloud-save-draft",
-    "allow-cloud-start-sync"
+    "allow-cloud-start-sync",
+    "allow-cloud-prepare-sync",
+    "allow-cloud-reconcile-sync",
+    "allow-cloud-cancel-sync"
   ]
 }

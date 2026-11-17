@@ -30,6 +30,8 @@
 
 mod check_preferences;
 #[cfg(feature = "cloud")]
+pub(crate) mod cloud_capture;
+#[cfg(feature = "cloud")]
 mod cloud_setup;
 pub(crate) use check_preferences::{check_preferences_snapshot_in, enabled_checks_in};
 pub(crate) mod codex_rollout_checkpoint;

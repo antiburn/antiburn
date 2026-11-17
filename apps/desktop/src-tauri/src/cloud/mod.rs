@@ -1,4 +1,5 @@
 mod auth;
+mod capture;
 mod engine;
 #[cfg(test)]
 mod http_tests;
@@ -109,6 +110,7 @@ fn existing_folder_choices() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     auth_enabled: bool,
+    capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
     identity: Option<Identity>,
@@ -120,11 +122,13 @@ pub struct Snapshot {
     local_reset_available: bool,
     remote_revocation_unconfirmed: bool,
     setup_error: Option<String>,
+    pending_sync: Option<capture::PendingSync>,
     draft: Draft,
 }
 
 pub(crate) struct Controller {
     engine: Mutex<Engine>,
+    capture: Mutex<capture::Host>,
     attempt_generation: AtomicU64,
     account_generation: AtomicU64,
     recorded_status: Mutex<AuthStatus>,
@@ -145,38 +149,7 @@ fn draft(app: &tauri::AppHandle, session: Option<&auth::Session>) -> Result<Draf
         .map(|value| serde_json::from_str::<Draft>(&value))
         .transpose()
         .map_err(|_| "Could not read Cloud setup.")?;
-    let repositories = store
-        .repositories()
-        .map_err(|_| "Could not read Cloud folders.")?;
-    let mut result = saved.unwrap_or_default();
-    if !result.folders_initialized {
-        let mut folders = Vec::<Folder>::new();
-        for repository in &repositories {
-            if let Some(path) = &repository.repo_root
-                && repository.enabled
-                && Path::new(path).is_absolute()
-                && !folders.iter().any(|folder| &folder.path == path)
-                && folders.len() < 100
-            {
-                folders.push(Folder {
-                    path: path.clone(),
-                    selected: false,
-                    session_count: None,
-                    session_count_is_partial: false,
-                });
-            }
-        }
-        result.folders = folders;
-    }
-    for folder in &mut result.folders {
-        folder.session_count = repositories
-            .iter()
-            .filter(|repository| repository.repo_root.as_deref() == Some(folder.path.as_str()))
-            .map(|repository| repository.session_count)
-            .max();
-        folder.session_count_is_partial = folder.session_count.is_some();
-    }
-    Ok(result)
+    Ok(saved.unwrap_or_default())
 }
 
 fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
@@ -186,15 +159,34 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             .account_generation
             .load(Ordering::Acquire);
     let session = if current { engine.session() } else { None };
-    let (mut draft, setup_error) = match draft(app, session) {
+    let (mut draft, mut setup_error) = match draft(app, session) {
         Ok(draft) => (draft, None),
         Err(error) => (Draft::default(), Some(error)),
     };
     if session.is_none() {
         draft.screen = Screen::Handoff;
     }
+    let pending_sync = session.and_then(|session| {
+        match app
+            .state::<crate::store::Store>()
+            .current_cloud_capture_request(
+                &session.user.id,
+                &session.workspace.id,
+                &capture::selected_roots(&draft.folders),
+            ) {
+            Ok(request) => request.map(Into::into),
+            Err(_) => {
+                setup_error = Some("Could not read saved capture requests.".into());
+                None
+            }
+        }
+    });
+    if session.is_some() && !cfg!(unix) {
+        setup_error = Some("Native capture is not supported on this platform.".into());
+    }
     Snapshot {
         auth_enabled: engine.config.is_some(),
+        capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
         // Authentication alone does not authorize capture.
         sync_enabled: false,
         status: if current {
@@ -211,6 +203,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         local_reset_available: engine.local_reset_available,
         remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
         setup_error,
+        pending_sync,
         draft,
     }
 }
@@ -261,6 +254,7 @@ pub fn initialize(
     #[cfg(debug_assertions)]
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
     app.manage(Controller {
+        capture: Mutex::new(capture::Host::new(directory)),
         engine: Mutex::new(Engine::new(
             Config::from_build(),
             Box::new(KeyringVault::new(
@@ -286,7 +280,9 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
-        engine.generation = generation;
+        if engine.generation != generation {
+            return Ok(snapshot(&app, &engine));
+        }
         if let Err(error) = engine.refresh(now(), || {
             controller.account_generation.load(Ordering::Acquire) == generation
         }) {
@@ -315,7 +311,9 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
             return Err("Cloud sign-in was cancelled.".to_owned());
         }
         let account_generation = controller.account_generation.load(Ordering::Acquire);
-        engine.generation = account_generation;
+        if engine.generation != account_generation {
+            return Err("Cloud account cleanup is still in progress.".to_owned());
+        }
         if engine.config.is_none() {
             engine.status = if app
                 .opener()
@@ -393,14 +391,21 @@ pub fn invalidate_pending(app: &tauri::AppHandle) {
 
 #[tauri::command]
 pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    invalidate_pending(&app);
+    let generation = app
+        .state::<Controller>()
+        .attempt_generation
+        .fetch_add(1, Ordering::AcqRel)
+        + 1;
     tauri::async_runtime::spawn_blocking(move || {
         let controller = app.state::<Controller>();
         let mut engine = controller
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
-        if let Err(error) = engine.cancel(controller.attempt_generation.load(Ordering::Acquire)) {
+        if controller.attempt_generation.load(Ordering::Acquire) != generation {
+            return Ok(snapshot(&app, &engine));
+        }
+        if let Err(error) = engine.cancel(generation) {
             engine.status = error.into();
         }
         Ok(publish(&app, &engine))
@@ -423,6 +428,12 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
+        if !engine.allows_account_cleanup(
+            generation,
+            controller.account_generation.load(Ordering::Acquire),
+        ) {
+            return Ok(snapshot(&app, &engine));
+        }
         if let Err(error) = engine.sign_out() {
             engine.status = error.into();
         }
@@ -447,6 +458,12 @@ pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
+        if !engine.allows_account_cleanup(
+            generation,
+            controller.account_generation.load(Ordering::Acquire),
+        ) {
+            return Ok(snapshot(&app, &engine));
+        }
         if let Err(error) = engine.reset_local() {
             engine.status = error.into();
         }
@@ -511,6 +528,142 @@ pub async fn cloud_save_draft(
 }
 
 #[tauri::command]
-pub fn cloud_start_sync() -> Result<(), String> {
-    Err("Cloud capture is not available. No sessions were queued or uploaded.".to_owned())
+pub async fn cloud_prepare_sync(
+    app: tauri::AppHandle,
+    request_id: String,
+    folders: Vec<Folder>,
+    consent: capture::Consent,
+) -> Result<capture::SyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !cfg!(unix) {
+            return Err("Native capture is not supported on this platform.".into());
+        }
+        if !capture::valid_request_id(&request_id) || folders.len() > 100 {
+            return Err("Choose a valid capture request and source selection.".into());
+        }
+        let controller = app.state::<Controller>();
+        let generation = controller.account_generation.load(Ordering::Acquire);
+        let current = || controller.account_generation.load(Ordering::Acquire) == generation;
+        let mut engine = controller
+            .engine
+            .lock()
+            .map_err(|_| "Cloud is unavailable.")?;
+        if engine.generation != generation {
+            return Err("Cloud account changed. Choose sources again.".into());
+        }
+        if let Err(error) = engine.refresh(now(), current) {
+            engine.status = error.into();
+            publish(&app, &engine);
+            return Err("Connect to Cloud before preparing capture.".into());
+        }
+        let session = engine
+            .session()
+            .ok_or("Connect to Cloud before preparing capture.")?;
+        let roots =
+            capture::validate_selection(session, &draft(&app, Some(session))?, &folders, &consent)?;
+        if !current() {
+            return Err("Cloud account changed. Choose sources again.".into());
+        }
+        let request = app
+            .state::<crate::store::Store>()
+            .prepare_cloud_capture(
+                &request_id,
+                &session.user.id,
+                &session.workspace.id,
+                &roots,
+                now(),
+            )
+            .map_err(|_| "Could not save the capture request. No source content was read.")?;
+        publish(&app, &engine);
+        Ok(capture::SyncResult::from(&request))
+    })
+    .await
+    .map_err(|_| "Cloud is unavailable.".to_owned())?
+}
+
+enum CaptureAction {
+    Discover,
+    Read,
+    Cancel,
+}
+
+fn capture_request(
+    app: &tauri::AppHandle,
+    request_id: &str,
+    action: CaptureAction,
+) -> Result<capture::SyncResult, String> {
+    if !capture::valid_request_id(request_id) {
+        return Err("Capture request is unavailable.".into());
+    }
+    let controller = app.state::<Controller>();
+    let generation = controller.account_generation.load(Ordering::Acquire);
+    let current = || controller.account_generation.load(Ordering::Acquire) == generation;
+    let mut engine = controller
+        .engine
+        .lock()
+        .map_err(|_| "Cloud is unavailable.")?;
+    if engine.generation != generation {
+        return Err("Cloud account changed. Your saved request is kept.".into());
+    }
+    if let Err(error) = engine.refresh(now(), current) {
+        engine.status = error.into();
+        publish(app, &engine);
+        return Err("Connect to the original Cloud account to view this request.".into());
+    }
+    let session = engine
+        .session()
+        .ok_or("Connect to the original Cloud account to view this request.")?;
+    let store = app.state::<crate::store::Store>();
+    let request = store
+        .cloud_capture_request(request_id, &session.user.id, &session.workspace.id)
+        .map_err(|_| "Capture request is unavailable.")?;
+    let request = match action {
+        CaptureAction::Read => request,
+        CaptureAction::Cancel => store
+            .cancel_cloud_capture_request(&request)
+            .map_err(|_| "Could not cancel the saved request.")?,
+        CaptureAction::Discover => controller
+            .capture
+            .lock()
+            .map_err(|_| "Native capture is unavailable.")?
+            .discover(&store, &request, current)?,
+    };
+    publish(app, &engine);
+    Ok(capture::SyncResult::from(&request))
+}
+
+#[tauri::command]
+pub async fn cloud_start_sync(
+    app: tauri::AppHandle,
+    request_id: String,
+) -> Result<capture::SyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        capture_request(&app, &request_id, CaptureAction::Discover)
+    })
+    .await
+    .map_err(|_| "Cloud is unavailable.".to_owned())?
+}
+
+#[tauri::command]
+pub async fn cloud_reconcile_sync(
+    app: tauri::AppHandle,
+    request_id: String,
+) -> Result<capture::SyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        capture_request(&app, &request_id, CaptureAction::Read)
+    })
+    .await
+    .map_err(|_| "Cloud is unavailable.".to_owned())?
+}
+
+#[tauri::command]
+pub async fn cloud_cancel_sync(
+    app: tauri::AppHandle,
+    request_id: String,
+) -> Result<capture::SyncResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        capture_request(&app, &request_id, CaptureAction::Cancel)
+    })
+    .await
+    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }

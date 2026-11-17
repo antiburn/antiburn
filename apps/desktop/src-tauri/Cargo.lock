@@ -100,6 +100,7 @@ dependencies = [
  "antiburn-checks",
  "antiburn-checks-store",
  "antiburn-cli-runtime",
+ "antiburn-cloud-capture",
  "antiburn-hud",
  "antiburn-local",
  "antiburn-main-window",
@@ -204,6 +205,18 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "antiburn-cloud-capture"
+version = "0.1.0"
+dependencies = [
+ "errno",
+ "flate2",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
 ]
 
 [[package]]

@@ -42,7 +42,7 @@ path = "src/lib.rs"
 [features]
 default = []
 # Manual development builds only. Distribution builds do not select Cloud.
-cloud = ["tauri/dynamic-acl"]
+cloud = ["tauri/dynamic-acl", "dep:antiburn-cloud-capture"]
 # Set only by packaged distribution builds. Release-profile development runs
 # deliberately omit it so they cannot change the machine's login items.
 distribution = []
@@ -64,6 +64,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+antiburn-cloud-capture = { path = "../../../crates/antiburn-cloud-capture", optional = true, features = ["cloud"] }
 antiburn-cli-runtime = { path = "../../../crates/antiburn-cli-runtime" }
 # Strict installed-check parsing, runtime selection, and decision contracts.
 antiburn-checks = { path = "../../../crates/antiburn-checks" }

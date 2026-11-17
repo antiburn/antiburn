@@ -37,6 +37,7 @@ export function CloudCaptureConsent({
           disabled={
             value.busy ||
             !value.cloud.identity ||
+            value.cloud.status !== "signed_in" ||
             !destination ||
             !selected.length ||
             !!value.cloud.setupError
@@ -44,11 +45,19 @@ export function CloudCaptureConsent({
           onChange={(event) => session.setFullContentConsent(event.target.checked)}
         />
         <span>
-          I agree to upload full native session content from the selected folders to this
-          destination. This includes messages, private thinking, tool calls and results, and
-          session metadata. It can contain secrets or private file text.
+          {value.cloud.captureEnabled
+            ? "I authorize a full-content capture request for the selected sources, account, and destination."
+            : "I agree to upload full native session content from the selected folders to this destination."}{" "}
+          This includes messages, private thinking, tool calls and results, and session
+          metadata. It can contain secrets or private file text.
         </span>
       </label>
+      {value.cloud.captureEnabled && (
+        <p className="type-footnote text-label-secondary">
+          This action saves a capture request on this device. Upload is unavailable. Saving does
+          not confirm that any source content was read or captured.
+        </p>
+      )}
       {value.cloud.setupError && (
         <p className="type-footnote text-label-secondary" role="status">
           {value.cloud.setupError} Reload Cloud settings before choosing folders or confirming
