@@ -20,7 +20,7 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-11-16
+## [0.11.1] - 2026-11-16
 
 ### Changed
 

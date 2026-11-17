@@ -78,15 +78,17 @@ test("native dependency checks reject unbundled runtime libraries", () => {
   );
   assert.deepEqual(
     validateNativeDependencies(
-      "    KERNEL32.dll\r\n    api-ms-win-core-synch-l1-2-0.dll\r\n",
+      "    KERNEL32.dll\r\n    COMBASE.dll\r\n    api-ms-win-core-synch-l1-2-0.dll\r\n",
       "aarch64-pc-windows-msvc",
     ),
-    ["kernel32.dll", "api-ms-win-core-synch-l1-2-0.dll"],
+    ["kernel32.dll", "combase.dll", "api-ms-win-core-synch-l1-2-0.dll"],
   );
-  assert.throws(() =>
-    validateNativeDependencies(
-      "    VCRUNTIME140.dll\r\n",
-      "x86_64-pc-windows-msvc",
-    ),
+  assert.throws(
+    () =>
+      validateNativeDependencies(
+        "    combase.dll\r\n    VCRUNTIME140.dll\r\n    third-party.dll\r\n",
+        "x86_64-pc-windows-msvc",
+      ),
+    /non-system Windows dependencies: vcruntime140\.dll, third-party\.dll$/,
   );
 });
