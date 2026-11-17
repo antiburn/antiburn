@@ -9,7 +9,8 @@ use antiburn_checks::decision::{
     attempt_id, validate_declarations, validate_requirements,
 };
 use antiburn_checks::expression_eval::EvaluationBudget;
-use antiburn_checks::fit::{FitOmission, FitReport, FitStrategy};
+use antiburn_checks::fit::{FitOmission, FitReport, FitStrategy, PreparationRecord};
+use antiburn_checks::preparation::decode_preparation_record;
 use antiburn_checks::prepared_assessment::{
     MAX_ASSESSMENT_FITTING_WORK_BYTES, MAX_PREPARED_ASSESSMENT_BYTES,
     MAX_PREPARED_ASSESSMENT_NODES, PREPARATION_LIMITS, PreparedAssessment, PreparedBlock,
@@ -645,6 +646,189 @@ fn strict_visitor_rejects_crossing_nodes_depth_and_duplicates_before_values() {
 }
 
 #[test]
+fn strict_json_keeps_native_numeric_types_and_finite_f64_values() {
+    let limits = JsonLimits {
+        max_bytes: 1_024,
+        max_nodes: 32,
+        max_depth: 8,
+    };
+    for (raw, expected) in [
+        ("0.5", json!(0.5)),
+        ("5e-1", json!(0.5)),
+        ("-1.25E+2", json!(-125.0)),
+        ("1.0", json!(1.0)),
+        ("-0", json!(-0.0)),
+        ("0", json!(0_u64)),
+        ("18446744073709551615", json!(u64::MAX)),
+        ("-9223372036854775808", json!(i64::MIN)),
+        ("18446744073709551616", json!(18_446_744_073_709_551_616.0)),
+        ("-9223372036854775809", json!(-9_223_372_036_854_775_808.0)),
+        ("0.9499999999999998", json!(0.949_999_999_999_999_8)),
+        ("1e-9999", json!(0.0)),
+    ] {
+        assert_eq!(
+            decode_strict_json(raw.as_bytes(), limits).unwrap(),
+            expected,
+            "{raw}"
+        );
+    }
+    let zero = decode_strict_json(b"-0", limits).unwrap();
+    assert!(zero.as_f64().unwrap().is_sign_negative());
+    assert_eq!(
+        decode_strict_json(
+            br#"{"numbers":[0.5,5e-1,{"negative":-1.25E+2}],"text":"UTF-8: \u00e9"}"#,
+            limits
+        )
+        .unwrap(),
+        json!({"numbers": [0.5, 0.5, {"negative": -125.0}], "text": "UTF-8: é"})
+    );
+}
+
+#[test]
+fn strict_json_keeps_private_marker_keys_as_literal_objects() {
+    let limits = JsonLimits {
+        max_bytes: 1_024,
+        max_nodes: 32,
+        max_depth: 8,
+    };
+    for (raw, expected) in [
+        (
+            r#"{"$serde_json::private::Number":"0.5"}"#,
+            json!({"$serde_json::private::Number": "0.5"}),
+        ),
+        (
+            r#"{"$serde_json::private::Number":"not-a-number"}"#,
+            json!({"$serde_json::private::Number": "not-a-number"}),
+        ),
+        (
+            r#"{"$serde_json::private::RawValue":"[0.5]"}"#,
+            json!({"$serde_json::private::RawValue": "[0.5]"}),
+        ),
+        (
+            r#"{"items":[{"$serde_json::private::Number":0.5},{"$serde_json::private::RawValue":{"nested":5e-1}}]}"#,
+            json!({"items": [
+                {"$serde_json::private::Number": 0.5},
+                {"$serde_json::private::RawValue": {"nested": 0.5}}
+            ]}),
+        ),
+    ] {
+        assert_eq!(
+            decode_strict_json(raw.as_bytes(), limits).unwrap(),
+            expected,
+            "{raw}"
+        );
+    }
+}
+
+#[test]
+fn strict_json_counts_real_values_before_decoding_the_next_value() {
+    let limits = JsonLimits {
+        max_bytes: 1_024,
+        max_nodes: 4,
+        max_depth: 3,
+    };
+    let raw = br#"{"values":[0.5,-2e-1]}"#;
+    assert_eq!(
+        decode_strict_json(raw, limits).unwrap(),
+        json!({"values": [0.5, -0.2]})
+    );
+    assert!(matches!(
+        decode_strict_json(
+            raw,
+            JsonLimits {
+                max_nodes: 3,
+                ..limits
+            }
+        ),
+        Err(BoundedJsonError::Nodes {
+            observed: 4,
+            maximum: 3
+        })
+    ));
+    assert!(matches!(
+        decode_strict_json(
+            raw,
+            JsonLimits {
+                max_depth: 2,
+                ..limits
+            }
+        ),
+        Err(BoundedJsonError::Depth {
+            observed: 3,
+            maximum: 2
+        })
+    ));
+    assert!(matches!(
+        decode_strict_json(
+            raw,
+            JsonLimits {
+                max_bytes: raw.len() as u64 - 1,
+                ..limits
+            }
+        ),
+        Err(BoundedJsonError::Bytes { .. })
+    ));
+    assert!(matches!(
+        decode_strict_json(br#"{"a":0.5,"\u0061":invalid}"#, limits),
+        Err(BoundedJsonError::DuplicateKey(key)) if key == "a"
+    ));
+    assert!(matches!(
+        decode_strict_json(br#"{"outer":{"a":0.5,"\u0061":invalid}}"#, limits),
+        Err(BoundedJsonError::DuplicateKey(key)) if key == "a"
+    ));
+    for raw in [
+        b"1e9999".as_slice(),
+        b"-1e9999",
+        b"[0.5,]",
+        b"{\"a\":0.5,}",
+        b"{\"a\" 0.5}",
+        b"[0.5 0.6]",
+        b"01",
+        b"1x",
+        b"1.",
+        b"1e",
+        b"+1",
+        b"\"bad\xff\"",
+        b"{\"\xff\":null}",
+        b"null\xff",
+        b"falsex",
+        b"nul",
+        b"[] true",
+        b"true false",
+    ] {
+        assert!(decode_strict_json(raw, limits).is_err(), "{raw:?}");
+    }
+}
+
+#[test]
+fn strict_json_keeps_container_syntax_and_the_existing_recursion_ceiling() {
+    let limits = JsonLimits {
+        max_bytes: 1_024,
+        max_nodes: 256,
+        max_depth: 256,
+    };
+    for expected in [
+        Value::Null,
+        json!(false),
+        json!([]),
+        json!({}),
+        json!([null, true, false, [], {}, "\"\\\n\t\u{0}é漢字"]),
+        json!({"escaped\"key": {"": "value"}, "array": [[], {"number": -0.5}]}),
+    ] {
+        let bytes = serde_json::to_vec(&expected).unwrap();
+        assert_eq!(decode_strict_json(&bytes, limits).unwrap(), expected);
+    }
+    for depth in [127, 128] {
+        let raw = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        assert_eq!(
+            decode_strict_json(raw.as_bytes(), limits).is_ok(),
+            serde_json::from_str::<Value>(&raw).is_ok(),
+            "depth {depth}"
+        );
+    }
+}
+
+#[test]
 fn collect_str_checks_the_node_limit_without_formatting() {
     struct PanicDisplay;
 
@@ -709,6 +893,62 @@ fn collect_str_streams_only_until_the_byte_limit() {
         Err(BoundedJsonError::Bytes { maximum: 64, .. })
     ));
     assert!((1..=5).contains(&value.writes.get()));
+}
+
+#[test]
+fn measurements_keep_number_bytes_and_literal_marker_object_boundaries() {
+    let number: serde_json::Number =
+        serde_json::from_str("0.9499999999999998999999999998").unwrap();
+    for value in [
+        Value::Number(number.clone()),
+        json!({"$serde_json::private::Number": "0.9499999999999998999999999998"}),
+        json!({"$serde_json::private::RawValue": "[0.5]"}),
+        json!({"$serde_json::private::Number": number.clone()}),
+        json!([number, {"$serde_json::private::RawValue": [0.5, -0.2]}]),
+    ] {
+        let bytes = serde_json::to_vec(&value).unwrap().len() as u64;
+        let (nodes, depth) = count_nodes(&value, 1);
+        let limits = JsonLimits {
+            max_bytes: bytes,
+            max_nodes: nodes,
+            max_depth: depth,
+        };
+        let measured = measure_json(&value, limits).unwrap();
+        assert_eq!(
+            (measured.bytes, measured.nodes, measured.depth),
+            (bytes, nodes, depth)
+        );
+        assert!(matches!(
+            measure_json(
+                &value,
+                JsonLimits {
+                    max_bytes: bytes - 1,
+                    ..limits
+                }
+            ),
+            Err(BoundedJsonError::Bytes { .. })
+        ));
+        assert!(matches!(
+            measure_json(
+                &value,
+                JsonLimits {
+                    max_nodes: nodes - 1,
+                    ..limits
+                }
+            ),
+            Err(BoundedJsonError::Nodes { .. })
+        ));
+        assert!(matches!(
+            measure_json(
+                &value,
+                JsonLimits {
+                    max_depth: depth - 1,
+                    ..limits
+                }
+            ),
+            Err(BoundedJsonError::Depth { .. })
+        ));
+    }
 }
 
 #[test]
@@ -903,6 +1143,57 @@ fn prepared_full_wrapper_depth_and_bytes_have_exact_boundaries() {
     decode_prepared_assessment(&serde_json::to_vec(&prepared).unwrap()).unwrap();
     prepared.profile.push('x');
     assert!(decode_prepared_assessment(&serde_json::to_vec(&prepared).unwrap()).is_err());
+}
+
+#[test]
+fn prepared_payloads_keep_literal_marker_objects_and_typed_decimals() {
+    for marker in [
+        json!({"$serde_json::private::Number": "0.5"}),
+        json!({"$serde_json::private::Number": "not-a-number"}),
+        json!({"$serde_json::private::RawValue": "[0.5]"}),
+        json!({"$serde_json::private::RawValue": "not-json"}),
+    ] {
+        for field in ["original_input", "input", "request"] {
+            let mut prepared = prepared();
+            let payload = json!({
+                "decimal": 0.5,
+                "nested": [{"marker": marker.clone(), "decimal": 0.949_999_999_999_999_8}]
+            });
+            match field {
+                "original_input" => prepared.decisions[0].original_input = payload,
+                "input" => prepared.decisions[0].input = payload,
+                "request" => prepared.decisions[0].request = payload,
+                _ => unreachable!(),
+            }
+            prepared.validate().unwrap();
+            let raw = serde_json::to_vec(&prepared).unwrap();
+            assert_eq!(
+                decode_prepared_assessment(&raw).unwrap(),
+                prepared,
+                "raw {field}: {marker}"
+            );
+            assert_eq!(
+                serde_json::from_value::<PreparedAssessment>(
+                    serde_json::to_value(&prepared).unwrap()
+                )
+                .unwrap(),
+                prepared,
+                "canonical {field}: {marker}"
+            );
+            let record = PreparationRecord::Ready(prepared);
+            assert_eq!(
+                decode_preparation_record(&serde_json::to_vec(&record).unwrap()).unwrap(),
+                record,
+                "raw Ready {field}: {marker}"
+            );
+            assert_eq!(
+                serde_json::from_value::<PreparationRecord>(serde_json::to_value(&record).unwrap())
+                    .unwrap(),
+                record,
+                "canonical Ready {field}: {marker}"
+            );
+        }
+    }
 }
 
 #[test]

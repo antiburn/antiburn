@@ -3,6 +3,7 @@
 use serde::Serialize;
 use serde_json::Number;
 
+use crate::bounded_json::{JsonLimits, decode_strict_json};
 use crate::diagnostics::DiagnosticCode;
 
 const MAX_EXPRESSION_PARSE_DEPTH: usize = 128;
@@ -735,7 +736,18 @@ fn lex_number(source: &str, start: usize) -> Result<(Number, usize), ExpressionE
         }
     }
     let text = &source[start..index];
-    let number = serde_json::from_str::<Number>(text).map_err(|_| number_error(start))?;
+    let serde_json::Value::Number(number) = decode_strict_json(
+        text.as_bytes(),
+        JsonLimits {
+            max_bytes: u64::MAX,
+            max_nodes: 1,
+            max_depth: 1,
+        },
+    )
+    .map_err(|_| number_error(start))?
+    else {
+        return Err(number_error(start));
+    };
     Ok((number, index))
 }
 
