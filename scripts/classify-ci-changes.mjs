@@ -217,8 +217,8 @@ export const CROSS_WORKSPACE_INPUTS = {
   "fixtures/cloud/capture-v1/reference/main.capture-metadata.chunk-00000.gz":
     ["cloud-capture"],
   "fixtures/cloud/capture-v1/sections.json": ["cloud-capture"],
-  "fixtures/cloud/opencode/current.sql": ["cloud-capture"],
-  "fixtures/cloud/opencode/earlier.sql": ["cloud-capture"],
+  "fixtures/cloud/opencode/current.sql": ["cloud-capture", "shell"],
+  "fixtures/cloud/opencode/earlier.sql": ["cloud-capture", "shell"],
   "plugins/antiburn-live/hooks/catalog.ts": ["engine"],
 };
 

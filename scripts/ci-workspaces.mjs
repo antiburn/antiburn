@@ -40,6 +40,7 @@ export const WORKSPACES = [
       "checks",
       "checks-store",
       "cli-runtime",
+      "cloud-capture",
       "engine",
       "remote",
       "nudge",
