@@ -154,22 +154,14 @@ or loading an extension does not prove that its next prompt receives context.
 Record the exact host version, platform, surface, fixture, and observed context
 before claiming native acceptance.
 
-## Local native acceptance record
+## Native acceptance boundaries
 
-The following development checks use synthetic CLI responses and disposable
-profiles on macOS. Loopback endpoints capture native handoff; these checks do
-not establish real app evaluation or public installation.
+Synthetic CLI responses, disposable profiles, and loopback request capture can
+check native handoff. They do not establish real app evaluation, public
+installation, or Windows, Linux, remote-host, or GUI parity. Keep exact host
+versions and observations in local acceptance records.
 
-| Host build                      | Surface and observation                                                                                                                                                                                            | Remaining boundary                                                                                                              |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code 2.1.307             | CLI print mode; packaged UserPromptSubmit and PostToolUse hooks placed the assessment in captured model requests and acknowledged it                                                                               | Desktop and public distribution require separate checks                                                                         |
-| Codex CLI 0.163.0               | Native UserPromptSubmit registered in isolated hooks.json; packaged hook placed the assessment in a loopback Responses request and acknowledged it                                                                 | Bundled-plugin hook trust and desktop installation are separate from native CLI configuration                                   |
-| Pi 1.3.0                        | CLI with packaged extension and offline configuration; before_agent_start placed the assessment in a loopback model request and acknowledged it                                                                    | Type validation targets SDK 0.80.3; TUI and other runtime versions require separate checks                                      |
-| OpenCode 1.19.3                 | Packaged plugin with an isolated offline dependency profile; messages transform placed the assessment in the primary build model request, then acknowledged it; the preceding title request received no assessment | Type validation targets SDK 1.19.2; native handoff requires mutating the host message array in place                            |
-| Cursor Agent 2026.05.24-dda726e | Native project postToolUse configuration referenced the unmodified packaged hook; after a real shell tool, the native Connect hook response carried the assessment and the CLI acknowledged it                     | The loopback protocol fixture observes native context handoff, not a cloud model request; YAML evidence coverage is unsupported |
-
-There is no claim of Windows, Linux, remote-host or GUI parity from these
-checks. Command-hook acknowledgement confirms a completed stdout write, not
+Command-hook acknowledgement confirms a completed stdout write, not
 model consumption. Pi uses a callback-result handoff boundary. OpenCode changes
 the transient primary-session prompt before the host converts it to model
 messages. Title and compaction requests do not consume its delivery receipts.
@@ -184,6 +176,5 @@ Verify real-session mod events produce no detector findings or fix actions.
 
 Delivery adds no first-party analytics event containing session IDs, check IDs,
 authored messages, evidence, or transcript data. Local connection diagnostics
-provide the operational signal for this development milestone; broader adoption
-measurement remains outside this change. Existing usage meters stay independent
-of check connectivity.
+report connectivity, not adoption. Existing usage meters stay independent of
+check connectivity.

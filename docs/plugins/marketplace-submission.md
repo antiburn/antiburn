@@ -2,9 +2,8 @@
 
 The plugin homepage is [antiburn.com/plugin](https://antiburn.com/plugin).
 The submission repository is [antiburn/antiburn](https://github.com/antiburn/antiburn),
-folder `plugins/antiburn`. The recorded 0.2.4 submission selected
-`claude-plugin-v0.2.4`; confirm the current tracked reference and review state
-in the portal before changing either. The recommended
+folder `plugins/antiburn`. Confirm the current tracked reference and review
+state in the portal before changing either. The recommended
 ongoing directory channel is a dedicated `claude-plugin-release` branch,
 advanced only for tested plugin releases. A versioned tag is an alternative,
 but each update requires selecting the new tag in the portal. See
@@ -14,11 +13,10 @@ selects an immutable artifact commit; its installation route stays on `main`.
 
 See [directory submission guidance](distribution.md#claude-directory-submission)
 for the permanent source and promotion requirements, and
-[validation scope](validation.md) for recorded checks and their limits.
-The 0.2.7 candidate is not submitted or published through this preparation.
-If a tag is separately authorized, use `claude-plugin-v0.2.7` at the validated
-artifact commit. No tag is created here. A package version or tag does not
-establish directory acceptance or publication.
+[validation scope](validation.md) for supported checks and their limits.
+A package version or tag does not establish directory acceptance or publication.
+For an authorized tag-based submission, use `claude-plugin-v<version>` at the
+validated artifact commit. Never move an existing versioned tag.
 
 The owner validates and submits manually through the
 [Claude developer portal](https://claude.ai/directory/manage), following the
@@ -27,5 +25,4 @@ The owner validates and submits manually through the
 Automatic publication stays off. A GitHub Release is not required; a tag is
 needed only when choosing the tag-based directory workflow.
 
-Owner-specific plans and handoffs are local working artifacts and are excluded
-from this public repository.
+Keep owner-specific submission records and captures outside maintained docs.

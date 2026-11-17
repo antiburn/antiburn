@@ -1,9 +1,8 @@
 # Real YAML session-check acceptance
 
-The immediate target is the existing **Failed retry loop** definition reaching
-one Claude Code main session through the real Antiburn app and CLI.
-Do not add another audit definition or a new communication service. The initial
-Claude acceptance and the later cross-vendor visual audit have separate results.
+Use the existing **Failed retry loop** definition to check native advisory
+delivery through the real Antiburn app and CLI. Qualify each host version and
+surface separately. One successful host does not establish cross-vendor support.
 
 For the reusable engineer and agent procedure, follow the
 [session advisory screenshot audit runsheet](../runbooks/session-advisory-audit.md).
@@ -46,8 +45,7 @@ Cap the initial run at 24 Jev evaluations and reassess before further calls.
 Provider-backed checks and vendor turns use the configured provider allowance.
 Keep private sessions outside evaluation scope. Keep screenshots, native IDs,
 transcripts, and machine output in local audit artifacts rather than Git.
-Disable temporary activations and stop owned backends after capture. The
-bidirectional request plan and broader vendor audit remain separate work.
+Disable temporary activations and stop owned backends after capture.
 
 ## Repeatable visual trigger
 
@@ -68,16 +66,10 @@ hash and labels evaluation as unverified; capture the actual assessment separate
 
 This fixture emulates the characterized Claude CLI **2.1.278** format. It proves
 the evaluation and delivery path with controlled evidence, not spontaneous retry
-behavior or compatibility with newer Claude recordings. The initial audit parser rejected 2.1.308 and 2.1.309 evidence. The continuation
-follow-up below adds characterized 2.1.309 support. Do not relabel current
-recordings as 2.1.278.
-
-The 2026-10-23 local audit produced one real Jev assessment (`stuck`, probability
-1.0), displayed the unchanged authored failure in Antiburn, and delivered that
-advisory through a real Claude UserPromptSubmit hook. The resumed agent's prose
-attributes the scripted attempts to itself; the fixture manifest remains the
-source of truth for their provenance. Current-version ingestion and recovery
-clearance remain separate acceptance cases.
+behavior or compatibility with newer Claude recordings. The continuation
+contract below also covers characterized 2.1.309 inputs. Do not relabel
+recordings from another version as 2.1.278. The fixture manifest, not the
+resumed agent's prose, identifies scripted evidence.
 
 ## Cross-vendor fixture audit
 
@@ -98,37 +90,21 @@ configure the candidate plugin in the disposable project's `opencode.json` and
 verify the backend loaded it; placing a file in `.opencode/plugins` alone did not
 load it in the audited desktop backend.
 
-The initial cross-vendor capture on 2026-10-23 had these results:
-
-- OpenCode desktop: real Jev assessment (`stuck`, probability 0.97), authored
-  failure visible in Antiburn, and the actual desktop response repeats the advisory.
-- Pi: real assessment and actual plugin custom-message delivery, confirmed by its
-  RPC event stream and assistant response. Later native writes invalidate the
-  assessment. A terminal screenshot and continued-session compatibility remain open.
-- Claude 2.1.309: resuming the characterized fixture invalidates the assessment;
-  the actual desktop response reports no advisory. Earlier print-mode evidence
-  does not establish current interactive compatibility.
-- Codex: real assessment visible in Antiburn; UUID resume rejects the unregistered
-  fixture. Vendor receipt and terminal/desktop screenshots remain unverified.
-
-Keep the local report's timestamps and validity snapshot with each capture.
+Keep timestamps and the validity snapshot with each local capture.
 These scripted retry fixtures exercise the real evaluator; they do not prove
 spontaneous agent retry behavior, recovery clearance, or all-vendor acceptance.
 
-## Continuation compatibility follow-up
+## Continuation compatibility
 
-The retained Claude root contract now accepts the characterized 2.1.309 CLI
+The retained Claude root contract accepts the characterized 2.1.309 CLI
 continuation alongside 2.1.278. Other versions remain rejected. Pi can advance
 lineage through inert `custom` and `custom_message` entries; signal-bearing custom
 rows remain unavailable. Both the native reader and the live continuation gate
 apply this rule. The fixture supplies zero usage counters so Pi's native
-terminal can render scripted assistant records. These compatibility changes need
-fresh live captures; earlier failed captures remain valid historical evidence.
-The follow-up captured actual Claude 2.1.309 terminal and Desktop Remote Control
-responses repeating the authored YAML advisory. OpenCode terminal capture reopens
-the real desktop receiving session and shows that receipt history. Pi received
-the advisory in its native terminal; final continuation acceptance uses a fresh
-fixture because the earlier parser already invalidated its original assessment.
+terminal can render scripted assistant records. Check continuation with fresh
+live captures after parser changes. An earlier invalidated assessment does not
+become valid after an upgrade. For OpenCode, reopen the actual receiving session
+to inspect receipt history rather than creating another session for a screenshot.
 
 Keep the candidate app and CLI on the same parser revision. After a revision
 change, dormant native delivery cursors refresh after real session activity and
