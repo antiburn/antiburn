@@ -4,15 +4,17 @@ use std::env;
 use std::fs;
 
 macro_rules! command_names {
-    ($( $handler:path => $name:literal, )*) => {
-        &[$($name),*]
+    ($( $(#[$meta:meta])* $handler:path => $name:literal, )*) => {
+        &[
+            $($(#[$meta])* $name,)*
+        ]
     };
 }
 
 const APP_COMMANDS: &[&str] = with_app_commands!(command_names);
 
 fn command_permission_sources() -> Vec<String> {
-    ["capabilities", "permissions"]
+    ["capabilities", "permissions", "cloud-capabilities"]
         .into_iter()
         .flat_map(|directory| {
             fs::read_dir(directory)
@@ -91,15 +93,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=ANTIBURN_ANALYTICS_ENABLED");
     println!("cargo:rerun-if-env-changed=GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=GOOGLE_ANTIGRAVITY_2_IDE_AGY_OAUTH_CLIENT_SECRET");
-    for name in [
-        "AUTH_VERIFIED",
-        "AUTHORIZATION_URL",
-        "TOKEN_URL",
-        "PROFILE_URL",
-        "REVOCATION_URL",
-        "CLIENT_ID",
-        "CALLBACK_URI",
-    ] {
+    for name in ["ISSUER", "RESOURCE"] {
         println!("cargo:rerun-if-env-changed=ANTIBURN_CLOUD_{name}");
     }
     println!("cargo:rerun-if-changed=capabilities");

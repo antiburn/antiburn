@@ -1,5 +1,6 @@
 import { Search, X } from "lucide-react"
-import { useCallback, useId, useRef, useState } from "react"
+import { useCallback, useId, useRef, useState, useSyncExternalStore } from "react"
+import { appInfoStore } from "../../lib/appInfoStore"
 import { groupAppResults, type AppSearchResult } from "../../lib/appSearch"
 import {
   AppSearchCheckAvailability,
@@ -13,6 +14,7 @@ export function AppSearch({
   onChoose: (result: AppSearchResult) => Promise<void>
   onClose: () => void
 }) {
+  const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [error, setError] = useState(false)
@@ -33,6 +35,7 @@ export function AppSearch({
     undefined,
     availability.snapshot?.configured ?? false,
     availability.snapshot?.installedChecks ?? [],
+    info?.cloudEnabled === true,
   )
   const results = groups.flatMap((group) => group.results)
   const active = results.find((result) => result.id === selectedId) ?? results[0]

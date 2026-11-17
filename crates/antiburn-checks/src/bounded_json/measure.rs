@@ -76,6 +76,7 @@ impl<'a> NodeSerializer<'a> {
         Ok(Compound {
             counter: self.counter,
             depth: self.depth,
+            is_number: false,
         })
     }
 
@@ -211,10 +212,13 @@ impl<'a> ser::Serializer for NodeSerializer<'a> {
     }
     fn serialize_struct(
         self,
-        _: &'static str,
+        name: &'static str,
         _: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
-        self.compound()
+        let mut compound = self.compound()?;
+        // serde_json writes this typed struct as one number, not an object.
+        compound.is_number = name == "$serde_json::private::Number";
+        Ok(compound)
     }
     fn serialize_struct_variant(
         self,
@@ -230,6 +234,7 @@ impl<'a> ser::Serializer for NodeSerializer<'a> {
 struct Compound<'a> {
     counter: &'a mut NodeCounter,
     depth: usize,
+    is_number: bool,
 }
 
 impl Compound<'_> {
@@ -282,7 +287,11 @@ impl SerializeStruct for Compound<'_> {
         _: &'static str,
         value: &T,
     ) -> Result<(), Self::Error> {
-        self.value(value)
+        if self.is_number {
+            Ok(())
+        } else {
+            self.value(value)
+        }
     }
     fn end(self) -> Result<(), Self::Error> {
         Ok(())

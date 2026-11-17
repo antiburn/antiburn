@@ -158,7 +158,7 @@ test("routes frontend changes without Rust matrices", () => {
   assert.equal(outputs.run_desktop, "false");
 });
 
-test("routes capture source and its synthetic fixture package without desktop builds", () => {
+test("routes capture inputs to capture and shell checks", () => {
   for (const file of [
     "crates/antiburn-cloud-capture/src/spool.rs",
     "crates/antiburn-cloud-capture/tests/capture.rs",
@@ -176,7 +176,8 @@ test("routes capture source and its synthetic fixture package without desktop bu
     for (const stage of ["draft", "ready", "main"]) {
       const outputs = plan(stage, [file]);
       assert.equal(outputs.engine_workspaces, "cloud-capture", `${stage} ${file}`);
-      assert.equal(outputs.run_desktop, "false", file);
+      assert.equal(outputs.run_desktop, "true", file);
+      assert.equal(desktopWorkspaces(outputs), "shell", file);
       assert.equal(outputs.run_frontend, "false", file);
       assert.equal(outputs.run_remote_build, "false", file);
     }

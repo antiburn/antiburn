@@ -34,6 +34,31 @@ test("ordinary launch commands do not read the host or build payloads", () => {
   assert.equal(prepareCliDev(args, { readHost: fail, buildPayload: fail }), args)
 })
 
+test("CLI preparation preserves Cloud features and other Tauri options", () => {
+  const input = [
+    "dev",
+    "--with-cli",
+    "--features",
+    "cloud",
+    "--features=analytics",
+    "--target",
+    "aarch64-apple-darwin",
+    "--config",
+    "src-tauri/tauri.debug.conf.json",
+  ]
+  assert.deepEqual(
+    prepareCliDev(input, {
+      readHost: () => "host: aarch64-apple-darwin",
+      buildPayload: () => {},
+    }),
+    [
+      ...input.filter((argument) => argument !== "--with-cli"),
+      "--config",
+      "src-tauri/tauri.sidecar.conf.json",
+    ],
+  )
+})
+
 test("debug bundles are prepared and build failures prevent launching", () => {
   const args = ["build", "--debug", "--with-cli"]
   assert.throws(

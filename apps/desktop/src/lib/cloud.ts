@@ -1,8 +1,12 @@
+/** Feature-gated native Cloud IPC. No credential or native source bytes cross
+ * this renderer boundary; saved requests are not capture or upload acceptance.
+ */
 import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-dialog"
-import { hasShell } from "./ipc"
+import { appInfo, hasShell } from "./ipc"
 import { listen } from "./tauriEvents"
 
+/** Closed native auth states. A signed-in account still needs content consent. */
 export type CloudStatus =
   | "idle"
   | "opening"
@@ -18,79 +22,194 @@ export type CloudStatus =
   | "invalid_response"
   | "credential_failed"
   | "unavailable"
+  | "reauth_required"
+  | "revocation_unconfirmed"
+/** Verified destination display data. Only a granted personal workspace is usable. */
+export interface CloudWorkspace {
+  id: string
+  name: string
+  kind: "personal" | "team"
+}
+/** Nested setup view, separate from the host's persisted onboarding step. */
 export type CloudScreen = "handoff" | "identity" | "folders" | "complete"
-interface CloudFolder {
+/** Closed native source contracts, not installed runtime versions. */
+export type CloudSourceKind = "claude_jsonl" | "opencode_sqlite_v2"
+/** One exact source approved in the picker: a project directory or database file. */
+interface CloudSourceSelection {
+  sourceKind: CloudSourceKind
+  path: string
+}
+/** Persisted source preference. Missing kind keeps the legacy Claude-only meaning. */
+export interface CloudFolder {
   sessionCount?: number | null
   sessionCountIsPartial?: boolean
   path: string
   selected: boolean
+  sourceKind?: CloudSourceKind
 }
+/** Normalize only an absent legacy kind; native code rejects unknown kinds. */
+export const cloudSourceKind = (source: CloudFolder): CloudSourceKind =>
+  source.sourceKind ?? "claude_jsonl"
+/** Compare provider and path together without treating display counts as consent. */
+export const cloudSourceKey = (source: CloudFolder) =>
+  JSON.stringify([cloudSourceKind(source), source.path])
+/** Account-bound UI preferences, never permission to read or upload content. */
 export interface CloudDraft {
   screen: CloudScreen
   folders: CloudFolder[]
 }
+/** Bind renderer intent to the current internal account and granted destination. */
+interface CloudDestinationBinding {
+  accountId: string
+  destinationId: string
+}
+/** One explicit confirmation for a saved request. V1 stays Claude-only. V2
+ * includes proved session-owned database blobs, never external files or URLs.
+ */
+export type CaptureConsent = CloudDestinationBinding & {
+  fullContent: true
+  attachments: false
+} & (
+    | { version: "native-full-content-v1"; selectedRoots: string[] }
+    | { version: "native-full-content-v2"; selectedSources: CloudSourceSelection[] }
+  )
+/** Native account state, not a build gate. authEnabled requires valid service
+ * configuration; captureEnabled permits saved requests, never content upload.
+ */
 export interface CloudSnapshot {
   authEnabled: boolean
   syncEnabled: boolean
+  captureEnabled?: boolean
   status: CloudStatus
   identity: { id: string; login: string; avatar?: string } | null
   expiresAt?: number | null
+  grantExpiresAt?: number | null
+  destination?: CloudWorkspace | null
+  revocationPending?: boolean
+  localCleanupPending?: boolean
+  localResetAvailable?: boolean
+  remoteRevocationUnconfirmed?: boolean
+  setupError?: string | null
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
+/** Local coding-agent integration status, not Cloud authentication or upload status. */
 export type AgentReadiness = "pending" | "ready" | "unavailable" | "failed"
+/** Native returns saved-request states only; operation progress is for isolated previews. */
 export type SyncResult =
-  | { status: "unavailable" | "idle" | "starting" | "ambiguous" | "failed" | "cancelled" }
+  | {
+      status:
+        | "unavailable"
+        | "upload_unavailable"
+        | "idle"
+        | "starting"
+        | "ambiguous"
+        | "failed"
+        | "cancelled"
+    }
   | {
       status: "accepted" | "syncing" | "partial" | "complete"
       operationId: string
       completed: number
       total: number
     }
+/**
+ * Native commands for setup and Settings.
+ * Attach watch before read: commands, including reads, can emit state before
+ * their reply. Implementations keep secrets native and return safe errors.
+ * Saved requests survive observer teardown and account cleanup.
+ */
 export interface CloudPort {
+  /** Refresh native authority. A state event can precede this reply. */
   read(): Promise<CloudSnapshot>
+  /** Observe safe snapshots until the returned stop function is called. */
   watch(listener: (value: CloudSnapshot) => void): Promise<() => void>
+  /** Open browser approval, or the information page when service config is absent. */
   begin(): Promise<CloudSnapshot>
+  /** Cancel a pending browser attempt only; keep established auth and saved requests. */
   cancel(): Promise<CloudSnapshot>
-  save(draft: CloudDraft, foldersEdited?: boolean): Promise<CloudSnapshot>
+  /** Save preferences only for the exact current personal account binding. */
+  save(
+    draft: CloudDraft,
+    binding: CloudDestinationBinding,
+    foldersEdited?: boolean,
+  ): Promise<CloudSnapshot>
+  /** Close local access first, then revoke this grant and finish secure cleanup. */
   signOut(): Promise<CloudSnapshot>
-  pick(): Promise<string[]>
+  /** Permit reconnect only without saved proof; retain the remote-revocation warning. */
+  resetLocal(): Promise<CloudSnapshot>
+  /** Ask for exact sources of one provider. Default hints never authorize reads. */
+  pick(sourceKind?: CloudSourceKind): Promise<string[]>
+  /** Read local integration readiness independently of saved-request reconciliation. */
   agent(): Promise<AgentReadiness>
-  prepareSync(folders: CloudFolder[], requestId: string): Promise<void>
-  start(folders: CloudFolder[], requestId: string): Promise<SyncResult>
+  /** Save exact account/root consent before listing. Reuse this ID after uncertainty. */
+  prepareSync(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<void>
+  /** List a saved native selection only; this build cannot capture or upload bytes. */
+  start(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<SyncResult>
+  /** Read saved state only. Reconciliation must not rescan or submit an upload. */
   reconcile(requestId: string): Promise<SyncResult>
+  /** Mark the original account's saved selection cancelled without deleting bytes. */
   cancelSync(requestId: string): Promise<SyncResult>
 }
+/** Safe busy rejection means native work did not start; never surface other raw errors. */
+export const CLOUD_BUSY_MESSAGE = "Cloud is busy. Try again."
+/** Closed renderer default for a browser or a native build without Cloud. */
 export const emptyCloudSnapshot: CloudSnapshot = {
   authEnabled: false,
   syncEnabled: false,
+  captureEnabled: false,
   status: "idle",
   identity: null,
   draft: { screen: "handoff", folders: [] },
 }
+/** Read the Rust capability, not an environment flag or service availability. */
+async function cloudBuildEnabled() {
+  return hasShell() && (await appInfo())?.cloudEnabled === true
+}
+/** Keep account IPC unreachable in ordinary builds, including browser previews. */
+async function cloudCommand(command: string, args?: Record<string, unknown>) {
+  if (!(await cloudBuildEnabled())) return emptyCloudSnapshot
+  return args ? invoke<CloudSnapshot>(command, args) : invoke<CloudSnapshot>(command)
+}
+/** Keep saved-request IPC gated separately from simulated operation progress. */
+async function cloudSyncCommand(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<SyncResult> {
+  if (!(await cloudBuildEnabled())) return { status: "unavailable" }
+  return invoke<SyncResult>(command, args)
+}
+/** Invoke Cloud commands only when Rust AppInfo confirms the non-default feature. */
 export const nativeCloudPort: CloudPort = {
-  read: () => (hasShell() ? invoke("cloud_status") : Promise.resolve(emptyCloudSnapshot)),
-  watch: (listener) =>
-    hasShell()
+  read: () => cloudCommand("cloud_status"),
+  watch: async (listener) =>
+    (await cloudBuildEnabled())
       ? listen<CloudSnapshot>("cloud:changed", (event) => listener(event.payload))
-      : Promise.resolve(() => {}),
-  begin: () =>
-    hasShell()
-      ? invoke("cloud_begin")
-      : Promise.resolve({ ...emptyCloudSnapshot, status: "unavailable" }),
-  cancel: () => invoke("cloud_cancel"),
-  save: (value, foldersEdited = true) => invoke("cloud_save_draft", { value, foldersEdited }),
-  signOut: () => invoke("cloud_sign_out"),
-  pick: async () => {
+      : () => {},
+  begin: () => cloudCommand("cloud_begin"),
+  cancel: () => cloudCommand("cloud_cancel"),
+  save: (value, binding, foldersEdited = true) =>
+    cloudCommand("cloud_save_draft", { value, binding, foldersEdited }),
+  signOut: () => cloudCommand("cloud_sign_out"),
+  resetLocal: () => cloudCommand("cloud_reset_local"),
+  pick: async (sourceKind = "claude_jsonl") => {
+    if (!(await cloudBuildEnabled())) return []
+    const database = sourceKind === "opencode_sqlite_v2"
+    const defaultPath = database
+      ? await invoke<string | null>("cloud_source_picker_directory")
+      : null
     const selected = await open({
-      directory: true,
+      directory: !database,
       multiple: true,
-      title: "Choose folders for Cloud",
+      title: database
+        ? "Choose OpenCode V2 databases"
+        : "Choose Claude projects/<project> source directories",
+      ...(defaultPath ? { defaultPath } : {}),
     })
     return selected === null ? [] : Array.isArray(selected) ? selected : [selected]
   },
   agent: async () => {
-    if (!hasShell()) return "unavailable"
+    if (!(await cloudBuildEnabled())) return "unavailable"
     const statuses = await invoke<{ phase: string }[]>("get_agent_integrations")
     if (statuses.some((value) => value.phase === "active")) return "ready"
     if (
@@ -103,13 +222,10 @@ export const nativeCloudPort: CloudPort = {
       return "pending"
     return "unavailable"
   },
-  prepareSync: async () => {
-    throw new Error("Cloud sync is unavailable.")
+  prepareSync: async (folders, requestId, consent) => {
+    await cloudSyncCommand("cloud_prepare_sync", { folders, requestId, consent })
   },
-  start: async () => {
-    await invoke("cloud_start_sync")
-    return { status: "unavailable" }
-  },
-  reconcile: () => Promise.resolve({ status: "unavailable" }),
-  cancelSync: () => Promise.resolve({ status: "unavailable" }),
+  start: (_folders, requestId) => cloudSyncCommand("cloud_start_sync", { requestId }),
+  reconcile: (requestId) => cloudSyncCommand("cloud_reconcile_sync", { requestId }),
+  cancelSync: (requestId) => cloudSyncCommand("cloud_cancel_sync", { requestId }),
 }

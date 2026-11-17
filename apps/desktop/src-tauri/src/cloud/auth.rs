@@ -1,176 +1,491 @@
+//! First-party wire validation and the OS credential boundary for the native engine.
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Read;
-use std::time::Duration;
+use std::{io::Read, time::Duration};
 use url::Url;
 
+/// Display metadata for browser consent, not a physical-device identity.
+pub const DEVICE_NAME: &str = "Antiburn desktop";
+/// The only first-party permission accepted by this native connection.
+pub const SCOPE: &str = "capture:write";
+/// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
+pub const MAX_ACCESS_SECONDS: u64 = 900;
+/// Maximum initial fixed grant lifetime in seconds.
+pub const MAX_GRANT_SECONDS: i64 = 365 * 24 * 60 * 60;
+
+/// Pin canonical service origins. Builds with debug assertions admit literal loopback HTTP.
+/// Resource owns request routes; issuer binds callbacks and responses.
+/// Neither value can contain a path or trailing slash.
 #[derive(Clone)]
 pub struct Config {
+    pub issuer: String,
+    pub resource: String,
     pub authorization: Url,
     pub token: Url,
-    pub profile: Url,
+    pub session: Url,
     pub revocation: Url,
-    pub client_id: String,
-    pub callback: String,
 }
 
 impl Config {
-    pub fn from_build(scheme: &str) -> Option<Self> {
-        if option_env!("ANTIBURN_CLOUD_AUTH_VERIFIED") != Some("enabled") {
-            return None;
-        }
-        Self::parse(
-            option_env!("ANTIBURN_CLOUD_AUTHORIZATION_URL")?,
-            option_env!("ANTIBURN_CLOUD_TOKEN_URL")?,
-            option_env!("ANTIBURN_CLOUD_PROFILE_URL")?,
-            option_env!("ANTIBURN_CLOUD_REVOCATION_URL")?,
-            option_env!("ANTIBURN_CLOUD_CLIENT_ID")?,
-            option_env!("ANTIBURN_CLOUD_CALLBACK_URI")?,
-            scheme,
+    /// Use local defaults with debug assertions only when both origins are absent.
+    /// Partial or invalid overrides disable authentication. Other builds need explicit HTTPS.
+    pub fn from_build() -> Option<Self> {
+        Self::from_origins(
+            option_env!("ANTIBURN_CLOUD_ISSUER"),
+            option_env!("ANTIBURN_CLOUD_RESOURCE"),
         )
     }
 
-    pub fn parse(
-        authorization: &str,
-        token: &str,
-        profile: &str,
-        revocation: &str,
-        client_id: &str,
-        callback: &str,
-        scheme: &str,
-    ) -> Option<Self> {
-        let endpoint = |value: &str| {
+    /// Keep explicit origins as one complete pair; never fill a missing override.
+    fn from_origins(issuer: Option<&str>, resource: Option<&str>) -> Option<Self> {
+        match (issuer, resource) {
+            (None, None) if cfg!(debug_assertions) => {
+                Self::parse("http://localhost:3000", "http://localhost:3000")
+            }
+            (Some(issuer), Some(resource)) => Self::parse(issuer, resource),
+            _ => None,
+        }
+    }
+
+    /// Reject aliases, credentials, paths, and remote HTTP rather than normalizing authority.
+    pub fn parse(issuer: &str, resource: &str) -> Option<Self> {
+        /// Require the exact public origin string used by callback and response proofs.
+        fn canonical(value: &str) -> Option<Url> {
             let url = Url::parse(value).ok()?;
-            (url.scheme() == "https"
+            ((url.scheme() == "https" || debug_loopback_http(&url))
                 && url.host_str().is_some()
                 && url.username().is_empty()
                 && url.password().is_none()
+                && url.query().is_none()
                 && url.fragment().is_none()
-                && url.query().is_none())
-            .then_some(url)
-        };
-        let authorization = endpoint(authorization)?;
-        let token = endpoint(token)?;
-        let profile = endpoint(profile)?;
-        let revocation = endpoint(revocation)?;
-        if [&token, &profile, &revocation]
-            .iter()
-            .any(|url| url.origin() != authorization.origin())
-            || client_id.is_empty()
-            || client_id.len() > 256
-            || callback != format!("{scheme}://cloud/auth")
-        {
-            return None;
+                && url.path() == "/"
+                && url.origin().ascii_serialization() == value)
+                .then_some(url)
         }
+        canonical(issuer)?;
+        let resource_url = canonical(resource)?;
         Some(Self {
-            authorization,
-            token,
-            profile,
-            revocation,
-            client_id: client_id.to_owned(),
-            callback: callback.to_owned(),
+            issuer: issuer.to_owned(),
+            resource: resource.to_owned(),
+            authorization: resource_url.join("desktop/authorize").ok()?,
+            token: resource_url.join("v1/desktop/token").ok()?,
+            revocation: resource_url.join("v1/desktop/logout").ok()?,
+            session: resource_url.join("v1/desktop/session").ok()?,
         })
     }
 }
 
+/// Admit plaintext only for exact loopback hosts when debug assertions are enabled.
+fn debug_loopback_http(url: &Url) -> bool {
+    cfg!(debug_assertions)
+        && url.scheme() == "http"
+        && match url.host() {
+            Some(url::Host::Domain("localhost")) => true,
+            Some(url::Host::Ipv4(address)) => address == std::net::Ipv4Addr::LOCALHOST,
+            Some(url::Host::Ipv6(address)) => address == std::net::Ipv6Addr::LOCALHOST,
+            _ => false,
+        }
+}
+
+/// Closed errors safe for renderer state. Never attach tokens or raw provider errors.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
     Offline,
+    /// Token exchange failed during connection setup before sending HTTP proof.
+    /// Timeouts and failures after dispatch cannot use this retry-safe outcome.
+    OfflineBeforeSend,
     Rejected,
     InvalidResponse,
     CredentialFailed,
     Cancelled,
     Unavailable,
+    ReauthRequired,
 }
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Internal account binding plus display metadata; the display name never binds a grant.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct User {
+    pub id: String,
+    pub display_name: String,
+}
+
+/// Destination kind used to reject team grants in the personal-only native path.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceKind {
+    Personal,
+    Team,
+}
+
+/// Granted destination and display metadata, not a user-selectable upload fallback.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Workspace {
+    pub id: String,
+    pub name: String,
+    pub kind: WorkspaceKind,
+}
+
+/// Desktop grant authority, not captured coding-session metadata.
+/// Validation must precede use; access and fixed grant deadlines stay separate.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Session {
+    pub user: User,
+    pub grant_id: String,
+    pub device_name: String,
+    pub workspace: Workspace,
+    pub resource: String,
+    pub scope: String,
+    pub iss: String,
+    pub expires_at: i64,
+    pub access_expires_at: i64,
+}
+
+impl Session {
+    /// Require live access inside the validated fixed grant deadline.
+    pub fn validate(&self, config: &Config, now: i64) -> Result<(), Failure> {
+        self.validate_grant(config, now)?;
+        if self.access_expires_at <= now || self.access_expires_at > self.expires_at {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    /// Validate stable grant bindings even when the previous access token has expired.
+    pub fn validate_grant(&self, config: &Config, now: i64) -> Result<(), Failure> {
+        if !bounded(&self.user.id, 256)
+            || !bounded(&self.user.display_name, 256)
+            || !bounded(&self.grant_id, 256)
+            || !bounded(&self.device_name, 100)
+            || !bounded(&self.workspace.id, 256)
+            || !bounded(&self.workspace.name, 256)
+            || self.workspace.kind != WorkspaceKind::Personal
+            || self.resource != config.resource
+            || self.scope != SCOPE
+            || self.iss != config.issuer
+            || self.expires_at <= now
+            || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
+        {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    /// Pin ownership, scope, origin, and the fixed deadline across refresh rotation.
+    /// Renamed account/workspace display labels do not change authority.
+    pub fn same_grant(&self, other: &Self) -> bool {
+        self.user.id == other.user.id
+            && self.grant_id == other.grant_id
+            && self.workspace.id == other.workspace.id
+            && self.workspace.kind == other.workspace.kind
+            && self.resource == other.resource
+            && self.scope == other.scope
+            && self.iss == other.iss
+            && self.expires_at == other.expires_at
+    }
+}
+
+/// Nonsecret account display data permitted to cross the renderer IPC boundary.
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Identity {
     pub id: String,
     pub login: String,
 }
 
-#[derive(Deserialize)]
+impl From<&Session> for Identity {
+    fn from(value: &Session) -> Self {
+        Self {
+            id: value.user.id.clone(),
+            login: value.user.display_name.clone(),
+        }
+    }
+}
+
+/// Reject empty, oversized, or control-bearing wire strings without logging their values.
+fn bounded(value: &str, maximum: usize) -> bool {
+    !value.is_empty() && value.len() <= maximum && !value.chars().any(char::is_control)
+}
+
+/// Parse the wire deadline to UTC seconds; malformed input cannot restore access.
+fn deadline(value: &str) -> Result<i64, Failure> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .map(|value| value.unix_timestamp())
+        .map_err(|_| Failure::InvalidResponse)
+}
+
+/// Untrusted token response. Decoding is not acceptance; retain bounded refresh
+/// proof for cleanup even when another field fails authority validation.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Tokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_in: u64,
     pub token_type: String,
+    pub grant_id: String,
+    pub user_id: String,
+    pub workspace_id: String,
+    pub grant_expires_at: String,
+    pub scope: String,
+    pub resource: String,
+    pub iss: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+impl Tokens {
+    /// Validate secret bounds and access lifetime before sending any access bearer.
+    fn validate_secrets(&self) -> Result<(), Failure> {
+        if self.token_type != "Bearer"
+            || !bounded(&self.access_token, 16_384)
+            || !bounded(&self.refresh_token, 16_384)
+            || self.access_token == self.refresh_token
+            || !(1..=MAX_ACCESS_SECONDS).contains(&self.expires_in)
+        {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    /// Reject authority outside the pinned first-party resource, issuer, scope, or deadline.
+    pub fn validate(&self, config: &Config, now: i64) -> Result<(), Failure> {
+        self.validate_secrets()?;
+        let expires_at = deadline(&self.grant_expires_at)?;
+        if !bounded(&self.grant_id, 256)
+            || !bounded(&self.user_id, 256)
+            || !bounded(&self.workspace_id, 256)
+            || self.scope != SCOPE
+            || self.resource != config.resource
+            || self.iss != config.issuer
+            || expires_at <= now
+            || expires_at > now.saturating_add(MAX_GRANT_SECONDS)
+        {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(())
+    }
+
+    /// Require the independently verified session to confirm every token grant binding.
+    pub fn matches_session(&self, session: &Session) -> bool {
+        self.grant_id == session.grant_id
+            && self.user_id == session.user.id
+            && self.workspace_id == session.workspace.id
+            && deadline(&self.grant_expires_at).ok() == Some(session.expires_at)
+            && self.scope == session.scope
+            && self.resource == session.resource
+            && self.iss == session.iss
+    }
+}
+
+/// Exact flat session wire shape; deadline conversion does not itself validate authority.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionResponse {
+    user_id: String,
+    display_name: Option<String>,
+    workspace_id: String,
+    workspace_name: String,
+    grant_id: String,
+    device_name: String,
+    scope: String,
+    resource: String,
+    grant_expires_at: String,
+    access_expires_at: String,
+    iss: String,
+}
+
+impl TryFrom<SessionResponse> for Session {
+    type Error = Failure;
+
+    fn try_from(value: SessionResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
+            user: User {
+                id: value.user_id,
+                display_name: value.display_name.unwrap_or_else(|| "Cloud account".into()),
+            },
+            grant_id: value.grant_id,
+            device_name: value.device_name,
+            workspace: Workspace {
+                id: value.workspace_id,
+                name: value.workspace_name,
+                kind: WorkspaceKind::Personal,
+            },
+            resource: value.resource,
+            scope: value.scope,
+            iss: value.iss,
+            expires_at: deadline(&value.grant_expires_at)?,
+            access_expires_at: deadline(&value.access_expires_at)?,
+        })
+    }
+}
+
+/// Ephemeral browser proof. Never persist its verifier or restore it after restart.
+#[derive(Clone)]
 pub struct Attempt {
     pub state: String,
-    pub verifier: Option<String>,
+    pub verifier: String,
+    pub callback: String,
     pub expires_at: i64,
+    pub epoch: String,
+    pub generation: u64,
 }
 
-#[derive(Default, Clone, Serialize, Deserialize)]
-pub struct Secrets {
-    pub pending: Option<Attempt>,
-    pub refresh_token: Option<String>,
+/// OS-only refresh record. `session: None` permits logout only, never authentication;
+/// cleanup can retain one extra returned proof without replacing the original.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Credential {
+    pub epoch: String,
+    pub issuer: String,
+    pub resource: String,
+    pub refresh_token: String,
+    #[serde(default)]
+    pub cleanup_refresh_tokens: Vec<String>,
+    pub session: Option<Session>,
 }
 
+/// Store one engine's rotating refresh credential and logout-only proofs.
+///
+/// The controller serializes calls and holds the state-directory owner lock.
+/// Implementors must use secure storage, replace the whole record on write, and
+/// return errors without secrets. A read failure is not an absent credential.
+/// A successful write must be durable before it returns. Failed writes must not
+/// claim success; the engine closes access and keeps revocation uncertainty.
+/// These synchronous calls require the Cloud blocking-work permit.
 pub trait Vault: Send + Sync {
-    fn read(&self) -> Result<Secrets, Failure>;
-    fn write(&self, secrets: &Secrets) -> Result<(), Failure>;
+    /// Return absence only for a missing entry; malformed or inaccessible storage is an error.
+    fn read(&self) -> Result<Option<Credential>, Failure>;
+    /// Delete only when given `None`; deleting an absent credential succeeds.
+    /// The engine records confirmed revocation before requesting deletion.
+    fn write(&self, credential: Option<&Credential>) -> Result<(), Failure>;
 }
 
-pub struct KeyringVault(pub String);
+/// OS credential storage bound to the app identifier and state-directory namespace.
+/// Synchronous keyring calls require admitted blocking work and have no plaintext fallback.
+pub struct KeyringVault {
+    service: String,
+    account: String,
+}
+impl KeyringVault {
+    /// Derive the namespace in memory without opening the keyring during UI setup.
+    pub fn new(service: String, directory: &std::path::Path) -> Self {
+        let namespace =
+            URL_SAFE_NO_PAD.encode(Sha256::digest(directory.as_os_str().as_encoded_bytes()));
+        Self {
+            service,
+            account: format!("cloud-grant-v2-{namespace}"),
+        }
+    }
+}
 impl Vault for KeyringVault {
-    fn read(&self) -> Result<Secrets, Failure> {
-        let entry = keyring::Entry::new(&self.0, "cloud-session-v1")
+    fn read(&self) -> Result<Option<Credential>, Failure> {
+        let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|_| Failure::CredentialFailed)?;
         match entry.get_password() {
-            Ok(value) => serde_json::from_str(&value).map_err(|_| Failure::CredentialFailed),
-            Err(keyring::Error::NoEntry) => Ok(Secrets::default()),
+            Ok(value) => {
+                let credential: Credential =
+                    serde_json::from_str(&value).map_err(|_| Failure::CredentialFailed)?;
+                if credential.cleanup_refresh_tokens.len() > 1
+                    || !bounded(&credential.refresh_token, 16_384)
+                    || credential
+                        .cleanup_refresh_tokens
+                        .iter()
+                        .any(|proof| !bounded(proof, 16_384))
+                {
+                    return Err(Failure::CredentialFailed);
+                }
+                Ok(Some(credential))
+            }
+            Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err(Failure::CredentialFailed),
         }
     }
-    fn write(&self, secrets: &Secrets) -> Result<(), Failure> {
-        let entry = keyring::Entry::new(&self.0, "cloud-session-v1")
+    fn write(&self, credential: Option<&Credential>) -> Result<(), Failure> {
+        let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|_| Failure::CredentialFailed)?;
-        if secrets.pending.is_none() && secrets.refresh_token.is_none() {
-            return match entry.delete_credential() {
+        match credential {
+            Some(credential) => entry
+                .set_password(
+                    &serde_json::to_string(credential).map_err(|_| Failure::CredentialFailed)?,
+                )
+                .map_err(|_| Failure::CredentialFailed),
+            None => match entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
                 Err(_) => Err(Failure::CredentialFailed),
-            };
+            },
         }
-        let value = serde_json::to_string(secrets).map_err(|_| Failure::CredentialFailed)?;
-        entry
-            .set_password(&value)
-            .map_err(|_| Failure::CredentialFailed)
     }
 }
 
+/// Exact first-party JSON proof variants, without cookies or access bearer proof.
+#[derive(Serialize)]
+#[serde(tag = "grant_type", rename_all = "snake_case")]
+pub enum TokenRequest<'a> {
+    AuthorizationCode {
+        code: &'a str,
+        code_verifier: &'a str,
+    },
+    RefreshToken {
+        refresh_token: &'a str,
+    },
+}
+
+/// Send the native engine's first-party requests without retries or redirects.
+///
+/// Implementors must bound responses and keep cookies, Origin, and raw errors
+/// out of this boundary. Only `session` sends access bearer proof. The controller
+/// serializes credential operations; transport success does not grant access.
+/// Implementors can block only inside admitted Cloud blocking work.
 pub trait Transport: Send + Sync {
-    fn exchange(&self, config: &Config, fields: &[(&str, &str)]) -> Result<Tokens, Failure>;
-    fn profile(&self, config: &Config, access: &str) -> Result<Identity, Failure>;
+    /// Return decoded tokens with a bounded refresh proof, even when other fields
+    /// are invalid. The engine validates authority and saves rejected proof for
+    /// logout. Return `OfflineBeforeSend` only when no HTTP proof was sent.
+    /// An uncertain exchange must not retry the predecessor.
+    fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure>;
+    /// Read current server authority; the engine checks all returned bindings.
+    fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
+    /// Return success only for synchronous HTTP 204 confirming this proof's grant.
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
 
+/// Short blocking HTTP transport, used only inside the bounded Cloud worker.
+/// The engine's synchronous proof/write ordering stays intact; this is not async HTTP.
 pub struct HttpTransport;
-fn client() -> Result<reqwest::blocking::Client, Failure> {
+/// Check each request URL before attaching proof. Debug loopback HTTP bypasses
+/// proxies so plaintext credentials stay on the local connection.
+fn client(url: &Url) -> Result<reqwest::blocking::Client, Failure> {
+    let local_http = debug_loopback_http(url);
+    if (url.scheme() != "https" && !local_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(Failure::Unavailable);
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
-    reqwest::blocking::Client::builder()
+    let mut builder = reqwest::blocking::Client::builder()
+        .https_only(!local_http)
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|_| Failure::Offline)
+        .retry(reqwest::retry::never())
+        .timeout(Duration::from_secs(15));
+    if local_http {
+        builder = builder.no_proxy();
+    }
+    builder.build().map_err(|_| Failure::Offline)
 }
+
+/// Bound successful JSON and map status/read errors to closed safe failures.
 fn decode<T: serde::de::DeserializeOwned>(
     response: reqwest::blocking::Response,
 ) -> Result<T, Failure> {
     let status = response.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED
-        || status == reqwest::StatusCode::FORBIDDEN
-        || status == reqwest::StatusCode::BAD_REQUEST
-    {
+    if [400, 401, 403].contains(&status.as_u16()) {
         return Err(Failure::Rejected);
     }
-    if !status.is_success() {
+    if status != reqwest::StatusCode::OK {
         return Err(Failure::Offline);
     }
     let mut bytes = Vec::new();
@@ -183,55 +498,50 @@ fn decode<T: serde::de::DeserializeOwned>(
     }
     serde_json::from_slice(&bytes).map_err(|_| Failure::InvalidResponse)
 }
+
+/// Permit a later exchange only when connection setup failed before HTTP dispatch.
+/// Keep timeouts uncertain even when the connector reports them.
+/// The transport must keep retries and redirects disabled.
+fn exchange_failure(error: reqwest::Error) -> Failure {
+    if error.is_connect() && !error.is_timeout() {
+        Failure::OfflineBeforeSend
+    } else {
+        Failure::Offline
+    }
+}
+
 impl Transport for HttpTransport {
-    fn exchange(&self, config: &Config, fields: &[(&str, &str)]) -> Result<Tokens, Failure> {
+    fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
-            client()?
+            client(&config.token)?
                 .post(config.token.clone())
-                .form(fields)
+                .json(request)
                 .send()
-                .map_err(|_| Failure::Offline)?,
+                .map_err(exchange_failure)?,
         )?;
-        if !tokens.token_type.eq_ignore_ascii_case("bearer")
-            || tokens.access_token.is_empty()
-            || tokens.refresh_token.is_empty()
-            || tokens.access_token.len() > 16_384
-            || tokens.refresh_token.len() > 16_384
-            || !(60..=86_400).contains(&tokens.expires_in)
-        {
+        // Keep usable logout proof until the engine decides whether to accept it.
+        if !bounded(&tokens.refresh_token, 16_384) {
             return Err(Failure::InvalidResponse);
         }
         Ok(tokens)
     }
-    fn profile(&self, config: &Config, access: &str) -> Result<Identity, Failure> {
-        let identity: Identity = decode(
-            client()?
-                .get(config.profile.clone())
+    fn session(&self, config: &Config, access: &str) -> Result<Session, Failure> {
+        let response: SessionResponse = decode(
+            client(&config.session)?
+                .get(config.session.clone())
                 .bearer_auth(access)
                 .send()
                 .map_err(|_| Failure::Offline)?,
         )?;
-        if identity.id.is_empty()
-            || identity.id.len() > 256
-            || identity.login.is_empty()
-            || identity.login.len() > 100
-            || identity.login.chars().any(char::is_control)
-        {
-            return Err(Failure::InvalidResponse);
-        }
-        Ok(identity)
+        response.try_into()
     }
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure> {
-        let response = client()?
+        let response = client(&config.revocation)?
             .post(config.revocation.clone())
-            .form(&[
-                ("token", refresh),
-                ("token_type_hint", "refresh_token"),
-                ("client_id", &config.client_id),
-            ])
+            .json(&serde_json::json!({ "refresh_token": refresh }))
             .send()
             .map_err(|_| Failure::Offline)?;
-        if response.status().is_success() {
+        if response.status() == reqwest::StatusCode::NO_CONTENT {
             Ok(())
         } else {
             Err(Failure::Offline)
@@ -239,43 +549,49 @@ impl Transport for HttpTransport {
     }
 }
 
+/// Generate independent 32-byte proof or epoch material with OS randomness.
 pub fn random() -> Result<String, Failure> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|_| Failure::Unavailable)?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
+
+/// Derive the S256 PKCE challenge without exposing the verifier to the browser.
 pub fn challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
+/// A guarded browser result, still subject to pending epoch and generation checks.
 pub enum Callback {
-    Marketing,
     Code(String),
     Cancelled,
 }
-pub fn validate_callback(raw: &str, scheme: &str, attempt: &Attempt, now: i64) -> Option<Callback> {
-    if raw.len() > 8192 || now >= attempt.expires_at {
-        return None;
-    }
-    let url = Url::parse(raw).ok()?;
-    let path = if attempt.verifier.is_some() {
-        "/auth"
-    } else {
-        "/return"
-    };
-    if url.scheme() != scheme
-        || url.host_str() != Some("cloud")
-        || url.path() != path
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.port().is_some()
-        || url.fragment().is_some()
+
+/// Admit only the exact callback route, Host, state, issuer, and one result.
+/// Invalid requests cannot consume an attempt or disclose the expected proof.
+pub fn validate_callback(
+    target: &str,
+    host: &str,
+    config: &Config,
+    attempt: &Attempt,
+    now: i64,
+) -> Option<Callback> {
+    if target.len() > 8192
+        || now >= attempt.expires_at
+        || !target.starts_with("/cloud/callback?")
+        || target.contains('#')
+        || host
+            != attempt
+                .callback
+                .strip_prefix("http://")?
+                .strip_suffix("/cloud/callback")?
     {
         return None;
     }
+    let query = target.strip_prefix("/cloud/callback?")?;
     let mut fields = std::collections::HashMap::new();
-    for (key, value) in url.query_pairs() {
-        if !["state", "code", "error"].contains(&key.as_ref())
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if !["state", "code", "error", "iss"].contains(&key.as_ref())
             || fields
                 .insert(key.into_owned(), value.into_owned())
                 .is_some()
@@ -283,11 +599,11 @@ pub fn validate_callback(raw: &str, scheme: &str, attempt: &Attempt, now: i64) -
             return None;
         }
     }
-    if fields.get("state") != Some(&attempt.state) {
+    if fields.get("state") != Some(&attempt.state)
+        || fields.get("iss") != Some(&config.issuer)
+        || fields.len() != 3
+    {
         return None;
-    }
-    if attempt.verifier.is_none() {
-        return (fields.len() == 1).then_some(Callback::Marketing);
     }
     match (fields.get("code"), fields.get("error")) {
         (Some(code), None)
@@ -299,3 +615,6 @@ pub fn validate_callback(raw: &str, scheme: &str, attempt: &Attempt, now: i64) -
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

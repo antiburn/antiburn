@@ -119,6 +119,10 @@ pub fn evaluate_decision_input_with_budget(
 }
 
 /// Decodes the full saved record before allocating typed executable state.
+///
+/// Raw JSON callers must use this entry point rather than deserializing
+/// `PreparationRecord` directly. Direct Serde conversion expects already-decoded,
+/// checked JSON values.
 pub fn decode_preparation_record(
     bytes: &[u8],
 ) -> Result<crate::fit::PreparationRecord, crate::fit::PreparationFailure> {

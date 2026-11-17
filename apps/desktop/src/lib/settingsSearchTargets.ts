@@ -29,6 +29,13 @@ export const SETTINGS_SEARCH_TARGETS = {
     pane: "sessions",
     label: "Upload sessions",
     aliases: ["Antiburn Cloud", "cloud upload"],
+    feature: "cloud",
+  },
+  cloudFolders: {
+    pane: "sessions",
+    label: "Cloud folders",
+    aliases: ["Cloud sources", "capture consent", "full-content capture"],
+    feature: "cloud",
   },
   monitoring: {
     pane: "sessions",
@@ -357,6 +364,7 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: string
     aliases: readonly string[]
     platform?: "macos"
+    feature?: "cloud"
     platformLabels?: Partial<Record<Platform, string>>
   }
 >

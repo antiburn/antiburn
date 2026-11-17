@@ -1,3 +1,4 @@
+/** Isolated synthetic Cloud views for browser evidence, with no native credentials or source I/O. */
 import { createCloudDevPort, isCloudDevScenario } from "../../src/onboarding/cloudDevPort"
 import { CloudOnboarding } from "../../src/onboarding/CloudOnboarding"
 import {
@@ -7,6 +8,7 @@ import {
   type SyncResult,
 } from "../../src/lib/cloud"
 
+/** Build preview-only account/request state; simulated success cannot establish product support. */
 export function cloudFixture(name: string): CloudPort {
   const dev = name.startsWith("dev-") ? name.slice(4) : null
   if (isCloudDevScenario(dev)) return createCloudDevPort(dev)
@@ -43,6 +45,9 @@ export function cloudFixture(name: string): CloudPort {
           ? "browser_failed"
           : (name as CloudSnapshot["status"]),
     identity: authenticated ? { id: "synthetic", login: "example" } : null,
+    destination: authenticated
+      ? { id: "synthetic-personal", name: "Personal", kind: "personal" }
+      : null,
     draft: {
       screen: ["identity", "identity_error"].includes(name)
         ? "identity"
@@ -84,6 +89,10 @@ export function cloudFixture(name: string): CloudPort {
       value = { ...emptyCloudSnapshot, status: "signed_out" }
       return value
     },
+    resetLocal: async () => {
+      value = { ...emptyCloudSnapshot, status: "signed_out", remoteRevocationUnconfirmed: true }
+      return value
+    },
     pick: async () => ["/Example/New folder"],
     agent: async () => (name === "complete" ? "pending" : "unavailable"),
     prepareSync: async () => {},
@@ -107,6 +116,7 @@ export function cloudFixture(name: string): CloudPort {
     cancelSync: async () => ({ status: "cancelled" }),
   }
 }
+/** Render the selected synthetic view without analytics or persisted onboarding changes. */
 export function CloudFixture() {
   const name = new URLSearchParams(window.location.search).get("cloud") ?? "marketing"
   return (

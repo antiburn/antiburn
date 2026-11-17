@@ -3019,6 +3019,7 @@ fn aggregate_detector_masks(
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub app_version: String,
+    pub cloud_enabled: bool,
     /// True when Rust enables debug assertions for this binary.
     pub debug_build: bool,
     /// CPU architecture this binary was compiled for, e.g. `aarch64`.

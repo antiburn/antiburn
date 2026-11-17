@@ -421,8 +421,19 @@ describe("SessionsStepSettings scan folders", () => {
 })
 
 describe("SessionsStepSettings Cloud preference", () => {
+  it("omits Cloud controls and commands in ordinary builds", async () => {
+    mockCommands({ app_info: { ...INFO, cloudEnabled: false } })
+    render(<SessionsStepSettings />)
+    await screen.findByText("42 sessions · 3.5 MB")
+    expect(screen.queryByText("Antiburn Cloud")).not.toBeInTheDocument()
+    expect(invoke.mock.calls.some(([command]) => String(command).startsWith("cloud_"))).toBe(
+      false,
+    )
+  })
+
   it("disables unavailable uploads without changing saved intent and opens Learn more", async () => {
     mockCommands({
+      app_info: { ...INFO, cloudEnabled: true },
       get_settings: { ...DEFAULT_SETTINGS, cloudUploadEnabled: true },
       cloud_begin: emptyCloudSnapshot,
     })
@@ -451,20 +462,22 @@ describe("SessionsStepSettings Cloud preference", () => {
 
   it("preserves configured account controls", async () => {
     mockCommands({
+      app_info: { ...INFO, cloudEnabled: true },
       cloud_status: { ...emptyCloudSnapshot, authEnabled: true, status: "signed_out" },
       cloud_sign_out: { ...emptyCloudSnapshot, authEnabled: true, status: "signed_out" },
     })
     render(<SessionsStepSettings />)
-    const signOut = await screen.findByRole("button", { name: "Sign out" })
+    const signIn = await screen.findByRole("button", { name: "Sign in" })
     expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
     expect(screen.getByText("Not signed in")).toBeVisible()
     expect(screen.getByText("You’re signed out on this device.")).toBeVisible()
-    fireEvent.click(signOut)
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_sign_out"))
+    fireEvent.click(signIn)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_begin"))
   })
 
   it("saves local intent and keeps the existing eligibility controls together", async () => {
     mockCommands({
+      app_info: { ...INFO, cloudEnabled: true },
       cloud_status: { ...emptyCloudSnapshot, authEnabled: true },
       set_settings: (args: { settings: unknown }) => args.settings,
     })
@@ -506,6 +519,7 @@ describe("SessionsStepSettings Cloud preference", () => {
 
   it("honors saved Cloud and non-Git preferences", async () => {
     mockCommands({
+      app_info: { ...INFO, cloudEnabled: true },
       cloud_status: { ...emptyCloudSnapshot, authEnabled: true },
       get_settings: {
         ...DEFAULT_SETTINGS,

@@ -317,6 +317,7 @@ fn install_app_menu(app: &AppHandle) -> tauri::Result<()> {
     let view_items: [&dyn IsMenuItem<Wry>; 4] = [&separator, &zoom_in, &zoom_out, &actual_size];
     view_menu.append_items(&view_items)?;
     #[cfg(debug_assertions)]
+    #[cfg(feature = "cloud")]
     view_menu.append(&crate::cloud_dev::menu(app)?)?;
     app.set_menu(menu)?;
     Ok(())
@@ -817,7 +818,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
     let hud_dev = build_hud_dev_menu(app)?;
     #[cfg(debug_assertions)]
     let hud_dev_item = hud_dev.menu;
-    #[cfg(debug_assertions)]
+    #[cfg(all(debug_assertions, feature = "cloud"))]
     let cloud_dev = crate::cloud_dev::menu(app)?;
     #[cfg(debug_assertions)]
     let reset_onboarding = MenuItem::with_id(
@@ -857,7 +858,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<BuiltMenu> {
         &codex_only_item,
         #[cfg(debug_assertions)]
         &hud_dev_item,
-        #[cfg(debug_assertions)]
+        #[cfg(all(debug_assertions, feature = "cloud"))]
         &cloud_dev,
         #[cfg(debug_assertions)]
         &reset_onboarding,
@@ -1006,6 +1007,7 @@ fn on_tray_event(tray: &TrayIcon, event: TrayIconEvent) {
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     #[cfg(debug_assertions)]
+    #[cfg(feature = "cloud")]
     if crate::cloud_dev::handle(app, event.id().as_ref()) {
         return;
     }

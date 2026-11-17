@@ -6,6 +6,7 @@ import "./onboarding.css"
 
 type OnboardingStep =
   "welcome" | "sessions" | "limits" | "hud" | "checks" | "cloud" | "cloudUnavailable"
+/** Host-owned local progress and visibility. Only native build info can expose Cloud steps. */
 export interface OnboardingViewProps {
   step: OnboardingStep
   onStepChange: (step: OnboardingStep) => void
@@ -15,6 +16,8 @@ export interface OnboardingViewProps {
   hudSupported?: boolean
   hudVariant?: "notch" | "floating" | "unsupported"
   visible?: boolean
+  /** Native AppInfo.cloudEnabled only. Service availability must not hide this flow. */
+  cloudEnabled?: boolean
 }
 
 const order: OnboardingStep[] = ["welcome", "sessions", "limits", "hud", "checks", "cloud"]
@@ -48,8 +51,8 @@ const slides = {
     duration: 4000,
   },
   cloud: {
-    title: "Upload all your sessions, across devices",
-    body: "Upload sessions from your chosen folders to antiburn cloud, and explore their usage and insights across your devices.",
+    title: "Set up Antiburn Cloud",
+    body: "Connect in your browser and choose native session sources. This build can save capture requests, but uploads are unavailable.",
     support: "antiburn cloud is optional. You can keep using Antiburn locally.",
     times: [700, 1100, 1600, 2200, 2900],
     duration: 4200,
@@ -58,6 +61,7 @@ const slides = {
 
 type TeachingStep = keyof typeof slides
 
+/** Own example animation time while subscribed. Hidden or unready frames must pause it. */
 export function createPlayback(
   times: readonly number[],
   duration: number,
@@ -306,8 +310,9 @@ function Demo({
   )
 }
 
+/** Render existing teaching/setup steps without completing or enabling Cloud on its own. */
 export function OnboardingView({
-  step,
+  step: requestedStep,
   onStepChange,
   onComplete,
   busy = false,
@@ -315,7 +320,12 @@ export function OnboardingView({
   hudSupported = false,
   hudVariant,
   visible = true,
+  cloudEnabled = false,
 }: OnboardingViewProps) {
+  const step =
+    !cloudEnabled && (requestedStep === "cloud" || requestedStep === "cloudUnavailable")
+      ? "checks"
+      : requestedStep
   if (step === "cloudUnavailable")
     return (
       <CloudOnboarding
@@ -416,15 +426,18 @@ export function OnboardingView({
             <button
               className="onboarding-primary"
               disabled={busy}
-              onClick={() =>
-                onStepChange(step === "cloud" ? "cloudUnavailable" : order[index + 1]!)
-              }
+              onClick={() => {
+                if (step === "checks" && !cloudEnabled) onComplete()
+                else onStepChange(step === "cloud" ? "cloudUnavailable" : order[index + 1]!)
+              }}
             >
               {step === "welcome"
                 ? "Get started"
                 : step === "cloud"
                   ? "Set up Cloud"
-                  : "Continue"}
+                  : step === "checks" && !cloudEnabled
+                    ? "Done"
+                    : "Continue"}
             </button>
           }
         </div>

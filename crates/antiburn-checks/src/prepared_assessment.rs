@@ -32,6 +32,11 @@ const INNER_LIMITS: JsonLimits = JsonLimits {
     max_depth: MAX_FIT_INPUT_DEPTH,
 };
 
+/// Saved immutable inputs and requests for one complete model assessment.
+///
+/// Raw JSON must use [`decode_prepared_assessment`] or
+/// [`crate::preparation::decode_preparation_record`]. The `Deserialize`
+/// implementation expects already-decoded, checked JSON values.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PreparedAssessment {
     pub version: u8,
@@ -249,11 +254,21 @@ struct SavedAssessment {
 #[serde(deny_unknown_fields)]
 struct SavedBlock {
     decision: String,
+    #[serde(deserialize_with = "deserialize_payload")]
     original_input: Value,
+    #[serde(deserialize_with = "deserialize_payload")]
     input: Value,
+    #[serde(deserialize_with = "deserialize_payload")]
     request: Value,
     report: SavedReport,
 }
+
+/// Preserve literal payload keys while owning already-decoded values.
+/// The enclosing assessment has already passed its complete node/depth check.
+fn deserialize_payload<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
+    crate::bounded_json::deserialize_strict_value(deserializer, INNER_LIMITS)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedReport {

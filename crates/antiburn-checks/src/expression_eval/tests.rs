@@ -194,6 +194,196 @@ fn json_serialization_sorts_keys_and_escapes_text() {
 }
 
 #[test]
+fn from_json_keeps_finite_numbers_in_nested_values() {
+    for (source, expected) in [
+        ("fromJSON('1.25')", json!(1.25)),
+        ("fromJSON('2e2')", json!(200.0)),
+        ("fromJSON('1.00000000000000001')", json!(1.0)),
+        ("fromJSON('-0')", json!(-0.0)),
+        ("fromJSON('18446744073709551615')", json!(u64::MAX)),
+        ("fromJSON('-9223372036854775808')", json!(i64::MIN)),
+        (
+            "fromJSON('18446744073709551616')",
+            json!(18_446_744_073_709_551_616.0),
+        ),
+        (
+            "fromJSON('{\"values\":[1.25,{\"value\":2e2},-0]}')",
+            json!({"values": [1.25, {"value": 200.0}, -0.0]}),
+        ),
+        ("fromJSON('[1.25,2e2]')[1] == 200", json!(true)),
+    ] {
+        assert_value(source, expected);
+    }
+    for source in [
+        "fromJSON('-1e400')",
+        "fromJSON('[1e400]')",
+        "fromJSON('{\"value\":1e400}')",
+        "fromJSON('{\"value\":1e400,\"value\":1}')",
+        "fromJSON('{\"value\":1,\"value\":1e400}')",
+    ] {
+        assert_invalid(source);
+    }
+}
+
+#[test]
+fn from_json_keeps_private_marker_keys_as_literal_objects() {
+    for (text, expected) in [
+        (
+            r#"{"$serde_json::private::Number":"1.25"}"#,
+            json!({"$serde_json::private::Number": "1.25"}),
+        ),
+        (
+            r#"{"$serde_json::private::Number":"1e400"}"#,
+            json!({"$serde_json::private::Number": "1e400"}),
+        ),
+        (
+            r#"{"$serde_json::private::RawValue":"1.25"}"#,
+            json!({"$serde_json::private::RawValue": "1.25"}),
+        ),
+        (
+            r#"{"$serde_json::private::Number":"2e2","other":1}"#,
+            json!({"$serde_json::private::Number": "2e2", "other": 1}),
+        ),
+        (
+            r#"[{"$serde_json::private::Number":"1.25"},{"$serde_json::private::RawValue":"{}"}]"#,
+            json!([{"$serde_json::private::Number": "1.25"}, {"$serde_json::private::RawValue": "{}"}]),
+        ),
+    ] {
+        let mut budget = EvaluationBudget::default();
+        let value = super::json::parse(text, &mut budget, 1).unwrap();
+        assert_eq!(value, expected, "{text}");
+        assert!(
+            value.is_object() || value.is_array(),
+            "marker keys remain data: {text}"
+        );
+    }
+    assert_value(
+        "fromJSON('{\"$serde_json::private::Number\":\"1.25\"}')['$serde_json::private::Number']",
+        json!("1.25"),
+    );
+}
+
+#[test]
+fn from_json_keeps_invalid_text_errors_separate_from_budget_exhaustion() {
+    for text in [
+        "",
+        " ",
+        "[1,]",
+        r#"{"x":}"#,
+        "true false",
+        "01",
+        "-",
+        "1.",
+        "1e",
+        r#"{"x":1,}"#,
+        "{1:2}",
+        r#"{"x":1 "y":2}"#,
+        "[NaN]",
+        "-Infinity",
+        "1e400",
+    ] {
+        let mut budget = EvaluationBudget::default();
+        let error = super::json::parse(text, &mut budget, 1).unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::RuntimeInvalidContext, "{text}");
+        assert_eq!(error.message, "fromJSON requires valid finite JSON.");
+        assert!(!budget.exhausted(), "{text}");
+        assert_eq!(
+            super::json::parse("1.25", &mut budget, 1).unwrap(),
+            json!(1.25),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn from_json_array_eof_does_not_charge_a_missing_value() {
+    for (text, steps, items) in [("[", 1, 0), ("[ \n", 1, 0), ("[1,", 2, 1), ("[1, \t", 2, 1)] {
+        let limits = EvaluationLimits {
+            max_steps: steps,
+            ..EvaluationLimits::default()
+        };
+        let mut budget = EvaluationBudget::new(limits, items, text.len());
+        let error = super::json::parse(text, &mut budget, 1).unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::RuntimeInvalidContext, "{text}");
+        assert_eq!(budget.steps(), steps, "{text}");
+        assert_eq!(budget.visited_items(), items, "{text}");
+        assert!(!budget.exhausted(), "{text}");
+    }
+}
+
+#[test]
+fn from_json_array_eof_keeps_the_budget_for_a_later_valid_parse() {
+    for (text, steps, items) in [("[", 1, 0), ("[1,", 2, 1)] {
+        let limits = EvaluationLimits {
+            max_steps: steps + 1,
+            ..EvaluationLimits::default()
+        };
+        let mut budget = EvaluationBudget::new(limits, items, text.len() + 1);
+        let error = super::json::parse(text, &mut budget, 1).unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::RuntimeInvalidContext, "{text}");
+        assert_eq!(
+            super::json::parse("0", &mut budget, 1).unwrap(),
+            json!(0),
+            "{text}"
+        );
+        assert_eq!(budget.steps(), steps + 1, "{text}");
+        assert_eq!(budget.visited_items(), items, "{text}");
+        assert!(!budget.exhausted(), "{text}");
+    }
+}
+
+#[test]
+fn from_json_preserves_duplicate_policy_and_shared_budget_charges() {
+    let text = r#"{"n":[1.25,2e2],"n":-0}"#;
+    let limits = EvaluationLimits {
+        max_depth: 5,
+        max_steps: 5,
+    };
+    let mut budget = EvaluationBudget::new(limits, 4, text.len());
+    assert_eq!(
+        super::json::parse(text, &mut budget, 3).unwrap(),
+        json!({"n": -0.0})
+    );
+    assert_eq!(budget.steps(), 5);
+    assert_eq!(budget.visited_items(), 4);
+    assert_eq!(budget.generated_bytes(), text.len());
+    assert_eq!(budget.materialized_bytes(), 0);
+
+    for (limits, max_items, max_bytes) in [
+        (
+            EvaluationLimits {
+                max_depth: 4,
+                max_steps: 5,
+            },
+            4,
+            text.len(),
+        ),
+        (
+            EvaluationLimits {
+                max_depth: 5,
+                max_steps: 4,
+            },
+            4,
+            text.len(),
+        ),
+        (limits, 3, text.len()),
+        (limits, 4, text.len() - 1),
+    ] {
+        let mut budget = EvaluationBudget::new(limits, max_items, max_bytes);
+        let error = super::json::parse(text, &mut budget, 3).unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::EvaluationLimitExceeded);
+        assert!(budget.exhausted());
+        assert!(budget.steps() <= limits.max_steps);
+        assert!(budget.visited_items() <= max_items);
+        assert!(budget.generated_bytes() <= max_bytes);
+        assert_eq!(
+            super::json::parse("null", &mut budget, 1).unwrap_err().code,
+            DiagnosticCode::EvaluationLimitExceeded
+        );
+    }
+}
+
+#[test]
 fn projections_preserve_order_nested_arrays_and_missing_fields() {
     let context = json!({"groups": [{"items": [{"name": "a"}, {"name": "b"}]}, {"items": [{"name": "c"}]}], "object": {"z": {"name": 2}, "a": {"name": 1}}, "empty": [], "bad": [{"name": 1}, {}]});
     assert_eq!(

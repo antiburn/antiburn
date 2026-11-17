@@ -7,8 +7,8 @@ The app finds coding-agent sessions on this machine, analyzes them with the
 local engine, and shows activity, session findings, and API-equivalent cost
 estimates. The Sessions step settings can sync supported sessions from configured Linux
 SSH hosts to a private local cache; see [remote sessions](../../docs/remote-sessions.md).
-The session index stays on this device. The app needs no antiburn account,
-server, or backend.
+The session index stays on this device. Local session discovery and analysis need
+no Antiburn account, server, or backend.
 
 ## Data and network requests
 
@@ -69,7 +69,7 @@ server, or backend.
   Privacy provides the opt-out. Default source and development builds exclude
   the analytics client.
 
-## Sessions navigation and Cloud preference
+## Sessions navigation and optional Cloud builds
 
 The main window opens Sessions immediately. Its sidebar contains Sessions,
 Checks, and Settings. Overview is no longer a navigation or search destination;
@@ -80,12 +80,25 @@ and integration startup remain independent of this introduction. Supported HUDs
 appear after completion unless an existing preference disables them.
 
 The introduction uses isolated example data to demonstrate Sessions, provider
-limits, the HUD, notifications, and Checks. Its Cloud action opens a coming-soon handoff with Learn more and local continuation.
-Native authentication is independently gated on verified backend configuration.
-After verified login, folder drafts and truthful completion states are available;
-production uploads remain disabled pending the service and consent contract.
-Agent readiness comes from native integration status. See the
+limits, the HUD, notifications, and Checks. Ordinary builds finish after Checks.
+Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Public builds keep Cloud disabled until launch. Development requires the explicit,
+non-default Rust feature `cloud`.
+The desktop `dev` and `dev:bundle` launchers select it for debug development.
+Environment values cannot enable the feature. Builds without `cloud` register no
+Cloud commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
+When both build-time origins are absent, debug Cloud builds use
+`http://localhost:3000` for both issuer and resource. Standard release Cloud builds
+require explicit HTTPS origins. The native build capability enables the existing Cloud
+teaching and setup screens; runtime service availability does not hide them.
+Setup can finish locally without content consent or saving a source request.
+See the
 [Cloud desktop contract](../../docs/cloud/desktop-contract.md).
+
+Cloud capture is separate from local analysis. `antiburn-local` supplies the
+parsed evidence and metrics for local session views, API-equivalent cost
+estimates, and Burn Checks. The optional `antiburn-cloud-capture` library packages
+native source and capture metadata, not these local results.
 
 `pnpm build:demo` builds current product components into a separate demo bundle.
 Build aliases replace native services with synthetic adapters. The introduction
@@ -98,16 +111,21 @@ updates still require visual and motion comparisons against that reference.
 asset response. Explicit bundled asset URLs support opaque-origin frames on
 WKWebView without enabling same-origin access or network connections.
 
-Settings → Sessions places Antiburn Cloud above Repositories, Include folders
-without Git, and Scan folders. New settings include non-Git folders; saved
-preferences, including an explicit opt-out, remain unchanged. Upload sessions
-saves a device-local preference that defaults off. This build does not upload
-sessions, authenticate with Antiburn Cloud, or queue history for later upload.
-
-Before uploads can be enabled, the pipeline must retain the original working
-folder separately from inferred repository associations. The Cloud contract
-also needs decisions on history, payload fields, retention/deletion, remote
-sessions, authentication, and disconnect behavior.
+Manual Cloud builds place the Cloud account controls in Settings → Sessions,
+above Repositories. Connecting remains available after the introduction.
+Source choices and the legacy Upload sessions preference do not authorize
+capture. Full native content needs a separate confirmation for the selected
+account, destination, and explicitly selected sources. Choose native Claude
+`projects/<project>` directories or exact OpenCode V2 database files, not
+repository paths or inferred working directories. Settings keeps source choices separate for each account and personal
+destination. Signing out revokes only the current desktop connection; it does
+not sign out the browser or delete saved captures. OpenCode consent includes
+proved session-owned in-store blobs, but excludes external files and URL downloads.
+On supported Unix platforms, **Save capture request** keeps a durable selection
+with stable local IDs and reports **Upload unavailable**. It lists source names,
+not transcript content. Native capture reservation and upload transport remain
+unavailable, so no native content is captured or uploaded. There is no automatic
+future upload promise. Windows has no native capture fallback.
 
 ## Layout
 
@@ -166,9 +184,9 @@ Run from the repository root:
 
 ```bash
 pnpm install
-pnpm --filter @antiburn/desktop dev          # Tauri dev build (main window + tray)
+pnpm --filter @antiburn/desktop dev          # Tauri debug build with local Cloud
 pnpm --filter @antiburn/desktop dev:web      # frontend only, in a browser
-pnpm --filter @antiburn/desktop dev:bundle   # bundled debug .app / installer
+pnpm --filter @antiburn/desktop dev:bundle   # debug .app / installer with local Cloud
 pnpm --filter @antiburn/desktop lint
 pnpm --filter @antiburn/desktop type-check
 pnpm --filter @antiburn/desktop test
@@ -179,6 +197,35 @@ pnpm --filter @antiburn/desktop icons        # regenerate app and tray icons
 The `dev`, `dev:bundle`, and `tauri` scripts load `apps/desktop/.env` when it
 exists. The shell environment takes precedence. `.env.example` lists the Google
 installed-app variables used only for Antigravity 2.0, its IDE, and `agy`.
+
+The debug `dev` and `dev:bundle` commands, including their `:cli` variants, pass
+`--features cloud` to Tauri. They do not start a Cloud service. Start an approved
+local service at `http://localhost:3000` before testing a real connection. If it is
+not running, local sessions still work and Cloud requests report offline.
+The Cloud Dev menu offers separate simulated previews without a service.
+
+These launchers use the debug app identifier and its own data directory.
+Debug settings, source selections, saved requests, and Cloud state stay separate
+from the release app. Selections remain reusable within each app profile.
+
+To override the local service, set both `ANTIBURN_CLOUD_ISSUER` and
+`ANTIBURN_CLOUD_RESOURCE` before rebuilding. Each value must be the service's exact
+canonical origin without credentials, a path, query, fragment, or trailing slash.
+Partial or invalid configuration disables authentication instead of using the
+local default. HTTP is allowed only for debug builds and literal `localhost`,
+`127.0.0.1`, or `[::1]` hosts. Remote services always require HTTPS.
+Rust's `debug_assertions` setting controls the local defaults and HTTP exception.
+Custom release builds that enable debug assertions also get this debug behavior.
+
+Saved connections stay bound to their original issuer and resource. To sign out
+of a connection from another service, rebuild with its original origins first.
+Changing defaults does not move or rebind stored credentials.
+
+Cargo defaults and release commands do not enable Cloud. `tauri build`,
+`tauri dev --release`, and custom Cargo profiles do not receive the launcher's
+debug feature selection. A manually enabled Cloud build without debug assertions
+has no local default and accepts only explicit HTTPS origins. These development
+commands do not authorize production use.
 
 And for the shell:
 
@@ -650,8 +697,8 @@ validator together.
 
 Debug builds also include **Reset onboarding** in the menu-bar icon's context menu. It restarts the full native onboarding flow at Welcome, replacing an open onboarding window. Sessions, preferences, and Cloud account state are preserved.
 
-Debug builds include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. **Full Walkthrough** opens a separate native window with an example account and folders. Sign in simulates a callback after a short wait; review the selected example folders and start syncing to see the prototype’s ongoing background-sync completion screen. Sync runs in the background; Done is available without waiting for a sync result. **Done** closes the preview. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
+Builds with the explicit `cloud` feature and debug assertions include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. The standard desktop dev launchers select this feature. Builds without `cloud` or debug assertions omit the menu. **Full Walkthrough** opens a separate native window with an example account and folders. Connecting simulates a callback after a short wait. The preview does not connect to a service or upload native content. **Done** closes it. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
 
 The other entries open auth recovery, folder and agent-readiness states directly. Dedicated sync progress and recovery screens are not part of onboarding. Completion entries show local completion with each agent-readiness state. Reopening any menu entry resets that preview.
 
-The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding to test the real landing-page link. Release builds do not include the submenu.
+The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding in a Cloud-enabled development build to test the waiting-list link. Standard release builds do not include the submenu.

@@ -1334,6 +1334,7 @@ pub enum OnboardingAction {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg(any(feature = "cloud", all(test, feature = "analytics")))]
 pub enum OnboardingCloudStatus {
     Opening,
     Waiting,
@@ -1830,6 +1831,7 @@ wire_values!(OnboardingAction, {
 });
 
 #[cfg(feature = "analytics")]
+#[cfg(any(feature = "cloud", test))]
 wire_values!(OnboardingCloudStatus, {
     OnboardingCloudStatus::Opening => "opening",
     OnboardingCloudStatus::Waiting => "waiting",

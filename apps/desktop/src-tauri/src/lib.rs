@@ -77,8 +77,9 @@ mod jev;
 pub mod published_evidence_reader;
 pub use jev::client::evaluate_custom as evaluate_custom_system_one;
 pub use jev::config as jev_config;
+#[cfg(feature = "cloud")]
 mod cloud;
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, feature = "cloud"))]
 mod cloud_dev;
 pub mod jev_cloudflare;
 pub mod jev_ollama;
@@ -191,8 +192,8 @@ impl Schedulers {
 /// them.
 pub fn run() {
     macro_rules! command_handlers {
-        ($( $handler:path => $name:literal, )*) => {
-            tauri::generate_handler![$($handler),*]
+        ($( $(#[$meta:meta])* $handler:path => $name:literal, )*) => {
+            tauri::generate_handler![$($(#[$meta])* $handler),*]
         };
     }
 
@@ -214,18 +215,9 @@ pub fn run() {
     let builder = antiburn_nudge::register(
         tauri::Builder::default()
             .manage(RepeatedLaunch::default())
-            .manage(cloud::PendingLinks::default())
             // Register first so a second process exits before it starts any
             // background scheduler or scan.
             .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-                for raw in &args {
-                    if raw.contains("://cloud/") {
-                        cloud::receive(app, raw.clone());
-                    }
-                }
-                if args.iter().any(|raw| raw.contains("://cloud/")) {
-                    return;
-                }
                 if launch_intent::from_args(&args) == launch_intent::LaunchIntent::Background {
                     return;
                 }
@@ -278,7 +270,8 @@ pub fn run() {
         let onboarding =
             onboarding_window::OnboardingWindowState::load(&app.state::<store::Store>());
         app.manage(onboarding);
-        cloud::initialize(app.handle());
+        #[cfg(feature = "cloud")]
+        cloud::initialize(app.handle(), &data_dir)?;
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(jev::worker::WorkerHandle::default());
@@ -485,12 +478,6 @@ pub fn run() {
         })
     });
     app.run(move |app, event| match event {
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
-        RunEvent::Opened { urls } => {
-            for url in urls {
-                cloud::receive(app, url.to_string());
-            }
-        }
         RunEvent::ExitRequested { api, code, .. } if should_prevent_exit(code) => {
             api.prevent_exit();
         }
@@ -945,6 +932,77 @@ mod tests {
         }
         for excluded in ["\"default\"", "dialog:default", "opener:default"] {
             assert!(!capability.contains(excluded), "unexpected {excluded}");
+        }
+    }
+
+    #[test]
+    fn cloud_commands_require_the_explicit_feature() {
+        macro_rules! names {
+            ($( $(#[$meta:meta])* $handler:path => $name:literal, )*) => {
+                &[$($(#[$meta])* $name,)*]
+            };
+        }
+        let commands: &[&str] = with_app_commands!(names);
+        assert_eq!(commands.contains(&"cloud_begin"), cfg!(feature = "cloud"));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|name| name.starts_with("cloud_"))
+                .count(),
+            if cfg!(feature = "cloud") { 12 } else { 0 }
+        );
+    }
+
+    #[test]
+    fn ordinary_bundle_configs_grant_no_cloud_capability_or_custom_scheme() {
+        for source in [
+            include_str!("../tauri.conf.json"),
+            include_str!("../tauri.debug.conf.json"),
+            include_str!("../tauri.memory-probe.conf.json"),
+            include_str!("../tauri.release.conf.json"),
+            include_str!("../tauri.sidecar.conf.json"),
+        ] {
+            let config: serde_json::Value = serde_json::from_str(source).unwrap();
+            assert!(config["plugins"]["deep-link"].is_null());
+            if let Some(capabilities) = config["app"]["security"]["capabilities"].as_array() {
+                assert!(capabilities.iter().all(|capability| {
+                    !capability
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("cloud-"))
+                }));
+            }
+        }
+        let permissions = include_str!("../capabilities/onboarding.json");
+        assert!(!permissions.contains("allow-cloud-"));
+        let cargo = include_str!("../Cargo.toml");
+        assert!(cargo.contains("default = []"));
+        assert!(cargo.contains("distribution = []"));
+    }
+
+    #[test]
+    #[cfg(feature = "cloud")]
+    fn cloud_account_capability_reaches_existing_onboarding_and_settings() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../cloud-capabilities/account.json")).unwrap();
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "settings", "onboarding"])
+        );
+        for permission in [
+            "allow-cloud-status",
+            "allow-cloud-begin",
+            "allow-cloud-cancel",
+            "allow-cloud-sign-out",
+            "allow-cloud-prepare-sync",
+            "allow-cloud-start-sync",
+        ] {
+            assert!(
+                capability["permissions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == permission)
+            );
         }
     }
 

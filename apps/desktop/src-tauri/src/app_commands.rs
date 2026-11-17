@@ -1,13 +1,30 @@
 macro_rules! with_app_commands {
     ($callback:ident) => {
         $callback! {
+            #[cfg(feature = "cloud")]
             onboarding_window::cloud_preview_window => "cloud_preview_window",
+            #[cfg(feature = "cloud")]
             cloud::cloud_status => "cloud_status",
+            #[cfg(feature = "cloud")]
             cloud::cloud_begin => "cloud_begin",
+            #[cfg(feature = "cloud")]
             cloud::cloud_cancel => "cloud_cancel",
+            #[cfg(feature = "cloud")]
             cloud::cloud_sign_out => "cloud_sign_out",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_reset_local => "cloud_reset_local",
+            #[cfg(feature = "cloud")]
             cloud::cloud_save_draft => "cloud_save_draft",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_source_picker_directory => "cloud_source_picker_directory",
+            #[cfg(feature = "cloud")]
             cloud::cloud_start_sync => "cloud_start_sync",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_prepare_sync => "cloud_prepare_sync",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_reconcile_sync => "cloud_reconcile_sync",
+            #[cfg(feature = "cloud")]
+            cloud::cloud_cancel_sync => "cloud_cancel_sync",
 
             cli_install::get_cli_install_state => "get_cli_install_state",
             cli_install::test_cli_installation => "test_cli_installation",

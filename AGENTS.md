@@ -35,7 +35,9 @@ contract. Do not link delivery plans or local run evidence from maintained docs.
 
 Read the public contracts in `docs/cloud/` before changing Cloud features.
 Keep Cloud behind the explicit, non-default Rust feature `cloud`. Ordinary
-builds and release workflows must not enable it.
+release builds and release workflows must not enable it. The desktop development
+launcher selects it for local testing. Use `#[cfg(debug_assertions)]` for local
+debug configuration; do not add a separate build-profile flag.
 
 Keep source, documentation, commits, and PR text limited to public client
 behavior, public API contracts, and synthetic fixtures. Do not include private

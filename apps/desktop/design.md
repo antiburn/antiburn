@@ -2074,6 +2074,9 @@ The onboarding welcome vendor marks use monochrome black in light mode and white
 
 ## Cloud onboarding
 
+These layouts are for development builds. Antiburn Cloud is not live, and public
+builds keep it disabled. The public Cloud page is a [waiting-list signup](https://antiburn.com/cloud/).
+
 The separate Cloud setup uses the onboarding semantic palette, existing control and
 popover radii, and existing motion durations. The badge reserves the native title
 bar area. The centered handoff and identity cards lead to a selected-by-default folder

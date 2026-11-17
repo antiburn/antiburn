@@ -1,0 +1,77 @@
+import type { CloudSession, CloudViewSnapshot } from "./CloudSession"
+import { personalCloudDestination } from "../lib/cloudDestination"
+
+/** Show the exact account and destination. CloudSession starts confirmation
+ * unchecked and clears it when authority or selected roots change.
+ */
+export function CloudCaptureConsent({
+  session,
+  value,
+}: {
+  session: CloudSession
+  value: CloudViewSnapshot
+}) {
+  const destination = personalCloudDestination(value.cloud.destination ?? null)
+  const selected = value.cloud.draft.folders.filter((folder) => folder.selected)
+  return (
+    <div className="flex flex-col gap-3 p-4 type-callout text-label">
+      <p>
+        Account: <strong>{value.cloud.identity?.login ?? "Not connected"}</strong>
+      </p>
+      <p>
+        Destination:{" "}
+        <strong>{value.cloud.destination?.name ?? "Not verified. Capture is blocked."}</strong>
+      </p>
+      <p className="type-footnote text-label-secondary">
+        {selected.length
+          ? `${selected.length} ${selected.length === 1 ? "folder" : "folders"} selected for this account and destination.`
+          : "Select folders before confirming full-content capture."}
+      </p>
+      {value.cloud.destination?.kind === "team" && (
+        <p role="status" className="type-footnote text-label-secondary">
+          This build supports personal workspaces only. The requested team has not been replaced
+          with a personal destination.
+        </p>
+      )}
+      <label className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={value.fullContentConsent}
+          disabled={
+            value.busy ||
+            !value.cloud.identity ||
+            value.cloud.status !== "signed_in" ||
+            !destination ||
+            !selected.length ||
+            !!value.cloud.setupError
+          }
+          onChange={(event) => session.setFullContentConsent(event.target.checked)}
+        />
+        <span>
+          {value.cloud.captureEnabled
+            ? "I authorize a full-content capture request for the selected sources, account, and destination."
+            : "I agree to upload full native session content from the selected folders to this destination."}{" "}
+          This includes messages, private thinking, tool calls and results, session metadata,
+          and proved session-owned content stored inside a selected OpenCode database, including
+          blobs. It can contain secrets or private file text.
+        </span>
+      </label>
+      {value.cloud.captureEnabled && (
+        <p className="type-footnote text-label-secondary">
+          This action saves a capture request on this device. Upload is unavailable. Saving does
+          not confirm that any source content was read or captured.
+        </p>
+      )}
+      {value.cloud.setupError && (
+        <p className="type-footnote text-label-secondary" role="status">
+          {value.cloud.setupError} Reload Cloud settings before choosing folders or confirming
+          capture.
+        </p>
+      )}
+      <p className="type-footnote text-label-secondary">
+        Attachments are separate. External attachment files and URL downloads are excluded. This
+        build saves requests only; it does not read or upload content.
+      </p>
+    </div>
+  )
+}

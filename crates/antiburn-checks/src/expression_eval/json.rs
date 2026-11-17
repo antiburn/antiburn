@@ -1,7 +1,6 @@
-use std::fmt;
+use serde_json::Value;
 
-use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
-use serde_json::{Map, Number, Value};
+use crate::bounded_json::{DuplicateKeys, JsonLimits, decode_json_with};
 
 use super::functions::append;
 use super::value::ValueProvenance;
@@ -109,104 +108,36 @@ fn write_string(
     append(output, "\"", budget)
 }
 
+/// Parses JSON with the shared budget and keeps the last value for duplicate keys.
+/// Charges overwritten values too; object keys do not count as visited items.
 pub(super) fn parse(
     text: &str,
     budget: &mut EvaluationBudget,
     depth: usize,
 ) -> Result<Value, EvaluationError> {
     budget.reserve_generated_bytes(text.len())?;
-    let mut deserializer = serde_json::Deserializer::from_str(text);
-    let result = ValueSeed {
-        budget,
-        depth,
-        item: false,
-    }
-    .deserialize(&mut deserializer);
-    let result = result.and_then(|value| deserializer.end().map(|()| value));
+    let limits = JsonLimits {
+        max_bytes: u64::try_from(text.len())
+            .map_err(|_| invalid_error("fromJSON requires valid finite JSON."))?,
+        max_nodes: usize::MAX,
+        max_depth: usize::MAX,
+    };
+    let result = decode_json_with(
+        text.as_bytes(),
+        limits,
+        DuplicateKeys::LastWins,
+        |relative_depth| {
+            if budget.step(depth + (relative_depth - 1)).is_err() {
+                return false;
+            }
+            relative_depth == 1 || budget.visit_items(1).is_ok()
+        },
+    );
     match result {
         Ok(value) => Ok(value),
         Err(_) if budget.exhausted() => Err(limit_error(
             "JSON parsing exhausted the shared evaluation budget.",
         )),
         Err(_) => Err(invalid_error("fromJSON requires valid finite JSON.")),
-    }
-}
-
-struct ValueSeed<'a> {
-    budget: &'a mut EvaluationBudget,
-    depth: usize,
-    item: bool,
-}
-
-impl<'de> DeserializeSeed<'de> for ValueSeed<'_> {
-    type Value = Value;
-
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Value, D::Error> {
-        self.budget
-            .step(self.depth)
-            .map_err(|error| serde::de::Error::custom(error.message))?;
-        if self.item {
-            self.budget
-                .visit_items(1)
-                .map_err(|error| serde::de::Error::custom(error.message))?;
-        }
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for ValueSeed<'_> {
-    type Value = Value;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("finite JSON")
-    }
-
-    fn visit_unit<E: serde::de::Error>(self) -> Result<Value, E> {
-        Ok(Value::Null)
-    }
-    fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Value, E> {
-        Ok(Value::Bool(value))
-    }
-    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Value, E> {
-        Ok(Value::Number(value.into()))
-    }
-    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Value, E> {
-        Ok(Value::Number(value.into()))
-    }
-    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Value, E> {
-        Number::from_f64(value)
-            .map(Value::Number)
-            .ok_or_else(|| E::custom("JSON number must be finite."))
-    }
-    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Value, E> {
-        Ok(Value::String(value.to_owned()))
-    }
-    fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Value, E> {
-        Ok(Value::String(value))
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Value, A::Error> {
-        let mut values = Vec::new();
-        while let Some(value) = sequence.next_element_seed(ValueSeed {
-            budget: self.budget,
-            depth: self.depth + 1,
-            item: true,
-        })? {
-            values.push(value);
-        }
-        Ok(Value::Array(values))
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut object: A) -> Result<Value, A::Error> {
-        let mut values = Map::new();
-        while let Some(key) = object.next_key::<String>()? {
-            let value = object.next_value_seed(ValueSeed {
-                budget: self.budget,
-                depth: self.depth + 1,
-                item: true,
-            })?;
-            values.insert(key, value);
-        }
-        Ok(Value::Object(values))
     }
 }

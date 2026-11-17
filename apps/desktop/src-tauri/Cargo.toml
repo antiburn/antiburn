@@ -40,6 +40,9 @@ name = "antiburn_desktop"
 path = "src/lib.rs"
 
 [features]
+default = []
+# Manual development builds only. Distribution builds do not select Cloud.
+cloud = ["tauri/dynamic-acl", "dep:antiburn-cloud-capture", "tokio/net"]
 # Set only by packaged distribution builds. Release-profile development runs
 # deliberately omit it so they cannot change the machine's login items.
 distribution = []
@@ -61,6 +64,7 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+antiburn-cloud-capture = { path = "../../../crates/antiburn-cloud-capture", optional = true, features = ["cloud"] }
 antiburn-cli-runtime = { path = "../../../crates/antiburn-cli-runtime" }
 # Strict installed-check parsing, runtime selection, and decision contracts.
 antiburn-checks = { path = "../../../crates/antiburn-checks" }
@@ -160,7 +164,6 @@ tauri-plugin-prevent-default = "6"
 # Must be registered before other plugins so a repeated launch exits before it
 # can start another background scan scheduler.
 tauri-plugin-single-instance = "2"
-tauri-plugin-deep-link = "2"
 # Emits structured shell events through the process subscriber.
 tracing = "0.1"
 # RFC 3339 stamps for the store's own timestamps.
@@ -169,13 +172,7 @@ tracing = "0.1"
 # does not carry.
 jiff = "0.2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
-# The scan scheduler, and the timer the consented-analytics flusher sleeps on.
-# Excludes `net` and `process`: this crate never opens a socket or spawns a
-# child directly. The direct-fetch usage sources and the analytics channel both
-# reach the network through `reqwest`'s own bundled runtime
-# instead, and the Codex app-server fallback spawns synchronously through
-# `std::process` — so this feature list still names only what this crate's own
-# async code needs.
+# Runtime scheduling and async process I/O. The non-default Cloud feature adds net.
 tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time", "process", "io-util"] }
 url = "2"
 # Sixteen unpredictable bytes for the rotating installation identifier. Already
