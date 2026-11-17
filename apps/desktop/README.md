@@ -7,8 +7,8 @@ The app finds coding-agent sessions on this machine, analyzes them with the
 local engine, and shows activity, session findings, and API-equivalent cost
 estimates. The Sessions step settings can sync supported sessions from configured Linux
 SSH hosts to a private local cache; see [remote sessions](../../docs/remote-sessions.md).
-The session index stays on this device. The app needs no antiburn account,
-server, or backend.
+The session index stays on this device. Local session discovery and analysis need
+no Antiburn account, server, or backend.
 
 ## Data and network requests
 
@@ -81,7 +81,9 @@ appear after completion unless an existing preference disables them.
 
 The introduction uses isolated example data to demonstrate Sessions, provider
 limits, the HUD, notifications, and Checks. Ordinary builds finish after Checks.
-Cloud is unreleased and requires the explicit, non-default Rust feature `cloud`.
+Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Public builds keep Cloud disabled until launch. Development requires the explicit,
+non-default Rust feature `cloud`.
 The desktop `dev` and `dev:bundle` launchers select it for debug development.
 Environment values cannot enable the feature. Builds without `cloud` register no
 Cloud commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
@@ -92,6 +94,11 @@ teaching and setup screens; runtime service availability does not hide them.
 Setup can finish locally without content consent or saving a source request.
 See the
 [Cloud desktop contract](../../docs/cloud/desktop-contract.md).
+
+Cloud capture is separate from local analysis. `antiburn-local` supplies the
+parsed evidence and metrics for local session views, API-equivalent cost
+estimates, and Burn Checks. The optional `antiburn-cloud-capture` library packages
+native source and capture metadata, not these local results.
 
 `pnpm build:demo` builds current product components into a separate demo bundle.
 Build aliases replace native services with synthetic adapters. The introduction
@@ -694,4 +701,4 @@ Builds with the explicit `cloud` feature and debug assertions include **Cloud De
 
 The other entries open auth recovery, folder and agent-readiness states directly. Dedicated sync progress and recovery screens are not part of onboarding. Completion entries show local completion with each agent-readiness state. Reopening any menu entry resets that preview.
 
-The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding to test the real landing-page link. Standard release builds do not include the submenu.
+The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding in a Cloud-enabled development build to test the waiting-list link. Standard release builds do not include the submenu.

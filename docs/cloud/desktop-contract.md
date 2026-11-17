@@ -1,9 +1,36 @@
 # Cloud desktop contract
 
-Cloud is unreleased. It uses a browser-approved desktop connection, not a general
+Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Public builds keep Cloud disabled until launch.
+
+Development builds use a browser-approved desktop connection, not a general
 OAuth or OpenID Connect service. Builds without the `cloud` feature include no Cloud commands,
 capabilities, callback scheme, account controls, or Cloud onboarding step. Local
 sessions and Checks do not need Cloud.
+
+## Local analysis and Cloud capture
+
+[`antiburn-local`](../../crates/antiburn-local) owns local session discovery,
+parsing, and analysis. Its parsed evidence and metrics support local session
+views, API-equivalent cost estimates, and Burn Checks. It does not own Cloud
+consent, capture spools, or uploads.
+
+The separate [`antiburn-cloud-capture`](../../crates/antiburn-cloud-capture)
+library prepares bounded native source packages and reconciles uploads through
+a host-supplied `Transport`. These packages contain native source streams and
+capture metadata, not serialized local evidence, cost estimates, or Check results.
+See the [capture contract](capture.md) for source fidelity and transport rules.
+
+The current desktop Cloud path saves consent-bound source requests and lists
+native source identities. It does not execute native content capture or uploads.
+The library's capture and upload APIs do not make those operations available in
+the desktop.
+
+Local analysis needs no Cloud account or content consent. Model-based Burn Checks
+use their own configured connection and **Run checks** setting. They can send
+selected inputs when Cloud is disabled; Cloud content consent does not authorize
+these provider requests. See [data and network requests](../../apps/desktop/README.md#data-and-network-requests)
+for the separate controls and input limits.
 
 ## Native build gate
 
