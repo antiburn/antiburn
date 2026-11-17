@@ -8,6 +8,7 @@ mod auth;
 mod capture;
 mod engine;
 #[cfg(test)]
+#[cfg(debug_assertions)]
 mod http_tests;
 mod loopback;
 mod state;
@@ -15,6 +16,7 @@ mod state;
 mod tests;
 mod work;
 
+use crate::store::cloud_capture::SourceKind;
 use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, Workspace};
 use engine::Engine;
 use serde::{Deserialize, Serialize};
@@ -72,6 +74,8 @@ impl From<Failure> for AuthStatus {
 pub struct Folder {
     path: String,
     selected: bool,
+    #[serde(default, skip_serializing_if = "SourceKind::is_claude")]
+    source_kind: SourceKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session_count: Option<u32>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -625,6 +629,23 @@ pub async fn cloud_save_draft(
     .await
 }
 
+/// Suggest a picker directory without enumerating stores or granting source access.
+/// Only explicit file selection and content consent can create an OpenCode request.
+#[tauri::command]
+pub(crate) async fn cloud_source_picker_directory(
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, || {
+        Ok(antiburn_local::discovery::agents::opencode::data_roots()
+            .into_iter()
+            .filter(|path| path.is_absolute())
+            .filter_map(|path| path.to_str().map(str::to_owned))
+            .find(|path| path.len() <= 4096 && !path.chars().any(char::is_control)))
+    })
+    .await
+}
+
 /// Persist exact full-content consent and roots before source-name discovery.
 /// Reusing a request ID must preserve its original account/destination selection.
 #[tauri::command]
@@ -673,6 +694,7 @@ pub async fn cloud_prepare_sync(
                 &session.user.id,
                 &session.workspace.id,
                 &roots,
+                consent.version(),
                 now(),
             )
             .map_err(|_| "Could not save the capture request. No source content was read.")?;

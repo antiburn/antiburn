@@ -1066,7 +1066,10 @@ it("fences late native results and creates a new request for changed roots", asy
   const calls = vi.mocked(port.prepareSync).mock.calls
   expect(calls).toHaveLength(2)
   expect(calls[1]![1]).not.toBe(calls[0]![1])
-  expect(calls[1]![2].selectedRoots).toEqual(["/Example/claude/projects/new"])
+  expect(calls[1]![2]).toMatchObject({
+    version: "native-full-content-v1",
+    selectedRoots: ["/Example/claude/projects/new"],
+  })
   stop()
 })
 
@@ -1167,5 +1170,90 @@ it("does not expose other raw native or provider errors as an admission warning"
   await settle()
   await session.go("folders")
   expect(session.getSnapshot().error).toBe("Cloud could not complete that action. Try again.")
+  stop()
+})
+
+it("adds an explicitly picked OpenCode database and confirms a typed mixed-provider selection", async () => {
+  const { port } = fixture(nativeCapture)
+  vi.mocked(port.pick).mockResolvedValue(["/Example/opencode/opencode.db"])
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.addFolders("opencode_sqlite_v2")
+  expect(port.pick).toHaveBeenCalledExactlyOnceWith("opencode_sqlite_v2")
+  expect(session.getSnapshot().fullContentConsent).toBe(false)
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(port.prepareSync).toHaveBeenCalledWith(
+    expect.arrayContaining([
+      {
+        path: "/Example/opencode/opencode.db",
+        selected: true,
+        sourceKind: "opencode_sqlite_v2",
+      },
+    ]),
+    expect.any(String),
+    {
+      version: "native-full-content-v2",
+      accountId: "synthetic",
+      destinationId: "synthetic-personal",
+      fullContent: true,
+      attachments: false,
+      selectedSources: [
+        { sourceKind: "claude_jsonl", path: "/Example/claude/projects/a" },
+        { sourceKind: "claude_jsonl", path: "/Example/claude/projects/z" },
+        { sourceKind: "opencode_sqlite_v2", path: "/Example/opencode/opencode.db" },
+      ],
+    },
+  )
+  expect(session.getSnapshot().sync).toEqual({ status: "upload_unavailable" })
+  stop()
+})
+
+it("fences a late saved selection when the provider changes at the same path", async () => {
+  const initial: CloudSnapshot = {
+    ...nativeCapture,
+    draft: { screen: "folders", folders: [{ path: "/Example/source", selected: true }] },
+  }
+  const { port, emit } = fixture(initial)
+  let finish!: (result: { status: "upload_unavailable" }) => void
+  port.start = vi.fn(
+    () =>
+      new Promise<{ status: "upload_unavailable" }>((done) => {
+        finish = done
+      }),
+  )
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const old = session.startSync()
+  await settle()
+  emit({
+    ...initial,
+    draft: {
+      screen: "folders",
+      folders: [{ path: "/Example/source", selected: true, sourceKind: "opencode_sqlite_v2" }],
+    },
+  })
+  finish({ status: "upload_unavailable" })
+  await old
+  expect(session.getSnapshot()).toMatchObject({
+    fullContentConsent: false,
+    sync: { status: "unavailable" },
+  })
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  session.setFullContentConsent(true)
+  await session.startSync()
+  const calls = vi.mocked(port.prepareSync).mock.calls
+  expect(calls).toHaveLength(2)
+  expect(calls[1]![1]).not.toBe(calls[0]![1])
+  expect(calls[0]![2].version).toBe("native-full-content-v1")
+  expect(calls[1]![2]).toMatchObject({
+    version: "native-full-content-v2",
+    selectedSources: [{ sourceKind: "opencode_sqlite_v2", path: "/Example/source" }],
+  })
   stop()
 })

@@ -51,8 +51,9 @@ export function CloudCaptureConsent({
           {value.cloud.captureEnabled
             ? "I authorize a full-content capture request for the selected sources, account, and destination."
             : "I agree to upload full native session content from the selected folders to this destination."}{" "}
-          This includes messages, private thinking, tool calls and results, and session
-          metadata. It can contain secrets or private file text.
+          This includes messages, private thinking, tool calls and results, session metadata,
+          and proved session-owned content stored inside a selected OpenCode database, including
+          blobs. It can contain secrets or private file text.
         </span>
       </label>
       {value.cloud.captureEnabled && (
@@ -68,7 +69,8 @@ export function CloudCaptureConsent({
         </p>
       )}
       <p className="type-footnote text-label-secondary">
-        Attachments are separate. This build does not read or upload attachment files.
+        Attachments are separate. External attachment files and URL downloads are excluded. This
+        build saves requests only; it does not read or upload content.
       </p>
     </div>
   )

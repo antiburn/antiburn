@@ -2,7 +2,7 @@ import { ToggleSwitch } from "../components/ui/ToggleSwitch"
 import { useState, useSyncExternalStore, type CSSProperties } from "react"
 import { ArrowUp, ArrowUpRight, Check, Cloud, Folder, Plus, UserRound } from "lucide-react"
 import appIcon from "../assets/app-icon.png"
-import { type CloudPort } from "../lib/cloud"
+import { cloudSourceKey, cloudSourceKind, type CloudPort } from "../lib/cloud"
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import { CloudSession, cloudStatusMessage } from "./CloudSession"
 import { CloudCaptureConsent } from "./CloudCaptureConsent"
@@ -188,13 +188,13 @@ export function CloudOnboarding({
           </h1>
           <p className="type-onboarding-body text-onboarding-muted">
             {captureEnabled
-              ? "Choose native Claude projects/<project> source directories directly, not repositories. Antiburn does not infer sources from working directories or suggest repositories."
+              ? "Choose native Claude projects/<project> source directories directly, not repositories. You can also choose an OpenCode V2 database. Antiburn does not infer sources from working directories."
               : "Choose folders to sync their existing and future coding sessions across your devices."}
           </p>
           <div className="cloud-folder-list" aria-label="Cloud folders">
             {value.cloud.draft.folders.length ? (
               value.cloud.draft.folders.map((folder) => (
-                <div key={folder.path} className="cloud-folder-row">
+                <div key={cloudSourceKey(folder)} className="cloud-folder-row">
                   <div className="cloud-folder-label">
                     <Folder size={18} aria-hidden />
                     <span>
@@ -202,6 +202,8 @@ export function CloudOnboarding({
                         {folder.path.split(/[\\/]/).filter(Boolean).at(-1) ?? folder.path}
                       </strong>
                       <small className="type-callout text-onboarding-muted">
+                        {captureEnabled &&
+                          `${cloudSourceKind(folder) === "opencode_sqlite_v2" ? "OpenCode V2" : "Claude"}: `}
                         {folder.path}
                       </small>
                     </span>
@@ -216,7 +218,7 @@ export function CloudOnboarding({
                     checked={folder.selected}
                     disabled={disabled}
                     onCheckedChange={(selected) =>
-                      void session.selectFolder(folder.path, selected)
+                      void session.selectFolder(folder.path, selected, cloudSourceKind(folder))
                     }
                   />
                 </div>
@@ -224,7 +226,7 @@ export function CloudOnboarding({
             ) : (
               <p className="cloud-empty type-body text-onboarding-muted">
                 {captureEnabled
-                  ? "No sources added. Add a Claude source directory to save a capture request."
+                  ? "No sources added. Add a Claude source directory or OpenCode V2 database to save a capture request."
                   : "No folders added. Add a folder to choose what to sync."}
               </p>
             )}
@@ -235,8 +237,18 @@ export function CloudOnboarding({
             onClick={() => void session.addFolders()}
           >
             <Plus size={16} aria-hidden />
-            Add a folder…
+            {captureEnabled ? "Add Claude sources…" : "Add a folder…"}
           </button>
+          {captureEnabled && (
+            <button
+              className="onboarding-secondary cloud-add"
+              disabled={disabled}
+              onClick={() => void session.addFolders("opencode_sqlite_v2")}
+            >
+              <Plus size={16} aria-hidden />
+              Add OpenCode databases…
+            </button>
+          )}
           <p className="type-callout text-onboarding-muted" role="status">
             {captureEnabled ? (
               "Upload unavailable. You can save a capture request on this device."

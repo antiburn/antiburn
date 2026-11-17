@@ -28,6 +28,7 @@ beforeEach(() => {
   mocks.hasShell.mockReturnValue(true)
   mocks.appInfo.mockResolvedValue({ cloudEnabled: true })
   mocks.invoke.mockResolvedValue({ status: "upload_unavailable" })
+  mocks.open.mockResolvedValue(null)
 })
 
 it("passes exact request bindings to native capture commands and returns their results", async () => {
@@ -61,7 +62,9 @@ it.each(["browser", "ordinary build"])(
     })
     expect(await nativeCloudPort.reconcile("request")).toEqual({ status: "unavailable" })
     expect(await nativeCloudPort.cancelSync("request")).toEqual({ status: "unavailable" })
+    expect(await nativeCloudPort.pick("opencode_sqlite_v2")).toEqual([])
     expect(mocks.invoke).not.toHaveBeenCalled()
+    expect(mocks.open).not.toHaveBeenCalled()
   },
 )
 
@@ -73,4 +76,40 @@ it("does not turn a native save failure into acceptance", async () => {
   await expect(nativeCloudPort.start(folders, "request", consent)).rejects.toThrow(
     "write failed",
   )
+})
+
+it("keeps legacy Claude directory selection separate from OpenCode file selection", async () => {
+  mocks.open.mockResolvedValue("/Example/claude/projects/project")
+  expect(await nativeCloudPort.pick()).toEqual(["/Example/claude/projects/project"])
+  expect(mocks.open).toHaveBeenLastCalledWith({
+    directory: true,
+    multiple: true,
+    title: "Choose Claude projects/<project> source directories",
+  })
+  expect(mocks.invoke).not.toHaveBeenCalled()
+  mocks.invoke.mockResolvedValue("/Example/opencode")
+  mocks.open.mockResolvedValue("/Example/opencode/opencode.db")
+  expect(await nativeCloudPort.pick("opencode_sqlite_v2")).toEqual([
+    "/Example/opencode/opencode.db",
+  ])
+  expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("cloud_source_picker_directory")
+  expect(mocks.open).toHaveBeenLastCalledWith({
+    directory: false,
+    multiple: true,
+    title: "Choose OpenCode V2 databases",
+    defaultPath: "/Example/opencode",
+  })
+})
+
+it("does not replace a failed picker hint with another provider or enroll a default", async () => {
+  mocks.invoke.mockRejectedValueOnce(new Error("busy"))
+  await expect(nativeCloudPort.pick("opencode_sqlite_v2")).rejects.toThrow("busy")
+  expect(mocks.open).not.toHaveBeenCalled()
+  mocks.invoke.mockResolvedValue(null)
+  expect(await nativeCloudPort.pick("opencode_sqlite_v2")).toEqual([])
+  expect(mocks.open).toHaveBeenLastCalledWith({
+    directory: false,
+    multiple: true,
+    title: "Choose OpenCode V2 databases",
+  })
 })

@@ -1,30 +1,45 @@
 # Cloud desktop contract
 
 Cloud is unreleased. It uses a browser-approved desktop connection, not a general
-OAuth or OpenID Connect service. Ordinary builds include no Cloud commands,
+OAuth or OpenID Connect service. Builds without the `cloud` feature include no Cloud commands,
 capabilities, callback scheme, account controls, or Cloud onboarding step. Local
 sessions and Checks do not need Cloud.
 
-## Manual build gate
+## Native build gate
 
 Cloud requires the explicit, non-default Cargo feature `cloud`. Neither an
-environment variable nor the `distribution` feature enables it. Existing
-production build commands do not select it.
+environment variable nor the `distribution` feature enables it. The standard
+desktop debug launcher selects it explicitly. Production build commands do not.
+
+The standard debug launchers use a separate app identifier and data directory.
+Settings, source selections, saved requests, auth state, and retry files remain
+separate from the release app. Source selections can be reused within one profile;
+this does not move credentials between service origins.
 
 Native `AppInfo.cloudEnabled` enables the existing Cloud teaching and setup
-screens after Checks. Ordinary builds finish after Checks, including when an
+screens after Checks. Builds without Cloud finish after Checks, including when an
 older saved introduction points to a Cloud screen. Service configuration,
 offline errors, and unsupported capture platforms do not turn the build feature
 off. Cloud setup always permits local completion without source or content
 consent.
 
-`ANTIBURN_CLOUD_ISSUER` and `ANTIBURN_CLOUD_RESOURCE` are build-time canonical
-HTTPS origins without a trailing slash. Both must match the service's exact
-issuer and resource strings. Route URLs still include the slash before the path.
-The resource origin owns the four native routes. Without valid configuration,
-authentication remains unavailable. Use an approved development service only.
-The client does not accept plain HTTP service origins. Loopback HTTP tests
-check synthetic requests and responses; they do not prove a live HTTPS connection.
+When Rust debug assertions are enabled (`cfg(debug_assertions)`), the issuer
+and resource both default to `http://localhost:3000` when neither
+`ANTIBURN_CLOUD_ISSUER` nor `ANTIBURN_CLOUD_RESOURCE` is set. The local service
+must be running for sign-in to work. Partial or invalid overrides disable
+authentication instead of falling back to localhost.
+
+Both variables are build-time canonical origins without a trailing slash. They
+must match the service's exact issuer and resource strings. Debug assertions
+also permit canonical loopback HTTP service origins. A custom release build
+that explicitly enables debug assertions uses the same debug behavior.
+
+Standard release builds keep Cloud disabled. Manually enabling `cloud` without
+debug assertions requires both HTTPS origins; it adds no implicit configuration.
+Route URLs still include the slash before the path. The resource origin owns
+the four native routes. Use an approved development service only.
+
+The explicit feature command also works for a debug build:
 
 ```sh
 cd apps/desktop
@@ -169,27 +184,56 @@ destination can reuse a previous content confirmation or retarget a saved
 capture. Changing selected sources clears the content confirmation too. Displayed
 count updates do not change that selection or its confirmation.
 
-Settings keeps folder choices separate for each account and personal destination.
-This scoped path requires explicit native Claude `projects/<project>` source
-directories. It does not discover sources from a repository path, an inferred
-working directory, or the current directory. Choose the source directories in
-the native picker. Path aliases and unsupported platforms fail without a
-fallback. A database read or write failure reports an error instead of treating
-setup as saved. Folder-load errors do not hide account cleanup controls.
+Settings keeps source choices separate for each account and personal destination.
+Choose the provider explicitly: Claude `projects/<project>` directories or exact
+OpenCode V2 database files. The picker can start in OpenCode's known data directory,
+using the local root helper's environment and platform conventions. That hint
+does not enumerate databases, select sources, or establish source permission.
+Custom and channel databases remain explicit file choices.
+
+Discovery never infers sources from a repository, working directory, installed
+runtime version, or another provider. OpenCode support uses the structural
+[V2 source contract](opencode.md), including the characterized earlier and
+current shapes, not every future schema. V1 and unsafe or unsupported stores
+fail visibly without fallback. Path aliases and unsupported platforms fail too.
+A setup database error does not become empty or saved preferences. Setup errors
+do not hide account cleanup controls. Restore access or use a supported source
+before explicitly retrying a failed listing.
 
 Login, folder selection, and the legacy local Upload sessions preference do not
 grant content consent. The UI requires a separate full-content confirmation:
 messages, private thinking, tool calls and results, and session metadata can leave
-the device and may contain secrets or file text. Attachment files need separate
-consent; this scoped UI does not read or upload them.
+the device and may contain secrets or file text. Typed consent also includes
+proved session-owned content stored inside an authorized OpenCode database,
+including native blobs. External attachment files, arbitrary linked files, and
+URL downloads remain excluded.
+
+`native-full-content-v1` stays Claude-only with its existing flags and root list.
+Selections that include OpenCode require `native-full-content-v2`, an exact
+provider/path list, full-content confirmation, and external attachments disabled.
+Changing a provider at the same path clears the confirmation just like changing
+the path. A saved request ID cannot change its provider, roots, consent version,
+account, or destination.
 
 `syncEnabled` is false. On supported Unix platforms, `captureEnabled` permits
 **Save capture request** after explicit source selection and full-content
 confirmation. The native host saves the consent version, account, destination,
-and exact root selection before listing source names. The capture library lists
-bounded native candidates without reading transcript or companion content. The
-host freezes their local capture IDs and scoped source IDs. A source scope stays
-stable for the same account and local root when an access grant changes.
+and exact typed root selection before listing source identities. The capture
+library lists Claude filenames or OpenCode schema and bounded session IDs,
+without reading transcript, companion, message, instruction, job, or blob
+payloads. Root, child, detached-child, and fork sessions remain independent.
+The host freezes their capture IDs, scoped source IDs, and typed native locators.
+A source scope stays stable for the same account and local source when an access
+grant changes. Many OpenCode sessions share a database path but not an identity.
+
+New locators bind the provider, source scope, relative path, exact native session
+ID, and nullable Claude child agent ID. Claude paths are relative to the selected
+project directory. An OpenCode locator keeps the approved database filename
+relative to its parent; it does not authorize other files in that directory.
+OpenCode personas are not source agents. These saved locators are selection
+snapshots, not admitted source handles or continuing permission for payload reads.
+The store checks each typed locator against its full frozen source ID.
+Inconsistent records fail reads, lookup, and cancellation without changing saved JSON.
 
 These requests report **Upload unavailable**. No native content is captured or
 uploaded. There is no automatic future upload promise. A retry keeps the saved
@@ -200,9 +244,17 @@ that selection cancelled through native IPC; this build has no request-cancellat
 control in onboarding or Settings. Cancellation does not delete remote data or
 unrelated captures.
 
+Legacy Claude requests retain their serialized shapes, consent, source scopes,
+IDs, and absolute transcript locators. Reading or reconciling a saved request
+does not convert those locators or inspect source paths. Completed and cancelled
+selections never rediscover. Unknown saved provider kinds fail without rewriting records.
+Stored capture hashes and retry bytes do not change.
+
 One native host mutex and the capture library's spool lock serialize access.
 This build starts no uploader. It permits up to 128 saved requests, 100 roots per
-request, and 512 selected sources per request. Full storage blocks new requests
+request, and 512 selected sources across both providers per request. Exceeding a
+discovery limit keeps the original request without a partial frozen selection.
+Full storage blocks new requests
 without removing old records. Source-request listing is not native ownership,
 capture-byte, or service-acceptance proof. The library's synthetic exporter and
 spool tests establish their separate byte contract.
@@ -212,15 +264,21 @@ acceptance. A later upload integration must persist the accepted source
 fingerprint and terminal request in one checked transaction before it
 acknowledges the library's accepted receipt. That host path is not enabled here.
 Saved compressed retry bytes remain governed by the
-[capture contract](capture-v1.md).
+[capture contract](capture.md).
 
 ## Validation
 
 Native checks use synthetic sessions, in-memory keyrings, temporary state files,
 separate test processes, and loopback sockets. They must cover PKCE, callback
 guards, generation fences, restart, uncertain refresh, keyring failure, fixed
-deadlines, logout, and cross-process locking. Tests must not read user provider
-folders or real credentials.
+deadlines, logout, cross-process locking, typed source consent, stable legacy
+records, provider dispatch, and independent database sessions. Source checks use
+the public synthetic SQL fixtures in private temporary databases. Tests must not
+read user provider folders, installed databases, or real credentials.
+
+Synthetic service-transport HTTP tests run only with debug assertions enabled.
+General Cloud tests remain enabled in every test profile. These mocks do not
+prove a live service connection.
 
 Run native formatting, Clippy, and focused Nextest checks with `--features cloud`.
 Also check the ordinary build with `--no-default-features`. Frontend checks cover

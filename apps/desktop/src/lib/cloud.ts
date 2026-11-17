@@ -32,12 +32,27 @@ export interface CloudWorkspace {
 }
 /** Nested setup view, separate from the host's persisted onboarding step. */
 export type CloudScreen = "handoff" | "identity" | "folders" | "complete"
-interface CloudFolder {
+/** Closed native source contracts, not installed runtime versions. */
+export type CloudSourceKind = "claude_jsonl" | "opencode_sqlite_v2"
+/** One exact source approved in the picker: a project directory or database file. */
+export interface CloudSourceSelection {
+  sourceKind: CloudSourceKind
+  path: string
+}
+/** Persisted source preference. Missing kind keeps the legacy Claude-only meaning. */
+export interface CloudFolder {
   sessionCount?: number | null
   sessionCountIsPartial?: boolean
   path: string
   selected: boolean
+  sourceKind?: CloudSourceKind
 }
+/** Normalize only an absent legacy kind; native code rejects unknown kinds. */
+export const cloudSourceKind = (source: CloudFolder): CloudSourceKind =>
+  source.sourceKind ?? "claude_jsonl"
+/** Compare provider and path together without treating display counts as consent. */
+export const cloudSourceKey = (source: CloudFolder) =>
+  JSON.stringify([cloudSourceKind(source), source.path])
 /** Account-bound UI preferences, never permission to read or upload content. */
 export interface CloudDraft {
   screen: CloudScreen
@@ -48,15 +63,16 @@ export interface CloudDestinationBinding {
   accountId: string
   destinationId: string
 }
-/** One explicit confirmation of exact roots and full content for a saved request.
- * This existing consent excludes attachments and must not be reused for new formats.
+/** One explicit confirmation for a saved request. V1 stays Claude-only. V2
+ * includes proved session-owned database blobs, never external files or URLs.
  */
-export interface CaptureConsent extends CloudDestinationBinding {
-  version: "native-full-content-v1"
+export type CaptureConsent = CloudDestinationBinding & {
   fullContent: true
   attachments: false
-  selectedRoots: string[]
-}
+} & (
+    | { version: "native-full-content-v1"; selectedRoots: string[] }
+    | { version: "native-full-content-v2"; selectedSources: CloudSourceSelection[] }
+  )
 /** Native account state, not a build gate. authEnabled requires valid service
  * configuration; captureEnabled permits saved requests, never content upload.
  */
@@ -122,8 +138,8 @@ export interface CloudPort {
   signOut(): Promise<CloudSnapshot>
   /** Permit reconnect only without saved proof; retain the remote-revocation warning. */
   resetLocal(): Promise<CloudSnapshot>
-  /** Ask for explicit native source directories without inferring repository sources. */
-  pick(): Promise<string[]>
+  /** Ask for exact sources of one provider. Default hints never authorize reads. */
+  pick(sourceKind?: CloudSourceKind): Promise<string[]>
   /** Read local integration readiness independently of saved-request reconciliation. */
   agent(): Promise<AgentReadiness>
   /** Save exact account/root consent before listing. Reuse this ID after uncertainty. */
@@ -176,12 +192,19 @@ export const nativeCloudPort: CloudPort = {
     cloudCommand("cloud_save_draft", { value, binding, foldersEdited }),
   signOut: () => cloudCommand("cloud_sign_out"),
   resetLocal: () => cloudCommand("cloud_reset_local"),
-  pick: async () => {
+  pick: async (sourceKind = "claude_jsonl") => {
     if (!(await cloudBuildEnabled())) return []
+    const database = sourceKind === "opencode_sqlite_v2"
+    const defaultPath = database
+      ? await invoke<string | null>("cloud_source_picker_directory")
+      : null
     const selected = await open({
-      directory: true,
+      directory: !database,
       multiple: true,
-      title: "Choose Claude projects/<project> source directories",
+      title: database
+        ? "Choose OpenCode V2 databases"
+        : "Choose Claude projects/<project> source directories",
+      ...(defaultPath ? { defaultPath } : {}),
     })
     return selected === null ? [] : Array.isArray(selected) ? selected : [selected]
   },

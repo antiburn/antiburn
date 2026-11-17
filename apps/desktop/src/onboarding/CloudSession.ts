@@ -2,11 +2,15 @@ import {
   emptyCloudSnapshot,
   CLOUD_BUSY_MESSAGE,
   nativeCloudPort,
+  cloudSourceKey,
+  cloudSourceKind,
   type AgentReadiness,
   type CloudDraft,
   type CloudPort,
   type CloudScreen,
   type CloudSnapshot,
+  type CloudSourceKind,
+  type CaptureConsent,
   type SyncResult,
 } from "../lib/cloud"
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
@@ -17,7 +21,7 @@ function selectedFoldersKey(value: CloudSnapshot) {
   return JSON.stringify(
     value.draft.folders
       .filter((folder) => folder.selected)
-      .map((folder) => folder.path)
+      .map(cloudSourceKey)
       .sort(),
   )
 }
@@ -398,12 +402,12 @@ export class CloudSession {
     )
   }
   /** Discard picker results after account changes and clear consent before source edits. */
-  addFolders = async () => {
+  addFolders = async (sourceKind: CloudSourceKind = "claude_jsonl") => {
     const generation = this.generation
     const account = this.snapshot.cloud.identity?.id
     const destination = this.snapshot.cloud.destination?.id
     await this.run("add_folder", async () => {
-      const paths = await this.port.pick()
+      const paths = await this.port.pick(sourceKind)
       if (
         !this.active ||
         generation !== this.generation ||
@@ -414,12 +418,18 @@ export class CloudSession {
       const folders = this.snapshot.cloud.draft.folders.map((folder) => ({ ...folder }))
       let changed = false
       for (const path of paths) {
-        const existing = folders.find((folder) => folder.path === path)
+        const existing = folders.find(
+          (folder) => folder.path === path && cloudSourceKind(folder) === sourceKind,
+        )
         if (existing && !existing.selected) {
           existing.selected = true
           changed = true
         } else if (!existing && folders.length < 100) {
-          folders.push({ path, selected: true })
+          folders.push({
+            path,
+            selected: true,
+            ...(sourceKind === "opencode_sqlite_v2" ? { sourceKind } : {}),
+          })
           changed = true
         }
       }
@@ -429,24 +439,32 @@ export class CloudSession {
     })
   }
   /** Clear consent immediately, before a delayed preference save can complete. */
-  selectFolder = (path: string, selected: boolean) => {
+  selectFolder = (
+    path: string,
+    selected: boolean,
+    sourceKind: CloudSourceKind = "claude_jsonl",
+  ) => {
     this.setFullContentConsent(false)
     return this.run("select_folder", () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
         folders: this.snapshot.cloud.draft.folders.map((folder) =>
-          folder.path === path ? { ...folder, selected } : folder,
+          folder.path === path && cloudSourceKind(folder) === sourceKind
+            ? { ...folder, selected }
+            : folder,
         ),
       }),
     )
   }
   /** Remove a draft choice, not any saved request, source, or spool entry. */
-  removeFolder = (path: string) => {
+  removeFolder = (path: string, sourceKind: CloudSourceKind = "claude_jsonl") => {
     this.setFullContentConsent(false)
     return this.run(null, () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
-        folders: this.snapshot.cloud.draft.folders.filter((folder) => folder.path !== path),
+        folders: this.snapshot.cloud.draft.folders.filter(
+          (folder) => folder.path !== path || cloudSourceKind(folder) !== sourceKind,
+        ),
       }),
     )
   }
@@ -479,13 +497,28 @@ export class CloudSession {
     const account = this.snapshot.cloud.identity.id
     const nativeCapture = this.snapshot.cloud.captureEnabled === true
     const destinationId = destination.id
-    const consent = {
-      version: "native-full-content-v1" as const,
+    const consent: CaptureConsent = {
       accountId: account,
       destinationId,
       fullContent: true as const,
       attachments: false as const,
-      selectedRoots: selected.map((folder) => folder.path).sort(),
+      ...(selected.some((folder) => cloudSourceKind(folder) === "opencode_sqlite_v2")
+        ? {
+            version: "native-full-content-v2" as const,
+            selectedSources: selected
+              .map((folder) => ({
+                sourceKind: cloudSourceKind(folder),
+                path: folder.path,
+              }))
+              .sort(
+                (a, b) =>
+                  a.sourceKind.localeCompare(b.sourceKind) || a.path.localeCompare(b.path),
+              ),
+          }
+        : {
+            version: "native-full-content-v1" as const,
+            selectedRoots: selected.map((folder) => folder.path).sort(),
+          }),
     }
     const requestId = this.requestId ?? crypto.randomUUID()
     this.requestId = requestId

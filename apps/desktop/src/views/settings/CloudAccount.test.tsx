@@ -32,6 +32,7 @@ function fixture(initial?: CloudSnapshot) {
   const prepareSync = vi.fn(async () => {})
   const start = vi.fn(async () => ({ status: "upload_unavailable" as const }))
   const reconcile = vi.fn(async () => ({ status: "upload_unavailable" as const }))
+  const pick = vi.fn(async () => ["/Example/opencode/opencode.db"])
   const session = new CloudSession(
     {
       ...nativeCloudPort,
@@ -47,6 +48,7 @@ function fixture(initial?: CloudSnapshot) {
       prepareSync,
       start,
       reconcile,
+      pick,
     },
     false,
     true,
@@ -59,6 +61,7 @@ function fixture(initial?: CloudSnapshot) {
     prepareSync,
     start,
     reconcile,
+    pick,
     emit: (next: CloudSnapshot) => publish(next),
   }
 }
@@ -227,4 +230,37 @@ it("clears native save confirmation when source selection changes", async () => 
   await waitFor(() => expect(consent).not.toBeChecked())
   expect(save).toBeDisabled()
   expect(start).not.toHaveBeenCalled()
+})
+
+it("selects OpenCode databases explicitly from Settings before typed content confirmation", async () => {
+  const { session, pick, save, prepareSync } = fixture({
+    ...nativeCapture,
+    draft: { screen: "complete", folders: [] },
+  })
+  render(<Account session={session} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Choose OpenCode databases…" }))
+  await waitFor(() => expect(save).toHaveBeenCalledOnce())
+  expect(pick).toHaveBeenCalledWith("opencode_sqlite_v2")
+  const source = screen.getByRole("switch", {
+    name: "Select /Example/opencode/opencode.db for Cloud capture",
+  })
+  expect(source).toBeChecked()
+  expect(screen.getByText("OpenCode V2: /Example/opencode/opencode.db")).toBeVisible()
+  const confirm = screen.getByRole("checkbox")
+  expect(confirm).not.toBeChecked()
+  fireEvent.click(confirm)
+  fireEvent.click(screen.getByRole("button", { name: "Save capture request" }))
+  await waitFor(() => expect(prepareSync).toHaveBeenCalledOnce())
+  expect(prepareSync).toHaveBeenCalledWith(
+    expect.any(Array),
+    expect.any(String),
+    expect.objectContaining({
+      version: "native-full-content-v2",
+      fullContent: true,
+      attachments: false,
+      selectedSources: [
+        { sourceKind: "opencode_sqlite_v2", path: "/Example/opencode/opencode.db" },
+      ],
+    }),
+  )
 })

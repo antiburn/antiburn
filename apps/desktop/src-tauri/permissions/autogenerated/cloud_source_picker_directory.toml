@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-source-picker-directory"
+description = "Enables the cloud_source_picker_directory command without any pre-configured scope."
+commands.allow = ["cloud_source_picker_directory"]
+
+[[permission]]
+identifier = "deny-cloud-source-picker-directory"
+description = "Denies the cloud_source_picker_directory command without any pre-configured scope."
+commands.deny = ["cloud_source_picker_directory"]

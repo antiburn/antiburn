@@ -15,8 +15,9 @@ pub const MAX_ACCESS_SECONDS: u64 = 900;
 /// Maximum initial fixed grant lifetime in seconds.
 pub const MAX_GRANT_SECONDS: i64 = 365 * 24 * 60 * 60;
 
-/// Pin canonical HTTPS origins. Resource owns request routes; issuer binds
-/// callbacks and responses. Neither value can contain a path or trailing slash.
+/// Pin canonical service origins. Builds with debug assertions admit literal loopback HTTP.
+/// Resource owns request routes; issuer binds callbacks and responses.
+/// Neither value can contain a path or trailing slash.
 #[derive(Clone)]
 pub struct Config {
     pub issuer: String,
@@ -28,20 +29,32 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load pinned build configuration; invalid or absent origins disable authentication.
+    /// Use local defaults with debug assertions only when both origins are absent.
+    /// Partial or invalid overrides disable authentication. Other builds need explicit HTTPS.
     pub fn from_build() -> Option<Self> {
-        Self::parse(
-            option_env!("ANTIBURN_CLOUD_ISSUER")?,
-            option_env!("ANTIBURN_CLOUD_RESOURCE")?,
+        Self::from_origins(
+            option_env!("ANTIBURN_CLOUD_ISSUER"),
+            option_env!("ANTIBURN_CLOUD_RESOURCE"),
         )
     }
 
-    /// Reject aliases, credentials, paths, and non-HTTPS origins rather than normalizing authority.
+    /// Keep explicit origins as one complete pair; never fill a missing override.
+    fn from_origins(issuer: Option<&str>, resource: Option<&str>) -> Option<Self> {
+        match (issuer, resource) {
+            (None, None) if cfg!(debug_assertions) => {
+                Self::parse("http://localhost:3000", "http://localhost:3000")
+            }
+            (Some(issuer), Some(resource)) => Self::parse(issuer, resource),
+            _ => None,
+        }
+    }
+
+    /// Reject aliases, credentials, paths, and remote HTTP rather than normalizing authority.
     pub fn parse(issuer: &str, resource: &str) -> Option<Self> {
         /// Require the exact public origin string used by callback and response proofs.
         fn canonical(value: &str) -> Option<Url> {
             let url = Url::parse(value).ok()?;
-            (url.scheme() == "https"
+            ((url.scheme() == "https" || debug_loopback_http(&url))
                 && url.host_str().is_some()
                 && url.username().is_empty()
                 && url.password().is_none()
@@ -62,6 +75,18 @@ impl Config {
             session: resource_url.join("v1/desktop/session").ok()?,
         })
     }
+}
+
+/// Admit plaintext only for exact loopback hosts when debug assertions are enabled.
+fn debug_loopback_http(url: &Url) -> bool {
+    cfg!(debug_assertions)
+        && url.scheme() == "http"
+        && match url.host() {
+            Some(url::Host::Domain("localhost")) => true,
+            Some(url::Host::Ipv4(address)) => address == std::net::Ipv4Addr::LOCALHOST,
+            Some(url::Host::Ipv6(address)) => address == std::net::Ipv6Addr::LOCALHOST,
+            _ => false,
+        }
 }
 
 /// Closed errors safe for renderer state. Never attach tokens or raw provider errors.
@@ -426,15 +451,26 @@ pub trait Transport: Send + Sync {
 /// Short blocking HTTP transport, used only inside the bounded Cloud worker.
 /// The engine's synchronous proof/write ordering stays intact; this is not async HTTP.
 pub struct HttpTransport;
-/// Build a bounded, nonredirecting, nonretrying client for one worker-owned request.
-fn client() -> Result<reqwest::blocking::Client, Failure> {
+/// Check each request URL before attaching proof. Debug loopback HTTP bypasses
+/// proxies so plaintext credentials stay on the local connection.
+fn client(url: &Url) -> Result<reqwest::blocking::Client, Failure> {
+    let local_http = debug_loopback_http(url);
+    if (url.scheme() != "https" && !local_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(Failure::Unavailable);
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
-    reqwest::blocking::Client::builder()
+    let mut builder = reqwest::blocking::Client::builder()
+        .https_only(!local_http)
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|_| Failure::Offline)
+        .timeout(Duration::from_secs(15));
+    if local_http {
+        builder = builder.no_proxy();
+    }
+    builder.build().map_err(|_| Failure::Offline)
 }
 
 /// Bound successful JSON and map status/read errors to closed safe failures.
@@ -462,7 +498,7 @@ fn decode<T: serde::de::DeserializeOwned>(
 impl Transport for HttpTransport {
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
-            client()?
+            client(&config.token)?
                 .post(config.token.clone())
                 .json(request)
                 .send()
@@ -476,7 +512,7 @@ impl Transport for HttpTransport {
     }
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure> {
         let response: SessionResponse = decode(
-            client()?
+            client(&config.session)?
                 .get(config.session.clone())
                 .bearer_auth(access)
                 .send()
@@ -485,7 +521,7 @@ impl Transport for HttpTransport {
         response.try_into()
     }
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure> {
-        let response = client()?
+        let response = client(&config.revocation)?
             .post(config.revocation.clone())
             .json(&serde_json::json!({ "refresh_token": refresh }))
             .send()
@@ -564,3 +600,6 @@ pub fn validate_callback(
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

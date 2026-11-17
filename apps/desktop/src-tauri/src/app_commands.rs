@@ -16,6 +16,8 @@ macro_rules! with_app_commands {
             #[cfg(feature = "cloud")]
             cloud::cloud_save_draft => "cloud_save_draft",
             #[cfg(feature = "cloud")]
+            cloud::cloud_source_picker_directory => "cloud_source_picker_directory",
+            #[cfg(feature = "cloud")]
             cloud::cloud_start_sync => "cloud_start_sync",
             #[cfg(feature = "cloud")]
             cloud::cloud_prepare_sync => "cloud_prepare_sync",

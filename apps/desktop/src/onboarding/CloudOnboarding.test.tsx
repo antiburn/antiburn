@@ -242,3 +242,37 @@ it("cancels only the pending browser attempt before local completion", async () 
   expect(port.cancelSync).not.toHaveBeenCalled()
   expect(port.prepareSync).not.toHaveBeenCalled()
 })
+
+it("offers explicit OpenCode database selection and native stored-content consent without upload", async () => {
+  const { port, start } = fixture({ draft: { screen: "folders", folders: [] } })
+  port.pick = vi.fn(async () => ["/Example/opencode/opencode.db"])
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  fireEvent.click(await screen.findByRole("button", { name: "Add OpenCode databases…" }))
+  await waitFor(() =>
+    expect(screen.getByText("OpenCode V2: /Example/opencode/opencode.db")).toBeVisible(),
+  )
+  expect(port.pick).toHaveBeenCalledWith("opencode_sqlite_v2")
+  expect(screen.getByText(/including blobs/)).toBeVisible()
+  expect(
+    screen.getByText(/External attachment files and URL downloads are excluded/),
+  ).toBeVisible()
+  const save = screen.getByRole("button", { name: "Save capture request" })
+  expect(save).toBeDisabled()
+  fireEvent.click(screen.getByRole("checkbox"))
+  fireEvent.click(save)
+  expect(await screen.findByRole("heading", { name: "Capture request saved" })).toBeVisible()
+  expect(port.prepareSync).toHaveBeenCalledWith(expect.any(Array), expect.any(String), {
+    version: "native-full-content-v2",
+    accountId: "synthetic",
+    destinationId: "personal",
+    fullContent: true,
+    attachments: false,
+    selectedSources: [
+      { sourceKind: "opencode_sqlite_v2", path: "/Example/opencode/opencode.db" },
+    ],
+  })
+  expect(start).toHaveBeenCalledOnce()
+  expect(screen.getByText("Upload unavailable")).toBeVisible()
+})

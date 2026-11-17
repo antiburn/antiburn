@@ -3,6 +3,24 @@ use auth::{Credential, Session, TokenRequest, Tokens, Transport, Vault, Workspac
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
+fn cloud_source_preferences_keep_legacy_shapes_and_reject_unknown_providers() {
+    let raw = r#"{"path":"/Example/claude/projects/project","selected":true}"#;
+    let legacy: Folder = serde_json::from_str(raw).unwrap();
+    assert!(legacy.source_kind.is_claude());
+    assert_eq!(serde_json::to_string(&legacy).unwrap(), raw);
+    let database: Folder = serde_json::from_str(
+        r#"{"path":"/Example/opencode/opencode.db","selected":true,"sourceKind":"opencode_sqlite_v2"}"#
+    ).unwrap();
+    assert_eq!(database.source_kind, SourceKind::OpenCodeSqliteV2);
+    assert!(
+        serde_json::from_str::<Folder>(
+            r#"{"path":"/Example/source","selected":false,"sourceKind":"unknown"}"#
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn cloud_startup_and_onboarding_prereads_use_the_worker_boundary() {
     let source = include_str!("mod.rs");
     let setup = source

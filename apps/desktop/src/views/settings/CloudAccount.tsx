@@ -9,6 +9,7 @@ import { CloudCaptureConsent } from "../../onboarding/CloudCaptureConsent"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { personalCloudDestination } from "../../lib/cloudDestination"
+import { cloudSourceKey, cloudSourceKind } from "../../lib/cloud"
 
 /** Render one observed account. Setup errors block source actions, not revocation.
  * Local reset needs a separate confirmation and cannot claim remote deletion.
@@ -139,31 +140,48 @@ export function CloudAccount({
           value.cloud.setupError ??
           (value.cloud.identity
             ? value.cloud.captureEnabled
-              ? "Choose native Claude projects/<project> source directories directly, not repositories. Antiburn does not infer sources from working directories or suggest repositories. Source choices alone do not authorize capture."
+              ? "Choose native Claude projects/<project> source directories or OpenCode V2 databases, not repositories. Source choices alone do not authorize capture."
               : "Choose folders for this account. Folder choices alone do not authorize capture."
             : "Connect to Cloud before choosing folders.")
         }
         trailing={
-          <button
-            className="ui-push-button"
-            disabled={value.busy || !value.cloud.identity || !!value.cloud.setupError}
-            onClick={() => void session.addFolders()}
-          >
-            Choose folders…
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="ui-push-button"
+              disabled={value.busy || !value.cloud.identity || !!value.cloud.setupError}
+              onClick={() => void session.addFolders()}
+            >
+              {value.cloud.captureEnabled ? "Choose Claude sources…" : "Choose folders…"}
+            </button>
+            {value.cloud.captureEnabled && (
+              <button
+                className="ui-push-button"
+                disabled={value.busy || !value.cloud.identity || !!value.cloud.setupError}
+                onClick={() => void session.addFolders("opencode_sqlite_v2")}
+              >
+                Choose OpenCode databases…
+              </button>
+            )}
+          </div>
         }
       >
         {value.cloud.identity && (
           <div className="mt-3 flex flex-col gap-3">
             {value.cloud.draft.folders.map((folder) => (
-              <div key={folder.path} className="flex items-center justify-between gap-3">
-                <span className="min-w-0 break-all type-callout text-label">{folder.path}</span>
+              <div
+                key={cloudSourceKey(folder)}
+                className="flex items-center justify-between gap-3"
+              >
+                <span className="min-w-0 break-all type-callout text-label">
+                  {cloudSourceKind(folder) === "opencode_sqlite_v2" ? "OpenCode V2" : "Claude"}:{" "}
+                  {folder.path}
+                </span>
                 <ToggleSwitch
                   aria-label={`Select ${folder.path} for Cloud capture`}
                   checked={folder.selected}
                   disabled={value.busy || !!value.cloud.setupError}
                   onCheckedChange={(selected) =>
-                    void session.selectFolder(folder.path, selected)
+                    void session.selectFolder(folder.path, selected, cloudSourceKind(folder))
                   }
                 />
               </div>

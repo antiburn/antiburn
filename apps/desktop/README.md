@@ -82,10 +82,12 @@ appear after completion unless an existing preference disables them.
 The introduction uses isolated example data to demonstrate Sessions, provider
 limits, the HUD, notifications, and Checks. Ordinary builds finish after Checks.
 Cloud is unreleased and requires the explicit, non-default Rust feature `cloud`.
-Environment values cannot enable the feature. Ordinary builds register no Cloud
-commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
-Manual Cloud builds also require valid build-time service configuration before
-they can connect. The native build capability enables the existing Cloud
+The desktop `dev` and `dev:bundle` launchers select it for debug development.
+Environment values cannot enable the feature. Builds without `cloud` register no
+Cloud commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
+When both build-time origins are absent, debug Cloud builds use
+`http://localhost:3000` for both issuer and resource. Standard release Cloud builds
+require explicit HTTPS origins. The native build capability enables the existing Cloud
 teaching and setup screens; runtime service availability does not hide them.
 Setup can finish locally without content consent or saving a source request.
 See the
@@ -104,13 +106,14 @@ WKWebView without enabling same-origin access or network connections.
 
 Manual Cloud builds place the Cloud account controls in Settings → Sessions,
 above Repositories. Connecting remains available after the introduction.
-Folder choices and the legacy Upload sessions preference do not authorize
+Source choices and the legacy Upload sessions preference do not authorize
 capture. Full native content needs a separate confirmation for the selected
-account, destination, and explicitly selected folders. This scoped path selects
-native Claude `projects/<project>` source directories directly, not repository
-paths or inferred working directories. Settings keeps folder choices separate for each account and personal
+account, destination, and explicitly selected sources. Choose native Claude
+`projects/<project>` directories or exact OpenCode V2 database files, not
+repository paths or inferred working directories. Settings keeps source choices separate for each account and personal
 destination. Signing out revokes only the current desktop connection; it does
-not sign out the browser or delete saved captures. Attachments remain separate.
+not sign out the browser or delete saved captures. OpenCode consent includes
+proved session-owned in-store blobs, but excludes external files and URL downloads.
 On supported Unix platforms, **Save capture request** keeps a durable selection
 with stable local IDs and reports **Upload unavailable**. It lists source names,
 not transcript content. Native capture reservation and upload transport remain
@@ -174,9 +177,9 @@ Run from the repository root:
 
 ```bash
 pnpm install
-pnpm --filter @antiburn/desktop dev          # Tauri dev build (main window + tray)
+pnpm --filter @antiburn/desktop dev          # Tauri debug build with local Cloud
 pnpm --filter @antiburn/desktop dev:web      # frontend only, in a browser
-pnpm --filter @antiburn/desktop dev:bundle   # bundled debug .app / installer
+pnpm --filter @antiburn/desktop dev:bundle   # debug .app / installer with local Cloud
 pnpm --filter @antiburn/desktop lint
 pnpm --filter @antiburn/desktop type-check
 pnpm --filter @antiburn/desktop test
@@ -187,6 +190,35 @@ pnpm --filter @antiburn/desktop icons        # regenerate app and tray icons
 The `dev`, `dev:bundle`, and `tauri` scripts load `apps/desktop/.env` when it
 exists. The shell environment takes precedence. `.env.example` lists the Google
 installed-app variables used only for Antigravity 2.0, its IDE, and `agy`.
+
+The debug `dev` and `dev:bundle` commands, including their `:cli` variants, pass
+`--features cloud` to Tauri. They do not start a Cloud service. Start an approved
+local service at `http://localhost:3000` before testing a real connection. If it is
+not running, local sessions still work and Cloud requests report offline.
+The Cloud Dev menu offers separate simulated previews without a service.
+
+These launchers use the debug app identifier and its own data directory.
+Debug settings, source selections, saved requests, and Cloud state stay separate
+from the release app. Selections remain reusable within each app profile.
+
+To override the local service, set both `ANTIBURN_CLOUD_ISSUER` and
+`ANTIBURN_CLOUD_RESOURCE` before rebuilding. Each value must be the service's exact
+canonical origin without credentials, a path, query, fragment, or trailing slash.
+Partial or invalid configuration disables authentication instead of using the
+local default. HTTP is allowed only for debug builds and literal `localhost`,
+`127.0.0.1`, or `[::1]` hosts. Remote services always require HTTPS.
+Rust's `debug_assertions` setting controls the local defaults and HTTP exception.
+Custom release builds that enable debug assertions also get this debug behavior.
+
+Saved connections stay bound to their original issuer and resource. To sign out
+of a connection from another service, rebuild with its original origins first.
+Changing defaults does not move or rebind stored credentials.
+
+Cargo defaults and release commands do not enable Cloud. `tauri build`,
+`tauri dev --release`, and custom Cargo profiles do not receive the launcher's
+debug feature selection. A manually enabled Cloud build without debug assertions
+has no local default and accepts only explicit HTTPS origins. These development
+commands do not authorize production use.
 
 And for the shell:
 
@@ -658,8 +690,8 @@ validator together.
 
 Debug builds also include **Reset onboarding** in the menu-bar icon's context menu. It restarts the full native onboarding flow at Welcome, replacing an open onboarding window. Sessions, preferences, and Cloud account state are preserved.
 
-Debug builds with the explicit `cloud` feature include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. Ordinary debug and production builds omit it. **Full Walkthrough** opens a separate native window with an example account and folders. Connecting simulates a callback after a short wait. The preview does not connect to a service or upload native content. **Done** closes it. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
+Builds with the explicit `cloud` feature and debug assertions include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. The standard desktop dev launchers select this feature. Builds without `cloud` or debug assertions omit the menu. **Full Walkthrough** opens a separate native window with an example account and folders. Connecting simulates a callback after a short wait. The preview does not connect to a service or upload native content. **Done** closes it. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
 
 The other entries open auth recovery, folder and agent-readiness states directly. Dedicated sync progress and recovery screens are not part of onboarding. Completion entries show local completion with each agent-readiness state. Reopening any menu entry resets that preview.
 
-The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding to test the real landing-page link. Release builds do not include the submenu.
+The window is titled **Cloud Dev — Simulated**. It never opens GitHub, reads credentials, scans folders, uploads sessions, saves onboarding progress or emits Cloud analytics. Learn more is also simulated in this window. Use regular onboarding to test the real landing-page link. Standard release builds do not include the submenu.
