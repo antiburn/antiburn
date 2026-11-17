@@ -1,14 +1,14 @@
 # Native Cloud capture
 
-This standalone crate owns bounded Claude native capture, private disk spooling,
-a durable many-session queue, and upload reconciliation through a caller-owned
+This standalone crate owns bounded Claude file and OpenCode SQLite capture,
+private disk spooling, a durable many-session queue, and upload reconciliation through a caller-owned
 transport. It contains no network client.
 
 The default build has no capture API. Select the explicit non-default `cloud`
 feature for controlled integration. Production upload enablement, consent,
 credentials, service endpoints, and scheduling belong to the native host.
 
-Read the [v1 contract](../../docs/cloud/capture-v1.md) for source ownership,
+Read the [capture contract](../../docs/cloud/capture.md) for source ownership,
 independent stream chunks with fixed 8 MiB expanded bounds, stable source
 fingerprints, typed metadata sections, frozen upload plans, limits, acceptance,
 and platform scope. Use `resume_step` to bound each scheduler turn to one saved
@@ -16,5 +16,34 @@ chunk. The host owns persistent selections, accepted fingerprints, and fair
 scheduling.
 After acceptance, save the accepted fingerprint and terminal request durably,
 then call `acknowledge_accepted` to remove the retained receipt.
+
+## Host integration
+
+1. Authorize one Claude source root or OpenCode database, discover it, and scope
+   each candidate with the host's stable account and device-local source scope.
+2. Save request and consent bindings, then capture with a new globally unique ID.
+   If capture leaves `Preparing`, cancel explicitly before using a new ID.
+3. Schedule one `resume_step` per pending request after checking current consent.
+   Retry saved bytes and bindings, not a new source generation.
+4. Save the accepted fingerprint and terminal request durably, then acknowledge
+   the accepted receipt. Executor stop and logout do not cancel requests.
+
+Use `discover_claude` for an authorized project directory or `discover_opencode`
+for an authorized V2 database. `Candidate::source_kind()` identifies the native
+contract. `source_path()` is a display locator; OpenCode candidates share a
+database path but have independent native IDs and scoped source keys.
+See the [OpenCode source guide](../../docs/cloud/opencode.md) and
+[SQLite native format](../../docs/cloud/sqlite-native.md) for ownership and cell
+preservation rules. A source schema error is not a saved-format migration.
+
+[`Transport`](src/contract.rs) is the native host's service boundary. Its API
+documents method ordering, exact body handling, frozen plans, and closed errors.
+The host keeps credentials and upload decisions outside renderer code and runs
+blocking work on bounded workers, never on UI or async runtime threads. See the contract's
+[operator recovery](../../docs/cloud/capture.md#failure-and-operator-recovery)
+before handling a spool that cannot open or reducing limits.
+
+## Tests
+
 Tests use only the [public synthetic fixture package](../../fixtures/cloud/capture-v1)
 and files generated inside temporary directories.

@@ -1,5 +1,17 @@
 //! Network-free native capture. The non-default `cloud` feature enables the API.
-//! See `docs/cloud/capture-v1.md` for the public byte and transport contract.
+//! See `docs/cloud/capture.md` for the public byte and transport contract.
+//!
+//! The native host supplies source access, consent, account and destination
+//! bindings, a `Transport`, and scheduling. This crate owns admitted source
+//! handles, exact saved chunks, queue records, and upload reconciliation.
+//! Renderer code must not own credentials, choose upload locations, or call these
+//! blocking discovery, capture, or queue operations on UI or async runtime
+//! threads. The host supplies bounded blocking workers; this crate owns no runtime.
+//!
+//! Discover an authorized source, bind each candidate to its stable source scope,
+//! then capture with a new identity. Schedule `Spool::resume_step` for pending
+//! entries. Persist an accepted fingerprint and terminal request before calling
+//! `Spool::acknowledge_accepted`. Stopping an executor never cancels its entries.
 
 #[cfg(feature = "cloud")]
 mod contract;
@@ -11,17 +23,21 @@ mod discovery;
 mod filesystem;
 #[cfg(feature = "cloud")]
 mod metadata;
+#[cfg(all(feature = "cloud", unix))]
+mod opencode;
 #[cfg(feature = "cloud")]
 mod protocol;
 #[cfg(feature = "cloud")]
 mod spool;
+#[cfg(all(feature = "cloud", unix))]
+mod sqlite_native;
 #[cfg(feature = "cloud")]
 mod stream;
 
 #[cfg(feature = "cloud")]
 pub use contract::*;
 #[cfg(feature = "cloud")]
-pub use discovery::{Candidate, discover_claude};
+pub use discovery::{Candidate, CaptureSourceKind, discover_claude, discover_opencode};
 #[cfg(feature = "cloud")]
 pub use metadata::*;
 #[cfg(feature = "cloud")]

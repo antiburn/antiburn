@@ -1,7 +1,7 @@
 # Claude native capture fixtures v1
 
 Package version: `claude-native-capture-fixtures-v1`.
-Capture contract: `antiburn-native-capture-v1`.
+Capture contract version: `1`. Manifest and metadata versions are integers.
 
 Every native file is synthetic and authored for these tests. No real provider
 folder, captured transcript, user identity, credential, or private repository
@@ -36,6 +36,6 @@ example describes observation time, not the session's historical checkout.
 Neither example needs a real provider or Git read. All labels are synthetic.
 Unknown section fields must survive serialization.
 
-See [the public contract](../../../docs/cloud/capture-v1.md) for validation and
+See [the public contract](../../../docs/cloud/capture.md) for validation and
 the explicit reference regeneration command. Regenerate only after reviewing an
 intentional byte-contract change.

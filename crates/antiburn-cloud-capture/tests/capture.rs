@@ -352,6 +352,70 @@ fn discovery_is_bounded_and_child_and_fork_sources_are_independent() {
 }
 
 #[test]
+fn candidates_expose_native_identity_without_treating_every_source_as_a_transcript() {
+    let root = candidate("main");
+    assert_eq!(root.source_kind(), CaptureSourceKind::ClaudeJsonl);
+    assert_eq!(root.source_path(), fixtures().join("project/main.jsonl"));
+    assert_eq!(root.native_session_id(), "main");
+    assert_eq!(root.native_agent_id(), None);
+    let child = candidate("main/subagents/agent-worker")
+        .in_source_scope("synthetic-root")
+        .unwrap();
+    assert_eq!(child.source_kind(), CaptureSourceKind::ClaudeJsonl);
+    assert_eq!(child.native_session_id(), "main");
+    assert_eq!(child.native_agent_id(), Some("worker"));
+    assert_eq!(
+        child.source_id(),
+        "synthetic-root/main/subagents/agent-worker"
+    );
+}
+
+#[test]
+fn provider_stream_layouts_cannot_mix_roles_companions_or_schemas() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let source = candidate("main/subagents/agent-worker");
+    let id = identity(source.source_id(), "stream-contract");
+    let mut transport = FakeTransport::default();
+    let entry = queue
+        .capture(id.clone(), &source, BTreeMap::new(), &mut transport)
+        .unwrap();
+    let root = temp.path().join("spool/stream-contract");
+    let manifest = entry.manifest.as_ref().unwrap();
+    let before = saved_chunks(&root, manifest);
+    for corruption in ["rows-with-companion", "role", "schema", "metadata"] {
+        let mut invalid = entry.clone();
+        let manifest = invalid.manifest.as_mut().unwrap();
+        match corruption {
+            "rows-with-companion" => {
+                manifest.streams[0].stream_id = "native-rows".into();
+                manifest.streams[0].role = "native_rows".into();
+                manifest.streams[0].schema = "antiburn-sqlite-native".into();
+            }
+            "role" => manifest.streams[0].role = "native_rows".into(),
+            "schema" => manifest.streams[0].schema = "antiburn-sqlite-native".into(),
+            "metadata" => manifest.streams[2].schema = "claude-jsonl".into(),
+            _ => unreachable!(),
+        }
+        manifest.source_fingerprint = manifest.calculate_source_fingerprint().unwrap();
+        fs::write(
+            root.join("record.json"),
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            queue.resume_step(&id, &mut transport),
+            Err(Error::CorruptSpool)
+        ));
+        assert!(transport.uploaded.is_empty());
+        assert_eq!(
+            saved_chunks(&root, entry.manifest.as_ref().unwrap()),
+            before
+        );
+    }
+}
+
+#[test]
 fn exact_native_and_companion_bytes_and_extensible_metadata_are_retained() {
     let temp = temporary();
     let mut spool = spool(&temp);
@@ -382,17 +446,29 @@ fn exact_native_and_companion_bytes_and_extensible_metadata_are_retained() {
     }
     assert_eq!(
         &bytes[..manifest.streams[0].expanded_bytes as usize],
-        fs::read(candidate.transcript_path()).unwrap()
+        fs::read(candidate.source_path()).unwrap()
     );
     let companion_offset = manifest.streams[0].expanded_bytes as usize;
     let native_companion = &manifest.streams[1];
     assert_eq!(
         &bytes[companion_offset..companion_offset + native_companion.expanded_bytes as usize],
-        fs::read(candidate.transcript_path().with_extension("meta.json")).unwrap()
+        fs::read(candidate.source_path().with_extension("meta.json")).unwrap()
     );
     let metadata = metadata(&bytes, &manifest);
     assert_eq!(metadata.source_agent_version.as_deref(), Some("2.1.309"));
-    assert_eq!(metadata.recorded_agent_versions, ["2.1.278", "2.1.309"]);
+    assert_eq!(
+        metadata.version_observations,
+        [
+            VersionObservation {
+                version: "2.1.278".into(),
+                ownership: VersionOwnership::Inherited,
+            },
+            VersionObservation {
+                version: "2.1.309".into(),
+                ownership: VersionOwnership::Owned,
+            }
+        ]
+    );
     assert!(metadata.version_scan_complete);
     assert_eq!(metadata.sections["synthetic.example.v1"].data["keep"], true);
     assert_eq!(
@@ -700,8 +776,8 @@ fn source_symlink_and_hardlink_are_rejected_before_reservation() {
         .unwrap()
         .remove(0);
     let original = project.join("saved");
-    fs::rename(candidate.transcript_path(), &original).unwrap();
-    symlink(&original, candidate.transcript_path()).unwrap();
+    fs::rename(candidate.source_path(), &original).unwrap();
+    symlink(&original, candidate.source_path()).unwrap();
     let mut queue = spool(&temp);
     let mut transport = FakeTransport::default();
     assert!(
@@ -714,8 +790,8 @@ fn source_symlink_and_hardlink_are_rejected_before_reservation() {
             )
             .is_err()
     );
-    fs::remove_file(candidate.transcript_path()).unwrap();
-    fs::hard_link(&original, candidate.transcript_path()).unwrap();
+    fs::remove_file(candidate.source_path()).unwrap();
+    fs::hard_link(&original, candidate.source_path()).unwrap();
     assert!(matches!(
         queue.capture(
             identity("main", "capture-link"),
@@ -831,9 +907,9 @@ fn fixed_expanded_chunks_are_independent_for_each_stream() {
     assert_eq!(manifest.streams.len(), 2);
     assert_eq!(manifest.streams[0].chunks.len(), 2);
     assert_eq!(manifest.streams[0].chunks[0].expanded_bytes, CHUNK_BYTES);
-    assert_eq!(manifest.streams[0].chunks[1].expanded_offset, CHUNK_BYTES);
+    assert_eq!(manifest.streams[0].chunks[1].index, 1);
     assert_eq!(manifest.streams[1].chunks.len(), 1);
-    assert_eq!(manifest.streams[1].chunks[0].expanded_offset, 0);
+    assert_eq!(manifest.streams[1].chunks[0].index, 0);
     let bytes = expanded(&temp.path().join("spool/capture-large"), &manifest);
     let metadata = metadata(&bytes, &manifest);
     assert_eq!(metadata.source_agent_version, None);
@@ -951,6 +1027,59 @@ fn capture_matches_the_public_saved_wire_reference() {
 }
 
 #[test]
+fn opencode_wire_reference_matches_real_capture_in_distinct_roots() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/cloud/opencode")
+        .canonicalize()
+        .unwrap();
+    let expected: CaptureManifest =
+        serde_json::from_slice(&fs::read(fixtures.join("reference/main.capture.json")).unwrap())
+            .unwrap();
+    for _ in 0..2 {
+        let temporary = temporary();
+        let database = temporary.path().join("opencode.db");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(&fs::read_to_string(fixtures.join("current.sql")).unwrap())
+            .unwrap();
+        drop(connection);
+        let candidate = discover_opencode(&database, &Limits::default())
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.native_session_id() == "ses_main")
+            .unwrap()
+            .in_source_scope("synthetic-root")
+            .unwrap();
+        let mut queue = spool(&temporary);
+        let mut transport = FakeTransport::default();
+        let entry = queue
+            .capture(
+                identity(candidate.source_id(), "fixture-opencode-main"),
+                &candidate,
+                MetadataSections::new(),
+                &mut transport,
+            )
+            .unwrap();
+        assert_eq!(transport.reserve_calls, 1);
+        assert!(transport.uploaded.is_empty());
+        assert_eq!(entry.manifest.as_ref(), Some(&expected));
+        let saved = temporary.path().join("spool/fixture-opencode-main");
+        expanded(&saved, &expected);
+        for (key, _) in expected.chunks() {
+            assert_eq!(
+                fs::read(saved.join(format!("chunk-{}-{:05}.gz", key.stream_id, key.index)))
+                    .unwrap(),
+                fs::read(fixtures.join(format!(
+                    "reference/main.{}.chunk-{:05}.gz",
+                    key.stream_id, key.index
+                )))
+                .unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn source_scope_is_fixed_and_applies_to_relationships() {
     let temp = temporary();
     let mut queue = spool(&temp);
@@ -1042,7 +1171,13 @@ fn partial_final_record_and_binary_native_bytes_survive_without_newline_repair()
     let metadata = metadata(&bytes, &manifest);
     assert_eq!(metadata.source_agent_version, None);
     assert!(!metadata.version_scan_complete);
-    assert_eq!(metadata.recorded_agent_versions, ["2.1.309"]);
+    assert_eq!(
+        metadata.version_observations,
+        [VersionObservation {
+            version: "2.1.309".into(),
+            ownership: VersionOwnership::Unknown,
+        }]
+    );
 }
 
 #[test]
@@ -1185,7 +1320,13 @@ fn invalid_version_fields_and_conflicting_fork_edges_stay_unknown() {
     );
     assert_eq!(metadata.relationship, Relationship::Unknown);
     assert_eq!(metadata.source_agent_version, None);
-    assert_eq!(metadata.recorded_agent_versions, ["2.1.309"]);
+    assert_eq!(
+        metadata.version_observations,
+        [VersionObservation {
+            version: "2.1.309".into(),
+            ownership: VersionOwnership::Owned,
+        }]
+    );
     assert!(!metadata.version_scan_complete);
 }
 
@@ -1574,7 +1715,6 @@ fn inherited_fork_versions_do_not_become_owned_source_versions() {
         &manifest,
     );
     assert_eq!(metadata.source_agent_version, None);
-    assert_eq!(metadata.recorded_agent_versions, ["2.1.278"]);
     assert!(metadata.version_scan_complete);
     assert!(!metadata.owned_version_complete);
     assert_eq!(
@@ -1809,41 +1949,58 @@ fn a_resume_step_does_not_read_later_saved_chunks() {
 #[test]
 fn malformed_stream_chunk_layout_blocks_resume_without_releasing_bytes() {
     let temp = temporary();
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
+    fs::File::create(project.join("large.jsonl"))
+        .unwrap()
+        .set_len(CHUNK_BYTES + 1)
+        .unwrap();
+    let source = discover_claude(&project, &Limits::default())
+        .unwrap()
+        .remove(0);
     let mut queue = spool(&temp);
-    let id = identity("main", "malformed-stream-layout");
+    let id = identity("large", "malformed-stream-layout");
     let mut transport = FakeTransport::default();
-    let mut entry = queue
-        .capture(
-            id.clone(),
-            &candidate("main"),
-            BTreeMap::new(),
-            &mut transport,
-        )
+    let entry = queue
+        .capture(id.clone(), &source, BTreeMap::new(), &mut transport)
         .unwrap();
     let original = entry.manifest.clone().unwrap();
     let before = saved_chunks(
         &temp.path().join("spool/malformed-stream-layout"),
         &original,
     );
-    entry.manifest.as_mut().unwrap().streams[0].chunks[0].expanded_offset = 1;
-    fs::write(
-        temp.path()
-            .join("spool/malformed-stream-layout/record.json"),
-        serde_json::to_vec(&entry).unwrap(),
-    )
-    .unwrap();
-    assert!(matches!(
-        queue.resume_step(&id, &mut transport),
-        Err(Error::CorruptSpool)
-    ));
-    assert!(transport.uploaded.is_empty());
-    assert_eq!(
-        before,
-        saved_chunks(
-            &temp.path().join("spool/malformed-stream-layout"),
-            &original
+    for corruption in ["index", "non-final-length", "total-length", "empty-final"] {
+        let mut entry = entry.clone();
+        let chunks = &mut entry.manifest.as_mut().unwrap().streams[0].chunks;
+        match corruption {
+            "index" => chunks[0].index = 1,
+            "non-final-length" => {
+                chunks[0].expanded_bytes -= 1;
+                chunks[1].expanded_bytes += 1;
+            }
+            "total-length" => chunks[1].expanded_bytes += 1,
+            "empty-final" => chunks[1].expanded_bytes = 0,
+            _ => unreachable!(),
+        }
+        fs::write(
+            temp.path()
+                .join("spool/malformed-stream-layout/record.json"),
+            serde_json::to_vec(&entry).unwrap(),
         )
-    );
+        .unwrap();
+        assert!(matches!(
+            queue.resume_step(&id, &mut transport),
+            Err(Error::CorruptSpool)
+        ));
+        assert!(transport.uploaded.is_empty());
+        assert_eq!(
+            before,
+            saved_chunks(
+                &temp.path().join("spool/malformed-stream-layout"),
+                &original
+            )
+        );
+    }
 }
 
 #[test]
@@ -2048,7 +2205,7 @@ fn conflicting_owned_fork_evidence_cannot_be_hidden_by_a_child_companion() {
     let bytes = expanded(&temp.path().join("spool/conflicting-child"), &manifest);
     assert_eq!(
         &bytes[..manifest.streams[0].expanded_bytes as usize],
-        fs::read(source.transcript_path()).unwrap()
+        fs::read(source.source_path()).unwrap()
     );
     let metadata = metadata(&bytes, &manifest);
     assert_eq!(metadata.relationship, Relationship::Unknown);
@@ -2086,6 +2243,34 @@ fn malformed_ownership_fields_do_not_prove_a_historical_runtime_version() {
         assert_eq!(captured.source_agent_version, None);
         assert!(!captured.owned_version_complete);
     }
+}
+
+#[test]
+fn native_unknown_objects_do_not_change_claude_version_evidence() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let original = b"{\"sessionId\":\"main\",\"version\":\"2.1.309\",\"future\":{\"$serde_json::private::Number\":\"not-a-number\"}}\n";
+    fs::write(project.join("main.jsonl"), original).unwrap();
+    let source = discover_claude(&project, &Limits::default())
+        .unwrap()
+        .remove(0);
+    let mut queue = spool(&temp);
+    let entry = queue
+        .capture(
+            identity("main", "native-literal-object"),
+            &source,
+            MetadataSections::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let manifest = entry.manifest.unwrap();
+    let bytes = expanded(&temp.path().join("spool/native-literal-object"), &manifest);
+    assert_eq!(&bytes[..original.len()], original);
+    let metadata = metadata(&bytes, &manifest);
+    assert_eq!(metadata.source_agent_version.as_deref(), Some("2.1.309"));
+    assert!(metadata.version_scan_complete);
+    assert!(metadata.owned_version_complete);
 }
 
 #[test]
@@ -2173,4 +2358,244 @@ fn changed_native_bytes_do_not_replace_the_saved_generation() {
         saved_chunks(&temp.path().join("spool/generation-first"), first_manifest),
         before
     );
+}
+
+#[test]
+fn saved_acceptance_recovers_the_pending_state_before_cancellation() {
+    for pending in [CaptureState::Queued, CaptureState::AwaitingIntegrity] {
+        let temp = temporary();
+        let mut queue = spool(&temp);
+        let id = identity("main", "accepted-status");
+        let mut transport = FakeTransport::default();
+        let mut entry = queue
+            .capture(
+                id.clone(),
+                &candidate("main"),
+                BTreeMap::new(),
+                &mut transport,
+            )
+            .unwrap();
+        let manifest = entry.manifest.as_ref().unwrap();
+        let plan = transport
+            .negotiate(entry.reservation_id.as_ref().unwrap(), manifest)
+            .unwrap();
+        transport
+            .confirmed
+            .extend(manifest.chunks().map(|(key, _)| key));
+        transport.accepted = true;
+        entry.server_status = Some(transport.response(manifest, &plan));
+        entry.upload_plan = Some(plan);
+        entry.state = pending;
+        entry.completion_submitted = pending == CaptureState::AwaitingIntegrity;
+        let root = temp.path().join("spool/accepted-status");
+        let chunks = saved_chunks(&root, manifest);
+        fs::write(
+            root.join("record.json"),
+            serde_json::to_vec(&entry).unwrap(),
+        )
+        .unwrap();
+        drop(queue);
+
+        let mut queue = spool(&temp);
+        let recovered = queue.entries().unwrap().remove(0);
+        assert_eq!(recovered.state, CaptureState::Accepted);
+        let fingerprint = recovered.accepted_source_fingerprint().unwrap();
+        assert!(fingerprint.matches_source(manifest));
+        assert!(matches!(queue.cancel(&id), Err(Error::AlreadyAccepted)));
+        for key in chunks.keys() {
+            assert!(
+                !root
+                    .join(format!("chunk-{}-{:05}.gz", key.stream_id, key.index))
+                    .exists()
+            );
+        }
+        drop(queue);
+
+        let mut queue = spool(&temp);
+        assert_eq!(queue.entries().unwrap()[0], recovered);
+        assert_eq!(
+            queue.entries().unwrap()[0].accepted_source_fingerprint(),
+            Some(fingerprint)
+        );
+        queue.acknowledge_accepted(&id).unwrap();
+        assert!(queue.entries().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn capture_wire_uses_numeric_versions_without_derived_fields() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let entry = queue
+        .capture(
+            identity("main", "numeric-format"),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let manifest = entry.manifest.unwrap();
+    let transcript = &manifest.streams[0];
+    let source_preimage = format!(
+        r#"{{"version":1,"metadata_fingerprint":"{}","streams":[{{"stream_id":"transcript","role":"native_transcript","schema":"claude-jsonl","expanded_bytes":{},"expanded_sha256":"{}"}}]}}"#,
+        manifest.metadata_fingerprint, transcript.expanded_bytes, transcript.expanded_sha256
+    );
+    assert_eq!(manifest.source_fingerprint, sha(source_preimage.as_bytes()));
+    let wire = serde_json::to_value(&manifest).unwrap();
+    assert_eq!(wire["version"], 1);
+    assert!(wire.get("capture_version").is_none());
+    for stream in wire["streams"].as_array().unwrap() {
+        for chunk in stream["chunks"].as_array().unwrap() {
+            assert!(chunk.get("expanded_offset").is_none());
+        }
+    }
+    let metadata_bytes = expanded_stream(
+        &temp.path().join("spool/numeric-format"),
+        &manifest.streams[1],
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata_bytes).unwrap();
+    assert_eq!(metadata["version"], 1);
+    for removed in [
+        "schema_version",
+        "capture_version",
+        "recorded_agent_versions",
+    ] {
+        assert!(metadata.get(removed).is_none());
+    }
+    for invalid in [
+        serde_json::json!("1"),
+        serde_json::json!("antiburn-native-capture-v1"),
+        serde_json::json!(0),
+        serde_json::json!(2),
+        serde_json::json!(-1),
+        serde_json::json!(1.0),
+    ] {
+        let mut bad_manifest = wire.clone();
+        bad_manifest["version"] = invalid.clone();
+        assert!(serde_json::from_value::<CaptureManifest>(bad_manifest).is_err());
+        let mut bad_metadata = metadata.clone();
+        bad_metadata["version"] = invalid;
+        assert!(serde_json::from_value::<CaptureMetadata>(bad_metadata).is_err());
+    }
+    let mut missing_manifest_version = wire;
+    missing_manifest_version
+        .as_object_mut()
+        .unwrap()
+        .remove("version");
+    assert!(serde_json::from_value::<CaptureManifest>(missing_manifest_version).is_err());
+    let mut missing_metadata_version = metadata;
+    missing_metadata_version
+        .as_object_mut()
+        .unwrap()
+        .remove("version");
+    assert!(serde_json::from_value::<CaptureMetadata>(missing_metadata_version).is_err());
+}
+
+#[test]
+fn unsupported_saved_formats_preserve_the_record_and_every_chunk() {
+    for version in [
+        None,
+        Some(serde_json::json!("1")),
+        Some(serde_json::json!(2)),
+    ] {
+        let temp = temporary();
+        let mut queue = spool(&temp);
+        let entry = queue
+            .capture(
+                identity("main", "unsupported-format"),
+                &candidate("main"),
+                BTreeMap::new(),
+                &mut FakeTransport::default(),
+            )
+            .unwrap();
+        let manifest = entry.manifest.as_ref().unwrap();
+        let root = temp.path().join("spool/unsupported-format");
+        let chunks = saved_chunks(&root, manifest);
+        let mut record = serde_json::to_value(&entry).unwrap();
+        let saved_manifest = record["manifest"].as_object_mut().unwrap();
+        if let Some(version) = version {
+            saved_manifest.insert("version".into(), version);
+        } else {
+            saved_manifest.remove("version");
+            saved_manifest.insert(
+                "capture_version".into(),
+                serde_json::json!("antiburn-native-capture-v1"),
+            );
+        }
+        let record = serde_json::to_vec(&record).unwrap();
+        fs::write(root.join("record.json"), &record).unwrap();
+        drop(queue);
+        assert!(matches!(
+            Spool::open(&temp.path().join("spool"), Limits::default()),
+            Err(Error::UnsupportedFormat)
+        ));
+        assert_eq!(fs::read(root.join("record.json")).unwrap(), record);
+        assert_eq!(saved_chunks(&root, manifest), chunks);
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn discovery_ignores_non_utf8_names_but_counts_them_against_the_bound() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let children = project.join("main/subagents");
+    fs::create_dir_all(&children).unwrap();
+    fs::write(project.join("main.jsonl"), b"{}\n").unwrap();
+    fs::write(children.join("agent-worker.jsonl"), b"{}\n").unwrap();
+    let invalid = std::ffi::OsString::from_vec(b"unowned-\xff".to_vec());
+    fs::write(project.join(&invalid), b"outside capture scope").unwrap();
+    fs::write(children.join(&invalid), b"outside capture scope").unwrap();
+    let limits = Limits {
+        discovery_entries: 5,
+        ..Limits::default()
+    };
+    let candidates = discover_claude(&project, &limits).unwrap();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(Candidate::source_id)
+            .collect::<Vec<_>>(),
+        ["main", "main/subagents/agent-worker"]
+    );
+    assert!(matches!(
+        discover_claude(
+            &project,
+            &Limits {
+                discovery_entries: 4,
+                ..limits
+            }
+        ),
+        Err(Error::Limit)
+    ));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn spool_rejects_non_utf8_names_without_releasing_pending_bytes() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let entry = queue
+        .capture(
+            identity("main", "strict-spool"),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let root = temp.path().join("spool/strict-spool");
+    let manifest = entry.manifest.unwrap();
+    let before = saved_chunks(&root, &manifest);
+    let invalid = std::ffi::OsString::from_vec(b"unexpected-\xff".to_vec());
+    fs::write(root.join(invalid), b"unexpected spool file").unwrap();
+    drop(queue);
+    assert!(matches!(
+        Spool::open(&temp.path().join("spool"), Limits::default()),
+        Err(Error::CorruptSpool)
+    ));
+    assert_eq!(saved_chunks(&root, &manifest), before);
 }

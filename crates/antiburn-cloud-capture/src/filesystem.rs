@@ -1,3 +1,5 @@
+//! Source admission and file-generation checks without payload reads.
+
 #[cfg(unix)]
 use crate::{Error, Result};
 #[cfg(unix)]
@@ -6,6 +8,7 @@ use std::fs::File;
 use std::path::{Component, Path};
 
 #[cfg(unix)]
+/// Open each absolute path component without following symlinks.
 pub(crate) fn open_source(path: &Path, directory: bool) -> Result<File> {
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
@@ -46,6 +49,7 @@ pub(crate) fn open_source(path: &Path, directory: bool) -> Result<File> {
 }
 
 #[cfg(unix)]
+/// Compare pinned identity, size, timestamps, and one remaining hard link.
 pub(crate) fn same_source(before: &std::fs::Metadata, after: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     before.dev() == after.dev()
@@ -59,6 +63,7 @@ pub(crate) fn same_source(before: &std::fs::Metadata, after: &std::fs::Metadata)
 }
 
 #[cfg(not(unix))]
+/// Native file generations are unavailable on unsupported platforms.
 pub(crate) fn same_source(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
     false
 }

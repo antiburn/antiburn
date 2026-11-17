@@ -1,3 +1,8 @@
+//! Deterministic gzip chunks and bounded Claude source evidence.
+//!
+//! Capture writes exact input before evidence inspection. The scanner never
+//! repairs native bytes or turns inherited records into owned runtime evidence.
+
 use crate::contract::{hex, safe_id};
 use crate::directory::Directory;
 use crate::{
@@ -10,6 +15,7 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
 
+/// Name a chunk from a validated stream key, never a source path.
 pub(crate) fn chunk_name(key: &ChunkKey) -> String {
     format!("chunk-{}-{:05}.gz", key.stream_id, key.index)
 }
@@ -43,6 +49,7 @@ struct CurrentChunk {
     bytes: u64,
 }
 
+/// Save independent gzip members under one reserved compressed-byte budget.
 pub(crate) struct ChunkStream<'a> {
     directory: &'a Directory,
     stream_id: String,
@@ -55,6 +62,7 @@ pub(crate) struct ChunkStream<'a> {
 }
 
 impl<'a> ChunkStream<'a> {
+    /// Set up a stream; create a chunk only when nonempty input arrives.
     pub fn new(directory: &'a Directory, stream_id: &str, maximum_compressed: u64) -> Self {
         Self {
             directory,
@@ -68,6 +76,7 @@ impl<'a> ChunkStream<'a> {
         }
     }
 
+    /// Split exact expanded bytes at fixed boundaries; the caller owns its input cap.
     pub fn write(&mut self, mut bytes: &[u8]) -> Result<()> {
         while !bytes.is_empty() {
             if self.current.is_none() {
@@ -118,7 +127,6 @@ impl<'a> ChunkStream<'a> {
         self.compressed_bytes += output.bytes;
         self.chunks.push(Chunk {
             index: self.chunks.len() as u32,
-            expanded_offset: self.bytes - current.bytes,
             expanded_bytes: current.bytes,
             expanded_sha256: hex(&current.digest.finalize()),
             compressed_bytes: output.bytes,
@@ -127,6 +135,7 @@ impl<'a> ChunkStream<'a> {
         Ok(())
     }
 
+    /// Sync all members and publish descriptors, including an empty-file digest.
     pub fn finish(mut self, role: &str, schema: &str) -> Result<CapturedStream> {
         self.finish_chunk()?;
         self.directory.sync()?;
@@ -144,6 +153,9 @@ impl<'a> ChunkStream<'a> {
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const MAX_VERSIONS: usize = 16;
 
+/// Inspect bounded Claude records without changing the saved native stream.
+///
+/// Unknown object keys remain literal data, not JSON-library type directives.
 pub(crate) struct NativeMetadata {
     line: Vec<u8>,
     oversized_line: bool,
@@ -161,6 +173,7 @@ pub(crate) struct NativeMetadata {
 }
 
 impl NativeMetadata {
+    /// Bind ownership checks to the native filename identity, not installation state.
     pub fn new(native_session_id: &str, native_agent_id: Option<&str>) -> Self {
         Self {
             line: Vec::new(),
@@ -179,6 +192,7 @@ impl NativeMetadata {
         }
     }
 
+    /// Inspect complete bounded records and mark malformed or oversized scans partial.
     pub fn feed(&mut self, bytes: &[u8]) {
         for byte in bytes {
             if *byte == b'\n' {
@@ -198,7 +212,7 @@ impl NativeMetadata {
             self.oversized_line = false;
             return;
         }
-        let record = serde_json::from_slice::<serde_json::Value>(&self.line);
+        let record = crate::metadata::decode_metadata_value(&self.line);
         self.line.clear();
         let Ok(record) = record else {
             self.complete = false;
@@ -291,6 +305,7 @@ impl NativeMetadata {
         self.fork_parent = Some(parent.into());
     }
 
+    /// Deny complete evidence for an unfinished final record without repairing it.
     pub fn finish(&mut self) {
         if !self.line.is_empty() || self.oversized_line {
             self.complete = false;

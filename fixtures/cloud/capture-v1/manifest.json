@@ -1,5 +1,5 @@
 {
-  "capture_version": "antiburn-native-capture-v1",
+  "capture_version": 1,
   "files": [
     {
       "bytes": 390,
@@ -77,9 +77,9 @@
       "sha256": "da2479885e97b701d96148e598a752714e1a21fc300b0ca2fc1adacb84165ac2"
     },
     {
-      "bytes": 1722,
+      "bytes": 1623,
       "path": "reference/main.capture.json",
-      "sha256": "1085e1227cd30612a4cc6da3349cd5a36c81d3eec1a5f21040cd320ba226d8c1"
+      "sha256": "2a611eb90f1d22e60a8e4d301372a7e962545c50c8fa345c478c65bae9c21e91"
     },
     {
       "bytes": 1450,
@@ -92,9 +92,9 @@
       "sha256": "c2b4a944e71deb0ed32c2279c00d2d445886e32a6cfe1bfedcc2d4a6e7a6289f"
     },
     {
-      "bytes": 664,
+      "bytes": 641,
       "path": "reference/main.capture-metadata.chunk-00000.gz",
-      "sha256": "b527491de39fada1790f21ffd7bf6f179c97b20d91744bece6a59f6bd47e3095"
+      "sha256": "36007150c0598295cc11363239c0fbf81e4ca6faf312ceb196aedb51819fdc49"
     }
   ],
   "fixture_version": "claude-native-capture-fixtures-v1",

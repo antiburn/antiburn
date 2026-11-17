@@ -283,6 +283,7 @@ jobs:
             crates/antiburn-checks-store
             crates/antiburn-cli-runtime
             apps/cli
+            crates/antiburn-cloud-capture
           shared-key: ci-engine-${{ matrix.name }}
           cache-bin: false
           # Pull requests run only the x64 and macOS platforms, so only those

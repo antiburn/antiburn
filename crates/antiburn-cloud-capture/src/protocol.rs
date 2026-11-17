@@ -1,25 +1,38 @@
+//! Exact source layouts, frozen upload plans, and authoritative status checks.
+//!
+//! Local descriptors and service receipts never replace complete server integrity
+//! verification. Progress advances only from validated, nonregressing receipts.
+
 use crate::contract::{digest, safe_id};
 use crate::*;
 use std::collections::BTreeSet;
 
+/// Define the exact ordered slots for each supported source contract.
 pub(crate) fn stream_spec(
+    kind: CaptureSourceKind,
     index: usize,
     count: usize,
 ) -> (&'static str, &'static str, &'static str) {
-    if index == 0 {
-        ("transcript", "native_transcript", "claude-jsonl")
-    } else if index + 1 == count {
+    if index + 1 == count {
         (
             "capture-metadata",
             "capture_metadata",
             "antiburn-capture-metadata-v1",
         )
     } else {
-        (
-            "native-companion",
-            "native_companion",
-            "claude-agent-meta-json",
-        )
+        match kind {
+            CaptureSourceKind::ClaudeJsonl if index == 0 => {
+                ("transcript", "native_transcript", "claude-jsonl")
+            }
+            CaptureSourceKind::ClaudeJsonl => (
+                "native-companion",
+                "native_companion",
+                "claude-agent-meta-json",
+            ),
+            CaptureSourceKind::OpenCodeSqliteV2 => {
+                ("native-rows", "native_rows", "antiburn-sqlite-native")
+            }
+        }
     }
 }
 
@@ -30,9 +43,12 @@ fn valid_hash(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
+/// Check saved descriptors and layout, not the contents of native chunk bodies.
 pub(crate) fn validate_manifest(manifest: &CaptureManifest, limits: &Limits) -> Result<()> {
-    if manifest.capture_version != CAPTURE_VERSION
-        || manifest.compression != "gzip-mtime0-os255-level6"
+    if manifest.version != CAPTURE_VERSION {
+        return Err(Error::UnsupportedFormat);
+    }
+    if manifest.compression != "gzip-mtime0-os255-level6"
         || manifest.chunk_expanded_bytes != CHUNK_BYTES
         || !valid_hash(&manifest.metadata_fingerprint)
         || !(2..=3).contains(&manifest.streams.len())
@@ -40,9 +56,14 @@ pub(crate) fn validate_manifest(manifest: &CaptureManifest, limits: &Limits) -> 
     {
         return Err(Error::CorruptSpool);
     }
+    let kind = match manifest.streams[0].stream_id.as_str() {
+        "transcript" => CaptureSourceKind::ClaudeJsonl,
+        "native-rows" if manifest.streams.len() == 2 => CaptureSourceKind::OpenCodeSqliteV2,
+        _ => return Err(Error::CorruptSpool),
+    };
     let mut total = 0u64;
     for (index, stream) in manifest.streams.iter().enumerate() {
-        let (id, role, schema) = stream_spec(index, manifest.streams.len());
+        let (id, role, schema) = stream_spec(kind, index, manifest.streams.len());
         let maximum = if index == 0 {
             limits.source_bytes
         } else {
@@ -55,6 +76,9 @@ pub(crate) fn validate_manifest(manifest: &CaptureManifest, limits: &Limits) -> 
             || !valid_hash(&stream.expanded_sha256)
             || stream.chunks.len() > 128
             || (index + 1 == manifest.streams.len() && stream.expanded_bytes == 0)
+            || (kind == CaptureSourceKind::OpenCodeSqliteV2
+                && index == 0
+                && stream.expanded_bytes == 0)
         {
             return Err(Error::CorruptSpool);
         }
@@ -80,10 +104,9 @@ fn validate_stream(stream: &CapturedStream) -> Result<()> {
     if stream.chunks.is_empty() {
         return Err(Error::CorruptSpool);
     }
-    let mut offset = 0u64;
+    let mut expanded_bytes = 0u64;
     for (index, chunk) in stream.chunks.iter().enumerate() {
         if chunk.index as usize != index
-            || chunk.expanded_offset != offset
             || chunk.expanded_bytes == 0
             || chunk.expanded_bytes > CHUNK_BYTES
             || (index + 1 != stream.chunks.len() && chunk.expanded_bytes != CHUNK_BYTES)
@@ -94,11 +117,11 @@ fn validate_stream(stream: &CapturedStream) -> Result<()> {
         {
             return Err(Error::CorruptSpool);
         }
-        offset = offset
+        expanded_bytes = expanded_bytes
             .checked_add(chunk.expanded_bytes)
             .ok_or(Error::CorruptSpool)?;
     }
-    if offset != stream.expanded_bytes {
+    if expanded_bytes != stream.expanded_bytes {
         return Err(Error::CorruptSpool);
     }
     Ok(())

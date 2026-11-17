@@ -1,5 +1,11 @@
+//! Private durable capture and one-chunk upload reconciliation.
+//!
+//! The host owns consent and scheduling. Run filesystem, SQLite, compression, and
+//! transport work on bounded blocking workers, not UI or async runtime threads.
+
 use crate::contract::{encode_bounded, hex, safe_id};
 use crate::directory::Directory;
+use crate::discovery::{CandidateSource, ClaudeSource};
 use crate::filesystem::same_source;
 use crate::protocol::{
     stream_spec, validate_manifest, validate_plan, validate_status, validate_status_progress,
@@ -7,14 +13,30 @@ use crate::protocol::{
 use crate::stream::{ChunkStream, NativeMetadata, chunk_name};
 use crate::*;
 use sha2::{Digest, Sha256};
-use std::fs::File;
+use std::fs::{File, Metadata};
 use std::io::{Read, Seek};
 use std::path::Path;
 
 const MAX_DIRECTORY_FILES: usize = 132;
 
-/// A single executor owns the spool lock. Drop this value to stop execution;
-/// dropping it never cancels captures or deletes native bytes.
+/// Retain Claude pins across reservation; SQLite payload opens only afterward.
+enum PreparedSource<'a> {
+    Claude {
+        source: &'a ClaudeSource,
+        files: Vec<File>,
+        pinned: Vec<Metadata>,
+    },
+    #[cfg(unix)]
+    OpenCode(&'a crate::opencode::OpenCodeSource),
+}
+
+/// Private saved bodies and durable queue records owned by one executor.
+///
+/// The native host owns consent, credentials, request selection, and terminal
+/// state. This value owns the exclusive spool lock and all queue file changes.
+/// Drop it to stop execution; dropping it never cancels captures or deletes
+/// native bytes. Run its blocking methods on a bounded native worker, never on
+/// UI or async runtime threads. Other platforms return [`Error::UnsupportedPlatform`].
 pub struct Spool {
     root: Directory,
     limits: Limits,
@@ -22,6 +44,24 @@ pub struct Spool {
 }
 
 impl Spool {
+    /// Create or reopen a private Unix spool and acquire its exclusive lock.
+    ///
+    /// `root` must be an absolute path with no symlink components and an existing
+    /// parent. Directories must belong to the effective user with mode `0700`;
+    /// files require mode `0600` and one hard link. Another executor returns
+    /// [`Error::Busy`].
+    ///
+    /// Opening finishes interrupted publication and terminal deletion. It also
+    /// recovers a validated accepted status saved with an older pending state,
+    /// retains the accepted receipt, and releases its chunks. It does not resume
+    /// native reads or contact a transport.
+    ///
+    /// One corrupt record can block the whole spool. Preserve its private files
+    /// for operator recovery; do not delete entries to make opening succeed.
+    /// Restore prior limits if lower limits no longer admit saved entries.
+    /// An unsupported saved manifest returns [`Error::UnsupportedFormat`] without
+    /// rewriting it or releasing its chunks. Use its original build to drain or
+    /// explicitly cancel; never change version fields or recompress a retry.
     pub fn open(root: &Path, limits: Limits) -> Result<Self> {
         limits.validate()?;
         let root = Directory::open(root)?;
@@ -41,6 +81,10 @@ impl Spool {
         Ok(spool)
     }
 
+    /// Read bounded queue snapshots ordered by capture ID, including receipts.
+    ///
+    /// This does not read chunk bodies or contact the service. The host must
+    /// reconcile pending entries and acknowledge accepted ones separately.
     pub fn entries(&self) -> Result<Vec<QueueEntry>> {
         let mut entries = Vec::new();
         for directory in self.directories()? {
@@ -52,6 +96,19 @@ impl Spool {
 
     /// The host must obtain consent and bind this source to the destination
     /// before calling. No native content is read before reserve succeeds.
+    ///
+    /// Use a scoped candidate and a fresh, globally unique capture ID. Repeating
+    /// an existing identity returns its saved entry without reading new source
+    /// bytes or replacing metadata. Different bindings return
+    /// [`Error::IdentityMismatch`].
+    ///
+    /// Admission errors can occur before publication. After a `Preparing` entry
+    /// is published, a reservation, read, mutation, or metadata failure leaves it
+    /// interrupted. Inspect [`Self::entries`] after failure. Explicitly cancel
+    /// that entry before capturing a later generation with a new ID.
+    ///
+    /// Successful capture freezes exact native streams and typed metadata on
+    /// disk. Upload resume never reopens the source.
     pub fn capture(
         &mut self,
         identity: CaptureIdentity,
@@ -77,30 +134,50 @@ impl Spool {
             Err(error) => return Err(error),
         }
         validate_sections(&sections)?;
-        let mut sources = vec![candidate.directory.source_file(&candidate.filename)?];
-        if let Some(companion) = &candidate.companion {
-            sources.push(candidate.directory.source_file(companion)?);
-        }
-        let mut native_bytes = 0u64;
-        let mut pinned = Vec::new();
-        for (index, source) in sources.iter().enumerate() {
-            let metadata = source.metadata()?;
-            if !same_source(&metadata, &metadata) {
-                return Err(Error::InvalidSource);
+        let (prepared, native_bytes, native_streams) = match &candidate.source {
+            CandidateSource::Claude(source) => {
+                let mut files = vec![source.directory.source_file(&source.filename)?];
+                if let Some(companion) = &source.companion {
+                    files.push(source.directory.source_file(companion)?);
+                }
+                let mut native_bytes = 0u64;
+                let mut pinned = Vec::new();
+                for (index, file) in files.iter().enumerate() {
+                    let metadata = file.metadata()?;
+                    if !same_source(&metadata, &metadata) {
+                        return Err(Error::InvalidSource);
+                    }
+                    let maximum = if index > 0 {
+                        METADATA_BYTES
+                    } else {
+                        self.limits.source_bytes
+                    };
+                    if metadata.len() > maximum {
+                        return Err(Error::Limit);
+                    }
+                    native_bytes = native_bytes
+                        .checked_add(metadata.len())
+                        .ok_or(Error::Limit)?;
+                    pinned.push(metadata);
+                }
+                let count = files.len();
+                (
+                    PreparedSource::Claude {
+                        source,
+                        files,
+                        pinned,
+                    },
+                    native_bytes,
+                    count,
+                )
             }
-            let maximum = if index > 0 {
-                METADATA_BYTES
-            } else {
-                self.limits.source_bytes
-            };
-            if metadata.len() > maximum {
-                return Err(Error::Limit);
-            }
-            native_bytes = native_bytes
-                .checked_add(metadata.len())
-                .ok_or(Error::Limit)?;
-            pinned.push(metadata);
-        }
+            #[cfg(unix)]
+            CandidateSource::OpenCode(source) => (
+                PreparedSource::OpenCode(source),
+                self.limits.source_bytes,
+                1,
+            ),
+        };
         let maximum_expanded = native_bytes
             .checked_add(METADATA_BYTES)
             .ok_or(Error::Limit)?;
@@ -109,7 +186,7 @@ impl Spool {
         }
         let (used, count) = self.usage()?;
         let maximum_compressed =
-            maximum_expanded + native_bytes / 100 + sources.len() as u64 * 1024 + 2048;
+            maximum_expanded + native_bytes / 100 + native_streams as u64 * 1024 + 2048;
         let disk_reservation = maximum_compressed + 2 * RECORD_BYTES;
         if count >= self.limits.queue_entries
             || disk_reservation > self.limits.spool_bytes.saturating_sub(used)
@@ -133,62 +210,28 @@ impl Spool {
         entry.reservation_id = Some(reservation_id);
         self.save(&directory, &entry)?;
 
-        let mut streams = Vec::new();
-        let mut scanner = NativeMetadata::new(
-            &candidate.native_session_id,
-            candidate.native_agent_id.as_deref(),
-        );
-        let mut companion_bytes = Vec::new();
-        let mut buffer = [0u8; 64 * 1024];
-        let stream_count = sources.len() + 1;
-        for (index, source) in sources.iter_mut().enumerate() {
-            if !same_source(&pinned[index], &source.metadata()?) {
-                return Err(Error::SourceChanged);
+        let (mut streams, metadata) = match prepared {
+            PreparedSource::Claude {
+                source,
+                files,
+                pinned,
+            } => capture_claude(&directory, candidate, source, files, pinned, sections)?,
+            #[cfg(unix)]
+            PreparedSource::OpenCode(source) => {
+                capture_opencode(&directory, candidate, source, &self.limits, sections)?
             }
-            let (id, role, schema) = stream_spec(index, stream_count);
-            let size = pinned[index].len();
-            let mut stream = ChunkStream::new(&directory, id, size + size / 100 + 1024);
-            let mut remaining = pinned[index].len();
-            while remaining > 0 {
-                let count = remaining.min(buffer.len() as u64) as usize;
-                let read = source.read(&mut buffer[..count])?;
-                if read == 0 {
-                    return Err(Error::SourceChanged);
-                }
-                let bytes = &buffer[..read];
-                stream.write(bytes)?;
-                if index == 0 {
-                    scanner.feed(bytes);
-                } else {
-                    companion_bytes.extend_from_slice(bytes);
-                }
-                remaining -= read as u64;
-            }
-            if !same_source(&pinned[index], &source.metadata()?) {
-                return Err(Error::SourceChanged);
-            }
-            streams.push(stream.finish(role, schema)?);
-        }
-        // A companion can change while the transcript is read, or vice versa.
-        for (index, source) in sources.iter().enumerate() {
-            if !same_source(&pinned[index], &source.metadata()?) {
-                return Err(Error::SourceChanged);
-            }
-        }
-        scanner.finish();
-        if scanner.owned_records == 0 && scanner.has_inherited_records {
-            return Err(Error::InvalidSource);
-        }
-        let metadata = capture_metadata(candidate, scanner, &companion_bytes, sections);
+        };
         validate_section_bindings(&metadata.sections, &streams)?;
         let metadata_fingerprint = metadata.stable_fingerprint()?;
         let metadata = encode_bounded(&metadata, METADATA_BYTES)?;
-        let (id, role, schema) = stream_spec(stream_count - 1, stream_count);
+        let stream_count = streams.len() + 1;
+        let (id, role, schema) =
+            stream_spec(candidate.source_kind(), stream_count - 1, stream_count);
         let mut stream = ChunkStream::new(&directory, id, METADATA_BYTES + 2048);
         stream.write(&metadata)?;
         streams.push(stream.finish(role, schema)?);
         let mut manifest = CaptureManifest {
-            capture_version: CAPTURE_VERSION.into(),
+            version: CAPTURE_VERSION,
             identity: entry.identity.clone(),
             compression: "gzip-mtime0-os255-level6".into(),
             chunk_expanded_bytes: CHUNK_BYTES,
@@ -205,6 +248,10 @@ impl Spool {
     }
 
     /// Drain saved parts synchronously. Schedulers should use resume_step.
+    ///
+    /// Return after acceptance, completion submission, or a polling turn without
+    /// an upload. This helper is not a fair scheduler or a loop that waits for
+    /// integrity acceptance. Errors retain the same retry identity and bodies.
     pub fn resume(
         &mut self,
         identity: &CaptureIdentity,
@@ -224,6 +271,17 @@ impl Spool {
     }
 
     /// Reconcile and send at most one independently compressed saved chunk.
+    ///
+    /// A turn negotiates the frozen plan, reconciles authoritative status, and
+    /// hashes at most the selected saved chunk before sending it. Completion
+    /// uses a later turn after all required upload receipts exist. Poll again
+    /// while the returned state is `AwaitingIntegrity`.
+    ///
+    /// The caller must recheck current consent and authorization before each
+    /// turn. Errors never authorize a new identity, destination, or body.
+    /// `Preparing` returns [`Error::InterruptedCapture`]. Acceptance saves state
+    /// and verified status together before releasing chunks; its receipt remains
+    /// until [`Self::acknowledge_accepted`].
     pub fn resume_step(
         &mut self,
         identity: &CaptureIdentity,
@@ -262,12 +320,8 @@ impl Spool {
         }
         let status = transport.status(&reservation, &manifest, &plan)?;
         let confirmed = self.save_status(&directory, &mut entry, status)?;
-        if entry
-            .server_status
-            .as_ref()
-            .is_some_and(|status| status.integrity_accepted)
-        {
-            return self.accept_entry(&directory, entry, None);
+        if entry.state == CaptureState::Accepted {
+            return step_result(entry, None);
         }
         let missing = plan.chunks.iter().find(|chunk| {
             chunk.disposition == ChunkDisposition::Upload && !confirmed.contains(&chunk.key)
@@ -288,13 +342,6 @@ impl Spool {
             if !confirmed.contains(&planned.key) {
                 return Err(Error::InvalidServerStatus);
             }
-            if entry
-                .server_status
-                .as_ref()
-                .is_some_and(|status| status.integrity_accepted)
-            {
-                return self.accept_entry(&directory, entry, Some(planned.key.clone()));
-            }
             return step_result(entry, Some(planned.key.clone()));
         }
         if !entry.completion_submitted {
@@ -307,28 +354,10 @@ impl Spool {
             let status = transport.status(&reservation, &manifest, &plan)?;
             self.save_status(&directory, &mut entry, status)?;
         }
-        if entry
-            .server_status
-            .as_ref()
-            .is_some_and(|status| status.integrity_accepted)
-        {
-            return self.accept_entry(&directory, entry, None);
-        }
         step_result(entry, None)
     }
 
-    fn accept_entry(
-        &self,
-        directory: &Directory,
-        mut entry: QueueEntry,
-        uploaded: Option<ChunkKey>,
-    ) -> Result<ResumeStep> {
-        entry.state = CaptureState::Accepted;
-        self.save(directory, &entry)?;
-        self.release_accepted_bytes(&entry.identity.capture_id)?;
-        step_result(entry, uploaded)
-    }
-
+    /// Commit verified acceptance with its state before releasing saved chunks.
     fn save_status(
         &self,
         directory: &Directory,
@@ -339,12 +368,23 @@ impl Spool {
         let plan = entry.upload_plan.as_ref().ok_or(Error::CorruptSpool)?;
         let confirmed = validate_status(&status, manifest, plan)?;
         validate_status_progress(entry.server_status.as_ref(), &status)?;
+        if status.integrity_accepted {
+            entry.state = CaptureState::Accepted;
+        }
         entry.server_status = Some(status);
         self.save(directory, entry)?;
+        if entry.state == CaptureState::Accepted {
+            self.release_accepted_bytes(&entry.identity.capture_id)?;
+        }
         Ok(confirmed)
     }
 
     /// Use only for an explicit capture cancellation, not logout or executor stop.
+    ///
+    /// This saves cancellation before removing local bytes and the queue entry.
+    /// It does not cancel remote uploads or delete remote content. The host must
+    /// keep terminal request state and never reuse the capture ID.
+    /// Accepted entries return [`Error::AlreadyAccepted`] and retain their receipt.
     pub fn cancel(&mut self, identity: &CaptureIdentity) -> Result<()> {
         identity.validate()?;
         let name = &identity.capture_id;
@@ -363,6 +403,10 @@ impl Spool {
 
     /// Call only after the host durably saves the accepted fingerprint and
     /// terminal request state. Until then, the accepted receipt stays queued.
+    ///
+    /// The identity must match exactly. Pending entries return
+    /// [`Error::NotAccepted`]. An I/O failure may leave deletion in progress;
+    /// reopen the spool to finish it and consult the host's saved terminal state.
     pub fn acknowledge_accepted(&mut self, identity: &CaptureIdentity) -> Result<()> {
         identity.validate()?;
         let entry = self.read_entry(&identity.capture_id)?;
@@ -392,8 +436,15 @@ impl Spool {
     }
 
     fn read_directory_entry(&self, directory: &Directory, name: &str) -> Result<QueueEntry> {
-        let entry: QueueEntry =
+        let record: serde_json::Value =
             serde_json::from_slice(&directory.read_bounded("record.json", RECORD_BYTES)?)?;
+        if let Some(manifest) = record.get("manifest").filter(|value| !value.is_null())
+            && manifest.get("version").and_then(serde_json::Value::as_u64)
+                != Some(u64::from(CAPTURE_VERSION))
+        {
+            return Err(Error::UnsupportedFormat);
+        }
+        let entry: QueueEntry = serde_json::from_value(record)?;
         entry.identity.validate().map_err(|_| Error::CorruptSpool)?;
         if name != entry.identity.capture_id {
             return Err(Error::CorruptSpool);
@@ -511,7 +562,19 @@ impl Spool {
                 self.remove_entry(&name)?;
                 continue;
             }
-            let entry = self.read_entry(&name)?;
+            let mut entry = self.read_entry(&name)?;
+            if matches!(
+                entry.state,
+                CaptureState::Queued | CaptureState::AwaitingIntegrity
+            ) && entry
+                .server_status
+                .as_ref()
+                .is_some_and(|status| status.integrity_accepted)
+            {
+                // Older records can save acceptance before the state transition.
+                entry.state = CaptureState::Accepted;
+                self.save(&self.root.open_dir(&name)?, &entry)?;
+            }
             if entry.state == CaptureState::Accepted {
                 self.release_accepted_bytes(&name)?;
             } else if entry.state == CaptureState::Cancelled {
@@ -591,16 +654,134 @@ impl Spool {
     }
 }
 
-fn capture_metadata(
+/// Stream one pinned file generation after its reservation is durable.
+fn capture_claude(
+    directory: &Directory,
     candidate: &Candidate,
+    source: &ClaudeSource,
+    mut files: Vec<File>,
+    pinned: Vec<Metadata>,
+    sections: MetadataSections,
+) -> Result<(Vec<CapturedStream>, CaptureMetadata)> {
+    let mut streams = Vec::new();
+    let mut scanner =
+        NativeMetadata::new(&source.native_session_id, source.native_agent_id.as_deref());
+    let mut companion_bytes = Vec::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let stream_count = files.len() + 1;
+    for (index, file) in files.iter_mut().enumerate() {
+        if !same_source(&pinned[index], &file.metadata()?) {
+            return Err(Error::SourceChanged);
+        }
+        let (id, role, schema) = stream_spec(CaptureSourceKind::ClaudeJsonl, index, stream_count);
+        let size = pinned[index].len();
+        let mut stream = ChunkStream::new(directory, id, size + size / 100 + 1024);
+        let mut remaining = size;
+        while remaining > 0 {
+            let count = remaining.min(buffer.len() as u64) as usize;
+            let read = file.read(&mut buffer[..count])?;
+            if read == 0 {
+                return Err(Error::SourceChanged);
+            }
+            let bytes = &buffer[..read];
+            stream.write(bytes)?;
+            if index == 0 {
+                scanner.feed(bytes);
+            } else {
+                companion_bytes.extend_from_slice(bytes);
+            }
+            remaining -= read as u64;
+        }
+        if !same_source(&pinned[index], &file.metadata()?) {
+            return Err(Error::SourceChanged);
+        }
+        streams.push(stream.finish(role, schema)?);
+    }
+    // Check both files again after streaming either one.
+    for (index, file) in files.iter().enumerate() {
+        if !same_source(&pinned[index], &file.metadata()?) {
+            return Err(Error::SourceChanged);
+        }
+    }
+    scanner.finish();
+    if scanner.owned_records == 0 && scanner.has_inherited_records {
+        return Err(Error::InvalidSource);
+    }
+    Ok((
+        streams,
+        claude_metadata(candidate, source, scanner, &companion_bytes, sections),
+    ))
+}
+
+#[cfg(unix)]
+/// Freeze one SQLite snapshot within the source and compressed-spool budgets.
+fn capture_opencode(
+    directory: &Directory,
+    candidate: &Candidate,
+    source: &crate::opencode::OpenCodeSource,
+    limits: &Limits,
+    sections: MetadataSections,
+) -> Result<(Vec<CapturedStream>, CaptureMetadata)> {
+    let (id, role, schema) = stream_spec(CaptureSourceKind::OpenCodeSqliteV2, 0, 2);
+    let maximum_compressed = limits.source_bytes + limits.source_bytes / 100 + 1024;
+    let mut stream = ChunkStream::new(directory, id, maximum_compressed);
+    let exported = crate::opencode::export(source, limits, |bytes| {
+        if bytes.len() as u64 > limits.source_bytes.saturating_sub(stream.bytes) {
+            return Err(Error::Limit);
+        }
+        stream.write(bytes)
+    })?;
+    let stream = stream.finish(role, schema)?;
+    let relationship = if let Some(parent) = exported.fork_session_id {
+        if parent == source.native_session_id() {
+            Relationship::Unknown
+        } else {
+            Relationship::Fork {
+                parent_source_id: candidate.scoped_key(&source.key_for_session(&parent)?),
+                proof: "opencode-session-v2-fork".into(),
+            }
+        }
+    } else if let Some(parent) = exported.parent_session_id {
+        if parent == source.native_session_id() {
+            Relationship::Unknown
+        } else {
+            Relationship::Child {
+                parent_source_id: candidate.scoped_key(&source.key_for_session(&parent)?),
+                proof: "opencode-session-v2-parent".into(),
+            }
+        }
+    } else {
+        Relationship::Unknown
+    };
+    let metadata = CaptureMetadata {
+        version: CAPTURE_VERSION,
+        agent: "opencode".into(),
+        source_format: "OpenCodeSqliteV2".into(),
+        native_session_id: source.native_session_id().into(),
+        native_agent_id: None,
+        source_agent_version: None,
+        version_observations: Vec::new(),
+        version_scan_complete: false,
+        owned_version_complete: false,
+        relationship,
+        history_completeness: "unknown".into(),
+        sections,
+    };
+    Ok((vec![stream], metadata))
+}
+
+/// Attribute only owned runtime versions and directly proved native relationships.
+fn claude_metadata(
+    candidate: &Candidate,
+    source: &ClaudeSource,
     scanner: NativeMetadata,
     companion: &[u8],
     sections: MetadataSections,
 ) -> CaptureMetadata {
-    let mut relationship = candidate.relationship.clone();
+    let mut relationship = source.relationship.clone();
     if scanner.fork_conflict {
         relationship = Relationship::Unknown;
-    } else if candidate.native_agent_id.is_some() {
+    } else if source.native_agent_id.is_some() {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(companion)
             && value.get("isFork").and_then(|value| value.as_bool()) == Some(true)
         {
@@ -608,12 +789,12 @@ fn capture_metadata(
                 Some(parent)
                     if safe_id(parent)
                         && !parent.starts_with("agent-")
-                        && candidate.native_agent_id.as_deref() != Some(parent) =>
+                        && source.native_agent_id.as_deref() != Some(parent) =>
                 {
                     Relationship::Fork {
                         parent_source_id: candidate.scoped_key(&format!(
                             "{}/subagents/agent-{parent}",
-                            candidate.native_session_id
+                            source.native_session_id
                         )),
                         proof: "claude-native-meta-v1".into(),
                     }
@@ -622,7 +803,7 @@ fn capture_metadata(
             };
         }
     } else if let Some(parent) = scanner.fork_parent {
-        relationship = if parent == candidate.native_session_id {
+        relationship = if parent == source.native_session_id {
             Relationship::Unknown
         } else {
             Relationship::Fork {
@@ -639,14 +820,12 @@ fn capture_metadata(
         None
     };
     CaptureMetadata {
-        schema_version: 1,
-        capture_version: CAPTURE_VERSION.into(),
+        version: CAPTURE_VERSION,
         agent: "claude-code".into(),
         source_format: "ClaudeJsonl".into(),
-        native_session_id: candidate.native_session_id.clone(),
-        native_agent_id: candidate.native_agent_id.clone(),
+        native_session_id: source.native_session_id.clone(),
+        native_agent_id: source.native_agent_id.clone(),
         source_agent_version,
-        recorded_agent_versions: scanner.versions.into_iter().collect(),
         version_observations: scanner.observations.into_iter().collect(),
         version_scan_complete: scanner.complete,
         owned_version_complete,

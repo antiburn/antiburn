@@ -1,9 +1,10 @@
-# Native capture v1
+# Native capture
 
-`antiburn-native-capture-v1` preserves exact native source streams for Cloud
-processing. Cloud owns semantic parsing. The desktop does not turn its local
-normalized session model into an upload payload. Local parsing and Burn Check
-coverage remain governed by [session coverage](../session-coverage.md) and
+Native capture preserves source before semantic normalization. Claude streams
+retain exact file bytes. OpenCode streams retain typed session-owned SQLite cells
+from one read snapshot, not a database copy. Cloud owns semantic parsing. The
+desktop does not upload its local normalized session model. Local parsing and
+Burn Check coverage remain governed by [session coverage](../session-coverage.md) and
 [check coverage](../check-coverage.md).
 
 This public contract is unreleased. The standalone
@@ -12,12 +13,16 @@ client. Its default feature set is empty. All capture code requires the explicit
 non-default Rust feature `cloud`. The library does not enable desktop sync,
 select a service URL, grant consent, or enable production.
 
+`CaptureManifest.version` and `CaptureMetadata.version` are the integer `1`.
+Strings, missing versions, and unsupported numbers are invalid. The synthetic
+fixture package has its own identity, separate from this numeric format version.
+
 ## Source ownership and capture
 
-Discovery accepts one explicitly authorized Claude `projects/<project>` directory.
-It never finds a home directory. Tests read only public synthetic fixtures and
-files they create in temporary directories. The host owns current source access
-policy, selected folders, consent, and scheduling.
+Discovery accepts one explicitly authorized source: a Claude `projects/<project>`
+directory or an OpenCode database. It never finds a home directory. Tests read only
+public synthetic fixtures and files they create in temporary directories. The
+host owns current source access policy, selected sources, consent, and scheduling.
 
 The host assigns one stable `source_scope_id` per account and device-local source
 root, then calls `Candidate::in_source_scope` before capture. Replacing a directory
@@ -25,11 +30,21 @@ access grant must not change that scope. It is not a grant ID or a repository ID
 The library permits unscoped candidates for synthetic fixtures; a host must not
 use unscoped keys across accounts or roots.
 
+`Candidate::source_kind()` identifies the source contract. `source_path()` is a
+display locator for the transcript or database; many OpenCode sessions share one
+path. Use `native_session_id()` and `source_id()` to identify selections, not that
+path alone. The host scopes candidates before assigning capture identities.
+
+### Claude files
+
 Discovery reads directory entries and metadata, not native content. It admits:
 
 - Direct `<session-id>.jsonl` transcripts, excluding `audit.jsonl`.
 - Independent `<session-id>/subagents/agent-<id>.jsonl` transcripts.
 - Only an admitted child's exact same-stem `agent-<id>.meta.json` companion.
+
+Non-UTF-8 filenames cannot name admitted sources. Discovery ignores them but
+counts them toward its directory-entry bound. Spool names remain strict UTF-8.
 
 Each root, child, orphan child, or fork has its own capture, reservation, and retry
 state. A parent capture does not merge child transcripts or fork replay sources.
@@ -59,15 +74,45 @@ bytes or metadata sections cannot replace that pending capture. Native bytes
 retain invalid JSON, original line endings, unknown fields, and an incomplete
 final record. Capture does not repair or clip them.
 
+### OpenCode SQLite
+
+`discover_opencode` reads bounded schema and session identities, not session
+payload. It returns independent root, child, and fork candidates from the
+OpenCode V2 `session_v2` source contract. V1 stores do not select a fallback.
+Native keys include the provider, database namespace, and session ID before the
+host's stable source scope is added.
+
+After reservation succeeds, capture opens a read-only snapshot and exports the
+selected session's owned rows and proved native dependencies. Ordinary additive
+columns retain their typed values. Known optional tables, native blob data,
+structural limits, and unsafe-source rejection are defined in the
+[OpenCode source guide](opencode.md). Capture does not copy database or WAL files,
+read another session's content through a parent edge, follow external file paths,
+or fetch URLs.
+
+The [SQLite native format](sqlite-native.md) preserves table, column, key, order,
+and cell information without exporting DDL or indexes. It retains integer values,
+real-value bits, text bytes, and blob bytes with bounded fragments. Base64 and
+envelope overhead count toward the expanded source bound. The connection closes
+before capture returns.
+
+OpenCode reserves `limits.source_bytes + METADATA_BYTES` expanded bytes before
+payload reads, even when the selected source is smaller. Admission also reserves
+the conservative compressed bound and both queue record slots. The exporter and
+spool sink both enforce the expanded bound; compressed writes remain bounded.
+Failures leave an interrupted entry, not a smaller successful capture.
+
 ## Independent stream layout
 
-The manifest contains ordered streams. It does not contain a concatenated
-transcript/companion/metadata byte stream.
+Claude captures contain transcript, optional companion, and metadata streams in
+that order. OpenCode captures contain native rows and metadata only. These are
+ordered independent streams, not one concatenated upload body.
 
 | Stream ID | Role | Schema | Bytes |
 | --- | --- | --- | --- |
 | `transcript` | `native_transcript` | `claude-jsonl` | Exact native JSONL |
 | `native-companion` | `native_companion` | `claude-agent-meta-json` | Exact owned companion, when present |
+| `native-rows` | `native_rows` | `antiburn-sqlite-native` | Typed OpenCode SQLite cells; numeric format version inside its header |
 | `capture-metadata` | `capture_metadata` | `antiburn-capture-metadata-v1` | Compact UTF-8 metadata JSON |
 
 Each stream records its stable ID, role, schema, full expanded byte length,
@@ -77,15 +122,19 @@ The generated metadata stream is always present and nonempty.
 
 Chunk boundaries restart for every stream. Each non-final chunk expands to
 exactly 8,388,608 bytes (8 MiB). Each final chunk expands to 1 through 8,388,608
-bytes. A small companion or metadata sidecar has its own chunk. An empty native
-stream has length zero, SHA-256 of the empty byte string, and zero chunks. It
-does not create an empty gzip member.
+bytes. A small companion or metadata sidecar has its own chunk. An empty Claude
+file stream has length zero, SHA-256 of the empty byte string, and zero chunks.
+It does not create an empty gzip member. An OpenCode stream is nonempty and
+includes the SQLite native header and end record.
 
 Each chunk is one independent gzip member: level 6, modification time zero, OS
 byte 255, and no filename or comment. The compression name is
 `gzip-mtime0-os255-level6`. Each chunk records a zero-based index within its
-stream, expanded offset, expanded and compressed lengths, and both digests.
-`ChunkKey { stream_id, index }` identifies a chunk. All offsets are stream-local.
+stream, expanded and compressed lengths, and both digests.
+`ChunkKey { stream_id, index }` identifies a chunk. The expanded offset is
+`index * 8,388,608` after validating consecutive indices, full non-final chunks,
+and the stream's total expanded length. Offsets are stream-local and are not
+serialized on chunks.
 
 The lockfile and synthetic wire references pin this implementation's compressor
 output. Resume sends saved compressed bytes. An upgrade must not recompress a
@@ -98,9 +147,12 @@ the stable metadata stream.
 
 ## Stable metadata and source fingerprint
 
-`CaptureMetadata` has schema version 1, capture version, agent `claude-code`,
-source format `ClaudeJsonl`, native filename session and agent IDs, version
+`CaptureMetadata` has integer `version: 1`, native identity, provider version
 evidence, relationship, history completeness, and optional typed sections.
+Claude uses agent `claude-code`, source format `ClaudeJsonl`, and native filename
+session and child agent IDs. OpenCode uses agent `opencode`, source format
+`OpenCodeSqliteV2`, and its native session ID. OpenCode personas do not set
+`native_agent_id`.
 It has no capture ID, account, destination, automatic timestamp, or queue state.
 These operation values must not change the source bytes for an unchanged
 native source and unchanged meaningful metadata.
@@ -113,8 +165,8 @@ unknown fields. A data field named `unix_millis` is not removed. The saved metad
 stream retains the actual observation time and its exact wire digest.
 
 `source_fingerprint` hashes compact JSON with fields in this order:
-`capture_version`, `metadata_fingerprint`, and `streams`. The last field contains
-only ordered native stream descriptors, each with `stream_id`, `role`, `schema`,
+`version` with integer value `1`, `metadata_fingerprint`, and `streams`. The last
+field contains only ordered native stream descriptors, each with `stream_id`, `role`, `schema`,
 `expanded_bytes`, and `expanded_sha256` in that order. It excludes operation
 identity, compressed representation, and the physical metadata stream descriptor.
 Consumers must verify the metadata fingerprint against expanded metadata and
@@ -138,7 +190,7 @@ and consent state, honor current permissions and deletion state, and continue
 reconciliation for saved captures. A prior fingerprint does not prove that
 remote data remains available.
 
-### Historical producer versions
+### Claude historical producer versions
 
 `source_agent_version` comes only from records owned by the captured source.
 It never comes from an installed executable or another agent's replayed record.
@@ -156,8 +208,9 @@ can retain bytes without claiming an owned runtime version.
 The scanner keeps at most 16 distinct version strings, plus their bounded
 `owned`, `inherited`, or `unknown` observations. Here `inherited` means that a
 record names another logical owner; it does not itself prove a fork edge.
-`recorded_agent_versions` retains the observed set without attributing it to the
-current producer.
+`version_observations` retains these values and their ownership without
+attributing inherited or unknown versions to the current producer. Consumers
+can derive a distinct version set from these observations.
 
 The source version is non-null only when a complete bounded scan finds owned
 records, every owned record has a valid recorded version, and all owned versions
@@ -171,15 +224,29 @@ owned record without a version. Its source version stays null. Version
 observations do not establish complete retained history. History completeness
 is always `unknown`.
 
+### OpenCode historical producer versions
+
+`source_agent_version` is null. A native session creation or import version does
+not prove the runtime that produced its full history. Those cells remain in the
+native row stream. `version_observations` is empty, and `version_scan_complete`
+and `owned_version_complete` are false because the Claude scanner does not apply.
+History completeness remains `unknown`.
+
 ### Relationships
 
-`unknown` means that capture has no accepted direct relationship proof. `child`
-names the parent source key from the exact subagents layout. A root `fork` needs
+`unknown` means that capture has no accepted direct relationship proof. For
+Claude, `child` names the parent source key from the exact subagents layout. A root `fork` needs
 an owned native `forkedFrom.sessionId`. A child `fork` needs its exact companion's
 `isFork: true` and unprefixed `parentAgentId`. Self-references and conflicting
 owned fork evidence do not prove a fork edge. Similar text, timestamps, or
 repository association do not establish lineage. A parent edge does not imply
 that the parent was captured.
+
+OpenCode takes `parent_session_id` and `fork_session_id` from the same snapshot as
+its native rows. A valid fork takes precedence when both edges exist; both raw
+columns remain in source. Parent keys stay in the selected database namespace and
+host scope. Missing columns, absent edges, and self-references do not prove a
+relationship. A relationship never reads parent content or grants access to it.
 
 ## Typed optional metadata sections
 
@@ -263,9 +330,10 @@ write, file sync, atomic rename, and directory sync. Interrupted publication and
 terminal deletion have distinct recoverable names. Fully saved captures become
 `queued` and survive restart without reopening sources.
 
-Default bounds are 512 MiB per transcript, 64 KiB per companion and generated
-metadata stream, 1 GiB expanded capture size, 512 queue entries, and 2 GiB of
-spool bytes. A record cannot exceed 512 KiB. Streaming reads use 64 KiB buffers.
+Default bounds are 512 MiB per Claude transcript or expanded OpenCode native-row
+stream, 64 KiB per companion and generated metadata stream, 1 GiB expanded capture
+size, 512 queue entries, and 2 GiB of spool bytes. A record cannot exceed 512 KiB.
+File streaming reads use 64 KiB buffers; SQLite uses bounded cell fragments.
 Before native reads, capture reserves conservative compressed size and room for
 two bounded queue records. Limits may be lowered within the supported bounds.
 
@@ -278,7 +346,8 @@ state. `resume` is a synchronous draining helper, not a fair scheduler.
 One spool permits one executor and at most one synchronous part upload at a
 time. The host must also bound its root list, discovery workers, and pending
 selections. Per-root discovery limits are not an aggregate limit across roots.
-Run these synchronous calls on a native worker, not the UI thread.
+Run these blocking calls on bounded native workers, never on UI or async runtime
+threads. The library does not own an executor or require a Tokio runtime.
 
 Progress separates total compressed bytes, required transfer bytes, reused
 bytes, and server-confirmed upload bytes. Before negotiation,
@@ -295,6 +364,9 @@ Explicit capture cancellation is the only other byte-release path.
 
 After integrity acceptance, the spool releases chunk files but keeps the bounded
 accepted receipt, manifest, plan, and final status. Restart retains this receipt.
+The spool saves verified status and accepted state in one atomic record update
+before releasing chunks. Opening also recovers a valid accepted status saved
+with a pending state. This recovery preserves the receipt and denies cancellation.
 The host must durably save its accepted fingerprint and terminal request state,
 then call `acknowledge_accepted`. Only that call removes the accepted queue entry.
 `cancel` rejects an accepted entry with `AlreadyAccepted`; acknowledgment rejects
@@ -308,6 +380,68 @@ Transport errors use closed values. Filesystem errors expose only their error
 kind. Content, credentials, paths, signed URLs, and raw service errors must not
 enter logs, analytics, or renderer status.
 
+### Caller and transport ownership
+
+The native host owns source grants, current consent, credentials, durable request
+selection, and accepted-source state. The spool owns its records and saved bytes.
+Returned entries are snapshots, not a storage API. Renderer code must not choose
+upload locations, hold credentials, or run synchronous capture and upload calls.
+
+`Transport` keeps service I/O outside the capture library. Implementors must
+preserve exact request bindings, validate upload locations and redirects, bound
+response sizes and timeouts, and map failures to closed errors. Upload must send
+the exact supplied gzip body. A short body is an error, not a reason to repair or
+recompress it. A failed request can still have succeeded remotely; reconcile
+under the same saved identity, manifest, and plan.
+
+The [`Transport` API](../../crates/antiburn-cloud-capture/src/contract.rs) states
+the ordering, idempotency, and receipt rules for each method. Those rules do not
+select an HTTP API or enable a service endpoint.
+
+### Failure and operator recovery
+
+`UnsupportedSource` means that the native database schema or ownership rules are
+unsupported or unsafe. Capture does not silently omit that source, switch
+formats, or expose raw SQL errors. This is separate from a saved wire format
+that the current build cannot read.
+
+Saved captures from a different wire format return `UnsupportedFormat` before
+record recovery or upload. The spool does not rewrite their records, recompress
+their chunks, or release their bytes. This includes the string-version format.
+Before changing builds, drain or explicitly cancel pending captures under the
+original build and acknowledge accepted receipts after saving host state. If
+that build is unavailable, preserve a private copy for operator recovery. Do not
+edit version fields or assign a new ID to make an old retry appear compatible.
+
+Inspect saved entries after a capture failure. Errors before queue publication
+may leave no entry. A published `preparing` entry cannot resume native reads.
+Keep it until explicit cancellation, then use a new ID to capture a later source
+generation. Do not replace a queued capture when the source or metadata changes.
+
+One corrupt record or invalid spool entry can prevent the whole spool from
+opening. Corruption is not permission to delete bytes, change a capture ID, or
+claim acceptance. Use this recovery procedure:
+
+1. Stop all executors for the spool. If limits changed, restore the prior limits
+   before trying to open it again. Saved entries must fit the configured limits;
+   drain pending work and acknowledge accepted receipts before lowering them.
+2. Preserve a private copy of the spool, its ownership and modes, and the host's
+   request and terminal state. Do not attach native bytes or raw records to logs,
+   analytics, issues, or support reports.
+3. Have an operator inspect the affected entry locally. Correct an access or
+   permission problem only against the trusted spool setup. Do not weaken the
+   symlink, ownership, hard-link, mode, or digest checks.
+4. If repair needs more work, an operator may move the whole affected capture
+   directory to a separate private quarantine while execution is stopped. Keep
+   every saved byte and its identity. Quarantine does not cancel the request or
+   authorize recapture. Retain its host selection and consent state, and restore
+   the entry under the same ID before resuming it.
+
+The library does not repair corrupt records or reconstruct missing saved chunks
+from a newer source. An explicit user cancellation remains the decision to
+release an unaccepted capture. An accepted receipt still needs the host's durable
+terminal state and acknowledgment.
+
 ## Synthetic fixtures and checks
 
 [`fixtures/cloud/capture-v1`](../../fixtures/cloud/capture-v1) is the public
@@ -315,13 +449,26 @@ enter logs, analytics, or renderer status.
 typed section example, and independent reference stream part by length and
 SHA-256. These synthetic shapes do not certify every historical Claude release.
 
+[`fixtures/cloud/opencode`](../../fixtures/cloud/opencode) contains synthetic
+earlier/current SQL inputs and real saved `ses_main` wire references. Tests
+rebuild the current source in separate temporary roots and compare its manifest
+and exact gzip parts with the checked-in output. The package manifest pins each
+input and reference file by byte length and SHA-256.
+
 ```sh
 cargo fmt --manifest-path crates/antiburn-cloud-capture/Cargo.toml --check
+cargo check --manifest-path crates/antiburn-cloud-capture/Cargo.toml --lib --locked
 cargo clippy --manifest-path crates/antiburn-cloud-capture/Cargo.toml --all-targets --features cloud --locked -- -D warnings
 cargo nextest run --manifest-path crates/antiburn-cloud-capture/Cargo.toml --features cloud --locked
 ```
 
-The explicit reference writer reads only this synthetic package:
+CI selects this workspace for capture source and synthetic package changes. It
+checks the default library separately and enables `cloud` for Clippy and Nextest.
+The non-UTF-8 filesystem cases run on Linux, which permits those filenames.
+Windows builds do not establish native capture support. None of these checks
+enables Cloud in desktop builds or releases.
+
+The explicit reference writer reads only these two synthetic packages:
 
 ```sh
 cargo run --manifest-path crates/antiburn-cloud-capture/Cargo.toml --features cloud --locked --example write_fixture

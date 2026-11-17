@@ -56,6 +56,25 @@ fn synthetic_sections_bind_to_exact_native_bytes_and_local_data() {
 }
 
 #[test]
+fn native_row_streams_can_bind_source_position_evidence() {
+    let mut sections = sections();
+    let section = native_section(&mut sections);
+    let MetadataObservation::SourcePosition { stream_id, .. } = &mut section.observation else {
+        panic!("expected native observation");
+    };
+    *stream_id = "native-rows".into();
+    let MetadataEvidence::NativeStream { stream_id, .. } = &mut section.evidence[0] else {
+        panic!("expected native evidence");
+    };
+    *stream_id = "native-rows".into();
+    let mut stream = native_stream();
+    stream.stream_id = "native-rows".into();
+    stream.role = "native_rows".into();
+    stream.schema = "antiburn-sqlite-native".into();
+    validate_section_bindings(&sections, &[stream]).unwrap();
+}
+
+#[test]
 fn missing_observation_and_evidence_fail_deserialization_or_validation() {
     for field in ["observation", "evidence"] {
         let mut value = serde_json::to_value(sections()).unwrap();

@@ -16,8 +16,15 @@ The explicit non-default `cloud` feature in
 Claude JSONL and an owned child transcript's same-stem native companion. Each
 root, child, and proved fork has a separate capture. A replay-only file cannot
 claim another source's identity or runtime version. Unknown historical versions
-remain unknown. See the [native capture contract](cloud/capture-v1.md) and its
+remain unknown. See the [native capture contract](cloud/capture.md) and its
 public synthetic fixtures for the accepted layout, bounds, and ownership rules.
+
+OpenCode V2 capture exports session-owned SQLite rows and proved native
+dependencies from one read-only snapshot, including ordinary additive columns
+and known optional tables. It does not copy a database, follow external paths or
+URLs, or treat a creation/import version as the runtime for the whole history.
+Each child and fork remains independent. See the [OpenCode capture guide](cloud/opencode.md)
+for structural source support and limits; this is separate from local parsing.
 
 This library has no network client and does not enable desktop uploads. Capture
 does not expand local parsing, normalized evidence, or Burn Check support below.
