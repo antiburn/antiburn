@@ -9,6 +9,19 @@ This is a living contract. A discovered path does not prove that its contents
 are understood. A parsed field can support a scoped result without proving full
 historical coverage.
 
+## Optional Cloud native capture
+
+The explicit non-default `cloud` feature in
+[`antiburn-cloud-capture`](../crates/antiburn-cloud-capture) preserves exact
+Claude JSONL and an owned child transcript's same-stem native companion. Each
+root, child, and proved fork has a separate capture. A replay-only file cannot
+claim another source's identity or runtime version. Unknown historical versions
+remain unknown. See the [native capture contract](cloud/capture-v1.md) and its
+public synthetic fixtures for the accepted layout, bounds, and ownership rules.
+
+This library has no network client and does not enable desktop uploads. Capture
+does not expand local parsing, normalized evidence, or Burn Check support below.
+
 ## Project access and transcript indexing
 
 A transcript's project path is metadata, not authorization to read the project.

@@ -52,8 +52,8 @@ fn sha(bytes: &[u8]) -> String {
 #[derive(Default)]
 struct FakeTransport {
     manifest: Option<CaptureManifest>,
-    confirmed: BTreeSet<u32>,
-    uploaded: Vec<(u32, Vec<u8>)>,
+    confirmed: BTreeSet<ChunkKey>,
+    uploaded: Vec<(ChunkKey, Vec<u8>)>,
     reserve_calls: usize,
     complete_calls: usize,
     reuse_all: bool,
@@ -68,10 +68,14 @@ struct FakeTransport {
     reserve_failure: bool,
     drop_previous_receipt: bool,
     bad_manifest_digest: bool,
+    reuse_stream: Option<String>,
+    change_plan: bool,
+    wrong_plan_totals: bool,
+    bad_receipt_hash: bool,
 }
 
 impl FakeTransport {
-    fn response(&self, manifest: &CaptureManifest) -> ServerStatus {
+    fn response(&self, manifest: &CaptureManifest, plan: &UploadPlan) -> ServerStatus {
         let mut identity = manifest.identity.clone();
         if self.bad_identity {
             identity.account_id = "another-account".into();
@@ -79,17 +83,23 @@ impl FakeTransport {
         let mut parts: Vec<_> = self
             .confirmed
             .iter()
-            .map(|index| PartReceipt {
-                index: *index,
-                compressed_sha256: if self.bad_hash {
+            .map(|key| PartReceipt {
+                key: key.clone(),
+                compressed_sha256: if self.bad_receipt_hash {
                     "0".repeat(64)
                 } else {
-                    manifest.chunks[*index as usize].compressed_sha256.clone()
+                    manifest.chunk(key).unwrap().compressed_sha256.clone()
                 },
             })
             .collect();
-        if self.duplicate_receipt && !parts.is_empty() {
-            parts.push(parts[0].clone());
+        if self.duplicate_receipt {
+            let (key, chunk) = manifest.chunks().next().unwrap();
+            let part = PartReceipt {
+                key,
+                compressed_sha256: chunk.compressed_sha256.clone(),
+            };
+            parts.push(part.clone());
+            parts.push(part);
         }
         ServerStatus {
             identity,
@@ -98,7 +108,8 @@ impl FakeTransport {
             } else {
                 manifest.sha256().unwrap()
             },
-            parts,
+            plan_id: plan.plan_id.clone(),
+            uploaded_parts: parts,
             integrity_accepted: self.accepted,
         }
     }
@@ -124,29 +135,77 @@ impl Transport for FakeTransport {
         &mut self,
         _: &str,
         manifest: &CaptureManifest,
-    ) -> std::result::Result<ServerStatus, TransportError> {
+    ) -> std::result::Result<UploadPlan, TransportError> {
         self.manifest = Some(manifest.clone());
-        if self.reuse_all {
-            self.confirmed = manifest.chunks.iter().map(|chunk| chunk.index).collect();
+        let mut required_transfer_bytes = 0;
+        let mut reused_bytes = 0;
+        let chunks = manifest
+            .chunks()
+            .map(|(key, chunk)| {
+                let disposition = if self.reuse_all
+                    || self.reuse_stream.as_deref() == Some(key.stream_id.as_str())
+                {
+                    reused_bytes += chunk.compressed_bytes;
+                    ChunkDisposition::Reuse
+                } else {
+                    required_transfer_bytes += chunk.compressed_bytes;
+                    ChunkDisposition::Upload
+                };
+                PlannedChunk {
+                    key,
+                    disposition,
+                    compressed_sha256: if self.bad_hash {
+                        "0".repeat(64)
+                    } else {
+                        chunk.compressed_sha256.clone()
+                    },
+                }
+            })
+            .collect();
+        let mut identity = manifest.identity.clone();
+        if self.bad_identity {
+            identity.account_id = "another-account".into();
         }
-        Ok(self.response(manifest))
+        if self.wrong_plan_totals {
+            required_transfer_bytes += 1;
+        }
+        Ok(UploadPlan {
+            identity,
+            manifest_sha256: if self.bad_manifest_digest {
+                "0".repeat(64)
+            } else {
+                manifest.sha256().unwrap()
+            },
+            plan_id: if self.change_plan {
+                "changed-plan".into()
+            } else {
+                "synthetic-plan".into()
+            },
+            chunks,
+            required_transfer_bytes,
+            reused_bytes,
+        })
     }
 
     fn status(
         &mut self,
         _: &str,
         manifest: &CaptureManifest,
+        plan: &UploadPlan,
     ) -> std::result::Result<ServerStatus, TransportError> {
         if self.drop_previous_receipt && self.confirmed.len() > 1 {
-            self.confirmed.remove(&0);
+            let first = self.uploaded.first().unwrap().0.clone();
+            self.confirmed.remove(&first);
         }
-        Ok(self.response(manifest))
+        Ok(self.response(manifest, plan))
     }
 
     fn upload_part(
         &mut self,
         _: &str,
-        _: &CaptureIdentity,
+        _: &CaptureManifest,
+        _: &UploadPlan,
+        key: &ChunkKey,
         chunk: &Chunk,
         body: &mut dyn Read,
     ) -> std::result::Result<(), TransportError> {
@@ -154,8 +213,8 @@ impl Transport for FakeTransport {
         body.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes.len() as u64, chunk.compressed_bytes);
         assert_eq!(sha(&bytes), chunk.compressed_sha256);
-        self.uploaded.push((chunk.index, bytes));
-        self.confirmed.insert(chunk.index);
+        self.uploaded.push((key.clone(), bytes));
+        self.confirmed.insert(key.clone());
         if self.fail_upload_after_receipt {
             self.fail_upload_after_receipt = false;
             return Err(TransportError::Offline);
@@ -167,6 +226,7 @@ impl Transport for FakeTransport {
         &mut self,
         _: &str,
         _: &CaptureManifest,
+        _: &UploadPlan,
     ) -> std::result::Result<(), TransportError> {
         self.complete_calls += 1;
         if self.fail_complete {
@@ -182,8 +242,21 @@ impl Transport for FakeTransport {
 
 fn expanded(root: &Path, manifest: &CaptureManifest) -> Vec<u8> {
     let mut bytes = Vec::new();
-    for chunk in &manifest.chunks {
-        let compressed = fs::read(root.join(format!("chunk-{:05}.gz", chunk.index))).unwrap();
+    for stream in &manifest.streams {
+        let part = expanded_stream(root, stream);
+        assert_eq!(sha(&part), stream.expanded_sha256);
+        assert_eq!(part.len() as u64, stream.expanded_bytes);
+        bytes.extend(part);
+    }
+    bytes
+}
+
+fn expanded_stream(root: &Path, stream: &CapturedStream) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for chunk in &stream.chunks {
+        let compressed =
+            fs::read(root.join(format!("chunk-{}-{:05}.gz", stream.stream_id, chunk.index)))
+                .unwrap();
         assert_eq!(sha(&compressed), chunk.compressed_sha256);
         let mut part = Vec::new();
         GzDecoder::new(compressed.as_slice())
@@ -194,15 +267,51 @@ fn expanded(root: &Path, manifest: &CaptureManifest) -> Vec<u8> {
         assert_eq!(&compressed[..10], &[31, 139, 8, 0, 0, 0, 0, 0, 0, 255]);
         bytes.extend(part);
     }
-    assert_eq!(sha(&bytes), manifest.expanded_sha256);
-    assert_eq!(bytes.len() as u64, manifest.expanded_bytes);
     bytes
 }
 
 fn metadata(bytes: &[u8], manifest: &CaptureManifest) -> CaptureMetadata {
-    let file = manifest.files.last().unwrap();
-    serde_json::from_slice(&bytes[file.offset as usize..(file.offset + file.bytes) as usize])
-        .unwrap()
+    let start = manifest
+        .streams
+        .iter()
+        .take(manifest.streams.len() - 1)
+        .map(|stream| stream.expanded_bytes)
+        .sum::<u64>() as usize;
+    serde_json::from_slice(&bytes[start..]).unwrap()
+}
+
+fn local_section(data: serde_json::Value) -> MetadataSection {
+    let data_sha256 = sha(&serde_json::to_vec(&data).unwrap());
+    MetadataSection {
+        schema: "synthetic-section-v1".into(),
+        producer: MetadataProducer {
+            name: "synthetic-producer".into(),
+            version: "1.0".into(),
+            unknown_fields: BTreeMap::new(),
+        },
+        observation: MetadataObservation::ObservedAt {
+            unix_millis: 1_700_000_000_000,
+            unknown_fields: BTreeMap::new(),
+        },
+        evidence: vec![MetadataEvidence::LocalObservation {
+            method: "synthetic-observation".into(),
+            data_sha256,
+            unknown_fields: BTreeMap::new(),
+        }],
+        data,
+        unknown_fields: BTreeMap::new(),
+    }
+}
+
+fn saved_chunks(root: &Path, manifest: &CaptureManifest) -> BTreeMap<ChunkKey, Vec<u8>> {
+    manifest
+        .chunks()
+        .map(|(key, _)| {
+            let bytes = fs::read(root.join(format!("chunk-{}-{:05}.gz", key.stream_id, key.index)))
+                .unwrap();
+            (key, bytes)
+        })
+        .collect()
 }
 
 #[test]
@@ -216,7 +325,10 @@ fn discovery_is_bounded_and_child_and_fork_sources_are_independent() {
         [
             "fork",
             "main",
+            "main/subagents/agent-conflicting-fork",
             "main/subagents/agent-fork",
+            "main/subagents/agent-inherited-only",
+            "main/subagents/agent-replay-only",
             "main/subagents/agent-worker",
             "unknown"
         ]
@@ -251,7 +363,7 @@ fn exact_native_and_companion_bytes_and_extensible_metadata_are_retained() {
             &candidate,
             BTreeMap::from([(
                 "synthetic.example.v1".into(),
-                serde_json::json!({"keep": true}),
+                local_section(serde_json::json!({"keep": true})),
             )]),
             &mut transport,
         )
@@ -261,25 +373,28 @@ fn exact_native_and_companion_bytes_and_extensible_metadata_are_retained() {
     let manifest = entry.manifest.unwrap();
     let root = temp.path().join("spool/capture-fork");
     let bytes = expanded(&root, &manifest);
-    for file in &manifest.files {
-        let captured = &bytes[file.offset as usize..(file.offset + file.bytes) as usize];
-        assert_eq!(sha(captured), file.sha256);
+    let mut offset = 0;
+    for stream in &manifest.streams {
+        let end = offset + stream.expanded_bytes as usize;
+        let captured = &bytes[offset..end];
+        assert_eq!(sha(captured), stream.expanded_sha256);
+        offset = end;
     }
     assert_eq!(
-        &bytes[..manifest.files[0].bytes as usize],
+        &bytes[..manifest.streams[0].expanded_bytes as usize],
         fs::read(candidate.transcript_path()).unwrap()
     );
-    let native_companion = &manifest.files[1];
+    let companion_offset = manifest.streams[0].expanded_bytes as usize;
+    let native_companion = &manifest.streams[1];
     assert_eq!(
-        &bytes[native_companion.offset as usize
-            ..(native_companion.offset + native_companion.bytes) as usize],
+        &bytes[companion_offset..companion_offset + native_companion.expanded_bytes as usize],
         fs::read(candidate.transcript_path().with_extension("meta.json")).unwrap()
     );
     let metadata = metadata(&bytes, &manifest);
-    assert_eq!(metadata.source_agent_version, None);
+    assert_eq!(metadata.source_agent_version.as_deref(), Some("2.1.309"));
     assert_eq!(metadata.recorded_agent_versions, ["2.1.278", "2.1.309"]);
     assert!(metadata.version_scan_complete);
-    assert_eq!(metadata.extensions["synthetic.example.v1"]["keep"], true);
+    assert_eq!(metadata.sections["synthetic.example.v1"].data["keep"], true);
     assert_eq!(
         metadata.relationship,
         Relationship::Fork {
@@ -363,10 +478,10 @@ fn restart_reconciles_lost_part_response_without_reading_the_source_again() {
     let mut queue = spool(&temp);
     let entry = queue.resume(&identity, &mut transport).unwrap();
     assert_eq!(entry.state, CaptureState::AwaitingIntegrity);
-    assert_eq!(transport.uploaded.len(), 1);
+    assert_eq!(transport.uploaded.len(), 2);
     assert!(
         temp.path()
-            .join("spool/capture-resume/chunk-00000.gz")
+            .join("spool/capture-resume/chunk-transcript-00000.gz")
             .exists()
     );
     transport.accepted = true;
@@ -374,6 +489,14 @@ fn restart_reconciles_lost_part_response_without_reading_the_source_again() {
         queue.resume(&identity, &mut transport).unwrap().state,
         CaptureState::Accepted
     );
+    assert!(
+        !temp
+            .path()
+            .join("spool/capture-resume/chunk-transcript-00000.gz")
+            .exists()
+    );
+    assert_eq!(queue.entries().unwrap()[0].state, CaptureState::Accepted);
+    queue.acknowledge_accepted(&identity).unwrap();
     assert!(!temp.path().join("spool/capture-resume").exists());
 }
 
@@ -394,7 +517,9 @@ fn reused_chunks_and_202_completion_keep_every_saved_byte() {
             &mut transport,
         )
         .unwrap();
-    let chunk = temp.path().join("spool/capture-reuse/chunk-00000.gz");
+    let chunk = temp
+        .path()
+        .join("spool/capture-reuse/chunk-transcript-00000.gz");
     let before = fs::read(&chunk).unwrap();
     let entry = queue.resume(&identity, &mut transport).unwrap();
     assert_eq!(entry.state, CaptureState::AwaitingIntegrity);
@@ -680,7 +805,7 @@ fn source_disk_and_queue_limits_stop_work_before_reservation() {
 }
 
 #[test]
-fn fixed_expanded_chunk_layout_spans_native_file_boundaries() {
+fn fixed_expanded_chunks_are_independent_for_each_stream() {
     let temp = temporary();
     let project = temp.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -703,9 +828,12 @@ fn fixed_expanded_chunk_layout_spans_native_file_boundaries() {
         )
         .unwrap();
     let manifest = entry.manifest.unwrap();
-    assert_eq!(manifest.chunks.len(), 2);
-    assert_eq!(manifest.chunks[0].expanded_bytes, CHUNK_BYTES);
-    assert_eq!(manifest.chunks[1].expanded_offset, CHUNK_BYTES);
+    assert_eq!(manifest.streams.len(), 2);
+    assert_eq!(manifest.streams[0].chunks.len(), 2);
+    assert_eq!(manifest.streams[0].chunks[0].expanded_bytes, CHUNK_BYTES);
+    assert_eq!(manifest.streams[0].chunks[1].expanded_offset, CHUNK_BYTES);
+    assert_eq!(manifest.streams[1].chunks.len(), 1);
+    assert_eq!(manifest.streams[1].chunks[0].expanded_offset, 0);
     let bytes = expanded(&temp.path().join("spool/capture-large"), &manifest);
     let metadata = metadata(&bytes, &manifest);
     assert_eq!(metadata.source_agent_version, None);
@@ -727,7 +855,9 @@ fn corrupted_saved_bytes_block_upload_and_do_not_release_capture() {
             &mut transport,
         )
         .unwrap();
-    let path = temp.path().join("spool/capture-corrupt/chunk-00000.gz");
+    let path = temp
+        .path()
+        .join("spool/capture-corrupt/chunk-transcript-00000.gz");
     let mut bytes = fs::read(&path).unwrap();
     bytes[20] ^= 1;
     fs::write(&path, bytes).unwrap();
@@ -768,7 +898,7 @@ fn mismatched_and_duplicate_server_receipts_never_release_bytes() {
         ));
         assert!(
             temp.path()
-                .join("spool/capture-status/chunk-00000.gz")
+                .join("spool/capture-status/chunk-transcript-00000.gz")
                 .exists()
         );
     }
@@ -796,7 +926,7 @@ fn capture_matches_the_public_saved_wire_reference() {
         .capture(
             identity("main", "fixture-main"),
             &candidate("main"),
-            BTreeMap::new(),
+            serde_json::from_slice(&fs::read(fixtures().join("sections.json")).unwrap()).unwrap(),
             &mut FakeTransport::default(),
         )
         .unwrap();
@@ -804,10 +934,20 @@ fn capture_matches_the_public_saved_wire_reference() {
         serde_json::from_slice(&fs::read(fixtures().join("reference/main.capture.json")).unwrap())
             .unwrap();
     assert_eq!(entry.manifest.unwrap(), expected);
-    assert_eq!(
-        fs::read(temp.path().join("spool/fixture-main/chunk-00000.gz")).unwrap(),
-        fs::read(fixtures().join("reference/main.chunk-00000.gz")).unwrap(),
-    );
+    for (key, _) in expected.chunks() {
+        assert_eq!(
+            fs::read(temp.path().join(format!(
+                "spool/fixture-main/chunk-{}-{:05}.gz",
+                key.stream_id, key.index
+            )))
+            .unwrap(),
+            fs::read(fixtures().join(format!(
+                "reference/main.{}.chunk-{:05}.gz",
+                key.stream_id, key.index
+            )))
+            .unwrap(),
+        );
+    }
 }
 
 #[test]
@@ -929,7 +1069,10 @@ fn restart_cleans_interrupted_publication_and_terminal_deletion_only() {
     assert_eq!(queue.entries().unwrap()[0].identity, id);
     assert!(!root.join(".new-unpublished").exists());
     assert!(!root.join(".delete-accepted").exists());
-    assert!(root.join("capture-survivor/chunk-00000.gz").exists());
+    assert!(
+        root.join("capture-survivor/chunk-transcript-00000.gz")
+            .exists()
+    );
 }
 
 #[test]
@@ -955,13 +1098,13 @@ fn many_independent_pending_captures_survive_restart() {
     assert_eq!(queue.entries().unwrap().len(), 39);
     assert!(
         temp.path()
-            .join("spool/capture-018/chunk-00000.gz")
+            .join("spool/capture-018/chunk-transcript-00000.gz")
             .exists()
     );
 }
 
 #[test]
-fn oversized_extensions_fail_before_reservation() {
+fn oversized_sections_fail_before_reservation() {
     let temp = temporary();
     let mut queue = spool(&temp);
     let mut transport = FakeTransport::default();
@@ -971,7 +1114,7 @@ fn oversized_extensions_fail_before_reservation() {
             &candidate("main"),
             BTreeMap::from([(
                 "synthetic.large.v1".into(),
-                serde_json::json!("x".repeat(40 * 1024))
+                local_section(serde_json::json!("x".repeat(40 * 1024)))
             )]),
             &mut transport,
         ),
@@ -1003,7 +1146,7 @@ fn orphan_child_capture_does_not_require_or_read_a_parent_transcript() {
         )
         .unwrap();
     let manifest = entry.manifest.unwrap();
-    assert_eq!(manifest.files.len(), 2);
+    assert_eq!(manifest.streams.len(), 2);
     let bytes = expanded(&temp.path().join("spool/capture-orphan"), &manifest);
     assert_eq!(&bytes[..original.len()], original);
     let metadata = metadata(&bytes, &manifest);
@@ -1022,7 +1165,7 @@ fn invalid_version_fields_and_conflicting_fork_edges_stay_unknown() {
     let temp = temporary();
     let project = temp.path().join("project");
     fs::create_dir(&project).unwrap();
-    fs::write(project.join("conflict.jsonl"), b"{\"version\":\"2.1.309\",\"forkedFrom\":{\"sessionId\":\"first\"}}\n{\"version\":42,\"forkedFrom\":{\"sessionId\":\"second\"}}\n").unwrap();
+    fs::write(project.join("conflict.jsonl"), b"{\"sessionId\":\"conflict\",\"version\":\"2.1.309\",\"forkedFrom\":{\"sessionId\":\"first\"}}\n{\"sessionId\":\"conflict\",\"version\":42,\"forkedFrom\":{\"sessionId\":\"second\"}}\n").unwrap();
     let candidate = discover_claude(&project, &Limits::default())
         .unwrap()
         .remove(0);
@@ -1107,17 +1250,20 @@ fn regressed_server_receipts_block_completion_and_keep_all_chunks() {
     ));
     assert_eq!(transport.complete_calls, 0);
     assert_eq!(transport.uploaded.len(), 2);
-    for index in 0..2 {
+    let saved_status = queue.entries().unwrap().remove(0).server_status.unwrap();
+    assert_eq!(saved_status.uploaded_parts.len(), 1);
+    assert_eq!(saved_status.uploaded_parts[0].key.stream_id, "transcript");
+    for stream in ["transcript", "capture-metadata"] {
         assert!(
             temp.path()
-                .join(format!("spool/capture-regression/chunk-{index:05}.gz"))
+                .join(format!("spool/capture-regression/chunk-{stream}-00000.gz"))
                 .exists()
         );
     }
 }
 
 #[test]
-fn restart_releases_only_durable_terminal_records() {
+fn an_accepted_flag_without_integrity_evidence_never_releases_bytes() {
     let temp = temporary();
     let mut queue = spool(&temp);
     let id = identity("main", "capture-terminal");
@@ -1133,9 +1279,15 @@ fn restart_releases_only_durable_terminal_records() {
     entry.state = CaptureState::Accepted;
     fs::write(&record, serde_json::to_vec(&entry).unwrap()).unwrap();
     drop(queue);
-    let queue = spool(&temp);
-    assert!(queue.entries().unwrap().is_empty());
-    assert!(!temp.path().join("spool/capture-terminal").exists());
+    assert!(matches!(
+        Spool::open(&temp.path().join("spool"), Limits::default()),
+        Err(Error::CorruptSpool)
+    ));
+    assert!(
+        temp.path()
+            .join("spool/capture-terminal/chunk-transcript-00000.gz")
+            .exists()
+    );
 }
 
 #[test]
@@ -1178,12 +1330,13 @@ fn spool_handles_do_not_follow_a_replaced_ancestor_after_admission() {
     assert_eq!(queue.entries().unwrap().len(), 1);
     assert!(
         moved_parent
-            .join("spool/capture-before-rename/chunk-00000.gz")
+            .join("spool/capture-before-rename/chunk-transcript-00000.gz")
             .exists()
     );
     assert!(fs::read_dir(&decoy).unwrap().next().is_none());
     transport.accepted = true;
     queue.resume(&first, &mut transport).unwrap();
+    queue.acknowledge_accepted(&first).unwrap();
     assert!(queue.entries().unwrap().is_empty());
     assert!(fs::read_dir(&decoy).unwrap().next().is_none());
 }
@@ -1230,5 +1383,794 @@ fn captured_sources_stay_bound_to_the_discovered_directory_after_rename() {
     assert_eq!(
         &bytes[original.len()..original.len() + companion.len()],
         companion
+    );
+}
+
+#[test]
+fn new_capture_identity_preserves_stable_streams_and_accepted_source_fingerprint() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let source = candidate("main");
+    let first_id = identity("main", "stable-first");
+    let mut first_transport = FakeTransport {
+        accept_on_complete: true,
+        ..FakeTransport::default()
+    };
+    let first = queue
+        .capture(
+            first_id.clone(),
+            &source,
+            BTreeMap::new(),
+            &mut first_transport,
+        )
+        .unwrap();
+    assert!(first.accepted_source_fingerprint().is_none());
+    let first_manifest = first.manifest.unwrap();
+    let accepted = queue.resume(&first_id, &mut first_transport).unwrap();
+    let fingerprint = accepted.accepted_source_fingerprint().unwrap();
+    let fingerprint: AcceptedSourceFingerprint =
+        serde_json::from_slice(&serde_json::to_vec(&fingerprint).unwrap()).unwrap();
+    queue.acknowledge_accepted(&first_id).unwrap();
+    let second_id = identity("main", "stable-second");
+    let second = queue
+        .capture(
+            second_id.clone(),
+            &source,
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let second_manifest = second.manifest.as_ref().unwrap();
+    assert_ne!(
+        first_manifest.sha256().unwrap(),
+        second_manifest.sha256().unwrap()
+    );
+    assert_eq!(
+        first_manifest.source_fingerprint,
+        second_manifest.source_fingerprint
+    );
+    assert_eq!(first_manifest.streams, second_manifest.streams);
+    assert!(fingerprint.matches_source(second_manifest));
+    assert!(second.accepted_source_fingerprint().is_none());
+    let bytes = expanded(&temp.path().join("spool/stable-second"), second_manifest);
+    let metadata = serde_json::to_value(metadata(&bytes, second_manifest)).unwrap();
+    assert!(metadata.get("identity").is_none());
+    assert!(
+        !serde_json::to_string(&metadata)
+            .unwrap()
+            .contains("stable-second")
+    );
+    drop(queue);
+    let mut queue = spool(&temp);
+    let pending = queue.entries().unwrap().remove(0);
+    assert_eq!(pending.identity, second_id);
+    assert!(fingerprint.matches_source(pending.manifest.as_ref().unwrap()));
+    let before = saved_chunks(
+        &temp.path().join("spool/stable-second"),
+        pending.manifest.as_ref().unwrap(),
+    );
+    let fenced = CaptureIdentity {
+        account_id: "other-account".into(),
+        ..second_id.clone()
+    };
+    assert!(matches!(
+        queue.resume_step(&fenced, &mut FakeTransport::default()),
+        Err(Error::IdentityMismatch)
+    ));
+    let mut fenced_manifest = pending.manifest.unwrap();
+    fenced_manifest.identity = fenced;
+    assert!(!fingerprint.matches_source(&fenced_manifest));
+    assert_eq!(
+        before,
+        saved_chunks(&temp.path().join("spool/stable-second"), &fenced_manifest)
+    );
+}
+
+#[test]
+fn metadata_only_changes_change_the_source_fingerprint_without_replacing_a_pending_retry() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let source = candidate("main");
+    let sections = BTreeMap::from([(
+        "synthetic.snapshot".into(),
+        local_section(serde_json::json!({"checkout":"first"})),
+    )]);
+    let first_id = identity("main", "metadata-first");
+    let first = queue
+        .capture(
+            first_id.clone(),
+            &source,
+            sections,
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let first_manifest = first.manifest.as_ref().unwrap();
+    let before = saved_chunks(&temp.path().join("spool/metadata-first"), first_manifest);
+    let changed = BTreeMap::from([(
+        "synthetic.snapshot".into(),
+        local_section(serde_json::json!({"checkout":"second"})),
+    )]);
+    let second = queue
+        .capture(
+            identity("main", "metadata-second"),
+            &source,
+            changed.clone(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let second_manifest = second.manifest.unwrap();
+    assert_ne!(
+        first_manifest.source_fingerprint,
+        second_manifest.source_fingerprint
+    );
+    assert_eq!(first_manifest.streams[0], second_manifest.streams[0]);
+    assert_ne!(
+        first_manifest.streams.last(),
+        second_manifest.streams.last()
+    );
+    let retried = queue
+        .capture(first_id, &source, changed, &mut FakeTransport::default())
+        .unwrap();
+    assert_eq!(retried, first);
+    assert_eq!(
+        before,
+        saved_chunks(
+            &temp.path().join("spool/metadata-first"),
+            retried.manifest.as_ref().unwrap()
+        )
+    );
+    assert_eq!(queue.entries().unwrap().len(), 2);
+}
+
+#[test]
+fn empty_native_streams_have_zero_chunks_and_a_separate_nonempty_metadata_stream() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let children = project.join("main/subagents");
+    fs::create_dir_all(&children).unwrap();
+    fs::write(children.join("agent-empty.jsonl"), b"").unwrap();
+    fs::write(children.join("agent-empty.meta.json"), b"").unwrap();
+    let source = discover_claude(&project, &Limits::default())
+        .unwrap()
+        .remove(0);
+    let mut queue = spool(&temp);
+    let id = identity(source.source_id(), "empty-streams");
+    let mut transport = FakeTransport::default();
+    let entry = queue
+        .capture(id.clone(), &source, BTreeMap::new(), &mut transport)
+        .unwrap();
+    let manifest = entry.manifest.unwrap();
+    assert_eq!(manifest.streams.len(), 3);
+    for stream in &manifest.streams[..2] {
+        assert_eq!(stream.expanded_bytes, 0);
+        assert_eq!(stream.expanded_sha256, sha(b""));
+        assert!(stream.chunks.is_empty());
+    }
+    assert_eq!(manifest.streams[2].stream_id, "capture-metadata");
+    assert_eq!(manifest.streams[2].chunks.len(), 1);
+    assert_eq!(manifest.chunks().count(), 1);
+    let step = queue.resume_step(&id, &mut transport).unwrap();
+    assert_eq!(step.uploaded_chunk.unwrap().stream_id, "capture-metadata");
+    assert_eq!(transport.uploaded.len(), 1);
+    assert_eq!(transport.complete_calls, 0);
+}
+
+#[test]
+fn inherited_fork_versions_do_not_become_owned_source_versions() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let source = candidate("main/subagents/agent-inherited-only");
+    let entry = queue
+        .capture(
+            identity(source.source_id(), "inherited-version"),
+            &source,
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let manifest = entry.manifest.unwrap();
+    let metadata = metadata(
+        &expanded(&temp.path().join("spool/inherited-version"), &manifest),
+        &manifest,
+    );
+    assert_eq!(metadata.source_agent_version, None);
+    assert_eq!(metadata.recorded_agent_versions, ["2.1.278"]);
+    assert!(metadata.version_scan_complete);
+    assert!(!metadata.owned_version_complete);
+    assert_eq!(
+        metadata.version_observations,
+        [VersionObservation {
+            version: "2.1.278".into(),
+            ownership: VersionOwnership::Inherited,
+        }]
+    );
+}
+
+#[test]
+fn frozen_plan_survives_restart_and_rejects_changed_negotiation() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let id = identity("main", "frozen-plan");
+    let mut transport = FakeTransport::default();
+    queue
+        .capture(
+            id.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let step = queue.resume_step(&id, &mut transport).unwrap();
+    let saved = step.entry.upload_plan.clone().unwrap();
+    let before = saved_chunks(
+        &temp.path().join("spool/frozen-plan"),
+        step.entry.manifest.as_ref().unwrap(),
+    );
+    drop(queue);
+    let mut queue = spool(&temp);
+    assert_eq!(
+        queue.entries().unwrap()[0].upload_plan.as_ref(),
+        Some(&saved)
+    );
+    transport.change_plan = true;
+    assert!(matches!(
+        queue.resume_step(&id, &mut transport),
+        Err(Error::PlanChanged)
+    ));
+    let retained = queue.entries().unwrap().remove(0);
+    assert_eq!(retained.upload_plan.as_ref(), Some(&saved));
+    assert_eq!(
+        before,
+        saved_chunks(
+            &temp.path().join("spool/frozen-plan"),
+            retained.manifest.as_ref().unwrap()
+        )
+    );
+    assert_eq!(transport.uploaded.len(), 1);
+    transport.change_plan = false;
+    transport.reuse_stream = Some("capture-metadata".into());
+    assert!(matches!(
+        queue.resume_step(&id, &mut transport),
+        Err(Error::PlanChanged)
+    ));
+    assert_eq!(
+        queue.entries().unwrap()[0].upload_plan.as_ref(),
+        Some(&saved)
+    );
+    transport.reuse_stream = None;
+    transport.accept_on_complete = true;
+    assert_eq!(
+        queue.resume(&id, &mut transport).unwrap().state,
+        CaptureState::Accepted
+    );
+}
+
+#[test]
+fn transfer_reuse_and_server_confirmation_have_separate_durable_totals() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let source = candidate("main/subagents/agent-fork");
+    let id = identity(source.source_id(), "mixed-plan");
+    let mut transport = FakeTransport {
+        reuse_stream: Some("transcript".into()),
+        ..FakeTransport::default()
+    };
+    let entry = queue
+        .capture(id.clone(), &source, BTreeMap::new(), &mut transport)
+        .unwrap();
+    assert!(!entry.progress().unwrap().negotiated);
+    let manifest = entry.manifest.unwrap();
+    let transcript_bytes = manifest.streams[0].chunks[0].compressed_bytes;
+    let companion_bytes = manifest.streams[1].chunks[0].compressed_bytes;
+    let metadata_bytes = manifest.streams[2].chunks[0].compressed_bytes;
+    let all_saved = saved_chunks(&temp.path().join("spool/mixed-plan"), &manifest);
+    let first = queue.resume_step(&id, &mut transport).unwrap();
+    assert_eq!(first.uploaded_chunk.unwrap().stream_id, "native-companion");
+    assert!(first.progress.negotiated);
+    assert_eq!(
+        first.progress.required_transfer_bytes,
+        companion_bytes + metadata_bytes
+    );
+    assert_eq!(first.progress.reused_bytes, transcript_bytes);
+    assert_eq!(first.progress.confirmed_upload_bytes, companion_bytes);
+    assert_eq!(
+        first.progress.total_compressed_bytes,
+        transcript_bytes + companion_bytes + metadata_bytes
+    );
+    drop(queue);
+    let mut queue = spool(&temp);
+    assert_eq!(
+        queue.entries().unwrap()[0].progress().unwrap(),
+        first.progress
+    );
+    let second = queue.resume_step(&id, &mut transport).unwrap();
+    assert_eq!(second.uploaded_chunk.unwrap().stream_id, "capture-metadata");
+    assert_eq!(
+        second.progress.confirmed_upload_bytes,
+        companion_bytes + metadata_bytes
+    );
+    assert_eq!(transport.complete_calls, 0);
+    let submitted = queue.resume_step(&id, &mut transport).unwrap();
+    assert_eq!(submitted.entry.state, CaptureState::AwaitingIntegrity);
+    assert!(submitted.entry.accepted_source_fingerprint().is_none());
+    assert_eq!(
+        all_saved,
+        saved_chunks(&temp.path().join("spool/mixed-plan"), &manifest)
+    );
+    assert_eq!(transport.complete_calls, 1);
+    queue.resume_step(&id, &mut transport).unwrap();
+    assert_eq!(transport.complete_calls, 1);
+}
+
+#[test]
+fn invalid_transfer_totals_or_uploaded_receipts_fail_closed() {
+    for bad_plan in [true, false] {
+        let temp = temporary();
+        let mut queue = spool(&temp);
+        let id = identity("main", "invalid-plan-status");
+        let mut transport = FakeTransport {
+            wrong_plan_totals: bad_plan,
+            bad_receipt_hash: !bad_plan,
+            ..FakeTransport::default()
+        };
+        let entry = queue
+            .capture(
+                id.clone(),
+                &candidate("main"),
+                BTreeMap::new(),
+                &mut transport,
+            )
+            .unwrap();
+        let manifest = entry.manifest.unwrap();
+        let before = saved_chunks(&temp.path().join("spool/invalid-plan-status"), &manifest);
+        assert!(matches!(
+            queue.resume_step(&id, &mut transport),
+            Err(Error::InvalidServerStatus)
+        ));
+        assert_eq!(
+            before,
+            saved_chunks(&temp.path().join("spool/invalid-plan-status"), &manifest)
+        );
+        assert_eq!(transport.complete_calls, 0);
+    }
+}
+
+#[test]
+fn bounded_steps_allow_round_robin_upload_of_many_chunk_sources() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
+    fs::File::create(project.join("large.jsonl"))
+        .unwrap()
+        .set_len(CHUNK_BYTES + 1)
+        .unwrap();
+    let source = discover_claude(&project, &Limits::default())
+        .unwrap()
+        .remove(0);
+    let mut queue = spool(&temp);
+    let first = identity("large", "fair-first");
+    let second = identity("large", "fair-second");
+    let mut one = FakeTransport::default();
+    let mut two = FakeTransport::default();
+    queue
+        .capture(first.clone(), &source, BTreeMap::new(), &mut one)
+        .unwrap();
+    queue
+        .capture(second.clone(), &source, BTreeMap::new(), &mut two)
+        .unwrap();
+    for index in 0..2 {
+        for (id, transport) in [(&first, &mut one), (&second, &mut two)] {
+            let before = transport.uploaded.len();
+            let step = queue.resume_step(id, transport).unwrap();
+            assert_eq!(
+                step.uploaded_chunk,
+                Some(ChunkKey {
+                    stream_id: "transcript".into(),
+                    index
+                })
+            );
+            assert_eq!(transport.uploaded.len(), before + 1);
+            assert_eq!(transport.complete_calls, 0);
+        }
+    }
+    assert_eq!(queue.entries().unwrap().len(), 2);
+}
+
+#[test]
+fn a_resume_step_does_not_read_later_saved_chunks() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let id = identity("main", "bounded-read");
+    let mut transport = FakeTransport::default();
+    queue
+        .capture(
+            id.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let later = temp
+        .path()
+        .join("spool/bounded-read/chunk-capture-metadata-00000.gz");
+    let mut bytes = fs::read(&later).unwrap();
+    bytes[20] ^= 1;
+    fs::write(&later, bytes).unwrap();
+    let step = queue.resume_step(&id, &mut transport).unwrap();
+    assert_eq!(step.uploaded_chunk.unwrap().stream_id, "transcript");
+    assert_eq!(transport.uploaded.len(), 1);
+    assert!(matches!(
+        queue.resume_step(&id, &mut transport),
+        Err(Error::CorruptSpool)
+    ));
+    assert!(later.exists());
+}
+
+#[test]
+fn malformed_stream_chunk_layout_blocks_resume_without_releasing_bytes() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let id = identity("main", "malformed-stream-layout");
+    let mut transport = FakeTransport::default();
+    let mut entry = queue
+        .capture(
+            id.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let original = entry.manifest.clone().unwrap();
+    let before = saved_chunks(
+        &temp.path().join("spool/malformed-stream-layout"),
+        &original,
+    );
+    entry.manifest.as_mut().unwrap().streams[0].chunks[0].expanded_offset = 1;
+    fs::write(
+        temp.path()
+            .join("spool/malformed-stream-layout/record.json"),
+        serde_json::to_vec(&entry).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        queue.resume_step(&id, &mut transport),
+        Err(Error::CorruptSpool)
+    ));
+    assert!(transport.uploaded.is_empty());
+    assert_eq!(
+        before,
+        saved_chunks(
+            &temp.path().join("spool/malformed-stream-layout"),
+            &original
+        )
+    );
+}
+
+#[test]
+fn an_owned_companion_only_change_changes_the_source_fingerprint() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let children = project.join("main/subagents");
+    fs::create_dir_all(&children).unwrap();
+    fs::write(
+        children.join("agent-child.jsonl"),
+        b"{\"sessionId\":\"main\",\"agentId\":\"child\",\"version\":\"2.1.309\"}\n",
+    )
+    .unwrap();
+    let companion = children.join("agent-child.meta.json");
+    fs::write(&companion, b"{\"isFork\":false,\"syntheticExtra\":1}\n").unwrap();
+    let source = discover_claude(&project, &Limits::default())
+        .unwrap()
+        .remove(0);
+    let mut queue = spool(&temp);
+    let first = queue
+        .capture(
+            identity(source.source_id(), "companion-first"),
+            &source,
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap()
+        .manifest
+        .unwrap();
+    fs::write(&companion, b"{\"isFork\":false,\"syntheticExtra\":2}\n").unwrap();
+    let second = queue
+        .capture(
+            identity(source.source_id(), "companion-second"),
+            &source,
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap()
+        .manifest
+        .unwrap();
+    assert_eq!(first.streams[0], second.streams[0]);
+    assert_ne!(first.streams[1], second.streams[1]);
+    assert_eq!(first.streams[2], second.streams[2]);
+    assert_ne!(first.source_fingerprint, second.source_fingerprint);
+    assert_eq!(queue.entries().unwrap().len(), 2);
+}
+
+#[test]
+fn observation_timestamps_change_wire_bytes_but_not_stable_source_fingerprints() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let source = candidate("main");
+    let first_section = local_section(serde_json::json!({"checkout":"same","unix_millis":7}));
+    let mut later_section = first_section.clone();
+    if let MetadataObservation::ObservedAt { unix_millis, .. } = &mut later_section.observation {
+        *unix_millis += 123456;
+    }
+    let first = queue
+        .capture(
+            identity("main", "time-first"),
+            &source,
+            BTreeMap::from([("synthetic.snapshot".into(), first_section)]),
+            &mut FakeTransport::default(),
+        )
+        .unwrap()
+        .manifest
+        .unwrap();
+    let later = queue
+        .capture(
+            identity("main", "time-later"),
+            &source,
+            BTreeMap::from([("synthetic.snapshot".into(), later_section.clone())]),
+            &mut FakeTransport::default(),
+        )
+        .unwrap()
+        .manifest
+        .unwrap();
+    assert_ne!(first.streams[1], later.streams[1]);
+    assert_ne!(first.sha256().unwrap(), later.sha256().unwrap());
+    assert_eq!(first.metadata_fingerprint, later.metadata_fingerprint);
+    assert_eq!(first.source_fingerprint, later.source_fingerprint);
+    later_section.data["unix_millis"] = 8.into();
+    if let MetadataEvidence::LocalObservation { data_sha256, .. } = &mut later_section.evidence[0] {
+        *data_sha256 = sha(&serde_json::to_vec(&later_section.data).unwrap());
+    }
+    let changed = queue
+        .capture(
+            identity("main", "time-data"),
+            &source,
+            BTreeMap::from([("synthetic.snapshot".into(), later_section)]),
+            &mut FakeTransport::default(),
+        )
+        .unwrap()
+        .manifest
+        .unwrap();
+    assert_ne!(later.metadata_fingerprint, changed.metadata_fingerprint);
+    assert_ne!(later.source_fingerprint, changed.source_fingerprint);
+}
+
+#[test]
+fn accepted_receipts_survive_restart_until_the_host_acknowledges_them() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let id = identity("main", "accepted-receipt");
+    let mut transport = FakeTransport {
+        accept_on_complete: true,
+        ..FakeTransport::default()
+    };
+    queue
+        .capture(
+            id.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    assert!(matches!(
+        queue.acknowledge_accepted(&id),
+        Err(Error::NotAccepted)
+    ));
+    let entry = queue.resume(&id, &mut transport).unwrap();
+    let accepted = entry.accepted_source_fingerprint().unwrap();
+    assert!(
+        !temp
+            .path()
+            .join("spool/accepted-receipt/chunk-transcript-00000.gz")
+            .exists()
+    );
+    assert!(matches!(queue.cancel(&id), Err(Error::AlreadyAccepted)));
+    drop(queue);
+    let mut queue = spool(&temp);
+    assert_eq!(
+        queue.entries().unwrap().as_slice(),
+        std::slice::from_ref(&entry)
+    );
+    assert_eq!(
+        queue.entries().unwrap()[0].accepted_source_fingerprint(),
+        Some(accepted)
+    );
+    let fenced = CaptureIdentity {
+        account_id: "wrong-account".into(),
+        ..id.clone()
+    };
+    assert!(matches!(
+        queue.acknowledge_accepted(&fenced),
+        Err(Error::IdentityMismatch)
+    ));
+    assert_eq!(
+        queue
+            .resume_step(
+                &id,
+                &mut FakeTransport {
+                    reserve_failure: true,
+                    ..FakeTransport::default()
+                }
+            )
+            .unwrap()
+            .entry,
+        entry
+    );
+    queue.acknowledge_accepted(&id).unwrap();
+    assert!(queue.entries().unwrap().is_empty());
+    drop(queue);
+    assert!(spool(&temp).entries().unwrap().is_empty());
+}
+
+#[test]
+fn inherited_only_native_records_cannot_establish_a_new_source_identity() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let source = candidate("main/subagents/agent-replay-only");
+    let id = identity(source.source_id(), "replay-only");
+    let mut transport = FakeTransport::default();
+    assert!(matches!(
+        queue.capture(id.clone(), &source, BTreeMap::new(), &mut transport),
+        Err(Error::InvalidSource)
+    ));
+    assert_eq!(queue.entries().unwrap()[0].state, CaptureState::Preparing);
+    assert!(transport.uploaded.is_empty());
+    assert!(matches!(
+        queue.resume_step(&id, &mut transport),
+        Err(Error::InterruptedCapture)
+    ));
+    queue.cancel(&id).unwrap();
+    assert!(queue.entries().unwrap().is_empty());
+}
+
+#[test]
+fn conflicting_owned_fork_evidence_cannot_be_hidden_by_a_child_companion() {
+    let temp = temporary();
+    let source = candidate("main/subagents/agent-conflicting-fork");
+    let mut queue = spool(&temp);
+    let entry = queue
+        .capture(
+            identity(source.source_id(), "conflicting-child"),
+            &source,
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let manifest = entry.manifest.unwrap();
+    let bytes = expanded(&temp.path().join("spool/conflicting-child"), &manifest);
+    assert_eq!(
+        &bytes[..manifest.streams[0].expanded_bytes as usize],
+        fs::read(source.transcript_path()).unwrap()
+    );
+    let metadata = metadata(&bytes, &manifest);
+    assert_eq!(metadata.relationship, Relationship::Unknown);
+    assert_eq!(metadata.source_agent_version.as_deref(), Some("2.1.309"));
+}
+
+#[test]
+fn malformed_ownership_fields_do_not_prove_a_historical_runtime_version() {
+    for extra in [r#""agentId":42"#, r#""isSidechain":"false""#] {
+        let temp = temporary();
+        let project = temp.path().join("project");
+        fs::create_dir(&project).unwrap();
+        fs::write(
+            project.join("main.jsonl"),
+            format!("{{\"sessionId\":\"main\",\"version\":\"2.1.309\",{extra}}}\n"),
+        )
+        .unwrap();
+        let source = discover_claude(&project, &Limits::default())
+            .unwrap()
+            .remove(0);
+        let mut queue = spool(&temp);
+        let entry = queue
+            .capture(
+                identity("main", "invalid-owner"),
+                &source,
+                BTreeMap::new(),
+                &mut FakeTransport::default(),
+            )
+            .unwrap();
+        let manifest = entry.manifest.unwrap();
+        let captured = metadata(
+            &expanded(&temp.path().join("spool/invalid-owner"), &manifest),
+            &manifest,
+        );
+        assert_eq!(captured.source_agent_version, None);
+        assert!(!captured.owned_version_complete);
+    }
+}
+
+#[test]
+fn queue_admission_keeps_both_record_slots_reserved_for_every_entry() {
+    let temp = temporary();
+    let limits = Limits {
+        spool_bytes: 2 * RECORD_BYTES + 200_000,
+        ..Limits::default()
+    };
+    let mut queue = Spool::open(&temp.path().join("spool"), limits.clone()).unwrap();
+    let first = identity("main", "record-headroom-first");
+    let mut transport = FakeTransport::default();
+    queue
+        .capture(
+            first.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    assert!(matches!(
+        queue.capture(
+            identity("main", "record-headroom-second"),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport
+        ),
+        Err(Error::Limit)
+    ));
+    assert_eq!(transport.reserve_calls, 1);
+    queue.resume_step(&first, &mut transport).unwrap();
+    drop(queue);
+    let queue = Spool::open(&temp.path().join("spool"), limits).unwrap();
+    let entry = &queue.entries().unwrap()[0];
+    assert!(entry.progress().unwrap().negotiated);
+    assert!(entry.progress().unwrap().confirmed_upload_bytes > 0);
+}
+
+#[test]
+fn changed_native_bytes_do_not_replace_the_saved_generation() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let path = project.join("main.jsonl");
+    fs::write(&path, b"{\"sessionId\":\"main\",\"synthetic\":1}\n").unwrap();
+    let source = discover_claude(&project, &Limits::default())
+        .unwrap()
+        .remove(0);
+    let mut queue = spool(&temp);
+    let first_id = identity("main", "generation-first");
+    let first = queue
+        .capture(
+            first_id.clone(),
+            &source,
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap();
+    let first_manifest = first.manifest.as_ref().unwrap();
+    let before = saved_chunks(&temp.path().join("spool/generation-first"), first_manifest);
+    fs::write(&path, b"{\"sessionId\":\"main\",\"synthetic\":2}\n").unwrap();
+    let later = queue
+        .capture(
+            identity("main", "generation-later"),
+            &source,
+            BTreeMap::new(),
+            &mut FakeTransport::default(),
+        )
+        .unwrap()
+        .manifest
+        .unwrap();
+    assert_ne!(first_manifest.source_fingerprint, later.source_fingerprint);
+    assert_eq!(
+        queue
+            .capture(
+                first_id,
+                &source,
+                BTreeMap::new(),
+                &mut FakeTransport::default()
+            )
+            .unwrap(),
+        first
+    );
+    assert_eq!(
+        saved_chunks(&temp.path().join("spool/generation-first"), first_manifest),
+        before
     );
 }

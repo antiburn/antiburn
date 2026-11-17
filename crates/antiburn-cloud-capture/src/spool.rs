@@ -1,12 +1,14 @@
-use crate::contract::{digest, encode_bounded, hex, safe_id};
+use crate::contract::{encode_bounded, hex, safe_id};
 use crate::directory::Directory;
 use crate::filesystem::same_source;
+use crate::protocol::{
+    stream_spec, validate_manifest, validate_plan, validate_status, validate_status_progress,
+};
 use crate::stream::{ChunkStream, NativeMetadata, chunk_name};
 use crate::*;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 const MAX_DIRECTORY_FILES: usize = 132;
@@ -54,14 +56,13 @@ impl Spool {
         &mut self,
         identity: CaptureIdentity,
         candidate: &Candidate,
-        extensions: BTreeMap<String, serde_json::Value>,
+        sections: MetadataSections,
         transport: &mut impl Transport,
     ) -> Result<QueueEntry> {
         identity.validate()?;
         if identity.source_id != candidate.source_id {
             return Err(Error::IdentityMismatch);
         }
-        encode_bounded(&extensions, METADATA_BYTES / 2)?;
         let name = identity.capture_id.clone();
         match self.root.open_dir(&name) {
             Ok(directory) => {
@@ -75,26 +76,19 @@ impl Spool {
             Err(Error::Io(std::io::ErrorKind::NotFound)) => {}
             Err(error) => return Err(error),
         }
-        let mut sources = vec![(
-            "transcript.jsonl",
-            "native_transcript",
-            candidate.directory.source_file(&candidate.filename)?,
-        )];
+        validate_sections(&sections)?;
+        let mut sources = vec![candidate.directory.source_file(&candidate.filename)?];
         if let Some(companion) = &candidate.companion {
-            sources.push((
-                "native.meta.json",
-                "native_companion",
-                candidate.directory.source_file(companion)?,
-            ));
+            sources.push(candidate.directory.source_file(companion)?);
         }
         let mut native_bytes = 0u64;
         let mut pinned = Vec::new();
-        for (name, _, source) in &sources {
+        for (index, source) in sources.iter().enumerate() {
             let metadata = source.metadata()?;
             if !same_source(&metadata, &metadata) {
                 return Err(Error::InvalidSource);
             }
-            let maximum = if *name == "native.meta.json" {
+            let maximum = if index > 0 {
                 METADATA_BYTES
             } else {
                 self.limits.source_bytes
@@ -114,7 +108,8 @@ impl Spool {
             return Err(Error::Limit);
         }
         let (used, count) = self.usage()?;
-        let maximum_compressed = maximum_expanded + maximum_expanded / 100 + 1024;
+        let maximum_compressed =
+            maximum_expanded + native_bytes / 100 + sources.len() as u64 * 1024 + 2048;
         let disk_reservation = maximum_compressed + 2 * RECORD_BYTES;
         if count >= self.limits.queue_entries
             || disk_reservation > self.limits.spool_bytes.saturating_sub(used)
@@ -126,6 +121,9 @@ impl Spool {
             state: CaptureState::Preparing,
             reservation_id: None,
             manifest: None,
+            upload_plan: None,
+            server_status: None,
+            completion_submitted: false,
         };
         let directory = self.create_entry(&name, &entry)?;
         let reservation_id = transport.reserve(&entry.identity, maximum_expanded)?;
@@ -135,17 +133,21 @@ impl Spool {
         entry.reservation_id = Some(reservation_id);
         self.save(&directory, &entry)?;
 
-        let mut stream = ChunkStream::new(&directory, maximum_compressed);
-        let mut files = Vec::new();
-        let mut scanner = NativeMetadata::new();
+        let mut streams = Vec::new();
+        let mut scanner = NativeMetadata::new(
+            &candidate.native_session_id,
+            candidate.native_agent_id.as_deref(),
+        );
         let mut companion_bytes = Vec::new();
         let mut buffer = [0u8; 64 * 1024];
-        for (index, (name, role, source)) in sources.iter_mut().enumerate() {
+        let stream_count = sources.len() + 1;
+        for (index, source) in sources.iter_mut().enumerate() {
             if !same_source(&pinned[index], &source.metadata()?) {
                 return Err(Error::SourceChanged);
             }
-            let offset = stream.bytes;
-            let mut hash = Sha256::new();
+            let (id, role, schema) = stream_spec(index, stream_count);
+            let size = pinned[index].len();
+            let mut stream = ChunkStream::new(&directory, id, size + size / 100 + 1024);
             let mut remaining = pinned[index].len();
             while remaining > 0 {
                 let count = remaining.min(buffer.len() as u64) as usize;
@@ -155,7 +157,6 @@ impl Spool {
                 }
                 let bytes = &buffer[..read];
                 stream.write(bytes)?;
-                hash.update(bytes);
                 if index == 0 {
                     scanner.feed(bytes);
                 } else {
@@ -166,59 +167,68 @@ impl Spool {
             if !same_source(&pinned[index], &source.metadata()?) {
                 return Err(Error::SourceChanged);
             }
-            files.push(CapturedFile {
-                name: (*name).into(),
-                role: (*role).into(),
-                offset,
-                bytes: pinned[index].len(),
-                sha256: hex(&hash.finalize()),
-            });
+            streams.push(stream.finish(role, schema)?);
         }
         // A companion can change while the transcript is read, or vice versa.
-        for (index, (_, _, source)) in sources.iter().enumerate() {
+        for (index, source) in sources.iter().enumerate() {
             if !same_source(&pinned[index], &source.metadata()?) {
                 return Err(Error::SourceChanged);
             }
         }
         scanner.finish();
-        let metadata = capture_metadata(
-            &entry.identity,
-            candidate,
-            scanner,
-            &companion_bytes,
-            extensions,
-        );
+        if scanner.owned_records == 0 && scanner.has_inherited_records {
+            return Err(Error::InvalidSource);
+        }
+        let metadata = capture_metadata(candidate, scanner, &companion_bytes, sections);
+        validate_section_bindings(&metadata.sections, &streams)?;
+        let metadata_fingerprint = metadata.stable_fingerprint()?;
         let metadata = encode_bounded(&metadata, METADATA_BYTES)?;
-        files.push(CapturedFile {
-            name: "capture-metadata.json".into(),
-            role: "capture_metadata".into(),
-            offset: stream.bytes,
-            bytes: metadata.len() as u64,
-            sha256: digest(&metadata),
-        });
+        let (id, role, schema) = stream_spec(stream_count - 1, stream_count);
+        let mut stream = ChunkStream::new(&directory, id, METADATA_BYTES + 2048);
         stream.write(&metadata)?;
-        let (chunks, expanded_sha256, expanded_bytes) = stream.finish()?;
-        entry.manifest = Some(CaptureManifest {
+        streams.push(stream.finish(role, schema)?);
+        let mut manifest = CaptureManifest {
             capture_version: CAPTURE_VERSION.into(),
             identity: entry.identity.clone(),
             compression: "gzip-mtime0-os255-level6".into(),
             chunk_expanded_bytes: CHUNK_BYTES,
-            expanded_bytes,
-            expanded_sha256,
-            files,
-            chunks,
-        });
+            metadata_fingerprint,
+            source_fingerprint: String::new(),
+            streams,
+        };
+        manifest.source_fingerprint = manifest.calculate_source_fingerprint()?;
+        validate_manifest(&manifest, &self.limits)?;
+        entry.manifest = Some(manifest);
         entry.state = CaptureState::Queued;
         self.save(&directory, &entry)?;
         Ok(entry)
     }
 
-    /// Reconcile the server's saved state before sending any saved part again.
+    /// Drain saved parts synchronously. Schedulers should use resume_step.
     pub fn resume(
         &mut self,
         identity: &CaptureIdentity,
         transport: &mut impl Transport,
     ) -> Result<QueueEntry> {
+        loop {
+            let step = self.resume_step(identity, transport)?;
+            if step.uploaded_chunk.is_none()
+                || matches!(
+                    step.entry.state,
+                    CaptureState::Accepted | CaptureState::Cancelled
+                )
+            {
+                return Ok(step.entry);
+            }
+        }
+    }
+
+    /// Reconcile and send at most one independently compressed saved chunk.
+    pub fn resume_step(
+        &mut self,
+        identity: &CaptureIdentity,
+        transport: &mut impl Transport,
+    ) -> Result<ResumeStep> {
         identity.validate()?;
         let name = &identity.capture_id;
         let directory = self.root.open_dir(name)?;
@@ -233,49 +243,105 @@ impl Spool {
             entry.state,
             CaptureState::Accepted | CaptureState::Cancelled
         ) {
-            return Ok(entry);
-        }
-        let manifest = entry.manifest.as_ref().ok_or(Error::CorruptSpool)?;
-        let reservation = entry.reservation_id.as_deref().ok_or(Error::CorruptSpool)?;
-        self.validate_saved_parts(&directory, manifest)?;
-        let status = transport.negotiate(reservation, manifest)?;
-        let mut confirmed = validate_status(&status, manifest)?;
-        if !status.integrity_accepted {
-            for chunk in &manifest.chunks {
-                if confirmed.contains(&chunk.index) {
-                    continue;
-                }
-                let body = directory.file(&chunk_name(chunk.index), false)?;
-                transport.upload_part(
-                    reservation,
-                    identity,
-                    chunk,
-                    &mut body.take(chunk.compressed_bytes),
-                )?;
-                let status = transport.status(reservation, manifest)?;
-                confirmed = validate_status(&status, manifest)?;
-                if !confirmed.contains(&chunk.index) {
-                    return Err(Error::InvalidServerStatus);
-                }
+            if entry.state == CaptureState::Accepted {
+                self.release_accepted_bytes(name)?;
             }
-            if confirmed.len() != manifest.chunks.len() {
+            return step_result(entry, None);
+        }
+        let manifest = entry.manifest.clone().ok_or(Error::CorruptSpool)?;
+        let reservation = entry.reservation_id.clone().ok_or(Error::CorruptSpool)?;
+        let plan = transport.negotiate(&reservation, &manifest)?;
+        validate_plan(&plan, &manifest)?;
+        if let Some(saved) = &entry.upload_plan {
+            if saved != &plan {
+                return Err(Error::PlanChanged);
+            }
+        } else {
+            entry.upload_plan = Some(plan.clone());
+            self.save(&directory, &entry)?;
+        }
+        let status = transport.status(&reservation, &manifest, &plan)?;
+        let confirmed = self.save_status(&directory, &mut entry, status)?;
+        if entry
+            .server_status
+            .as_ref()
+            .is_some_and(|status| status.integrity_accepted)
+        {
+            return self.accept_entry(&directory, entry, None);
+        }
+        let missing = plan.chunks.iter().find(|chunk| {
+            chunk.disposition == ChunkDisposition::Upload && !confirmed.contains(&chunk.key)
+        });
+        if let Some(planned) = missing {
+            let chunk = manifest.chunk(&planned.key).ok_or(Error::CorruptSpool)?;
+            let body = self.checked_part(&directory, &planned.key, chunk)?;
+            transport.upload_part(
+                &reservation,
+                &manifest,
+                &plan,
+                &planned.key,
+                chunk,
+                &mut body.take(chunk.compressed_bytes),
+            )?;
+            let status = transport.status(&reservation, &manifest, &plan)?;
+            let confirmed = self.save_status(&directory, &mut entry, status)?;
+            if !confirmed.contains(&planned.key) {
                 return Err(Error::InvalidServerStatus);
             }
-            // This state is durable before submission. A lost response resumes
-            // through negotiation and server status, not source recapture.
+            if entry
+                .server_status
+                .as_ref()
+                .is_some_and(|status| status.integrity_accepted)
+            {
+                return self.accept_entry(&directory, entry, Some(planned.key.clone()));
+            }
+            return step_result(entry, Some(planned.key.clone()));
+        }
+        if !entry.completion_submitted {
+            // Save intent before the idempotent completion request.
             entry.state = CaptureState::AwaitingIntegrity;
             self.save(&directory, &entry)?;
-            transport.complete(reservation, manifest)?;
-            let status = transport.status(reservation, manifest)?;
-            validate_status(&status, manifest)?;
-            if !status.integrity_accepted {
-                return Ok(entry);
-            }
+            transport.complete(&reservation, &manifest, &plan)?;
+            entry.completion_submitted = true;
+            self.save(&directory, &entry)?;
+            let status = transport.status(&reservation, &manifest, &plan)?;
+            self.save_status(&directory, &mut entry, status)?;
         }
+        if entry
+            .server_status
+            .as_ref()
+            .is_some_and(|status| status.integrity_accepted)
+        {
+            return self.accept_entry(&directory, entry, None);
+        }
+        step_result(entry, None)
+    }
+
+    fn accept_entry(
+        &self,
+        directory: &Directory,
+        mut entry: QueueEntry,
+        uploaded: Option<ChunkKey>,
+    ) -> Result<ResumeStep> {
         entry.state = CaptureState::Accepted;
-        self.save(&directory, &entry)?;
-        self.release_entry(name)?;
-        Ok(entry)
+        self.save(directory, &entry)?;
+        self.release_accepted_bytes(&entry.identity.capture_id)?;
+        step_result(entry, uploaded)
+    }
+
+    fn save_status(
+        &self,
+        directory: &Directory,
+        entry: &mut QueueEntry,
+        status: ServerStatus,
+    ) -> Result<std::collections::BTreeSet<ChunkKey>> {
+        let manifest = entry.manifest.as_ref().ok_or(Error::CorruptSpool)?;
+        let plan = entry.upload_plan.as_ref().ok_or(Error::CorruptSpool)?;
+        let confirmed = validate_status(&status, manifest, plan)?;
+        validate_status_progress(entry.server_status.as_ref(), &status)?;
+        entry.server_status = Some(status);
+        self.save(directory, entry)?;
+        Ok(confirmed)
     }
 
     /// Use only for an explicit capture cancellation, not logout or executor stop.
@@ -287,9 +353,26 @@ impl Spool {
         if entry.identity != *identity {
             return Err(Error::IdentityMismatch);
         }
+        if entry.state == CaptureState::Accepted {
+            return Err(Error::AlreadyAccepted);
+        }
         entry.state = CaptureState::Cancelled;
         self.save(&directory, &entry)?;
         self.release_entry(name)
+    }
+
+    /// Call only after the host durably saves the accepted fingerprint and
+    /// terminal request state. Until then, the accepted receipt stays queued.
+    pub fn acknowledge_accepted(&mut self, identity: &CaptureIdentity) -> Result<()> {
+        identity.validate()?;
+        let entry = self.read_entry(&identity.capture_id)?;
+        if entry.identity != *identity {
+            return Err(Error::IdentityMismatch);
+        }
+        if entry.state != CaptureState::Accepted {
+            return Err(Error::NotAccepted);
+        }
+        self.release_entry(&identity.capture_id)
     }
 
     fn create_entry(&self, name: &str, entry: &QueueEntry) -> Result<Directory> {
@@ -333,6 +416,42 @@ impl Spool {
         {
             return Err(Error::CorruptSpool);
         }
+        if entry.manifest.is_none()
+            && (entry.upload_plan.is_some()
+                || entry.server_status.is_some()
+                || entry.completion_submitted)
+        {
+            return Err(Error::CorruptSpool);
+        }
+        if entry.completion_submitted
+            && !matches!(
+                entry.state,
+                CaptureState::AwaitingIntegrity | CaptureState::Accepted | CaptureState::Cancelled
+            )
+        {
+            return Err(Error::CorruptSpool);
+        }
+        entry.progress().map_err(|_| Error::CorruptSpool)?;
+        if entry.state == CaptureState::Accepted
+            && (entry.manifest.is_none()
+                || entry.reservation_id.is_none()
+                || entry.upload_plan.is_none()
+                || !entry
+                    .server_status
+                    .as_ref()
+                    .is_some_and(|status| status.integrity_accepted))
+        {
+            return Err(Error::CorruptSpool);
+        }
+        if entry.state == CaptureState::AwaitingIntegrity {
+            let progress = entry.progress().map_err(|_| Error::CorruptSpool)?;
+            if entry.server_status.is_none()
+                || !progress.negotiated
+                || progress.confirmed_upload_bytes != progress.required_transfer_bytes
+            {
+                return Err(Error::CorruptSpool);
+            }
+        }
         Ok(entry)
     }
 
@@ -362,14 +481,24 @@ impl Spool {
         let mut used = 0u64;
         for name in &directories {
             let directory = self.root.open_dir(name)?;
+            // Each entry keeps both record slots reserved until host acknowledgment.
+            used = used.checked_add(2 * RECORD_BYTES).ok_or(Error::Limit)?;
             for name in directory.names(MAX_DIRECTORY_FILES)? {
                 let file = directory.file(&name, false)?;
-                used = used
-                    .checked_add(file.metadata()?.len())
-                    .ok_or(Error::Limit)?;
+                let size = file.metadata()?.len();
+                if name == "record.json" || name == "record.next" {
+                    if size > RECORD_BYTES {
+                        return Err(Error::CorruptSpool);
+                    }
+                    continue;
+                }
+                used = used.checked_add(size).ok_or(Error::Limit)?;
                 if used > self.limits.spool_bytes {
                     return Err(Error::Limit);
                 }
+            }
+            if used > self.limits.spool_bytes {
+                return Err(Error::Limit);
             }
         }
         Ok((used, directories.len()))
@@ -383,10 +512,9 @@ impl Spool {
                 continue;
             }
             let entry = self.read_entry(&name)?;
-            if matches!(
-                entry.state,
-                CaptureState::Accepted | CaptureState::Cancelled
-            ) {
+            if entry.state == CaptureState::Accepted {
+                self.release_accepted_bytes(&name)?;
+            } else if entry.state == CaptureState::Cancelled {
                 self.release_entry(&name)?;
             }
         }
@@ -397,6 +525,21 @@ impl Spool {
         let deleting = format!(".delete-{name}");
         self.root.rename(name, &deleting)?;
         self.remove_entry(&deleting)
+    }
+
+    fn release_accepted_bytes(&self, name: &str) -> Result<()> {
+        let directory = self.root.open_dir(name)?;
+        for file_name in directory.names(MAX_DIRECTORY_FILES)? {
+            if file_name == "record.json" || file_name == "record.next" {
+                continue;
+            }
+            if !file_name.starts_with("chunk-") || !file_name.ends_with(".gz") {
+                return Err(Error::CorruptSpool);
+            }
+            directory.file(&file_name, false)?;
+            directory.remove(&file_name, false)?;
+        }
+        directory.sync()
     }
 
     fn remove_entry(&self, name: &str) -> Result<()> {
@@ -423,45 +566,41 @@ impl Spool {
         Ok(())
     }
 
-    fn validate_saved_parts(
-        &self,
-        directory: &Directory,
-        manifest: &CaptureManifest,
-    ) -> Result<()> {
+    fn checked_part(&self, directory: &Directory, key: &ChunkKey, chunk: &Chunk) -> Result<File> {
         let mut buffer = [0; 64 * 1024];
-        for chunk in &manifest.chunks {
-            let mut file = directory.file(&chunk_name(chunk.index), false)?;
-            if file.metadata()?.len() != chunk.compressed_bytes {
-                return Err(Error::CorruptSpool);
-            }
-            let mut hash = Sha256::new();
-            let mut remaining = chunk.compressed_bytes;
-            while remaining > 0 {
-                let count = remaining.min(buffer.len() as u64) as usize;
-                let read = file.read(&mut buffer[..count])?;
-                if read == 0 {
-                    return Err(Error::CorruptSpool);
-                }
-                hash.update(&buffer[..read]);
-                remaining -= read as u64;
-            }
-            if hex(&hash.finalize()) != chunk.compressed_sha256 {
-                return Err(Error::CorruptSpool);
-            }
+        let mut file = directory.file(&chunk_name(key), false)?;
+        if file.metadata()?.len() != chunk.compressed_bytes {
+            return Err(Error::CorruptSpool);
         }
-        Ok(())
+        let mut hash = Sha256::new();
+        let mut remaining = chunk.compressed_bytes;
+        while remaining > 0 {
+            let count = remaining.min(buffer.len() as u64) as usize;
+            let read = file.read(&mut buffer[..count])?;
+            if read == 0 {
+                return Err(Error::CorruptSpool);
+            }
+            hash.update(&buffer[..read]);
+            remaining -= read as u64;
+        }
+        if hex(&hash.finalize()) != chunk.compressed_sha256 {
+            return Err(Error::CorruptSpool);
+        }
+        file.rewind()?;
+        Ok(file)
     }
 }
 
 fn capture_metadata(
-    identity: &CaptureIdentity,
     candidate: &Candidate,
     scanner: NativeMetadata,
     companion: &[u8],
-    extensions: BTreeMap<String, serde_json::Value>,
+    sections: MetadataSections,
 ) -> CaptureMetadata {
     let mut relationship = candidate.relationship.clone();
-    if candidate.native_agent_id.is_some() {
+    if scanner.fork_conflict {
+        relationship = Relationship::Unknown;
+    } else if candidate.native_agent_id.is_some() {
         if let Ok(value) = serde_json::from_slice::<serde_json::Value>(companion)
             && value.get("isFork").and_then(|value| value.as_bool()) == Some(true)
         {
@@ -482,8 +621,6 @@ fn capture_metadata(
                 _ => Relationship::Unknown,
             };
         }
-    } else if scanner.fork_conflict {
-        relationship = Relationship::Unknown;
     } else if let Some(parent) = scanner.fork_parent {
         relationship = if parent == candidate.native_session_id {
             Relationship::Unknown
@@ -494,112 +631,36 @@ fn capture_metadata(
             }
         };
     }
-    let source_agent_version = if scanner.complete && scanner.versions.len() == 1 {
-        scanner.versions.iter().next().cloned()
+    let owned_version_complete =
+        scanner.complete && scanner.owned_version_complete && scanner.owned_records > 0;
+    let source_agent_version = if owned_version_complete && scanner.owned_versions.len() == 1 {
+        scanner.owned_versions.iter().next().cloned()
     } else {
         None
     };
     CaptureMetadata {
         schema_version: 1,
         capture_version: CAPTURE_VERSION.into(),
-        identity: identity.clone(),
         agent: "claude-code".into(),
         source_format: "ClaudeJsonl".into(),
         native_session_id: candidate.native_session_id.clone(),
         native_agent_id: candidate.native_agent_id.clone(),
         source_agent_version,
         recorded_agent_versions: scanner.versions.into_iter().collect(),
+        version_observations: scanner.observations.into_iter().collect(),
         version_scan_complete: scanner.complete,
+        owned_version_complete,
         relationship,
         history_completeness: "unknown".into(),
-        extensions,
+        sections,
     }
 }
 
-fn valid_hash(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn validate_manifest(manifest: &CaptureManifest, limits: &Limits) -> Result<()> {
-    if manifest.capture_version != CAPTURE_VERSION
-        || manifest.compression != "gzip-mtime0-os255-level6"
-        || manifest.chunk_expanded_bytes != CHUNK_BYTES
-        || manifest.expanded_bytes == 0
-        || manifest.expanded_bytes > limits.capture_bytes
-        || !valid_hash(&manifest.expanded_sha256)
-        || manifest.chunks.is_empty()
-        || manifest.chunks.len() > 129
-        || !(2..=3).contains(&manifest.files.len())
-    {
-        return Err(Error::CorruptSpool);
-    }
-    let mut offset = 0;
-    for (index, chunk) in manifest.chunks.iter().enumerate() {
-        if chunk.index as usize != index
-            || chunk.expanded_offset != offset
-            || chunk.expanded_bytes == 0
-            || chunk.expanded_bytes > CHUNK_BYTES
-            || (index + 1 != manifest.chunks.len() && chunk.expanded_bytes != CHUNK_BYTES)
-            || chunk.compressed_bytes == 0
-            || chunk.compressed_bytes > CHUNK_BYTES + CHUNK_BYTES / 100 + 1024
-            || !valid_hash(&chunk.expanded_sha256)
-            || !valid_hash(&chunk.compressed_sha256)
-        {
-            return Err(Error::CorruptSpool);
-        }
-        offset += chunk.expanded_bytes;
-    }
-    if offset != manifest.expanded_bytes {
-        return Err(Error::CorruptSpool);
-    }
-    offset = 0;
-    for (index, file) in manifest.files.iter().enumerate() {
-        let (name, role) = if index == 0 {
-            ("transcript.jsonl", "native_transcript")
-        } else if index + 1 == manifest.files.len() {
-            ("capture-metadata.json", "capture_metadata")
-        } else {
-            ("native.meta.json", "native_companion")
-        };
-        if file.offset != offset
-            || (index == 0 && file.bytes > limits.source_bytes)
-            || (index > 0 && file.bytes > METADATA_BYTES)
-            || file.name != name
-            || file.role != role
-            || !valid_hash(&file.sha256)
-        {
-            return Err(Error::CorruptSpool);
-        }
-        offset = offset.checked_add(file.bytes).ok_or(Error::CorruptSpool)?;
-    }
-    if offset != manifest.expanded_bytes {
-        return Err(Error::CorruptSpool);
-    }
-    Ok(())
-}
-
-fn validate_status(status: &ServerStatus, manifest: &CaptureManifest) -> Result<BTreeSet<u32>> {
-    if status.identity != manifest.identity
-        || status.manifest_sha256 != manifest.sha256()?
-        || status.parts.len() > manifest.chunks.len()
-    {
-        return Err(Error::InvalidServerStatus);
-    }
-    let mut confirmed = BTreeSet::new();
-    for part in &status.parts {
-        let chunk = manifest
-            .chunks
-            .get(part.index as usize)
-            .ok_or(Error::InvalidServerStatus)?;
-        if chunk.compressed_sha256 != part.compressed_sha256 || !confirmed.insert(part.index) {
-            return Err(Error::InvalidServerStatus);
-        }
-    }
-    if status.integrity_accepted && confirmed.len() != manifest.chunks.len() {
-        return Err(Error::InvalidServerStatus);
-    }
-    Ok(confirmed)
+fn step_result(entry: QueueEntry, uploaded_chunk: Option<ChunkKey>) -> Result<ResumeStep> {
+    let progress = entry.progress()?;
+    Ok(ResumeStep {
+        entry,
+        progress,
+        uploaded_chunk,
+    })
 }

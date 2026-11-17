@@ -1,0 +1,2 @@
+{"type":"assistant","uuid":"inherited-worker-record","sessionId":"main","agentId":"worker","isSidechain":true,"version":"2.1.278","message":{"role":"assistant","content":"Synthetic inherited record."}}
+{"type":"assistant","uuid":"owned-unversioned-record","sessionId":"main","agentId":"inherited-only","isSidechain":true,"message":{"role":"assistant","content":"Synthetic owned record without a recorded version."}}

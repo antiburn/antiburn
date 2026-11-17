@@ -8,32 +8,42 @@
   },
   "compression": "gzip-mtime0-os255-level6",
   "chunk_expanded_bytes": 8388608,
-  "expanded_bytes": 876,
-  "expanded_sha256": "1af1e5784bbc68fab105959da136a448a1e1e490bacb1769e68c6a831d1c089b",
-  "files": [
+  "metadata_fingerprint": "fc2f43d0a7bcd5f3f09987ee3db60f3dbb483a8728ce1b6e118fe754845408c4",
+  "source_fingerprint": "65b9d7e1de48dacf0ad4bccab519f1eaeed351125fdea2dc96d616542846fa31",
+  "streams": [
     {
-      "name": "transcript.jsonl",
+      "stream_id": "transcript",
       "role": "native_transcript",
-      "offset": 0,
-      "bytes": 390,
-      "sha256": "d435bab180bea7840ae99a76912980d7c1a172265e18fc4256016089b0e04f44"
+      "schema": "claude-jsonl",
+      "expanded_bytes": 390,
+      "expanded_sha256": "d435bab180bea7840ae99a76912980d7c1a172265e18fc4256016089b0e04f44",
+      "chunks": [
+        {
+          "index": 0,
+          "expanded_offset": 0,
+          "expanded_bytes": 390,
+          "expanded_sha256": "d435bab180bea7840ae99a76912980d7c1a172265e18fc4256016089b0e04f44",
+          "compressed_bytes": 214,
+          "compressed_sha256": "c2b4a944e71deb0ed32c2279c00d2d445886e32a6cfe1bfedcc2d4a6e7a6289f"
+        }
+      ]
     },
     {
-      "name": "capture-metadata.json",
+      "stream_id": "capture-metadata",
       "role": "capture_metadata",
-      "offset": 390,
-      "bytes": 486,
-      "sha256": "7736e6c91cbeeacfe5aa36249a9c68db12940d84d65e7993954cacaf8e1f34dc"
-    }
-  ],
-  "chunks": [
-    {
-      "index": 0,
-      "expanded_offset": 0,
-      "expanded_bytes": 876,
-      "expanded_sha256": "1af1e5784bbc68fab105959da136a448a1e1e490bacb1769e68c6a831d1c089b",
-      "compressed_bytes": 406,
-      "compressed_sha256": "abe4b7f0452b21e928e05a1dc90ae2f333ad1cc0ec89aa986cdab42ff4b8c9ae"
+      "schema": "antiburn-capture-metadata-v1",
+      "expanded_bytes": 1531,
+      "expanded_sha256": "74083850a1da2deb4ed0270cf5be18d29e29abf4fe9ed2595cdb0f5ac76da7e7",
+      "chunks": [
+        {
+          "index": 0,
+          "expanded_offset": 0,
+          "expanded_bytes": 1531,
+          "expanded_sha256": "74083850a1da2deb4ed0270cf5be18d29e29abf4fe9ed2595cdb0f5ac76da7e7",
+          "compressed_bytes": 664,
+          "compressed_sha256": "b527491de39fada1790f21ffd7bf6f179c97b20d91744bece6a59f6bd47e3095"
+        }
+      ]
     }
   ]
 }

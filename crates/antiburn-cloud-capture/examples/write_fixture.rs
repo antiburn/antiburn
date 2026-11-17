@@ -1,6 +1,5 @@
 use antiburn_cloud_capture::*;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -22,7 +21,7 @@ fn main() -> Result<()> {
             source_id: "main".into(),
         },
         &candidate,
-        BTreeMap::new(),
+        serde_json::from_slice(&fs::read(fixtures.join("sections.json"))?)?,
         &mut Reservation,
     )?;
     let reference = fixtures.join("reference");
@@ -32,11 +31,7 @@ fn main() -> Result<()> {
         reference.join("main.capture.json"),
         serde_json::to_vec_pretty(&manifest)?,
     )?;
-    fs::copy(
-        temporary.path().join("spool/fixture-main/chunk-00000.gz"),
-        reference.join("main.chunk-00000.gz"),
-    )?;
-    let paths = [
+    let mut paths: Vec<String> = [
         "project/main.jsonl",
         "project/fork.jsonl",
         "project/unknown.jsonl",
@@ -44,14 +39,32 @@ fn main() -> Result<()> {
         "project/main/subagents/agent-worker.meta.json",
         "project/main/subagents/agent-fork.jsonl",
         "project/main/subagents/agent-fork.meta.json",
+        "project/main/subagents/agent-inherited-only.jsonl",
+        "project/main/subagents/agent-inherited-only.meta.json",
+        "project/main/subagents/agent-replay-only.jsonl",
+        "project/main/subagents/agent-replay-only.meta.json",
+        "project/main/subagents/agent-conflicting-fork.jsonl",
+        "project/main/subagents/agent-conflicting-fork.meta.json",
         "project/audit.jsonl",
         "project/unowned.txt",
         "reference/main.capture.json",
-        "reference/main.chunk-00000.gz",
-    ];
+        "sections.json",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    for (key, _) in manifest.chunks() {
+        let source = format!("chunk-{}-{:05}.gz", key.stream_id, key.index);
+        let reference_name = format!("main.{}.chunk-{:05}.gz", key.stream_id, key.index);
+        fs::copy(
+            temporary.path().join("spool/fixture-main").join(source),
+            reference.join(&reference_name),
+        )?;
+        paths.push(format!("reference/{reference_name}"));
+    }
     let mut files = Vec::new();
     for path in paths {
-        let bytes = fs::read(fixtures.join(path))?;
+        let bytes = fs::read(fixtures.join(&path))?;
         files.push(serde_json::json!({
             "path": path,
             "bytes": bytes.len(),
@@ -85,7 +98,7 @@ impl Transport for Reservation {
         &mut self,
         _: &str,
         _: &CaptureManifest,
-    ) -> std::result::Result<ServerStatus, TransportError> {
+    ) -> std::result::Result<UploadPlan, TransportError> {
         Err(TransportError::Rejected)
     }
 
@@ -93,6 +106,7 @@ impl Transport for Reservation {
         &mut self,
         _: &str,
         _: &CaptureManifest,
+        _: &UploadPlan,
     ) -> std::result::Result<ServerStatus, TransportError> {
         Err(TransportError::Rejected)
     }
@@ -100,7 +114,9 @@ impl Transport for Reservation {
     fn upload_part(
         &mut self,
         _: &str,
-        _: &CaptureIdentity,
+        _: &CaptureManifest,
+        _: &UploadPlan,
+        _: &ChunkKey,
         _: &Chunk,
         _: &mut dyn std::io::Read,
     ) -> std::result::Result<(), TransportError> {
@@ -111,6 +127,7 @@ impl Transport for Reservation {
         &mut self,
         _: &str,
         _: &CaptureManifest,
+        _: &UploadPlan,
     ) -> std::result::Result<(), TransportError> {
         Err(TransportError::Rejected)
     }

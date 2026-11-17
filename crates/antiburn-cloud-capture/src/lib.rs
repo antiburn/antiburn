@@ -10,6 +10,10 @@ mod discovery;
 #[cfg(feature = "cloud")]
 mod filesystem;
 #[cfg(feature = "cloud")]
+mod metadata;
+#[cfg(feature = "cloud")]
+mod protocol;
+#[cfg(feature = "cloud")]
 mod spool;
 #[cfg(feature = "cloud")]
 mod stream;
@@ -18,5 +22,7 @@ mod stream;
 pub use contract::*;
 #[cfg(feature = "cloud")]
 pub use discovery::{Candidate, discover_claude};
+#[cfg(feature = "cloud")]
+pub use metadata::*;
 #[cfg(feature = "cloud")]
 pub use spool::Spool;

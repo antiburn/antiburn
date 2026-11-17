@@ -1,5 +1,5 @@
+use crate::MetadataSections;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 
@@ -105,27 +105,64 @@ pub enum Relationship {
 pub struct CaptureMetadata {
     pub schema_version: u32,
     pub capture_version: String,
-    pub identity: CaptureIdentity,
     pub agent: String,
     pub source_format: String,
     pub native_session_id: String,
     pub native_agent_id: Option<String>,
     pub source_agent_version: Option<String>,
     pub recorded_agent_versions: Vec<String>,
+    pub version_observations: Vec<VersionObservation>,
     pub version_scan_complete: bool,
+    pub owned_version_complete: bool,
     pub relationship: Relationship,
     /// Native bytes are retained as found; this is not a whole-history claim.
     pub history_completeness: String,
-    pub extensions: BTreeMap<String, serde_json::Value>,
+    pub sections: MetadataSections,
+}
+
+impl CaptureMetadata {
+    /// Ignore only the envelope's observation time, not evidence or data fields.
+    pub fn stable_fingerprint(&self) -> Result<String> {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&encode_bounded(self, METADATA_BYTES)?)?;
+        let sections = value["sections"]
+            .as_object_mut()
+            .ok_or(Error::InvalidMetadata)?;
+        for section in sections.values_mut() {
+            if section["observation"]["kind"] == "observed_at" {
+                section["observation"]
+                    .as_object_mut()
+                    .ok_or(Error::InvalidMetadata)?
+                    .remove("unix_millis");
+            }
+        }
+        value.sort_all_objects();
+        Ok(digest(&encode_bounded(&value, METADATA_BYTES)?))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapturedFile {
-    pub name: String,
+pub struct CapturedStream {
+    pub stream_id: String,
     pub role: String,
-    pub offset: u64,
-    pub bytes: u64,
-    pub sha256: String,
+    pub schema: String,
+    pub expanded_bytes: u64,
+    pub expanded_sha256: String,
+    pub chunks: Vec<Chunk>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionOwnership {
+    Owned,
+    Inherited,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct VersionObservation {
+    pub version: String,
+    pub ownership: VersionOwnership,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,15 +181,90 @@ pub struct CaptureManifest {
     pub identity: CaptureIdentity,
     pub compression: String,
     pub chunk_expanded_bytes: u64,
-    pub expanded_bytes: u64,
-    pub expanded_sha256: String,
-    pub files: Vec<CapturedFile>,
-    pub chunks: Vec<Chunk>,
+    pub metadata_fingerprint: String,
+    pub source_fingerprint: String,
+    pub streams: Vec<CapturedStream>,
 }
 
 impl CaptureManifest {
     pub fn sha256(&self) -> Result<String> {
         Ok(digest(&encode_bounded(self, RECORD_BYTES)?))
+    }
+
+    /// This content key excludes capture, account, and destination identities.
+    pub fn calculate_source_fingerprint(&self) -> Result<String> {
+        #[derive(Serialize)]
+        struct Source<'a> {
+            capture_version: &'a str,
+            metadata_fingerprint: &'a str,
+            streams: Vec<Stream<'a>>,
+        }
+        #[derive(Serialize)]
+        struct Stream<'a> {
+            stream_id: &'a str,
+            role: &'a str,
+            schema: &'a str,
+            expanded_bytes: u64,
+            expanded_sha256: &'a str,
+        }
+        let source = Source {
+            capture_version: &self.capture_version,
+            metadata_fingerprint: &self.metadata_fingerprint,
+            streams: self
+                .streams
+                .iter()
+                .filter(|stream| stream.role != "capture_metadata")
+                .map(|stream| Stream {
+                    stream_id: &stream.stream_id,
+                    role: &stream.role,
+                    schema: &stream.schema,
+                    expanded_bytes: stream.expanded_bytes,
+                    expanded_sha256: &stream.expanded_sha256,
+                })
+                .collect(),
+        };
+        Ok(digest(&encode_bounded(&source, RECORD_BYTES)?))
+    }
+
+    pub fn chunks(&self) -> impl Iterator<Item = (ChunkKey, &Chunk)> {
+        self.streams.iter().flat_map(|stream| {
+            stream.chunks.iter().map(move |chunk| {
+                (
+                    ChunkKey {
+                        stream_id: stream.stream_id.clone(),
+                        index: chunk.index,
+                    },
+                    chunk,
+                )
+            })
+        })
+    }
+
+    pub fn chunk(&self, key: &ChunkKey) -> Option<&Chunk> {
+        self.streams
+            .iter()
+            .find(|stream| stream.stream_id == key.stream_id)?
+            .chunks
+            .get(key.index as usize)
+    }
+}
+
+/// The host may persist this only after integrity acceptance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptedSourceFingerprint {
+    pub account_id: String,
+    pub destination_id: String,
+    pub source_id: String,
+    pub source_fingerprint: String,
+}
+
+impl AcceptedSourceFingerprint {
+    /// Comparison never cancels, replaces, or releases an existing queue entry.
+    pub fn matches_source(&self, manifest: &CaptureManifest) -> bool {
+        self.account_id == manifest.identity.account_id
+            && self.destination_id == manifest.identity.destination_id
+            && self.source_id == manifest.identity.source_id
+            && self.source_fingerprint == manifest.source_fingerprint
     }
 }
 
@@ -172,22 +284,92 @@ pub struct QueueEntry {
     pub state: CaptureState,
     pub reservation_id: Option<String>,
     pub manifest: Option<CaptureManifest>,
+    pub upload_plan: Option<UploadPlan>,
+    pub server_status: Option<ServerStatus>,
+    pub completion_submitted: bool,
 }
 
-/// A server-confirmed part receipt, scoped by `ServerStatus` to one manifest.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PartReceipt {
+impl QueueEntry {
+    pub fn accepted_source_fingerprint(&self) -> Option<AcceptedSourceFingerprint> {
+        if self.state != CaptureState::Accepted || !self.server_status.as_ref()?.integrity_accepted
+        {
+            return None;
+        }
+        let manifest = self.manifest.as_ref()?;
+        Some(AcceptedSourceFingerprint {
+            account_id: self.identity.account_id.clone(),
+            destination_id: self.identity.destination_id.clone(),
+            source_id: self.identity.source_id.clone(),
+            source_fingerprint: manifest.source_fingerprint.clone(),
+        })
+    }
+
+    pub fn progress(&self) -> Result<TransferProgress> {
+        crate::protocol::entry_progress(self)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ChunkKey {
+    pub stream_id: String,
     pub index: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkDisposition {
+    Upload,
+    Reuse,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedChunk {
+    pub key: ChunkKey,
+    pub compressed_sha256: String,
+    pub disposition: ChunkDisposition,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadPlan {
+    pub identity: CaptureIdentity,
+    pub manifest_sha256: String,
+    pub plan_id: String,
+    pub chunks: Vec<PlannedChunk>,
+    pub required_transfer_bytes: u64,
+    pub reused_bytes: u64,
+}
+
+/// This receipt confirms an uploaded chunk, not a reuse decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartReceipt {
+    pub key: ChunkKey,
     pub compressed_sha256: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerStatus {
     pub identity: CaptureIdentity,
     pub manifest_sha256: String,
-    pub parts: Vec<PartReceipt>,
+    pub plan_id: String,
+    pub uploaded_parts: Vec<PartReceipt>,
     /// True only after the service verifies and accepts the complete capture.
     pub integrity_accepted: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferProgress {
+    pub negotiated: bool,
+    pub total_compressed_bytes: u64,
+    pub required_transfer_bytes: u64,
+    pub reused_bytes: u64,
+    pub confirmed_upload_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeStep {
+    pub entry: QueueEntry,
+    pub progress: TransferProgress,
+    pub uploaded_chunk: Option<ChunkKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,12 +394,13 @@ pub trait Transport {
         &mut self,
         reservation_id: &str,
         manifest: &CaptureManifest,
-    ) -> std::result::Result<ServerStatus, TransportError>;
+    ) -> std::result::Result<UploadPlan, TransportError>;
 
     fn status(
         &mut self,
         reservation_id: &str,
         manifest: &CaptureManifest,
+        plan: &UploadPlan,
     ) -> std::result::Result<ServerStatus, TransportError>;
 
     /// Consume at most chunk.compressed_bytes bytes. A successful call does not
@@ -225,7 +408,9 @@ pub trait Transport {
     fn upload_part(
         &mut self,
         reservation_id: &str,
-        identity: &CaptureIdentity,
+        manifest: &CaptureManifest,
+        plan: &UploadPlan,
+        key: &ChunkKey,
         chunk: &Chunk,
         body: &mut dyn Read,
     ) -> std::result::Result<(), TransportError>;
@@ -235,6 +420,7 @@ pub trait Transport {
         &mut self,
         reservation_id: &str,
         manifest: &CaptureManifest,
+        plan: &UploadPlan,
     ) -> std::result::Result<(), TransportError>;
 }
 
@@ -243,6 +429,7 @@ pub enum Error {
     Io(std::io::ErrorKind),
     InvalidIdentity,
     InvalidSource,
+    InvalidMetadata,
     SourceChanged,
     Limit,
     CorruptSpool,
@@ -250,6 +437,9 @@ pub enum Error {
     InterruptedCapture,
     IdentityMismatch,
     InvalidServerStatus,
+    PlanChanged,
+    NotAccepted,
+    AlreadyAccepted,
     UnsupportedPlatform,
     Transport(TransportError),
 }

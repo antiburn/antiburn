@@ -28,7 +28,8 @@ impl Candidate {
         &self.transcript
     }
 
-    /// Bind native keys to one stable device and authorized source root.
+    /// Bind native keys to one stable account and device-local source root.
+    /// Keep this source_scope_id when a directory access grant is replaced.
     pub fn in_source_scope(&self, scope: &str) -> Result<Self> {
         if !safe_id(scope) || self.source_scope.is_some() {
             return Err(Error::InvalidIdentity);

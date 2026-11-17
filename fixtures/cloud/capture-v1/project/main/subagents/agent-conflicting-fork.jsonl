@@ -1,0 +1,2 @@
+{"type":"assistant","sessionId":"main","agentId":"conflicting-fork","isSidechain":true,"version":"2.1.309","forkedFrom":{"sessionId":"first"},"message":{"role":"assistant","content":"Synthetic conflicting fork evidence."}}
+{"type":"assistant","sessionId":"main","agentId":"conflicting-fork","isSidechain":true,"version":"2.1.309","forkedFrom":{"sessionId":"second"},"message":{"role":"assistant","content":"Synthetic second fork assertion."}}

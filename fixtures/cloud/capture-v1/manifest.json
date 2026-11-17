@@ -37,6 +37,36 @@
       "sha256": "580535d10f5d6bb8f028f0b1a27c5aa805951b111e49438f2ba1d72a1a3f5bba"
     },
     {
+      "bytes": 416,
+      "path": "project/main/subagents/agent-inherited-only.jsonl",
+      "sha256": "e16b1ca1ac9ba82ca070229721d63c981c72ab6c873165ecbb92998b80009ac3"
+    },
+    {
+      "bytes": 58,
+      "path": "project/main/subagents/agent-inherited-only.meta.json",
+      "sha256": "81fb9462f5557dbadfb7ca566ae3a9e189c7fad8b88307d7f673676d36b2e745"
+    },
+    {
+      "bytes": 214,
+      "path": "project/main/subagents/agent-replay-only.jsonl",
+      "sha256": "58d6a6b8d0f39881120405e44763e0d692969d6fc5e3fe7a1135beef7e83a037"
+    },
+    {
+      "bytes": 58,
+      "path": "project/main/subagents/agent-replay-only.meta.json",
+      "sha256": "81fb9462f5557dbadfb7ca566ae3a9e189c7fad8b88307d7f673676d36b2e745"
+    },
+    {
+      "bytes": 443,
+      "path": "project/main/subagents/agent-conflicting-fork.jsonl",
+      "sha256": "b297bb87c02e9e68d0315e403aab6fedcc219b37a8419357fec4f1e5caa5e01d"
+    },
+    {
+      "bytes": 58,
+      "path": "project/main/subagents/agent-conflicting-fork.meta.json",
+      "sha256": "81fb9462f5557dbadfb7ca566ae3a9e189c7fad8b88307d7f673676d36b2e745"
+    },
+    {
       "bytes": 93,
       "path": "project/audit.jsonl",
       "sha256": "5c75d4fd3c7ee8fae9a05b52254928ad010ceaf40f19ff68d0e464381b56172f"
@@ -47,14 +77,24 @@
       "sha256": "da2479885e97b701d96148e598a752714e1a21fc300b0ca2fc1adacb84165ac2"
     },
     {
-      "bytes": 1167,
+      "bytes": 1722,
       "path": "reference/main.capture.json",
-      "sha256": "bb85f00fd31b55850f28be5cac6a9ba3027fa640c820b14e4db45f56a96e50b6"
+      "sha256": "1085e1227cd30612a4cc6da3349cd5a36c81d3eec1a5f21040cd320ba226d8c1"
     },
     {
-      "bytes": 406,
-      "path": "reference/main.chunk-00000.gz",
-      "sha256": "abe4b7f0452b21e928e05a1dc90ae2f333ad1cc0ec89aa986cdab42ff4b8c9ae"
+      "bytes": 1450,
+      "path": "sections.json",
+      "sha256": "73a43b039e3113bd4280dec198b14cbb62376e301458d2d75eff304a0027ab95"
+    },
+    {
+      "bytes": 214,
+      "path": "reference/main.transcript.chunk-00000.gz",
+      "sha256": "c2b4a944e71deb0ed32c2279c00d2d445886e32a6cfe1bfedcc2d4a6e7a6289f"
+    },
+    {
+      "bytes": 664,
+      "path": "reference/main.capture-metadata.chunk-00000.gz",
+      "sha256": "b527491de39fada1790f21ffd7bf6f179c97b20d91744bece6a59f6bd47e3095"
     }
   ],
   "fixture_version": "claude-native-capture-fixtures-v1",

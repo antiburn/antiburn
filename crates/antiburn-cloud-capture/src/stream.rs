@@ -1,14 +1,17 @@
 use crate::contract::{hex, safe_id};
 use crate::directory::Directory;
-use crate::{CHUNK_BYTES, Chunk, Error, Result};
+use crate::{
+    CHUNK_BYTES, CapturedStream, Chunk, ChunkKey, Error, Result, VersionObservation,
+    VersionOwnership,
+};
 use flate2::{Compression, GzBuilder, write::GzEncoder};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
 
-pub(crate) fn chunk_name(index: u32) -> String {
-    format!("chunk-{index:05}.gz")
+pub(crate) fn chunk_name(key: &ChunkKey) -> String {
+    format!("chunk-{}-{:05}.gz", key.stream_id, key.index)
 }
 
 struct Output {
@@ -42,6 +45,7 @@ struct CurrentChunk {
 
 pub(crate) struct ChunkStream<'a> {
     directory: &'a Directory,
+    stream_id: String,
     current: Option<CurrentChunk>,
     chunks: Vec<Chunk>,
     digest: Sha256,
@@ -51,9 +55,10 @@ pub(crate) struct ChunkStream<'a> {
 }
 
 impl<'a> ChunkStream<'a> {
-    pub fn new(directory: &'a Directory, maximum_compressed: u64) -> Self {
+    pub fn new(directory: &'a Directory, stream_id: &str, maximum_compressed: u64) -> Self {
         Self {
             directory,
+            stream_id: stream_id.into(),
             current: None,
             chunks: Vec::new(),
             digest: Sha256::new(),
@@ -66,9 +71,13 @@ impl<'a> ChunkStream<'a> {
     pub fn write(&mut self, mut bytes: &[u8]) -> Result<()> {
         while !bytes.is_empty() {
             if self.current.is_none() {
-                let file = self
-                    .directory
-                    .file(&chunk_name(self.chunks.len() as u32), true)?;
+                let file = self.directory.file(
+                    &chunk_name(&ChunkKey {
+                        stream_id: self.stream_id.clone(),
+                        index: self.chunks.len() as u32,
+                    }),
+                    true,
+                )?;
                 let output = Output {
                     file,
                     digest: Sha256::new(),
@@ -118,10 +127,17 @@ impl<'a> ChunkStream<'a> {
         Ok(())
     }
 
-    pub fn finish(mut self) -> Result<(Vec<Chunk>, String, u64)> {
+    pub fn finish(mut self, role: &str, schema: &str) -> Result<CapturedStream> {
         self.finish_chunk()?;
         self.directory.sync()?;
-        Ok((self.chunks, hex(&self.digest.finalize()), self.bytes))
+        Ok(CapturedStream {
+            stream_id: self.stream_id,
+            role: role.into(),
+            schema: schema.into(),
+            expanded_bytes: self.bytes,
+            expanded_sha256: hex(&self.digest.finalize()),
+            chunks: self.chunks,
+        })
     }
 }
 
@@ -133,17 +149,31 @@ pub(crate) struct NativeMetadata {
     oversized_line: bool,
     pub complete: bool,
     pub versions: BTreeSet<String>,
+    pub observations: BTreeSet<VersionObservation>,
+    pub owned_versions: BTreeSet<String>,
+    pub owned_version_complete: bool,
+    pub owned_records: usize,
+    pub has_inherited_records: bool,
+    native_session_id: String,
+    native_agent_id: Option<String>,
     pub fork_parent: Option<String>,
     pub fork_conflict: bool,
 }
 
 impl NativeMetadata {
-    pub fn new() -> Self {
+    pub fn new(native_session_id: &str, native_agent_id: Option<&str>) -> Self {
         Self {
             line: Vec::new(),
             oversized_line: false,
             complete: true,
             versions: BTreeSet::new(),
+            observations: BTreeSet::new(),
+            owned_versions: BTreeSet::new(),
+            owned_version_complete: true,
+            owned_records: 0,
+            has_inherited_records: false,
+            native_session_id: native_session_id.into(),
+            native_agent_id: native_agent_id.map(str::to_owned),
             fork_parent: None,
             fork_conflict: false,
         }
@@ -174,16 +204,55 @@ impl NativeMetadata {
             self.complete = false;
             return;
         };
-        self.inspect_version(&record);
-        self.inspect_fork(&record);
+        let ownership = self.ownership(&record);
+        self.has_inherited_records |= ownership == VersionOwnership::Inherited;
+        self.inspect_version(&record, ownership.clone());
+        if ownership == VersionOwnership::Owned {
+            self.inspect_fork(&record);
+        }
     }
 
-    fn inspect_version(&mut self, record: &serde_json::Value) {
+    fn ownership(&self, record: &serde_json::Value) -> VersionOwnership {
+        let session = record.get("sessionId").and_then(|value| value.as_str());
+        let agent = match record.get("agentId") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(agent)) => Some(agent.as_str()),
+            _ => return VersionOwnership::Unknown,
+        };
+        let sidechain = match record.get("isSidechain") {
+            None => false,
+            Some(serde_json::Value::Bool(value)) => *value,
+            _ => return VersionOwnership::Unknown,
+        };
+        let owned_agent = match &self.native_agent_id {
+            Some(expected) => agent == Some(expected.as_str()),
+            None => agent.is_none() && !sidechain,
+        };
+        if session == Some(self.native_session_id.as_str()) && owned_agent {
+            VersionOwnership::Owned
+        } else if agent.is_some() || sidechain || session.is_some() {
+            VersionOwnership::Inherited
+        } else {
+            VersionOwnership::Unknown
+        }
+    }
+
+    fn inspect_version(&mut self, record: &serde_json::Value, ownership: VersionOwnership) {
+        let owned = ownership == VersionOwnership::Owned;
+        if owned {
+            self.owned_records += 1;
+        }
         let Some(value) = record.get("version") else {
+            if owned {
+                self.owned_version_complete = false;
+            }
             return;
         };
         let Some(version) = value.as_str() else {
             self.complete = false;
+            if owned {
+                self.owned_version_complete = false;
+            }
             return;
         };
         if !safe_id(version.replace('.', "-").as_str())
@@ -191,9 +260,19 @@ impl NativeMetadata {
             || (!self.versions.contains(version) && self.versions.len() >= MAX_VERSIONS)
         {
             self.complete = false;
+            if owned {
+                self.owned_version_complete = false;
+            }
             return;
         }
         self.versions.insert(version.to_owned());
+        if owned {
+            self.owned_versions.insert(version.to_owned());
+        }
+        self.observations.insert(VersionObservation {
+            version: version.into(),
+            ownership,
+        });
     }
 
     fn inspect_fork(&mut self, record: &serde_json::Value) {
