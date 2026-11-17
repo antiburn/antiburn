@@ -1259,6 +1259,34 @@ fn oversized_sections_fail_before_reservation() {
 }
 
 #[test]
+fn section_nesting_limits_preserve_the_supported_capture_boundary() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let mut transport = FakeTransport::default();
+    for depth in [125, 129, 124] {
+        let mut data = serde_json::Value::Null;
+        for _ in 0..depth {
+            data = serde_json::Value::Array(vec![data]);
+        }
+        let result = queue.capture(
+            identity("main", &format!("capture-nesting-{depth}")),
+            &candidate("main"),
+            BTreeMap::from([("synthetic.nested".into(), local_section(data))]),
+            &mut transport,
+        );
+        if depth == 124 {
+            assert_eq!(result.unwrap().state, CaptureState::Queued);
+            assert_eq!(transport.reserve_calls, 1);
+            assert_eq!(queue.entries().unwrap().len(), 1);
+        } else {
+            assert!(matches!(result, Err(Error::Limit)));
+            assert_eq!(transport.reserve_calls, 0);
+            assert!(queue.entries().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
 fn orphan_child_capture_does_not_require_or_read_a_parent_transcript() {
     let temp = temporary();
     let project = temp.path().join("project");

@@ -662,8 +662,12 @@ fn references_owned_table(connection: &Connection, table: &str) -> Result<bool> 
             return Err(Error::Limit);
         }
         let name = name.map_err(sql_error)?;
-        if TABLES.iter().any(|spec| spec.name == name)
-            || matches!(name.as_str(), "blob" | "instruction_blob")
+        if TABLES
+            .iter()
+            .any(|spec| spec.name.eq_ignore_ascii_case(&name))
+            || ["blob", "instruction_blob"]
+                .iter()
+                .any(|table| table.eq_ignore_ascii_case(&name))
         {
             return Ok(true);
         }

@@ -1,8 +1,8 @@
 #![cfg(feature = "cloud")]
 
 use antiburn_cloud_capture::{
-    CapturedStream, Error, MetadataEvidence, MetadataObservation, MetadataSection,
-    MetadataSections, validate_section_bindings, validate_sections,
+    CaptureMetadata, CapturedStream, Error, MetadataEvidence, MetadataObservation, MetadataSection,
+    MetadataSections, Relationship, validate_section_bindings, validate_sections,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -140,6 +140,93 @@ fn section_count_and_compact_json_sizes_are_bounded() {
     validate_sections(&total).unwrap();
     total.insert("test.third".into(), large);
     assert!(matches!(validate_sections(&total), Err(Error::Limit)));
+}
+
+#[test]
+fn section_nesting_includes_every_envelope_and_the_metadata_root() {
+    for (location, enclosing_depth) in [
+        ("data", 3),
+        ("section", 3),
+        ("producer", 4),
+        ("observation", 4),
+        ("evidence", 5),
+    ] {
+        for object in [false, true] {
+            for extra_depth in [0, 1, 5] {
+                let supported = extra_depth == 0;
+                let mut value = Value::Null;
+                for _ in 0..(127 - enclosing_depth + extra_depth) {
+                    value = if object {
+                        Value::Object([("nested".into(), value)].into_iter().collect())
+                    } else {
+                        Value::Array(vec![value])
+                    };
+                }
+                let mut section = local_section(&mut sections()).clone();
+                match location {
+                    "data" => section.data = value,
+                    "section" => {
+                        section.unknown_fields.insert("future".into(), value);
+                    }
+                    "producer" => {
+                        section
+                            .producer
+                            .unknown_fields
+                            .insert("future".into(), value);
+                    }
+                    "observation" => {
+                        let MetadataObservation::ObservedAt { unknown_fields, .. } =
+                            &mut section.observation
+                        else {
+                            panic!("expected local observation");
+                        };
+                        unknown_fields.insert("future".into(), value);
+                    }
+                    "evidence" => {
+                        let MetadataEvidence::LocalObservation { unknown_fields, .. } =
+                            &mut section.evidence[0]
+                        else {
+                            panic!("expected local evidence");
+                        };
+                        unknown_fields.insert("future".into(), value);
+                    }
+                    _ => unreachable!(),
+                }
+                let MetadataEvidence::LocalObservation { data_sha256, .. } =
+                    &mut section.evidence[0]
+                else {
+                    panic!("expected local evidence");
+                };
+                *data_sha256 = sha(&serde_json::to_vec(&section.data).unwrap());
+                let sections = [("test.nesting".into(), section)].into_iter().collect();
+                let metadata = CaptureMetadata {
+                    version: 1,
+                    agent: "claude-code".into(),
+                    source_format: "ClaudeJsonl".into(),
+                    native_session_id: "synthetic-session".into(),
+                    native_agent_id: None,
+                    source_agent_version: None,
+                    version_observations: vec![],
+                    version_scan_complete: false,
+                    owned_version_complete: false,
+                    relationship: Relationship::Unknown,
+                    history_completeness: "unknown".into(),
+                    sections,
+                };
+                let validation = validate_sections(&metadata.sections);
+                if supported {
+                    validation.unwrap();
+                    metadata.stable_fingerprint().unwrap();
+                } else {
+                    assert!(
+                        matches!(validation, Err(Error::Limit)),
+                        "{location}, object={object}, extra_depth={extra_depth}: {validation:?}"
+                    );
+                    assert!(metadata.stable_fingerprint().is_err());
+                }
+            }
+        }
+    }
 }
 
 #[test]

@@ -212,6 +212,49 @@ fn optional_broken_and_unknown_owned_tables_fail_without_v1_fallback() {
 }
 
 #[test]
+fn unknown_tables_with_case_insensitive_owned_links_fail_before_export() {
+    for target in [
+        "SESSION_V2",
+        "SeSsIoN_v2",
+        "SESSION_MESSAGE",
+        "SeSsIoN_MeSsAgE",
+        "BLOB",
+        "BlOb",
+        "INSTRUCTION_BLOB",
+        "InStRuCtIoN_bLoB",
+    ] {
+        let (_directory, path, connection) = database(CURRENT);
+        let admitted = source(&path, "ses_main");
+        connection
+            .execute_batch(&format!(
+                "PRAGMA foreign_keys = OFF;
+                 CREATE TABLE notes(owner TEXT REFERENCES {target}(id), body TEXT);
+                 INSERT INTO notes VALUES ('ses_main', 'uncaptured synthetic note');"
+            ))
+            .unwrap();
+        assert!(
+            matches!(
+                discover(&path, &Limits::default()),
+                Err(Error::UnsupportedSource)
+            ),
+            "{target}"
+        );
+        let mut emitted = Vec::new();
+        assert!(
+            matches!(
+                export(&admitted, &Limits::default(), |bytes| {
+                    emitted.extend_from_slice(bytes);
+                    Ok(())
+                }),
+                Err(Error::UnsupportedSource)
+            ),
+            "{target}"
+        );
+        assert!(emitted.is_empty(), "{target}");
+    }
+}
+
+#[test]
 fn exact_binary_ownership_does_not_select_case_aliases() {
     let (_directory, path, connection) = database(EARLIER);
     connection.execute_batch(

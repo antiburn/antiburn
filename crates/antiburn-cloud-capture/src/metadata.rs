@@ -296,7 +296,7 @@ fn decode_raw_value(raw: &RawValue, depth: usize) -> serde_json::Result<Value> {
 
 /// Validate names, bounded compact JSON, reserved fields, and typed envelopes.
 ///
-/// Size or count overflow returns [`Error::Limit`]; invalid fields return
+/// Size, count, or nesting overflow returns [`Error::Limit`]; invalid fields return
 /// [`Error::InvalidMetadata`]. This checks local data digests but cannot bind
 /// native evidence without stream descriptors; use [`validate_section_bindings`].
 pub fn validate_sections(sections: &MetadataSections) -> Result<()> {
@@ -310,7 +310,10 @@ pub fn validate_sections(sections: &MetadataSections) -> Result<()> {
         encode_bounded(section, SECTION_BYTES)?;
         validate_section(section)?;
     }
-    encode_bounded(sections, SECTIONS_BYTES)?;
+    let bytes = encode_bounded(sections, SECTIONS_BYTES)?;
+    let raw = serde_json::from_slice(&bytes)?;
+    // The full fingerprint decoder also counts the enclosing metadata object.
+    decode_raw_value(raw, 1).map_err(|_| Error::Limit)?;
     Ok(())
 }
 
