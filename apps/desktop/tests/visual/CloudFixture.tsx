@@ -43,6 +43,9 @@ export function cloudFixture(name: string): CloudPort {
           ? "browser_failed"
           : (name as CloudSnapshot["status"]),
     identity: authenticated ? { id: "synthetic", login: "example" } : null,
+    destination: authenticated
+      ? { id: "synthetic-personal", name: "Personal", kind: "personal" }
+      : null,
     draft: {
       screen: ["identity", "identity_error"].includes(name)
         ? "identity"
@@ -82,6 +85,10 @@ export function cloudFixture(name: string): CloudPort {
     },
     signOut: async () => {
       value = { ...emptyCloudSnapshot, status: "signed_out" }
+      return value
+    },
+    resetLocal: async () => {
+      value = { ...emptyCloudSnapshot, status: "signed_out", remoteRevocationUnconfirmed: true }
       return value
     },
     pick: async () => ["/Example/New folder"],

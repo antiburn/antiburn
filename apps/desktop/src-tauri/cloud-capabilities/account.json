@@ -8,6 +8,7 @@
     "allow-cloud-begin",
     "allow-cloud-cancel",
     "allow-cloud-sign-out",
+    "allow-cloud-reset-local",
     "allow-cloud-save-draft",
     "allow-cloud-start-sync"
   ]

@@ -25,6 +25,11 @@ function fixture(initial: CloudSnapshot = emptyCloudSnapshot) {
       return value
     }),
     signOut: vi.fn(async () => ({ ...emptyCloudSnapshot, status: "signed_out" as const })),
+    resetLocal: vi.fn(async () => ({
+      ...emptyCloudSnapshot,
+      status: "signed_out" as const,
+      remoteRevocationUnconfirmed: true,
+    })),
     save: vi.fn(async (draft) => {
       value = { ...value, draft }
       return value

@@ -410,8 +410,9 @@ fn cloud_logout_keyring_delete_failure_cannot_restore_an_account() {
     fixture.vault.fail_write.store(false, Ordering::Release);
     fixture.restart();
     fixture.engine.refresh(200, || true).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
     assert!(fixture.engine.session().is_none());
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
     fixture.engine.sign_out().unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
 }
@@ -440,7 +441,9 @@ fn cloud_process_lock_child() {
     let mut guard = store.lock().unwrap();
     let record = guard.read().unwrap();
     assert!(record.phase == state::Phase::SignedOut);
-    guard.replace(state::Phase::ReauthRequired, false).unwrap();
+    guard
+        .replace(state::Phase::ReauthRequired, state::Cleanup::None)
+        .unwrap();
 }
 
 #[test]
@@ -448,7 +451,9 @@ fn cloud_lock_serializes_separate_processes() {
     let directory = tempfile::tempdir().unwrap();
     let store = state::StateStore::new(directory.path());
     let mut guard = store.lock().unwrap();
-    guard.replace(state::Phase::SignedOut, false).unwrap();
+    guard
+        .replace(state::Phase::SignedOut, state::Cleanup::None)
+        .unwrap();
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
         .args([
@@ -488,6 +493,9 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         grant_expires_at: Some(10_000),
         destination: Some(session().workspace),
         revocation_pending: false,
+        local_cleanup_pending: false,
+        local_reset_available: false,
+        remote_revocation_unconfirmed: false,
         draft: Draft::default(),
     };
     let encoded = serde_json::to_string(&snapshot_for_window(value, "settings")).unwrap();
@@ -637,7 +645,12 @@ impl Vault for SyntheticFileVault {
         match credential {
             Some(value) => std::fs::write(&self.0, serde_json::to_vec(value).unwrap()),
             None => match std::fs::remove_file(&self.0) {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    if std::env::var_os("ANTIBURN_SYNTHETIC_CLOUD_EXIT_AFTER_DELETE").is_some() {
+                        std::process::exit(73);
+                    }
+                    Ok(())
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error),
             },
@@ -700,4 +713,100 @@ fn cloud_process_restart_rotates_the_saved_successor_instead_of_a_predecessor() 
     let (mut engine, transport) = process_engine(directory.path(), 2);
     engine.refresh(300, || true).unwrap();
     assert_eq!(*transport.seen.lock().unwrap(), ["synthetic-refresh-1"]);
+}
+
+#[test]
+fn cloud_process_cleanup_child() {
+    let Ok(directory) = std::env::var("ANTIBURN_SYNTHETIC_CLOUD_CLEANUP_TEST") else {
+        return;
+    };
+    let (mut engine, _) = process_engine(Path::new(&directory), 1);
+    engine.sign_out().unwrap();
+    panic!("The synthetic crash must occur after deleting the test credential");
+}
+
+#[test]
+fn cloud_restart_finishes_deletion_after_confirmed_revocation_and_a_process_exit() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut engine, _) = process_engine(directory.path(), 0);
+    let (_, _listener, attempt) = engine.begin(100, 0).unwrap();
+    engine
+        .callback(
+            &attempt,
+            auth::Callback::Code("synthetic".into()),
+            101,
+            || true,
+        )
+        .unwrap();
+    drop(engine);
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "cloud::tests::cloud_process_cleanup_child",
+            "--nocapture",
+        ])
+        .env("ANTIBURN_SYNTHETIC_CLOUD_CLEANUP_TEST", directory.path())
+        .env("ANTIBURN_SYNTHETIC_CLOUD_EXIT_AFTER_DELETE", "1")
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(73));
+    let (mut engine, transport) = process_engine(directory.path(), 2);
+    engine.refresh(200, || true).unwrap();
+    assert!(engine.status == AuthStatus::SignedOut);
+    assert!(engine.cleanup == state::Cleanup::None);
+    assert_eq!(transport.revocations.load(Ordering::Acquire), 0);
+    engine.begin(201, 1).unwrap();
+}
+
+#[test]
+fn cloud_corrupt_state_with_no_credential_needs_explicit_reset_and_keeps_its_warning() {
+    let mut fixture = Fixture::new();
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    std::fs::write(
+        fixture.directory.path().join("cloud-auth-state-v2"),
+        b"{torn",
+    )
+    .unwrap();
+    let retry = fixture.directory.path().join("synthetic-retry.bin");
+    std::fs::write(&retry, b"unchanged synthetic compressed retry bytes").unwrap();
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.local_reset_available);
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    fixture.engine.reset_local().unwrap();
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    assert_eq!(
+        fixture
+            .engine
+            .callback(&attempt, auth::Callback::Code("late".into()), 102, || true),
+        Err(Failure::Cancelled)
+    );
+    fixture.restart();
+    fixture.engine.refresh(103, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    fixture.sign_in();
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    fixture.engine.sign_out().unwrap();
+    fixture.restart();
+    fixture.engine.refresh(104, || true).unwrap();
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    assert_eq!(
+        std::fs::read(retry).unwrap(),
+        b"unchanged synthetic compressed retry bytes"
+    );
+}
+
+#[test]
+fn cloud_local_reset_does_not_discard_a_recoverable_refresh_credential() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    fixture.transport.fail_revoke.store(true, Ordering::Release);
+    fixture.engine.sign_out().unwrap();
+    assert_eq!(fixture.engine.reset_local(), Err(Failure::Unavailable));
+    assert!(fixture.vault.read().unwrap().is_some());
 }

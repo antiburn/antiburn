@@ -17,12 +17,50 @@ pub enum Phase {
     ReauthRequired,
 }
 
+#[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Cleanup {
+    #[default]
+    None,
+    Revoke {
+        prior_unconfirmed: bool,
+    },
+    DeleteCredential {
+        prior_unconfirmed: bool,
+    },
+    RemoteUnconfirmed,
+}
+
+impl Cleanup {
+    pub fn blocks_connection(self) -> bool {
+        matches!(self, Self::Revoke { .. } | Self::DeleteCredential { .. })
+    }
+
+    pub fn prior_unconfirmed(self) -> bool {
+        match self {
+            Self::None => false,
+            Self::Revoke { prior_unconfirmed } | Self::DeleteCredential { prior_unconfirmed } => {
+                prior_unconfirmed
+            }
+            Self::RemoteUnconfirmed => true,
+        }
+    }
+
+    pub fn prior_warning_only(self) -> Self {
+        if self.prior_unconfirmed() {
+            Self::RemoteUnconfirmed
+        } else {
+            Self::None
+        }
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub epoch: String,
     pub phase: Phase,
-    pub revocation_pending: bool,
+    pub cleanup: Cleanup,
 }
 
 pub struct StateStore {
@@ -121,7 +159,16 @@ impl Guard {
         if bytes.len() > 4096 {
             return Err(Failure::CredentialFailed);
         }
-        serde_json::from_slice(&bytes).map_err(|_| Failure::CredentialFailed)
+        let record: Record =
+            serde_json::from_slice(&bytes).map_err(|_| Failure::CredentialFailed)?;
+        if matches!(record.cleanup, Cleanup::DeleteCredential { .. })
+            && record.phase != Phase::SignedOut
+            || matches!(record.cleanup, Cleanup::Revoke { .. })
+                && !matches!(record.phase, Phase::SignedOut | Phase::ReauthRequired)
+        {
+            return Err(Failure::CredentialFailed);
+        }
+        Ok(record)
     }
 
     pub fn write(&mut self, value: &Record) -> Result<(), Failure> {
@@ -148,11 +195,11 @@ impl Guard {
         result
     }
 
-    pub fn replace(&mut self, phase: Phase, revocation_pending: bool) -> Result<Record, Failure> {
+    pub fn replace(&mut self, phase: Phase, cleanup: Cleanup) -> Result<Record, Failure> {
         let value = Record {
             epoch: random()?,
             phase,
-            revocation_pending,
+            cleanup,
         };
         self.write(&value)?;
         Ok(value)

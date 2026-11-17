@@ -48,8 +48,7 @@ const messages = {
   unavailable: "Cloud is not available in this build. You can continue locally.",
   reauth_required:
     "Revoke the previous connection in Settings, then connect again. The refresh response is not safe to retry.",
-  revocation_unconfirmed:
-    "Signed out locally. Cloud has not confirmed revocation. Retry revocation when you are online.",
+  revocation_unconfirmed: "Signed out locally. Cloud has not confirmed revocation.",
 } as const
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 
@@ -297,6 +296,7 @@ export class CloudSession {
   cancel = () => this.run("cancel", this.port.cancel)
   cancelSilently = () => this.run(null, this.port.cancel)
   signOut = () => this.run("sign_out", this.port.signOut)
+  resetLocal = () => this.run(null, this.port.resetLocal)
   setFullContentConsent = (fullContentConsent: boolean) => this.publish({ fullContentConsent })
   go = async (screen: CloudDraft["screen"], action: "back" | "continue" = "continue") => {
     if (screen !== "handoff" && !this.snapshot.cloud.identity) return

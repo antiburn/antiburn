@@ -68,10 +68,19 @@ first flushes a new signed-out generation. Browser cancellation changes only the
 pending browser-attempt generation; it does not cancel an established connection
 or its refresh. Sign-out revokes only this client's current
 grant, not every connection on the account. A failed remote response stays visible
-as unconfirmed revocation. A keyring deletion failure is also visible, but the
-durable local marker still blocks login restoration after a restart. Cleanup-only
-keyring records may retry revocation; they cannot restore an authenticated
-session. Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
+as unconfirmed revocation. The client durably records confirmed remote revocation
+before deleting its keyring credential. A restart can therefore finish local
+deletion without requiring that deleted credential or repeating remote logout.
+A deletion failure remains visible, and the closed marker blocks login
+restoration. Cleanup-only keyring records cannot restore an authenticated session.
+Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
+
+When remote revocation is unknown and no refresh credential remains, Settings
+offers an explicit local reset. The confirmation states that this does not revoke
+the old connection. Reset permits a new connection but preserves an
+unconfirmed-revocation warning, including after reconnect and restart. The user
+can revoke the old connection in browser Settings. Reset does not remove retry
+bytes or accept late browser callbacks.
 
 Callback URLs, codes, tokens, PKCE material, and raw provider errors do not enter
 renderer events, logs, or analytics. Identity and folder paths do not enter

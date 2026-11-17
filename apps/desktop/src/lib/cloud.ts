@@ -52,6 +52,9 @@ export interface CloudSnapshot {
   grantExpiresAt?: number | null
   destination?: CloudWorkspace | null
   revocationPending?: boolean
+  localCleanupPending?: boolean
+  localResetAvailable?: boolean
+  remoteRevocationUnconfirmed?: boolean
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
@@ -71,6 +74,7 @@ export interface CloudPort {
   cancel(): Promise<CloudSnapshot>
   save(draft: CloudDraft, foldersEdited?: boolean): Promise<CloudSnapshot>
   signOut(): Promise<CloudSnapshot>
+  resetLocal(): Promise<CloudSnapshot>
   pick(): Promise<string[]>
   agent(): Promise<AgentReadiness>
   prepareSync(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<void>
@@ -103,6 +107,7 @@ export const nativeCloudPort: CloudPort = {
   save: (value, foldersEdited = true) =>
     cloudCommand("cloud_save_draft", { value, foldersEdited }),
   signOut: () => cloudCommand("cloud_sign_out"),
+  resetLocal: () => cloudCommand("cloud_reset_local"),
   pick: async () => {
     if (!(await cloudBuildEnabled())) return []
     const selected = await open({

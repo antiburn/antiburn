@@ -1,4 +1,5 @@
 import { ArrowUpRight } from "lucide-react"
+import { useState } from "react"
 import {
   type CloudSession,
   cloudStatusMessage,
@@ -13,6 +14,7 @@ export function CloudAccount({
   session: CloudSession
   value: CloudViewSnapshot
 }) {
+  const [confirmReset, setConfirmReset] = useState(false)
   return (
     <>
       <div className="flex items-center justify-between gap-3 border-t border-separator px-4 py-3">
@@ -42,21 +44,25 @@ export function CloudAccount({
             Learn more <ArrowUpRight size={13} aria-hidden="true" />
           </button>
         )}
-        {value.cloud.authEnabled && !value.cloud.identity && !value.cloud.revocationPending && (
-          <button
-            className="ui-push-button"
-            disabled={
-              !value.loaded ||
-              value.busy ||
-              ["reauth_required", "credential_failed"].includes(value.cloud.status)
-            }
-            onClick={() => void session.begin()}
-          >
-            Sign in
-          </button>
-        )}
+        {value.cloud.authEnabled &&
+          !value.cloud.identity &&
+          !value.cloud.revocationPending &&
+          !value.cloud.localCleanupPending && (
+            <button
+              className="ui-push-button"
+              disabled={
+                !value.loaded ||
+                value.busy ||
+                ["reauth_required", "credential_failed"].includes(value.cloud.status)
+              }
+              onClick={() => void session.begin()}
+            >
+              Sign in
+            </button>
+          )}
         {(value.cloud.identity ||
           value.cloud.revocationPending ||
+          value.cloud.localCleanupPending ||
           value.cloud.status === "reauth_required" ||
           value.cloud.status === "credential_failed") && (
           <button
@@ -64,10 +70,62 @@ export function CloudAccount({
             disabled={value.busy}
             onClick={() => void session.signOut()}
           >
-            {value.cloud.revocationPending ? "Retry revocation" : "Sign out"}
+            {value.cloud.localCleanupPending
+              ? "Retry secure cleanup"
+              : value.cloud.revocationPending
+                ? "Retry revocation"
+                : "Sign out"}
           </button>
         )}
       </div>
+      {value.cloud.remoteRevocationUnconfirmed && (
+        <p
+          className="border-t border-separator px-4 py-3 type-footnote text-label-secondary"
+          role="status"
+        >
+          Cloud has not confirmed revocation of an earlier connection. Revoke that connection in
+          browser Settings.
+        </p>
+      )}
+      {value.cloud.localResetAvailable && (
+        <div className="flex flex-col gap-3 border-t border-separator px-4 py-3 type-callout text-label">
+          {confirmReset ? (
+            <>
+              <p>
+                Reset local connection state? You can reconnect, but this does not revoke the
+                old connection. The unconfirmed-revocation warning will remain.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  className="ui-push-button"
+                  disabled={value.busy}
+                  onClick={() => {
+                    setConfirmReset(false)
+                    void session.resetLocal()
+                  }}
+                >
+                  Reset and keep warning
+                </button>
+                <button
+                  className="ui-push-button"
+                  disabled={value.busy}
+                  onClick={() => setConfirmReset(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <button
+              className="ui-push-button"
+              disabled={value.busy}
+              onClick={() => setConfirmReset(true)}
+            >
+              Reset local connection
+            </button>
+          )}
+        </div>
+      )}
       {value.cloud.identity && <CloudCaptureConsent session={session} value={value} />}
     </>
   )

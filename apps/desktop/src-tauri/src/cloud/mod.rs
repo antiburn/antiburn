@@ -101,6 +101,9 @@ pub struct Snapshot {
     grant_expires_at: Option<i64>,
     destination: Option<Workspace>,
     revocation_pending: bool,
+    local_cleanup_pending: bool,
+    local_reset_available: bool,
+    remote_revocation_unconfirmed: bool,
     draft: Draft,
 }
 
@@ -179,7 +182,10 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         expires_at: engine.attempt.as_ref().map(|attempt| attempt.expires_at),
         grant_expires_at: session.map(|session| session.expires_at),
         destination: session.map(|session| session.workspace.clone()),
-        revocation_pending: engine.revocation_pending,
+        revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
+        local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
+        local_reset_available: engine.local_reset_available,
+        remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
         draft,
     }
 }
@@ -404,6 +410,33 @@ pub async fn cloud_sign_out(
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
         if let Err(error) = engine.sign_out() {
+            engine.status = error.into();
+        }
+        engine.generation = generation;
+        Ok(snapshot_for_window(publish(&app, &engine), window.label()))
+    })
+    .await
+    .map_err(|_| "Cloud is unavailable.".to_owned())?
+}
+
+#[tauri::command]
+pub async fn cloud_reset_local(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<Snapshot, String> {
+    invalidate_pending(&app);
+    let generation = app
+        .state::<Controller>()
+        .account_generation
+        .fetch_add(1, Ordering::AcqRel)
+        + 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        let controller = app.state::<Controller>();
+        let mut engine = controller
+            .engine
+            .lock()
+            .map_err(|_| "Cloud is unavailable.")?;
+        if let Err(error) = engine.reset_local() {
             engine.status = error.into();
         }
         engine.generation = generation;
