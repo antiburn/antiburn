@@ -24,6 +24,7 @@ function fixture(destination: CloudWorkspace | null) {
     error: null,
     loaded: true,
     fullContentConsent: false,
+    sourceListingNeedsRetry: false,
   }
   return { session, value }
 }

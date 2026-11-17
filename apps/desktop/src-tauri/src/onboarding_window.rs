@@ -380,6 +380,8 @@ mod tests {
     }
 }
 
+/// Let only the debug preview label reveal, drag, or close its own native window.
+/// These UI operations cannot mutate credentials, onboarding progress, or sources.
 #[tauri::command]
 #[cfg(feature = "cloud")]
 pub(crate) fn cloud_preview_window(window: WebviewWindow, action: &str) -> Result<(), String> {

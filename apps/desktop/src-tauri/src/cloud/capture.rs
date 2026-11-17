@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+/// Explicit consent for one exact account, personal destination, and root set.
+/// Existing versioned consent excludes attachments and cannot authorize new formats.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Consent {
@@ -23,6 +25,7 @@ pub struct Consent {
     attachments: bool,
 }
 
+/// Saved-request outcome only. Upload unavailability is not payload or acceptance proof.
 #[derive(Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SyncResult {
@@ -40,6 +43,7 @@ impl From<&CaptureRequest> for SyncResult {
     }
 }
 
+/// Restore the saved request ID and safe outcome without resubmitting work.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingSync {
@@ -64,6 +68,7 @@ pub struct Host {
 }
 
 impl Host {
+    /// Save the spool path in memory; do not open storage during UI setup.
     pub fn new(directory: &Path) -> Self {
         Self {
             directory: directory.join("cloud-capture-v1"),
@@ -71,6 +76,9 @@ impl Host {
         }
     }
 
+    /// List source names under admitted blocking work and serialize library spool access.
+    /// Freeze completed identities once; retry failed listing with the same request.
+    /// The current-account predicate must be cheap and must not read source content.
     pub fn discover(
         &mut self,
         store: &Store,
@@ -137,6 +145,7 @@ impl Host {
     }
 }
 
+/// Sort consent-relevant roots without silently removing duplicate selections.
 pub fn selected_roots(folders: &[Folder]) -> Vec<String> {
     let mut roots = folders
         .iter()
@@ -147,6 +156,8 @@ pub fn selected_roots(folders: &[Folder]) -> Vec<String> {
     roots
 }
 
+/// Match current personal authority, saved preferences, and explicit content consent.
+/// Canonical filesystem checks can block, so callers must hold worker admission.
 pub fn validate_selection(
     session: &Session,
     draft: &Draft,
@@ -198,6 +209,7 @@ pub fn validate_selection(
     Ok(roots)
 }
 
+/// Admit bounded opaque idempotency keys, never filesystem paths or arbitrary renderer text.
 pub fn valid_request_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128

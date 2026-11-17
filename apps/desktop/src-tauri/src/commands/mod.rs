@@ -409,6 +409,8 @@ pub async fn get_promotion_readiness(
     .await
 }
 
+/// Save local onboarding progress off the runtime thread. Leaving Cloud setup
+/// reads prior state through Cloud admission before cancelling only its browser attempt.
 #[tauri::command]
 pub async fn set_onboarding_state(
     app: tauri::AppHandle,
@@ -416,9 +418,7 @@ pub async fn set_onboarding_state(
 ) -> CommandResult<OnboardingState> {
     let store = app.state::<Store>().inner().clone();
     #[cfg(feature = "cloud")]
-    if state != OnboardingState::CloudUnavailable
-        && store.onboarding_state().map_err(fail)? == OnboardingState::CloudUnavailable
-    {
+    if crate::cloud::onboarding_requires_cancel(app.clone(), state).await? {
         let _ = crate::cloud::cloud_cancel(app.clone()).await;
     }
     let record_app = app.clone();

@@ -1,3 +1,4 @@
+/** Isolated preview data and timers. This module never uses native credentials or source I/O. */
 import avatar from "../assets/cloud-dev-avatar.jpg"
 import {
   emptyCloudSnapshot,
@@ -7,6 +8,7 @@ import {
   type CloudStatus,
   type SyncResult,
 } from "../lib/cloud"
+/** Closed native-menu scenarios; unknown values must not select a preview. */
 export const cloudDevScenarios = [
   "walkthrough",
   "marketing",
@@ -28,10 +30,13 @@ export const cloudDevScenarios = [
   "complete-unavailable",
   "complete-failed",
 ] as const
+/** One synthetic scenario, not a service response or native account state. */
 export type CloudDevScenario = (typeof cloudDevScenarios)[number]
+/** Validate native preview selection before reading it as a scenario. */
 export function isCloudDevScenario(value: unknown): value is CloudDevScenario {
   return typeof value === "string" && cloudDevScenarios.some((scenario) => scenario === value)
 }
+/** Create a separate in-memory preview. The last observer stops its timers. */
 export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
   const completion = scenario.startsWith("complete-")
   const signedIn =

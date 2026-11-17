@@ -190,7 +190,7 @@ export function CloudAccount({
                 }
                 onClick={() => void session.startSync()}
               >
-                {value.sync.status === "upload_unavailable" && value.error
+                {value.sourceListingNeedsRetry
                   ? "Retry source listing"
                   : "Save capture request"}
               </button>

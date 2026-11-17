@@ -6,6 +6,7 @@ import "./onboarding.css"
 
 type OnboardingStep =
   "welcome" | "sessions" | "limits" | "hud" | "checks" | "cloud" | "cloudUnavailable"
+/** Host-owned local progress and visibility. Only native build info can expose Cloud steps. */
 export interface OnboardingViewProps {
   step: OnboardingStep
   onStepChange: (step: OnboardingStep) => void
@@ -60,6 +61,7 @@ const slides = {
 
 type TeachingStep = keyof typeof slides
 
+/** Own example animation time while subscribed. Hidden or unready frames must pause it. */
 export function createPlayback(
   times: readonly number[],
   duration: number,
@@ -308,6 +310,7 @@ function Demo({
   )
 }
 
+/** Render existing teaching/setup steps without completing or enabling Cloud on its own. */
 export function OnboardingView({
   step: requestedStep,
   onStepChange,

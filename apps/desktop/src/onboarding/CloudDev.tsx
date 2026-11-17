@@ -1,8 +1,10 @@
+/** Debug-only preview surface selected by native code, with no real Cloud port. */
 import { useState, useSyncExternalStore } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { CloudOnboarding } from "./CloudOnboarding"
 import { createCloudDevPort, isCloudDevScenario, type CloudDevScenario } from "./cloudDevPort"
 declare global {
+  /** Native-injected preview selection, never service configuration or credentials. */
   interface Window {
     __ANTIBURN_CLOUD_DEV__?: string
   }
@@ -34,6 +36,7 @@ const snapshot = () => {
     selection = { scenario: current, revision: selection.revision + 1 }
   return selection
 }
+/** Reveal only the label-checked native preview window after its renderer is ready. */
 export async function revealCloudDev() {
   await invoke("cloud_preview_window", { action: "ready" })
 }
@@ -49,6 +52,7 @@ function Preview({ scenario }: { scenario: CloudDevScenario }) {
     />
   )
 }
+/** Remount isolated preview state when the native menu chooses another scenario. */
 export function CloudDev() {
   const selected = useSyncExternalStore(subscribe, snapshot, snapshot)
   return (

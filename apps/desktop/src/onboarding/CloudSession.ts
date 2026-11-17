@@ -1,5 +1,6 @@
 import {
   emptyCloudSnapshot,
+  CLOUD_BUSY_MESSAGE,
   nativeCloudPort,
   type AgentReadiness,
   type CloudDraft,
@@ -11,6 +12,7 @@ import {
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
 import { personalCloudDestination } from "../lib/cloudDestination"
 
+/** Compare consent-relevant roots without treating display-count changes as edits. */
 function selectedFoldersKey(value: CloudSnapshot) {
   return JSON.stringify(
     value.draft.folders
@@ -20,6 +22,7 @@ function selectedFoldersKey(value: CloudSnapshot) {
   )
 }
 
+/** One surface's view state. Consent stays in memory and never substitutes for native checks. */
 export interface CloudViewSnapshot {
   cloud: CloudSnapshot
   screen: CloudScreen
@@ -29,6 +32,8 @@ export interface CloudViewSnapshot {
   error: string | null
   loaded: boolean
   fullContentConsent: boolean
+  /** Retry the saved request's listing even after a transient warning clears. */
+  sourceListingNeedsRetry: boolean
 }
 const messages = {
   idle: "",
@@ -51,7 +56,16 @@ const messages = {
   revocation_unconfirmed:
     "Signed out locally. Cloud has not confirmed revocation. Open Cloud settings to finish cleanup or reset.",
 } as const
+/** Map closed native states to safe copy without exposing provider errors. */
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
+
+/** Accept only the exact nonsecret admission error, not arbitrary native/provider text. */
+function isCloudBusy(error: unknown) {
+  return (
+    error === CLOUD_BUSY_MESSAGE ||
+    (error instanceof Error && error.message === CLOUD_BUSY_MESSAGE)
+  )
+}
 
 /**
  * Own one surface's Cloud view, timers, and in-memory content confirmation.
@@ -69,6 +83,7 @@ export class CloudSession {
     error: null,
     loaded: false,
     fullContentConsent: false,
+    sourceListingNeedsRetry: false,
   }
   private listeners = new Set<() => void>()
   private stop: (() => void) | undefined
@@ -85,12 +100,15 @@ export class CloudSession {
   private readonly port: CloudPort
   private readonly analytics: boolean
   private readonly holdIdentity: boolean
+  /** Inject isolated previews/tests explicitly. Production uses the native capability gate. */
   constructor(port: CloudPort = nativeCloudPort, analytics = true, holdIdentity = false) {
     this.port = port
     this.analytics = analytics
     this.holdIdentity = holdIdentity
   }
+  /** Return the stable snapshot expected by useSyncExternalStore. */
   getSnapshot = () => this.snapshot
+  /** Start observation for the first reader; the last unsubscribe fences late replies. */
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
     if (!this.active) {
@@ -111,6 +129,7 @@ export class CloudSession {
       }
     }
   }
+  /** Suspend timers and screen analytics while the host surface is hidden. */
   setVisible = (visible: boolean) => {
     if (this.visible === visible) return
     this.visible = visible
@@ -121,6 +140,7 @@ export class CloudSession {
     this.schedule()
     this.recordView()
   }
+  /** Count visible entries only, not state events or repeated renders. */
   private recordView() {
     if (
       this.analytics &&
@@ -134,12 +154,16 @@ export class CloudSession {
       noteCloudScreenViewed(this.snapshot.screen)
     }
   }
+  /** Replace view state and notify subscribers without changing native authority. */
   private publish(patch: Partial<CloudViewSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch }
     this.listeners.forEach((listener) => listener())
     this.recordView()
     this.schedule()
   }
+  /** Native state owns bindings. Clear consent on authority/root changes and let
+   * completed native work clear a transient admission warning, not a real failure.
+   */
   private receive(value: CloudSnapshot) {
     this.revision++
     const accountChanged = value.identity?.id !== this.snapshot.cloud.identity?.id
@@ -154,6 +178,11 @@ export class CloudSession {
       sourcesChanged ||
       value.status !== "signed_in" ||
       !!value.setupError
+    const retryInvalidated =
+      contextChanged ||
+      (value.pendingSync &&
+        (value.pendingSync.requestId !== this.preparedRequestId ||
+          value.pendingSync.result.status === "cancelled"))
     if (contextChanged) {
       this.requestId = null
       this.preparedRequestId = null
@@ -172,7 +201,9 @@ export class CloudSession {
       cloud: value,
       screen: value.identity && value.pendingSync ? "complete" : screen,
       loaded: true,
+      ...(this.snapshot.error === CLOUD_BUSY_MESSAGE ? { error: null } : {}),
       ...(contextChanged ? { fullContentConsent: false } : {}),
+      ...(retryInvalidated ? { sourceListingNeedsRetry: false } : {}),
       ...(value.identity && value.pendingSync
         ? { sync: value.pendingSync.result }
         : contextChanged
@@ -180,6 +211,7 @@ export class CloudSession {
           : {}),
     })
   }
+  /** Schedule only visible identity handoff or browser expiry; never poll signed-in accounts. */
   private schedule() {
     clearTimeout(this.timer)
     if (
@@ -212,13 +244,14 @@ export class CloudSession {
       ["opening", "waiting"].includes(this.snapshot.cloud.status)
     ) {
       const expiresAt = this.snapshot.cloud.expiresAt
-      if (expiresAt)
-        this.timer = setTimeout(
-          () => void this.refresh(),
-          Math.max(1, expiresAt * 1000 - Date.now() + 100),
-        )
+      if (expiresAt) {
+        const delay = expiresAt * 1000 - Date.now() + 100
+        // Native owns expiry. An elapsed timer must not turn busy replies into polling.
+        if (delay > 0) this.timer = setTimeout(() => void this.refresh(), delay)
+      }
     }
   }
+  /** Discard reads superseded by a native event or a later subscription generation. */
   private async refresh() {
     const generation = this.generation
     const revision = this.revision
@@ -226,11 +259,16 @@ export class CloudSession {
       const value = await this.port.read()
       if (this.active && generation === this.generation && revision === this.revision)
         this.receive(value)
-    } catch {
+    } catch (error) {
       if (generation === this.generation)
-        this.publish({ error: "Could not check Cloud. Try again." })
+        this.publish({
+          error: isCloudBusy(error) ? CLOUD_BUSY_MESSAGE : "Could not check Cloud. Try again.",
+        })
     }
   }
+  /** Attach events before independent account/integration reads. Restore saved IDs
+   * without starting a request; Cloud admission cannot block integration readiness.
+   */
   load = async () => {
     const generation = this.generation
     this.publish({ busy: true, error: null })
@@ -245,11 +283,6 @@ export class CloudSession {
         }
         this.stop = stop
       }
-      const revision = this.revision
-      const value = await this.port.read()
-      if (!this.active || generation !== this.generation) return
-      const appliedRead = revision === this.revision
-      if (appliedRead) this.receive(value)
       void this.port
         .agent()
         .then((agent) => {
@@ -258,6 +291,11 @@ export class CloudSession {
         .catch(() => {
           if (this.active && generation === this.generation) this.publish({ agent: "failed" })
         })
+      const revision = this.revision
+      const value = await this.port.read()
+      if (!this.active || generation !== this.generation) return
+      const appliedRead = revision === this.revision
+      if (appliedRead) this.receive(value)
       if (appliedRead && value.identity && value.pendingSync) {
         this.requestId = value.pendingSync.requestId
         this.publish({
@@ -275,15 +313,18 @@ export class CloudSession {
         this.publish({ sync, screen: "complete" })
       }
       this.publish({ busy: false })
-    } catch {
+    } catch (error) {
       if (this.active && generation === this.generation)
         this.publish({
           busy: false,
           loaded: true,
-          error: "Could not load Cloud. Try again or continue locally.",
+          error: isCloudBusy(error)
+            ? CLOUD_BUSY_MESSAGE
+            : "Could not load Cloud. Try again or continue locally.",
         })
     }
   }
+  /** Serialize surface actions and reject replies superseded by native events. */
   private async run(
     action: Parameters<typeof noteCloudAction>[1] | null,
     task: () => Promise<CloudSnapshot>,
@@ -301,14 +342,21 @@ export class CloudSession {
       this.publish({ busy: false })
       const consistent = fresh || JSON.stringify(this.snapshot.cloud) === JSON.stringify(value)
       return consistent && value.status !== "credential_failed"
-    } catch {
+    } catch (error) {
       if (this.active && generation === this.generation)
-        this.publish({ busy: false, error: "Cloud could not complete that action. Try again." })
+        this.publish({
+          busy: false,
+          error: isCloudBusy(error)
+            ? CLOUD_BUSY_MESSAGE
+            : "Cloud could not complete that action. Try again.",
+        })
       return false
     }
   }
+  /** Start explicit browser approval; authentication alone never starts capture. */
   begin = () =>
     this.run(this.snapshot.cloud.authEnabled ? "sign_in" : "learn_more", this.port.begin)
+  /** Cancel the previous browser attempt before opening another; keep native cleanup gates. */
   retry = () =>
     !this.snapshot.cloud.authEnabled
       ? this.begin()
@@ -317,14 +365,20 @@ export class CloudSession {
           if (cancelled.status === "credential_failed") return cancelled
           return this.port.begin()
         })
+  /** Record explicit browser cancellation without cancelling saved source requests. */
   cancel = () => this.run("cancel", this.port.cancel)
+  /** Cancel while navigating away without adding a second action event. */
   cancelSilently = () => this.run(null, this.port.cancel)
+  /** Ask native code to close this account generation and revoke only its grant. */
   signOut = () => this.run("sign_out", this.port.signOut)
+  /** Run only after the UI's separate reset confirmation; keep the remote warning. */
   resetLocal = () => this.run(null, this.port.resetLocal)
+  /** Change the current confirmation revision so in-flight preparation cannot reuse it. */
   setFullContentConsent = (fullContentConsent: boolean) => {
     if (fullContentConsent !== this.snapshot.fullContentConsent) this.consentRevision++
     this.publish({ fullContentConsent })
   }
+  /** Bind every preference write to the currently observed personal destination. */
   private saveDraft(draft: CloudDraft, foldersEdited = true) {
     const { identity, destination } = this.snapshot.cloud
     const personal = personalCloudDestination(destination ?? null)
@@ -336,12 +390,14 @@ export class CloudSession {
       foldersEdited,
     )
   }
+  /** Persist nested navigation only when native account/setup state permits it. */
   go = async (screen: CloudDraft["screen"], action: "back" | "continue" = "continue") => {
     if (screen !== "handoff" && !this.snapshot.cloud.identity) return
     await this.run(action, () =>
       this.saveDraft({ ...this.snapshot.cloud.draft, screen }, false),
     )
   }
+  /** Discard picker results after account changes and clear consent before source edits. */
   addFolders = async () => {
     const generation = this.generation
     const account = this.snapshot.cloud.identity?.id
@@ -372,6 +428,7 @@ export class CloudSession {
       return this.saveDraft({ ...this.snapshot.cloud.draft, folders })
     })
   }
+  /** Clear consent immediately, before a delayed preference save can complete. */
   selectFolder = (path: string, selected: boolean) => {
     this.setFullContentConsent(false)
     return this.run("select_folder", () =>
@@ -383,6 +440,7 @@ export class CloudSession {
       }),
     )
   }
+  /** Remove a draft choice, not any saved request, source, or spool entry. */
   removeFolder = (path: string) => {
     this.setFullContentConsent(false)
     return this.run(null, () =>
@@ -449,7 +507,13 @@ export class CloudSession {
         this.snapshot.cloud.pendingSync.result.status === "cancelled"
       )
     this.syncInFlight = true
-    this.publish({ screen: "complete", busy: false, sync: { status: "starting" }, error: null })
+    this.publish({
+      screen: "complete",
+      busy: false,
+      sync: { status: "starting" },
+      error: null,
+      sourceListingNeedsRetry: false,
+    })
     try {
       if (!existing) {
         await this.port.prepareSync(selected, requestId, consent)
@@ -463,19 +527,23 @@ export class CloudSession {
           : await this.port.start(selected, requestId, consent)
       if (current() && (nativeCapture || revision === this.revision))
         this.publish({ sync, busy: false, screen: "complete" })
-    } catch {
+    } catch (error) {
       if (current() && (nativeCapture || revision === this.revision)) {
         const saved = nativeCapture && this.preparedRequestId === requestId
+        const busy = isCloudBusy(error)
         this.publish({
-          sync: { status: saved ? "upload_unavailable" : "ambiguous" },
+          sync: { status: saved ? "upload_unavailable" : busy ? "unavailable" : "ambiguous" },
           busy: false,
-          screen: "complete",
-          ...(saved
-            ? {
-                error:
-                  "Could not finish listing sources. Your request is saved. Retry source listing.",
-              }
-            : {}),
+          screen: busy && !saved ? "folders" : "complete",
+          sourceListingNeedsRetry: saved,
+          ...(busy
+            ? { error: CLOUD_BUSY_MESSAGE }
+            : saved
+              ? {
+                  error:
+                    "Could not finish listing sources. Your request is saved. Retry source listing.",
+                }
+              : {}),
         })
       }
     } finally {

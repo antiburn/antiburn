@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { CloudSession } from "./CloudSession"
-import { emptyCloudSnapshot, type CloudPort, type CloudSnapshot } from "../lib/cloud"
+import {
+  CLOUD_BUSY_MESSAGE,
+  emptyCloudSnapshot,
+  type CloudPort,
+  type CloudSnapshot,
+} from "../lib/cloud"
 const analytics = vi.hoisted(() => ({ view: vi.fn(), action: vi.fn() }))
 vi.mock("../lib/onboardingAnalytics", () => ({
   noteCloudScreenViewed: analytics.view,
@@ -408,6 +413,34 @@ it("ignores legacy marketing expiry instead of scheduling auth status reads", as
   stop()
 })
 
+it.each([0, 2_000])(
+  "does not poll an elapsed browser deadline after a busy status read from clock %i",
+  async (clock) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(clock)
+    const waiting: CloudSnapshot = {
+      ...emptyCloudSnapshot,
+      authEnabled: true,
+      status: "waiting",
+      expiresAt: 1,
+    }
+    const { port, emit } = fixture(waiting)
+    vi.mocked(port.read).mockResolvedValueOnce(waiting).mockRejectedValue(CLOUD_BUSY_MESSAGE)
+    const session = new CloudSession(port, false)
+    const stop = session.subscribe(vi.fn())
+    await settle()
+    await vi.advanceTimersByTimeAsync(5_000)
+    const expectedReads = clock === 0 ? 2 : 1
+    expect(port.read).toHaveBeenCalledTimes(expectedReads)
+    session.setVisible(false)
+    session.setVisible(true)
+    emit(waiting)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(port.read).toHaveBeenCalledTimes(expectedReads)
+    stop()
+  },
+)
+
 it("advances verified identity automatically and suspends the delay when hidden", async () => {
   vi.stubGlobal(
     "matchMedia",
@@ -790,6 +823,11 @@ it("reports listing failure after the native prepare event and retries the same 
     error: expect.stringContaining("Could not finish listing sources"),
   })
   const id = vi.mocked(port.prepareSync).mock.calls[0]![1]
+  emit({
+    ...nativeCapture,
+    pendingSync: { requestId: id, result: { status: "upload_unavailable" } },
+  })
+  expect(session.getSnapshot().error).toContain("Could not finish listing sources")
   await session.startSync()
   expect(port.prepareSync).toHaveBeenCalledOnce()
   expect(port.start).toHaveBeenLastCalledWith(expect.any(Array), id, expect.any(Object))
@@ -834,6 +872,40 @@ it("loads agent readiness when reconciliation emits state before its reply", asy
   await settle()
   expect(port.agent).toHaveBeenCalledOnce()
   expect(session.getSnapshot().agent).toBe("ready")
+  expect(port.start).not.toHaveBeenCalled()
+  stop()
+})
+
+it("loads agent readiness independently when an initial busy read is followed by a saved snapshot", async () => {
+  const saved: CloudSnapshot = {
+    ...nativeCapture,
+    pendingSync: { requestId: "saved", result: { status: "upload_unavailable" } },
+  }
+  const { port, emit } = fixture(saved)
+  vi.mocked(port.read).mockRejectedValue(CLOUD_BUSY_MESSAGE)
+  let finishAgent!: (value: "ready") => void
+  port.agent = vi.fn(
+    () =>
+      new Promise<"ready">((done) => {
+        finishAgent = done
+      }),
+  )
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  expect(port.agent).toHaveBeenCalledOnce()
+  expect(session.getSnapshot().error).toBe(CLOUD_BUSY_MESSAGE)
+  emit(saved)
+  finishAgent("ready")
+  await settle()
+  expect(session.getSnapshot()).toMatchObject({
+    screen: "complete",
+    agent: "ready",
+    error: null,
+    cloud: { identity: nativeCapture.identity, pendingSync: { requestId: "saved" } },
+  })
+  expect(port.read).toHaveBeenCalledOnce()
+  expect(port.prepareSync).not.toHaveBeenCalled()
   expect(port.start).not.toHaveBeenCalled()
   stop()
 })
@@ -995,5 +1067,105 @@ it("fences late native results and creates a new request for changed roots", asy
   expect(calls).toHaveLength(2)
   expect(calls[1]![1]).not.toBe(calls[0]![1])
   expect(calls[1]![2].selectedRoots).toEqual(["/Example/claude/projects/new"])
+  stop()
+})
+
+it("shows safe admission rejection without clearing authority or source consent", async () => {
+  const { port, emit } = fixture(nativeCapture)
+  port.save = vi.fn(async () => {
+    throw CLOUD_BUSY_MESSAGE
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.go("folders")
+  expect(session.getSnapshot()).toMatchObject({
+    error: CLOUD_BUSY_MESSAGE,
+    cloud: { status: "signed_in" },
+    fullContentConsent: true,
+  })
+  emit(nativeCapture)
+  expect(session.getSnapshot().error).toBeNull()
+  expect(session.getSnapshot().fullContentConsent).toBe(true)
+  stop()
+})
+
+it("returns a rejected busy preparation to source selection and retries the same ID", async () => {
+  const { port } = fixture(nativeCapture)
+  vi.mocked(port.prepareSync).mockRejectedValueOnce(CLOUD_BUSY_MESSAGE)
+  vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(session.getSnapshot()).toMatchObject({
+    screen: "folders",
+    sync: { status: "unavailable" },
+    error: CLOUD_BUSY_MESSAGE,
+    fullContentConsent: true,
+  })
+  expect(port.start).not.toHaveBeenCalled()
+  await session.startSync()
+  const calls = vi.mocked(port.prepareSync).mock.calls
+  expect(calls).toHaveLength(2)
+  expect(calls[0]![1]).toBe(calls[1]![1])
+  expect(session.getSnapshot().sync).toEqual({ status: "upload_unavailable" })
+  stop()
+})
+
+it("keeps source-listing retry state after a busy listing and an unchanged native event", async () => {
+  const { port, emit } = fixture(nativeCapture)
+  port.prepareSync = vi.fn(async (_folders, requestId) => {
+    emit({
+      ...nativeCapture,
+      pendingSync: { requestId, result: { status: "upload_unavailable" } },
+    })
+  })
+  vi.mocked(port.start)
+    .mockRejectedValueOnce(CLOUD_BUSY_MESSAGE)
+    .mockResolvedValue({ status: "upload_unavailable" })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(session.getSnapshot()).toMatchObject({
+    error: CLOUD_BUSY_MESSAGE,
+    sourceListingNeedsRetry: true,
+    sync: { status: "upload_unavailable" },
+  })
+  const requestId = vi.mocked(port.prepareSync).mock.calls[0]![1]
+  emit({
+    ...nativeCapture,
+    pendingSync: { requestId, result: { status: "upload_unavailable" } },
+  })
+  expect(session.getSnapshot()).toMatchObject({
+    error: null,
+    sourceListingNeedsRetry: true,
+    fullContentConsent: true,
+  })
+  await session.startSync()
+  expect(port.prepareSync).toHaveBeenCalledOnce()
+  expect(port.start).toHaveBeenCalledTimes(2)
+  expect(vi.mocked(port.start).mock.calls.map((call) => call[1])).toEqual([
+    requestId,
+    requestId,
+  ])
+  expect(session.getSnapshot().sourceListingNeedsRetry).toBe(false)
+  stop()
+})
+
+it("does not expose other raw native or provider errors as an admission warning", async () => {
+  const { port } = fixture(nativeCapture)
+  port.save = vi.fn(async () => {
+    throw new Error("synthetic private provider detail")
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  await session.go("folders")
+  expect(session.getSnapshot().error).toBe("Cloud could not complete that action. Try again.")
   stop()
 })

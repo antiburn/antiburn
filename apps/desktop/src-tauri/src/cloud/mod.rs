@@ -1,6 +1,8 @@
 //! Feature-gated Cloud IPC for the existing onboarding and Settings surfaces.
 //! The controller owns authentication and source-listing side effects. Renderer
 //! snapshots contain no credentials and do not authorize content capture or upload.
+//! One admission slot owns synchronous I/O. Cleanup waits asynchronously; browser
+//! socket waiting runs separately and must recheck generations after admission.
 
 mod auth;
 mod capture;
@@ -11,6 +13,7 @@ mod loopback;
 mod state;
 #[cfg(test)]
 mod tests;
+mod work;
 
 use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, Workspace};
 use engine::Engine;
@@ -19,12 +22,14 @@ use std::{
     path::Path,
     sync::{
         Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+use work::{BlockingWork, Priority};
 
+/// Closed renderer-safe authentication outcomes, not permission to capture content.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthStatus {
@@ -61,6 +66,7 @@ impl From<Failure> for AuthStatus {
     }
 }
 
+/// An explicit native source-root preference. Display counts do not bind consent.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Folder {
@@ -72,6 +78,7 @@ pub struct Folder {
     session_count_is_partial: bool,
 }
 
+/// Persisted nested setup position, separate from the host onboarding step.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Screen {
@@ -82,6 +89,7 @@ pub enum Screen {
     Complete,
 }
 
+/// Preferences for one account and personal destination, never durable content consent.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Draft {
@@ -91,6 +99,7 @@ pub struct Draft {
     folders_initialized: bool,
 }
 
+/// Untrusted renderer intent that must match the engine's current personal grant.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DestinationBinding {
@@ -99,6 +108,7 @@ pub struct DestinationBinding {
 }
 
 impl DestinationBinding {
+    /// Reject a changed account, destination, or explicit team without fallback.
     fn matches(&self, session: &auth::Session) -> bool {
         self.account_id == session.user.id
             && self.destination_id == session.workspace.id
@@ -106,6 +116,7 @@ impl DestinationBinding {
     }
 }
 
+/// Preserve the stored draft's legacy initialization default when its field is absent.
 fn existing_folder_choices() -> bool {
     true
 }
@@ -135,6 +146,8 @@ pub struct Snapshot {
 /// One native owner serializes auth and capture operations. Atomic generations
 /// invalidate queued work before it can acquire a mutex or publish old authority.
 pub(crate) struct Controller {
+    blocking: BlockingWork,
+    setup_ready: AtomicBool,
     engine: Mutex<Engine>,
     capture: Mutex<capture::Host>,
     attempt_generation: AtomicU64,
@@ -142,15 +155,30 @@ pub(crate) struct Controller {
     recorded_status: Mutex<AuthStatus>,
 }
 
+/// Supply UTC seconds for fixed grant deadlines and browser-attempt expiry.
 fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
+/// Initialize feature tables only inside admitted blocking work. Failed attempts
+/// leave readiness false so a later read can retry; auth cleanup does not need them.
+fn ensure_cloud_setup(ready: &AtomicBool, store: &crate::store::Store) -> Result<(), String> {
+    if !ready.load(Ordering::Acquire) {
+        store
+            .initialize_cloud_setup()
+            .map_err(|_| "Could not initialize Cloud setup. Try again.".to_owned())?;
+        ready.store(true, Ordering::Release);
+    }
+    Ok(())
+}
+
+/// Read account-bound preferences in a blocking worker, never as content consent.
 fn draft(app: &tauri::AppHandle, session: Option<&auth::Session>) -> Result<Draft, String> {
     let Some(session) = session else {
         return Ok(Draft::default());
     };
     let store = app.state::<crate::store::Store>();
+    ensure_cloud_setup(&app.state::<Controller>().setup_ready, &store)?;
     let saved = store
         .cloud_draft(&session.user.id, &session.workspace.id)
         .map_err(|_| "Could not read Cloud setup.")?
@@ -160,13 +188,17 @@ fn draft(app: &tauri::AppHandle, session: Option<&auth::Session>) -> Result<Draf
     Ok(saved.unwrap_or_default())
 }
 
+/// Build safe view state in a blocking worker. Account generations hide stale
+/// identity, while setup failures block sources without hiding credential cleanup.
 fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
-    let current = engine.generation
-        == app
-            .state::<Controller>()
-            .account_generation
-            .load(Ordering::Acquire);
-    let session = if current { engine.session() } else { None };
+    let current = || {
+        engine.generation
+            == app
+                .state::<Controller>()
+                .account_generation
+                .load(Ordering::Acquire)
+    };
+    let session = if current() { engine.session() } else { None };
     let (mut draft, mut setup_error) = match draft(app, session) {
         Ok(draft) => (draft, None),
         Err(error) => (Draft::default(), Some(error)),
@@ -174,23 +206,32 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     if session.is_none() {
         draft.screen = Screen::Handoff;
     }
-    let pending_sync = session.and_then(|session| {
-        match app
-            .state::<crate::store::Store>()
-            .current_cloud_capture_request(
-                &session.user.id,
-                &session.workspace.id,
-                &capture::selected_roots(&draft.folders),
-            ) {
-            Ok(request) => request.map(Into::into),
-            Err(_) => {
-                setup_error = Some("Could not read saved capture requests.".into());
-                None
+    let pending_sync = session
+        .filter(|_| setup_error.is_none())
+        .and_then(|session| {
+            match app
+                .state::<crate::store::Store>()
+                .current_cloud_capture_request(
+                    &session.user.id,
+                    &session.workspace.id,
+                    &capture::selected_roots(&draft.folders),
+                ) {
+                Ok(request) => request.map(Into::into),
+                Err(_) => {
+                    setup_error = Some("Could not read saved capture requests.".into());
+                    None
+                }
             }
-        }
-    });
+        });
     if session.is_some() && !cfg!(unix) {
         setup_error = Some("Native capture is not supported on this platform.".into());
+    }
+    let current = current();
+    let session = session.filter(|_| current);
+    let pending_sync = pending_sync.filter(|_| current);
+    if !current {
+        draft = Draft::default();
+        setup_error = None;
     }
     Snapshot {
         auth_enabled: engine.config.is_some(),
@@ -203,7 +244,11 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             AuthStatus::Cancelled
         },
         identity: session.map(Identity::from),
-        expires_at: engine.attempt.as_ref().map(|attempt| attempt.expires_at),
+        expires_at: engine
+            .attempt
+            .as_ref()
+            .filter(|_| current)
+            .map(|attempt| attempt.expires_at),
         grant_expires_at: session.map(|session| session.expires_at),
         destination: session.map(|session| session.workspace.clone()),
         revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
@@ -224,6 +269,8 @@ fn emit_snapshot(app: &tauri::AppHandle, result: Snapshot) -> Snapshot {
     result
 }
 
+/// Record changed operation outcomes and notify views from admitted blocking work.
+/// Read-only notifications use `emit_snapshot` so they do not replay analytics.
 fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     let result = snapshot(app, engine);
     let controller = app.state::<Controller>();
@@ -257,16 +304,18 @@ fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     emit_snapshot(app, result)
 }
 
+/// Register capabilities and memory-only state during Tauri setup. The first
+/// account-bound store access initializes SQLite in admitted blocking work.
 pub fn initialize(
     app: &tauri::AppHandle,
     directory: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    app.state::<crate::store::Store>()
-        .initialize_cloud_setup()?;
     app.add_capability(include_str!("../../cloud-capabilities/account.json"))?;
     #[cfg(debug_assertions)]
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
     app.manage(Controller {
+        blocking: BlockingWork::default(),
+        setup_ready: AtomicBool::new(false),
         capture: Mutex::new(capture::Host::new(directory)),
         engine: Mutex::new(Engine::new(
             Config::from_build(),
@@ -288,7 +337,8 @@ pub fn initialize(
 /// status read closes access. Callers must attach their event listener first.
 #[tauri::command]
 pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, move || {
         let controller = app.state::<Controller>();
         let generation = controller.account_generation.load(Ordering::Acquire);
         let mut engine = controller
@@ -306,18 +356,30 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(emit_snapshot(&app, snapshot(&app, &engine)))
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Open explicit browser approval after normal admission. A busy rejection leaves
+/// the existing attempt intact. Cleanup can invalidate an admitted replacement
+/// before its blocking closure starts, so it must claim the observed generation.
 #[tauri::command]
 pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    let generation = app
+    let expected_generation = app
         .state::<Controller>()
         .attempt_generation
-        .fetch_add(1, Ordering::AcqRel)
-        + 1;
-    tauri::async_runtime::spawn_blocking(move || {
+        .load(Ordering::Acquire);
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, move || {
         let controller = app.state::<Controller>();
+        let generation = expected_generation + 1;
+        controller
+            .attempt_generation
+            .compare_exchange(
+                expected_generation,
+                generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| "Cloud sign-in was cancelled.".to_owned())?;
         let mut engine = controller
             .engine
             .lock()
@@ -359,51 +421,72 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         let config = engine.config.clone().ok_or("Cloud is unavailable.")?;
         let result = publish(&app, &engine);
         let callback_app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::spawn(async move {
             let current = || {
                 let controller = callback_app.state::<Controller>();
                 controller.attempt_generation.load(Ordering::Acquire) == generation
                     && controller.account_generation.load(Ordering::Acquire) == account_generation
             };
-            let callback = listener.wait(&config, &attempt, current);
-            let controller = callback_app.state::<Controller>();
-            let Ok(mut engine) = controller.engine.lock() else {
-                return;
-            };
+            let callback = listener.wait(&config, &attempt, current).await;
             if !current() {
                 return;
             }
-            if let Some(callback) = callback {
-                if let Err(error) = engine.callback(&attempt, callback, now(), current) {
-                    engine.status = error.into();
-                }
-            } else {
-                if let Err(error) = engine.cancel(generation) {
-                    engine.status = error.into();
-                } else {
-                    engine.status = if engine.cleanup.blocks_connection() {
-                        AuthStatus::RevocationUnconfirmed
-                    } else {
-                        AuthStatus::Expired
+            let work = callback_app.state::<Controller>().blocking.clone();
+            let result = work
+                .run(Priority::Cleanup, move || {
+                    let controller = callback_app.state::<Controller>();
+                    let current = || {
+                        controller.attempt_generation.load(Ordering::Acquire) == generation
+                            && controller.account_generation.load(Ordering::Acquire)
+                                == account_generation
                     };
-                }
-            }
-            if current() {
-                publish(&callback_app, &engine);
+                    let mut engine = controller
+                        .engine
+                        .lock()
+                        .map_err(|_| "Cloud is unavailable.")?;
+                    if !current() {
+                        return Ok(());
+                    }
+                    if let Some(callback) = callback {
+                        if let Err(error) = engine.callback(&attempt, callback, now(), current) {
+                            engine.status = error.into();
+                        }
+                    } else {
+                        if let Err(error) = engine.cancel(generation) {
+                            engine.status = error.into();
+                        } else {
+                            engine.status = if engine.cleanup.blocks_connection() {
+                                AuthStatus::RevocationUnconfirmed
+                            } else {
+                                AuthStatus::Expired
+                            };
+                        }
+                    }
+                    if current() {
+                        publish(&callback_app, &engine);
+                    }
+                    Ok(())
+                })
+                .await;
+            if result.is_err() {
+                tracing::warn!(event = "cloud_callback_worker_unavailable");
             }
         });
         Ok(result)
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Invalidate only browser work immediately, before any cleanup admission wait.
+/// This memory-only operation does not revoke established auth or remove requests.
 pub fn invalidate_pending(app: &tauri::AppHandle) {
     if let Some(controller) = app.try_state::<Controller>() {
         controller.attempt_generation.fetch_add(1, Ordering::AcqRel);
     }
 }
 
+/// Cancel a browser attempt with cleanup priority, retaining uncertain approval
+/// for explicit recovery. Established auth and saved source requests survive.
 #[tauri::command]
 pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     let generation = app
@@ -411,7 +494,8 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
         .attempt_generation
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Cleanup, move || {
         let controller = app.state::<Controller>();
         let mut engine = controller
             .engine
@@ -426,9 +510,10 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(publish(&app, &engine))
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Fence account/browser work before waiting for cleanup admission. Native state
+/// closes access before revocation and secure deletion; source bytes stay intact.
 #[tauri::command]
 pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
@@ -437,7 +522,8 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         .account_generation
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Cleanup, move || {
         let controller = app.state::<Controller>();
         let mut engine = controller
             .engine
@@ -456,9 +542,10 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(publish(&app, &engine))
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Apply an explicitly confirmed reset only when no secure refresh proof remains.
+/// Invalidate late work immediately and preserve the remote-revocation warning.
 #[tauri::command]
 pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
@@ -467,7 +554,8 @@ pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String
         .account_generation
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Cleanup, move || {
         let controller = app.state::<Controller>();
         let mut engine = controller
             .engine
@@ -486,9 +574,10 @@ pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String
         Ok(publish(&app, &engine))
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Save account-bound preferences in admitted blocking work. Counts are display
+/// data, and no preference write creates content consent or retargets requests.
 #[tauri::command]
 pub async fn cloud_save_draft(
     app: tauri::AppHandle,
@@ -496,7 +585,8 @@ pub async fn cloud_save_draft(
     binding: DestinationBinding,
     folders_edited: Option<bool>,
 ) -> Result<Snapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, move || {
         if value.folders.len() > 100
             || value.folders.iter().any(|folder| {
                 folder.path.is_empty()
@@ -520,14 +610,8 @@ pub async fn cloud_save_draft(
             return Err("Cloud account changed. Choose folders again.".to_owned());
         }
         let store = app.state::<crate::store::Store>();
-        let previous = store
-            .cloud_draft(&session.user.id, &session.workspace.id)
-            .map_err(|_| "Could not read Cloud setup.")?
-            .map(|raw| serde_json::from_str::<Draft>(&raw))
-            .transpose()
-            .map_err(|_| "Could not read Cloud setup.")?;
-        value.folders_initialized = folders_edited.unwrap_or(true)
-            || previous.is_some_and(|draft| draft.folders_initialized);
+        let previous = draft(&app, Some(session))?;
+        value.folders_initialized = folders_edited.unwrap_or(true) || previous.folders_initialized;
         for folder in &mut value.folders {
             folder.session_count = None;
             folder.session_count_is_partial = false;
@@ -539,9 +623,10 @@ pub async fn cloud_save_draft(
         Ok(publish(&app, &engine))
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Persist exact full-content consent and roots before source-name discovery.
+/// Reusing a request ID must preserve its original account/destination selection.
 #[tauri::command]
 pub async fn cloud_prepare_sync(
     app: tauri::AppHandle,
@@ -549,7 +634,8 @@ pub async fn cloud_prepare_sync(
     folders: Vec<Folder>,
     consent: capture::Consent,
 ) -> Result<capture::SyncResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, move || {
         if !cfg!(unix) {
             return Err("Native capture is not supported on this platform.".into());
         }
@@ -594,15 +680,17 @@ pub async fn cloud_prepare_sync(
         Ok(capture::SyncResult::from(&request))
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Share current-account checks across saved-request read, discovery, and cancellation.
 enum CaptureAction {
     Discover,
     Read,
     Cancel,
 }
 
+/// Run under blocking admission. Resolve the original account's durable request
+/// before touching library/storage state; never capture content or start upload.
 fn capture_request(
     app: &tauri::AppHandle,
     request_id: &str,
@@ -631,6 +719,7 @@ fn capture_request(
         return Err("Connect to the original Cloud account to view this request.".into());
     };
     let store = app.state::<crate::store::Store>();
+    ensure_cloud_setup(&controller.setup_ready, &store)?;
     let request = store
         .cloud_capture_request(request_id, &session.user.id, &session.workspace.id)
         .map_err(|_| "Capture request is unavailable.")?;
@@ -649,38 +738,63 @@ fn capture_request(
     Ok(capture::SyncResult::from(&request))
 }
 
+/// List names for a saved selection once. Retries keep IDs and completed results;
+/// `UploadUnavailable` confirms neither payload reading nor service acceptance.
 #[tauri::command]
 pub async fn cloud_start_sync(
     app: tauri::AppHandle,
     request_id: String,
 ) -> Result<capture::SyncResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, move || {
         capture_request(&app, &request_id, CaptureAction::Discover)
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Read saved request state only, without rescan, payload reads, or upload submission.
 #[tauri::command]
 pub async fn cloud_reconcile_sync(
     app: tauri::AppHandle,
     request_id: String,
 ) -> Result<capture::SyncResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Normal, move || {
         capture_request(&app, &request_id, CaptureAction::Read)
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
+/// Mark the original account's request cancelled with cleanup admission.
+/// This does not delete spools, native source, or remote content.
 #[tauri::command]
 pub async fn cloud_cancel_sync(
     app: tauri::AppHandle,
     request_id: String,
 ) -> Result<capture::SyncResult, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let work = app.state::<Controller>().blocking.clone();
+    work.run(Priority::Cleanup, move || {
         capture_request(&app, &request_id, CaptureAction::Cancel)
     })
     .await
-    .map_err(|_| "Cloud is unavailable.".to_owned())?
+}
+
+/// Read whether leaving onboarding must cancel its browser attempt. SQLite waits
+/// use cleanup admission, so they never block the UI or a Tokio runtime thread.
+pub(crate) async fn onboarding_requires_cancel(
+    app: tauri::AppHandle,
+    requested: crate::store::OnboardingState,
+) -> Result<bool, String> {
+    if requested == crate::store::OnboardingState::CloudUnavailable {
+        return Ok(false);
+    }
+    let work = app.state::<Controller>().blocking.clone();
+    let store = app.state::<crate::store::Store>().inner().clone();
+    work.run(Priority::Cleanup, move || {
+        store
+            .onboarding_state()
+            .map(|state| state == crate::store::OnboardingState::CloudUnavailable)
+            .map_err(|_| "Could not read onboarding progress.".to_owned())
+    })
+    .await
 }

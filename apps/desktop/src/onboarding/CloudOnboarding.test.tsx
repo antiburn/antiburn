@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { expect, it, vi } from "vitest"
 import {
   emptyCloudSnapshot,
+  CLOUD_BUSY_MESSAGE,
   nativeCloudPort,
   type CloudPort,
   type CloudSnapshot,
@@ -15,6 +16,7 @@ vi.mock("../lib/onboardingAnalytics", () => ({
 }))
 
 function fixture(patch: Partial<CloudSnapshot> = {}) {
+  let notify: (next: CloudSnapshot) => void = () => {}
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
     authEnabled: true,
@@ -32,7 +34,10 @@ function fixture(patch: Partial<CloudSnapshot> = {}) {
   const port: CloudPort = {
     ...nativeCloudPort,
     read: async () => value,
-    watch: async () => () => {},
+    watch: async (listener) => {
+      notify = listener
+      return () => {}
+    },
     agent: async () => "unavailable",
     prepareSync: vi.fn(async () => {}),
     start,
@@ -42,7 +47,14 @@ function fixture(patch: Partial<CloudSnapshot> = {}) {
       return value
     },
   }
-  return { port, start }
+  return {
+    port,
+    start,
+    emit: (patch: Partial<CloudSnapshot> = {}) => {
+      value = { ...value, ...patch }
+      notify(value)
+    },
+  }
 }
 
 it("saves native capture requests with truthful completion copy", async () => {
@@ -94,6 +106,35 @@ it("keeps the saved request visible and offers an explicit source-listing retry"
   fireEvent.click(retry)
   await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
   expect(vi.mocked(port.prepareSync)).toHaveBeenCalledOnce()
+})
+
+it("keeps source-listing retry visible after a busy warning clears on an unchanged event", async () => {
+  const { port, start, emit } = fixture()
+  port.prepareSync = vi.fn(async (_folders, requestId) => {
+    emit({ pendingSync: { requestId, result: { status: "upload_unavailable" } } })
+  })
+  start.mockRejectedValueOnce(CLOUD_BUSY_MESSAGE)
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  const save = await screen.findByRole("button", { name: "Save capture request" })
+  fireEvent.click(screen.getByRole("checkbox"))
+  fireEvent.click(save)
+  expect(await screen.findByText(CLOUD_BUSY_MESSAGE)).toBeVisible()
+  act(() => emit())
+  expect(screen.queryByText(CLOUD_BUSY_MESSAGE)).not.toBeInTheDocument()
+  const retry = screen.getByRole("button", { name: "Retry source listing" })
+  expect(retry).toBeEnabled()
+  fireEvent.click(retry)
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(2))
+  expect(port.prepareSync).toHaveBeenCalledOnce()
+  const requestId = vi.mocked(port.prepareSync).mock.calls[0]![1]
+  expect(start.mock.calls.map((call) => call[1])).toEqual([requestId, requestId])
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Retry source listing" }),
+    ).not.toBeInTheDocument(),
+  )
 })
 
 it("keeps sync wording for simulated accepted operations", async () => {

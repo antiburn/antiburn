@@ -26,6 +26,7 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("complete-failed", "Completion — Agent Failed"),
 ];
 
+/// Build fixed debug-only preview choices, with no real Cloud or source operations.
 pub(crate) fn menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
     let entries = SCENARIOS
         .iter()
@@ -40,6 +41,7 @@ pub(crate) fn menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
     Submenu::with_id_and_items(app, LABEL, "Cloud Dev", true, &items)
 }
 
+/// Admit only known native-menu choices before opening or updating an isolated preview.
 pub(crate) fn handle(app: &AppHandle, id: &str) -> bool {
     let Some(scenario) = id.strip_prefix("cloud-dev:") else {
         return false;
@@ -53,6 +55,7 @@ pub(crate) fn handle(app: &AppHandle, id: &str) -> bool {
     true
 }
 
+/// Reuse one preview window and inject only the already validated scenario selection.
 fn open(app: &AppHandle, scenario: &str) -> tauri::Result<()> {
     let value = serde_json::to_string(scenario)?;
     if let Some(window) = app.get_webview_window(LABEL) {

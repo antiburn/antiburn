@@ -88,6 +88,23 @@ Opaque access tokens stay in native memory for at most 15 minutes. Only the OS k
 tokens. There is no plaintext or database fallback. The connection has a fixed
 one-year deadline. Refresh does not extend that deadline.
 
+A single Cloud blocking-work permit admits synchronous keyring, SQLite, source,
+state-file, and short HTTP operations before they enter Tokio's blocking pool.
+Ordinary requests fail clearly as busy without starting work. Cleanup waits
+asynchronously for the permit. Sign-out, reset, and browser cancellation invalidate
+their account or browser generation before waiting. A busy connection attempt
+does not invalidate the pending browser attempt. An admitted connection attempt
+cannot replace a newer cancellation while it waits for a blocking worker.
+An awaiting caller cannot release a permit still owned by running work.
+Cloud table initialization runs lazily in that worker before table access, not
+during UI startup. Failed initialization remains retryable and does not hide
+credential cleanup.
+
+Loopback accept, read, write, cancellation polling, and expiry use Tokio async I/O
+outside the controller mutex and blocking-work permit. The existing HTTP transport
+remains synchronous with a 15-second timeout per request, only inside admitted
+blocking work. This does not make the whole authentication engine asynchronous.
+
 A process-wide mutex serializes credential operations. One lifetime OS lock owns
 the vault namespace. A second process cannot write credentials until that owner
 exits. The vault namespace includes the application identifier and state

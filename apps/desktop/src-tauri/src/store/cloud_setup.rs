@@ -6,6 +6,8 @@ use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
 impl Store {
+    /// Create feature-owned tables in one checked transaction on admitted blocking work.
+    /// Call before Cloud table access; failure can retry without marking setup ready.
     pub(crate) fn initialize_cloud_setup(&self) -> Result<()> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
@@ -36,6 +38,8 @@ impl Store {
         Ok(())
     }
 
+    /// Read only the requested account/destination preferences. Missing data is
+    /// not permission or consent; database failures stay distinct from absence.
     pub(crate) fn cloud_draft(&self, account: &str, workspace: &str) -> Result<Option<String>> {
         Ok(self
             .lock()
@@ -47,6 +51,8 @@ impl Store {
             .optional()?)
     }
 
+    /// Atomically replace bounded preferences without touching requests or source scopes.
+    /// The caller must validate current authority and run outside UI/runtime threads.
     pub(crate) fn save_cloud_draft(
         &self,
         account: &str,

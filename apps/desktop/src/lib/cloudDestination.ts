@@ -1,15 +1,21 @@
+/** Pure destination checks. This policy cannot create grants or authorize content reads. */
 import type { CloudWorkspace } from "./cloud"
 
+/** A deliberate team default belongs to one internal account, never the installation. */
 export interface SavedTeamDefault {
   accountId: string
   teamId: string
 }
 
+/** Keep unknown membership separate from an empty team list or a required choice. */
 export type CloudDestinationChoice =
   | { status: "unknown" | "missing_default"; destination: null }
   | { status: "choose"; destination: null; teams: CloudWorkspace[] }
   | { status: "ready"; destination: CloudWorkspace }
 
+/** Resolve the future membership policy without fallback from a removed explicit default.
+ * Current native setup remains personal-only and does not call this team policy.
+ */
 export function cloudDestinationChoice(
   accountId: string,
   memberships: CloudWorkspace[] | null,
@@ -34,6 +40,7 @@ export function cloudDestinationChoice(
   return { status: "choose", destination: null, teams }
 }
 
+/** Accept only the exact granted personal destination, never replace a requested team. */
 export function personalCloudDestination(
   granted: CloudWorkspace | null,
   requestedId: string | null = null,

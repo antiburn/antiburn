@@ -1,6 +1,8 @@
 //! Checked transactions for account-bound requests and stable local root scopes.
 //! Request IDs are idempotency keys. Cancellation keeps the record and does not
 //! delete spool bytes or remote data.
+//! All methods are synchronous and require admitted blocking work. The caller
+//! validates current authority. Creating a request also requires explicit consent.
 
 use super::Store;
 use antiburn_cloud_capture::CaptureIdentity;
@@ -9,8 +11,10 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+/// Existing full-content consent format; saved records keep their original version.
 pub(crate) const CONSENT_VERSION: &str = "native-full-content-v1";
 
+/// Stable account/local-root source identity, independent of a replaceable access grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RootScope {
     pub path: String,
@@ -25,6 +29,8 @@ pub(crate) struct SelectedSource {
     pub transcript_path: String,
 }
 
+/// Durable consent-bound selection. Frozen identities do not freeze source bytes;
+/// cancellation and grant replacement must not retarget or remove its record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CaptureRequest {
     pub request_id: String,
@@ -37,6 +43,7 @@ pub(crate) struct CaptureRequest {
     pub cancelled: bool,
 }
 
+/// Read inside the caller's connection or transaction, preserving absence versus corruption.
 fn read_in(connection: &Connection, id: &str) -> Result<Option<CaptureRequest>> {
     let raw: Option<String> = connection
         .query_row(
@@ -49,6 +56,7 @@ fn read_in(connection: &Connection, id: &str) -> Result<Option<CaptureRequest>> 
         .transpose()
 }
 
+/// Apply the same serialized record limit before every request insert or update.
 fn encoded(request: &CaptureRequest) -> Result<String> {
     let raw = serde_json::to_string(request)?;
     ensure!(
@@ -59,6 +67,9 @@ fn encoded(request: &CaptureRequest) -> Result<String> {
 }
 
 impl Store {
+    /// Atomically bind a new idempotency key and stable account/root scopes.
+    /// Repeated IDs must match their old selection; failure rolls back new scopes.
+    /// Call only after native consent validation, with blocking admission.
     pub(crate) fn prepare_cloud_capture(
         &self,
         request_id: &str,
@@ -137,6 +148,7 @@ impl Store {
         Ok(request)
     }
 
+    /// Read the original account/destination's request without fallback to another owner.
     pub(crate) fn cloud_capture_request(
         &self,
         id: &str,
@@ -152,6 +164,8 @@ impl Store {
         Ok(request)
     }
 
+    /// Find the latest saved selection matching exact roots, without reading source files.
+    /// The caller supplies current verified account context and a sorted root set.
     pub(crate) fn current_cloud_capture_request(
         &self,
         account: &str,
@@ -174,6 +188,8 @@ impl Store {
         Ok(None)
     }
 
+    /// Commit frozen candidates only if the original binding still matches.
+    /// Completed or cancelled selections stay unchanged on repeated discovery.
     pub(crate) fn finish_cloud_discovery(
         &self,
         request: &CaptureRequest,
@@ -206,6 +222,8 @@ impl Store {
         Ok(saved)
     }
 
+    /// Persist cancellation for the original owner while retaining all request/source identities.
+    /// This checked transaction does not own spool deletion or remote cleanup.
     pub(crate) fn cancel_cloud_capture_request(
         &self,
         request: &CaptureRequest,

@@ -23,6 +23,9 @@ export interface CloudOnboardingProps {
   holdIdentity?: boolean
 }
 const focusHeading = (node: HTMLHeadingElement | null) => node?.focus()
+/** Observe one CloudSession. Completion can stay local without content consent;
+ * leaving browser approval cancels only that attempt, not saved source requests.
+ */
 export function CloudOnboarding({
   onBack,
   onComplete,
@@ -454,7 +457,7 @@ export function CloudOnboarding({
           )}
           {value.screen === "complete" && (
             <>
-              {captureEnabled && captureSaved && value.error && (
+              {captureEnabled && captureSaved && value.sourceListingNeedsRetry && (
                 <button
                   className="onboarding-secondary"
                   disabled={disabled || !value.fullContentConsent}

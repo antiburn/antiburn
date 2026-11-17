@@ -1,5 +1,6 @@
 //! Durable authentication markers. The controller mutex serializes operations;
 //! the lifetime owner lock excludes other processes from the same vault namespace.
+//! Synchronous file operations require admitted blocking work.
 
 use super::auth::{Failure, random};
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+/// Durable auth lifecycle. Closed phases cannot restore credentials as active access.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -41,10 +43,12 @@ pub enum Cleanup {
 }
 
 impl Cleanup {
+    /// Block reconnect until retained proof is revoked and securely removed.
     pub fn blocks_connection(self) -> bool {
         matches!(self, Self::Revoke { .. } | Self::DeleteCredential { .. })
     }
 
+    /// Preserve uncertainty about an older connection across later grant cleanup.
     pub fn prior_unconfirmed(self) -> bool {
         match self {
             Self::None => false,
@@ -55,6 +59,7 @@ impl Cleanup {
         }
     }
 
+    /// Clear the current cleanup obligation without clearing an earlier remote warning.
     pub fn prior_warning_only(self) -> Self {
         if self.prior_unconfirmed() {
             Self::RemoteUnconfirmed
@@ -64,6 +69,7 @@ impl Cleanup {
     }
 }
 
+/// Credential-free marker. A fresh epoch prevents old callbacks or vault records restoring access.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
@@ -72,12 +78,15 @@ pub struct Record {
     pub cleanup: Cleanup,
 }
 
+/// Bind state files and lifetime process ownership to one native state directory.
+/// The owner lock is not in-process serialization; the controller supplies that.
 pub struct StateStore {
     directory: PathBuf,
     owner: Mutex<Option<Arc<File>>>,
 }
 
 impl StateStore {
+    /// Save the directory in memory without opening files during UI setup.
     pub fn new(directory: &Path) -> Self {
         Self {
             directory: directory.to_owned(),
@@ -85,6 +94,8 @@ impl StateStore {
         }
     }
 
+    /// Acquire lifetime process ownership once. Call only in serialized blocking
+    /// work; returned guards do not exclude concurrent callers in this process.
     pub fn lock(&self) -> Result<Guard, Failure> {
         let mut owner = self.owner.lock().map_err(|_| Failure::Unavailable)?;
         if owner.is_none() {
@@ -105,11 +116,14 @@ impl StateStore {
     }
 }
 
+/// Keep process ownership alive while reading or atomically replacing state.
+/// Callers still need controller serialization and the blocking-work permit.
 pub struct Guard {
     directory: PathBuf,
     _owner: Arc<File>,
 }
 
+/// Apply private creation permissions and reject Unix symlink traversal.
 fn private_options() -> OpenOptions {
     let mut options = OpenOptions::new();
     #[cfg(unix)]
@@ -120,6 +134,7 @@ fn private_options() -> OpenOptions {
     options
 }
 
+/// Reject nonprivate, foreign-owned, linked, or nonregular state/lock files on Unix.
 fn verify_file(file: &File) -> Result<(), Failure> {
     let metadata = file.metadata().map_err(|_| Failure::CredentialFailed)?;
     if !metadata.is_file() {
@@ -138,6 +153,7 @@ fn verify_file(file: &File) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Flush Unix directory entries after lock creation or atomic state replacement.
 fn sync_directory(directory: &Path) -> Result<(), Failure> {
     #[cfg(unix)]
     File::open(directory)
@@ -149,6 +165,7 @@ fn sync_directory(directory: &Path) -> Result<(), Failure> {
 }
 
 impl Guard {
+    /// Read bounded, credential-free state and reject invalid cleanup/phase combinations.
     pub fn read(&mut self) -> Result<Record, Failure> {
         let file = match private_options()
             .read(true)
@@ -180,6 +197,8 @@ impl Guard {
         Ok(record)
     }
 
+    /// Flush a private replacement before rename and directory sync. A failure
+    /// must leave the engine closed; it cannot establish successful credential cleanup.
     pub fn write(&mut self, value: &Record) -> Result<(), Failure> {
         let bytes = serde_json::to_vec(value).map_err(|_| Failure::CredentialFailed)?;
         let temporary = self
@@ -204,6 +223,7 @@ impl Guard {
         result
     }
 
+    /// Persist a fresh epoch for a lifecycle boundary before returning it to the engine.
     pub fn replace(&mut self, phase: Phase, cleanup: Cleanup) -> Result<Record, Failure> {
         let value = Record {
             epoch: random()?,

@@ -2,6 +2,71 @@ use super::*;
 use auth::{Credential, Session, TokenRequest, Tokens, Transport, Vault, WorkspaceKind};
 use std::sync::{Arc, atomic::AtomicBool};
 
+#[test]
+fn cloud_startup_and_onboarding_prereads_use_the_worker_boundary() {
+    let source = include_str!("mod.rs");
+    let setup = source
+        .split_once("pub fn initialize(")
+        .unwrap()
+        .1
+        .split_once("\n}")
+        .unwrap()
+        .0;
+    assert!(!setup.contains("initialize_cloud_setup"));
+    let begin = source
+        .split_once("pub async fn cloud_begin(")
+        .unwrap()
+        .1
+        .split_once("\n}")
+        .unwrap()
+        .0;
+    assert!(
+        begin.find("work.run(Priority::Normal").unwrap()
+            < begin.find(".compare_exchange(").unwrap()
+    );
+    assert!(
+        begin.find("let expected_generation =").unwrap()
+            < begin.find("work.run(Priority::Normal").unwrap()
+    );
+    assert!(!begin.contains("fetch_add("));
+    let preread = source
+        .split_once("pub(crate) async fn onboarding_requires_cancel(")
+        .unwrap()
+        .1;
+    let admission = preread.find("work.run(Priority::Cleanup").unwrap();
+    let read = preread.find(".onboarding_state()").unwrap();
+    assert!(admission < read);
+    let commands = include_str!("../commands/mod.rs");
+    let onboarding = commands
+        .split_once("pub async fn set_onboarding_state(")
+        .unwrap()
+        .1
+        .split_once("\n}")
+        .unwrap()
+        .0;
+    assert!(onboarding.contains("onboarding_requires_cancel(app.clone(), state).await?"));
+    assert!(!onboarding.contains(".onboarding_state()"));
+}
+
+#[test]
+fn cloud_snapshot_fences_account_changes_after_blocking_store_reads() {
+    let source = include_str!("mod.rs");
+    let snapshot = source
+        .split_once("fn snapshot(")
+        .unwrap()
+        .1
+        .split_once("\n}")
+        .unwrap()
+        .0;
+    let read = snapshot.find(".current_cloud_capture_request(").unwrap();
+    let fence = snapshot.find("let current = current();").unwrap();
+    let identity = snapshot.find("identity: session.map(").unwrap();
+    assert!(read < fence && fence < identity);
+    assert!(snapshot.contains("draft = Draft::default()"));
+    assert!(snapshot.contains("pending_sync.filter(|_| current)"));
+}
+
+/// Synthetic secure-store substitute shared by native engine and HTTP boundary tests.
 #[derive(Default)]
 pub(super) struct MemoryVault {
     value: Mutex<Option<Credential>>,
@@ -29,6 +94,7 @@ fn config() -> Config {
     Config::parse("https://api.example", "https://api.example").unwrap()
 }
 
+/// Supply synthetic desktop-grant authority without reading credentials or user content.
 pub(super) fn session() -> Session {
     Session {
         user: auth::User {
@@ -172,6 +238,54 @@ impl Fixture {
     fn restart(&mut self) {
         self.engine = self.reopen();
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cloud_busy_begin_preserves_the_pending_attempt_and_its_callback() {
+    let work = BlockingWork::default();
+    let running = work.clone();
+    let generation = Arc::new(AtomicU64::new(7));
+    let active_generation = generation.clone();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let first = tokio::spawn(async move {
+        running
+            .run(Priority::Normal, move || {
+                let mut fixture = Fixture::new();
+                let (_, _listener, attempt) = fixture.engine.begin(100, 7).unwrap();
+                started.send(()).unwrap();
+                wait.recv_timeout(std::time::Duration::from_secs(5))
+                    .map_err(|_| "test release".to_owned())?;
+                assert_eq!(active_generation.load(Ordering::Acquire), 7);
+                assert_eq!(
+                    fixture.engine.attempt.as_ref().unwrap().epoch,
+                    attempt.epoch
+                );
+                fixture
+                    .engine
+                    .callback(
+                        &attempt,
+                        auth::Callback::Code("synthetic-code".into()),
+                        101,
+                        || active_generation.load(Ordering::Acquire) == 7,
+                    )
+                    .unwrap();
+                assert!(fixture.engine.session().is_some());
+                Ok(())
+            })
+            .await
+    });
+    start.await.unwrap();
+    assert_eq!(
+        work.run(Priority::Normal, move || {
+            generation.fetch_add(1, Ordering::AcqRel);
+            Ok(())
+        })
+        .await,
+        Err(work::BUSY.into())
+    );
+    release.send(()).unwrap();
+    first.await.unwrap().unwrap();
 }
 
 #[test]
@@ -831,12 +945,19 @@ fn cloud_session_deadline_is_bounded_and_display_names_are_not_grant_bindings() 
     assert!(session().same_grant(&value));
 }
 
-#[test]
-fn cloud_raw_loopback_rejects_unguarded_requests_and_accepts_one_exact_callback() {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    let mut fixture = Fixture::new();
-    let (_, listener, attempt) = fixture.engine.begin(now(), 0).unwrap();
+#[tokio::test]
+async fn cloud_raw_loopback_rejects_unguarded_requests_and_accepts_one_exact_callback() {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpStream,
+    };
+    let (fixture, listener, attempt) = tokio::task::spawn_blocking(|| {
+        let mut fixture = Fixture::new();
+        let (_, listener, attempt) = fixture.engine.begin(now(), 0).unwrap();
+        (fixture, listener, attempt)
+    })
+    .await
+    .unwrap();
     let address = attempt
         .callback
         .trim_start_matches("http://")
@@ -846,7 +967,7 @@ fn cloud_raw_loopback_rejects_unguarded_requests_and_accepts_one_exact_callback(
         "/cloud/callback?state={}&iss=https%3A%2F%2Fapi.example&code=synthetic",
         attempt.state
     );
-    let worker = std::thread::spawn(move || listener.wait(&config(), &attempt, || true));
+    let worker = tokio::spawn(async move { listener.wait(&config(), &attempt, || true).await });
     for request in [
         format!("POST {target} HTTP/1.1\r\nHost: {address}\r\n\r\n"),
         format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
@@ -858,13 +979,15 @@ fn cloud_raw_loopback_rejects_unguarded_requests_and_accepts_one_exact_callback(
         format!("GET {target} HTTP/1.1\r\nHost: {address}\r\n\r\n"),
     ] {
         let valid = request == format!("GET {target} HTTP/1.1\r\nHost: {address}\r\n\r\n");
-        let mut stream = TcpStream::connect(&address).unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-            .unwrap();
-        stream.write_all(request.as_bytes()).unwrap();
+        let mut stream = TcpStream::connect(&address).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = String::new();
-        let read = stream.read_to_string(&mut response);
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.read_to_string(&mut response),
+        )
+        .await
+        .unwrap();
         if valid {
             read.unwrap();
             assert!(response.starts_with("HTTP/1.1 200"));
@@ -878,8 +1001,11 @@ fn cloud_raw_loopback_rejects_unguarded_requests_and_accepts_one_exact_callback(
         assert!(!response.contains("synthetic"));
     }
     assert!(
-        matches!(worker.join().unwrap(), Some(auth::Callback::Code(code)) if code == "synthetic")
+        matches!(worker.await.unwrap(), Some(auth::Callback::Code(code)) if code == "synthetic")
     );
+    tokio::task::spawn_blocking(move || drop(fixture))
+        .await
+        .unwrap();
 }
 
 struct SyntheticFileVault(std::path::PathBuf);

@@ -19,6 +19,9 @@ struct Access {
     session: Session,
 }
 
+/// Synchronous grant state machine used only inside admitted blocking work.
+/// The controller serializes every call; filesystem, vault, and short blocking
+/// HTTP operations must not execute on UI or Tokio runtime threads.
 pub struct Engine {
     pub config: Option<Config>,
     pub vault: Box<dyn Vault>,
@@ -33,6 +36,7 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Construct memory-only state. Credential/state restoration waits for `refresh`.
     pub fn new(
         config: Option<Config>,
         vault: Box<dyn Vault>,
@@ -53,14 +57,18 @@ impl Engine {
         }
     }
 
+    /// Read cached identity, not fresh server authority. Refresh before request
+    /// actions and enforce the controller's current account generation too.
     pub fn session(&self) -> Option<&Session> {
         self.access.as_ref().map(|access| &access.session)
     }
 
+    /// Reject reordered cleanup after a newer account operation owns the generation.
     pub fn allows_account_cleanup(&self, requested: u64, latest: u64) -> bool {
         requested == latest && requested >= self.generation
     }
 
+    /// Clear cached access on state-read failure instead of falling back to memory.
     fn read_state(&mut self) -> Result<(Guard, Record), Failure> {
         let state = self.state.lock().and_then(|mut guard| {
             let record = guard.read()?;
@@ -74,6 +82,8 @@ impl Engine {
         state
     }
 
+    /// Bind a fresh callback before browser launch and persist its pending epoch.
+    /// The caller must wait for the returned listener outside the controller lock.
     pub fn begin(
         &mut self,
         now: i64,
@@ -121,6 +131,7 @@ impl Engine {
         Ok((url.to_string(), listener, attempt))
     }
 
+    /// Abandon only the eligible browser attempt; a newer attempt or active grant survives.
     pub fn cancel(&mut self, generation: u64) -> Result<(), Failure> {
         if self
             .attempt
@@ -145,6 +156,7 @@ impl Engine {
         Ok(())
     }
 
+    /// Lost callback proof cannot establish remote revocation, even before exchange.
     fn abandon_pending(&mut self, guard: &mut Guard, record: Record) -> Result<(), Failure> {
         self.access = None;
         self.attempt = None;
@@ -160,6 +172,8 @@ impl Engine {
         Ok(())
     }
 
+    /// Exchange only a current pending callback. Persist closed recovery state
+    /// before transport, then validate all authority before saving refresh proof.
     pub fn callback(
         &mut self,
         attempt: &Attempt,
@@ -201,6 +215,8 @@ impl Engine {
         self.accept(&mut guard, record, tokens, None, now, current)
     }
 
+    /// Accept only matching fixed grant authority. Fence every vault/state write;
+    /// rejected or late tokens must take the logout-only cleanup path.
     fn accept(
         &mut self,
         guard: &mut Guard,
@@ -277,6 +293,8 @@ impl Engine {
         Ok(())
     }
 
+    /// Retain original and returned proofs before state writes can fail.
+    /// Confirm every proof's revocation before persisting permission to delete them.
     fn discard_tokens(
         &mut self,
         guard: &mut Guard,
@@ -333,6 +351,8 @@ impl Engine {
         self.finish_local_deletion(guard, record)
     }
 
+    /// Finish previously confirmed remote revocation. A failed vault deletion or
+    /// final state write remains retryable without restoring authenticated access.
     fn finish_local_deletion(
         &mut self,
         guard: &mut Guard,
@@ -348,6 +368,8 @@ impl Engine {
         Ok(())
     }
 
+    /// Restore or rotate one fixed grant inside the worker. Persist uncertainty
+    /// before exchange; never retry a predecessor after an uncertain response.
     pub fn refresh(&mut self, now: i64, current: impl Fn() -> bool) -> Result<(), Failure> {
         let Some(config) = self.config.clone() else {
             return Ok(());
@@ -428,6 +450,8 @@ impl Engine {
         self.accept(&mut guard, record, tokens, Some(&credential), now, current)
     }
 
+    /// Flush a new signed-out epoch before revoking all retained proofs.
+    /// Retry secure deletion only after its durable remote-confirmation marker.
     pub fn sign_out(&mut self) -> Result<(), Failure> {
         self.access = None;
         self.attempt = None;
@@ -488,6 +512,8 @@ impl Engine {
         self.finish_local_deletion(&mut guard, record)
     }
 
+    /// Permit reconnect only after explicit confirmation and an empty vault.
+    /// Keep uncertainty about older remote connections; never delete source bytes.
     pub fn reset_local(&mut self) -> Result<(), Failure> {
         self.access = None;
         self.attempt = None;
