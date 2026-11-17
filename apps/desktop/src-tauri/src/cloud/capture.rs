@@ -122,13 +122,12 @@ impl Host {
             if !current() {
                 return Err("Cloud account changed. Your saved request is kept.".into());
             }
+            let remaining = 512usize.saturating_sub(sources.len());
             let limits = Limits {
-                discovery_sessions: 512usize.saturating_sub(sources.len()),
+                // Discovery requires a positive limit, including for an empty root.
+                discovery_sessions: remaining.max(1),
                 ..Limits::default()
             };
-            if limits.discovery_sessions == 0 {
-                return Err("Choose fewer native session sources.".into());
-            }
             if request.consent_version != SOURCE_CONSENT_VERSION
                 && (request.consent_version != CONSENT_VERSION || !root.source_kind.is_claude())
             {
@@ -140,6 +139,9 @@ impl Host {
                 SourceKind::OpenCodeSqliteV2 => discover_opencode(Path::new(&root.path), &limits)
                     .map_err(|_| "Could not list the selected OpenCode V2 database. Check its access and supported schema.")?,
             };
+            if candidates.len() > remaining {
+                return Err("Choose fewer native session sources.".into());
+            }
             for candidate in candidates {
                 let candidate = candidate
                     .in_source_scope(&root.source_scope_id)
@@ -647,6 +649,64 @@ mod tests {
         let selected = host.discover(&store, &saved, || true).unwrap();
         assert_eq!(selected.sources.len(), 2);
         assert_eq!(selected.consent_version, SOURCE_CONSENT_VERSION);
+    }
+
+    #[test]
+    fn cloud_discovery_at_the_source_limit_accepts_empty_roots_but_rejects_more_sources() {
+        let (directory, root, store, session, mut draft, mut consent) = fixture();
+        for index in 1..512 {
+            fs::write(root.join(format!("session-{index}.jsonl")), b"").unwrap();
+        }
+        let empty = directory.path().canonicalize().unwrap().join("zz-empty");
+        fs::create_dir(&empty).unwrap();
+        draft.folders.push(Folder {
+            path: empty.to_str().unwrap().into(),
+            selected: true,
+            ..Folder::default()
+        });
+        consent.selected_roots = selected_roots(&draft.folders)
+            .into_iter()
+            .map(|root| root.path)
+            .collect();
+        let roots = validate_selection(&session, &draft, &draft.folders, &consent).unwrap();
+        let mut host = Host::new(&directory.path().canonicalize().unwrap());
+        let request = store
+            .prepare_cloud_capture(
+                "at-limit",
+                &session.user.id,
+                &session.workspace.id,
+                &roots,
+                consent.version(),
+                1,
+            )
+            .unwrap();
+        let selected = host.discover(&store, &request, || true).unwrap();
+        assert!(selected.discovery_complete);
+        assert_eq!(selected.sources.len(), 512);
+
+        fs::write(empty.join("one-more.jsonl"), b"").unwrap();
+        let overflow = store
+            .prepare_cloud_capture(
+                "over-limit",
+                &session.user.id,
+                &session.workspace.id,
+                &roots,
+                consent.version(),
+                2,
+            )
+            .unwrap();
+        assert!(
+            host.discover(&store, &overflow, || true)
+                .unwrap_err()
+                .contains("Choose fewer")
+        );
+        assert_eq!(
+            store
+                .cloud_capture_request("over-limit", &session.user.id, &session.workspace.id)
+                .unwrap(),
+            overflow
+        );
+        assert!(host.spool.as_ref().unwrap().entries().unwrap().is_empty());
     }
 
     #[test]

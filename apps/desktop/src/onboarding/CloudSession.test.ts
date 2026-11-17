@@ -662,6 +662,7 @@ it("does not submit a prepared capture after its content confirmation is cleared
   finishPrepare()
   await pending
   expect(port.start).not.toHaveBeenCalled()
+  expect(session.getSnapshot().sync).toEqual({ status: "unavailable" })
   stop()
 })
 
@@ -800,6 +801,122 @@ it("clears consent before a delayed source edit can finish during preparation", 
     },
   })
   await edit
+  stop()
+})
+
+it.each(["resolved", "rejected"] as const)(
+  "settles native preparation after consent is cleared when its reply is %s",
+  async (reply) => {
+    const { port } = fixture(nativeCapture)
+    let finishPrepare!: () => void
+    let rejectPrepare!: (error: Error) => void
+    port.prepareSync = vi.fn(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          finishPrepare = resolve
+          rejectPrepare = reject
+        }),
+    )
+    const session = new CloudSession(port, false)
+    const stop = session.subscribe(vi.fn())
+    await settle()
+    session.setFullContentConsent(true)
+    const pending = session.startSync()
+    expect(session.getSnapshot().sync).toEqual({ status: "starting" })
+    session.setFullContentConsent(false)
+    if (reply === "resolved") finishPrepare()
+    else rejectPrepare(new Error("synthetic preparation failure"))
+    await pending
+    expect(port.start).not.toHaveBeenCalled()
+    expect(port.cancelSync).not.toHaveBeenCalled()
+    expect(session.getSnapshot()).toMatchObject({
+      sync: { status: "unavailable" },
+      busy: false,
+      fullContentConsent: false,
+      error: null,
+    })
+    stop()
+  },
+)
+
+it.each(["same account", "new account"] as const)(
+  "keeps a newer request's starting progress for the %s after an older preparation finishes",
+  async (account) => {
+    const { port, emit } = fixture(nativeCapture)
+    let finishPrepare!: () => void
+    port.prepareSync = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPrepare = resolve
+        }),
+    )
+    const session = new CloudSession(port, false)
+    const stop = session.subscribe(vi.fn())
+    await settle()
+    session.setFullContentConsent(true)
+    const pending = session.startSync()
+    session.setFullContentConsent(false)
+    const next: CloudSnapshot = {
+      ...nativeCapture,
+      ...(account === "new account"
+        ? {
+            identity: { id: "synthetic-new-account", login: "another" },
+            destination: { id: "synthetic-new-personal", name: "Personal", kind: "personal" },
+          }
+        : {}),
+      pendingSync: { requestId: "synthetic-new-request", result: { status: "starting" } },
+    }
+    emit(next)
+    const newer = session.getSnapshot()
+    finishPrepare()
+    await pending
+    expect(port.start).not.toHaveBeenCalled()
+    expect(session.getSnapshot()).toBe(newer)
+    expect(session.getSnapshot().cloud.pendingSync?.requestId).toBe("synthetic-new-request")
+    stop()
+  },
+)
+
+it("keeps a newer sign-in busy after an older preparation finishes", async () => {
+  const { port, emit } = fixture(nativeCapture)
+  let finishPrepare!: () => void
+  let finishBegin!: (value: CloudSnapshot) => void
+  port.prepareSync = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finishPrepare = resolve
+      }),
+  )
+  port.begin = vi.fn(
+    () =>
+      new Promise<CloudSnapshot>((resolve) => {
+        finishBegin = resolve
+      }),
+  )
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const pending = session.startSync()
+  const signedOut: CloudSnapshot = {
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "signed_out",
+  }
+  emit(signedOut)
+  const signIn = session.begin()
+  const newer = session.getSnapshot()
+  finishPrepare()
+  await pending
+  expect(port.start).not.toHaveBeenCalled()
+  expect(session.getSnapshot()).toBe(newer)
+  expect(session.getSnapshot()).toMatchObject({
+    busy: true,
+    screen: "handoff",
+    sync: { status: "unavailable" },
+  })
+  finishBegin({ ...signedOut, status: "waiting" })
+  await signIn
   stop()
 })
 
@@ -1007,9 +1124,11 @@ it("does not start native capture after the window closes during preparation", a
   session.setFullContentConsent(true)
   const pending = session.startSync()
   stop()
+  const closed = session.getSnapshot()
   finish()
   await pending
   expect(port.start).not.toHaveBeenCalled()
+  expect(session.getSnapshot()).toBe(closed)
 })
 
 it("does not reuse an earlier confirmation after consent is cleared and checked again", async () => {
@@ -1031,6 +1150,7 @@ it("does not reuse an earlier confirmation after consent is cleared and checked 
   finish()
   await pending
   expect(port.start).not.toHaveBeenCalled()
+  expect(session.getSnapshot().sync).toEqual({ status: "unavailable" })
   stop()
 })
 

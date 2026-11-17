@@ -29,6 +29,7 @@ pub struct Engine {
     pub state: StateStore,
     pub attempt: Option<Attempt>,
     access: Option<Access>,
+    clock: Box<dyn Fn() -> i64 + Send>,
     pub status: AuthStatus,
     pub cleanup: Cleanup,
     pub local_reset_available: bool,
@@ -50,6 +51,7 @@ impl Engine {
             state,
             attempt: None,
             access: None,
+            clock: Box::new(super::now),
             status: AuthStatus::Idle,
             cleanup: Cleanup::None,
             local_reset_available: false,
@@ -57,10 +59,20 @@ impl Engine {
         }
     }
 
-    /// Read cached identity, not fresh server authority. Refresh before request
-    /// actions and enforce the controller's current account generation too.
+    /// Use a deterministic clock for synthetic authority tests.
+    #[cfg(test)]
+    pub(super) fn with_clock(mut self, clock: impl Fn() -> i64 + Send + 'static) -> Self {
+        self.clock = Box::new(clock);
+        self
+    }
+
+    /// Read unexpired cached identity, not fresh server authority. Refresh before
+    /// request actions and enforce the controller's current account generation too.
     pub fn session(&self) -> Option<&Session> {
-        self.access.as_ref().map(|access| &access.session)
+        self.access
+            .as_ref()
+            .filter(|access| access.expires_at > (self.clock)())
+            .map(|access| &access.session)
     }
 
     /// Reject reordered cleanup after a newer account operation owns the generation.
@@ -194,16 +206,18 @@ impl Engine {
 
     /// Exchange only a current pending callback. Persist closed recovery state
     /// before transport, then validate all authority before saving refresh proof.
+    /// `started_at` bounds access lifetime before blocking work; recheck the clock
+    /// after that work before installing access.
     pub fn callback(
         &mut self,
         attempt: &Attempt,
         callback: Callback,
-        now: i64,
+        started_at: i64,
         current: impl Fn() -> bool,
     ) -> Result<(), Failure> {
         let (mut guard, mut record) = self.read_state()?;
         if !current()
-            || now >= attempt.expires_at
+            || started_at >= attempt.expires_at
             || record.phase != Phase::Pending
             || record.epoch != attempt.epoch
             || self.attempt.as_ref().is_none_or(|pending| {
@@ -232,7 +246,7 @@ impl Engine {
                 code_verifier: &attempt.verifier,
             },
         )?;
-        self.accept(&mut guard, record, tokens, None, now, current)
+        self.accept(&mut guard, record, tokens, None, started_at, current)
     }
 
     /// Accept only matching fixed grant authority. Fence every vault/state write;
@@ -243,15 +257,28 @@ impl Engine {
         mut record: Record,
         tokens: auth::Tokens,
         previous: Option<&Credential>,
-        now: i64,
+        started_at: i64,
         current: impl Fn() -> bool,
     ) -> Result<(), Failure> {
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
         let session = tokens
-            .validate(&config, now)
-            .and_then(|()| self.transport.session(&config, &tokens.access_token))
+            .validate(&config, started_at)
+            .and_then(|()| {
+                if started_at.saturating_add(tokens.expires_in as i64) <= (self.clock)() {
+                    return Err(Failure::InvalidResponse);
+                }
+                self.transport.session(&config, &tokens.access_token)
+            })
             .and_then(|session| {
-                session.validate(&config, now)?;
+                let checked_at = started_at.max((self.clock)());
+                session.validate(&config, checked_at)?;
+                let expires_at = started_at
+                    .saturating_add(tokens.expires_in as i64)
+                    .min(session.expires_at)
+                    .min(session.access_expires_at);
+                if expires_at <= checked_at {
+                    return Err(Failure::InvalidResponse);
+                }
                 if !tokens.matches_session(&session) {
                     return Err(Failure::InvalidResponse);
                 }
@@ -264,7 +291,7 @@ impl Engine {
                 }) {
                     return Err(Failure::InvalidResponse);
                 }
-                Ok(session)
+                Ok((session, expires_at))
             });
         if !current() || session.is_err() {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
@@ -274,7 +301,7 @@ impl Engine {
                 Failure::Cancelled
             });
         }
-        let session = session?;
+        let (session, expires_at) = session?;
         let credential = Credential {
             epoch: record.epoch.clone(),
             issuer: config.issuer.clone(),
@@ -295,17 +322,19 @@ impl Engine {
         record.cleanup = record.cleanup.prior_warning_only();
         guard.write(&record)?;
         self.cleanup = record.cleanup;
-        // Check again after durable writes. Logout can invalidate work during an OS-vault call.
-        if !current() {
+        // Durable writes can outlast access or overlap account cancellation.
+        let cancelled = !current();
+        if cancelled || expires_at <= (self.clock)() {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
-            return Err(Failure::Cancelled);
+            return Err(if cancelled {
+                Failure::Cancelled
+            } else {
+                Failure::ReauthRequired
+            });
         }
         self.access = Some(Access {
             token: tokens.access_token,
-            expires_at: now
-                .saturating_add(tokens.expires_in as i64)
-                .min(session.expires_at)
-                .min(session.access_expires_at),
+            expires_at,
             epoch: record.epoch,
             session,
         });
@@ -390,11 +419,12 @@ impl Engine {
 
     /// Restore or rotate one fixed grant inside the worker. Persist uncertainty
     /// before exchange; never retry a predecessor after an uncertain response.
-    pub fn refresh(&mut self, now: i64, current: impl Fn() -> bool) -> Result<(), Failure> {
+    pub fn refresh(&mut self, started_at: i64, current: impl Fn() -> bool) -> Result<(), Failure> {
         let Some(config) = self.config.clone() else {
             return Ok(());
         };
         let (mut guard, mut record) = self.read_state()?;
+        let checked_at = started_at.max((self.clock)());
         self.cleanup = record.cleanup;
         self.local_reset_available = false;
         if record.phase != Phase::Active {
@@ -413,7 +443,7 @@ impl Engine {
                 Phase::ReauthRequired => AuthStatus::ReauthRequired,
                 Phase::Pending
                     if self.attempt.as_ref().is_some_and(|attempt| {
-                        attempt.epoch == record.epoch && attempt.expires_at > now
+                        attempt.epoch == record.epoch && attempt.expires_at > checked_at
                     }) =>
                 {
                     AuthStatus::Waiting
@@ -431,8 +461,8 @@ impl Engine {
         }
         if self.access.as_ref().is_some_and(|access| {
             access.epoch == record.epoch
-                && access.expires_at > now + 30
-                && access.session.expires_at > now
+                && access.expires_at > checked_at.saturating_add(30)
+                && access.session.expires_at > checked_at
                 && !access.token.is_empty()
         }) {
             self.status = AuthStatus::SignedIn;
@@ -452,10 +482,11 @@ impl Engine {
             || !credential.cleanup_refresh_tokens.is_empty()
             || credential.issuer != config.issuer
             || credential.resource != config.resource
-            || credential
-                .session
-                .as_ref()
-                .is_none_or(|session| session.validate_grant(&config, now).is_err())
+            || credential.session.as_ref().is_none_or(|session| {
+                session
+                    .validate_grant(&config, started_at.max((self.clock)()))
+                    .is_err()
+            })
         {
             return Err(Failure::ReauthRequired);
         }
@@ -485,7 +516,14 @@ impl Engine {
             Err(_) if !current() => return Err(Failure::Cancelled),
             Err(_) => return Err(Failure::ReauthRequired),
         };
-        self.accept(&mut guard, record, tokens, Some(&credential), now, current)
+        self.accept(
+            &mut guard,
+            record,
+            tokens,
+            Some(&credential),
+            started_at,
+            current,
+        )
     }
 
     /// Flush a new signed-out epoch before revoking all retained proofs.

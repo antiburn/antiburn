@@ -193,7 +193,7 @@ fn draft(app: &tauri::AppHandle, session: Option<&auth::Session>) -> Result<Draf
 }
 
 /// Build safe view state in a blocking worker. Account generations hide stale
-/// identity, while setup failures block sources without hiding credential cleanup.
+/// identity. Recheck expiry after store reads; setup failures do not hide cleanup.
 fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     let current = || {
         engine.generation
@@ -231,9 +231,9 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         setup_error = Some("Native capture is not supported on this platform.".into());
     }
     let current = current();
-    let session = session.filter(|_| current);
-    let pending_sync = pending_sync.filter(|_| current);
-    if !current {
+    let session = session.filter(|_| current && engine.session().is_some());
+    let pending_sync = pending_sync.filter(|_| current && session.is_some());
+    if !current || session.is_none() {
         draft = Draft::default();
         setup_error = None;
     }
@@ -242,10 +242,12 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
         // Authentication alone does not authorize capture.
         sync_enabled: false,
-        status: if current {
-            engine.status
-        } else {
+        status: if !current {
             AuthStatus::Cancelled
+        } else if engine.status == AuthStatus::SignedIn && session.is_none() {
+            AuthStatus::ReauthRequired
+        } else {
+            engine.status
         },
         identity: session.map(Identity::from),
         expires_at: engine

@@ -540,10 +540,11 @@ export class CloudSession {
         this.snapshot.cloud.pendingSync.result.status === "cancelled"
       )
     this.syncInFlight = true
+    const starting: SyncResult = { status: "starting" }
     this.publish({
       screen: "complete",
       busy: false,
-      sync: { status: "starting" },
+      sync: starting,
       error: null,
       sourceListingNeedsRetry: false,
     })
@@ -581,6 +582,9 @@ export class CloudSession {
       }
     } finally {
       this.syncInFlight = false
+      // Clear only this operation's progress, not state from a newer native event.
+      if (this.active && generation === this.generation && this.snapshot.sync === starting)
+        this.publish({ sync: { status: "unavailable" } })
     }
   }
 }

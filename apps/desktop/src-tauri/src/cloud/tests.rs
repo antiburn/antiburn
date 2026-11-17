@@ -62,7 +62,10 @@ fn cloud_startup_and_onboarding_prereads_use_the_worker_boundary() {
         .split_once("\n}")
         .unwrap()
         .0;
-    assert!(onboarding.contains("onboarding_requires_cancel(app.clone(), state).await?"));
+    assert!(onboarding.contains(
+        "if let Ok(true) = crate::cloud::onboarding_requires_cancel(app.clone(), state).await"
+    ));
+    assert!(!onboarding.contains("onboarding_requires_cancel(app.clone(), state).await?"));
     assert!(!onboarding.contains(".onboarding_state()"));
 }
 
@@ -81,7 +84,13 @@ fn cloud_snapshot_fences_account_changes_after_blocking_store_reads() {
     let identity = snapshot.find("identity: session.map(").unwrap();
     assert!(read < fence && fence < identity);
     assert!(snapshot.contains("draft = Draft::default()"));
-    assert!(snapshot.contains("pending_sync.filter(|_| current)"));
+    let expiry = snapshot
+        .find("session.filter(|_| current && engine.session().is_some())")
+        .unwrap();
+    assert!(read < expiry && expiry < identity);
+    assert!(snapshot.contains("pending_sync.filter(|_| current && session.is_some())"));
+    assert!(snapshot.contains("if !current || session.is_none()"));
+    assert!(snapshot.contains("engine.status == AuthStatus::SignedIn && session.is_none()"));
 }
 
 /// Synthetic secure-store substitute shared by native engine and HTTP boundary tests.
@@ -90,6 +99,7 @@ pub(super) struct MemoryVault {
     value: Mutex<Option<Credential>>,
     fail_read: AtomicBool,
     fail_write: AtomicBool,
+    on_credential_write: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Vault for Arc<MemoryVault> {
@@ -104,6 +114,11 @@ impl Vault for Arc<MemoryVault> {
             return Err(Failure::CredentialFailed);
         }
         *self.value.lock().unwrap() = value.cloned();
+        if value.is_some_and(|credential| credential.session.is_some())
+            && let Some(action) = &self.on_credential_write
+        {
+            action();
+        }
         Ok(())
     }
 }
@@ -144,6 +159,7 @@ struct FakeTransport {
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    returned_session: Mutex<Option<Session>>,
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
     token_grant: Mutex<Option<String>>,
@@ -200,7 +216,12 @@ impl Transport for Arc<FakeTransport> {
         if self.fail_session.load(Ordering::Acquire) {
             return Err(Failure::Offline);
         }
-        Ok(session())
+        Ok(self
+            .returned_session
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(session))
     }
     fn revoke(&self, _: &Config, refresh: &str) -> Result<(), Failure> {
         self.revocations.fetch_add(1, Ordering::AcqRel);
@@ -221,6 +242,7 @@ fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTranspor
         Box::new(transport),
         state::StateStore::new(directory),
     )
+    .with_clock(|| 100)
 }
 
 struct Fixture {
@@ -596,6 +618,168 @@ fn cloud_rotates_under_shared_state_and_keeps_access_only_in_memory() {
         std::fs::read_to_string(fixture.directory.path().join("cloud-auth-state-v2")).unwrap();
     assert!(!stored.contains("access"));
     assert!(!stored.contains("refresh"));
+}
+
+#[test]
+fn cloud_expired_exchange_session_or_vault_work_never_installs_access() {
+    use std::sync::atomic::AtomicI64;
+
+    for refresh in [false, true] {
+        for stage in ["exchange", "session", "vault"] {
+            let mut fixture = Fixture::new();
+            if refresh {
+                fixture.sign_in();
+            }
+            let started_at = if refresh { 200 } else { 101 };
+            let clock = Arc::new(AtomicI64::new(started_at));
+            let read_clock = clock.clone();
+            fixture.engine = fixture
+                .engine
+                .with_clock(move || read_clock.load(Ordering::Acquire));
+            let expire: Arc<dyn Fn() + Send + Sync> =
+                Arc::new(move || clock.store(started_at + 1, Ordering::Release));
+            fixture.transport = Arc::new(FakeTransport {
+                calls: AtomicU64::new(u64::from(refresh)),
+                token_expires_in: Mutex::new(Some(1)),
+                on_exchange: (stage == "exchange").then(|| expire.clone()),
+                on_session: (stage == "session").then(|| expire.clone()),
+                fail_revoke: AtomicBool::new(true),
+                ..FakeTransport::default()
+            });
+            fixture.engine.transport = Box::new(fixture.transport.clone());
+            fixture.vault = Arc::new(MemoryVault {
+                value: Mutex::new(fixture.vault.read().unwrap()),
+                on_credential_write: (stage == "vault").then(|| expire.clone()),
+                ..MemoryVault::default()
+            });
+            fixture.engine.vault = Box::new(fixture.vault.clone());
+            let result = if refresh {
+                fixture.engine.refresh(started_at, || true)
+            } else {
+                let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+                fixture.engine.callback(
+                    &attempt,
+                    auth::Callback::Code("synthetic".into()),
+                    started_at,
+                    || true,
+                )
+            };
+            assert_eq!(result, Err(Failure::ReauthRequired), "{refresh}/{stage}");
+            assert!(fixture.engine.session().is_none(), "{refresh}/{stage}");
+            let cleanup = fixture.vault.read().unwrap().unwrap();
+            assert!(cleanup.session.is_none(), "{refresh}/{stage}");
+            assert_eq!(cleanup.refresh_token, "synthetic-refresh-0");
+            assert_eq!(
+                cleanup.cleanup_refresh_tokens,
+                if refresh {
+                    vec!["synthetic-refresh-1"]
+                } else {
+                    Vec::new()
+                }
+            );
+            assert!(fixture.engine.cleanup.blocks_connection());
+            fixture.restart();
+            fixture.engine.refresh(started_at + 2, || true).unwrap();
+            assert!(fixture.engine.session().is_none());
+            assert_eq!(
+                fixture.transport.calls.load(Ordering::Acquire),
+                1 + u64::from(refresh)
+            );
+            fixture
+                .transport
+                .fail_revoke
+                .store(false, Ordering::Release);
+            fixture.engine.sign_out().unwrap();
+            assert!(fixture.vault.read().unwrap().is_none());
+        }
+    }
+}
+
+#[test]
+fn cloud_vault_work_cannot_outlast_session_or_fixed_grant_deadlines() {
+    use std::sync::atomic::AtomicI64;
+
+    for fixed_grant in [false, true] {
+        let mut fixture = Fixture::new();
+        let started_at = if fixed_grant { 9_900 } else { 101 };
+        let expires_at = if fixed_grant { 10_000 } else { 102 };
+        let clock = Arc::new(AtomicI64::new(started_at));
+        let read_clock = clock.clone();
+        fixture.engine = fixture
+            .engine
+            .with_clock(move || read_clock.load(Ordering::Acquire));
+        let mut authority = session();
+        authority.access_expires_at = expires_at;
+        fixture.transport = Arc::new(FakeTransport {
+            token_expires_in: Mutex::new(Some(900)),
+            returned_session: Mutex::new(Some(authority)),
+            fail_revoke: AtomicBool::new(true),
+            ..FakeTransport::default()
+        });
+        fixture.engine.transport = Box::new(fixture.transport.clone());
+        fixture.vault = Arc::new(MemoryVault {
+            on_credential_write: Some(Arc::new(move || {
+                clock.store(expires_at, Ordering::Release);
+            })),
+            ..MemoryVault::default()
+        });
+        fixture.engine.vault = Box::new(fixture.vault.clone());
+        let (_, _listener, attempt) = fixture.engine.begin(started_at - 1, 0).unwrap();
+        assert_eq!(
+            fixture.engine.callback(
+                &attempt,
+                auth::Callback::Code("synthetic".into()),
+                started_at,
+                || true,
+            ),
+            Err(Failure::ReauthRequired)
+        );
+        assert!(fixture.engine.session().is_none());
+        assert!(fixture.vault.read().unwrap().unwrap().session.is_none());
+        assert!(fixture.engine.cleanup.blocks_connection());
+    }
+}
+
+#[test]
+fn cloud_cached_session_hides_expired_token_session_and_grant_authority() {
+    use std::sync::atomic::AtomicI64;
+
+    for (started_at, expires_in, access_expires_at, expires_at) in [
+        (101, 1, 901, 102),
+        (101, 900, 102, 102),
+        (9_900, 900, 10_000, 10_000),
+    ] {
+        let mut fixture = Fixture::new();
+        let clock = Arc::new(AtomicI64::new(started_at));
+        let read_clock = clock.clone();
+        fixture.engine = fixture
+            .engine
+            .with_clock(move || read_clock.load(Ordering::Acquire));
+        let mut authority = session();
+        authority.access_expires_at = access_expires_at;
+        fixture.transport = Arc::new(FakeTransport {
+            token_expires_in: Mutex::new(Some(expires_in)),
+            returned_session: Mutex::new(Some(authority)),
+            ..FakeTransport::default()
+        });
+        fixture.engine.transport = Box::new(fixture.transport.clone());
+        let (_, _listener, attempt) = fixture.engine.begin(started_at - 1, 0).unwrap();
+        fixture
+            .engine
+            .callback(
+                &attempt,
+                auth::Callback::Code("synthetic".into()),
+                started_at,
+                || true,
+            )
+            .unwrap();
+        clock.store(expires_at - 1, Ordering::Release);
+        assert!(fixture.engine.session().is_some());
+        clock.store(expires_at, Ordering::Release);
+        assert!(fixture.engine.session().is_none());
+        assert!(fixture.vault.read().unwrap().unwrap().session.is_some());
+        assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    }
 }
 
 #[test]
@@ -1213,7 +1397,8 @@ fn process_engine(directory: &Path, count: u64) -> (Engine, Arc<FakeTransport>) 
             Box::new(SyntheticFileVault(directory.join("synthetic-vault.json"))),
             Box::new(transport.clone()),
             state::StateStore::new(directory),
-        ),
+        )
+        .with_clock(|| 100),
         transport,
     )
 }
