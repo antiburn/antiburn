@@ -29,6 +29,8 @@
 //! the persisted creation identity of one session row.
 
 mod check_preferences;
+#[cfg(feature = "cloud")]
+mod cloud_setup;
 pub(crate) use check_preferences::{check_preferences_snapshot_in, enabled_checks_in};
 pub(crate) mod codex_rollout_checkpoint;
 mod evidence_queue;

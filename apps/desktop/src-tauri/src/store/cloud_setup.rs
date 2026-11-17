@@ -1,0 +1,107 @@
+use super::Store;
+use anyhow::{Result, ensure};
+use rusqlite::{OptionalExtension, params};
+
+impl Store {
+    pub(crate) fn initialize_cloud_setup(&self) -> Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS cloud_setup (
+                account_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                draft_json TEXT NOT NULL CHECK(length(draft_json) <= 524288),
+                PRIMARY KEY (account_id, workspace_id)
+            );",
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn cloud_draft(&self, account: &str, workspace: &str) -> Result<Option<String>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT draft_json FROM cloud_setup WHERE account_id = ?1 AND workspace_id = ?2",
+                params![account, workspace],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub(crate) fn save_cloud_draft(
+        &self,
+        account: &str,
+        workspace: &str,
+        draft: &str,
+    ) -> Result<()> {
+        ensure!(
+            !account.is_empty() && !workspace.is_empty(),
+            "Cloud account is required"
+        );
+        ensure!(draft.len() <= 524_288, "Cloud setup exceeds its size limit");
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO cloud_setup (account_id, workspace_id, draft_json) VALUES (?1, ?2, ?3)
+             ON CONFLICT(account_id, workspace_id) DO UPDATE SET draft_json = excluded.draft_json",
+            params![account, workspace, draft],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_setup_is_account_and_destination_bound_and_survives_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        store
+            .save_cloud_draft("account-a", "personal-a", "saved")
+            .unwrap();
+        assert_eq!(store.cloud_draft("account-b", "personal-a").unwrap(), None);
+        assert_eq!(store.cloud_draft("account-a", "personal-b").unwrap(), None);
+        drop(store);
+        let store = Store::open(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        assert_eq!(
+            store
+                .cloud_draft("account-a", "personal-a")
+                .unwrap()
+                .as_deref(),
+            Some("saved")
+        );
+    }
+
+    #[test]
+    fn cloud_setup_reports_failed_reads_and_writes_without_replacing_saved_choices() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        assert!(store.cloud_draft("account", "personal").is_err());
+        store.initialize_cloud_setup().unwrap();
+        store
+            .save_cloud_draft("account", "personal", "saved")
+            .unwrap();
+        store
+            .lock()
+            .execute_batch(
+                "CREATE TRIGGER reject_cloud_setup BEFORE UPDATE ON cloud_setup
+             BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            store
+                .save_cloud_draft("account", "personal", "replacement")
+                .is_err()
+        );
+        assert_eq!(
+            store.cloud_draft("account", "personal").unwrap().as_deref(),
+            Some("saved")
+        );
+    }
+}

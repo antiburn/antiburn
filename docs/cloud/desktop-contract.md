@@ -36,12 +36,30 @@ are bounded. Both state and issuer must match the pending transaction.
 Attempts expire after ten minutes. Cancellation, logout, another connection
 attempt, and a process restart invalidate the old attempt. A restarted process
 does not restore an ephemeral listener or reuse its verifier.
+Browser approval can create a connection before the callback arrives. Canceling,
+replacing, or losing that callback therefore preserves unconfirmed revocation.
+Without a refresh credential, Settings requires an explicit local reset before
+reconnecting and keeps the warning. An explicit browser denial does not need this
+reset.
 
 The browser must name the workspace, permitted action, and device before the user
 approves the connection. The approved scope covers this first-party desktop
 client only. It does not grant general API-client or third-party authorization.
 The exact public request and response schemas need interoperability acceptance;
 provisional client helpers do not establish a supported service contract.
+
+Native requests use the configured API origin:
+
+| Request                   | Native proof                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `GET /desktop/authorize`  | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
+| `POST /v1/desktop/token`  | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
+| `GET /v1/desktop/session` | Access bearer                                                                                                |
+| `POST /v1/desktop/logout` | JSON `{refresh_token}`                                                                                       |
+
+Token, session, and logout requests send no cookies or Origin header. Token and
+logout proof does not use a bearer header. Native requests do not follow
+redirects or retry automatically.
 
 ## Credential and logout safety
 
@@ -100,6 +118,13 @@ blocks capture until the user chooses again. Neither a new account nor a changed
 destination can reuse a previous content confirmation or retarget a saved
 capture. Changing selected sources clears the content confirmation too. Displayed
 count updates do not change that selection or its confirmation.
+
+Settings keeps folder choices separate for each account and personal destination.
+Suggested folders start unselected. Choosing folders in the native picker or
+selecting a suggested folder is an explicit source choice. A database read or
+write failure reports an error instead of treating setup as saved. Indexed
+repository counts are not proof that a session has an original working directory
+inside a selected root.
 
 Login, folder selection, and the legacy local Upload sessions preference do not
 grant content consent. The UI requires a separate full-content confirmation:

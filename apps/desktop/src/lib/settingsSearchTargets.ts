@@ -31,6 +31,12 @@ export const SETTINGS_SEARCH_TARGETS = {
     aliases: ["Antiburn Cloud", "cloud upload"],
     feature: "cloud",
   },
+  cloudFolders: {
+    pane: "sessions",
+    label: "Cloud folders",
+    aliases: ["Cloud sources", "capture consent", "full-content capture"],
+    feature: "cloud",
+  },
   monitoring: {
     pane: "sessions",
     label: "Keep looking for new sessions",

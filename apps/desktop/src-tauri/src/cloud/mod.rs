@@ -1,5 +1,7 @@
 mod auth;
 mod engine;
+#[cfg(test)]
+mod http_tests;
 mod loopback;
 mod state;
 #[cfg(test)]
@@ -17,8 +19,6 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
-
-const DRAFT_KEY: &str = "internal:cloudOnboardingDraft";
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -86,6 +86,21 @@ pub struct Draft {
     folders_initialized: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DestinationBinding {
+    account_id: String,
+    destination_id: String,
+}
+
+impl DestinationBinding {
+    fn matches(&self, session: &auth::Session) -> bool {
+        self.account_id == session.user.id
+            && self.destination_id == session.workspace.id
+            && session.workspace.kind == auth::WorkspaceKind::Personal
+    }
+}
+
 fn existing_folder_choices() -> bool {
     true
 }
@@ -104,6 +119,7 @@ pub struct Snapshot {
     local_cleanup_pending: bool,
     local_reset_available: bool,
     remote_revocation_unconfirmed: bool,
+    setup_error: Option<String>,
     draft: Draft,
 }
 
@@ -118,15 +134,20 @@ fn now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
-fn draft(app: &tauri::AppHandle, discover: bool) -> Draft {
+fn draft(app: &tauri::AppHandle, session: Option<&auth::Session>) -> Result<Draft, String> {
+    let Some(session) = session else {
+        return Ok(Draft::default());
+    };
     let store = app.state::<crate::store::Store>();
     let saved = store
-        .internal_value(DRAFT_KEY)
-        .and_then(|value| serde_json::from_str::<Draft>(&value).ok());
-    if !discover {
-        return saved.unwrap_or_default();
-    }
-    let repositories = store.repositories().unwrap_or_default();
+        .cloud_draft(&session.user.id, &session.workspace.id)
+        .map_err(|_| "Could not read Cloud setup.")?
+        .map(|value| serde_json::from_str::<Draft>(&value))
+        .transpose()
+        .map_err(|_| "Could not read Cloud setup.")?;
+    let repositories = store
+        .repositories()
+        .map_err(|_| "Could not read Cloud folders.")?;
     let mut result = saved.unwrap_or_default();
     if !result.folders_initialized {
         let mut folders = Vec::<Folder>::new();
@@ -139,7 +160,7 @@ fn draft(app: &tauri::AppHandle, discover: bool) -> Draft {
             {
                 folders.push(Folder {
                     path: path.clone(),
-                    selected: true,
+                    selected: false,
                     session_count: None,
                     session_count_is_partial: false,
                 });
@@ -155,7 +176,7 @@ fn draft(app: &tauri::AppHandle, discover: bool) -> Draft {
             .max();
         folder.session_count_is_partial = folder.session_count.is_some();
     }
-    result
+    Ok(result)
 }
 
 fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
@@ -165,7 +186,10 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             .account_generation
             .load(Ordering::Acquire);
     let session = if current { engine.session() } else { None };
-    let mut draft = draft(app, session.is_some());
+    let (mut draft, setup_error) = match draft(app, session) {
+        Ok(draft) => (draft, None),
+        Err(error) => (Draft::default(), Some(error)),
+    };
     if session.is_none() {
         draft.screen = Screen::Handoff;
     }
@@ -186,15 +210,9 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
         local_reset_available: engine.local_reset_available,
         remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
+        setup_error,
         draft,
     }
-}
-
-fn snapshot_for_window(mut result: Snapshot, window: &str) -> Snapshot {
-    if window != "onboarding" {
-        result.draft = Draft::default();
-    }
-    result
 }
 
 fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
@@ -228,11 +246,7 @@ fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         *previous = engine.status;
     }
     for window in ["onboarding", "main", "settings"] {
-        let _ = app.emit_to(
-            window,
-            "cloud:changed",
-            snapshot_for_window(result.clone(), window),
-        );
+        let _ = app.emit_to(window, "cloud:changed", result.clone());
     }
     result
 }
@@ -241,6 +255,8 @@ pub fn initialize(
     app: &tauri::AppHandle,
     directory: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    app.state::<crate::store::Store>()
+        .initialize_cloud_setup()?;
     app.add_capability(include_str!("../../cloud-capabilities/account.json"))?;
     #[cfg(debug_assertions)]
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
@@ -262,10 +278,7 @@ pub fn initialize(
 }
 
 #[tauri::command]
-pub async fn cloud_status(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-) -> Result<Snapshot, String> {
+pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let controller = app.state::<Controller>();
         let generation = controller.account_generation.load(Ordering::Acquire);
@@ -279,7 +292,7 @@ pub async fn cloud_status(
         }) {
             engine.status = error.into();
         }
-        Ok(snapshot_for_window(snapshot(&app, &engine), window.label()))
+        Ok(snapshot(&app, &engine))
     })
     .await
     .map_err(|_| "Cloud is unavailable.".to_owned())?
@@ -355,7 +368,11 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 if let Err(error) = engine.cancel(generation) {
                     engine.status = error.into();
                 } else {
-                    engine.status = AuthStatus::Expired;
+                    engine.status = if engine.cleanup.blocks_connection() {
+                        AuthStatus::RevocationUnconfirmed
+                    } else {
+                        AuthStatus::Expired
+                    };
                 }
             }
             if current() {
@@ -393,10 +410,7 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
 }
 
 #[tauri::command]
-pub async fn cloud_sign_out(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-) -> Result<Snapshot, String> {
+pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
     let generation = app
         .state::<Controller>()
@@ -413,17 +427,14 @@ pub async fn cloud_sign_out(
             engine.status = error.into();
         }
         engine.generation = generation;
-        Ok(snapshot_for_window(publish(&app, &engine), window.label()))
+        Ok(publish(&app, &engine))
     })
     .await
     .map_err(|_| "Cloud is unavailable.".to_owned())?
 }
 
 #[tauri::command]
-pub async fn cloud_reset_local(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-) -> Result<Snapshot, String> {
+pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
     let generation = app
         .state::<Controller>()
@@ -440,7 +451,7 @@ pub async fn cloud_reset_local(
             engine.status = error.into();
         }
         engine.generation = generation;
-        Ok(snapshot_for_window(publish(&app, &engine), window.label()))
+        Ok(publish(&app, &engine))
     })
     .await
     .map_err(|_| "Cloud is unavailable.".to_owned())?
@@ -450,6 +461,7 @@ pub async fn cloud_reset_local(
 pub async fn cloud_save_draft(
     app: tauri::AppHandle,
     mut value: Draft,
+    binding: DestinationBinding,
     folders_edited: Option<bool>,
 ) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -467,13 +479,21 @@ pub async fn cloud_save_draft(
             .engine
             .lock()
             .map_err(|_| "Cloud is unavailable.")?;
-        if engine.session().is_none() {
-            value.screen = Screen::Handoff;
+        let session = engine
+            .session()
+            .ok_or("Connect to Cloud before choosing folders.")?;
+        if engine.generation != controller.account_generation.load(Ordering::Acquire)
+            || !binding.matches(session)
+        {
+            return Err("Cloud account changed. Choose folders again.".to_owned());
         }
         let store = app.state::<crate::store::Store>();
         let previous = store
-            .internal_value(DRAFT_KEY)
-            .and_then(|raw| serde_json::from_str::<Draft>(&raw).ok());
+            .cloud_draft(&session.user.id, &session.workspace.id)
+            .map_err(|_| "Could not read Cloud setup.")?
+            .map(|raw| serde_json::from_str::<Draft>(&raw))
+            .transpose()
+            .map_err(|_| "Could not read Cloud setup.")?;
         value.folders_initialized = folders_edited.unwrap_or(true)
             || previous.is_some_and(|draft| draft.folders_initialized);
         for folder in &mut value.folders {
@@ -482,7 +502,7 @@ pub async fn cloud_save_draft(
         }
         let encoded = serde_json::to_string(&value).map_err(|_| "Could not save Cloud setup.")?;
         store
-            .set_internal_value_checked(DRAFT_KEY, &encoded)
+            .save_cloud_draft(&session.user.id, &session.workspace.id, &encoded)
             .map_err(|_| "Could not save Cloud setup.")?;
         Ok(publish(&app, &engine))
     })

@@ -297,4 +297,8 @@ it("excludes Cloud search controls unless the native feature is enabled", () => 
   expect(searchApp("Antiburn Cloud", "macos", true, [], true)).toContainEqual(
     expect.objectContaining({ id: "settings:sessions:cloudUpload" }),
   )
+  expect(searchApp("Cloud sources")).toEqual([])
+  expect(searchApp("Cloud sources", "macos", true, [], true)).toContainEqual(
+    expect.objectContaining({ id: "settings:sessions:cloudFolders" }),
+  )
 })

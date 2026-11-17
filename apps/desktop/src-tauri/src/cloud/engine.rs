@@ -1,6 +1,9 @@
 use super::{
     AuthStatus,
-    auth::{self, Attempt, Callback, Config, Credential, Failure, Session, Transport, Vault},
+    auth::{
+        self, Attempt, Callback, Config, Credential, Failure, Session, TokenRequest, Transport,
+        Vault,
+    },
     loopback::Listener,
     state::{Cleanup, Guard, Phase, Record, StateStore},
 };
@@ -73,6 +76,10 @@ impl Engine {
         if record.cleanup.blocks_connection() || record.phase == Phase::Active {
             return Err(Failure::Unavailable);
         }
+        if record.phase == Phase::Pending {
+            self.abandon_pending(&mut guard, record)?;
+            return Err(Failure::ReauthRequired);
+        }
         if self.vault.read()?.is_some() {
             return Err(Failure::ReauthRequired);
         }
@@ -91,14 +98,14 @@ impl Engine {
         };
         let mut url = config.authorization.clone();
         url.query_pairs_mut().extend_pairs([
-            ("response_type", "code"),
-            ("client_id", auth::CLIENT_ID),
-            ("redirect_uri", &attempt.callback),
-            ("scope", auth::SCOPE),
-            ("resource", &config.resource),
-            ("state", &attempt.state),
-            ("code_challenge", &auth::challenge(&attempt.verifier)),
+            ("redirect_uri", attempt.callback.as_str()),
+            ("state", attempt.state.as_str()),
+            (
+                "code_challenge",
+                auth::challenge(&attempt.verifier).as_str(),
+            ),
             ("code_challenge_method", "S256"),
+            ("device_name", auth::DEVICE_NAME),
         ]);
         self.access = None;
         self.attempt = Some(attempt.clone());
@@ -110,12 +117,31 @@ impl Engine {
         if let Some(attempt) = self.attempt.take() {
             let (mut guard, record) = self.read_state()?;
             if record.epoch == attempt.epoch && record.phase == Phase::Pending {
-                guard.replace(Phase::SignedOut, record.cleanup)?;
+                return self.abandon_pending(&mut guard, record);
             }
         }
         if self.access.is_none() && generation > 0 {
-            self.status = AuthStatus::Cancelled;
+            self.status = if self.cleanup.blocks_connection() {
+                AuthStatus::RevocationUnconfirmed
+            } else {
+                AuthStatus::Cancelled
+            };
         }
+        Ok(())
+    }
+
+    fn abandon_pending(&mut self, guard: &mut Guard, record: Record) -> Result<(), Failure> {
+        self.access = None;
+        self.attempt = None;
+        let record = guard.replace(
+            Phase::SignedOut,
+            Cleanup::Revoke {
+                prior_unconfirmed: record.cleanup.prior_unconfirmed(),
+            },
+        )?;
+        self.cleanup = record.cleanup;
+        self.status = AuthStatus::RevocationUnconfirmed;
+        self.local_reset_available = self.vault.read()?.is_none();
         Ok(())
     }
 
@@ -152,14 +178,10 @@ impl Engine {
         let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
         let tokens = self.transport.exchange(
             config,
-            &[
-                ("grant_type", "authorization_code"),
-                ("code", &code),
-                ("code_verifier", &attempt.verifier),
-                ("client_id", auth::CLIENT_ID),
-                ("redirect_uri", &attempt.callback),
-                ("resource", &config.resource),
-            ],
+            &TokenRequest::AuthorizationCode {
+                code: &code,
+                code_verifier: &attempt.verifier,
+            },
         )?;
         self.accept(&mut guard, record, tokens, None, now, current)
     }
@@ -314,9 +336,7 @@ impl Engine {
                     AuthStatus::Waiting
                 }
                 Phase::Pending => {
-                    guard.replace(Phase::SignedOut, record.cleanup)?;
-                    self.attempt = None;
-                    AuthStatus::Expired
+                    return self.abandon_pending(&mut guard, record);
                 }
                 Phase::Active => unreachable!(),
             };
@@ -358,12 +378,9 @@ impl Engine {
             .transport
             .exchange(
                 &config,
-                &[
-                    ("grant_type", "refresh_token"),
-                    ("refresh_token", &credential.refresh_token),
-                    ("client_id", auth::CLIENT_ID),
-                    ("resource", &config.resource),
-                ],
+                &TokenRequest::RefreshToken {
+                    refresh_token: &credential.refresh_token,
+                },
             )
             .map_err(|_| Failure::ReauthRequired)?;
         self.accept(&mut guard, record, tokens, Some(&credential), now, current)
@@ -397,9 +414,7 @@ impl Engine {
         }
         let credential = self.vault.read()?;
         if credential.is_none() {
-            if matches!(previous.phase, Phase::SignedOut | Phase::Pending)
-                && !previous.cleanup.blocks_connection()
-            {
+            if previous.phase == Phase::SignedOut && !previous.cleanup.blocks_connection() {
                 record.cleanup = previous.cleanup.prior_warning_only();
                 guard.write(&record)?;
                 self.cleanup = record.cleanup;

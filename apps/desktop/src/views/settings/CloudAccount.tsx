@@ -6,6 +6,8 @@ import {
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
 import { CloudCaptureConsent } from "../../onboarding/CloudCaptureConsent"
+import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
+import { SettingsRow } from "./SettingsSearchRows"
 
 export function CloudAccount({
   session,
@@ -126,7 +128,52 @@ export function CloudAccount({
           )}
         </div>
       )}
-      {value.cloud.identity && <CloudCaptureConsent session={session} value={value} />}
+      <SettingsRow
+        searchId="cloudFolders"
+        className="border-t border-separator"
+        description={
+          value.cloud.setupError ??
+          (value.cloud.identity
+            ? "Choose folders for this account. Folder choices alone do not authorize capture."
+            : "Connect to Cloud before choosing folders.")
+        }
+        trailing={
+          <button
+            className="ui-push-button"
+            disabled={value.busy || !value.cloud.identity || !!value.cloud.setupError}
+            onClick={() => void session.addFolders()}
+          >
+            Choose folders…
+          </button>
+        }
+      >
+        {value.cloud.identity && (
+          <div className="mt-3 flex flex-col gap-3">
+            {value.cloud.draft.folders.map((folder) => (
+              <div key={folder.path} className="flex items-center justify-between gap-3">
+                <span className="min-w-0 break-all type-callout text-label">{folder.path}</span>
+                <ToggleSwitch
+                  aria-label={`Select ${folder.path} for Cloud capture`}
+                  checked={folder.selected}
+                  disabled={value.busy || !!value.cloud.setupError}
+                  onCheckedChange={(selected) =>
+                    void session.selectFolder(folder.path, selected)
+                  }
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </SettingsRow>
+      {value.cloud.identity && (
+        <>
+          <CloudCaptureConsent session={session} value={value} />
+          <p className="px-4 pb-3 type-footnote text-label-secondary">
+            Sign out revokes this desktop connection only. It does not sign out your browser or
+            delete saved captures.
+          </p>
+        </>
+      )}
     </>
   )
 }

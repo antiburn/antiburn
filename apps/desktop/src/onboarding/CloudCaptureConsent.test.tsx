@@ -11,6 +11,10 @@ function fixture(destination: CloudWorkspace | null) {
       ...emptyCloudSnapshot,
       identity: { id: "synthetic-account", login: "Example account" },
       destination,
+      draft: {
+        screen: "folders",
+        folders: [{ path: "/Example/Project", selected: true }],
+      },
     },
     screen: "folders",
     sync: { status: "unavailable" },
@@ -62,3 +66,11 @@ it.each([null, { id: "team", name: "Requested team", kind: "team" } satisfies Cl
     }
   },
 )
+
+it("requires an explicit source selection before full-content consent", () => {
+  const { session, value } = fixture({ id: "personal", name: "Personal", kind: "personal" })
+  value.cloud.draft.folders[0]!.selected = false
+  render(<CloudCaptureConsent session={session} value={value} />)
+  expect(screen.getByRole("checkbox")).toBeDisabled()
+  expect(screen.getByText(/Select folders before confirming/)).toBeVisible()
+})

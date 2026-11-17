@@ -103,7 +103,10 @@ Manual Cloud builds place the Cloud account controls in Settings → Sessions,
 above Repositories. Connecting remains available after the introduction.
 Folder choices and the legacy Upload sessions preference do not authorize
 capture. Full native content needs a separate confirmation for the selected
-account and destination. Attachments remain separate. Native capture transport
+account, destination, and explicitly selected folders. Suggested folders start
+unselected. Settings keeps folder choices separate for each account and personal
+destination. Signing out revokes only the current desktop connection; it does
+not sign out the browser or delete saved captures. Attachments remain separate. Native capture transport
 is disabled; no sessions are queued or uploaded.
 
 ## Layout

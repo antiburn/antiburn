@@ -1,5 +1,5 @@
 use super::*;
-use auth::{Credential, Session, Tokens, Transport, Vault, WorkspaceKind};
+use auth::{Credential, Session, TokenRequest, Tokens, Transport, Vault, WorkspaceKind};
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[derive(Default)]
@@ -61,14 +61,14 @@ struct FakeTransport {
 }
 
 impl Transport for Arc<FakeTransport> {
-    fn exchange(&self, _: &Config, fields: &[(&str, &str)]) -> Result<Tokens, Failure> {
+    fn exchange(&self, _: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let count = self.calls.fetch_add(1, Ordering::AcqRel);
         self.seen.lock().unwrap().push(
-            fields
-                .iter()
-                .find(|(key, _)| *key == "refresh_token")
-                .map_or("code", |(_, value)| value)
-                .to_string(),
+            match request {
+                TokenRequest::AuthorizationCode { .. } => "code",
+                TokenRequest::RefreshToken { refresh_token } => refresh_token,
+            }
+            .to_string(),
         );
         if self.fail_exchange.load(Ordering::Acquire) {
             return Err(Failure::Offline);
@@ -165,7 +165,7 @@ fn cloud_pkce_matches_rfc7636() {
 fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
     assert_eq!(
         config().authorization.as_str(),
-        "https://auth.example/oauth/authorize"
+        "https://api.example/desktop/authorize"
     );
     assert_eq!(
         config().session.as_str(),
@@ -184,16 +184,16 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
 }
 
 #[test]
-fn cloud_authorize_uses_literal_ephemeral_loopback_and_scoped_resource() {
+fn cloud_authorize_uses_only_first_party_fields_and_literal_ephemeral_loopback() {
     let mut fixture = Fixture::new();
     let (url, listener, attempt) = fixture.engine.begin(100, 0).unwrap();
     let url = url::Url::parse(&url).unwrap();
     let fields = url
         .query_pairs()
         .collect::<std::collections::HashMap<_, _>>();
-    assert_eq!(fields["client_id"], "antiburn-desktop");
-    assert_eq!(fields["scope"], "capture:write");
-    assert_eq!(fields["resource"], config().resource);
+    assert_eq!(url.origin().ascii_serialization(), "https://api.example");
+    assert_eq!(fields.len(), 5);
+    assert_eq!(fields["device_name"], auth::DEVICE_NAME);
     assert_eq!(fields["code_challenge_method"], "S256");
     let callback = url::Url::parse(&fields["redirect_uri"]).unwrap();
     assert_eq!(callback.host_str(), Some("127.0.0.1"));
@@ -286,8 +286,64 @@ fn cloud_restart_does_not_restore_an_ephemeral_listener() {
     drop(listener);
     fixture.restart();
     fixture.engine.refresh(101, || true).unwrap();
-    assert!(fixture.engine.status == AuthStatus::Expired);
+    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.local_reset_available);
     assert!(fixture.engine.session().is_none());
+}
+
+#[test]
+fn cloud_abandoned_browser_approval_needs_explicit_reset_without_losing_its_warning() {
+    let mut fixture = Fixture::new();
+    let (_, _listener, _) = fixture.engine.begin(100, 0).unwrap();
+    fixture.engine.cancel(1).unwrap();
+    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.local_reset_available);
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    fixture.engine.reset_local().unwrap();
+    fixture.engine.begin(102, 2).unwrap();
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+}
+
+#[test]
+fn cloud_expired_or_replaced_browser_attempt_does_not_claim_remote_revocation() {
+    for replaced in [false, true] {
+        let mut fixture = Fixture::new();
+        let (_, _listener, _) = fixture.engine.begin(100, 0).unwrap();
+        if replaced {
+            assert!(matches!(
+                fixture.engine.begin(101, 1),
+                Err(Failure::ReauthRequired)
+            ));
+        } else {
+            fixture.engine.refresh(700, || true).unwrap();
+        }
+        assert!(
+            fixture.engine.cleanup
+                == state::Cleanup::Revoke {
+                    prior_unconfirmed: false
+                }
+        );
+        assert!(fixture.engine.local_reset_available);
+        assert!(fixture.engine.session().is_none());
+    }
+}
+
+#[test]
+fn cloud_browser_denial_does_not_need_reset_but_native_pending_logout_does() {
+    let mut fixture = Fixture::new();
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    fixture
+        .engine
+        .callback(&attempt, auth::Callback::Cancelled, 101, || true)
+        .unwrap();
+    assert!(fixture.engine.cleanup == state::Cleanup::None);
+    fixture.engine.begin(102, 1).unwrap();
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.local_reset_available);
 }
 
 #[test]
@@ -496,9 +552,10 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         local_cleanup_pending: false,
         local_reset_available: false,
         remote_revocation_unconfirmed: false,
+        setup_error: None,
         draft: Draft::default(),
     };
-    let encoded = serde_json::to_string(&snapshot_for_window(value, "settings")).unwrap();
+    let encoded = serde_json::to_string(&value).unwrap();
     for field in [
         "access_token",
         "refresh_token",
@@ -509,6 +566,24 @@ fn cloud_snapshot_does_not_include_native_secrets() {
     ] {
         assert!(!encoded.contains(field));
     }
+}
+
+#[test]
+fn cloud_folder_writes_require_the_exact_current_personal_context() {
+    let binding = DestinationBinding {
+        account_id: session().user.id,
+        destination_id: session().workspace.id,
+    };
+    assert!(binding.matches(&session()));
+    let mut other = session();
+    other.user.id = "another-account".into();
+    assert!(!binding.matches(&other));
+    other = session();
+    other.workspace.id = "another-destination".into();
+    assert!(!binding.matches(&other));
+    other = session();
+    other.workspace.kind = WorkspaceKind::Team;
+    assert!(!binding.matches(&other));
 }
 
 #[test]

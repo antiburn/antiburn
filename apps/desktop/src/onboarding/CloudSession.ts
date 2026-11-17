@@ -48,7 +48,8 @@ const messages = {
   unavailable: "Cloud is not available in this build. You can continue locally.",
   reauth_required:
     "Revoke the previous connection in Settings, then connect again. The refresh response is not safe to retry.",
-  revocation_unconfirmed: "Signed out locally. Cloud has not confirmed revocation.",
+  revocation_unconfirmed:
+    "Signed out locally. Cloud has not confirmed revocation. Open Cloud settings to finish cleanup or reset.",
 } as const
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 
@@ -298,29 +299,55 @@ export class CloudSession {
   signOut = () => this.run("sign_out", this.port.signOut)
   resetLocal = () => this.run(null, this.port.resetLocal)
   setFullContentConsent = (fullContentConsent: boolean) => this.publish({ fullContentConsent })
+  private saveDraft(draft: CloudDraft, foldersEdited = true) {
+    const { identity, destination } = this.snapshot.cloud
+    const personal = personalCloudDestination(destination ?? null)
+    if (!identity || !personal || this.snapshot.cloud.setupError)
+      return Promise.reject(new Error("Choose a verified personal destination."))
+    return this.port.save(
+      draft,
+      { accountId: identity.id, destinationId: personal.id },
+      foldersEdited,
+    )
+  }
   go = async (screen: CloudDraft["screen"], action: "back" | "continue" = "continue") => {
     if (screen !== "handoff" && !this.snapshot.cloud.identity) return
     await this.run(action, () =>
-      this.port.save({ ...this.snapshot.cloud.draft, screen }, false),
+      this.saveDraft({ ...this.snapshot.cloud.draft, screen }, false),
     )
   }
   addFolders = async () => {
     const generation = this.generation
+    const account = this.snapshot.cloud.identity?.id
+    const destination = this.snapshot.cloud.destination?.id
     await this.run("add_folder", async () => {
       const paths = await this.port.pick()
-      if (!this.active || generation !== this.generation) return this.snapshot.cloud
-      const folders = [...this.snapshot.cloud.draft.folders]
-      for (const path of paths)
-        if (!folders.some((folder) => folder.path === path) && folders.length < 100)
-          folders.push({ path, selected: true })
-      if (folders.length === this.snapshot.cloud.draft.folders.length)
+      if (
+        !this.active ||
+        generation !== this.generation ||
+        account !== this.snapshot.cloud.identity?.id ||
+        destination !== this.snapshot.cloud.destination?.id
+      )
         return this.snapshot.cloud
-      return this.port.save({ ...this.snapshot.cloud.draft, folders })
+      const folders = this.snapshot.cloud.draft.folders.map((folder) => ({ ...folder }))
+      let changed = false
+      for (const path of paths) {
+        const existing = folders.find((folder) => folder.path === path)
+        if (existing && !existing.selected) {
+          existing.selected = true
+          changed = true
+        } else if (!existing && folders.length < 100) {
+          folders.push({ path, selected: true })
+          changed = true
+        }
+      }
+      if (!changed) return this.snapshot.cloud
+      return this.saveDraft({ ...this.snapshot.cloud.draft, folders })
     })
   }
   selectFolder = (path: string, selected: boolean) =>
     this.run("select_folder", () =>
-      this.port.save({
+      this.saveDraft({
         ...this.snapshot.cloud.draft,
         folders: this.snapshot.cloud.draft.folders.map((folder) =>
           folder.path === path ? { ...folder, selected } : folder,
@@ -329,7 +356,7 @@ export class CloudSession {
     )
   removeFolder = (path: string) =>
     this.run(null, () =>
-      this.port.save({
+      this.saveDraft({
         ...this.snapshot.cloud.draft,
         folders: this.snapshot.cloud.draft.folders.filter((folder) => folder.path !== path),
       }),

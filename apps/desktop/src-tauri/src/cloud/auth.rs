@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::{io::Read, time::Duration};
 use url::Url;
 
-pub const CLIENT_ID: &str = "antiburn-desktop";
+pub const DEVICE_NAME: &str = "Antiburn desktop";
 pub const SCOPE: &str = "capture:write";
 pub const MAX_ACCESS_SECONDS: u64 = 900;
 pub const MAX_GRANT_SECONDS: i64 = 365 * 24 * 60 * 60;
@@ -40,14 +40,14 @@ impl Config {
                 && url.as_str() == value)
                 .then_some(url)
         }
-        let issuer_url = canonical(issuer)?;
+        canonical(issuer)?;
         let resource_url = canonical(resource)?;
         Some(Self {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
-            authorization: issuer_url.join("oauth/authorize").ok()?,
-            token: issuer_url.join("oauth/token").ok()?,
-            revocation: issuer_url.join("oauth/revoke").ok()?,
+            authorization: resource_url.join("desktop/authorize").ok()?,
+            token: resource_url.join("v1/desktop/token").ok()?,
+            revocation: resource_url.join("v1/desktop/logout").ok()?,
             session: resource_url.join("v1/desktop/session").ok()?,
         })
     }
@@ -224,8 +224,20 @@ impl Vault for KeyringVault {
     }
 }
 
+#[derive(Serialize)]
+#[serde(tag = "grant_type", rename_all = "snake_case")]
+pub enum TokenRequest<'a> {
+    AuthorizationCode {
+        code: &'a str,
+        code_verifier: &'a str,
+    },
+    RefreshToken {
+        refresh_token: &'a str,
+    },
+}
+
 pub trait Transport: Send + Sync {
-    fn exchange(&self, config: &Config, fields: &[(&str, &str)]) -> Result<Tokens, Failure>;
+    fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure>;
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
@@ -235,6 +247,7 @@ fn client() -> Result<reqwest::blocking::Client, Failure> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|_| Failure::Offline)
@@ -262,11 +275,11 @@ fn decode<T: serde::de::DeserializeOwned>(
 }
 
 impl Transport for HttpTransport {
-    fn exchange(&self, config: &Config, fields: &[(&str, &str)]) -> Result<Tokens, Failure> {
+    fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
             client()?
                 .post(config.token.clone())
-                .form(fields)
+                .json(request)
                 .send()
                 .map_err(|_| Failure::Offline)?,
         )?;
@@ -293,11 +306,7 @@ impl Transport for HttpTransport {
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure> {
         let response = client()?
             .post(config.revocation.clone())
-            .form(&[
-                ("token", refresh),
-                ("token_type_hint", "refresh_token"),
-                ("client_id", CLIENT_ID),
-            ])
+            .json(&serde_json::json!({ "refresh_token": refresh }))
             .send()
             .map_err(|_| Failure::Offline)?;
         if response.status() == reqwest::StatusCode::NO_CONTENT {

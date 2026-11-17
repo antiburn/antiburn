@@ -36,10 +36,12 @@ export interface CloudDraft {
   screen: CloudScreen
   folders: CloudFolder[]
 }
-export interface CaptureConsent {
-  version: "native-full-content-v1"
+export interface CloudDestinationBinding {
   accountId: string
   destinationId: string
+}
+export interface CaptureConsent extends CloudDestinationBinding {
+  version: "native-full-content-v1"
   fullContent: true
   attachments: false
 }
@@ -55,6 +57,7 @@ export interface CloudSnapshot {
   localCleanupPending?: boolean
   localResetAvailable?: boolean
   remoteRevocationUnconfirmed?: boolean
+  setupError?: string | null
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
@@ -72,7 +75,11 @@ export interface CloudPort {
   watch(listener: (value: CloudSnapshot) => void): Promise<() => void>
   begin(): Promise<CloudSnapshot>
   cancel(): Promise<CloudSnapshot>
-  save(draft: CloudDraft, foldersEdited?: boolean): Promise<CloudSnapshot>
+  save(
+    draft: CloudDraft,
+    binding: CloudDestinationBinding,
+    foldersEdited?: boolean,
+  ): Promise<CloudSnapshot>
   signOut(): Promise<CloudSnapshot>
   resetLocal(): Promise<CloudSnapshot>
   pick(): Promise<string[]>
@@ -104,8 +111,8 @@ export const nativeCloudPort: CloudPort = {
       : () => {},
   begin: () => cloudCommand("cloud_begin"),
   cancel: () => cloudCommand("cloud_cancel"),
-  save: (value, foldersEdited = true) =>
-    cloudCommand("cloud_save_draft", { value, foldersEdited }),
+  save: (value, binding, foldersEdited = true) =>
+    cloudCommand("cloud_save_draft", { value, binding, foldersEdited }),
   signOut: () => cloudCommand("cloud_sign_out"),
   resetLocal: () => cloudCommand("cloud_reset_local"),
   pick: async () => {

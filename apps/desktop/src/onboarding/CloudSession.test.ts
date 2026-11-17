@@ -122,6 +122,18 @@ it("selects added folders but keeps sync disabled after real identity", async ()
   })
   stop()
 })
+it("selects a suggested folder when the picker returns its existing path", async () => {
+  const { port } = fixture(signedIn)
+  const session = new CloudSession(port)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  await session.addFolders()
+  expect(session.getSnapshot().cloud.draft.folders).toEqual([
+    { path: "/Example/Project", selected: true },
+  ])
+  expect(port.save).toHaveBeenCalledOnce()
+  stop()
+})
 it("does not replace a newer verified event with a late browser launch response", async () => {
   const { port, emit } = fixture()
   let resolve!: (value: CloudSnapshot) => void
@@ -214,6 +226,23 @@ it("drops async picker results after the window closes", async () => {
   resolve(["/Example/Late"])
   await pending
   expect(port.save).not.toHaveBeenCalled()
+})
+it("drops folder picker results when the account changes while the picker is open", async () => {
+  const { port, emit } = fixture(signedIn)
+  let resolve!: (value: string[]) => void
+  port.pick = () =>
+    new Promise<string[]>((done) => {
+      resolve = done
+    })
+  const session = new CloudSession(port)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  const pending = session.addFolders()
+  emit({ ...signedIn, identity: { id: "another-account", login: "Another" } })
+  resolve(["/Example/Late"])
+  await pending
+  expect(port.save).not.toHaveBeenCalled()
+  stop()
 })
 it("reconciles a persisted sync request after restart without starting another upload", async () => {
   const { port } = fixture({
