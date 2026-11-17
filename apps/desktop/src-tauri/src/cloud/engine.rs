@@ -131,6 +131,26 @@ impl Engine {
         Ok((url.to_string(), listener, attempt))
     }
 
+    /// Clear only this pending attempt after the opener proves no browser handoff.
+    /// Do not use this for an uncertain launch or a lost callback.
+    pub fn abort_browser_launch(&mut self, attempt: &Attempt) -> Result<(), Failure> {
+        if self.attempt.as_ref().is_none_or(|pending| {
+            pending.epoch != attempt.epoch || pending.generation != attempt.generation
+        }) {
+            return Ok(());
+        }
+        let (mut guard, record) = self.read_state()?;
+        if record.epoch != attempt.epoch || record.phase != Phase::Pending {
+            return Ok(());
+        }
+        guard.replace(Phase::SignedOut, record.cleanup)?;
+        self.attempt = None;
+        self.cleanup = record.cleanup;
+        self.local_reset_available = false;
+        self.status = AuthStatus::BrowserFailed;
+        Ok(())
+    }
+
     /// Abandon only the eligible browser attempt; a newer attempt or active grant survives.
     pub fn cancel(&mut self, generation: u64) -> Result<(), Failure> {
         if self
@@ -419,6 +439,7 @@ impl Engine {
             return Ok(());
         }
         self.access = None;
+        let prior_cleanup = record.cleanup;
         // Persist this before transport. A crash or an uncertain reply must not reuse a predecessor.
         record.phase = Phase::ReauthRequired;
         record.cleanup = Cleanup::Revoke {
@@ -438,15 +459,32 @@ impl Engine {
         {
             return Err(Failure::ReauthRequired);
         }
-        let tokens = self
-            .transport
-            .exchange(
-                &config,
-                &TokenRequest::RefreshToken {
-                    refresh_token: &credential.refresh_token,
-                },
-            )
-            .map_err(|_| Failure::ReauthRequired)?;
+        let tokens = match self.transport.exchange(
+            &config,
+            &TokenRequest::RefreshToken {
+                refresh_token: &credential.refresh_token,
+            },
+        ) {
+            Ok(tokens) => tokens,
+            Err(Failure::OfflineBeforeSend) if current() => {
+                record.phase = Phase::Active;
+                record.cleanup = prior_cleanup;
+                guard.write(&record)?;
+                // A cancelled generation cannot reopen a grant during the state write.
+                if !current() {
+                    record.phase = Phase::ReauthRequired;
+                    record.cleanup = Cleanup::Revoke {
+                        prior_unconfirmed: prior_cleanup.prior_unconfirmed(),
+                    };
+                    guard.write(&record)?;
+                    return Err(Failure::Cancelled);
+                }
+                self.cleanup = record.cleanup;
+                return Err(Failure::Offline);
+            }
+            Err(_) if !current() => return Err(Failure::Cancelled),
+            Err(_) => return Err(Failure::ReauthRequired),
+        };
         self.accept(&mut guard, record, tokens, Some(&credential), now, current)
     }
 

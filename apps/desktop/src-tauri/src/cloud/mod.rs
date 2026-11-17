@@ -57,7 +57,7 @@ pub enum AuthStatus {
 impl From<Failure> for AuthStatus {
     fn from(value: Failure) -> Self {
         match value {
-            Failure::Offline => Self::Offline,
+            Failure::Offline | Failure::OfflineBeforeSend => Self::Offline,
             Failure::Rejected => Self::Rejected,
             Failure::InvalidResponse => Self::InvalidResponse,
             Failure::CredentialFailed => Self::CredentialFailed,
@@ -414,10 +414,13 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 return Ok(publish(&app, &engine));
             }
         };
-        if app.opener().open_url(url, None::<&str>).is_err() {
-            engine
-                .cancel(generation)
-                .map_err(|_| "Could not cancel Cloud sign-in.")?;
+        if let Err(error) = app.opener().open_url(url, None::<&str>) {
+            if browser_launch_did_not_start(&error) {
+                engine.abort_browser_launch(&attempt)
+            } else {
+                engine.cancel(generation)
+            }
+            .map_err(|_| "Could not cancel Cloud sign-in.")?;
             engine.status = AuthStatus::BrowserFailed;
             return Ok(publish(&app, &engine));
         }
@@ -479,6 +482,16 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(result)
     })
     .await
+}
+
+/// A native missing-launcher error proves no handoff. Launcher exit failures and
+/// other errors can follow browser launch, so they must retain remote uncertainty.
+fn browser_launch_did_not_start(error: &tauri_plugin_opener::Error) -> bool {
+    matches!(
+        error,
+        tauri_plugin_opener::Error::Io(error)
+            if error.kind() == std::io::ErrorKind::NotFound && error.raw_os_error().is_some()
+    )
 }
 
 /// Invalidate only browser work immediately, before any cleanup admission wait.

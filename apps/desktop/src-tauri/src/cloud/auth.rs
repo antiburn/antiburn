@@ -94,6 +94,9 @@ fn debug_loopback_http(url: &Url) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum Failure {
     Offline,
+    /// Token exchange failed during connection setup before sending HTTP proof.
+    /// Timeouts and failures after dispatch cannot use this retry-safe outcome.
+    OfflineBeforeSend,
     Rejected,
     InvalidResponse,
     CredentialFailed,
@@ -440,7 +443,8 @@ pub enum TokenRequest<'a> {
 pub trait Transport: Send + Sync {
     /// Return decoded tokens with a bounded refresh proof, even when other fields
     /// are invalid. The engine validates authority and saves rejected proof for
-    /// logout. An uncertain exchange must not retry the predecessor.
+    /// logout. Return `OfflineBeforeSend` only when no HTTP proof was sent.
+    /// An uncertain exchange must not retry the predecessor.
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure>;
     /// Read current server authority; the engine checks all returned bindings.
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
@@ -495,6 +499,17 @@ fn decode<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&bytes).map_err(|_| Failure::InvalidResponse)
 }
 
+/// Permit a later exchange only when connection setup failed before HTTP dispatch.
+/// Keep timeouts uncertain even when the connector reports them.
+/// The transport must keep retries and redirects disabled.
+fn exchange_failure(error: reqwest::Error) -> Failure {
+    if error.is_connect() && !error.is_timeout() {
+        Failure::OfflineBeforeSend
+    } else {
+        Failure::Offline
+    }
+}
+
 impl Transport for HttpTransport {
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
@@ -502,7 +517,7 @@ impl Transport for HttpTransport {
                 .post(config.token.clone())
                 .json(request)
                 .send()
-                .map_err(|_| Failure::Offline)?,
+                .map_err(exchange_failure)?,
         )?;
         // Keep usable logout proof until the engine decides whether to accept it.
         if !bounded(&tokens.refresh_token, 16_384) {

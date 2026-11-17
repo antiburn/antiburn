@@ -94,6 +94,8 @@ are bounded. Both state and issuer must match the pending transaction.
 Attempts expire after ten minutes. Cancellation, logout, another connection
 attempt, and a process restart invalidate the old attempt. A restarted process
 does not restore an ephemeral listener or reuse its verifier.
+An OS missing-launcher error before browser handoff clears only that attempt and
+permits retry. Other opener errors do not prove that handoff failed.
 Browser approval can create a connection before the callback arrives. Canceling,
 replacing, or losing that callback therefore preserves unconfirmed revocation.
 Without a refresh credential, Settings requires an explicit local reset before
@@ -156,7 +158,9 @@ credential, callback, or verifier.
 
 Before sending a refresh, the client flushes a reauth-required marker. An
 uncertain response, process exit, invalid response, keyring failure, or failed
-session verification must not retry the predecessor. Successful rotation needs
+session verification must not retry the predecessor. A non-timeout connection
+setup failure proves that no HTTP proof was sent; only that result can restore
+retry eligibility for the current account generation. Successful rotation needs
 the same grant ID, account, workspace, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.

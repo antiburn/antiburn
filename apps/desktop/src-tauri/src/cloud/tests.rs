@@ -138,9 +138,11 @@ pub(super) fn session() -> Session {
 struct FakeTransport {
     calls: AtomicU64,
     fail_exchange: AtomicBool,
+    fail_before_send: AtomicBool,
     fail_revoke: AtomicBool,
     fail_session: AtomicBool,
     generation: Option<Arc<AtomicU64>>,
+    on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
@@ -152,6 +154,12 @@ struct FakeTransport {
 
 impl Transport for Arc<FakeTransport> {
     fn exchange(&self, _: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
+        if let Some(action) = &self.on_exchange {
+            action();
+        }
+        if self.fail_before_send.load(Ordering::Acquire) {
+            return Err(Failure::OfflineBeforeSend);
+        }
         let count = self.calls.fetch_add(1, Ordering::AcqRel);
         self.seen.lock().unwrap().push(
             match request {
@@ -415,6 +423,68 @@ fn cloud_cancel_and_late_callback_cannot_restore_identity() {
 }
 
 #[test]
+fn cloud_browser_prelaunch_abort_requires_a_native_missing_launcher_error() {
+    use std::io::{Error, ErrorKind};
+    use tauri_plugin_opener::Error as OpenerError;
+
+    assert!(browser_launch_did_not_start(&OpenerError::Io(
+        Error::from_raw_os_error(2)
+    )));
+    for error in [
+        Error::from(ErrorKind::NotFound),
+        Error::from(ErrorKind::PermissionDenied),
+        Error::other("launcher exited after handoff"),
+    ] {
+        assert!(!browser_launch_did_not_start(&OpenerError::Io(error)));
+    }
+}
+
+#[test]
+fn cloud_browser_prelaunch_abort_allows_retry_and_preserves_prior_warnings() {
+    for prior_warning in [false, true] {
+        let mut fixture = Fixture::new();
+        if prior_warning {
+            fixture
+                .engine
+                .state
+                .lock()
+                .unwrap()
+                .replace(state::Phase::SignedOut, state::Cleanup::RemoteUnconfirmed)
+                .unwrap();
+        }
+        let (_, listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+        drop(listener);
+        fixture.engine.abort_browser_launch(&attempt).unwrap();
+        assert!(fixture.engine.status == AuthStatus::BrowserFailed);
+        assert!(fixture.engine.attempt.is_none());
+        assert!(!fixture.engine.cleanup.blocks_connection());
+        assert_eq!(fixture.engine.cleanup.prior_unconfirmed(), prior_warning);
+        assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 0);
+        assert!(fixture.vault.read().unwrap().is_none());
+        fixture.restart();
+        fixture.engine.refresh(101, || true).unwrap();
+        assert!(fixture.engine.status == AuthStatus::SignedOut);
+        let (_, _listener, newer) = fixture.engine.begin(102, 2).unwrap();
+        assert_ne!(attempt.epoch, newer.epoch);
+        assert_eq!(
+            fixture
+                .engine
+                .callback(&attempt, auth::Callback::Code("late".into()), 103, || true),
+            Err(Failure::Cancelled)
+        );
+        fixture.engine.abort_browser_launch(&attempt).unwrap();
+        assert_eq!(fixture.engine.attempt.as_ref().unwrap().epoch, newer.epoch);
+        fixture
+            .engine
+            .callback(&newer, auth::Callback::Code("current".into()), 103, || true)
+            .unwrap();
+        fixture.engine.abort_browser_launch(&attempt).unwrap();
+        assert!(fixture.engine.session().is_some());
+        assert_eq!(fixture.engine.cleanup.prior_unconfirmed(), prior_warning);
+    }
+}
+
+#[test]
 fn cloud_cancel_during_session_request_never_saves_credentials() {
     let mut fixture = Fixture::new();
     let generation = Arc::new(AtomicU64::new(0));
@@ -544,12 +614,89 @@ fn cloud_uncertain_refresh_persists_reauth_and_never_retries_predecessor() {
         .transport
         .fail_exchange
         .store(false, Ordering::Release);
+    fixture.engine.refresh(201, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
     fixture.restart();
     fixture.engine.refresh(201, || true).unwrap();
     fixture.engine.refresh(202, || true).unwrap();
     assert!(fixture.engine.status == AuthStatus::ReauthRequired);
     assert!(fixture.engine.session().is_none());
     assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        *fixture.transport.seen.lock().unwrap(),
+        ["code", "synthetic-refresh-0"]
+    );
+}
+
+#[test]
+fn cloud_refresh_retries_an_unsent_proof_after_reconnect_or_restart() {
+    for restart in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.sign_in();
+        fixture
+            .transport
+            .fail_before_send
+            .store(true, Ordering::Release);
+        assert_eq!(fixture.engine.refresh(200, || true), Err(Failure::Offline));
+        assert!(fixture.engine.session().is_none());
+        assert!(!fixture.engine.cleanup.blocks_connection());
+        assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+        fixture
+            .transport
+            .fail_before_send
+            .store(false, Ordering::Release);
+        if restart {
+            fixture.restart();
+        }
+        fixture.engine.refresh(201, || true).unwrap();
+        assert!(fixture.engine.status == AuthStatus::SignedIn);
+        assert_eq!(
+            *fixture.transport.seen.lock().unwrap(),
+            ["code", "synthetic-refresh-0"]
+        );
+        assert_eq!(
+            fixture.vault.read().unwrap().unwrap().refresh_token,
+            "synthetic-refresh-1"
+        );
+    }
+}
+
+#[test]
+fn cloud_unsent_refresh_does_not_reopen_a_cancelled_generation() {
+    for cancel_during_restore in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.sign_in();
+        let generation = Arc::new(AtomicU64::new(0));
+        let cancelled = generation.clone();
+        let transport = Arc::new(FakeTransport {
+            fail_before_send: AtomicBool::new(true),
+            on_exchange: Some(Arc::new(move || {
+                if !cancel_during_restore {
+                    cancelled.fetch_add(1, Ordering::AcqRel);
+                }
+            })),
+            ..FakeTransport::default()
+        });
+        fixture.engine.transport = Box::new(transport.clone());
+        let checks = AtomicU64::new(0);
+        assert_eq!(
+            fixture.engine.refresh(200, || {
+                if cancel_during_restore && checks.fetch_add(1, Ordering::AcqRel) == 2 {
+                    generation.fetch_add(1, Ordering::AcqRel);
+                }
+                generation.load(Ordering::Acquire) == 0
+            }),
+            Err(Failure::Cancelled)
+        );
+        assert!(fixture.engine.session().is_none());
+        fixture.restart();
+        fixture.engine.refresh(201, || true).unwrap();
+        assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+        assert!(fixture.engine.cleanup.blocks_connection());
+        assert_eq!(transport.calls.load(Ordering::Acquire), 0);
+        assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    }
 }
 
 #[test]

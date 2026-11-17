@@ -27,6 +27,10 @@ impl Request {
 }
 
 fn server(status: u16, body: &str) -> (Config, JoinHandle<Request>) {
+    server_with_reply(Some((status, body)))
+}
+
+fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}/", listener.local_addr().unwrap());
     let origin = url::Url::parse(&origin).unwrap();
@@ -35,7 +39,7 @@ fn server(status: u16, body: &str) -> (Config, JoinHandle<Request>) {
     config.token = origin.join("v1/desktop/token").unwrap();
     config.session = origin.join("v1/desktop/session").unwrap();
     config.revocation = origin.join("v1/desktop/logout").unwrap();
-    let body = body.to_owned();
+    let reply = reply.map(|(status, body)| (status, body.to_owned()));
     let worker = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         stream
@@ -65,12 +69,14 @@ fn server(status: u16, body: &str) -> (Config, JoinHandle<Request>) {
         assert!(length < 16_384);
         let mut request_body = vec![0; length];
         stream.read_exact(&mut request_body).unwrap();
-        write!(
-            stream,
-            "HTTP/1.1 {status} Synthetic\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
+        if let Some((status, body)) = reply {
+            write!(
+                stream,
+                "HTTP/1.1 {status} Synthetic\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
         Request {
             line,
             headers,
@@ -130,6 +136,45 @@ fn cloud_http_refresh_sends_only_first_party_json_proof() {
         serde_json::json!({
             "grant_type": "refresh_token",
             "refresh_token": "synthetic-refresh",
+        })
+    );
+}
+
+#[test]
+fn cloud_http_refresh_distinguishes_connection_failure_from_a_lost_reply() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
+    config.token = format!("http://{}/v1/desktop/token", listener.local_addr().unwrap())
+        .parse()
+        .unwrap();
+    drop(listener);
+    assert!(matches!(
+        HttpTransport.exchange(
+            &config,
+            &TokenRequest::RefreshToken {
+                refresh_token: "synthetic-refresh"
+            },
+        ),
+        Err(Failure::OfflineBeforeSend)
+    ));
+
+    let (config, worker) = server_with_reply(None);
+    assert!(matches!(
+        HttpTransport.exchange(
+            &config,
+            &TokenRequest::RefreshToken {
+                refresh_token: "synthetic-refresh"
+            },
+        ),
+        Err(Failure::Offline)
+    ));
+    let request = worker.join().unwrap();
+    assert_eq!(request.line, "POST /v1/desktop/token HTTP/1.1");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body).unwrap(),
+        serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": "synthetic-refresh"
         })
     );
 }

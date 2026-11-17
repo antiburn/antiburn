@@ -196,6 +196,78 @@ mod debug_http {
     };
 
     #[test]
+    fn cloud_exchange_timeout_keeps_delivery_uncertain() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/token", listener.local_addr().unwrap());
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut received = Vec::new();
+            let proof = b"synthetic-refresh";
+            while !received.windows(proof.len()).any(|bytes| bytes == proof) {
+                let mut bytes = [0; 1024];
+                let count = stream.read(&mut bytes).unwrap();
+                assert!(count > 0 && received.len() < 16_384);
+                received.extend_from_slice(&bytes[..count]);
+            }
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+        });
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let error = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .retry(reqwest::retry::never())
+            .timeout(Duration::from_millis(300))
+            .build()
+            .unwrap()
+            .post(url)
+            .body("synthetic-refresh")
+            .send()
+            .unwrap_err();
+        assert!(error.is_timeout());
+        assert_eq!(super::super::exchange_failure(error), Failure::Offline);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn cloud_exchange_tls_failure_precedes_http_proof() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("https://{}/token", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = [0; 16_384];
+            let count = stream.read(&mut bytes).unwrap();
+            assert!(count > 0);
+            assert_eq!(bytes[0], 0x16);
+            stream.write_all(b"not a TLS response").unwrap();
+        });
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let error = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .https_only(true)
+            .retry(reqwest::retry::never())
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap()
+            .post(url)
+            .body("synthetic-refresh")
+            .send()
+            .unwrap_err();
+        assert!(error.is_connect());
+        assert_eq!(
+            super::super::exchange_failure(error),
+            Failure::OfflineBeforeSend
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn cloud_debug_default_never_sends_saved_https_refresh_or_logout_proof() {
         use super::super::{Credential, Session, Tokens, User, Vault, Workspace, WorkspaceKind};
         use crate::cloud::{
