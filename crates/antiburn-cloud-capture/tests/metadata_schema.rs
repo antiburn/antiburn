@@ -536,32 +536,38 @@ fn schema_checks_names_counts_and_observation_evidence_kinds() {
 
 #[test]
 fn maintained_examples_have_valid_structure_and_exact_evidence_bindings() {
-    let examples: Vec<&str> = GUIDE
-        .split("```json\n")
-        .skip(1)
-        .map(|block| block.split_once("```").unwrap().0)
-        .collect();
-    assert_eq!(examples.len(), 4);
-    let validator = validator();
-    let common: Value = serde_json::from_str(examples[0]).unwrap();
-    let git: Value = serde_json::from_str(examples[1]).unwrap();
-    let _: Value = serde_json::from_str(examples[2]).unwrap();
-    let billing: Value = serde_json::from_str(examples[3]).unwrap();
-    validator.validate(&common).unwrap();
-    let mut claude = metadata("claude-code", "ClaudeJsonl");
-    claude["sections"]["example.capture-git"] = git;
-    claude["sections"]["example.session-billing"] = billing;
-    validator.validate(&claude).unwrap();
-    let parsed: CaptureMetadata = serde_json::from_value(claude).unwrap();
-    let native = CapturedStream {
-        stream_id: "transcript".into(),
-        role: "native_transcript".into(),
-        schema: "claude-jsonl".into(),
-        expanded_bytes: examples[2].len() as u64,
-        expanded_sha256: sha(examples[2].as_bytes()),
-        chunks: vec![],
-    };
-    validate_section_bindings(&parsed.sections, &[native]).unwrap();
+    let lf_guide = GUIDE.replace("\r\n", "\n");
+    let crlf_guide = lf_guide.replace('\n', "\r\n");
+    for guide in [lf_guide, crlf_guide] {
+        // The guide declares LF bytes for native evidence, not checkout line endings.
+        let guide = guide.replace("\r\n", "\n");
+        let examples: Vec<&str> = guide
+            .split("```json\n")
+            .skip(1)
+            .map(|block| block.split_once("```").unwrap().0)
+            .collect();
+        assert_eq!(examples.len(), 4);
+        let validator = validator();
+        let common: Value = serde_json::from_str(examples[0]).unwrap();
+        let git: Value = serde_json::from_str(examples[1]).unwrap();
+        let _: Value = serde_json::from_str(examples[2]).unwrap();
+        let billing: Value = serde_json::from_str(examples[3]).unwrap();
+        validator.validate(&common).unwrap();
+        let mut claude = metadata("claude-code", "ClaudeJsonl");
+        claude["sections"]["example.capture-git"] = git;
+        claude["sections"]["example.session-billing"] = billing;
+        validator.validate(&claude).unwrap();
+        let parsed: CaptureMetadata = serde_json::from_value(claude).unwrap();
+        let native = CapturedStream {
+            stream_id: "transcript".into(),
+            role: "native_transcript".into(),
+            schema: "claude-jsonl".into(),
+            expanded_bytes: examples[2].len() as u64,
+            expanded_sha256: sha(examples[2].as_bytes()),
+            chunks: vec![],
+        };
+        validate_section_bindings(&parsed.sections, &[native]).unwrap();
+    }
 }
 
 #[test]
