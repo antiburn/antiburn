@@ -35,7 +35,7 @@ export type CloudScreen = "handoff" | "identity" | "folders" | "complete"
 /** Closed native source contracts, not installed runtime versions. */
 export type CloudSourceKind = "claude_jsonl" | "opencode_sqlite_v2"
 /** One exact source approved in the picker: a project directory or database file. */
-export interface CloudSourceSelection {
+interface CloudSourceSelection {
   sourceKind: CloudSourceKind
   path: string
 }
@@ -59,7 +59,7 @@ export interface CloudDraft {
   folders: CloudFolder[]
 }
 /** Bind renderer intent to the current internal account and granted destination. */
-export interface CloudDestinationBinding {
+interface CloudDestinationBinding {
   accountId: string
   destinationId: string
 }
