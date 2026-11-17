@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -162,8 +163,8 @@ pub struct JevResponse {
     pub usage: JevUsage,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum JevAnswer {
     Choice {
         choice: String,
@@ -179,6 +180,145 @@ pub enum JevAnswer {
         probabilities: BTreeMap<String, f64>,
         confidence: f64,
     },
+}
+
+/// Read numeric fields directly so JSON number features cannot change their type.
+///
+/// Fields must belong to the selected variant and cannot be missing, null, or
+/// duplicated. Object fields can appear in any order. Sequence inputs retain the
+/// variant's declared field order.
+impl<'de> Deserialize<'de> for JevAnswer {
+    fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["choice", "noul", "score"];
+        const FIELDS: &[&str] = &[
+            "type",
+            "choice",
+            "probabilities",
+            "confidence",
+            "noul",
+            "score",
+            "legend",
+        ];
+
+        struct AnswerVisitor;
+
+        impl<'de> Visitor<'de> for AnswerVisitor {
+            type Value = JevAnswer;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a typed Jev answer")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut kind = None;
+                let mut choice = None;
+                let mut probabilities = None;
+                let mut confidence = None;
+                let mut noul = None;
+                let mut score = None;
+                let mut legend = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "type" if kind.is_none() => kind = Some(map.next_value::<String>()?),
+                        "choice" if choice.is_none() => choice = Some(map.next_value()?),
+                        "probabilities" if probabilities.is_none() => {
+                            probabilities = Some(map.next_value()?)
+                        }
+                        "confidence" if confidence.is_none() => {
+                            confidence = Some(map.next_value()?)
+                        }
+                        "noul" if noul.is_none() => noul = Some(map.next_value()?),
+                        "score" if score.is_none() => score = Some(map.next_value()?),
+                        "legend" if legend.is_none() => legend = Some(map.next_value()?),
+                        "type" | "choice" | "probabilities" | "confidence" | "noul" | "score"
+                        | "legend" => {
+                            return Err(de::Error::custom(format_args!("duplicate field `{key}`")));
+                        }
+                        _ => return Err(de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                match kind
+                    .as_deref()
+                    .ok_or_else(|| de::Error::missing_field("type"))?
+                {
+                    "choice" if noul.is_none() && score.is_none() && legend.is_none() => {
+                        Ok(JevAnswer::Choice {
+                            choice: choice.ok_or_else(|| de::Error::missing_field("choice"))?,
+                            probabilities: probabilities
+                                .ok_or_else(|| de::Error::missing_field("probabilities"))?,
+                            confidence: confidence
+                                .ok_or_else(|| de::Error::missing_field("confidence"))?,
+                        })
+                    }
+                    "noul"
+                        if choice.is_none()
+                            && probabilities.is_none()
+                            && confidence.is_none()
+                            && score.is_none()
+                            && legend.is_none() =>
+                    {
+                        Ok(JevAnswer::Noul {
+                            noul: noul.ok_or_else(|| de::Error::missing_field("noul"))?,
+                        })
+                    }
+                    "score" if choice.is_none() && noul.is_none() => Ok(JevAnswer::Score {
+                        score: score.ok_or_else(|| de::Error::missing_field("score"))?,
+                        legend: legend.ok_or_else(|| de::Error::missing_field("legend"))?,
+                        probabilities: probabilities
+                            .ok_or_else(|| de::Error::missing_field("probabilities"))?,
+                        confidence: confidence
+                            .ok_or_else(|| de::Error::missing_field("confidence"))?,
+                    }),
+                    "choice" | "noul" | "score" => {
+                        Err(de::Error::custom("answer field does not match its type"))
+                    }
+                    kind => Err(de::Error::unknown_variant(kind, VARIANTS)),
+                }
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let kind: String = sequence
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let remaining = de::value::SeqAccessDeserializer::new(&mut sequence);
+                let answer = match kind.as_str() {
+                    "choice" => {
+                        let (choice, probabilities, confidence) =
+                            Deserialize::deserialize(remaining)?;
+                        JevAnswer::Choice {
+                            choice,
+                            probabilities,
+                            confidence,
+                        }
+                    }
+                    "noul" => {
+                        let (noul,) = Deserialize::deserialize(remaining)?;
+                        JevAnswer::Noul { noul }
+                    }
+                    "score" => {
+                        let (score, legend, probabilities, confidence) =
+                            Deserialize::deserialize(remaining)?;
+                        JevAnswer::Score {
+                            score,
+                            legend,
+                            probabilities,
+                            confidence,
+                        }
+                    }
+                    kind => return Err(de::Error::unknown_variant(kind, VARIANTS)),
+                };
+                if sequence.next_element::<de::IgnoredAny>()?.is_some() {
+                    return Err(de::Error::custom("answer sequence contains extra fields"));
+                }
+                Ok(answer)
+            }
+        }
+
+        decoder.deserialize_any(AnswerVisitor)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -251,9 +251,181 @@ impl<'de> Visitor<'de> for KeySeed {
 
 #[cfg(test)]
 mod tests {
+    use super::super::JevAnswer;
     use super::*;
     use serde::Deserialize;
     use serde_json::Value;
+
+    const ANSWER_FIELDS: &[(&str, &[(&str, &str)])] = &[
+        ("noul", &[("noul", "0.5")]),
+        (
+            "choice",
+            &[
+                ("choice", r#""yes""#),
+                ("probabilities", r#"{"yes":0.7,"no":0.3}"#),
+                ("confidence", "0.8"),
+            ],
+        ),
+        (
+            "score",
+            &[
+                ("score", "0.3"),
+                ("legend", r#"{"0":"low","1":"high"}"#),
+                ("probabilities", r#"{"0":0.7,"1":0.3}"#),
+                ("confidence", "0.8"),
+            ],
+        ),
+    ];
+
+    fn answer_json(fields: &[(&str, &str)]) -> String {
+        format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|(name, value)| format!(r#""{name}":{value}"#))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
+
+    #[test]
+    fn typed_answers_decode_raw_decimals_in_any_tag_position() {
+        for &(kind, fields) in ANSWER_FIELDS {
+            let expected = match kind {
+                "noul" => JevAnswer::Noul { noul: 0.5 },
+                "choice" => JevAnswer::Choice {
+                    choice: "yes".into(),
+                    probabilities: [("yes".into(), 0.7), ("no".into(), 0.3)].into(),
+                    confidence: 0.8,
+                },
+                "score" => JevAnswer::Score {
+                    score: 0.3,
+                    legend: [("0".into(), "low".into()), ("1".into(), "high".into())].into(),
+                    probabilities: [("0".into(), 0.7), ("1".into(), 0.3)].into(),
+                    confidence: 0.8,
+                },
+                _ => unreachable!(),
+            };
+            let tag = format!(r#""{kind}""#);
+            for position in 0..=fields.len() {
+                let mut fields = fields.to_vec();
+                fields.insert(position, ("type", &tag));
+                let body = answer_json(&fields);
+                let actual: JevAnswer = serde_json::from_str(&body).unwrap();
+                assert_eq!(actual, expected, "{body}");
+                assert_eq!(
+                    serde_json::to_value(&actual).unwrap(),
+                    serde_json::from_str::<Value>(&body).unwrap()
+                );
+            }
+        }
+        assert_eq!(
+            serde_json::from_str::<JevAnswer>(r#"{"noul":5e-1,"type":"noul"}"#).unwrap(),
+            JevAnswer::Noul { noul: 0.5 }
+        );
+    }
+
+    #[test]
+    fn typed_answers_keep_required_duplicate_null_and_variant_field_rules() {
+        for &(kind, required) in ANSWER_FIELDS {
+            let tag = format!(r#""{kind}""#);
+            let mut fields = vec![("type", tag.as_str())];
+            fields.extend_from_slice(required);
+            for position in 0..fields.len() {
+                let mut missing = fields.clone();
+                missing.remove(position);
+                let mut duplicate = fields.clone();
+                duplicate.push(fields[position]);
+                let mut null = fields.clone();
+                null[position].1 = "null";
+                for invalid in [missing, duplicate, null] {
+                    let body = answer_json(&invalid);
+                    assert!(serde_json::from_str::<JevAnswer>(&body).is_err(), "{body}");
+                }
+            }
+            for extra in [
+                ("extra", "true"),
+                ("noul", "0.5"),
+                ("score", "0.3"),
+                ("choice", r#""yes""#),
+                ("legend", "{}"),
+                ("probabilities", "{}"),
+                ("confidence", "0.8"),
+            ] {
+                if fields.iter().any(|(name, _)| *name == extra.0) {
+                    continue;
+                }
+                let mut invalid = fields.clone();
+                invalid.push(extra);
+                let body = answer_json(&invalid);
+                assert!(serde_json::from_str::<JevAnswer>(&body).is_err(), "{body}");
+            }
+        }
+        for body in [
+            r#"{"type":"Noul","noul":0.5}"#,
+            r#"{"type":{"noul":null},"noul":0.5}"#,
+            r#"{"type":0,"noul":0.5}"#,
+            r#"{"type":"noul","noul":"0.5"}"#,
+            r#"{"type":"noul","noul":true}"#,
+            "null",
+            "true",
+            "0.5",
+            r#""noul""#,
+        ] {
+            assert!(serde_json::from_str::<JevAnswer>(body).is_err(), "{body}");
+        }
+    }
+
+    #[test]
+    fn typed_answers_reject_objects_in_numeric_fields() {
+        for &(kind, required) in ANSWER_FIELDS {
+            let tag = format!(r#""{kind}""#);
+            let mut fields = vec![("type", tag.as_str())];
+            fields.extend_from_slice(required);
+            for position in 1..fields.len() {
+                let name = fields[position].0;
+                if !matches!(name, "noul" | "score" | "confidence" | "probabilities") {
+                    continue;
+                }
+                for object in [
+                    r#"{"$serde_json::private::Number":"0.5"}"#,
+                    r#"{"$serde_json::private::RawValue":"0.5"}"#,
+                    r#"{"value":0.5}"#,
+                    "[]",
+                ] {
+                    let value = if name == "probabilities" {
+                        format!(r#"{{"0":{object}}}"#)
+                    } else {
+                        object.to_owned()
+                    };
+                    let mut invalid = fields.clone();
+                    invalid[position].1 = &value;
+                    let body = answer_json(&invalid);
+                    assert!(serde_json::from_str::<JevAnswer>(&body).is_err(), "{body}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn typed_answers_keep_sequence_field_order_and_length_rules() {
+        for &(kind, fields) in ANSWER_FIELDS {
+            let values = fields
+                .iter()
+                .map(|(_, value)| *value)
+                .collect::<Vec<_>>()
+                .join(",");
+            let body = format!(r#"["{kind}",{values}]"#);
+            assert!(serde_json::from_str::<JevAnswer>(&body).is_ok(), "{body}");
+            for body in [
+                format!(r#"["{kind}"]"#),
+                format!(r#"["{kind}",{values},null]"#),
+                format!(r#"["{kind}",null]"#),
+            ] {
+                assert!(serde_json::from_str::<JevAnswer>(&body).is_err(), "{body}");
+            }
+        }
+    }
 
     fn decode(
         body: &str,
