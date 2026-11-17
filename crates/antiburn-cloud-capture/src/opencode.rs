@@ -350,6 +350,9 @@ fn metadata_at(directory: &File, name: &OsStr) -> Result<SourceMetadata> {
     let stat = unsafe { stat.assume_init() };
     Ok(SourceMetadata {
         identity: FileIdentity {
+            #[cfg(target_os = "linux")]
+            device: stat.st_dev,
+            #[cfg(not(target_os = "linux"))]
             device: stat.st_dev as u64,
             inode: stat.st_ino,
         },
