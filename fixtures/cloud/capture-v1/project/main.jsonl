@@ -1,0 +1,2 @@
+{"type":"user","uuid":"main-user","parentUuid":null,"sessionId":"main","version":"2.1.309","entrypoint":"cli","isSidechain":false,"message":{"role":"user","content":"Create a small example."}}
+{"type":"assistant","uuid":"main-assistant","parentUuid":"main-user","sessionId":"main","version":"2.1.309","message":{"role":"assistant","content":[{"type":"text","text":"Synthetic response."}]}}

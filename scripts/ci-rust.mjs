@@ -57,6 +57,17 @@ function workspaceCommands({ id, doctests }, { fmt, noAnalyticsCheck }) {
   const commands = [];
   if (fmt) commands.push({ step: "fmt", args: ["fmt", "--check"] });
   switch (id) {
+    case "cloud-capture":
+      commands.push({
+        step: "check (default features)",
+        args: ["check", "--lib", "--locked"],
+      });
+      commands.push({ step: "clippy (cloud)", args: clippy(["cloud"]) });
+      commands.push({
+        step: "tests (cloud)",
+        args: [...NEXTEST, "--features", "cloud"],
+      });
+      break;
     case "engine":
       commands.push({ step: "clippy", args: CLIPPY });
       commands.push({ step: "tests", args: [...NEXTEST, "--lib", "--tests"] });

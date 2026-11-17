@@ -294,23 +294,18 @@ until Tauri releases the old window label. Pane requests made during an active
 load are delivered to that renderer; a newly built renderer takes its pending
 pane once when it mounts.
 
-## Insights cancellation at the Settings boundary
+## Native report cancellation
 
-The Insights pane can run a native report reduction. Renderer teardown must
-not leave that work running for a reader who has closed the pane or Settings.
-Cancellation is enforced at two boundaries:
+`InsightsController` owns one report reduction at a time. Requests share a run
+only before it starts reading its database snapshot. Requests received after
+that point share one queued follow-up, so they do not receive a snapshot older
+than their request.
 
-- `InsightsSession` cancels when its last subscriber leaves and when the
-  document becomes hidden. It also stops its five-second status poll.
-- The Settings `Destroyed` handler calls the native `InsightsController`
-  directly. This covers native window destruction even when frontend cleanup
-  cannot complete.
-
-The native controller sets a cooperative cancellation flag. The read-only
-reduction stops at its next cancellation probe, so cancellation cannot corrupt
-stored evidence. Concurrent requests normally share one in-flight reduction.
-A new request does not join a run whose cancellation flag is already set; it
-starts a new reduction instead.
+Releasing a consumer's checks requests cancels the reduction when no registered
+checks requests remain. The native controller sets a cooperative cancellation
+flag. The read-only reduction stops at its next cancellation probe, so
+cancellation cannot corrupt stored evidence. A new request does not join an
+already canceled reduction.
 
 Application shutdown uses the same native cancellation signal.
 
@@ -323,12 +318,11 @@ Application shutdown uses the same native cancellation signal.
 | 10 seconds | Provisional main-window recovery watchdog for each replacement generation                            | Recovery generation start        |
 | 60 seconds | Keep the one startup renderer available for the first menu-bar click                                 | Startup prewarm readiness        |
 | 65 seconds | Destroy a startup prewarm that never reports renderer readiness                                      | Startup prewarm build            |
-| 5 seconds  | Refresh Insights processing status only while the pane has subscribers and remains visible           | Insights session start or resume |
 
 These values serve different purposes. The stale threshold is a recovery
 boundary, not an eviction deadline. The main-window 300 ms and 10-second values
-require post-implementation calibration before merge. No distribution is
-recorded here yet. The prewarm eviction delays are bounded handoff windows, not
+are provisional; this guide has no measured latency distribution that validates
+them. The prewarm eviction delays are bounded handoff windows, not
 guarantees that a renderer will remain alive. A lifecycle reset, application
 shutdown, or build failure can end one earlier.
 
@@ -395,7 +389,7 @@ Use these principles when adding or changing desktop windows:
 | Peek generations, concealment, and renderer destruction          | [`anchored-window`](../apps/desktop/src-tauri/crates/anchored-window/src/lib.rs)            |
 | Popover latency milestones and structured timing                 | [`timing.rs`](../apps/desktop/src-tauri/src/popover/timing.rs)                              |
 | First-run completion: menu-bar notice and popover prewarm        | [`commands/mod.rs`](../apps/desktop/src-tauri/src/commands/mod.rs)                          |
-| Settings creation, destruction, and native Insights cancellation | [`settings.rs`](../apps/desktop/src-tauri/src/settings.rs)                                  |
+| Settings creation and destruction                               | [`settings.rs`](../apps/desktop/src-tauri/src/settings.rs)                                  |
 | Global close and destroyed-window routing                        | [`lib.rs`](../apps/desktop/src-tauri/src/lib.rs)                                            |
 | React readiness marker                                           | [`WindowReadyMarker.tsx`](../apps/desktop/src/components/WindowReadyMarker.tsx)             |
 | Main application/fallback boundary                               | [`MainWindowErrorBoundary.tsx`](../apps/desktop/src/components/MainWindowErrorBoundary.tsx) |
@@ -404,7 +398,6 @@ Use these principles when adding or changing desktop windows:
 | Main typed health and target IPC                                 | [`mainWindowIpc.ts`](../apps/desktop/src/lib/mainWindowIpc.ts)                              |
 | Main bounded bootstrap diagnostics                               | [`bootstrapDiagnostics.ts`](../apps/desktop/src/lib/bootstrapDiagnostics.ts)                |
 | Popover content-ready boundary                                   | [`PopoverSession.ts`](../apps/desktop/src/views/popover/PopoverSession.ts)                  |
-| Insights visibility and subscriber ownership                     | [`InsightsSession.ts`](../apps/desktop/src/views/settings/InsightsSession.ts)               |
 | Native Insights cancellation and request sharing                 | [`insights_ipc.rs`](../apps/desktop/src-tauri/src/insights_ipc.rs)                          |
 
 ## Change checklist

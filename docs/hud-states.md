@@ -348,9 +348,9 @@ live macOS validation after changes to the native window mechanism.
   turn on the token map. The static segments keep the bar colour.
 - Under reduced motion the LED does not blink. The detail window states the
   spend rate in words instead.
-- A transcript write stays live for 90 seconds.
-- The renderer reads liveness once when shown. Session and scan events push
-  later changes, and one timer clears the live state at its expiry.
+- The session lifecycle registry owns liveness. A session works for 30 seconds
+  after its last write and remains active for list pills until 180 seconds.
+  Renderers reconcile snapshots and sequenced events without local expiry timers.
 - The renderer polls the token map every 5 seconds over a 5 minute window. The
   shell caches parsed samples per transcript fingerprint and keeps at most one
   hour of samples per session.
@@ -377,11 +377,9 @@ live macOS validation after changes to the native window mechanism.
   segments from the left. An unlit segment does not move. A segment takes
   two brightness levels, off and the peak, instead of a smooth ramp: the
   three segments of the band hold the peak together, and the band hops a
-  segment at a time, like a lamp. The gleam peaks
-  at about a quarter of full strength on the HUD, which floats over the
-  reader's work, and at a bit over half in the popover, which the reader
-  opened. A
-  segment keeps its colour under it either way. Above a dark
+  segment at a time, like a lamp. The popover gleam peaks at 0.56 opacity.
+  The HUD uses its separate blink, not the sweep. A segment keeps its colour
+  under the gleam. Above a dark
   segment the gleam is the shimmer white the session list runs across a
   running session's title, because the bar colours sit too close to the
   brand tint for a 6-pixel dot to show the tint above them. Above a light
@@ -392,9 +390,8 @@ live macOS validation after changes to the native window mechanism.
   the closed popover bar the gleam runs from twelve o'clock to the end of
   the ring's arc and fades there; a ring under an eighth flashes its first
   eighth in the brand tint.
-- The cycle is 4 seconds, the cycle of the shimmer the session list runs
-  across a running session's title, on the HUD and in the popover alike: a
-  live session moves at one pace on every surface. The two also share a
+- The popover sweep cycle is 4 seconds, matching the session list's shimmer
+  across a running session's title. The two also share a
   phase. A CSS animation starts when the browser applies it, so the
   renderer sets the start time of each live animation from the wall clock
   instead. A title shimmer and a meter sweep therefore hold the same point
@@ -417,6 +414,11 @@ live macOS validation after changes to the native window mechanism.
 - Under reduced motion the sweep stops, and the next segment to light holds
   the brand tint instead, which is the first segment when usage is too low
   to light one. The ring holds its next eighth.
+- `installLivePhase` owns animation start times. Components and stylesheets
+  must not add per-render phase delays. The stylesheet registers `--led-sweep`
+  with `@property` for numeric interpolation. Webviews without CSS `round()`
+  use a smooth gleam instead of brightness steps. Without relative color
+  support, lit segments keep the white gleam fallback.
 - Liveness comes from the session lifecycle registry: the renderer
   subscribes to `session:lifecycle`, then reads the versioned
   `get_live_sessions` snapshot, and applies only deltas with a higher
@@ -479,7 +481,7 @@ launch, so a docked HUD comes back docked.
 
 ## Platform boundary
 
-v1 is macOS-only. The native crate returns without creating a window on other
+The HUD is macOS-only. The native crate returns without creating a window on other
 platforms, and the frontend hides the Settings entry point there. Windows needs tuning
 for its taskbar position. Linux waits for reliable Wayland positioning and
 always-on-top behavior.

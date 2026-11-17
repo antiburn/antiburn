@@ -1,0 +1,54 @@
+{
+  "antiburn.allowance-contribution": {
+    "schema": "antiburn.allowance-contribution.v1",
+    "producer": {
+      "name": "synthetic-fixture",
+      "version": "1.0.0"
+    },
+    "observation": {
+      "kind": "source_position",
+      "stream_id": "transcript",
+      "expanded_offset": 0
+    },
+    "evidence": [
+      {
+        "kind": "native_stream",
+        "stream_id": "transcript",
+        "expanded_sha256": "d435bab180bea7840ae99a76912980d7c1a172265e18fc4256016089b0e04f44"
+      }
+    ],
+    "data": {
+      "synthetic": true,
+      "contribution_kind": "native_record_count",
+      "declared_contribution": 1,
+      "record_uuid": "main-user",
+      "source_fixture": "project/main.jsonl",
+      "provider_allowance_claim": false
+    }
+  },
+  "antiburn.capture-checkout": {
+    "schema": "antiburn.capture-checkout.v1",
+    "producer": {
+      "name": "synthetic-fixture",
+      "version": "1.0.0"
+    },
+    "observation": {
+      "kind": "observed_at",
+      "unix_millis": 1794873600000
+    },
+    "evidence": [
+      {
+        "kind": "local_observation",
+        "method": "synthetic-checkout-snapshot",
+        "data_sha256": "44892b15a9414c8c7ef41c8ba1a209db26823975d2cb3ebd4d3f4b3a1e46cbd1"
+      }
+    ],
+    "data": {
+      "checkout_label": "synthetic-checkout",
+      "historical_checkout": false,
+      "observation_scope": "capture_time",
+      "synthetic": true,
+      "worktree_label": "synthetic-worktree"
+    }
+  }
+}

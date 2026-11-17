@@ -14,6 +14,10 @@ Keep maintained product and contributor documentation in the repository,
 including design-system rules, coverage documents, runbooks, and reusable
 agent skills.
 
+Keep `docs/` current rather than recording delivery status. Use stable guide
+filenames without suffixes such as `-v1`; document format versions inside the
+contract. Do not link delivery plans or local run evidence from maintained docs.
+
 ## Solution design
 
 - Start with the user outcome.
@@ -23,6 +27,19 @@ agent skills.
 - Consider a separate source when the current source cannot support the feature.
 - Use hypotheses for investigation. Label them as hypotheses and do not present them as facts.
 - Prefer the smallest complete solution. Do not add full support when scoped support solves the user problem.
+- Do not use `_inner` as a helper-function suffix. Keep a helper only when it
+  makes the code clearer, and name it for the work it does. Inline unnecessary
+  wrappers. Preserve established external API names.
+
+## Cloud boundaries
+
+Read the public contracts in `docs/cloud/` before changing Cloud features.
+Keep Cloud behind the explicit, non-default Rust feature `cloud`. Ordinary
+builds and release workflows must not enable it.
+
+Keep source, documentation, commits, and PR text limited to public client
+behavior, public API contracts, and synthetic fixtures. Do not include private
+server design, infrastructure, plans, links, or copied private fixtures.
 
 ## React
 
@@ -33,6 +50,9 @@ Only add `useEffect` when no simpler design works. Explain why and get explicit
 maintainer agreement first.
 
 ## Rust
+
+Use Tokio async I/O. Run blocking filesystem, SQLite, or library work with bounded
+`spawn_blocking` tasks or workers, never on UI or async runtime threads.
 
 Do not suppress dead-code or deprecated-code lints. Remove dead code and replace
 deprecated APIs instead.
@@ -84,6 +104,17 @@ Write code comments in ASD-STE100 Simplified Technical English. Use active
 voice and present tense. Add a comment only for important information the code
 cannot show. Keep identifiers and API names unchanged.
 
+Add doc comments to public functions, types, traits, and modules, and to important
+internal functions. Explain purpose and caller rules rather than repeating
+signatures. Keep these contracts beside their definitions.
+Cover frontend component inputs, state and cache ownership, backend interfaces,
+and side effects when callers or maintainers depend on those rules.
+For each trait, explain why it exists, which code uses it, and what implementors
+must provide. State relevant error, ordering, concurrency, and data-safety rules.
+Explain non-obvious state transitions, retry inputs, and side-effect ownership.
+Update these contracts when behavior changes. Do not add abstractions just to
+document them or comments that repeat syntax.
+
 ## Session and check coverage
 
 Keep `docs/session-coverage.md` and `docs/check-coverage.md` current.
@@ -126,14 +157,14 @@ rules:
 After any coverage edit, run:
 
 ```bash
-cargo test --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
 ```
 
 When source claims or formats change, also run the relevant characterization
 test and:
 
 ```bash
-cargo test --manifest-path crates/antiburn-local/Cargo.toml --test source_contracts
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test source_contracts
 ```
 
 ## Product analytics

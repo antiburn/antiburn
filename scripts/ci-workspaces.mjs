@@ -120,6 +120,12 @@ export const WORKSPACES = [
     group: "engine",
     dependsOn: ["engine", "checks-store"],
   },
+  {
+    id: "cloud-capture",
+    directory: "crates/antiburn-cloud-capture",
+    group: "engine",
+    dependsOn: ["engine"],
+  },
 ];
 
 /** The workspace with the longest directory that contains `file`, or null. */
