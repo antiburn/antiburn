@@ -1,11 +1,11 @@
 # Native capture
 
-Native capture preserves source before semantic normalization. Claude streams
-retain exact file bytes. OpenCode streams retain typed session-owned SQLite cells
-from one read snapshot, not a database copy. Cloud owns semantic parsing. The
-desktop does not upload its local normalized session model. Local parsing and
-Burn Check coverage remain governed by [session coverage](../session-coverage.md) and
-[check coverage](../check-coverage.md).
+Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+This contract describes development-only capture; public builds keep Cloud disabled.
+
+Native capture preserves source without using the local normalized session model.
+Claude streams retain exact file bytes. OpenCode streams retain typed
+session-owned SQLite cells from one read snapshot, not a database copy.
 
 This public contract is unreleased. The standalone
 [`antiburn-cloud-capture`](../../crates/antiburn-cloud-capture) crate has no network
@@ -16,6 +16,28 @@ select a service URL, grant consent, or enable production.
 `CaptureManifest.version` and `CaptureMetadata.version` are the integer `1`.
 Strings, missing versions, and unsupported numbers are invalid. The synthetic
 fixture package has its own identity, separate from this numeric format version.
+
+## Capture and local analysis
+
+`antiburn-cloud-capture` owns bounded native source discovery and capture,
+private disk spooling, and upload reconciliation through a host-supplied
+`Transport`. It does not depend on `antiburn-local` or calculate local session
+metrics, cost estimates, or Burn Check results.
+
+[`antiburn-local`](../../crates/antiburn-local) owns local session discovery,
+parsing, and analysis. Its parsed evidence and metrics support the desktop's local
+session views, API-equivalent cost estimates, and Burn Checks. A capture package
+contains native source streams and capture metadata, not those local results.
+Cloud owns semantic parsing of uploaded source.
+Successful capture does not prove local parser or Check support. Local parsing
+and Burn Check coverage remain governed by [session coverage](../session-coverage.md)
+and [check coverage](../check-coverage.md).
+
+The native host must obtain Cloud content consent separately from local analysis
+and model-provider requests. Local discovery or a configured check provider does
+not authorize capture. Cloud content consent does not authorize model-provider
+requests. Enabling this library does not connect the desktop to a capture or
+upload transport; the native host owns that integration.
 
 ## Source ownership and capture
 

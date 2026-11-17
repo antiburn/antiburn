@@ -119,9 +119,18 @@ signature with Gatekeeper. Manual packages are available from the
 
 ## Development
 
-The repository contains the Rust engine in `crates/antiburn-local` and the
-Tauri desktop app in `apps/desktop`. Rust uses the toolchain in
-`rust-toolchain.toml`. Desktop development also needs Node 22+, pnpm, and the
+`antiburn-local` owns local session discovery, parsing, and analysis. The separate
+`antiburn-cloud-capture` library owns bounded native source capture, private
+spooling, and upload reconciliation through a host-supplied transport. It has no
+network client. The Tauri desktop app in `apps/desktop` owns the UI and host
+integration. See [capture and local analysis](docs/cloud/capture.md#capture-and-local-analysis)
+for the data boundary.
+
+Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Public builds keep Cloud disabled until launch.
+
+Rust uses the toolchain in `rust-toolchain.toml`. Desktop development also needs
+Node 22+, pnpm, and the
 [Tauri platform dependencies](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
@@ -144,7 +153,8 @@ See the [desktop guide](apps/desktop/README.md) for app commands and the
 
 ## Privacy
 
-antiburn uses no account, server, or backend. It hits agent provider APIs from your machine, using the same methods your harnesses already do.
+Local session analysis needs no Antiburn account, server, or backend. The app can
+make direct provider requests for enabled usage features and model-based checks.
 
 antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See [privacy and data](https://antiburn.com/docs/privacy/privacy-and-data/) and the complete [analytics contract](docs/analytics.md).
 

@@ -1,5 +1,8 @@
 # Native Cloud capture
 
+Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Public desktop builds keep Cloud disabled until launch.
+
 This standalone crate owns bounded Claude file and OpenCode SQLite capture,
 private disk spooling, a durable many-session queue, and upload reconciliation through a caller-owned
 transport. It contains no network client.
@@ -7,6 +10,12 @@ transport. It contains no network client.
 The default build has no capture API. Select the explicit non-default `cloud`
 feature for controlled integration. Production upload enablement, consent,
 credentials, service endpoints, and scheduling belong to the native host.
+
+This crate is separate from [`antiburn-local`](../antiburn-local), which owns
+local session discovery, parsing, and analysis. Capture packages native source
+and capture metadata, not the desktop's parsed evidence, cost estimates, or
+Burn Check results. See [capture and local analysis](../../docs/cloud/capture.md#capture-and-local-analysis)
+for the data and consent boundaries.
 
 Read the [capture contract](../../docs/cloud/capture.md) for source ownership,
 independent stream chunks with fixed 8 MiB expanded bounds, stable source

@@ -1,7 +1,8 @@
 # Cloud desktop contract
 
-Cloud is optional. This client ships with **Learn more**, opening
-`https://antiburn.com/cloud` as an ordinary external link in the system browser.
+Antiburn Cloud is not live. This client ships with **Learn more**, opening
+[the Cloud waiting-list signup](https://antiburn.com/cloud/) in the system browser.
+Public builds do not enable Cloud authentication or uploads.
 Learn more adds no query parameters or callback, creates no pending attempt,
 accesses no credential storage, and has no waiting or cancellation state. Authentication and uploads
 have separate gates. The desktop includes the handoff, verified identity,
