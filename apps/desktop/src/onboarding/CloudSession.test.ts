@@ -482,6 +482,7 @@ it("requires full-content consent and binds it to the current destination", asyn
     expect.any(String),
     {
       version: "native-full-content-v1",
+      accountId: "synthetic",
       destinationId: "synthetic-personal",
       fullContent: true,
       attachments: false,
@@ -512,5 +513,104 @@ it("does not submit a prepared capture to a changed destination", async () => {
   finishPrepare()
   await pending
   expect(port.start).not.toHaveBeenCalled()
+  stop()
+})
+
+it("keeps consent for count updates but clears it when selected sources change", async () => {
+  const initial: CloudSnapshot = {
+    ...signedIn,
+    draft: { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
+  }
+  const { port, emit } = fixture(initial)
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  emit({
+    ...initial,
+    draft: {
+      ...initial.draft,
+      folders: [{ path: "/Example/Project", selected: true, sessionCount: 2 }],
+    },
+  })
+  expect(session.getSnapshot().fullContentConsent).toBe(true)
+  emit({
+    ...initial,
+    draft: {
+      ...initial.draft,
+      folders: [
+        { path: "/Example/Project", selected: true },
+        { path: "/Example/Another", selected: true },
+      ],
+    },
+  })
+  expect(session.getSnapshot().fullContentConsent).toBe(false)
+  stop()
+})
+
+it("does not submit a prepared capture after its source selection changes", async () => {
+  const { port, emit } = fixture({
+    ...signedIn,
+    syncEnabled: true,
+    draft: { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
+  })
+  let finishPrepare!: () => void
+  port.prepareSync = () =>
+    new Promise((resolve) => {
+      finishPrepare = resolve
+    })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const pending = session.startSync()
+  emit({
+    ...signedIn,
+    draft: { screen: "folders", folders: [{ path: "/Example/Another", selected: true }] },
+  })
+  finishPrepare()
+  await pending
+  expect(port.start).not.toHaveBeenCalled()
+  stop()
+})
+
+it("does not submit a prepared capture after its content confirmation is cleared", async () => {
+  const { port } = fixture({
+    ...signedIn,
+    syncEnabled: true,
+    draft: { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
+  })
+  let finishPrepare!: () => void
+  port.prepareSync = () =>
+    new Promise((resolve) => {
+      finishPrepare = resolve
+    })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  const pending = session.startSync()
+  session.setFullContentConsent(false)
+  finishPrepare()
+  await pending
+  expect(port.start).not.toHaveBeenCalled()
+  stop()
+})
+
+it("blocks a team destination without selecting personal instead", async () => {
+  const team = { id: "team-a", name: "Example team", kind: "team" as const }
+  const { port } = fixture({
+    ...signedIn,
+    destination: team,
+    syncEnabled: true,
+    draft: { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
+  })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  session.setFullContentConsent(true)
+  await session.startSync()
+  expect(port.start).not.toHaveBeenCalled()
+  expect(session.getSnapshot().cloud.destination).toEqual(team)
   stop()
 })

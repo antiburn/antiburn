@@ -33,3 +33,17 @@ export function cloudDestinationChoice(
   if (teams.length === 1) return { status: "ready", destination: teams[0]! }
   return { status: "choose", destination: null, teams }
 }
+
+export function personalCloudDestination(
+  granted: CloudWorkspace | null,
+  requestedId: string | null = null,
+): CloudWorkspace | null {
+  if (
+    !granted ||
+    granted.kind !== "personal" ||
+    !granted.id ||
+    (requestedId !== null && requestedId !== granted.id)
+  )
+    return null
+  return granted
+}

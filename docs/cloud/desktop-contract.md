@@ -89,7 +89,8 @@ destination policy is personal for zero teams, automatic for one team, and
 an explicit account-bound saved team default for several teams. A removed default
 blocks capture until the user chooses again. Neither a new account nor a changed
 destination can reuse a previous content confirmation or retarget a saved
-capture.
+capture. Changing selected sources clears the content confirmation too. Displayed
+count updates do not change that selection or its confirmation.
 
 Login, folder selection, and the legacy local Upload sessions preference do not
 grant content consent. The UI requires a separate full-content confirmation:

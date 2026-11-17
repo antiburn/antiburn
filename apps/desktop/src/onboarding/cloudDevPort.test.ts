@@ -36,6 +36,7 @@ describe("Cloud Dev simulation", () => {
     expect((await port.read()).identity?.login).toBe("example")
     await port.start([], "test", {
       version: "native-full-content-v1",
+      accountId: "cloud-dev-account",
       destinationId: "cloud-dev-personal",
       fullContent: true,
       attachments: false,

@@ -1,4 +1,5 @@
 import type { CloudSession, CloudViewSnapshot } from "./CloudSession"
+import { personalCloudDestination } from "../lib/cloudDestination"
 
 export function CloudCaptureConsent({
   session,
@@ -7,17 +8,27 @@ export function CloudCaptureConsent({
   session: CloudSession
   value: CloudViewSnapshot
 }) {
+  const destination = personalCloudDestination(value.cloud.destination ?? null)
   return (
     <div className="flex flex-col gap-3 p-4 type-callout text-label">
+      <p>
+        Account: <strong>{value.cloud.identity?.login ?? "Not connected"}</strong>
+      </p>
       <p>
         Destination:{" "}
         <strong>{value.cloud.destination?.name ?? "Not verified. Capture is blocked."}</strong>
       </p>
+      {value.cloud.destination?.kind === "team" && (
+        <p role="status" className="type-footnote text-label-secondary">
+          This build supports personal workspaces only. The requested team has not been replaced
+          with a personal destination.
+        </p>
+      )}
       <label className="flex items-start gap-2">
         <input
           type="checkbox"
           checked={value.fullContentConsent}
-          disabled={value.busy || !value.cloud.identity || !value.cloud.destination}
+          disabled={value.busy || !value.cloud.identity || !destination}
           onChange={(event) => session.setFullContentConsent(event.target.checked)}
         />
         <span>

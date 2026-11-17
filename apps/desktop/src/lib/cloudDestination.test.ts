@@ -1,5 +1,5 @@
 import { expect, it } from "vitest"
-import { cloudDestinationChoice } from "./cloudDestination"
+import { cloudDestinationChoice, personalCloudDestination } from "./cloudDestination"
 import type { CloudWorkspace } from "./cloud"
 
 const personal: CloudWorkspace = { id: "personal", name: "Personal", kind: "personal" }
@@ -58,4 +58,13 @@ it("blocks a removed saved default even if a personal or one-team fallback exist
       }),
     ).toEqual({ status: "missing_default", destination: null })
   }
+})
+
+it("admits only a verified personal destination and never replaces an explicit request", () => {
+  expect(personalCloudDestination(personal, personal.id)).toEqual(personal)
+  expect(personalCloudDestination(personal)).toEqual(personal)
+  expect(personalCloudDestination(null)).toBeNull()
+  expect(personalCloudDestination(teamA)).toBeNull()
+  expect(personalCloudDestination(personal, teamA.id)).toBeNull()
+  expect(personalCloudDestination(personal, "")).toBeNull()
 })

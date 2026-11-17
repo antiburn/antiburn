@@ -9,6 +9,16 @@ import {
   type SyncResult,
 } from "../lib/cloud"
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
+import { personalCloudDestination } from "../lib/cloudDestination"
+
+function selectedFoldersKey(value: CloudSnapshot) {
+  return JSON.stringify(
+    value.draft.folders
+      .filter((folder) => folder.selected)
+      .map((folder) => folder.path)
+      .sort(),
+  )
+}
 
 export interface CloudViewSnapshot {
   cloud: CloudSnapshot
@@ -125,7 +135,9 @@ export class CloudSession {
     this.revision++
     const accountChanged = value.identity?.id !== this.snapshot.cloud.identity?.id
     const destinationChanged = value.destination?.id !== this.snapshot.cloud.destination?.id
-    if (!value.identity || accountChanged || destinationChanged) this.requestId = null
+    const sourcesChanged = selectedFoldersKey(value) !== selectedFoldersKey(this.snapshot.cloud)
+    if (!value.identity || accountChanged || destinationChanged || sourcesChanged)
+      this.requestId = null
     const screen = value.identity
       ? value.draft.screen === "handoff"
         ? "identity"
@@ -136,7 +148,7 @@ export class CloudSession {
       cloud: value,
       screen: value.identity && value.pendingSync ? "complete" : screen,
       loaded: true,
-      ...(!value.identity || accountChanged || destinationChanged
+      ...(!value.identity || accountChanged || destinationChanged || sourcesChanged
         ? { fullContentConsent: false }
         : {}),
       ...(value.identity && value.pendingSync
@@ -324,12 +336,14 @@ export class CloudSession {
     )
   startSync = async () => {
     const selected = this.snapshot.cloud.draft.folders.filter((folder) => folder.selected)
+    const selectionKey = selectedFoldersKey(this.snapshot.cloud)
+    const destination = personalCloudDestination(this.snapshot.cloud.destination ?? null)
     if (
       this.snapshot.busy ||
       this.snapshot.screen !== "folders" ||
       !this.snapshot.cloud.syncEnabled ||
       !this.snapshot.cloud.identity ||
-      !this.snapshot.cloud.destination ||
+      !destination ||
       !this.snapshot.fullContentConsent ||
       !selected.length
     )
@@ -338,9 +352,10 @@ export class CloudSession {
     const generation = this.generation
     const revision = this.revision
     const account = this.snapshot.cloud.identity.id
-    const destinationId = this.snapshot.cloud.destination.id
+    const destinationId = destination.id
     const consent = {
       version: "native-full-content-v1" as const,
+      accountId: account,
       destinationId,
       fullContent: true as const,
       attachments: false as const,
@@ -353,7 +368,9 @@ export class CloudSession {
       if (!existing) await this.port.prepareSync(selected, requestId, consent)
       if (
         this.snapshot.cloud.identity?.id !== account ||
-        this.snapshot.cloud.destination?.id !== destinationId
+        this.snapshot.cloud.destination?.id !== destinationId ||
+        selectedFoldersKey(this.snapshot.cloud) !== selectionKey ||
+        !this.snapshot.fullContentConsent
       )
         return
       const sync = existing

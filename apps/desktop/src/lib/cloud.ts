@@ -38,6 +38,7 @@ export interface CloudDraft {
 }
 export interface CaptureConsent {
   version: "native-full-content-v1"
+  accountId: string
   destinationId: string
   fullContent: true
   attachments: false
