@@ -72,9 +72,11 @@ checks or authorize publication.
 ## Exact-SHA release gate
 
 `scripts/wait-for-main-ci.mjs` requires a completed, successful `push` run on
-`main` for the exact tag SHA. Missing, ambiguous, canceled, failed, non-main,
-non-push, or wrong-SHA results block release. A tag pushed before CI finishes
-waits for that run; waiting does not reduce required coverage.
+`main` for the exact tag SHA. It accepts a matching successful run even if another
+matching run failed or was canceled. Without a success, it waits for a matching
+run that is still active; missing runs or only completed failures block release.
+Non-main, non-push, and wrong-SHA runs cannot satisfy the gate. Waiting does not
+reduce required coverage.
 
 Non-PR CI concurrency groups include the SHA. A later main push therefore does
 not cancel or queue behind the run needed by an earlier release. Pull request
