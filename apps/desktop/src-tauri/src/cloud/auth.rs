@@ -37,7 +37,7 @@ impl Config {
                 && url.query().is_none()
                 && url.fragment().is_none()
                 && url.path() == "/"
-                && url.as_str() == value)
+                && url.origin().ascii_serialization() == value)
                 .then_some(url)
         }
         canonical(issuer)?;

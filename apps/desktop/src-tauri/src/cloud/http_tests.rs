@@ -30,7 +30,7 @@ fn server(status: u16, body: &str) -> (Config, JoinHandle<Request>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}/", listener.local_addr().unwrap());
     let origin = url::Url::parse(&origin).unwrap();
-    let mut config = Config::parse("https://auth.example/", "https://api.example/").unwrap();
+    let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
     config.authorization = origin.join("desktop/authorize").unwrap();
     config.token = origin.join("v1/desktop/token").unwrap();
     config.session = origin.join("v1/desktop/session").unwrap();
@@ -179,8 +179,8 @@ fn token_json() -> serde_json::Value {
         "grant_id": "grant-synthetic", "user_id": "account-synthetic",
         "workspace_id": "personal-synthetic",
         "grant_expires_at": "1970-01-01T02:46:40Z",
-        "scope": "capture:write", "resource": "https://api.example/",
-        "iss": "https://auth.example/"
+        "scope": "capture:write", "resource": "https://api.example",
+        "iss": "https://api.example"
     })
 }
 
@@ -189,10 +189,10 @@ fn session_json() -> serde_json::Value {
         "user_id": "account-synthetic", "display_name": null,
         "workspace_id": "personal-synthetic", "workspace_name": "Example personal workspace",
         "grant_id": "grant-synthetic", "device_name": "Example desktop",
-        "scope": "capture:write", "resource": "https://api.example/",
+        "scope": "capture:write", "resource": "https://api.example",
         "grant_expires_at": "1970-01-01T02:46:40Z",
         "access_expires_at": "1970-01-01T00:03:00Z",
-        "iss": "https://auth.example/"
+        "iss": "https://api.example"
     })
 }
 

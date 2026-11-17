@@ -26,7 +26,7 @@ impl Vault for Arc<MemoryVault> {
 }
 
 fn config() -> Config {
-    Config::parse("https://auth.example/", "https://api.example/").unwrap()
+    Config::parse("https://api.example", "https://api.example").unwrap()
 }
 
 pub(super) fn session() -> Session {
@@ -42,9 +42,9 @@ pub(super) fn session() -> Session {
             name: "Personal".into(),
             kind: WorkspaceKind::Personal,
         },
-        resource: "https://api.example/".into(),
+        resource: "https://api.example".into(),
         scope: "capture:write".into(),
-        iss: "https://auth.example/".into(),
+        iss: "https://api.example".into(),
         expires_at: 10_000,
         access_expires_at: 901,
     }
@@ -183,6 +183,8 @@ fn cloud_pkce_matches_rfc7636() {
 
 #[test]
 fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
+    assert_eq!(config().issuer, "https://api.example");
+    assert_eq!(config().resource, "https://api.example");
     assert_eq!(
         config().authorization.as_str(),
         "https://api.example/desktop/authorize"
@@ -191,15 +193,18 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
         config().session.as_str(),
         "https://api.example/v1/desktop/session"
     );
-    for issuer in [
-        "http://auth.example/",
-        "https://auth.example",
-        "https://u@auth.example/",
-        "https://auth.example/?q=x",
-        "https://auth.example/#x",
-        "https://auth.example/path/",
+    for origin in [
+        "http://api.example",
+        "https://api.example/",
+        "https://API.example",
+        "https://api.example:443",
+        "https://u@api.example",
+        "https://api.example?q=x",
+        "https://api.example#x",
+        "https://api.example/path",
     ] {
-        assert!(Config::parse(issuer, "https://api.example/").is_none());
+        assert!(Config::parse(origin, "https://api.example").is_none());
+        assert!(Config::parse("https://api.example", origin).is_none());
     }
 }
 
@@ -236,14 +241,15 @@ fn cloud_callback_guards_exact_route_host_state_issuer_and_single_values() {
         .trim_start_matches("http://")
         .trim_end_matches("/cloud/callback");
     let good = format!(
-        "/cloud/callback?state={}&code=synthetic&iss=https%3A%2F%2Fauth.example%2F",
+        "/cloud/callback?state={}&code=synthetic&iss=https%3A%2F%2Fapi.example",
         attempt.state
     );
     assert!(auth::validate_callback(&good, host, &config(), &attempt, 101).is_some());
     for bad in [
         good.replace("/cloud/callback?", "/cloud/callback/?"),
         good.replace("/cloud/callback?", "/cloud/%63allback?"),
-        good.replace("auth.example", "other.example"),
+        good.replace("api.example", "other.example"),
+        format!("{good}%2F"),
         format!("{good}&state={}", attempt.state),
         format!("{good}&code=again"),
         format!("{good}&unknown=value"),
@@ -808,7 +814,7 @@ fn cloud_raw_loopback_rejects_unguarded_requests_and_accepts_one_exact_callback(
         .trim_end_matches("/cloud/callback")
         .to_owned();
     let target = format!(
-        "/cloud/callback?state={}&iss=https%3A%2F%2Fauth.example%2F&code=synthetic",
+        "/cloud/callback?state={}&iss=https%3A%2F%2Fapi.example&code=synthetic",
         attempt.state
     );
     let worker = std::thread::spawn(move || listener.wait(&config(), &attempt, || true));

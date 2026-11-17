@@ -12,9 +12,12 @@ environment variable nor the `distribution` feature enables it. Existing
 production build commands do not select it.
 
 `ANTIBURN_CLOUD_ISSUER` and `ANTIBURN_CLOUD_RESOURCE` are build-time canonical
-HTTPS origins with a trailing slash. Both must match the service's fixed values.
+HTTPS origins without a trailing slash. Both must match the service's exact
+issuer and resource strings. Route URLs still include the slash before the path.
 The resource origin owns the four native routes. Without valid configuration,
 authentication remains unavailable. Use an approved development service only.
+The client does not accept plain HTTP service origins. Loopback HTTP tests
+check synthetic requests and responses; they do not prove a live HTTPS connection.
 
 ```sh
 cd apps/desktop
