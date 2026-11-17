@@ -15,6 +15,7 @@ export interface OnboardingViewProps {
   hudSupported?: boolean
   hudVariant?: "notch" | "floating" | "unsupported"
   visible?: boolean
+  /** Native AppInfo.cloudEnabled only. Service availability must not hide this flow. */
   cloudEnabled?: boolean
 }
 
@@ -49,8 +50,8 @@ const slides = {
     duration: 4000,
   },
   cloud: {
-    title: "Upload all your sessions, across devices",
-    body: "Upload sessions from your chosen folders to antiburn cloud, and explore their usage and insights across your devices.",
+    title: "Set up Antiburn Cloud",
+    body: "Connect in your browser and choose native session sources. This build can save capture requests, but uploads are unavailable.",
     support: "antiburn cloud is optional. You can keep using Antiburn locally.",
     times: [700, 1100, 1600, 2200, 2900],
     duration: 4200,

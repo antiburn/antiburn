@@ -1,3 +1,6 @@
+//! Store folder drafts by internal account and personal destination. Drafts are
+//! preferences, not content consent. Failed reads and writes stay visible.
+
 use super::Store;
 use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};

@@ -10,6 +10,9 @@ import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { personalCloudDestination } from "../../lib/cloudDestination"
 
+/** Render one observed account. Setup errors block source actions, not revocation.
+ * Local reset needs a separate confirmation and cannot claim remote deletion.
+ */
 export function CloudAccount({
   session,
   value,

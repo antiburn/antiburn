@@ -818,6 +818,83 @@ it("restores a saved native request without content consent or a new submission"
   stop()
 })
 
+it("loads agent readiness when reconciliation emits state before its reply", async () => {
+  const saved: CloudSnapshot = {
+    ...nativeCapture,
+    pendingSync: { requestId: "saved", result: { status: "upload_unavailable" } },
+  }
+  const { port, emit } = fixture(saved)
+  port.agent = vi.fn(async () => "ready" as const)
+  port.reconcile = vi.fn(async () => {
+    emit(saved)
+    return { status: "upload_unavailable" as const }
+  })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  expect(port.agent).toHaveBeenCalledOnce()
+  expect(session.getSnapshot().agent).toBe("ready")
+  expect(port.start).not.toHaveBeenCalled()
+  stop()
+})
+
+it("clears consent on every observed surface when a status read closes authority", async () => {
+  let value = nativeCapture
+  const listeners = new Set<(next: CloudSnapshot) => void>()
+  const { port } = fixture(nativeCapture)
+  port.watch = async (listener) => {
+    listeners.add(listener)
+    return () => listeners.delete(listener)
+  }
+  port.read = async () => {
+    for (const listener of listeners) listener(value)
+    return value
+  }
+  const first = new CloudSession(port, false, true)
+  const second = new CloudSession(port, false, true)
+  const stopFirst = first.subscribe(vi.fn())
+  const stopSecond = second.subscribe(vi.fn())
+  await settle()
+  first.setFullContentConsent(true)
+  second.setFullContentConsent(true)
+  value = {
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "reauth_required",
+    revocationPending: true,
+  }
+  await second.load()
+  expect(first.getSnapshot()).toMatchObject({
+    cloud: { identity: null, status: "reauth_required" },
+    fullContentConsent: false,
+  })
+  expect(second.getSnapshot().fullContentConsent).toBe(false)
+  await first.startSync()
+  expect(port.prepareSync).not.toHaveBeenCalled()
+  stopFirst()
+  stopSecond()
+})
+
+it("does not navigate an unsupported connection through a failing draft save", async () => {
+  vi.useFakeTimers()
+  const { port } = fixture({
+    ...signedIn,
+    draft: { screen: "handoff", folders: [] },
+    setupError: "Native capture is not supported on this platform.",
+  })
+  const session = new CloudSession(port, false)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  await vi.advanceTimersByTimeAsync(4000)
+  expect(port.save).not.toHaveBeenCalled()
+  expect(session.getSnapshot()).toMatchObject({
+    screen: "identity",
+    error: null,
+    cloud: { setupError: "Native capture is not supported on this platform." },
+  })
+  stop()
+})
+
 it.each(["signed_out", "reauth_required", "credential_failed"] as const)(
   "blocks a native save outside the current signed-in context: %s",
   async (status) => {

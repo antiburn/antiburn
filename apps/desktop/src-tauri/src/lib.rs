@@ -959,6 +959,8 @@ mod tests {
             include_str!("../tauri.conf.json"),
             include_str!("../tauri.debug.conf.json"),
             include_str!("../tauri.memory-probe.conf.json"),
+            include_str!("../tauri.release.conf.json"),
+            include_str!("../tauri.sidecar.conf.json"),
         ] {
             let config: serde_json::Value = serde_json::from_str(source).unwrap();
             assert!(config["plugins"]["deep-link"].is_null());
@@ -975,6 +977,33 @@ mod tests {
         let cargo = include_str!("../Cargo.toml");
         assert!(cargo.contains("default = []"));
         assert!(cargo.contains("distribution = []"));
+    }
+
+    #[test]
+    #[cfg(feature = "cloud")]
+    fn cloud_account_capability_reaches_existing_onboarding_and_settings() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../cloud-capabilities/account.json")).unwrap();
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "settings", "onboarding"])
+        );
+        for permission in [
+            "allow-cloud-status",
+            "allow-cloud-begin",
+            "allow-cloud-cancel",
+            "allow-cloud-sign-out",
+            "allow-cloud-prepare-sync",
+            "allow-cloud-start-sync",
+        ] {
+            assert!(
+                capability["permissions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == permission)
+            );
+        }
     }
 
     #[test]

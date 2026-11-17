@@ -1,3 +1,5 @@
+//! First-party wire validation and the OS credential boundary for the native engine.
+
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -9,6 +11,8 @@ pub const SCOPE: &str = "capture:write";
 pub const MAX_ACCESS_SECONDS: u64 = 900;
 pub const MAX_GRANT_SECONDS: i64 = 365 * 24 * 60 * 60;
 
+/// Pin canonical HTTPS origins. Resource owns request routes; issuer binds
+/// callbacks and responses. Neither value can contain a path or trailing slash.
 #[derive(Clone)]
 pub struct Config {
     pub issuer: String,
@@ -287,8 +291,17 @@ pub struct Credential {
     pub session: Option<Session>,
 }
 
+/// Store one engine's rotating refresh credential and logout-only proofs.
+///
+/// The controller serializes calls and holds the state-directory owner lock.
+/// Implementors must use secure storage, replace the whole record on write, and
+/// return errors without secrets. A read failure is not an absent credential.
+/// A successful write must be durable before it returns. Failed writes must not
+/// claim success; the engine closes access and keeps revocation uncertainty.
 pub trait Vault: Send + Sync {
     fn read(&self) -> Result<Option<Credential>, Failure>;
+    /// Delete only when given `None`; deleting an absent credential succeeds.
+    /// The engine records confirmed revocation before requesting deletion.
     fn write(&self, credential: Option<&Credential>) -> Result<(), Failure>;
 }
 
@@ -358,9 +371,19 @@ pub enum TokenRequest<'a> {
     },
 }
 
+/// Send the native engine's first-party requests without retries or redirects.
+///
+/// Implementors must bound responses and keep cookies, Origin, and raw errors
+/// out of this boundary. Only `session` sends access bearer proof. The controller
+/// serializes credential operations; transport success does not grant access.
 pub trait Transport: Send + Sync {
+    /// Return decoded tokens with a bounded refresh proof, even when other fields
+    /// are invalid. The engine validates authority and saves rejected proof for
+    /// logout. An uncertain exchange must not retry the predecessor.
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure>;
+    /// Read current server authority; the engine checks all returned bindings.
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
+    /// Return success only for synchronous HTTP 204 confirming this proof's grant.
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
 
@@ -405,7 +428,10 @@ impl Transport for HttpTransport {
                 .send()
                 .map_err(|_| Failure::Offline)?,
         )?;
-        tokens.validate_secrets()?;
+        // Keep usable logout proof until the engine decides whether to accept it.
+        if !bounded(&tokens.refresh_token, 16_384) {
+            return Err(Failure::InvalidResponse);
+        }
         Ok(tokens)
     }
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure> {

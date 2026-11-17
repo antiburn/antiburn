@@ -8,6 +8,12 @@ import {
 } from "../lib/cloud"
 import { CloudOnboarding } from "./CloudOnboarding"
 
+const analytics = vi.hoisted(() => ({ action: vi.fn(), view: vi.fn() }))
+vi.mock("../lib/onboardingAnalytics", () => ({
+  noteCloudAction: analytics.action,
+  noteCloudScreenViewed: analytics.view,
+}))
+
 function fixture(patch: Partial<CloudSnapshot> = {}) {
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
@@ -127,4 +133,71 @@ it("does not claim syncing when native capture is unavailable on the platform", 
   ).toBeVisible()
   expect(screen.getByText("Native capture is not supported on this platform.")).toBeVisible()
   expect(screen.queryByText(/Sessions syncing/)).not.toBeInTheDocument()
+})
+
+it.each([{ draft: { screen: "folders" as const, folders: [] } }, {}])(
+  "allows local completion without source or content consent: %j",
+  async (patch) => {
+    const { port, start } = fixture(patch)
+    const done = vi.fn()
+    render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+    const local = await screen.findByRole("button", { name: "Continue locally" })
+    fireEvent.click(local)
+    expect(done).toHaveBeenCalledOnce()
+    expect(port.prepareSync).not.toHaveBeenCalled()
+    expect(start).not.toHaveBeenCalled()
+  },
+)
+
+it("names unsupported capture after a fresh connection without trying to save navigation", async () => {
+  const { port, start } = fixture({
+    captureEnabled: false,
+    setupError: "Native capture is not supported on this platform.",
+    draft: { screen: "handoff", folders: [] },
+  })
+  port.save = vi.fn()
+  const done = vi.fn()
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  expect(
+    await screen.findByText(/Native capture is not supported on this platform/),
+  ).toBeVisible()
+  fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
+  expect(done).toHaveBeenCalledOnce()
+  expect(port.save).not.toHaveBeenCalled()
+  expect(start).not.toHaveBeenCalled()
+})
+
+it("allows local completion while configured Cloud is offline", async () => {
+  const { port } = fixture({ status: "offline", identity: null, destination: null })
+  const done = vi.fn()
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Continue locally" }))
+  expect(done).toHaveBeenCalledOnce()
+  expect(port.prepareSync).not.toHaveBeenCalled()
+})
+
+it("records a local choice without reporting request or upload success", async () => {
+  const { port } = fixture()
+  render(<CloudOnboarding port={port} onBack={vi.fn()} onComplete={vi.fn()} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Continue locally" }))
+  expect(analytics.action).toHaveBeenCalledExactlyOnceWith("folders", "use_locally")
+  expect(port.prepareSync).not.toHaveBeenCalled()
+})
+
+it("cancels only the pending browser attempt before local completion", async () => {
+  const { port } = fixture({ status: "waiting", identity: null, destination: null })
+  port.cancel = vi.fn(async () => ({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "revocation_unconfirmed" as const,
+    revocationPending: true,
+  }))
+  port.cancelSync = vi.fn()
+  const done = vi.fn()
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Continue locally" }))
+  await waitFor(() => expect(done).toHaveBeenCalledOnce())
+  expect(port.cancel).toHaveBeenCalledOnce()
+  expect(port.cancelSync).not.toHaveBeenCalled()
+  expect(port.prepareSync).not.toHaveBeenCalled()
 })

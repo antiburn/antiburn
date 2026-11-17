@@ -9,6 +9,9 @@ import { CloudCaptureConsent } from "./CloudCaptureConsent"
 import "./onboarding.css"
 import "./cloud.css"
 
+/** Existing optional setup flow. The native build capability gates its caller;
+ * runtime service or platform failures must still allow local completion.
+ */
 export interface CloudOnboardingProps {
   onBack: () => void
   onComplete: () => void
@@ -51,7 +54,11 @@ export function CloudOnboarding({
   const selectedFolders = value.cloud.draft.folders.filter((folder) => folder.selected).length
   const finish = async () => {
     if (disabled) return
-    if (analytics) noteCloudAction(value.screen, "done")
+    if (analytics)
+      noteCloudAction(
+        value.screen,
+        value.screen === "complete" || !value.cloud.authEnabled ? "done" : "use_locally",
+      )
     if (waiting && !(await session.cancelSilently())) return
     onComplete()
   }
@@ -146,6 +153,11 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
+            {value.cloud.setupError && (
+              <p className="type-callout text-onboarding-muted" role="status">
+                {value.cloud.setupError} You can continue locally and manage Cloud in Settings.
+              </p>
+            )}
             {value.error && (
               <>
                 <p className="type-callout text-onboarding-muted" role="alert">
@@ -402,6 +414,17 @@ export function CloudOnboarding({
                 : value.cloud.status === "returned" || waiting
                   ? "Continue to Sessions"
                   : "Use locally for now"}
+            </button>
+          )}
+          {((value.screen === "handoff" && value.cloud.authEnabled) ||
+            value.screen === "identity" ||
+            value.screen === "folders") && (
+            <button
+              className="onboarding-secondary"
+              disabled={disabled}
+              onClick={() => void finish()}
+            >
+              Continue locally
             </button>
           )}
           {value.screen === "folders" && (

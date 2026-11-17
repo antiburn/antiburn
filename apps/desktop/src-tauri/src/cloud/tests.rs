@@ -3,7 +3,7 @@ use auth::{Credential, Session, TokenRequest, Tokens, Transport, Vault, Workspac
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[derive(Default)]
-struct MemoryVault {
+pub(super) struct MemoryVault {
     value: Mutex<Option<Credential>>,
     fail_read: AtomicBool,
     fail_write: AtomicBool,
@@ -61,6 +61,7 @@ struct FakeTransport {
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
     token_grant: Mutex<Option<String>>,
+    token_expires_in: Mutex<Option<u64>>,
     fail_revoke_for: Mutex<Option<String>>,
     seen: Mutex<Vec<String>>,
 }
@@ -81,7 +82,7 @@ impl Transport for Arc<FakeTransport> {
         Ok(Tokens {
             access_token: format!("synthetic-access-{count}"),
             refresh_token: format!("synthetic-refresh-{count}"),
-            expires_in: 60,
+            expires_in: self.token_expires_in.lock().unwrap().unwrap_or(60),
             token_type: "Bearer".into(),
             grant_id: self
                 .token_grant
@@ -495,6 +496,34 @@ fn cloud_rejected_refresh_keeps_both_grant_proofs_and_requires_original_revocati
         ]
     );
     assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_invalid_token_bounds_keep_logout_proof_without_restoring_access() {
+    for expires_in in [0, 901] {
+        let mut fixture = Fixture::new();
+        fixture.sign_in();
+        *fixture.transport.token_expires_in.lock().unwrap() = Some(expires_in);
+        fixture.transport.fail_revoke.store(true, Ordering::Release);
+        assert_eq!(
+            fixture.engine.refresh(200, || true),
+            Err(Failure::ReauthRequired)
+        );
+        assert!(fixture.engine.session().is_none());
+        let cleanup = fixture.vault.read().unwrap().unwrap();
+        assert!(cleanup.session.is_none());
+        assert_eq!(cleanup.refresh_token, "synthetic-refresh-0");
+        assert_eq!(cleanup.cleanup_refresh_tokens, ["synthetic-refresh-1"]);
+        fixture.restart();
+        fixture.engine.refresh(201, || true).unwrap();
+        assert!(fixture.engine.session().is_none());
+        fixture
+            .transport
+            .fail_revoke
+            .store(false, Ordering::Release);
+        fixture.engine.sign_out().unwrap();
+        assert!(fixture.vault.read().unwrap().is_none());
+    }
 }
 
 #[cfg(unix)]
@@ -1032,4 +1061,24 @@ fn cloud_local_reset_does_not_discard_a_recoverable_refresh_credential() {
     fixture.engine.sign_out().unwrap();
     assert_eq!(fixture.engine.reset_local(), Err(Failure::Unavailable));
     assert!(fixture.vault.read().unwrap().is_some());
+}
+
+#[test]
+fn cloud_corrupt_state_cannot_clear_an_earlier_connection_warning() {
+    let mut fixture = Fixture::new();
+    fixture.engine.begin(100, 0).unwrap();
+    fixture.engine.cancel(1).unwrap();
+    fixture.engine.reset_local().unwrap();
+    fixture.sign_in();
+    std::fs::write(
+        fixture.directory.path().join("cloud-auth-state-v2"),
+        b"{torn",
+    )
+    .unwrap();
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.vault.read().unwrap().is_none());
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    fixture.restart();
+    fixture.engine.refresh(200, || true).unwrap();
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
 }

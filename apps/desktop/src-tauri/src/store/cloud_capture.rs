@@ -1,3 +1,7 @@
+//! Checked transactions for account-bound requests and stable local root scopes.
+//! Request IDs are idempotency keys. Cancellation keeps the record and does not
+//! delete spool bytes or remote data.
+
 use super::Store;
 use antiburn_cloud_capture::CaptureIdentity;
 use anyhow::{Result, ensure};
@@ -13,6 +17,8 @@ pub(crate) struct RootScope {
     pub source_scope_id: String,
 }
 
+/// Frozen selection identity, not pinned source bytes or future capture authority.
+/// A saved path cannot replace the library's admitted source handle during capture.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct SelectedSource {
     pub identity: CaptureIdentity,

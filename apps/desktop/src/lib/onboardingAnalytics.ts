@@ -43,6 +43,7 @@ export function noteOnboardingCloudUnavailable(): void {
 
 export type CloudAnalyticsScreen = "handoff" | "identity" | "folders" | "sync" | "complete"
 export type CloudAnalyticsAction =
+  | "use_locally"
   | "learn_more"
   | "sign_in"
   | "cancel"

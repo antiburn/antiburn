@@ -46,6 +46,9 @@ export interface CaptureConsent extends CloudDestinationBinding {
   attachments: false
   selectedRoots: string[]
 }
+/** Native account state, not a build gate. authEnabled requires valid service
+ * configuration; captureEnabled permits saved requests, never content upload.
+ */
 export interface CloudSnapshot {
   authEnabled: boolean
   syncEnabled: boolean
@@ -81,6 +84,12 @@ export type SyncResult =
       completed: number
       total: number
     }
+/**
+ * Native commands for setup and Settings.
+ * Attach watch before read: commands, including reads, can emit state before
+ * their reply. Implementations keep secrets native and return safe errors.
+ * Saved requests survive observer teardown and account cleanup.
+ */
 export interface CloudPort {
   read(): Promise<CloudSnapshot>
   watch(listener: (value: CloudSnapshot) => void): Promise<() => void>
@@ -95,8 +104,11 @@ export interface CloudPort {
   resetLocal(): Promise<CloudSnapshot>
   pick(): Promise<string[]>
   agent(): Promise<AgentReadiness>
+  /** Save exact account/root consent before listing. Reuse this ID after uncertainty. */
   prepareSync(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<void>
+  /** List a saved native selection only; this build cannot capture or upload bytes. */
   start(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<SyncResult>
+  /** Read saved state only. Reconciliation must not rescan or submit an upload. */
   reconcile(requestId: string): Promise<SyncResult>
   cancelSync(requestId: string): Promise<SyncResult>
 }
@@ -122,6 +134,7 @@ async function cloudSyncCommand(
   if (!(await cloudBuildEnabled())) return { status: "unavailable" }
   return invoke<SyncResult>(command, args)
 }
+/** Invoke Cloud commands only when Rust AppInfo confirms the non-default feature. */
 export const nativeCloudPort: CloudPort = {
   read: () => cloudCommand("cloud_status"),
   watch: async (listener) =>

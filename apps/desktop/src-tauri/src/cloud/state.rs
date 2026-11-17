@@ -1,3 +1,6 @@
+//! Durable authentication markers. The controller mutex serializes operations;
+//! the lifetime owner lock excludes other processes from the same vault namespace.
+
 use super::auth::{Failure, random};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,6 +20,12 @@ pub enum Phase {
     ReauthRequired,
 }
 
+/// Keep remote uncertainty separate from local credential deletion.
+///
+/// `Revoke` retains proof until every stored proof has confirmed revocation.
+/// Persist `DeleteCredential` before deleting proof so restart can finish safely.
+/// `RemoteUnconfirmed` permits reconnect after explicit reset, but a later
+/// connection's cleanup must not clear that earlier warning.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Cleanup {

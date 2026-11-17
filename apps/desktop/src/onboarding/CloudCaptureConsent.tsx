@@ -1,6 +1,9 @@
 import type { CloudSession, CloudViewSnapshot } from "./CloudSession"
 import { personalCloudDestination } from "../lib/cloudDestination"
 
+/** Show the exact account and destination. CloudSession starts confirmation
+ * unchecked and clears it when authority or selected roots change.
+ */
 export function CloudCaptureConsent({
   session,
   value,

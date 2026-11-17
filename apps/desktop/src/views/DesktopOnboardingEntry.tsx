@@ -4,6 +4,9 @@ import { isMacOS } from "../lib/platform"
 import { appInfoStore } from "../lib/appInfoStore"
 import { OnboardingView } from "../onboarding/OnboardingView"
 
+/** Use the native build capability to expose the existing optional Cloud steps.
+ * Offline Cloud does not disable the steps or block ordinary local onboarding.
+ */
 export function DesktopOnboardingEntry() {
   const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [session] = useState(() => new DesktopOnboardingSession())

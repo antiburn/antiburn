@@ -1,3 +1,7 @@
+//! Feature-gated Cloud IPC for the existing onboarding and Settings surfaces.
+//! The controller owns authentication and source-listing side effects. Renderer
+//! snapshots contain no credentials and do not authorize content capture or upload.
+
 mod auth;
 mod capture;
 mod engine;
@@ -106,6 +110,8 @@ fn existing_folder_choices() -> bool {
     true
 }
 
+/// Renderer state for one current account. `auth_enabled` describes configured
+/// service availability, not the binary's `cloud` feature or upload authority.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
@@ -126,6 +132,8 @@ pub struct Snapshot {
     draft: Draft,
 }
 
+/// One native owner serializes auth and capture operations. Atomic generations
+/// invalidate queued work before it can acquire a mutex or publish old authority.
 pub(crate) struct Controller {
     engine: Mutex<Engine>,
     capture: Mutex<capture::Host>,
@@ -208,6 +216,14 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
 }
 
+/// Notify views without replaying operation outcomes when stored state is read.
+fn emit_snapshot(app: &tauri::AppHandle, result: Snapshot) -> Snapshot {
+    for window in ["onboarding", "main", "settings"] {
+        let _ = app.emit_to(window, "cloud:changed", result.clone());
+    }
+    result
+}
+
 fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     let result = snapshot(app, engine);
     let controller = app.state::<Controller>();
@@ -238,10 +254,7 @@ fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         }
         *previous = engine.status;
     }
-    for window in ["onboarding", "main", "settings"] {
-        let _ = app.emit_to(window, "cloud:changed", result.clone());
-    }
-    result
+    emit_snapshot(app, result)
 }
 
 pub fn initialize(
@@ -271,6 +284,8 @@ pub fn initialize(
     Ok(())
 }
 
+/// Refresh native authority and notify all account surfaces, including when a
+/// status read closes access. Callers must attach their event listener first.
 #[tauri::command]
 pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -288,7 +303,7 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
         }) {
             engine.status = error.into();
         }
-        Ok(snapshot(&app, &engine))
+        Ok(emit_snapshot(&app, snapshot(&app, &engine)))
     })
     .await
     .map_err(|_| "Cloud is unavailable.".to_owned())?
@@ -556,9 +571,10 @@ pub async fn cloud_prepare_sync(
             publish(&app, &engine);
             return Err("Connect to Cloud before preparing capture.".into());
         }
-        let session = engine
-            .session()
-            .ok_or("Connect to Cloud before preparing capture.")?;
+        let Some(session) = engine.session() else {
+            publish(&app, &engine);
+            return Err("Connect to Cloud before preparing capture.".into());
+        };
         let roots =
             capture::validate_selection(session, &draft(&app, Some(session))?, &folders, &consent)?;
         if !current() {
@@ -610,9 +626,10 @@ fn capture_request(
         publish(app, &engine);
         return Err("Connect to the original Cloud account to view this request.".into());
     }
-    let session = engine
-        .session()
-        .ok_or("Connect to the original Cloud account to view this request.")?;
+    let Some(session) = engine.session() else {
+        publish(app, &engine);
+        return Err("Connect to the original Cloud account to view this request.".into());
+    };
     let store = app.state::<crate::store::Store>();
     let request = store
         .cloud_capture_request(request_id, &session.user.id, &session.workspace.id)

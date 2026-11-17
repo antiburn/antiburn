@@ -165,6 +165,7 @@ export interface AppSettings {
 /** Where the app came from. Mirrors Rust `AppInfo`. */
 export interface AppInfo {
   appVersion: string
+  /** Native Rust build feature, independent of service or upload availability. */
   cloudEnabled?: boolean
   /** True when the binary enables Rust debug assertions. */
   debugBuild: boolean

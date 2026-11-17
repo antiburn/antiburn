@@ -623,6 +623,8 @@ storage, source listing, content capture, or upload acceptance. **Upload
 unavailable** emits no success outcome. Settings capture actions currently emit
 no dedicated outcome event. No request IDs, source IDs, roots, or content enter
 these events.
+**Continue locally** in configured Cloud setup uses `use_locally` on the current
+Cloud screen. It does not report capture or upload success.
 No callback URLs or authorization codes are collected. See the
 [onboarding measurement contract](analytics-measurement.md#desktop-onboarding).
 

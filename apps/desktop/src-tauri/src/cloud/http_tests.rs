@@ -236,14 +236,50 @@ fn cloud_http_frozen_token_and_flat_session_responses_bind_exact_authority() {
 }
 
 #[test]
-fn cloud_http_rejects_invalid_token_bounds_and_old_or_malformed_session_shapes() {
-    for expires in [
-        serde_json::json!(-1),
-        serde_json::json!(0),
-        serde_json::json!(901),
-    ] {
+fn cloud_http_returns_decoded_logout_proof_before_authority_validation() {
+    use super::auth::{Callback, Vault};
+    use super::{engine::Engine, state::StateStore, tests::MemoryVault};
+    use std::sync::Arc;
+
+    for expires in [0, 901] {
         let mut body = token_json();
-        body["expires_in"] = expires;
+        body["expires_in"] = expires.into();
+        let (config, worker) = server(200, &body.to_string());
+        let directory = tempfile::tempdir().unwrap();
+        let vault = Arc::new(MemoryVault::default());
+        let mut engine = Engine::new(
+            Some(config),
+            Box::new(vault.clone()),
+            Box::new(HttpTransport),
+            StateStore::new(directory.path()),
+        );
+        let (_, _listener, attempt) = engine.begin(100, 0).unwrap();
+        assert_eq!(
+            engine.callback(&attempt, Callback::Code("synthetic".into()), 101, || true),
+            Err(Failure::ReauthRequired)
+        );
+        worker.join().unwrap();
+        assert!(engine.session().is_none());
+        let cleanup = vault.read().unwrap().unwrap();
+        assert!(cleanup.session.is_none());
+        assert_eq!(cleanup.refresh_token, "synthetic-desktop-refresh");
+    }
+}
+
+#[test]
+fn cloud_http_rejects_unusable_proof_and_old_or_malformed_session_shapes() {
+    for body in [
+        {
+            let mut body = token_json();
+            body["expires_in"] = (-1).into();
+            body
+        },
+        {
+            let mut body = token_json();
+            body["refresh_token"] = "".into();
+            body
+        },
+    ] {
         let (config, worker) = server(200, &body.to_string());
         assert!(matches!(
             HttpTransport.exchange(

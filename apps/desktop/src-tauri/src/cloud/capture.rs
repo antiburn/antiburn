@@ -1,3 +1,6 @@
+//! Save consent-bound source requests and list filenames only. This host has no
+//! reservation or upload transport and must not read native transcript content.
+
 use super::{DestinationBinding, Draft, Folder, auth::Session};
 use crate::store::{
     Store,
@@ -53,6 +56,8 @@ impl From<CaptureRequest> for PendingSync {
     }
 }
 
+/// Serialize access to the library spool and freeze each completed selection.
+/// Explicit retries use the saved request ID; logout does not remove its state.
 pub struct Host {
     directory: PathBuf,
     spool: Option<Spool>,

@@ -85,7 +85,10 @@ Cloud is unreleased and requires the explicit, non-default Rust feature `cloud`.
 Environment values cannot enable the feature. Ordinary builds register no Cloud
 commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
 Manual Cloud builds also require valid build-time service configuration before
-they can connect. See the
+they can connect. The native build capability enables the existing Cloud
+teaching and setup screens; runtime service availability does not hide them.
+Setup can finish locally without content consent or saving a source request.
+See the
 [Cloud desktop contract](../../docs/cloud/desktop-contract.md).
 
 `pnpm build:demo` builds current product components into a separate demo bundle.

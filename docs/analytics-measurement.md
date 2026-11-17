@@ -583,7 +583,9 @@ among those choosing sign-in. Separate these denominators: legacy marketing retu
 not authentication. Group authentication failures only by the closed outcome categories.
 Authentication rejection and invalid responses both emit `failed`; do not count this
 outcome as a sync failure. Measure Start syncing among installations viewing folders
-and Done among installations viewing completion. Start syncing opens completion
+and Done among installations viewing completion. **Continue locally** from
+handoff, identity, or folders uses `use_locally` on that screen. It does not
+imply content consent or a saved request. Start syncing opens completion
 immediately; background preparation, submission, and reconciliation do not block Done.
 There is no separate sync screen, Check status action, or Cancel sync action in
 onboarding. Background status updates do not create another screen view. Production

@@ -11,6 +11,13 @@ Cloud requires the explicit, non-default Cargo feature `cloud`. Neither an
 environment variable nor the `distribution` feature enables it. Existing
 production build commands do not select it.
 
+Native `AppInfo.cloudEnabled` enables the existing Cloud teaching and setup
+screens after Checks. Ordinary builds finish after Checks, including when an
+older saved introduction points to a Cloud screen. Service configuration,
+offline errors, and unsupported capture platforms do not turn the build feature
+off. Cloud setup always permits local completion without source or content
+consent.
+
 `ANTIBURN_CLOUD_ISSUER` and `ANTIBURN_CLOUD_RESOURCE` are build-time canonical
 HTTPS origins without a trailing slash. Both must match the service's exact
 issuer and resource strings. Route URLs still include the slash before the path.
@@ -99,6 +106,9 @@ before updating local state. These cleanup credentials cannot restore an
 authenticated session. Cleanup requires confirmation for both proofs. A failed
 secure-storage write keeps an unconfirmed warning and attempts to revoke the
 returned proof.
+Decoded responses retain bounded logout proof even when token bounds or authority
+are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
+of a newer connection cannot prove that an older connection was revoked.
 
 Settings keeps the connection action available after onboarding. Native sign-out
 first flushes a new signed-out generation. Browser cancellation changes only the
@@ -111,6 +121,10 @@ deletion without requiring that deleted credential or repeating remote logout.
 A deletion failure remains visible, and the closed marker blocks login
 restoration. Cleanup-only keyring records cannot restore an authenticated session.
 Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
+Status reads can rotate credentials or close access. Native state updates reach
+every account surface, including before the requesting renderer receives its
+reply. Renderers attach their listener before reading and clear content consent
+when authority changes.
 
 When remote revocation is unknown and no refresh credential remains, Settings
 offers an explicit local reset. The confirmation states that this does not revoke
@@ -165,7 +179,9 @@ uploaded. There is no automatic future upload promise. A retry keeps the saved
 request and source IDs and does not rescan a completed selection. Reconciliation
 reads saved request state only. Account changes, logout, and grant replacement
 do not retarget requests or delete spools. Explicit request cancellation marks
-that selection cancelled; it does not delete remote data or unrelated captures.
+that selection cancelled through native IPC; this build has no request-cancellation
+control in onboarding or Settings. Cancellation does not delete remote data or
+unrelated captures.
 
 One native host mutex and the capture library's spool lock serialize access.
 This build starts no uploader. It permits up to 128 saved requests, 100 roots per

@@ -1,3 +1,7 @@
+//! Serialize authorization, rotation, and cleanup under the controller mutex.
+//! Closed state survives failure. Neither browser cancellation nor account
+//! cleanup owns capture requests or compressed retry bytes.
+
 use super::{
     AuthStatus,
     auth::{
@@ -431,7 +435,7 @@ impl Engine {
         let previous = guard.read().unwrap_or(Record {
             phase: Phase::SignedOut,
             cleanup: Cleanup::Revoke {
-                prior_unconfirmed: false,
+                prior_unconfirmed: true,
             },
             ..Record::default()
         });

@@ -53,6 +53,12 @@ const messages = {
 } as const
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 
+/**
+ * Own one surface's Cloud view, timers, and in-memory content confirmation.
+ * Native state owns credentials and durable requests. Events can arrive before
+ * IPC replies; revisions reject late replies, and context changes clear consent.
+ * Unsubscribing stops observation, not saved requests or native byte retention.
+ */
 export class CloudSession {
   private snapshot: CloudViewSnapshot = {
     cloud: emptyCloudSnapshot,
@@ -183,6 +189,7 @@ export class CloudSession {
       !this.snapshot.busy &&
       this.snapshot.screen === "identity" &&
       !this.holdIdentity &&
+      !this.snapshot.cloud.setupError &&
       !this.snapshot.error
     ) {
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -243,6 +250,14 @@ export class CloudSession {
       if (!this.active || generation !== this.generation) return
       const appliedRead = revision === this.revision
       if (appliedRead) this.receive(value)
+      void this.port
+        .agent()
+        .then((agent) => {
+          if (this.active && generation === this.generation) this.publish({ agent })
+        })
+        .catch(() => {
+          if (this.active && generation === this.generation) this.publish({ agent: "failed" })
+        })
       if (appliedRead && value.identity && value.pendingSync) {
         this.requestId = value.pendingSync.requestId
         this.publish({
@@ -260,14 +275,6 @@ export class CloudSession {
         this.publish({ sync, screen: "complete" })
       }
       this.publish({ busy: false })
-      void this.port
-        .agent()
-        .then((agent) => {
-          if (this.active && generation === this.generation) this.publish({ agent })
-        })
-        .catch(() => {
-          if (this.active && generation === this.generation) this.publish({ agent: "failed" })
-        })
     } catch {
       if (this.active && generation === this.generation)
         this.publish({
@@ -385,6 +392,7 @@ export class CloudSession {
       }),
     )
   }
+  /** Save explicit consent once. Retry listing with the same ID, never a new upload. */
   startSync = async () => {
     const selected = this.snapshot.cloud.draft.folders.filter((folder) => folder.selected)
     const selectionKey = selectedFoldersKey(this.snapshot.cloud)
