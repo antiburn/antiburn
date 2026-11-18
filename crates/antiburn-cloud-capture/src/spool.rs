@@ -19,12 +19,16 @@ use std::path::Path;
 
 const MAX_DIRECTORY_FILES: usize = 132;
 
-/// Retain Claude pins across reservation; SQLite payload opens only afterward.
+/// Retain file pins across reservation; SQLite payload opens only afterward.
 enum PreparedSource<'a> {
     Claude {
         source: &'a ClaudeSource,
         files: Vec<File>,
         pinned: Vec<Metadata>,
+    },
+    HeaderFile {
+        file: File,
+        pinned: Metadata,
     },
     #[cfg(unix)]
     OpenCode(&'a crate::opencode::OpenCodeSource),
@@ -230,6 +234,11 @@ impl Spool {
                     count,
                 )
             }
+            CandidateSource::Codex(source) | CandidateSource::Pi(source) => {
+                let (file, pinned) = source.pin(&self.limits)?;
+                let size = pinned.len();
+                (PreparedSource::HeaderFile { file, pinned }, size, 1)
+            }
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => (
                 PreparedSource::OpenCode(source),
@@ -279,6 +288,9 @@ impl Spool {
                 files,
                 pinned,
             } => capture_claude(&directory, candidate, source, files, pinned, sections)?,
+            PreparedSource::HeaderFile { file, pinned } => {
+                capture_header_file(&directory, candidate, file, pinned, sections)?
+            }
             #[cfg(unix)]
             PreparedSource::OpenCode(source) => {
                 capture_opencode(&directory, candidate, source, &self.limits, sections)?
@@ -809,6 +821,61 @@ fn capture_claude(
         streams,
         claude_metadata(candidate, source, scanner, &companion_bytes, sections),
     ))
+}
+
+/// Recheck the first owned header after reservation, then save the pinned file.
+fn capture_header_file(
+    directory: &Directory,
+    candidate: &Candidate,
+    mut file: File,
+    pinned: Metadata,
+    sections: MetadataSections,
+) -> Result<(Vec<CapturedStream>, CaptureMetadata)> {
+    if !same_source(&pinned, &file.metadata()?) {
+        return Err(Error::SourceChanged);
+    }
+    let id = candidate.native_session_id();
+    let (project, metadata) = match &candidate.source {
+        CandidateSource::Codex(_) => {
+            let header = crate::codex::read_header(&mut file, id)?;
+            (
+                header.project_evidence(),
+                header.metadata(candidate, sections),
+            )
+        }
+        CandidateSource::Pi(_) => (
+            crate::pi::project_evidence(&mut file, id)?,
+            crate::pi::metadata(id, sections),
+        ),
+        _ => return Err(Error::InvalidSource),
+    };
+    if let Some(selection) = &candidate.project_selection
+        && !selection.matches(&project)?
+    {
+        return Err(Error::SourceChanged);
+    }
+    file.rewind()?;
+    let (id, role, schema) = stream_spec(candidate.source_kind(), 0, 2);
+    let size = pinned.len();
+    let mut stream = ChunkStream::new(directory, id, size + size / 100 + 1024);
+    let mut remaining = size;
+    let mut buffer = [0u8; 64 * 1024];
+    while remaining > 0 {
+        let count = remaining.min(buffer.len() as u64) as usize;
+        let read = file.read(&mut buffer[..count])?;
+        if read == 0 {
+            return Err(Error::SourceChanged);
+        }
+        stream.write(&buffer[..read])?;
+        remaining -= read as u64;
+    }
+    if !same_source(&pinned, &file.metadata()?) {
+        return Err(Error::SourceChanged);
+    }
+    if let Some(selection) = &candidate.project_selection {
+        selection.verify_directories()?;
+    }
+    Ok((vec![stream.finish(role, schema)?], metadata))
 }
 
 #[cfg(unix)]

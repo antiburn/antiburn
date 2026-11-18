@@ -3,9 +3,10 @@
 Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/).
 Public desktop builds keep Cloud disabled until launch.
 
-This standalone crate owns bounded Claude file and OpenCode SQLite capture,
-private disk spooling, a durable many-session queue, and upload reconciliation through a caller-owned
-transport. It contains no network client.
+This standalone crate owns bounded capture of Claude files, Codex rollouts, Pi
+session files, and OpenCode SQLite. It also owns private disk spooling, a durable
+many-session queue, and upload reconciliation through a caller-owned transport.
+It contains no network client.
 
 The default build has no capture API. Select the explicit non-default `cloud`
 feature for controlled integration. Production upload enablement, consent,
@@ -30,8 +31,9 @@ then call `acknowledge_accepted` to remove the retained receipt.
 
 ## Host integration
 
-1. Authorize one Claude source root or OpenCode database, discover it, and scope
-   each candidate with the host's stable account and device-local source scope.
+1. Authorize one Claude source root, Codex rollout, Pi session file, or OpenCode
+   database. Scope each candidate with the host's stable account and device-local
+   source scope.
 2. Save request and consent bindings, then capture with a new globally unique ID.
    If capture leaves `Preparing`, cancel explicitly before using a new ID.
 3. Schedule one `resume_step` per pending request after checking current consent.
@@ -46,6 +48,11 @@ database path but have independent native IDs and scoped source keys.
 See the [OpenCode source guide](../../docs/cloud/opencode.md) and
 [SQLite native format](../../docs/cloud/sqlite-native.md) for ownership and cell
 preservation rules. A source schema error is not a saved-format migration.
+Use `reopen_codex` for one authorized rollout and its expected native session ID.
+See [Codex rollout capture](../../docs/cloud/codex.md) for its ownership and
+folder permission rules.
+Use `reopen_pi` for one authorized Pi session file and its expected native
+session ID. See [Pi session capture](../../docs/cloud/pi.md) for its rules.
 
 [`Transport`](src/contract.rs) is the desktop host's service boundary. Its API
 documents method ordering, exact body handling, frozen plans, and closed errors.
@@ -56,5 +63,4 @@ before handling a spool that cannot open or reducing limits.
 
 ## Tests
 
-Tests use only the [public synthetic fixture package](../../fixtures/cloud/capture-v1)
-and files generated inside temporary directories.
+Tests use public synthetic fixtures and files generated inside temporary directories.

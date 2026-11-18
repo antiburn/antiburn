@@ -158,12 +158,15 @@ impl Capabilities {
             .iter()
             .map(String::as_str)
             .collect::<std::collections::BTreeSet<_>>();
+        // A service can add formats before this client has their exporters.
+        // Require the formats this client sends and keep enforcing all limits.
         if !self.enabled
             || self.max_expanded_bytes > 1024 * 1024 * 1024
             || self.max_expanded_bytes <= 2 * METADATA_BYTES
             || self.chunk_expanded_bytes != CHUNK_BYTES
             || formats.len() != self.source_formats.len()
-            || formats != std::collections::BTreeSet::from(["ClaudeJsonl", "OpenCodeSqliteV2"])
+            || !formats.contains("ClaudeJsonl")
+            || !formats.contains("OpenCodeSqliteV2")
         {
             return Err(Failure::Unavailable);
         }
@@ -233,6 +236,8 @@ impl Source {
         use antiburn_cloud_capture::CaptureSourceKind;
         let (agent, source_format) = match candidate.source_kind() {
             CaptureSourceKind::ClaudeJsonl => ("claude-code", "ClaudeJsonl"),
+            CaptureSourceKind::CodexJsonl => ("codex", "CodexJsonl"),
+            CaptureSourceKind::PiJsonl => ("pi", "PiJsonl"),
             CaptureSourceKind::OpenCodeSqliteV2 => ("opencode", "OpenCodeSqliteV2"),
         };
         Self {

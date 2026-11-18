@@ -39,11 +39,16 @@ impl SourceKind {
     }
 }
 
-impl From<CaptureSourceKind> for SourceKind {
-    fn from(value: CaptureSourceKind) -> Self {
+impl TryFrom<CaptureSourceKind> for SourceKind {
+    type Error = anyhow::Error;
+
+    fn try_from(value: CaptureSourceKind) -> Result<Self> {
         match value {
-            CaptureSourceKind::ClaudeJsonl => Self::ClaudeJsonl,
-            CaptureSourceKind::OpenCodeSqliteV2 => Self::OpenCodeSqliteV2,
+            CaptureSourceKind::ClaudeJsonl => Ok(Self::ClaudeJsonl),
+            CaptureSourceKind::OpenCodeSqliteV2 => Ok(Self::OpenCodeSqliteV2),
+            CaptureSourceKind::CodexJsonl | CaptureSourceKind::PiJsonl => {
+                anyhow::bail!("This source is not enabled for sync.")
+            }
         }
     }
 }

@@ -13,10 +13,11 @@ use crate::store::{
         sync::{Job, JobState, ONGOING_CONSENT_VERSION, Policy, ProjectSelection},
     },
 };
+#[cfg(test)]
+use antiburn_cloud_capture::MetadataSections;
 use antiburn_cloud_capture::{
-    Candidate, CaptureState, Limits, MetadataSections, QueueEntry, TransferProgress,
-    Transport as _, discover_claude, discover_claude_page, discover_opencode,
-    discover_opencode_page,
+    Candidate, CaptureState, Limits, QueueEntry, TransferProgress, Transport as _, discover_claude,
+    discover_claude_page, discover_opencode, discover_opencode_page,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -30,6 +31,9 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use tokio::sync::Notify;
+
+#[path = "git_checkout.rs"]
+mod git_checkout;
 
 const RESERVATION_RETRY_DELAY: Duration = Duration::from_secs(15);
 
@@ -949,6 +953,17 @@ impl Runner {
                     self.state = State::Interrupted;
                     return Ok(());
                 }
+            }
+            let sections = git_checkout::capture_sections(&candidate, current, &|root| {
+                root.to_str()
+                    .is_some_and(|root| policy.allows(&selection.scope, root))
+            });
+            if !current() {
+                self.candidates.push_front(selection);
+                self.state = State::Paused;
+                return Ok(());
+            }
+            if waiting.is_some() {
                 // Flush away capacity-only retry permission before reserve can run.
                 store
                     .set_cloud_sync_job_state(&job, JobState::Pending)
@@ -975,16 +990,12 @@ impl Runner {
                 host.spool()?.retry_reservation(
                     job.identity.clone(),
                     &candidate,
-                    MetadataSections::new(),
+                    sections,
                     &mut transport,
                 )
             } else {
-                host.spool()?.capture(
-                    job.identity.clone(),
-                    &candidate,
-                    MetadataSections::new(),
-                    &mut transport,
-                )
+                host.spool()?
+                    .capture(job.identity.clone(), &candidate, sections, &mut transport)
             };
             if transport.failure == Some(upload::Failure::SourceSuppressed) {
                 store.suppress_cloud_sync(&job).map_err(

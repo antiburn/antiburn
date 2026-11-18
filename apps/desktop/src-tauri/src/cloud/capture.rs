@@ -189,7 +189,7 @@ impl Host {
                     serde_json::to_vec(&(&request.request_id, candidate.source_id()))
                         .map_err(|_| "Could not bind the selected source.")?,
                 ));
-                if SourceKind::from(candidate.source_kind()) != root.source_kind {
+                if SourceKind::try_from(candidate.source_kind()).ok() != Some(root.source_kind) {
                     return Err("The selected source provider changed.".into());
                 }
                 let base = match root.source_kind {

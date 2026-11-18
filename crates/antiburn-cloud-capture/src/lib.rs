@@ -15,6 +15,8 @@
 //! `Spool::acknowledge_accepted`. Stopping an executor never cancels its entries.
 
 #[cfg(feature = "cloud")]
+mod codex;
+#[cfg(feature = "cloud")]
 mod contract;
 #[cfg(feature = "cloud")]
 mod directory;
@@ -23,9 +25,13 @@ mod discovery;
 #[cfg(feature = "cloud")]
 mod filesystem;
 #[cfg(feature = "cloud")]
+mod header_file;
+#[cfg(feature = "cloud")]
 mod metadata;
 #[cfg(all(feature = "cloud", unix))]
 mod opencode;
+#[cfg(feature = "cloud")]
+mod pi;
 #[cfg(feature = "cloud")]
 mod project;
 #[cfg(feature = "cloud")]
@@ -38,6 +44,8 @@ mod sqlite_native;
 mod stream;
 
 #[cfg(feature = "cloud")]
+pub use codex::reopen_codex;
+#[cfg(feature = "cloud")]
 pub use contract::*;
 #[cfg(feature = "cloud")]
 pub use discovery::{Candidate, CaptureSourceKind, discover_claude, discover_opencode};
@@ -49,6 +57,8 @@ pub use discovery::{OpenCodeDiscoveryPage, discover_opencode_page};
 pub use discovery::{reopen_claude, reopen_opencode};
 #[cfg(feature = "cloud")]
 pub use metadata::*;
+#[cfg(feature = "cloud")]
+pub use pi::reopen_pi;
 #[cfg(feature = "cloud")]
 pub use project::{PROJECT_RECORD_BYTES, ProjectEvidence, ProjectSelection};
 #[cfg(feature = "cloud")]

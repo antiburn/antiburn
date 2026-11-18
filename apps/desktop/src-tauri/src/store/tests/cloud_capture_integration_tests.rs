@@ -16,7 +16,7 @@ fn cloud_provider_wire_values_match_native_candidate_kinds() {
             "\"opencode_sqlite_v2\"",
         ),
     ] {
-        let native = SourceKind::from(kind);
+        let native = SourceKind::try_from(kind).unwrap();
         assert_eq!(serde_json::to_string(&native).unwrap(), wire);
         assert_eq!(serde_json::from_str::<SourceKind>(wire).unwrap(), native);
     }

@@ -2348,6 +2348,100 @@ fn saved_chunks(directory: &Path) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
+fn scheduler_git(directory: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .env_clear()
+        .current_dir(directory)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{args:?}");
+}
+
+fn init_scheduler_checkout(directory: &Path) {
+    scheduler_git(directory, &["init", "--initial-branch=main"]);
+    scheduler_git(
+        directory,
+        &[
+            "-c",
+            "user.name=Synthetic",
+            "-c",
+            "user.email=synthetic@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "synthetic",
+        ],
+    );
+}
+
+fn saved_capture_metadata(directory: &Path) -> serde_json::Value {
+    saved_chunks(directory)
+        .keys()
+        .find_map(|name| {
+            let expanded = std::process::Command::new("gzip")
+                .arg("-dc")
+                .arg(directory.join(name))
+                .output()
+                .unwrap();
+            assert!(expanded.status.success());
+            serde_json::from_slice::<serde_json::Value>(&expanded.stdout)
+                .ok()
+                .filter(|body| body["sections"].is_object())
+        })
+        .expect("saved capture metadata")
+}
+
+#[test]
+fn cloud_scheduler_git_change_keeps_saved_capture_and_does_not_recapture() {
+    let mut fixture = Fixture::new(READY, 0);
+    let project = fixture.project.clone();
+    init_scheduler_checkout(&project);
+    fixture.turn();
+    let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(entry.state, CaptureState::Queued);
+    let directory = fixture
+        ._directory
+        .path()
+        .join("cloud-capture-v1")
+        .join(&entry.identity.capture_id);
+    let chunks = saved_chunks(&directory);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(
+        saved_capture_metadata(&directory)["sections"]["antiburn.git-checkout"]["data"]["branch"],
+        "main"
+    );
+
+    scheduler_git(&project, &["branch", "-m", "different-branch"]);
+    fixture.restart_scheduler();
+    fixture.turn();
+    assert_eq!(saved_chunks(&directory), chunks);
+    fixture.accept_first();
+
+    fixture.restart_scheduler();
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn cloud_scheduler_git_parent_outside_selected_folder_is_not_uploaded() {
+    let mut fixture = Fixture::new(READY, 0);
+    init_scheduler_checkout(fixture.project.parent().unwrap());
+    fixture.turn();
+    let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(entry.state, CaptureState::Queued);
+    let directory = fixture
+        ._directory
+        .path()
+        .join("cloud-capture-v1")
+        .join(&entry.identity.capture_id);
+    assert!(
+        saved_capture_metadata(&directory)["sections"]
+            .get("antiburn.git-checkout")
+            .is_none()
+    );
+}
+
 #[test]
 fn cloud_scheduler_retry_preserves_partial_capture_chunks_and_complete_uploads() {
     let mut fixture = Fixture::new(READY, 0);
