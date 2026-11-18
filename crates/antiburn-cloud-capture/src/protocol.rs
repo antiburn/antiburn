@@ -1,7 +1,7 @@
 //! Exact source layouts, frozen upload plans, and authoritative status checks.
 //!
 //! Local descriptors and service receipts never replace complete server integrity
-//! verification. Progress advances only from validated, nonregressing receipts.
+//! verification. Progress follows validated current receipts; acceptance is final.
 
 use crate::contract::{digest, safe_id};
 use crate::*;
@@ -189,6 +189,7 @@ pub(crate) fn validate_status(
     Ok(confirmed)
 }
 
+/// Permit provisional part expiry, but never reverse integrity acceptance.
 pub(crate) fn validate_status_progress(
     previous: Option<&ServerStatus>,
     current: &ServerStatus,
@@ -196,12 +197,7 @@ pub(crate) fn validate_status_progress(
     let Some(previous) = previous else {
         return Ok(());
     };
-    if (previous.integrity_accepted && !current.integrity_accepted)
-        || previous
-            .uploaded_parts
-            .iter()
-            .any(|part| !current.uploaded_parts.contains(part))
-    {
+    if previous.integrity_accepted && !current.integrity_accepted {
         return Err(Error::InvalidServerStatus);
     }
     Ok(())

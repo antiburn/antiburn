@@ -224,6 +224,8 @@ struct FakeTransport {
     reserve_mutation: Option<(PathBuf, Vec<u8>)>,
     reserve_failure: bool,
     drop_previous_receipt: bool,
+    keep_only_latest_receipt: bool,
+    lose_latest_receipt: bool,
     bad_manifest_digest: bool,
     reuse_stream: Option<String>,
     change_plan: bool,
@@ -360,7 +362,18 @@ impl Transport for FakeTransport {
         plan: &UploadPlan,
     ) -> std::result::Result<ServerStatus, TransportError> {
         self.status_calls += 1;
+        if self.keep_only_latest_receipt {
+            let latest = self.uploaded.last().map(|(key, _)| key);
+            self.confirmed.retain(|key| Some(key) == latest);
+        }
+        if self.lose_latest_receipt
+            && let Some((key, _)) = self.uploaded.last()
+        {
+            self.confirmed.remove(key);
+            self.lose_latest_receipt = false;
+        }
         if self.drop_previous_receipt && self.confirmed.len() > 1 {
+            self.drop_previous_receipt = false;
             let first = self.uploaded.first().unwrap().0.clone();
             self.confirmed.remove(&first);
         }
@@ -1555,7 +1568,7 @@ fn native_companion_has_a_strict_byte_limit_before_reservation() {
 }
 
 #[test]
-fn regressed_server_receipts_block_completion_and_keep_all_chunks() {
+fn expired_server_receipts_reupload_saved_chunks_before_completion() {
     let temp = temporary();
     let project = temp.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -1580,15 +1593,19 @@ fn regressed_server_receipts_block_completion_and_keep_all_chunks() {
             &mut transport,
         )
         .unwrap();
-    assert!(matches!(
-        queue.resume(&identity, &mut transport),
-        Err(Error::InvalidServerStatus)
-    ));
-    assert_eq!(transport.complete_calls, 0);
-    assert_eq!(transport.uploaded.len(), 2);
+    assert_eq!(
+        queue.resume(&identity, &mut transport).unwrap().state,
+        CaptureState::Queued
+    );
+    assert_eq!(
+        queue.resume(&identity, &mut transport).unwrap().state,
+        CaptureState::AwaitingIntegrity
+    );
+    assert_eq!(transport.complete_calls, 1);
+    assert_eq!(transport.uploaded.len(), 3);
+    assert_eq!(transport.uploaded[0], transport.uploaded[2]);
     let saved_status = queue.entries().unwrap().remove(0).server_status.unwrap();
-    assert_eq!(saved_status.uploaded_parts.len(), 1);
-    assert_eq!(saved_status.uploaded_parts[0].key.stream_id, "transcript");
+    assert_eq!(saved_status.uploaded_parts.len(), 2);
     for stream in ["transcript", "capture-metadata"] {
         assert!(
             temp.path()

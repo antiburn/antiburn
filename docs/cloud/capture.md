@@ -65,11 +65,16 @@ retains one page plus one candidate. Bind cursors to the same authorized root an
 policy. Restart a sweep to find new entries before its cursor.
 
 After current full-content consent and project admission, the host can use
-`Candidate::opencode_content_digest` to check an approved session for changes.
-It hashes the same bounded native-row stream as capture, including proved owned
-dependencies, without saving or uploading bytes. Unrelated database writes do not
-change this digest. The check creates no reservation or capture; it does not
-replace capture's fresh snapshot or integrity checks.
+`Candidate::opencode_content_digest(limits, selection)` to check an approved
+session for changes. The required `ProjectSelection` contains the host's approved
+folder trees. The export rechecks the recorded CWD in its read snapshot before
+reading session payload or dependencies. A nonmatching CWD returns `SourceChanged`;
+cached metadata cannot authorize the read, and no unrestricted fallback exists.
+The host checks current account and content-consent authority immediately before
+calling. The method hashes the same bounded native-row stream as capture,
+including proved owned dependencies, without saving or uploading bytes. Unrelated
+database writes do not change this digest. The check creates no reservation or
+capture; it does not replace capture's fresh snapshot or integrity checks.
 
 ### Project folder selection
 
@@ -433,9 +438,13 @@ bytes have passed integrity verification.
 
 `ServerStatus` binds the same identity, manifest digest, and plan ID. Its
 `uploaded_parts` confirm uploaded chunks only. A reuse decision is not an upload
-receipt. Unknown keys, duplicates, reused chunks in uploaded receipts, wrong
-hashes, or regressed confirmations fail closed. Confirmation never comes from
-local bytes sent or a successful HTTP upload alone.
+receipt. Unknown keys, duplicates, reused chunks in uploaded receipts, and wrong
+hashes fail closed. Before integrity acceptance, storage expiry can remove
+provisional parts from current status. The library keeps the same saved bytes,
+manifest, and plan, uploads those missing parts again, then resubmits the exact
+finalization request. A restart preserves this recovery state. Integrity
+acceptance cannot regress. Confirmation never comes from local bytes sent or a
+successful HTTP upload alone.
 
 Each `PartReceipt.compressed_sha256` is the registered expected saved-body digest.
 It binds the service's stored-part acknowledgment to the expected chunk in the

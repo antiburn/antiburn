@@ -102,17 +102,23 @@ impl Candidate {
 
     /// Hash this OpenCode session's exact bounded native export without saving it.
     ///
-    /// The host must check current full-content consent and project admission
-    /// first. This local read creates no capture, reservation, or upload. It uses
-    /// the same ownership, schema, byte, and snapshot checks as capture. Unrelated
+    /// The host must check current full-content consent and supply its approved
+    /// project selection. The export rechecks the recorded CWD in its read
+    /// snapshot before reading session payload. A nonmatching CWD returns
+    /// `SourceChanged`. This local read creates no capture, reservation, or upload.
+    /// It uses the same ownership, schema, and byte checks as capture. Unrelated
     /// database writes do not change the digest. Never log or publish the digest.
     /// Run on a bounded blocking worker. Other providers return `UnsupportedSource`.
-    pub fn opencode_content_digest(&self, limits: &Limits) -> Result<String> {
+    pub fn opencode_content_digest(
+        &self,
+        limits: &Limits,
+        selection: &crate::ProjectSelection,
+    ) -> Result<String> {
         #[cfg(unix)]
         if let CandidateSource::OpenCode(source) = &self.source {
             use sha2::{Digest, Sha256};
             let mut digest = Sha256::new();
-            crate::opencode::export(source, limits, |bytes| {
+            crate::opencode::export_in_project(source, limits, selection, |bytes| {
                 digest.update(bytes);
                 Ok(())
             })?;
@@ -122,7 +128,7 @@ impl Candidate {
                 .map(|byte| format!("{byte:02x}"))
                 .collect());
         }
-        let _ = limits;
+        let _ = (limits, selection);
         Err(Error::UnsupportedSource)
     }
 

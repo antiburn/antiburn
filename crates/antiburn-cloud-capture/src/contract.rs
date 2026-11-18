@@ -431,7 +431,7 @@ pub struct QueueEntry {
     pub manifest: Option<CaptureManifest>,
     /// First validated negotiation, kept unchanged through all later turns.
     pub upload_plan: Option<UploadPlan>,
-    /// Last validated authoritative status; confirmations cannot regress.
+    /// Last validated status. Provisional parts can expire before acceptance.
     pub server_status: Option<ServerStatus>,
     /// Completion returned success; false can still accompany saved intent.
     pub completion_submitted: bool,
@@ -533,7 +533,8 @@ pub struct PartReceipt {
 
 /// Authoritative status bound to the exact identity, manifest, and frozen plan.
 ///
-/// Uploaded receipts may grow but must not regress. Acceptance also requires
+/// Provisional receipts can disappear after storage expiry. Retry those chunks
+/// from saved bytes under the same plan. Acceptance cannot regress and requires
 /// receipts for every `Upload` decision; `Reuse` decisions must not appear here.
 /// Receipt digest matches establish expected-request bindings, not full byte
 /// integrity. Only `integrity_accepted` confirms complete capture verification.
@@ -662,7 +663,8 @@ pub trait Transport {
     /// Read service-confirmed stored transfers and acceptance for the frozen request.
     ///
     /// Do not infer confirmation from bytes sent or a successful upload response.
-    /// Receipts cover only `Upload` decisions and must not regress. Their digests
+    /// Receipts cover only current `Upload` parts and can disappear before
+    /// acceptance when incomplete storage expires. Their digests
     /// bind acknowledgments to registered expected chunks; they do not establish
     /// full byte integrity or require storage-provided SHA-256 metadata. Report
     /// integrity acceptance only after reading and verifying all stored bytes,

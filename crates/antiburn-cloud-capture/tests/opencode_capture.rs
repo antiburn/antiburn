@@ -147,9 +147,20 @@ fn expanded(root: &Path, identity: &CaptureIdentity, stream: &CapturedStream) ->
 #[test]
 fn session_digest_ignores_unrelated_writes_and_tracks_owned_values_and_dependencies() {
     let (_temporary, database, connection) = fixture();
+    let project = database.parent().unwrap().join("project");
+    std::fs::create_dir(&project).unwrap();
+    connection
+        .execute(
+            "UPDATE session_v2 SET directory=?1 WHERE id='ses_main'",
+            [project.to_str().unwrap()],
+        )
+        .unwrap();
+    let selection = ProjectSelection::new(vec![project]).unwrap();
     let candidate = selected(&database, "ses_main");
     let limits = Limits::default();
-    let original = candidate.opencode_content_digest(&limits).unwrap();
+    let original = candidate
+        .opencode_content_digest(&limits, &selection)
+        .unwrap();
     connection
         .execute(
             "UPDATE session_message SET data='unrelated change' WHERE id='msg_child'",
@@ -160,22 +171,82 @@ fn session_digest_ignores_unrelated_writes_and_tracks_owned_values_and_dependenc
         .execute("UPDATE credential SET value='unrelated global change'", [])
         .unwrap();
     assert_eq!(
-        candidate.opencode_content_digest(&limits).unwrap(),
+        candidate
+            .opencode_content_digest(&limits, &selection)
+            .unwrap(),
         original
     );
     connection.execute("UPDATE session_part SET data='owned change' WHERE message_id='msg_split' AND ordinal=0", []).unwrap();
-    let changed = candidate.opencode_content_digest(&limits).unwrap();
+    let changed = candidate
+        .opencode_content_digest(&limits, &selection)
+        .unwrap();
     assert_ne!(changed, original);
     connection.execute("UPDATE blob SET data=X'6e6577', bytes=3 WHERE hash='2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'", []).unwrap();
-    assert_ne!(candidate.opencode_content_digest(&limits).unwrap(), changed);
+    assert_ne!(
+        candidate
+            .opencode_content_digest(&limits, &selection)
+            .unwrap(),
+        changed
+    );
     assert!(
         candidate
-            .opencode_content_digest(&Limits {
-                source_bytes: 1,
-                ..limits
-            })
+            .opencode_content_digest(
+                &Limits {
+                    source_bytes: 1,
+                    ..limits
+                },
+                &selection,
+            )
             .is_err()
     );
+}
+
+#[test]
+fn session_digest_rechecks_project_before_reading_changed_owned_content() {
+    let (_temporary, database, connection) = fixture();
+    let root = database.parent().unwrap();
+    let approved = root.join("approved");
+    let excluded = root.join("excluded");
+    for project in [&approved, &excluded] {
+        std::fs::create_dir(project).unwrap();
+    }
+    connection
+        .execute(
+            "UPDATE session_v2 SET directory=?1 WHERE id='ses_main'",
+            [approved.to_str().unwrap()],
+        )
+        .unwrap();
+    let selection = ProjectSelection::new(vec![approved]).unwrap();
+    let candidate = selected(&database, "ses_main");
+    let limits = Limits::default();
+    let evidence = candidate.project_evidence_with_limits(&limits).unwrap();
+    assert!(selection.matches(&evidence).unwrap());
+    candidate
+        .opencode_content_digest(&limits, &selection)
+        .unwrap();
+
+    connection
+        .execute(
+            "UPDATE session_v2 SET directory=?1 WHERE id='ses_main'",
+            [excluded.to_str().unwrap()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE session_message SET data='not JSON' WHERE id='msg_user'",
+            [],
+        )
+        .unwrap();
+    assert!(selection.matches(&evidence).unwrap());
+    assert!(matches!(
+        candidate.opencode_content_digest(&limits, &selection),
+        Err(Error::SourceChanged)
+    ));
+    let excluded_selection = ProjectSelection::new(vec![excluded]).unwrap();
+    assert!(matches!(
+        candidate.opencode_content_digest(&limits, &excluded_selection),
+        Err(Error::InvalidSource)
+    ));
 }
 
 #[test]

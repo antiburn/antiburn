@@ -1,4 +1,108 @@
 use super::*;
+
+#[test]
+fn alternating_provisional_receipts_yield_without_an_unbounded_resume_loop() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let id = identity("main", "alternating-receipts");
+    let mut transport = FakeTransport {
+        keep_only_latest_receipt: true,
+        ..FakeTransport::default()
+    };
+    queue
+        .capture(
+            id.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let entry = queue.resume(&id, &mut transport).unwrap();
+    assert_eq!(entry.state, CaptureState::Queued);
+    assert_eq!(
+        transport.uploaded.len(),
+        entry.upload_plan.as_ref().unwrap().chunks.len() + 1
+    );
+    assert_eq!(transport.complete_calls, 0);
+    assert_eq!(transport.reserve_calls, 1);
+}
+
+#[test]
+fn missing_confirmation_after_a_successful_part_is_transient_and_keeps_bytes() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let id = identity("main", "missing-confirmation");
+    let mut transport = FakeTransport {
+        lose_latest_receipt: true,
+        ..FakeTransport::default()
+    };
+    let saved = queue
+        .capture(
+            id.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let directory = temp.path().join("spool/missing-confirmation");
+    let before = saved_chunks(&directory, saved.manifest.as_ref().unwrap());
+    assert!(matches!(
+        queue.resume_step(&id, &mut transport),
+        Err(Error::Transport(TransportError::Offline))
+    ));
+    assert_eq!(
+        saved_chunks(&directory, saved.manifest.as_ref().unwrap()),
+        before
+    );
+    assert_eq!(queue.entries().unwrap()[0].identity, id);
+    assert_eq!(transport.reserve_calls, 1);
+}
+
+#[test]
+fn expired_parts_refill_the_same_capture_after_finalization_and_restart() {
+    let temp = temporary();
+    let mut queue = spool(&temp);
+    let id = identity("main", "expired-parts");
+    let mut transport = FakeTransport::default();
+    queue
+        .capture(
+            id.clone(),
+            &candidate("main"),
+            BTreeMap::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let awaiting = queue.resume(&id, &mut transport).unwrap();
+    assert_eq!(awaiting.state, CaptureState::AwaitingIntegrity);
+    assert!(awaiting.completion_submitted);
+    let directory = temp.path().join("spool/expired-parts");
+    let before = saved_chunks(&directory, awaiting.manifest.as_ref().unwrap());
+    transport.confirmed.clear();
+    drop(queue);
+    let mut queue = spool(&temp);
+    let step = queue.resume_step(&id, &mut transport).unwrap();
+    assert_eq!(step.entry.identity, id);
+    assert_eq!(step.entry.state, CaptureState::Queued);
+    assert!(!step.entry.completion_submitted);
+    assert_eq!(step.entry.manifest, awaiting.manifest);
+    assert_eq!(step.entry.upload_plan, awaiting.upload_plan);
+    assert_eq!(
+        saved_chunks(&directory, step.entry.manifest.as_ref().unwrap()),
+        before
+    );
+    assert_eq!(
+        queue.resume(&id, &mut transport).unwrap().state,
+        CaptureState::AwaitingIntegrity
+    );
+    assert_eq!(transport.complete_calls, 2);
+    assert_eq!(transport.reserve_calls, 1);
+    assert_eq!(transport.negotiate_calls, 1);
+    transport.accepted = true;
+    assert_eq!(
+        queue.resume_step(&id, &mut transport).unwrap().entry.state,
+        CaptureState::Accepted
+    );
+}
 use std::os::unix::fs::MetadataExt;
 
 #[test]

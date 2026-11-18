@@ -312,17 +312,26 @@ impl Spool {
 
     /// Drain saved parts synchronously. Schedulers should use resume_step.
     ///
-    /// Return after acceptance, completion submission, or a polling turn without
-    /// an upload. This helper is not a fair scheduler or a loop that waits for
+    /// Return after acceptance, completion submission, a polling turn without
+    /// an upload, or one bounded part pass plus a completion turn. This helper
+    /// is not a fair scheduler or a loop that waits for
     /// integrity acceptance. Errors retain the same retry identity and bodies.
     pub fn resume(
         &mut self,
         identity: &CaptureIdentity,
         transport: &mut impl Transport,
     ) -> Result<QueueEntry> {
+        let mut turns = 0usize;
         loop {
             let step = self.resume_step(identity, transport)?;
+            turns += 1;
+            let maximum_turns = step
+                .entry
+                .upload_plan
+                .as_ref()
+                .map_or(1, |plan| plan.chunks.len().saturating_add(1));
             if step.uploaded_chunk.is_none()
+                || turns >= maximum_turns
                 || matches!(
                     step.entry.state,
                     CaptureState::Accepted | CaptureState::Cancelled
@@ -403,7 +412,7 @@ impl Spool {
             let status = transport.status(&reservation, &manifest, &plan)?;
             let confirmed = self.save_status(&directory, &mut entry, status)?;
             if !confirmed.contains(&planned.key) {
-                return Err(Error::InvalidServerStatus);
+                return Err(Error::Transport(crate::TransportError::Offline));
             }
             return step_result(entry, Some(planned.key.clone()));
         }
@@ -433,6 +442,15 @@ impl Spool {
         validate_status_progress(entry.server_status.as_ref(), &status)?;
         let state = if status.integrity_accepted {
             CaptureState::Accepted
+        } else if entry.state == CaptureState::AwaitingIntegrity
+            && plan.chunks.iter().any(|chunk| {
+                chunk.disposition == ChunkDisposition::Upload && !confirmed.contains(&chunk.key)
+            })
+        {
+            // Expired storage can lose provisional parts. Refill them from the
+            // same saved bytes, then resubmit the exact finalization request.
+            entry.completion_submitted = false;
+            CaptureState::Queued
         } else {
             entry.state
         };
