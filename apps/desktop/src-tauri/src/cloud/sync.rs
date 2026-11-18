@@ -559,16 +559,11 @@ impl Runner {
                         observation: job.observation_key.clone(),
                     });
                 }
-                Err(antiburn_cloud_capture::Error::SourceChanged)
-                | Err(antiburn_cloud_capture::Error::Io(std::io::ErrorKind::NotFound)) => {
+                Err(_) => {
                     store
                         .set_cloud_sync_job_state(job, JobState::Interrupted)
                         .map_err(|_| "Could not save the changed capture source state.")?;
                     self.state = State::Interrupted;
-                    return Ok(());
-                }
-                Err(_) => {
-                    self.state = State::Fenced;
                     return Ok(());
                 }
             }
@@ -641,35 +636,49 @@ impl Runner {
                 }
             };
             host.configure_limits(limits.clone())?;
-            let folders = policy
-                .projects
-                .iter()
-                .filter(|project| {
-                    policy.roots.iter().any(|root| {
-                        root.source_scope_id == selection.scope
-                            && root.source_kind == project.source_kind
-                            && root.path == project.source_path
+            let waiting = saved.filter(|job| job.state == JobState::WaitingForCapacity);
+            let folders = if let Some(job) = waiting {
+                job.project_folders
+                    .iter()
+                    .map(Path::new)
+                    .map(Path::to_owned)
+                    .collect()
+            } else {
+                policy
+                    .projects
+                    .iter()
+                    .filter(|project| {
+                        policy.roots.iter().any(|root| {
+                            root.source_scope_id == selection.scope
+                                && root.source_kind == project.source_kind
+                                && root.path == project.source_path
+                        })
                     })
-                })
-                .map(|project| Path::new(&project.project_path).to_owned())
-                .collect();
+                    .map(|project| Path::new(&project.project_path).to_owned())
+                    .collect()
+            };
             let projects = antiburn_cloud_capture::ProjectSelection::new(folders)
-                .map_err(|_| "A selected project folder is unavailable.")?;
-            let Some(candidate) = projects
-                .admit_with_limits(&selection.candidate, &limits)
-                .map_err(|_| "Project admission failed. No session content was uploaded.")?
-            else {
-                if let Some(job) = saved
-                    && job.state == JobState::WaitingForCapacity
-                {
+                .and_then(|projects| projects.admit_with_limits(&selection.candidate, &limits));
+            if !current() {
+                self.state = State::Paused;
+                return Ok(());
+            }
+            let candidate = match (projects, waiting) {
+                (Ok(Some(candidate)), _) => candidate,
+                (_, Some(job)) => {
                     store
                         .set_cloud_sync_job_state(job, JobState::Interrupted)
                         .map_err(|_| "Could not save the changed capture project state.")?;
                     self.state = State::Interrupted;
                     return Ok(());
                 }
-                self.state = State::Fenced;
-                continue;
+                (Ok(None), None) => {
+                    self.state = State::Fenced;
+                    continue;
+                }
+                (Err(_), None) => {
+                    return Err("Project admission failed. No session content was uploaded.".into());
+                }
             };
             if !current() {
                 self.candidates.push_front(selection);
@@ -704,21 +713,30 @@ impl Runner {
                     source_kind: root.source_kind,
                     path: root.path.clone(),
                 };
-                let evidence = cache.evidence(
-                    &policy.account_id,
-                    &policy.destination_id,
-                    &source,
-                    &selection.candidate,
-                    &limits,
-                )?;
-                let Some(evidence) = evidence else {
+                let observation = cache
+                    .evidence(
+                        &policy.account_id,
+                        &policy.destination_id,
+                        &source,
+                        &selection.candidate,
+                        &limits,
+                    )
+                    .and_then(|evidence| {
+                        evidence
+                            .map(|evidence| candidate_observation(&selection.candidate, &evidence))
+                            .transpose()
+                    });
+                if !current() {
+                    self.state = State::Paused;
+                    return Ok(());
+                }
+                if matches!(observation, Ok(None)) {
                     self.candidates.push_front(selection);
                     self.state = State::Syncing;
                     return Ok(());
                 };
                 if job.identity.source_id != candidate.source_id()
-                    || candidate_observation(&selection.candidate, &evidence)?
-                        != job.observation_key
+                    || observation.ok().flatten().as_deref() != Some(&job.observation_key)
                 {
                     store
                         .set_cloud_sync_job_state(&job, JobState::Interrupted)
