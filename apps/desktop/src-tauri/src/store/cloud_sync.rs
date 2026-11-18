@@ -7,10 +7,10 @@ use crate::store::Store;
 use antiburn_cloud_capture::{AcceptedSourceFingerprint, CaptureIdentity, QueueEntry};
 use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Component, Path},
 };
 
@@ -309,6 +309,54 @@ fn job_in(connection: &Connection, capture_id: &str) -> Result<Option<Job>> {
     .transpose()
 }
 
+/// Find or allocate the stable scope for this account, service, and source.
+fn source_scope(
+    transaction: &Transaction<'_>,
+    account: &str,
+    destination: &str,
+    resource_origin: &str,
+    root: &SourceSelection,
+) -> Result<RootScope> {
+    let kind = serde_json::to_string(&root.source_kind)?;
+    let saved: Option<String> = transaction
+        .query_row(
+            "SELECT source_scope_id FROM cloud_sync_service_scope
+             WHERE account_id=?1 AND destination_id=?2 AND resource_origin=?3 AND source_kind=?4 AND root_path=?5",
+            params![account, destination, resource_origin, kind, root.path],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let source_scope_id = match saved {
+        Some(saved) => saved,
+        None => {
+            let count: u64 = transaction.query_row(
+                "SELECT count(*) FROM cloud_sync_service_scope",
+                [],
+                |row| row.get(0),
+            )?;
+            ensure!(count < 4096, "Cloud source scope storage is full");
+            let scope = random_id()?;
+            transaction.execute(
+                "INSERT INTO cloud_sync_service_scope VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    account,
+                    destination,
+                    resource_origin,
+                    kind,
+                    root.path,
+                    scope
+                ],
+            )?;
+            scope
+        }
+    };
+    Ok(RootScope {
+        path: root.path.clone(),
+        source_kind: root.source_kind,
+        source_scope_id,
+    })
+}
+
 impl Store {
     /// Read only this account and workspace's explicit ongoing policy.
     /// Legacy setup preferences and saved source requests never create one.
@@ -388,44 +436,13 @@ impl Store {
         let transaction = connection.transaction()?;
         let mut scoped = Vec::new();
         for root in roots {
-            let kind = serde_json::to_string(&root.source_kind)?;
-            let saved: Option<String> = transaction
-                .query_row(
-                    "SELECT source_scope_id FROM cloud_sync_service_scope
-                 WHERE account_id=?1 AND destination_id=?2 AND resource_origin=?3 AND source_kind=?4 AND root_path=?5",
-                    params![account, destination, resource_origin, kind, root.path],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let scope = match saved {
-                Some(saved) => saved,
-                None => {
-                    let count: u64 = transaction.query_row(
-                        "SELECT count(*) FROM cloud_sync_service_scope",
-                        [],
-                        |row| row.get(0),
-                    )?;
-                    ensure!(count < 4096, "Cloud source scope storage is full");
-                    let scope = random_id()?;
-                    transaction.execute(
-                        "INSERT INTO cloud_sync_service_scope VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                        params![
-                            account,
-                            destination,
-                            resource_origin,
-                            kind,
-                            root.path,
-                            scope
-                        ],
-                    )?;
-                    scope
-                }
-            };
-            scoped.push(RootScope {
-                path: root.path.clone(),
-                source_kind: root.source_kind,
-                source_scope_id: scope,
-            });
+            scoped.push(source_scope(
+                &transaction,
+                account,
+                destination,
+                resource_origin,
+                root,
+            )?);
         }
         let policy = Policy {
             account_id: account.into(),
@@ -445,6 +462,96 @@ impl Store {
         )?;
         transaction.commit()?;
         Ok(policy)
+    }
+
+    /// Apply a checked group change to the exact current policy in one transaction.
+    /// The caller checks group membership and admits any new source before this call.
+    /// An OFF change can only remove grants. The scope table retains IDs for re-enable.
+    pub(crate) fn set_cloud_sync_project(
+        &self,
+        policy: &Policy,
+        group_id: &str,
+        selected: bool,
+        projects: &BTreeSet<ProjectSelection>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        let origin = policy
+            .resource_origin
+            .as_deref()
+            .filter(|origin| valid_resource_origin(origin))
+            .ok_or_else(|| anyhow::anyhow!("Cloud service origin is invalid"))?;
+        ensure!(
+            policy.consent_version == ONGOING_CONSENT_VERSION,
+            "Cloud consent is required"
+        );
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let raw: String = transaction.query_row(
+            "SELECT record_json FROM cloud_sync_policy WHERE account_id=?1 AND destination_id=?2",
+            params![policy.account_id, policy.destination_id],
+            |row| row.get(0),
+        )?;
+        ensure!(
+            serde_json::from_str::<Policy>(&raw)? == *policy,
+            "Cloud policy changed"
+        );
+        let mut saved = policy.clone();
+        if selected {
+            ensure!(
+                !projects.is_empty()
+                    && projects
+                        .iter()
+                        .all(|project| valid_project_path(&project.project_path)),
+                "Choose recorded Cloud projects"
+            );
+            saved.projects.extend(projects.iter().cloned());
+            saved.projects.sort();
+            saved.projects.dedup();
+            ensure!(saved.projects.len() <= 100, "Choose bounded Cloud projects");
+            let roots: BTreeSet<_> = projects
+                .iter()
+                .map(|project| SourceSelection {
+                    source_kind: project.source_kind,
+                    path: project.source_path.clone(),
+                })
+                .collect();
+            for root in roots {
+                if !saved.roots.iter().any(|existing| {
+                    existing.source_kind == root.source_kind && existing.path == root.path
+                }) {
+                    ensure!(saved.roots.len() < 100, "Choose bounded Cloud sources");
+                    saved.roots.push(source_scope(
+                        &transaction,
+                        &policy.account_id,
+                        &policy.destination_id,
+                        origin,
+                        &root,
+                    )?);
+                }
+            }
+            saved
+                .roots
+                .sort_by(|a, b| (a.source_kind, &a.path).cmp(&(b.source_kind, &b.path)));
+        } else {
+            saved.projects.retain(|project| !projects.contains(project));
+            saved.roots.retain(|root| {
+                let binds_root = |project: &ProjectSelection| {
+                    project.source_kind == root.source_kind && project.source_path == root.path
+                };
+                !projects.iter().any(binds_root) || saved.projects.iter().any(binds_root)
+            });
+        }
+        saved.project_choices.insert(group_id.to_owned(), selected);
+        if saved != *policy {
+            saved.revision = random_id()?;
+            transaction.execute(
+                "UPDATE cloud_sync_policy SET record_json=?3 WHERE account_id=?1 AND destination_id=?2",
+                params![saved.account_id, saved.destination_id, encode(&saved, 524_288)?],
+            )?;
+        }
+        ensure!(current(), "Cloud account or upload controls changed");
+        transaction.commit()?;
+        Ok(saved)
     }
 
     /// Persist pause or explicit retry without changing consent or frozen jobs.

@@ -51,7 +51,7 @@ function confirmationContextKey(value: CloudViewSnapshot) {
   ])
 }
 
-/** One surface's view state. Only an explicit Start action grants content consent. */
+/** One surface's view state. Start or a confirmed Settings addition grants content consent. */
 export interface CloudViewSnapshot {
   /** Fence actions rendered before an account, source, or folder selection change. */
   contextRevision: number
@@ -607,6 +607,21 @@ export class CloudSession {
       this.selectedProjects(choices),
     ])
   }
+  /** Fence one Settings confirmation even while its group is excluded from Start. */
+  private projectConfirmationKey(group: DesktopCloudProjectGroup) {
+    return JSON.stringify([
+      group.id,
+      group.environment,
+      group.path,
+      group.groupingComplete,
+      [...group.folderPaths].sort(),
+      this.supportedProjectSelections(group)
+        .map((project) =>
+          JSON.stringify([project.sourceKind, project.sourcePath, project.projectPath]),
+        )
+        .sort(),
+    ])
+  }
   /** Read one bounded page without saving initial ON choices. Desktop code
    * owns source evidence and worktree grouping; failed pages never become empty success.
    */
@@ -665,6 +680,7 @@ export class CloudSession {
         worktreeCount: group.worktreeCount,
         sessionCount: Math.max(group.sessionCount, group.captureSessionCount),
         captureSupported: this.supportedProjectSelections(group).length > 0,
+        confirmationKey: this.projectConfirmationKey(group),
       }))
       const choices = cloudProjectChoices(
         viewGroups,
@@ -717,6 +733,81 @@ export class CloudSession {
         selectionKey: this.projectSelectionKey(projects.groups, choices),
       },
     })
+  }
+  /** Keep saved local grants visible when discovery loses a folder. Show grants
+   * above or inside a group by directory boundary, never by a partial name.
+   */
+  projectHasSavedPermission = (id: string) => {
+    const group = this.desktopProjects.find((item) => item.id === id)
+    return (
+      group?.environment === "native" &&
+      !!this.snapshot.ongoing?.projects.some((project) =>
+        [group.path, ...group.folderPaths].some(
+          (path) =>
+            path === project.projectPath ||
+            path.startsWith(`${project.projectPath.replace(/\/+$/, "")}/`) ||
+            project.projectPath.startsWith(`${path.replace(/\/+$/, "")}/`),
+        ),
+      )
+    )
+  }
+  /** Save one Settings switch. The caller confirms additions before invoking this. */
+  setSavedProject = async (context: CloudViewSnapshot, id: string, selected: boolean) => {
+    const port = this.port.ongoing
+    const binding = this.projectBinding(!selected)
+    const group = this.desktopProjects.find((item) => item.id === id)
+    const policyRevision = context.ongoing?.policyRevision
+    if (
+      !this.active ||
+      !port ||
+      !binding ||
+      !group ||
+      !policyRevision ||
+      policyRevision !== this.snapshot.ongoing?.policyRevision ||
+      this.snapshot.busy ||
+      this.syncInFlight ||
+      this.snapshot.projects?.loading ||
+      this.snapshot.ongoing?.consentVersion !== "desktop-project-sync-v1" ||
+      !this.snapshot.ongoing.storageKnown ||
+      context.contextRevision !== this.consentRevision ||
+      confirmationContextKey(context) !== confirmationContextKey(this.snapshot)
+    )
+      return
+    if (
+      selected &&
+      context.projects?.groups.find((item) => item.id === id)?.confirmationKey !==
+        this.projectConfirmationKey(group)
+    )
+      return
+    const projects = selected ? this.supportedProjectSelections(group) : []
+    if (selected && !projects.length) return
+    const generation = this.generation
+    const revision = this.ongoingRevision
+    this.publish({ busy: true, error: null })
+    try {
+      const status = await port.setProject({
+        ...binding,
+        groupId: id,
+        selected,
+        projects,
+        folderPaths: selected
+          ? group.folderPaths
+          : [...new Set([group.path, ...group.folderPaths])],
+        expectedPolicyRevision: policyRevision,
+      })
+      if (this.active && generation === this.generation && revision === this.ongoingRevision)
+        this.receiveOngoing(status)
+    } catch {
+      if (
+        this.active &&
+        generation === this.generation &&
+        this.snapshot.cloud.identity?.id === binding.accountId &&
+        this.snapshot.cloud.destination?.id === binding.destinationId
+      )
+        this.publish({ error: "Could not confirm the folder change. Try the switch again." })
+    } finally {
+      if (this.active && generation === this.generation) this.publish({ busy: false })
+    }
   }
   /** Pause or retry the saved policy without expanding its sources or project paths. */
   controlSync = async (paused: boolean) => {

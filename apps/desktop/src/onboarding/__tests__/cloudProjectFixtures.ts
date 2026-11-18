@@ -79,6 +79,7 @@ export function ongoingStatus(patch: Partial<CloudOngoingStatus> = {}): CloudOng
     accountId: "synthetic-account",
     destinationId: "synthetic-personal",
     consentVersion: null,
+    policyRevision: "synthetic-policy",
     paused: false,
     selectedSources: [],
     projects: [],
@@ -138,6 +139,14 @@ export function cloudProjectFixture(): {
         projects: consent.projects,
         selectedSources: consent.selectedSources,
         projectChoices: consent.projectChoices,
+      }),
+    ),
+    setProject: vi.fn<CloudOngoingPort["setProject"]>(async (change) =>
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projectChoices: { [change.groupId]: change.selected },
+        projects: change.selected ? change.projects : [],
       }),
     ),
     pause: vi.fn<CloudOngoingPort["pause"]>(async () =>

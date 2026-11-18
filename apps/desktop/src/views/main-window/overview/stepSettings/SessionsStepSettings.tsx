@@ -197,7 +197,7 @@ export function SessionsStepSettings() {
     <>
       {info?.cloudEnabled && (
         <SectionGroup title="Antiburn Cloud">
-          <Card>
+          <Card divided={false}>
             <CloudAccount session={cloudSession} value={cloud}>
               <SettingsToggleRow
                 searchId="cloudUpload"

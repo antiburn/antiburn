@@ -133,7 +133,7 @@ it("requires source selection and sends account-bound folder changes from Settin
   const row = screen.getByText("Cloud folders").closest<HTMLElement>("[data-settings-control]")!
   row.scrollIntoView = vi.fn()
   new SettingsTargetFocus().attach(container, "sessions", "cloudFolders", 1)()
-  expect(screen.getByRole("button", { name: "Choose folders…" })).toHaveFocus()
+  expect(source).toHaveFocus()
   expect(source).not.toBeChecked()
   expect(save).not.toHaveBeenCalled()
   fireEvent.click(source)
@@ -159,7 +159,7 @@ it("keeps revocation available when folder setup cannot load", async () => {
   render(<Account session={session} />)
   const logout = await screen.findByRole("button", { name: "Sign out" })
   expect(logout).toBeEnabled()
-  expect(screen.getByRole("button", { name: "Choose folders…" })).toBeDisabled()
+  expect(screen.queryByRole("button", { name: /Choose folders/ })).not.toBeInTheDocument()
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   fireEvent.click(logout)
   await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
@@ -183,7 +183,9 @@ it("saves a desktop capture request from Settings after onboarding without claim
   render(<Account session={session} />)
   const save = await screen.findByRole("button", { name: "Save capture request" })
   expect(save).toBeEnabled()
-  expect(screen.getByText(/Choose the folders where Claude saves sessions/)).toBeVisible()
+  expect(
+    screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
+  ).not.toBeInTheDocument()
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   expect(save).toBeEnabled()
   fireEvent.click(save)
@@ -224,19 +226,28 @@ it("does not save or authorize a request when source selection changes", async (
   expect(start).not.toHaveBeenCalled()
 })
 
-it("selects OpenCode databases explicitly from Settings before typed content confirmation", async () => {
+it("uses an already discovered OpenCode source without a Settings picker", async () => {
   const { session, pick, save, prepareSync } = fixture({
     ...desktopCapture,
-    draft: { screen: "complete", folders: [] },
+    draft: {
+      screen: "complete",
+      folders: [
+        {
+          path: "/Example/opencode/opencode.db",
+          sourceKind: "opencode_sqlite_v2",
+          selected: true,
+        },
+      ],
+    },
   })
   render(<Account session={session} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Choose OpenCode databases…" }))
-  await waitFor(() => expect(save).toHaveBeenCalledOnce())
-  expect(pick).toHaveBeenCalledWith("opencode_sqlite_v2")
-  const source = screen.getByRole("switch", {
+  const source = await screen.findByRole("switch", {
     name: "Select /Example/opencode/opencode.db for Cloud capture",
   })
   expect(source).toBeChecked()
+  expect(pick).not.toHaveBeenCalled()
+  expect(save).not.toHaveBeenCalled()
+  expect(screen.queryByRole("button", { name: /Choose OpenCode/ })).not.toBeInTheDocument()
   expect(screen.getByText("OpenCode V2: /Example/opencode/opencode.db")).toBeVisible()
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   expect(prepareSync).not.toHaveBeenCalled()

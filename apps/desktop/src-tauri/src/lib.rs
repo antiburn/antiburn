@@ -951,7 +951,7 @@ mod tests {
                 .iter()
                 .filter(|name| name.starts_with("cloud_"))
                 .count(),
-            if cfg!(feature = "cloud") { 18 } else { 0 }
+            if cfg!(feature = "cloud") { 19 } else { 0 }
         );
     }
 

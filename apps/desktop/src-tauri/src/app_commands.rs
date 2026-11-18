@@ -34,6 +34,8 @@ macro_rules! with_app_commands {
             #[cfg(feature = "cloud")]
             cloud::sync::cloud_enable_sync => "cloud_enable_sync",
             #[cfg(feature = "cloud")]
+            cloud::sync::cloud_set_sync_project => "cloud_set_sync_project",
+            #[cfg(feature = "cloud")]
             cloud::sync::cloud_pause_sync => "cloud_pause_sync",
             #[cfg(feature = "cloud")]
             cloud::sync::cloud_retry_sync => "cloud_retry_sync",

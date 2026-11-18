@@ -32,12 +32,20 @@ const CAPACITY_ONE: usize = 6;
 const RESERVE_CAPACITY: usize = 7;
 const VERIFY_PENDING: usize = 8;
 const UNKNOWN_CAPACITY: usize = 9;
+const PART_CONFLICT: usize = 10;
+const FINALIZE_CONFLICT: usize = 11;
+const IDLE_PART: usize = 12;
+const IDLE_FINALIZE: usize = 13;
+const RENEWED_PART_CONFLICT: usize = 14;
+const RENEWED_FINALIZE_CONFLICT: usize = 15;
 
 struct Service {
     origin: String,
     mode: Arc<AtomicUsize>,
     requests: Arc<AtomicUsize>,
     reserves: Arc<AtomicUsize>,
+    renewals: Arc<AtomicUsize>,
+    conflicts: Arc<AtomicUsize>,
     capacity_rejections: Arc<AtomicUsize>,
     reserve_identities: Arc<Mutex<Vec<CaptureIdentity>>>,
     reserve_database: Arc<Mutex<Option<std::path::PathBuf>>>,
@@ -53,6 +61,8 @@ impl Service {
         let mode = Arc::new(AtomicUsize::new(mode));
         let requests = Arc::new(AtomicUsize::new(0));
         let reserves = Arc::new(AtomicUsize::new(0));
+        let renewals = Arc::new(AtomicUsize::new(0));
+        let conflicts = Arc::new(AtomicUsize::new(0));
         let capacity_rejections = Arc::new(AtomicUsize::new(0));
         let reserve_identities = Arc::new(Mutex::new(Vec::new()));
         let reserve_database = Arc::new(Mutex::new(None::<std::path::PathBuf>));
@@ -67,12 +77,16 @@ impl Service {
         let worker_capacity_rejections = capacity_rejections.clone();
         let worker_reserve_identities = reserve_identities.clone();
         let worker_reserve_database = reserve_database.clone();
+        let worker_renewals = renewals.clone();
+        let worker_conflicts = conflicts.clone();
         let worker = std::thread::spawn(move || {
             let mut manifest: Option<CaptureManifest> = None;
             let mut receipts = Vec::<PartReceipt>::new();
             let mut pending_key: Option<ChunkKey> = None;
             let mut finalized = false;
             let mut active = false;
+            let mut renewed = false;
+            let mut conflicted_request = None;
             while !worker_stop.load(Ordering::Acquire) {
                 let mut stream = match listener.accept() {
                     Ok((stream, _)) => stream,
@@ -94,6 +108,11 @@ impl Service {
                 } else {
                     serde_json::from_slice(&body).unwrap()
                 };
+                if (line.contains("/parts ") || line.contains("/finalize "))
+                    && let Some(previous) = conflicted_request.take()
+                {
+                    assert_eq!((line.clone(), body.clone()), previous);
+                }
                 let (status, output) = if line.contains("/capabilities ") {
                     if mode == CAPS_OFFLINE {
                         continue;
@@ -221,6 +240,41 @@ impl Service {
                         })
                         .unwrap(),
                     )
+                } else if line.contains("/renew ") {
+                    worker_renewals.fetch_add(1, Ordering::AcqRel);
+                    let saved = manifest.as_ref().unwrap();
+                    assert_eq!(input["reservation_id"], "reservation");
+                    assert_eq!(input["manifest_sha256"], saved.sha256().unwrap());
+                    assert_eq!(input["plan_id"], "plan");
+                    if matches!(
+                        mode,
+                        IDLE_PART
+                            | IDLE_FINALIZE
+                            | READY
+                            | RENEWED_PART_CONFLICT
+                            | RENEWED_FINALIZE_CONFLICT
+                    ) {
+                        renewed = true;
+                        (204, serde_json::Value::Null)
+                    } else {
+                        (
+                            409,
+                            serde_json::json!({"error": {"code": "capture_conflict", "retryable": false, "message": "Conflict."}}),
+                        )
+                    }
+                } else if (mode == PART_CONFLICT && line.contains("/parts "))
+                    || (mode == FINALIZE_CONFLICT && line.contains("/finalize "))
+                    || (mode == RENEWED_PART_CONFLICT && line.contains("/parts "))
+                    || (mode == RENEWED_FINALIZE_CONFLICT && line.contains("/finalize "))
+                    || (!renewed && mode == IDLE_PART && line.contains("/parts "))
+                    || (!renewed && mode == IDLE_FINALIZE && line.contains("/finalize "))
+                {
+                    worker_conflicts.fetch_add(1, Ordering::AcqRel);
+                    conflicted_request = Some((line.clone(), body.clone()));
+                    (
+                        409,
+                        serde_json::json!({"error": {"code": "capture_conflict", "retryable": false, "message": "Conflict."}}),
+                    )
                 } else if line.contains("/parts ") {
                     let key: ChunkKey = serde_json::from_value(input["key"].clone()).unwrap();
                     let chunk = manifest.as_ref().unwrap().chunk(&key).unwrap();
@@ -254,7 +308,11 @@ impl Service {
                 } else {
                     panic!("unexpected test service route");
                 };
-                let output = output.to_string();
+                let output = if status == 204 {
+                    String::new()
+                } else {
+                    output.to_string()
+                };
                 write!(stream, "HTTP/1.1 {status} Synthetic\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{output}", output.len()).unwrap();
             }
         });
@@ -263,6 +321,8 @@ impl Service {
             mode,
             requests,
             reserves,
+            renewals,
+            conflicts,
             capacity_rejections,
             reserve_identities,
             reserve_database,
@@ -619,6 +679,152 @@ fn write_source(root: &Path, project: &Path, id: &str, message: &str) {
         ),
     )
     .unwrap();
+}
+
+#[test]
+fn cloud_scheduler_folder_opt_out_keeps_saved_bytes_without_an_upload_error() {
+    let mut fixture = Fixture::new(READY, 0);
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    let directory = fixture
+        ._directory
+        .path()
+        .join("cloud-capture-v1")
+        .join(&saved.identity.capture_id);
+    let bytes = saved_files(&directory);
+    fixture.policy = fixture
+        .store
+        .set_cloud_sync_project(
+            &fixture.policy,
+            "synthetic-group",
+            false,
+            &fixture.policy.projects.iter().cloned().collect(),
+            || true,
+        )
+        .unwrap();
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fixture.turn();
+    let observed = status(
+        &fixture.store,
+        &mut fixture.host,
+        &fixture.engine,
+        fixture.runner.state,
+    )
+    .unwrap();
+    assert_eq!(observed.status, State::Ready);
+    assert_eq!(observed.queued_count, 0);
+    assert_eq!(observed.fenced_count, 0);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+    assert_eq!(
+        fixture.host.spool().unwrap().entries().unwrap(),
+        vec![saved]
+    );
+    assert_eq!(saved_files(&directory), bytes);
+}
+
+#[test]
+fn cloud_scheduler_renews_idle_parts_and_finalization_without_recapture() {
+    for mode in [IDLE_PART, IDLE_FINALIZE] {
+        let mut fixture = Fixture::new(mode, 0);
+        fixture.turn();
+        let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+        fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+        fixture.accept_first();
+        assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 1);
+        assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+        assert_eq!(
+            fixture
+                .service
+                .reserve_identities
+                .lock()
+                .unwrap()
+                .as_slice(),
+            std::slice::from_ref(&saved.identity)
+        );
+        assert_eq!(
+            fixture
+                .store
+                .cloud_sync_job(&saved.identity.capture_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            JobState::Accepted,
+        );
+    }
+}
+
+#[test]
+fn cloud_scheduler_rechecks_older_fenced_uploads_automatically_with_bounded_conflicts() {
+    let mut fixture = Fixture::new(PART_CONFLICT, 0);
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    fixture.turn();
+    assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 1);
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_job(&saved.identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Fenced
+    );
+    fixture.turn();
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fixture.turn();
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+    fixture.service.mode.store(IDLE_PART, Ordering::Release);
+    fixture.restart_scheduler();
+    fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+    fixture.accept_first();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 2);
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_job(&saved.identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Accepted
+    );
+}
+
+#[test]
+fn cloud_scheduler_replays_once_when_a_renewed_request_still_conflicts() {
+    for mode in [RENEWED_PART_CONFLICT, RENEWED_FINALIZE_CONFLICT] {
+        let mut fixture = Fixture::new(mode, 0);
+        for _ in 0..8 {
+            fixture.turn();
+            if fixture.runner.state == State::Fenced {
+                break;
+            }
+        }
+        assert_eq!(fixture.runner.state, State::Fenced);
+        assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 1);
+        assert_eq!(fixture.service.conflicts.load(Ordering::Acquire), 2);
+        let requests = fixture.service.requests.load(Ordering::Acquire);
+        fixture.turn();
+        assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+    }
+}
+
+#[test]
+fn cloud_scheduler_recovers_saved_bytes_when_the_conflict_cooldown_expires() {
+    let mut fixture = Fixture::new(PART_CONFLICT, 0);
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::Fenced);
+    fixture.service.mode.store(IDLE_PART, Ordering::Release);
+    fixture
+        .runner
+        .conflict_rechecks
+        .insert(saved.identity.capture_id.clone(), Instant::now());
+    fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+    fixture.accept_first();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 2);
 }
 
 #[test]
@@ -1030,6 +1236,80 @@ fn cloud_scheduler_capacity_retry_cannot_reuse_a_narrowed_policy() {
     let retried = fixture.host.spool().unwrap().entries().unwrap().remove(0);
     assert_ne!(retried.identity.capture_id, before.identity.capture_id);
     assert_eq!(retried.identity.source_id, before.identity.source_id);
+}
+
+#[test]
+fn cloud_scheduler_keeps_conflicted_bytes_and_recovers_without_explicit_retry() {
+    for mode in [PART_CONFLICT, FINALIZE_CONFLICT] {
+        let mut fixture = Fixture::new(mode, 0);
+        for _ in 0..8 {
+            fixture.turn();
+            if fixture.runner.state == State::Fenced {
+                break;
+            }
+        }
+        let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+        let job = fixture
+            .store
+            .cloud_sync_job(&entry.identity.capture_id)
+            .unwrap()
+            .unwrap();
+        assert!(job.allowed(&fixture.policy));
+        assert_eq!(job.state, JobState::Fenced);
+        assert_eq!(
+            entry.state,
+            if mode == PART_CONFLICT {
+                CaptureState::Queued
+            } else {
+                CaptureState::AwaitingIntegrity
+            }
+        );
+        assert!(!entry.completion_submitted);
+        let directory = fixture
+            ._directory
+            .path()
+            .join("cloud-capture-v1")
+            .join(&entry.identity.capture_id);
+        let bytes = saved_files(&directory);
+
+        fixture.restart_scheduler();
+        fixture.turn();
+        let requests = fixture.service.requests.load(Ordering::Acquire);
+        fixture.turn();
+        assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+        assert_eq!(
+            status(
+                &fixture.store,
+                &mut fixture.host,
+                &fixture.engine,
+                fixture.runner.state,
+            )
+            .unwrap()
+            .fenced_count,
+            1
+        );
+        assert_eq!(saved_files(&directory), bytes);
+
+        fixture.service.mode.store(READY, Ordering::Release);
+        fixture.restart_scheduler();
+        for _ in 0..8 {
+            fixture.turn();
+            if fixture.host.spool().unwrap().entries().unwrap().is_empty() {
+                break;
+            }
+        }
+        assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+        assert_eq!(
+            fixture
+                .store
+                .cloud_sync_job(&entry.identity.capture_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            JobState::Accepted
+        );
+        assert!(!directory.exists());
+    }
 }
 
 #[test]

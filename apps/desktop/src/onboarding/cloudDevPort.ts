@@ -114,6 +114,7 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
     accountId: identity.id,
     destinationId: "cloud-dev-personal",
     consentVersion: completion ? "desktop-project-sync-v1" : null,
+    policyRevision: "preview-policy",
     paused: false,
     selectedSources: completion
       ? groups.flatMap((group) =>
@@ -214,6 +215,17 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
         publish()
         publishSync()
         ongoingProgress()
+        return ongoing
+      },
+      setProject: async ({ groupId, selected, projects }) => {
+        const paths = new Set(groups.find((group) => group.id === groupId)?.folderPaths)
+        const next = ongoing.projects.filter((project) => !paths.has(project.projectPath))
+        ongoing = {
+          ...ongoing,
+          projects: selected ? [...next, ...projects] : next,
+          projectChoices: { ...ongoing.projectChoices, [groupId]: selected },
+        }
+        publishSync()
         return ongoing
       },
       pause: async () => {

@@ -7,6 +7,36 @@ use std::{fs, sync::Arc};
 
 const ORIGIN: &str = "https://api.example";
 
+#[test]
+fn settings_project_removes_unavailable_bindings_by_exact_folder_and_group_id() {
+    let main = "/unavailable/project";
+    let worktree = "/unavailable/worktree";
+    let saved = [
+        ProjectSelection {
+            source_kind: SourceKind::OpenCodeSqliteV2,
+            source_path: "/unavailable/opencode.db".into(),
+            project_path: main.into(),
+        },
+        ProjectSelection {
+            source_kind: SourceKind::ClaudeJsonl,
+            source_path: "/unavailable/claude".into(),
+            project_path: worktree.into(),
+        },
+    ];
+    let id = group_id("native", main);
+    assert_eq!(
+        group_projects_to_remove(&id, &[worktree.into()], &saved).unwrap(),
+        saved.iter().cloned().collect()
+    );
+    assert!(group_projects_to_remove(&id, &[], &saved).is_err());
+    let mut overlapping = saved.to_vec();
+    overlapping.push(ProjectSelection {
+        project_path: "/unavailable".into(),
+        ..saved[0].clone()
+    });
+    assert!(group_projects_to_remove(&id, &[worktree.into()], &overlapping).is_err());
+}
+
 struct Authority;
 
 impl Transport for Authority {
@@ -192,6 +222,41 @@ fn cloud_project_discovery_selected_custom_opencode_file_produces_groups_without
     );
     assert!(!fixture.directory.path().join("cloud-capture-v1").exists());
     assert_eq!(fs::read(&fixture.source.path).unwrap(), before);
+}
+
+#[test]
+fn cloud_project_discovery_uses_default_opencode_source_without_saving_consent() {
+    let mut fixture = Fixture::new();
+    let binding = fixture.binding();
+    let known = known_sources(&fixture.store, [PathBuf::from(&fixture.source.path)]).unwrap();
+    let discovery = discover_projects(
+        &fixture.store,
+        &mut fixture.cache,
+        &fixture.engine,
+        &binding,
+        None,
+        known,
+        &|| true,
+    )
+    .unwrap();
+
+    assert!(!discovery.partial);
+    assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
+    assert!(discovery.groups.iter().any(|group| group.capture_supported));
+    assert!(
+        fixture
+            .store
+            .cloud_draft("synthetic-user", "synthetic-personal")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        fixture
+            .store
+            .cloud_sync_policy("synthetic-user", "synthetic-personal", ORIGIN)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

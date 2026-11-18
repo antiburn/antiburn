@@ -21,6 +21,7 @@ pub(super) enum Route {
     Status,
     Parts,
     Finalize,
+    Renew,
 }
 
 impl Route {
@@ -32,6 +33,7 @@ impl Route {
             Self::Status => format!("/v1/desktop/captures/{capture}/status"),
             Self::Parts => format!("/v1/desktop/captures/{capture}/parts"),
             Self::Finalize => format!("/v1/desktop/captures/{capture}/finalize"),
+            Self::Renew => format!("/v1/desktop/captures/{capture}/renew"),
         }
     }
 }
@@ -247,7 +249,10 @@ impl<'a> HttpTransport<'a> {
         ) {
             Ok(response) => {
                 let (failure, error) = match response.status {
-                    200..=299 => return Ok(response),
+                    200..=299 => {
+                        self.failure = None;
+                        return Ok(response);
+                    }
                     401 | 403 => (Failure::Unauthorized, TransportError::Unauthorized),
                     409 if matches!(route, Route::Reserve) && source_suppressed(&response.body) => {
                         (Failure::SourceSuppressed, TransportError::Conflict)
@@ -297,6 +302,37 @@ impl<'a> HttpTransport<'a> {
         }
     }
 
+    /// Reuse the same body and binding. Do not replay if renewal fails.
+    fn request_with_renewal(
+        &mut self,
+        identity: &CaptureIdentity,
+        route: Route,
+        body: &impl Serialize,
+        binding: &Context<'_>,
+    ) -> Result<ApiResponse, TransportError> {
+        match self.request(identity, route, body) {
+            Err(_) if self.failure == Some(Failure::Conflict) => {
+                self.renew(identity, binding)?;
+                self.request(identity, route, body)
+            }
+            result => result,
+        }
+    }
+
+    /// Renew only the given reservation and immutable registered plan.
+    fn renew(
+        &mut self,
+        identity: &CaptureIdentity,
+        binding: &impl Serialize,
+    ) -> Result<(), TransportError> {
+        let response = self.request(identity, Route::Renew, binding)?;
+        if response.status != 204 || !response.body.is_empty() {
+            self.failure = Some(Failure::Rejected);
+            return Err(TransportError::Rejected);
+        }
+        Ok(())
+    }
+
     fn decode<T: DeserializeOwned>(&mut self, response: ApiResponse) -> Result<T, TransportError> {
         if response.status != 200 {
             self.failure = Some(Failure::Rejected);
@@ -311,21 +347,26 @@ impl<'a> HttpTransport<'a> {
 
 /// Only the closed capacity refusal proves that reserve created no reservation.
 fn capacity_refused(body: &[u8]) -> bool {
+    api_error_is(body, "capture_limit", true)
+}
+
+/// Check only a closed API error, not message text from a server or proxy.
+fn api_error_is(body: &[u8], code: &str, retryable: bool) -> bool {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Envelope {
-        error: CapacityError,
+        error: ApiError,
     }
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
-    struct CapacityError {
+    struct ApiError {
         code: String,
         retryable: bool,
         #[serde(rename = "message")]
         _message: serde::de::IgnoredAny,
     }
     serde_json::from_slice::<Envelope>(body)
-        .is_ok_and(|value| value.error.code == "capture_limit" && value.error.retryable)
+        .is_ok_and(|value| value.error.code == code && value.error.retryable == retryable)
 }
 
 /// Accept only the API's closed reserve error, never raw storage/provider text.
@@ -354,6 +395,16 @@ struct Context<'a> {
     reservation_id: &'a str,
     manifest_sha256: &'a str,
     plan_id: &'a str,
+}
+
+impl<'a> Context<'a> {
+    fn new(reservation_id: &'a str, plan: &'a UploadPlan) -> Self {
+        Self {
+            reservation_id,
+            manifest_sha256: &plan.manifest_sha256,
+            plan_id: &plan.plan_id,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -501,11 +552,7 @@ impl Transport for HttpTransport<'_> {
         let response = self.request(
             &manifest.identity,
             Route::Status,
-            &Context {
-                reservation_id,
-                manifest_sha256: &plan.manifest_sha256,
-                plan_id: &plan.plan_id,
-            },
+            &Context::new(reservation_id, plan),
         )?;
         self.decode(response)
     }
@@ -519,13 +566,15 @@ impl Transport for HttpTransport<'_> {
         chunk: &Chunk,
         body: &mut dyn Read,
     ) -> Result<(), TransportError> {
-        let response = self.request(
+        let binding = Context::new(reservation_id, plan);
+        let response = self.request_with_renewal(
             &manifest.identity,
             Route::Parts,
             &serde_json::json!({
                 "reservation_id": reservation_id, "manifest_sha256": plan.manifest_sha256,
                 "plan_id": plan.plan_id, "key": key,
             }),
+            &binding,
         )?;
         let part: Part = self.decode(response)?;
         let (url, headers) = signed_request(part, chunk)?;
@@ -563,15 +612,9 @@ impl Transport for HttpTransport<'_> {
         manifest: &CaptureManifest,
         plan: &UploadPlan,
     ) -> Result<(), TransportError> {
-        let response = self.request(
-            &manifest.identity,
-            Route::Finalize,
-            &Context {
-                reservation_id,
-                manifest_sha256: &plan.manifest_sha256,
-                plan_id: &plan.plan_id,
-            },
-        )?;
+        let binding = Context::new(reservation_id, plan);
+        let response =
+            self.request_with_renewal(&manifest.identity, Route::Finalize, &binding, &binding)?;
         if response.status == 202 {
             Ok(())
         } else {

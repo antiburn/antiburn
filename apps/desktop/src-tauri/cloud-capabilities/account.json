@@ -19,6 +19,7 @@
     "allow-cloud-sync-projects",
     "allow-cloud-sync-status",
     "allow-cloud-enable-sync",
+    "allow-cloud-set-sync-project",
     "allow-cloud-pause-sync",
     "allow-cloud-retry-sync"
   ]

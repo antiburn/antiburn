@@ -201,7 +201,7 @@ it("keeps unreadable saved-upload state visible without extra status paragraphs"
 it("keeps blocked saved work visible after Retry without claiming acceptance", async () => {
   mockCloud(true, false, { status: "syncing", fencedCount: 2 })
   render(<SessionsStepSettings />)
-  expect(await screen.findByText("Some uploads are blocked.")).toBeVisible()
+  expect(await screen.findByText("Could not resume saved uploads.")).toBeVisible()
   await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
   fireEvent.click(screen.getByRole("button", { name: "Retry saved uploads" }))
   await waitFor(() =>
@@ -212,7 +212,7 @@ it("keeps blocked saved work visible after Retry without claiming acceptance", a
   await waitFor(() =>
     expect(screen.getByRole("button", { name: "Retry saved uploads" })).toBeEnabled(),
   )
-  expect(screen.getAllByText("Some uploads are blocked.")).toHaveLength(1)
+  expect(screen.getAllByText("Could not resume saved uploads.")).toHaveLength(1)
   expect(
     screen.queryByText(/uploaded ·|Transferred|All sessions uploaded/),
   ).not.toBeInTheDocument()

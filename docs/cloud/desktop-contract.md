@@ -239,12 +239,20 @@ provider-source discovery, not accepted Cloud sessions. Only qualified Claude an
 V2 sources can produce upload jobs; a suggested project or checked row does not
 add support for another provider.
 
-New project choices default to selected in renderer memory. Loading a page or
-toggling a row does not save ongoing consent or switch uploads on. Existing
+New onboarding project choices default to selected in renderer memory. Loading a page or
+toggling an onboarding row does not save ongoing consent or switch uploads on. Existing
 explicit choices and saved opt-outs take precedence over a new default.
 **Start syncing** approves only the currently loaded selected groups and their
 exact current path members. **Load more folders** does not approve unseen groups.
 Until confirmation, an existing saved policy stays unchanged.
+
+After initial consent, Settings switches show saved project permission rather
+than draft defaults. Turning a group off removes its approved bindings immediately.
+Turning it on requires the Settings confirmation dialog for its full sessions and
+current worktrees. The command checks the exact policy revision and group membership,
+then changes only that group. Other groups, unseen pages, and the global pause remain
+unchanged. The last group can be turned off without deleting saved captures.
+There is no Update button. Onboarding keeps its draft-and-Start flow without a dialog.
 
 Confirmation saves the complete `projectChoices` map, including exclusions,
 atomically with the upload policy. Status returns the same map for reopen.
@@ -275,8 +283,7 @@ part of the upload.
 ### Source access and discovery limits
 
 The desktop host finds supported provider sources through existing local metadata
-and provider adapters. Settings also offers explicit source access for missing
-Claude `projects/<project>` directories or exact OpenCode V2 database files.
+and provider adapters. Settings uses these default discoveries without source pickers.
 Source access does not permit every project in that directory or database.
 OpenCode support follows the structural [V2 source contract](opencode.md), not
 every historical or future release. V1 and unsafe or unsupported stores have no
@@ -314,11 +321,13 @@ uploads are pending. Closing onboarding stops renderer observation, not the
 saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
-Settings → Sessions shows the account, personal destination, upload switch, and
-folder choices. The normal view omits transfer counters and progress text.
+Settings → Sessions shows the account, personal destination, upload switch,
+folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
 uploads run or the policy is paused.
+Errors use an inline alert rather than muted routine status. Jobs excluded by the
+current folder policy retain their bytes but do not count as current upload failures.
 
 `storageKnown` is true only when saved-state reads succeed. When false, status
 counters and progress are unknown or last-known values, not current results. The desktop
@@ -334,7 +343,15 @@ retargeting or deleting saved captures.
 Retryable HTTP 429 capacity rejections defer the current upload until its retry deadline.
 The desktop then retries the same saved capture ID after checking current source
 and policy bindings. Saved uploads take priority over new captures. Saved bytes
-remain intact. Historical unknown failures still require explicit **Retry**.
+remain intact. Historical unknown failures before reservation still require explicit **Retry**.
+
+Part and finalization conflicts first try renewal of the same reservation,
+manifest hash, and plan. Only a successful renewal permits one replay of the
+original request. This recovers idle expiry without reading source again or changing
+capture identity. Server authority, absolute expiry, writer, and cleanup fences still
+apply. Earlier fenced post-reservation uploads receive a bounded automatic recheck;
+persistent conflicts wait at least 60 seconds between attempts. Empty interrupted
+captures do not gain permission to read source through this recovery path.
 
 Capture API requests use the configured resource origin and desktop-held credentials.
 Saved gzip bodies go only to validated, short-lived upload locations supplied

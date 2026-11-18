@@ -394,6 +394,139 @@ fn group_id(environment: &str, path: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(bytes))
 }
 
+/// Add only current group folders on supported roots with recorded session metadata.
+pub(super) fn confirm_group_projects(
+    store: &Store,
+    cache: &mut Cache,
+    binding: &DestinationBinding,
+    id: &str,
+    projects: &BTreeSet<ProjectSelection>,
+    current: &dyn Fn() -> bool,
+) -> Result<(), String> {
+    let saved = store
+        .cloud_draft(&binding.account_id, &binding.destination_id)
+        .map_err(|_| "Could not read saved provider sources.")?
+        .map(|raw| serde_json::from_str::<Draft>(&raw))
+        .transpose()
+        .map_err(|_| "Could not read saved provider sources.")?
+        .unwrap_or_default();
+    let (known, _) = known_sources(
+        store,
+        antiburn_local::discovery::agents::opencode::native_database_paths(),
+    )?;
+    let (roots, _) = merge_sources(known, &saved.folders)?;
+    let mut by_source = BTreeMap::<&SourceSelection, BTreeSet<String>>::new();
+    let mut contexts = BTreeMap::new();
+    for project in projects {
+        let root = roots
+            .iter()
+            .find(|root| {
+                root.source_kind == project.source_kind && root.path == project.source_path
+            })
+            .ok_or("A session source changed. Reload projects and confirm again.")?;
+        let member = contexts
+            .entry(&project.project_path)
+            .or_insert_with(|| context("native", &project.project_path));
+        if !member.complete
+            || group_id("native", &member.main) != id
+            || !member.folders.contains(&project.project_path)
+        {
+            return Err("The project folders changed. Reload projects and confirm again.".into());
+        }
+        by_source
+            .entry(root)
+            .or_default()
+            .insert(project.project_path.clone());
+    }
+    let mut remaining = 512;
+    cache.begin_scan();
+    for (root, folders) in by_source {
+        let ids = if root.source_kind == SourceKind::OpenCodeSqliteV2 {
+            let paths = folders.iter().cloned().collect::<Vec<_>>();
+            store
+                .cloud_opencode_session_ids(&paths, 512)
+                .map_err(|_| "Could not read cached session identities.")?
+        } else {
+            Vec::new()
+        };
+        let candidates = project_candidates(root, &ids, &mut remaining, current)?;
+        let mut qualified = false;
+        for candidate in candidates {
+            if !current() {
+                return Err("Cloud account or upload controls changed.".into());
+            }
+            if let Some(evidence) = cache.evidence(
+                &binding.account_id,
+                &binding.destination_id,
+                root,
+                &candidate,
+                &sync::metadata_limits(),
+            )? && evidence.scan_complete()
+                && evidence.project_paths().iter().any(|path| {
+                    path.to_str().is_some_and(|path| {
+                        group_id("native", &cache.context("native", path).main) == id
+                    })
+                })
+            {
+                qualified = true;
+                break;
+            }
+        }
+        if !qualified {
+            return Err("Could not confirm a supported session for this project. Reload projects and try again.".into());
+        }
+    }
+    Ok(())
+}
+
+/// Find grants for the group even when current provider discovery cannot list them.
+/// If a remaining grant can still cover the group, do not report that it is off.
+pub(super) fn group_projects_to_remove(
+    id: &str,
+    folder_paths: &[String],
+    saved: &[ProjectSelection],
+) -> Result<BTreeSet<ProjectSelection>, String> {
+    let mut folders: BTreeSet<_> = folder_paths.iter().cloned().collect();
+    let contexts: BTreeMap<_, _> = saved
+        .iter()
+        .map(|project| &project.project_path)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|path| (path, context("native", path)))
+        .collect();
+    for (path, member) in &contexts {
+        if group_id("native", path) == id || group_id("native", &member.main) == id {
+            folders.insert((*path).clone());
+            folders.insert(member.main.clone());
+            folders.extend(member.folders.iter().cloned());
+        }
+    }
+    let mut removed = BTreeSet::new();
+    for project in saved {
+        if folders.contains(&project.project_path) {
+            removed.insert(project.clone());
+            continue;
+        }
+        let path = Path::new(&project.project_path);
+        if folders
+            .iter()
+            .any(|folder| Path::new(folder).starts_with(path) || path.starts_with(folder))
+        {
+            return Err(
+                "Another saved project overlaps these folders. Pause uploads to stop syncing them."
+                    .into(),
+            );
+        }
+        if !contexts[&project.project_path].complete {
+            return Err(
+                "Could not verify all saved project folders. Pause uploads to stop syncing them."
+                    .into(),
+            );
+        }
+    }
+    Ok(removed)
+}
+
 fn add_suggestion(
     cache: &mut Cache,
     groups: &mut BTreeMap<(String, String), Group>,

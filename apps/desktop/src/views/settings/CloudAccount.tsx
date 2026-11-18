@@ -1,4 +1,4 @@
-import { ArrowUpRight, Folder } from "lucide-react"
+import { ArrowUpRight, CircleAlert, Folder } from "lucide-react"
 import { useState, type ReactNode } from "react"
 import {
   type CloudSession,
@@ -9,6 +9,7 @@ import {
 import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
+import { ConnectionDialog } from "./ConnectionDialog"
 import { personalCloudDestination } from "../../lib/cloudDestination"
 import {
   CLOUD_BUSY_MESSAGE,
@@ -21,7 +22,7 @@ const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
   offline: "Cloud is offline.",
   reauth_required: "Sign in again to resume uploads.",
   upload_unavailable: "Cloud uploads are unavailable.",
-  fenced: "Some uploads are blocked.",
+  fenced: "Could not resume saved uploads.",
   interrupted: "Some sessions could not be prepared.",
   storage_unavailable: "Could not read saved uploads.",
 }
@@ -50,7 +51,7 @@ export function CloudAccount({
       : null
   return (
     <>
-      <div className="flex items-center justify-between gap-3 border-t border-separator px-4 py-3">
+      <div className="flex items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
           <p className="type-body text-label">
             {readFailed
@@ -65,7 +66,10 @@ export function CloudAccount({
             <p className="type-footnote text-label-secondary">{value.cloud.destination.name}</p>
           )}
           {accountMessage && (
-            <p className="type-footnote text-label-secondary" role="status">
+            <p
+              className={`type-footnote ${value.error ? "text-system-red-text" : "text-label-secondary"}`}
+              role={value.error ? "alert" : "status"}
+            >
               {accountMessage}
             </p>
           )}
@@ -124,16 +128,13 @@ export function CloudAccount({
         )}
       </div>
       {value.cloud.remoteRevocationUnconfirmed && (
-        <p
-          className="border-t border-separator px-4 py-3 type-footnote text-label-secondary"
-          role="status"
-        >
+        <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
           Cloud has not confirmed an earlier sign-out. Open Cloud settings in your browser to
           close that old connection.
         </p>
       )}
       {value.cloud.localResetAvailable && (
-        <div className="flex flex-col gap-3 border-t border-separator px-4 py-3 type-callout text-label">
+        <div className="flex flex-col gap-3 px-4 py-3 type-callout text-label">
           {confirmReset ? (
             <>
               <p>
@@ -179,35 +180,7 @@ export function CloudAccount({
         <>
           <SettingsRow
             searchId="cloudFolders"
-            className="border-t border-separator"
-            description={
-              value.cloud.setupError ??
-              (value.cloud.identity
-                ? value.cloud.captureEnabled
-                  ? "Choose the folders where Claude saves sessions, or choose an OpenCode V2 database. This does not give permission to upload their contents."
-                  : "Choose folders for this account. Folder choices alone do not authorize capture."
-                : "Connect to Cloud before choosing folders.")
-            }
-            trailing={
-              <div className="flex flex-wrap gap-2">
-                <button
-                  className="ui-push-button"
-                  disabled={value.busy || !value.cloud.identity || !!value.cloud.setupError}
-                  onClick={() => void session.addFolders()}
-                >
-                  {value.cloud.captureEnabled ? "Choose Claude sources…" : "Choose folders…"}
-                </button>
-                {value.cloud.captureEnabled && (
-                  <button
-                    className="ui-push-button"
-                    disabled={value.busy || !value.cloud.identity || !!value.cloud.setupError}
-                    onClick={() => void session.addFolders("opencode_sqlite_v2")}
-                  >
-                    Choose OpenCode databases…
-                  </button>
-                )}
-              </div>
-            }
+            description={value.cloud.setupError ?? undefined}
           >
             {value.cloud.identity && (
               <div className="mt-3 flex flex-col gap-3">
@@ -282,8 +255,8 @@ export function CloudAccount({
   )
 }
 
-/** Keep project defaults local. Only the explicit Start action saves new content
- * consent. Provider access, saved upload recovery, and acceptance stay separate.
+/** Keep initial choices local until Start. Saved switches revoke immediately or
+ * require confirmation before adding content permission.
  */
 function CloudProjectsAccount({
   session,
@@ -293,6 +266,11 @@ function CloudProjectsAccount({
   value: CloudViewSnapshot
 }) {
   const projects = value.projects
+  const [confirm, setConfirm] = useState<{
+    id: string
+    name: string
+    context: CloudViewSnapshot
+  } | null>(null)
   const policy = value.ongoing
   const hasConsent = policy?.consentVersion === "desktop-project-sync-v1"
   const storageUnknown = cloudUploadStatusUnknown(policy)
@@ -301,10 +279,7 @@ function CloudProjectsAccount({
   if (!personalCloudDestination(value.cloud.destination ?? null)) {
     if (value.error) return null
     return (
-      <p
-        className="border-t border-separator px-4 py-3 type-footnote text-label-secondary"
-        role="status"
-      >
+      <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
         {value.cloud.destination?.kind === "team"
           ? "Personal uploads are unavailable for this connection."
           : "Could not verify the Cloud destination."}
@@ -351,18 +326,27 @@ function CloudProjectsAccount({
     !value.cloud.setupError &&
     !value.error &&
     projects.groups.length === 0
-  const needsSourceAccess =
-    empty || (projects?.loaded && projects.groups.some((group) => !group.captureSupported))
+  const selected = (id: string) =>
+    hasConsent ? session.projectHasSavedPermission(id) : (projects?.choices[id] ?? true)
+  const syncState = hasConsent
+    ? policy.paused
+      ? "Uploads paused"
+      : policy.projects.length === 0
+        ? "No folders selected"
+        : policy.status === "syncing" || policy.queuedCount > 0
+          ? "Uploading sessions"
+          : policy.status === "ready"
+            ? "Uploads on"
+            : null
+    : null
   return (
     <>
       <SettingsRow
         searchId="cloudFolders"
-        className="border-t border-separator"
         trailing={
           projects?.loaded && projects.groups.length > 0 ? (
             <span className="type-footnote text-label-secondary">
-              {projects.groups.filter((group) => projects.choices[group.id] ?? true).length}{" "}
-              selected
+              {projects.groups.filter((group) => selected(group.id)).length} selected
             </span>
           ) : null
         }
@@ -385,15 +369,19 @@ function CloudProjectsAccount({
               <ToggleSwitch
                 aria-label={`Sync ${group.name}: ${group.path}`}
                 aria-describedby={`cloud-settings-folder-${encodeURIComponent(group.id)}`}
-                checked={projects.choices[group.id] ?? true}
+                checked={selected(group.id)}
                 disabled={
                   value.busy ||
                   starting ||
                   storageUnknown ||
                   projects.loading ||
-                  !!value.cloud.setupError
+                  (!selected(group.id) && (!!value.cloud.setupError || !group.captureSupported))
                 }
-                onCheckedChange={(selected) => session.selectProject(group.id, selected)}
+                onCheckedChange={(next) => {
+                  if (!hasConsent) session.selectProject(group.id, next)
+                  else if (next) setConfirm({ id: group.id, name: group.name, context: value })
+                  else void session.setSavedProject(value, group.id, false)
+                }}
               />
             </div>
           ))}
@@ -416,7 +404,7 @@ function CloudProjectsAccount({
           </button>
         )}
       </SettingsRow>
-      {!!projects?.groups.length && (
+      {!hasConsent && !!projects?.groups.length && (
         <div className="px-4 pb-3">
           <button
             className="ui-push-button"
@@ -436,33 +424,21 @@ function CloudProjectsAccount({
             aria-description={`Sync full sessions from the selected folders and their worktrees to ${value.cloud.destination?.name ?? "the selected destination"} for ${value.cloud.identity.login}.`}
             onClick={() => void session.startSync(value)}
           >
-            {starting ? "Starting…" : hasConsent ? "Update sync selection" : "Start syncing"}
+            {starting ? "Starting…" : "Start syncing"}
           </button>
         </div>
       )}
-      {needsSourceAccess && value.cloud.captureEnabled && (
-        <div className="flex flex-wrap gap-2 px-4 pb-3">
-          <button
-            className="ui-push-button"
-            disabled={value.busy || starting || projects?.loading || !!value.cloud.setupError}
-            onClick={() => void session.addFolders()}
-          >
-            Choose Claude session folders…
-          </button>
-          <button
-            className="ui-push-button"
-            disabled={value.busy || starting || projects?.loading || !!value.cloud.setupError}
-            onClick={() => void session.addFolders("opencode_sqlite_v2")}
-          >
-            Choose OpenCode databases…
-          </button>
-        </div>
+      {syncState && !error && !value.error && (
+        <p role="status" className="px-4 pb-3 type-footnote text-label-secondary">
+          {syncState}
+        </p>
       )}
       {error && (
         <div
-          className="flex items-center gap-2 border-t border-separator px-4 py-2 type-footnote text-label-secondary"
-          role="status"
+          className="mx-4 mb-3 flex flex-wrap items-center gap-2 rounded-control bg-system-red/10 px-3 py-2 type-footnote text-system-red-text"
+          role="alert"
         >
+          <CircleAlert size={15} className="shrink-0" aria-hidden="true" />
           <span>{error}</span>
           {retry && (
             <button
@@ -471,10 +447,42 @@ function CloudProjectsAccount({
               disabled={value.busy || starting || projects?.loading}
               onClick={retry}
             >
-              Retry
+              {folderError ? "Retry folders" : "Retry uploads"}
             </button>
           )}
         </div>
+      )}
+      {confirm && (
+        <ConnectionDialog
+          title={`Upload sessions from ${confirm.name}?`}
+          onCancel={() => setConfirm(null)}
+        >
+          <div className="flex flex-col gap-4 px-4 pb-4">
+            <p className="type-callout text-label-secondary">
+              Cloud will upload full sessions from this folder and its worktrees to your
+              personal workspace.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                className="ui-push-button"
+                disabled={value.busy}
+                onClick={() => setConfirm(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="ui-push-button"
+                disabled={value.busy}
+                onClick={async () => {
+                  await session.setSavedProject(confirm.context, confirm.id, true)
+                  setConfirm(null)
+                }}
+              >
+                {value.busy ? "Allowing uploads…" : "Allow uploads"}
+              </button>
+            </div>
+          </div>
+        </ConnectionDialog>
       )}
     </>
   )

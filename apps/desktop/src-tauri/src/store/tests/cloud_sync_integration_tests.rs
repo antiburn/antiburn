@@ -769,3 +769,118 @@ fn cloud_project_choices_use_the_existing_policy_record_size_bound() {
         original
     );
 }
+
+#[test]
+fn settings_project_change_keeps_hidden_policy_pause_and_stable_scopes() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let original = policy(&store);
+    let paused = store.set_cloud_sync_paused(&original, true).unwrap();
+    let original_group = project_group_id("/Example/project");
+    let other_group = project_group_id("/Example/other");
+    let added = ProjectSelection {
+        source_kind: SourceKind::OpenCodeSqliteV2,
+        source_path: "/Example/opencode.db".into(),
+        project_path: "/Example/other".into(),
+    };
+    let other_projects = BTreeSet::from([added.clone()]);
+    let expanded = store
+        .set_cloud_sync_project(&paused, &other_group, true, &other_projects, || true)
+        .unwrap();
+    assert!(expanded.paused);
+    assert_ne!(expanded.revision, paused.revision);
+    assert_eq!(expanded.projects.len(), 2);
+    assert!(expanded.roots.contains(&paused.roots[0]));
+    let added_scope = expanded
+        .roots
+        .iter()
+        .find(|root| root.path == added.source_path)
+        .unwrap()
+        .clone();
+    let narrowed = store
+        .set_cloud_sync_project(
+            &expanded,
+            &original_group,
+            false,
+            &paused.projects.iter().cloned().collect(),
+            || true,
+        )
+        .unwrap();
+    assert_eq!(narrowed.projects, [added]);
+    assert_eq!(narrowed.roots, [added_scope]);
+    assert!(!narrowed.project_choices[&original_group]);
+    assert!(narrowed.project_choices[&other_group]);
+    let empty = store
+        .set_cloud_sync_project(&narrowed, &other_group, false, &other_projects, || true)
+        .unwrap();
+    assert!(empty.projects.is_empty());
+    assert!(empty.roots.is_empty());
+    assert!(empty.paused);
+    assert!(!empty.allows(&paused.roots[0].source_scope_id, "/Example/project/src"));
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap(),
+        Some(empty.clone())
+    );
+    let restored = store
+        .set_cloud_sync_project(
+            &empty,
+            &original_group,
+            true,
+            &paused.projects.iter().cloned().collect(),
+            || true,
+        )
+        .unwrap();
+    assert_eq!(restored.roots, paused.roots);
+    assert!(restored.paused);
+    assert!(!restored.project_choices[&other_group]);
+}
+
+#[test]
+fn settings_project_change_rejects_stale_binding_and_rolls_back_on_fence() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let original = policy(&store);
+    let group = project_group_id("/Example/project");
+    let paused = store.set_cloud_sync_paused(&original, true).unwrap();
+    let projects = BTreeSet::from([ProjectSelection {
+        source_kind: SourceKind::OpenCodeSqliteV2,
+        source_path: "/Example/opencode.db".into(),
+        project_path: "/Example/project".into(),
+    }]);
+    assert!(
+        store
+            .set_cloud_sync_project(&original, &group, true, &projects, || true)
+            .is_err()
+    );
+    assert!(
+        store
+            .set_cloud_sync_project(&paused, &group, true, &projects, || false)
+            .is_err()
+    );
+    let mut wrong_service = paused.clone();
+    wrong_service.resource_origin = Some("https://other.example".into());
+    assert!(
+        store
+            .set_cloud_sync_project(&wrong_service, &group, true, &projects, || true)
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap(),
+        Some(paused)
+    );
+    let scopes: u64 = store
+        .lock()
+        .query_row("SELECT count(*) FROM cloud_sync_service_scope", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(scopes, 1);
+}

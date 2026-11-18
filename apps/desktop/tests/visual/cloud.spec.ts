@@ -324,18 +324,19 @@ test("compact Cloud Settings keeps the real upload control without progress boil
   await upload.click()
   await expect(upload).not.toBeChecked()
   await expect(page.getByText("Cloud uploads paused", { exact: true })).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Update sync selection" })).toBeEnabled()
+  await expect(page.getByRole("button", { name: "Update sync selection" })).toHaveCount(0)
+  await expect(page.getByText("Uploads paused", { exact: true })).toBeVisible()
 })
 
-test("empty Cloud Settings offers session files instead of an unusable consent form", async ({
+test("empty Cloud Settings uses default sources without pickers or a consent form", async ({
   page,
 }) => {
   await page.goto("/tests/visual/?surface=cloud&cloud=settings-empty&theme=light")
   await expect(page.getByText("No session folders found.")).toBeVisible()
   await expect(
     page.getByRole("button", { name: "Choose Claude session folders…" }),
-  ).toBeVisible()
-  await expect(page.getByRole("button", { name: "Choose OpenCode databases…" })).toBeVisible()
+  ).toHaveCount(0)
+  await expect(page.getByRole("button", { name: "Choose OpenCode databases…" })).toHaveCount(0)
   await expect(page.getByRole("checkbox")).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Start syncing", exact: true })).toHaveCount(0)
 })
@@ -358,9 +359,41 @@ test("reopened Settings keeps exclusions and does not confirm newly shown groups
   ).not.toBeChecked()
   await expect(
     page.getByRole("switch", { name: "Sync New project: /Example/NewProject" }),
-  ).toBeChecked()
+  ).not.toBeChecked()
   await expect(page.getByRole("checkbox")).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Update sync selection" })).toBeEnabled()
+  await expect(page.getByRole("button", { name: "Update sync selection" })).toHaveCount(0)
+})
+
+test("Settings switches save exclusions and confirm additions without an Update button", async ({
+  page,
+}) => {
+  await page.goto("/tests/visual/?surface=cloud&cloud=settings-folders&theme=light")
+  const studio = page.getByRole("switch", { name: /Sync Studio:/ })
+  await expect(studio).toBeChecked()
+  await studio.click()
+  await expect(studio).not.toBeChecked()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await studio.click()
+  await expect(page.getByRole("dialog")).toHaveAccessibleName("Upload sessions from Studio?")
+  await page.getByRole("button", { name: "Cancel", exact: true }).click()
+  await expect(studio).not.toBeChecked()
+  await studio.click()
+  await page.getByRole("button", { name: "Allow uploads", exact: true }).click()
+  await expect(studio).toBeChecked()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: /Update sync|Choose Claude|Choose OpenCode/ }),
+  ).toHaveCount(0)
+  const card = page
+    .getByText("Signed in as example", { exact: true })
+    .locator("..")
+    .locator("..")
+    .locator("..")
+  expect(
+    await card.evaluate((element) =>
+      Array.from(element.children).map((child) => getComputedStyle(child).borderTopWidth),
+    ),
+  ).not.toContain("1px")
 })
 
 for (const theme of ["light", "dark"] as const) {
@@ -420,7 +453,7 @@ for (const theme of ["light", "dark"] as const) {
     }
   })
 
-  test(`missing source access keeps provider pickers reachable in ${theme}`, async ({
+  test(`missing source access does not offer custom provider pickers in ${theme}`, async ({
     page,
   }) => {
     await page.setViewportSize({ width: 480, height: 620 })
@@ -432,10 +465,10 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByRole("button", { name: "Start syncing" })).toBeDisabled()
     await expect(
       page.getByRole("button", { name: "Choose Claude session folders…" }),
-    ).toBeInViewport()
-    await expect(
-      page.getByRole("button", { name: "Choose OpenCode databases…" }),
-    ).toBeInViewport()
+    ).toHaveCount(0)
+    await expect(page.getByRole("button", { name: "Choose OpenCode databases…" })).toHaveCount(
+      0,
+    )
     await expect(page.getByRole("button", { name: "Sign out" })).toBeEnabled()
     await expect(page.getByRole("button", { name: "Refresh folders" })).toHaveCount(0)
     await expect(page.getByText("No session folders found.", { exact: true })).toHaveCount(0)
@@ -450,7 +483,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.setViewportSize({ width: 480, height: 620 })
     await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" })
     await page.goto(`/tests/visual/?surface=cloud&cloud=settings-attention&theme=${theme}`)
-    const failure = page.getByText("Some uploads are blocked.", { exact: true })
+    const failure = page.getByText("Could not resume saved uploads.", { exact: true })
     await expect(failure).toHaveCount(1)
     await expect(failure).toBeInViewport()
     const retry = page.getByRole("button", { name: "Retry saved uploads", exact: true })
@@ -479,7 +512,7 @@ for (const theme of ["light", "dark"] as const) {
       await expect(
         page.getByRole("switch", { name: "Upload sessions", exact: true }),
       ).toBeChecked()
-      await expect(page.getByRole("button", { name: "Update sync selection" })).toBeInViewport()
+      await expect(page.getByRole("button", { name: "Update sync selection" })).toHaveCount(0)
       await expect(page.getByRole("switch", { name: /Sync Website:/ })).not.toBeChecked()
       await expect(
         page.getByRole("button", { name: /Refresh folders|Retry saved uploads/ }),

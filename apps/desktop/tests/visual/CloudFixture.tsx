@@ -166,6 +166,7 @@ export function cloudFixture(name: string): CloudPort {
     accountId: "synthetic",
     destinationId: "synthetic-personal",
     consentVersion: null,
+    policyRevision: "fixture-policy",
     paused: false,
     projects: [],
     projectChoices: {},
@@ -307,6 +308,16 @@ export function cloudFixture(name: string): CloudPort {
         }
         return ongoing
       },
+      setProject: async ({ groupId, selected, projects }) => {
+        const paths = new Set(groups.find((group) => group.id === groupId)?.folderPaths)
+        const next = ongoing.projects.filter((project) => !paths.has(project.projectPath))
+        ongoing = {
+          ...ongoing,
+          projects: selected ? [...next, ...projects] : next,
+          projectChoices: { ...ongoing.projectChoices, [groupId]: selected },
+        }
+        return ongoing
+      },
       pause: async () => {
         ongoing = { ...ongoing, paused: true, status: "paused" }
         return ongoing
@@ -422,7 +433,7 @@ function CloudSettingsFixture({ name }: { name: string }) {
     >
       <div className="mx-auto max-w-3xl">
         <SectionGroup title="Antiburn Cloud">
-          <Card>
+          <Card divided={false}>
             <CloudAccount session={session} value={value}>
               <SettingsToggleRow
                 searchId="cloudUpload"

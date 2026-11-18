@@ -49,6 +49,8 @@ export interface CloudProjectGroup {
   sessionCount: number | null
   worktreeCount: number
   captureSupported?: boolean
+  /** Freeze this group's exact paths and source bindings, including when unchecked. */
+  confirmationKey?: string
 }
 /** Explicit local row choices. An absent choice shows a new group as selected;
  * neither that default nor a legacy upload preference grants content consent.
@@ -212,6 +214,14 @@ export interface CloudOngoingConsent extends CloudDestinationBinding {
   ongoing: true
   attachments: false
 }
+/** Edit one saved folder group without replacing other approved bindings. */
+interface CloudProjectChange extends CloudDestinationBinding {
+  groupId: string
+  selected: boolean
+  projects: CloudProjectSelection[]
+  folderPaths: string[]
+  expectedPolicyRevision: string
+}
 /** Desktop upload state. Transfer counters and queued work do not prove acceptance. */
 export interface CloudOngoingStatus {
   /** Counters and transfer progress are current only after a complete storage read. */
@@ -230,6 +240,7 @@ export interface CloudOngoingStatus {
   accountId: string | null
   destinationId: string | null
   consentVersion: string | null
+  policyRevision?: string | null
   paused: boolean
   selectedSources: CloudSourceSelection[]
   projects: CloudProjectSelection[]
@@ -251,7 +262,7 @@ export interface CloudOngoingStatus {
   }
 }
 /** Desktop-owned ongoing work survives renderer teardown. Attach status observation
- * before reads. Only enable accepts new content permission; pause/retry reuse it.
+ * before reads. Enable and confirmed folder additions grant content permission.
  */
 export interface CloudOngoingPort {
   groups(
@@ -261,6 +272,7 @@ export interface CloudOngoingPort {
   status(): Promise<CloudOngoingStatus | null>
   watch(listener: (value: CloudOngoingStatus) => void): Promise<() => void>
   enable(consent: CloudOngoingConsent): Promise<CloudOngoingStatus>
+  setProject(change: CloudProjectChange): Promise<CloudOngoingStatus>
   pause(binding: CloudDestinationBinding): Promise<CloudOngoingStatus>
   retry(binding: CloudDestinationBinding): Promise<CloudOngoingStatus>
 }
@@ -425,6 +437,7 @@ export const desktopCloudPort: CloudPort = {
         ? listen<CloudOngoingStatus>("cloud:sync-changed", (event) => listener(event.payload))
         : () => {},
     enable: (consent) => cloudOngoingCommand("cloud_enable_sync", { consent }),
+    setProject: (change) => cloudOngoingCommand("cloud_set_sync_project", { change }),
     pause: (binding) => cloudOngoingCommand("cloud_pause_sync", { binding }),
     retry: (binding) => cloudOngoingCommand("cloud_retry_sync", { binding }),
   },

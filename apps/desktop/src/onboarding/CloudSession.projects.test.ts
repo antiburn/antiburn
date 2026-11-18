@@ -119,6 +119,100 @@ it("keeps raw paths available when the display-home read fails", async () => {
   }
 })
 
+it.each(["worktree", "source"])(
+  "rejects a stale excluded-group confirmation after a %s change",
+  async (change) => {
+    const { port, ongoing } = cloudProjectFixture()
+    ongoing.status.mockResolvedValue(
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projectChoices: { studio: false },
+      }),
+    )
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+      const rendered = session.getSnapshot()
+      const group = projectGroup()
+      const sourcePath =
+        change === "source"
+          ? "/Example/claude/projects/new-source"
+          : group.projects[0]!.sourcePath
+      const folderPaths =
+        change === "worktree"
+          ? [...group.folderPaths, "/Example/new-worktree"]
+          : group.folderPaths
+      const updated = projectGroup({
+        folderPaths,
+        projects: folderPaths.map((projectPath) => ({
+          ...group.projects[0]!,
+          sourcePath,
+          projectPath,
+        })),
+      })
+      ongoing.groups.mockResolvedValue({
+        groups: [updated],
+        sourceRoots: [{ sourceKind: "claude_jsonl", path: sourcePath }],
+        nextCursor: null,
+        partial: false,
+      })
+      await session.loadProjects()
+      await session.setSavedProject(rendered, group.id, true)
+      expect(ongoing.setProject).not.toHaveBeenCalled()
+      await session.setSavedProject(session.getSnapshot(), group.id, true)
+      expect(ongoing.setProject).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          selected: true,
+          projects: updated.projects,
+          folderPaths,
+        }),
+      )
+    } finally {
+      stop()
+    }
+  },
+)
+
+it.each(["account", "sign-out"])(
+  "ignores an old folder-save failure after %s changes",
+  async (change) => {
+    const { port, ongoing, emit } = cloudProjectFixture()
+    ongoing.status.mockResolvedValue(
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projects: projectGroup().projects,
+      }),
+    )
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+      let reject!: (error: Error) => void
+      ongoing.setProject.mockImplementationOnce(
+        () =>
+          new Promise((_, fail) => {
+            reject = fail
+          }),
+      )
+      const pending = session.setSavedProject(session.getSnapshot(), "studio", false)
+      if (change === "account") {
+        ongoing.status.mockResolvedValue(ongoingStatus({ accountId: "second-account" }))
+        emit({ identity: { id: "second-account", login: "Second" } })
+      } else {
+        emit({ identity: null, destination: null, status: "signed_out" })
+      }
+      reject(new Error("Synthetic old account failure"))
+      await pending
+      expect(session.getSnapshot().error).toBeNull()
+    } finally {
+      stop()
+    }
+  },
+)
+
 it("keeps exact saved choices ahead of defaults and local choices ahead of refreshes", async () => {
   const { port, ongoing, emit } = cloudProjectFixture()
   ongoing.status.mockResolvedValue(ongoingStatus({ projectChoices: { studio: false } }))

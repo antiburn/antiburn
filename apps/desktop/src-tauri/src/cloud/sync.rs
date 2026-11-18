@@ -19,7 +19,7 @@ use antiburn_cloud_capture::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -47,6 +47,19 @@ pub(crate) struct Consent {
     full_content: bool,
     ongoing: bool,
     attachments: bool,
+}
+
+/// One Settings change. Adding projects requires a new full session confirmation.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProjectChange {
+    account_id: String,
+    destination_id: String,
+    group_id: String,
+    selected: bool,
+    projects: Vec<ProjectSelection>,
+    folder_paths: Vec<String>,
+    expected_policy_revision: String,
 }
 
 /// Closed upload outcomes. Byte progress alone never reports acceptance.
@@ -98,6 +111,7 @@ pub(crate) struct Status {
     account_id: Option<String>,
     destination_id: Option<String>,
     consent_version: Option<String>,
+    policy_revision: Option<String>,
     paused: bool,
     selected_sources: Vec<SourceSelection>,
     projects: Vec<ProjectSelection>,
@@ -134,6 +148,8 @@ struct Runner {
     candidates: VecDeque<Selection>,
     next_reconcile: Option<Instant>,
     next_reservation: Option<Instant>,
+    /// Bound automatic rechecks of saved, post-reservation conflicts.
+    conflict_rechecks: BTreeMap<String, Instant>,
     binding: Option<(String, String, Option<String>, String)>,
     discovery_cursor: Option<DiscoveryCursor>,
     cursor: Option<String>,
@@ -456,6 +472,8 @@ impl Runner {
                     .into(),
             );
         }
+        self.conflict_rechecks
+            .retain(|id, _| jobs.iter().any(|job| &job.identity.capture_id == id));
         let pending = entries
             .iter()
             .filter(|entry| {
@@ -466,7 +484,12 @@ impl Runner {
                         CaptureState::Queued | CaptureState::AwaitingIntegrity
                     )
                     && jobs.iter().any(|job| {
-                        !matches!(job.state, JobState::Fenced | JobState::Recovering)
+                        job.state != JobState::Recovering
+                            && (job.state != JobState::Fenced
+                                || self
+                                    .conflict_rechecks
+                                    .get(&job.identity.capture_id)
+                                    .is_none_or(|deadline| *deadline <= Instant::now()))
                             && job.identity == entry.identity
                             && job.allowed(&policy)
                     })
@@ -491,10 +514,22 @@ impl Runner {
                 .resource_origin
                 .as_deref()
                 .ok_or("Confirm Cloud sync for this service.")?;
+            if job.state == JobState::Fenced {
+                self.conflict_rechecks.insert(
+                    job.identity.capture_id.clone(),
+                    Instant::now() + Duration::from_secs(60),
+                );
+            }
             let mut transport =
                 upload::HttpTransport::new(engine, account_current, current, origin, None);
             let result = host.spool()?.resume_step(&entry.identity, &mut transport);
             self.state = transport_state(transport.failure, &result);
+            if result.is_ok() && job.state == JobState::Fenced && current() {
+                store
+                    .set_cloud_sync_job_state(job, JobState::Queued)
+                    .map_err(|_| "Could not save recovered capture progress.")?;
+                self.conflict_rechecks.remove(&job.identity.capture_id);
+            }
             if result.is_err()
                 && self.state == State::Fenced
                 && let Some(job) = jobs.iter().find(|job| job.identity == entry.identity)
@@ -502,6 +537,10 @@ impl Runner {
                 store
                     .set_cloud_sync_job_state(job, JobState::Fenced)
                     .map_err(|_| "Could not save fenced capture state.")?;
+                self.conflict_rechecks.insert(
+                    job.identity.capture_id.clone(),
+                    Instant::now() + Duration::from_secs(60),
+                );
             }
             if let Ok(step) = result
                 && step.entry.state == CaptureState::Accepted
@@ -845,16 +884,20 @@ impl Runner {
             }
             return Ok(());
         }
-        self.state = if jobs
-            .iter()
-            .any(|job| matches!(job.state, JobState::Interrupted | JobState::Recovering))
-        {
+        self.state = if jobs.iter().any(|job| {
+            job.allowed(&policy)
+                && matches!(job.state, JobState::Interrupted | JobState::Recovering)
+        }) {
             State::Interrupted
-        } else if self.discovery_blocked || jobs.iter().any(|job| job.state == JobState::Fenced) {
+        } else if self.discovery_blocked
+            || jobs
+                .iter()
+                .any(|job| job.allowed(&policy) && job.state == JobState::Fenced)
+        {
             State::Fenced
         } else if jobs
             .iter()
-            .any(|job| job.state == JobState::WaitingForCapacity)
+            .any(|job| job.allowed(&policy) && job.state == JobState::WaitingForCapacity)
         {
             State::Syncing
         } else {
@@ -1328,7 +1371,6 @@ fn status(
     if policy.paused {
         status.status = State::Paused;
     }
-    status.consent_version = Some(policy.consent_version);
     status.selected_sources = policy
         .roots
         .iter()
@@ -1337,12 +1379,13 @@ fn status(
             path: root.path.clone(),
         })
         .collect();
-    status.projects = policy.projects;
-    status.project_choices = policy.project_choices;
     let jobs = store
         .cloud_sync_jobs(&session.user.id, &session.workspace.id, &session.resource)
         .map_err(|_| "Could not read capture progress.")?;
     for job in &jobs {
+        if !job.allowed(&policy) {
+            continue;
+        }
         match job.state {
             JobState::Pending | JobState::WaitingForCapacity | JobState::Queued => {
                 status.queued_count += 1
@@ -1352,6 +1395,10 @@ fn status(
             JobState::Accepted | JobState::Suppressed | JobState::Abandoned => {}
         }
     }
+    status.consent_version = Some(policy.consent_version.clone());
+    status.policy_revision = Some(policy.revision.clone());
+    status.projects = policy.projects.clone();
+    status.project_choices = policy.project_choices.clone();
     (status.accepted_count, status.suppressed_count) = store
         .cloud_sync_outcome_counts(&session.user.id, &session.workspace.id, &session.resource)
         .map_err(|_| "Could not read accepted source state.")?;
@@ -1373,7 +1420,9 @@ fn status(
     for entry in entries {
         if entry.identity.account_id == session.user.id
             && entry.identity.destination_id == session.workspace.id
-            && jobs.iter().any(|job| job.identity == entry.identity)
+            && jobs
+                .iter()
+                .any(|job| job.identity == entry.identity && job.allowed(&policy))
         {
             has_progress = true;
             status.progress.add(
@@ -1689,6 +1738,205 @@ pub(crate) async fn cloud_enable_sync(
                 return Err("Cloud account changed. Saved work is kept.".into());
             }
             super::emit_snapshot(&app, super::snapshot(&app, &engine));
+            Ok(emit_status(&app, result))
+        })
+        .await;
+    wake.notify_one();
+    result
+}
+
+/// Change one approved Settings group without replacing a paged policy or resuming uploads.
+#[tauri::command]
+pub(crate) async fn cloud_set_sync_project(
+    app: tauri::AppHandle,
+    change: ProjectChange,
+) -> Result<Status, String> {
+    use super::projects::{confirm_group_projects, group_projects_to_remove};
+    use crate::store::cloud_capture::sync::valid_project_path;
+
+    if change.group_id.len() != 43
+        || !change
+            .group_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        || change.projects.len() > 100
+        || change.folder_paths.len() > 100
+        || !change
+            .folder_paths
+            .iter()
+            .all(|path| valid_project_path(path))
+        || (change.selected && change.projects.is_empty())
+    {
+        return Err("Reload projects and choose a supported Cloud project.".into());
+    }
+    let controller = app.state::<Controller>();
+    let account_generation = controller.account_generation.load(Ordering::Acquire);
+    let work = controller.blocking.clone();
+    let wake = controller.sync.wake.clone();
+    let content_generation = if change.selected {
+        controller.sync.generation.load(Ordering::Acquire)
+    } else {
+        controller.sync.generation.fetch_add(1, Ordering::AcqRel) + 1
+    };
+    let priority = if change.selected {
+        Priority::Normal
+    } else {
+        Priority::Cleanup
+    };
+    let result = work
+        .run(priority, move || {
+            let controller = app.state::<Controller>();
+            let account_current =
+                || controller.account_generation.load(Ordering::Acquire) == account_generation;
+            let current = || {
+                account_current()
+                    && controller.sync.generation.load(Ordering::Acquire) == content_generation
+            };
+            let mut engine = controller
+                .engine
+                .lock()
+                .map_err(|_| "Cloud is unavailable.")?;
+            if engine.generation != account_generation || !current() {
+                return Err("Cloud account or upload controls changed. Reload projects.".into());
+            }
+            if change.selected {
+                let refreshed = engine.refresh(now(), account_current);
+                if let Err(error) = refreshed {
+                    engine.status = error.into();
+                }
+                super::emit_snapshot(&app, super::snapshot(&app, &engine));
+                refreshed.map_err(|_| "Connect to Cloud before confirming sync.")?;
+            }
+            let binding = DestinationBinding {
+                account_id: change.account_id,
+                destination_id: change.destination_id,
+            };
+            let session = engine
+                .session()
+                .ok_or("Cloud account changed. Reload projects.")?;
+            if !binding.matches(session) || !current() {
+                return Err("Cloud account or upload controls changed. Reload projects.".into());
+            }
+            let store = app.state::<Store>();
+            ensure_cloud_setup(&controller.setup_ready, &store)?;
+            let policy = store
+                .cloud_sync_policy(
+                    &binding.account_id,
+                    &binding.destination_id,
+                    &session.resource,
+                )
+                .map_err(|_| "Could not read Cloud sync consent.")?
+                .ok_or("Confirm Cloud sync first.")?;
+            if policy.revision != change.expected_policy_revision {
+                return Err("Cloud project choices changed. Reload projects and try again.".into());
+            }
+            let mut host = controller
+                .capture
+                .lock()
+                .map_err(|_| "Session capture is unavailable.")?;
+            let (projects, fence) = if change.selected {
+                let projects: BTreeSet<_> = change.projects.into_iter().collect();
+                antiburn_cloud_capture::ProjectSelection::new(
+                    projects
+                        .iter()
+                        .map(|project| Path::new(&project.project_path).to_owned())
+                        .collect(),
+                )
+                .map_err(|_| "Choose existing project directories without path aliases.")?;
+                confirm_group_projects(
+                    &store,
+                    &mut *controller
+                        .project_cache
+                        .lock()
+                        .map_err(|_| "Project discovery is unavailable.")?,
+                    &binding,
+                    &change.group_id,
+                    &projects,
+                    &current,
+                )?;
+                let capabilities = upload::capabilities(
+                    &mut engine,
+                    &binding.account_id,
+                    &binding.destination_id,
+                    &account_current,
+                    &current,
+                );
+                super::emit_snapshot(&app, super::snapshot(&app, &engine));
+                host.configure_limits(capabilities.map_err(
+                    |_| "Cloud upload is unavailable. No source content was uploaded.",
+                )?)?;
+                controller
+                    .sync
+                    .generation
+                    .compare_exchange(
+                        content_generation,
+                        content_generation + 1,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .map_err(|_| "Cloud upload controls changed. Confirm again.")?;
+                (projects, content_generation + 1)
+            } else {
+                (
+                    group_projects_to_remove(
+                        &change.group_id,
+                        &change.folder_paths,
+                        &policy.projects,
+                    )?,
+                    content_generation,
+                )
+            };
+            let can_commit = || {
+                account_current()
+                    && controller.sync.generation.load(Ordering::Acquire) == fence
+                    && engine
+                        .session()
+                        .is_some_and(|session| binding.matches(session))
+            };
+            let saved = store
+                .set_cloud_sync_project(
+                    &policy,
+                    &change.group_id,
+                    change.selected,
+                    &projects,
+                    can_commit,
+                )
+                .map_err(
+                    |_| "Could not save the Cloud project change. Reload projects and try again.",
+                )?;
+            let mut runner = controller
+                .sync
+                .runner
+                .lock()
+                .map_err(|_| "Cloud sync is unavailable.")?;
+            if change.selected && !saved.paused {
+                runner.next_reconcile = None;
+                runner.conflict_rechecks.clear();
+                runner.state = State::Ready;
+            }
+            let result =
+                status(&store, &mut host, &engine, runner.state).unwrap_or_else(|_| Status {
+                    status: State::StorageUnavailable,
+                    account_id: Some(saved.account_id),
+                    destination_id: Some(saved.destination_id),
+                    consent_version: Some(saved.consent_version),
+                    policy_revision: Some(saved.revision),
+                    paused: saved.paused,
+                    selected_sources: saved
+                        .roots
+                        .into_iter()
+                        .map(|root| SourceSelection {
+                            source_kind: root.source_kind,
+                            path: root.path,
+                        })
+                        .collect(),
+                    projects: saved.projects,
+                    project_choices: saved.project_choices,
+                    ..Status::default()
+                });
+            if !can_commit() {
+                return Err("Cloud account or upload controls changed. Saved work is kept.".into());
+            }
             Ok(emit_status(&app, result))
         })
         .await;

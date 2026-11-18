@@ -2105,7 +2105,7 @@ host skill discovery. Pending tool setup settles from events. Failed setup point
 to Repair in Settings → CLI and does not block Done or Cloud folder discovery.
 
 Grouped Cloud folder rows use a 72px minimum height, 16px folder icon, session
-count, and a selected-by-default switch. The list fills the available height and
+count, and a switch. Onboarding selects new groups by default. Its list fills the available height and
 scrolls above pinned actions. It has no per-row remove button or Not now footer
 action. Desktop counts use known repository metadata; unavailable counts are
 explicit. Start syncing moves directly to completion without waiting for
@@ -2121,25 +2121,24 @@ Desktop evidence owns
 grouping and recorded project/CWD paths, including CWD changes during a session;
 provider database paths and file paths in tool calls are not project membership.
 Desktop captures preserve the provider's native session format, such as Claude JSONL.
-New groups show as selected without saving that default. Start requires separate
+New onboarding groups show as selected without saving that default. Start requires separate
 full-content confirmation for the current selected path members. A later external
 worktree does not inherit that confirmation. Counts and display order do not change
 the selection.
 
 Start saves confirmed group choices, including exclusions, with the desktop sync
-policy. Unconfirmed edits stay in memory. Restoring these choices never uses
+policy. Unconfirmed onboarding edits stay in memory. Restoring these choices never uses
 provider-file preferences or grants access to new paths. A policy without saved
 choice history requires one review before the user updates it.
 
 Project discovery reads one bounded page at a time. "Load more folders" adds the
 next page without saving defaults. Start approves only the current shown members
 with confirmed Claude or OpenCode V2 session files. Other agents can appear as folder
-suggestions, with upload support marked unavailable. Provider-source pickers stay
-in Settings and do not authorize every project in a source. The Upload sessions
+suggestions, with upload support marked unavailable. Settings uses automatic provider
+discovery without source pickers. The Upload sessions
 switch pauses or resumes the saved ongoing policy; the old local upload preference
 does not grant consent. Settings shows brief actual failures and their available
-recovery actions, not transfer counters. Source pickers remain available for a
-complete empty list or cached groups without qualified source access. Partial or
+recovery actions, not transfer counters. Partial or
 paged empty discovery does not become a complete empty result. Folder content can
 scroll without moving the completion action
 out of the footer.
@@ -2148,8 +2147,12 @@ The folder list does not shrink to make room for consent paragraphs. A short
 subtitle states full-session scope. The account and destination share a compact
 chip; the selected group count sits above the list. Back, underlined Continue
 locally, and Start syncing are the folder footer's only content.
-Normal Settings shows account/sign-out, the upload switch, and folder choices
-without routine status or safety paragraphs. Start or Update still requires an
-explicit action. Actual read and upload failures keep their recovery actions.
+Normal Settings shows account/sign-out, the upload switch, folder choices, and
+one short upload state. The Cloud card uses spacing instead of internal dividers.
+Folder switches reflect saved permission, so new unapproved groups stay off.
+Turning a folder off saves immediately. Turning it on opens a full-session
+confirmation dialog in Settings only. There is no separate Update button.
+An explicit global pause remains in effect after folder changes. Read and upload
+failures use a red inline alert with an icon and a recovery action.
 
 The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding, and an 18px reserved status line to match the prototype. Auth handoff has the prototype footer separator; Learn more keeps its approved plain footer. Identity uses a circular 64px image and a 24px green badge with a 3px paper border and contrasting action ink.
