@@ -595,6 +595,10 @@ pub struct ResumeStep {
 /// saved captures under the same identity after restoring current authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportError {
+    /// The service asks the caller to retry the same operation later. A reserve
+    /// implementation must prove that capacity refusal created no reservation.
+    /// A generic HTTP 429 or unknown delivery does not establish this proof.
+    Backpressure,
     /// Network, timeout, or body I/O failed; remote success can remain unknown.
     Offline,
     /// Current authentication or consent does not permit the fixed request.
@@ -630,8 +634,13 @@ pub trait Transport {
     /// `maximum_expanded_bytes` includes conservative generated-metadata space.
     /// Use the capture ID for reservation idempotency. Return a reservation ID
     /// with 1 through 128 ASCII letters, digits, hyphens, or underscores.
-    /// Failure leaves an interrupted `Preparing` entry; capture will not read a
-    /// later generation under that ID.
+    /// Failure leaves a `Preparing` entry. Only a proved [`TransportError::Backpressure`]
+    /// refusal can use [`crate::Spool::retry_reservation`] under the same capture ID.
+    /// The host must recheck current authorization and unchanged source observation,
+    /// then durably clear its saved capacity proof before reservation I/O.
+    /// The spool requires a present empty entry with no reservation or partial files.
+    /// Missing or quarantined entries cannot retry. Unknown delivery and other
+    /// failures cannot automatically read a later source generation.
     fn reserve(
         &mut self,
         identity: &CaptureIdentity,
@@ -704,9 +713,10 @@ pub trait Transport {
 /// Capture failures without native content, paths, or raw provider diagnostics.
 ///
 /// Errors do not cancel entries or authorize recapture. Inspect the saved state:
-/// `Preparing` requires explicit cancellation; a queued retry keeps its identity,
-/// metadata, plan, and saved bodies. Corruption can block the whole spool and
-/// needs operator recovery rather than automatic deletion.
+/// `Preparing` requires explicit cancellation unless a proved capacity refusal
+/// meets [`crate::Spool::retry_reservation`]'s empty-entry and host proof rules.
+/// A queued retry keeps its identity, metadata, plan, and saved bodies. Corruption
+/// can block the whole spool and needs operator recovery rather than deletion.
 #[derive(Debug)]
 pub enum Error {
     /// Filesystem error kind without the original path or error message.

@@ -173,7 +173,8 @@ Capture pins file identity, size, modification time, and change time before
 reservation. It saves a `preparing` queue entry, then calls `Transport::reserve`
 immediately before reading native content. It checks pinned files before and
 after streaming. Mutation, reservation failure, or interruption leaves an
-interrupted entry. It cannot resume native reads under the same capture ID.
+interrupted entry, except for the proved capacity refusal described below.
+Other failures cannot resume native reads under the same capture ID.
 Explicit cancellation and a new ID are required to capture a later generation.
 
 Repeating `capture` with an existing identity returns the saved entry. New source
@@ -539,9 +540,25 @@ that build is unavailable, preserve a private copy for operator recovery. Do not
 edit version fields or assign a new ID to make an old retry appear compatible.
 
 Inspect saved entries after a capture failure. Errors before queue publication
-may leave no entry. A published `preparing` entry cannot resume native reads.
-Keep it until explicit cancellation, then use a new ID to capture a later source
-generation. Do not replace a queued capture when the source or metadata changes.
+may leave no entry. A published `preparing` entry normally requires explicit
+cancellation, then a new ID to capture a later source generation. Do not replace a
+queued capture when the source or metadata changes.
+
+The narrow exception is a proved capacity refusal that created no reservation.
+The host can save that proof and a retry deadline, then retry reservation under
+the same capture ID with `Spool::retry_reservation`. Before retrying, it must
+recheck the current account, destination, service, source access, project policy,
+and unchanged source observation. A changed recorded CWD outside approved
+folders, changed source observation, or missing native identity interrupts the
+job without changing its ID or saved spool files. Absence from one discovery page
+does not prove that an identity is missing.
+
+The host must durably clear the capacity-only retry proof before reservation I/O.
+Unknown delivery, historical failures without this proof, and a generic HTTP 429
+do not permit automatic same-ID source reads. The spool accepts this retry only
+for a present `Preparing` entry with no reservation, manifest, plan, status, or
+completion intent, and no files other than `record.json`. Missing, quarantined,
+reserved, and partial entries fail without changing saved bytes.
 
 One corrupt record or invalid spool entry can prevent the whole spool from
 opening. Corruption is not permission to delete bytes, change a capture ID, or

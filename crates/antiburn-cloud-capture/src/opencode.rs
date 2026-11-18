@@ -93,7 +93,23 @@ pub(crate) struct OpenCodeExport {
 /// partially migrated V2 stores fail visibly and never select a V1 fallback.
 /// Run this synchronous filesystem and SQLite work on a bounded blocking worker.
 pub(crate) fn discover(database: &Path, limits: &Limits) -> Result<Vec<OpenCodeSource>> {
+    let (sources, next_cursor) = discover_page(database, None, limits)?;
+    if next_cursor.is_some() {
+        return Err(Error::Limit);
+    }
+    Ok(sources)
+}
+
+/// Read one binary-ID page from a fresh, source-bound metadata snapshot.
+pub(crate) fn discover_page(
+    database: &Path,
+    after: Option<&str>,
+    limits: &Limits,
+) -> Result<(Vec<OpenCodeSource>, Option<String>)> {
     limits.validate()?;
+    if let Some(after) = after {
+        validate_id(after)?;
+    }
     let admitted = Arc::new(AdmittedDatabase::open(database)?);
     let deadline = Instant::now() + EXPORT_TIME;
     let connection = admitted.connect(deadline)?;
@@ -103,17 +119,26 @@ pub(crate) fn discover(database: &Path, limits: &Limits) -> Result<Vec<OpenCodeS
         .prepare(
             "SELECT CASE WHEN typeof(id) = 'text' AND octet_length(id) <= ?1
                          THEN id END
-               FROM session_v2 ORDER BY id COLLATE BINARY LIMIT ?2",
+               FROM session_v2 WHERE id COLLATE BINARY > ?2
+               ORDER BY id COLLATE BINARY LIMIT ?3",
         )
         .map_err(sql_error)?;
     let mut rows = statement
-        .query(params![MAX_ID_BYTES, limits.discovery_sessions + 1])
+        .query(params![
+            MAX_ID_BYTES,
+            after.unwrap_or(""),
+            limits.discovery_sessions + 1
+        ])
         .map_err(sql_error)?;
     let mut sources = Vec::new();
+    let mut next_cursor = None;
     while let Some(row) = rows.next().map_err(sql_error)? {
         check_deadline(deadline)?;
         if sources.len() == limits.discovery_sessions {
-            return Err(Error::Limit);
+            next_cursor = sources
+                .last()
+                .map(|source: &OpenCodeSource| source.session_id.clone());
+            break;
         }
         let id: Option<String> = row.get(0).map_err(sql_error)?;
         let id = id.ok_or(Error::InvalidSource)?;
@@ -128,7 +153,7 @@ pub(crate) fn discover(database: &Path, limits: &Limits) -> Result<Vec<OpenCodeS
     drop(statement);
     admitted.verify(Some(&connection))?;
     connection.execute_batch("ROLLBACK").map_err(sql_error)?;
-    Ok(sources)
+    Ok((sources, next_cursor))
 }
 
 /// Reopen one exact native ID without reading other session rows or payload.
@@ -503,3 +528,7 @@ pub(super) fn bounded_text(
 #[cfg(all(test, unix))]
 #[path = "opencode/tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "opencode/discovery_integration_tests.rs"]
+mod discovery_tests;

@@ -135,6 +135,60 @@ impl Spool {
             Err(Error::Io(std::io::ErrorKind::NotFound)) => {}
             Err(error) => return Err(error),
         }
+        self.capture_source(identity, candidate, sections, transport, None)
+    }
+
+    /// Retry a proved capacity refusal under the same identity, without removing
+    /// the entry or replacing any saved bytes.
+    ///
+    /// The host must durably record a definitive reservation backpressure result,
+    /// clear that retry permission before this call, and recheck current consent,
+    /// source identity, source observation, and project admission. Unknown prior
+    /// errors do not permit this call. A crash after retry starts requires normal
+    /// interrupted-capture recovery, not another inferred capacity retry.
+    ///
+    /// Only a present `Preparing` entry with no reservation, manifest, plan,
+    /// status, completion, or files beyond `record.json` can retry. Missing,
+    /// quarantined, reserved, and partial entries fail without changing bytes.
+    pub fn retry_reservation(
+        &mut self,
+        identity: CaptureIdentity,
+        candidate: &Candidate,
+        sections: MetadataSections,
+        transport: &mut impl Transport,
+    ) -> Result<QueueEntry> {
+        identity.validate()?;
+        if identity.source_id != candidate.source_id {
+            return Err(Error::IdentityMismatch);
+        }
+        let directory = self.root.open_dir(&identity.capture_id)?;
+        let entry = self.read_directory_entry(&directory, &identity.capture_id)?;
+        if entry.identity != identity {
+            return Err(Error::IdentityMismatch);
+        }
+        if entry.state != CaptureState::Preparing
+            || entry.reservation_id.is_some()
+            || entry.manifest.is_some()
+            || entry.upload_plan.is_some()
+            || entry.server_status.is_some()
+            || entry.completion_submitted
+            || directory.names(2)? != ["record.json"]
+        {
+            return Err(Error::InterruptedCapture);
+        }
+        self.capture_source(identity, candidate, sections, transport, Some(directory))
+    }
+
+    /// Prepare bounded source reads and reserve before saving native bytes.
+    /// A supplied directory has already passed the empty-reservation retry checks.
+    fn capture_source(
+        &mut self,
+        identity: CaptureIdentity,
+        candidate: &Candidate,
+        sections: MetadataSections,
+        transport: &mut impl Transport,
+        directory: Option<Directory>,
+    ) -> Result<QueueEntry> {
         validate_sections(&sections)?;
         if let Some(selection) = &candidate.project_selection {
             selection.verify_directories()?;
@@ -192,8 +246,9 @@ impl Spool {
         let (used, count) = self.usage()?;
         let maximum_compressed =
             maximum_expanded + native_bytes / 100 + native_streams as u64 * 1024 + 2048;
-        let disk_reservation = maximum_compressed + 2 * RECORD_BYTES;
-        if count >= self.limits.queue_entries
+        let new_entry = directory.is_none();
+        let disk_reservation = maximum_compressed + if new_entry { 2 * RECORD_BYTES } else { 0 };
+        if (new_entry && count >= self.limits.queue_entries)
             || disk_reservation > self.limits.spool_bytes.saturating_sub(used)
         {
             return Err(Error::Limit);
@@ -207,7 +262,10 @@ impl Spool {
             server_status: None,
             completion_submitted: false,
         };
-        let directory = self.create_entry(&name, &entry)?;
+        let directory = match directory {
+            Some(directory) => directory,
+            None => self.create_entry(&entry.identity.capture_id, &entry)?,
+        };
         let reservation_id = transport.reserve(&entry.identity, maximum_expanded)?;
         if !safe_id(&reservation_id) {
             return Err(Error::InvalidServerStatus);

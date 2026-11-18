@@ -42,6 +42,8 @@ pub use contract::*;
 #[cfg(feature = "cloud")]
 pub use discovery::{Candidate, CaptureSourceKind, discover_claude, discover_opencode};
 #[cfg(feature = "cloud")]
+pub use discovery::{OpenCodeDiscoveryPage, discover_opencode_page};
+#[cfg(feature = "cloud")]
 pub use discovery::{reopen_claude, reopen_opencode};
 #[cfg(feature = "cloud")]
 pub use metadata::*;

@@ -181,6 +181,58 @@ pub fn discover_opencode(database: &Path, limits: &Limits) -> Result<Vec<Candida
     }
 }
 
+/// One bounded metadata page, not a complete database listing or project grant.
+#[derive(Debug)]
+pub struct OpenCodeDiscoveryPage {
+    /// Independent native identities, limited by `Limits::discovery_sessions`.
+    pub candidates: Vec<Candidate>,
+    /// Last returned native ID when another page exists. Keep it private and bind
+    /// it to the same authorized source, account, destination, and policy.
+    pub next_cursor: Option<String>,
+}
+
+/// Discover one binary native-ID page from an authorized OpenCode V2 database.
+///
+/// Pass `None` for the first page, then the returned cursor for the same source.
+/// Each call opens a fresh read snapshot and repeats schema, source identity, and
+/// deadline checks. It reads no payload and returns at most 512 candidates.
+/// A page does not prove that the complete database was listed. Restart a sweep
+/// to find inserts or CWD changes behind its cursor. Recheck current recorded CWD
+/// evidence and current project permission before capture.
+///
+/// The host must authorize the exact source, scope candidates, bound retained
+/// pages, and run this blocking operation on a bounded worker. Unsupported
+/// sources and non-Unix platforms fail as in [`discover_opencode`].
+pub fn discover_opencode_page(
+    database: &Path,
+    after: Option<&str>,
+    limits: &Limits,
+) -> Result<OpenCodeDiscoveryPage> {
+    limits.validate()?;
+    #[cfg(unix)]
+    {
+        let (sources, next_cursor) = crate::opencode::discover_page(database, after, limits)?;
+        Ok(OpenCodeDiscoveryPage {
+            candidates: sources
+                .into_iter()
+                .map(|source| Candidate {
+                    source_id: source.native_key().into(),
+                    source: CandidateSource::OpenCode(source),
+                    source_scope: None,
+                    project_paths: Vec::new(),
+                    project_selection: None,
+                })
+                .collect(),
+            next_cursor,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (database, after);
+        Err(Error::UnsupportedPlatform)
+    }
+}
+
 /// Re-admit one saved Claude native locator without reading its transcript.
 ///
 /// The host must first authorize the exact source directory again. IDs come
