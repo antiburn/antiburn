@@ -1,11 +1,11 @@
-# OpenCode native capture
+# OpenCode desktop capture
 
 Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
 This contract describes development-only capture; public builds keep Cloud disabled.
 
 OpenCode capture preserves session-owned SQLite values for later document
 projection. It does not use normalized metrics, start OpenCode, read external
-attachment files, or download URLs. See [native capture](capture.md) for consent,
+attachment files, or download URLs. See [desktop capture](capture.md) for consent,
 private spooling, fixed chunks, and saved retries, and
 [SQLite native format](sqlite-native.md) for the row stream.
 

@@ -32,10 +32,10 @@ enum PreparedSource<'a> {
 
 /// Private saved bodies and durable queue records owned by one executor.
 ///
-/// The native host owns consent, credentials, request selection, and terminal
+/// The desktop host owns consent, credentials, request selection, and terminal
 /// state. This value owns the exclusive spool lock and all queue file changes.
 /// Drop it to stop execution; dropping it never cancels captures or deletes
-/// native bytes. Run its blocking methods on a bounded native worker, never on
+/// native bytes. Run its blocking methods on a bounded blocking worker, never on
 /// UI or async runtime threads. Other platforms return [`Error::UnsupportedPlatform`].
 pub struct Spool {
     root: Directory,

@@ -1,6 +1,6 @@
-# Native Cloud capture
+# Desktop Cloud capture
 
-Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/).
 Public desktop builds keep Cloud disabled until launch.
 
 This standalone crate owns bounded Claude file and OpenCode SQLite capture,
@@ -9,13 +9,15 @@ transport. It contains no network client.
 
 The default build has no capture API. Select the explicit non-default `cloud`
 feature for controlled integration. Production upload enablement, consent,
-credentials, service endpoints, and scheduling belong to the native host.
+credentials, service endpoints, and scheduling belong to the desktop host.
 
 This crate is separate from [`antiburn-local`](../antiburn-local), which owns
 local session discovery, parsing, and analysis. Capture packages native source
 and capture metadata, not the desktop's parsed evidence, cost estimates, or
 Burn Check results. See [capture and local analysis](../../docs/cloud/capture.md#capture-and-local-analysis)
 for the data and consent boundaries.
+Here native refers to the provider's original session formats, bytes, and
+recorded identities. The application performs desktop capture of those sources.
 
 Read the [capture contract](../../docs/cloud/capture.md) for source ownership,
 independent stream chunks with fixed 8 MiB expanded bounds, stable source
@@ -45,7 +47,7 @@ See the [OpenCode source guide](../../docs/cloud/opencode.md) and
 [SQLite native format](../../docs/cloud/sqlite-native.md) for ownership and cell
 preservation rules. A source schema error is not a saved-format migration.
 
-[`Transport`](src/contract.rs) is the native host's service boundary. Its API
+[`Transport`](src/contract.rs) is the desktop host's service boundary. Its API
 documents method ordering, exact body handling, frozen plans, and closed errors.
 The host keeps credentials and upload decisions outside renderer code and runs
 blocking work on bounded workers, never on UI or async runtime threads. See the contract's

@@ -402,7 +402,7 @@ impl AcceptedSourceFingerprint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureState {
-    /// Native capture did not finish. Cancel explicitly before using a new ID.
+    /// Desktop capture did not finish. Cancel explicitly before using a new ID.
     Preparing,
     /// Saved source is complete. Reconcile and upload from the spool only.
     Queued,
@@ -621,7 +621,7 @@ pub enum TransportError {
 /// diagnostics. Errors can follow remote success, so retry and status must be
 /// safe under the same frozen inputs.
 pub trait Transport {
-    /// Reserve the fixed identity before full native capture reads content.
+    /// Reserve the fixed identity before full desktop capture reads source content.
     ///
     /// A separate, authorized local project-evidence scan can read bounded native
     /// transcript content before reservation. That scan never spools or uploads
@@ -739,7 +739,7 @@ pub enum Error {
     NotAccepted,
     /// Accepted work cannot be cancelled; the host must acknowledge its receipt.
     AlreadyAccepted,
-    /// Native source capture and private spooling require a supported Unix host.
+    /// Desktop capture and private spooling require a supported Unix host.
     UnsupportedPlatform,
     /// The saved manifest needs its original build; no migration is attempted.
     UnsupportedFormat,
@@ -751,10 +751,10 @@ impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if matches!(self, Self::UnsupportedFormat) {
             return formatter.write_str(
-                "native capture failed: unsupported capture format; use the original build to drain or cancel, or preserve a private copy for recovery",
+                "desktop capture failed: unsupported capture format; use the original build to drain or cancel, or preserve a private copy for recovery",
             );
         }
-        write!(formatter, "native capture failed: {self:?}")
+        write!(formatter, "desktop capture failed: {self:?}")
     }
 }
 

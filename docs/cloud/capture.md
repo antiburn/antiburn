@@ -1,11 +1,13 @@
-# Native capture
+# Desktop capture
 
-Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/).
 This contract describes development-only capture; public builds keep Cloud disabled.
 
-Native capture preserves source without using the local normalized session model.
+Desktop capture preserves provider-native source without using the local normalized session model.
 Claude streams retain exact file bytes. OpenCode streams retain typed
 session-owned SQLite cells from one read snapshot, not a database copy.
+Here native refers only to the provider's original session formats, bytes,
+schemas, and recorded identities, not the desktop capture operation.
 
 This public contract is unreleased. The standalone
 [`antiburn-cloud-capture`](../../crates/antiburn-cloud-capture) crate has no network
@@ -33,11 +35,11 @@ Successful capture does not prove local parser or Check support. Local parsing
 and Burn Check coverage remain governed by [session coverage](../session-coverage.md)
 and [check coverage](../check-coverage.md).
 
-The native host must obtain Cloud content consent separately from local analysis
+The desktop host must obtain Cloud content consent separately from local analysis
 and model-provider requests. Local discovery or a configured check provider does
 not authorize capture. Cloud content consent does not authorize model-provider
 requests. Enabling this library does not connect the desktop to a capture or
-upload transport; the native host owns that integration.
+upload transport; the desktop host owns that integration.
 
 ## Source ownership and capture
 
@@ -97,7 +99,7 @@ The encoded Claude directory name, provider storage path, project identifier,
 parent or fork links, tool CWD, and touched file paths never supply permission.
 The scan does not infer a repository root or perform Git reads.
 
-The native host owns metadata caching, source-change checks, and eviction.
+The desktop host owns metadata caching, source-change checks, and eviction.
 Claude's `source_digest()` reports the full streamed transcript SHA-256 as a
 local cache value, not permission, freshness proof, or a capture fingerprint.
 OpenCode returns no whole-source digest because this lookup does not read the
@@ -138,7 +140,7 @@ enumerating other sessions or reading payload. They do not restore a saved
 project permission. The host must authorize source access again, retain its
 stable account/source scope, and admit the reopened candidate against current
 folder choices before a new capture. All these calls block and need a bounded
-native worker. Saved upload retries continue from immutable spool bytes.
+blocking worker. Saved upload retries continue from immutable spool bytes.
 
 ### Claude files
 
@@ -469,7 +471,7 @@ state. `resume` is a synchronous draining helper, not a fair scheduler.
 One spool permits one executor and at most one synchronous part upload at a
 time. The host must also bound its root list, discovery workers, and pending
 selections. Per-root discovery limits are not an aggregate limit across roots.
-Run these blocking calls on bounded native workers, never on UI or async runtime
+Run these blocking calls on bounded blocking workers, never on UI or async runtime
 threads. The library does not own an executor or require a Tokio runtime.
 
 Progress separates total compressed bytes, required transfer bytes, reused
@@ -505,7 +507,7 @@ enter logs, analytics, or renderer status.
 
 ### Caller and transport ownership
 
-The native host owns source grants, current consent, credentials, durable request
+The desktop host owns source grants, current consent, credentials, durable request
 selection, and accepted-source state. The spool owns its records and saved bytes.
 Returned entries are snapshots, not a storage API. Renderer code must not choose
 upload locations, hold credentials, or run synchronous capture and upload calls.
@@ -588,7 +590,7 @@ cargo nextest run --manifest-path crates/antiburn-cloud-capture/Cargo.toml --fea
 CI selects this workspace for capture source and synthetic package changes. It
 checks the default library separately and enables `cloud` for Clippy and Nextest.
 The non-UTF-8 filesystem cases run on Linux, which permits those filenames.
-Windows builds do not establish native capture support. None of these checks
+Windows builds do not establish desktop capture support. None of these checks
 enables Cloud in desktop builds or releases.
 
 The explicit reference writer reads only these two synthetic packages:

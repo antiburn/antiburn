@@ -1,7 +1,8 @@
-//! Network-free native capture. The non-default `cloud` feature enables the API.
+//! Network-free desktop capture of provider-native session source.
+//! The non-default `cloud` feature enables the API.
 //! See `docs/cloud/capture.md` for the public byte and transport contract.
 //!
-//! The native host supplies source access, consent, account and destination
+//! The desktop host supplies source access, consent, account and destination
 //! bindings, a `Transport`, and scheduling. This crate owns admitted source
 //! handles, exact saved chunks, queue records, and upload reconciliation.
 //! Renderer code must not own credentials, choose upload locations, or call these
