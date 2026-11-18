@@ -41,6 +41,7 @@ macro_rules! with_app_commands {
             cli_install::get_cli_install_state => "get_cli_install_state",
             cli_install::test_cli_installation => "test_cli_installation",
             cli_install::repair_cli_installation => "repair_cli_installation",
+            local_tools::get_local_tools_status => "get_local_tools_status",
             agent_integrations::desktop::get_agent_integrations => "get_agent_integrations",
             agent_integrations::desktop::repair_agent_integration => "repair_agent_integration",
             agent_integrations::desktop::remove_agent_integration => "remove_agent_integration",

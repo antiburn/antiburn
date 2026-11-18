@@ -211,9 +211,10 @@ not silently replace a team with personal. Consent also stays bound to the
 configured service origin. Account, destination, or service changes cannot
 retarget saved captures.
 
-Sign-in, source access, project checkboxes, and the legacy local **Upload sessions**
-preference do not grant upload consent. **Start syncing** requires a separate
-full-content confirmation for the current selection. `desktop-project-sync-v1`
+Sign-in, source access, folder toggles, and the legacy local **Upload sessions**
+preference do not grant upload consent. Clicking **Start syncing** confirms
+full-content upload for the current selection. The folder screen's short subtitle
+states the scope; no separate consent checkbox or footer notice is required. `desktop-project-sync-v1`
 binds the account, personal destination, exact provider sources, and approved
 project/worktree paths, with full content and ongoing sync enabled and external
 attachments disabled. It covers existing sessions and new sessions in those
@@ -227,8 +228,8 @@ URL downloads remain excluded. This consent remains separate from local analysis
 and model-based Checks.
 
 Changing the account, destination, provider source, or selected path membership
-clears the current confirmation. Count-only updates do not change consent.
-Updating the saved sync selection needs another explicit confirmation.
+invalidates any pending approval for an earlier selection. Count-only updates do
+not change consent. Updating saved folders requires clicking the update action.
 
 ### Project suggestions and worktrees
 
@@ -310,20 +311,30 @@ capture; the host does not clip source or fall back to guessed limits.
 **Start syncing** moves onboarding to completion without waiting for capture,
 transfer, or integrity acceptance. **Done** remains available while setup or
 uploads are pending. Closing onboarding stops renderer observation, not the
-saved ongoing policy or desktop scheduler. Local agent readiness remains
+saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
-Settings → Sessions shows current upload state and transfer counters.
-`storageKnown` is true only when saved-state reads succeed. When false, counters
-and progress are unknown or last-known values, not current results. The desktop
+Settings → Sessions shows the account, personal destination, upload switch, and
+folder choices. The normal view omits transfer counters and progress text.
+Folder-read and saved-upload failures use brief messages, with recovery actions
+when available. Known blocked or interrupted work remains visible while other
+uploads run or the policy is paused.
+
+`storageKnown` is true only when saved-state reads succeed. When false, status
+counters and progress are unknown or last-known values, not current results. The desktop
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
 values must match the current account, destination, and service.
-**Upload sessions** pauses or resumes the confirmed policy;
-**Retry saved uploads** retries permitted saved work without expanding the
-selection. Pause stops admission of further sensitive work and saves the paused
+**Upload sessions** pauses or resumes the confirmed policy. For saved-upload errors,
+**Retry** retries permitted saved work without expanding the selection.
+Pause stops admission of further sensitive work and saves the paused
 state. It does not delete spools, undo requests already sent, or delete remote
 content. Sign-out and account changes also stop unauthorized work without
 retargeting or deleting saved captures.
+
+Retryable HTTP 429 capacity rejections defer the current upload until its retry deadline.
+The desktop then retries the same saved capture ID after checking current source
+and policy bindings. Saved uploads take priority over new captures. Saved bytes
+remain intact. Historical unknown failures still require explicit **Retry**.
 
 Capture API requests use the configured resource origin and desktop-held credentials.
 Saved gzip bodies go only to validated, short-lived upload locations supplied
@@ -349,6 +360,30 @@ verification. The host saves the accepted source fingerprint and terminal job
 state before acknowledging the retained library receipt. Explicit cancellation
 is the separate release path for an unaccepted capture, not remote deletion.
 Saved bytes and operator recovery remain governed by the [capture contract](capture.md).
+
+### Local tools status
+
+Completion reads `get_local_tools_status` and observes `local-tools:changed`.
+Both carry `{revision, phase, cliInstalled, cliTested, skillInstalled, reason}`. The phases
+are `pending`, `ready`, `unavailable`, and `failed`. Tool status is separate from
+Cloud authentication, folder discovery, and upload consent. Pending or failed tool
+setup does not block these paths or **Done**.
+
+The renderer attaches the listener before reading. It keeps the latest native
+revision in memory for the current app process. It ignores queries and events
+with lower revisions. A successful query can replace an intervening event when
+its revision is at least as recent. An accepted event supersedes a pending query
+error, which has no revision. Closing the observer rejects late replies
+and removes its listener. Tool setup can settle from events without a refresh
+control or polling.
+
+**Local tools ready** means the CLI passed its capability test and the generated
+skill and bound config match their ownership receipts. It does not prove host
+skill discovery, vendor callbacks, or native integration delivery. Failed setup
+points to **Repair** in Settings → CLI. That existing action retries debug tool
+setup while preserving ownership checks. Read-only status calls do not install
+or repair tools. See the [CLI contract](../cli-installation.md#debug-cli-and-skill)
+for profile and platform limits.
 
 ### Legacy saved source requests
 

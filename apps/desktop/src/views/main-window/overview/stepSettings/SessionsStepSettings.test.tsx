@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { emptyCloudSnapshot } from "../../../../lib/cloud"
 import { DEFAULT_SETTINGS } from "../../../../lib/ipc"
 import { SessionsStepSettings } from "./SessionsStepSettings"
+import { localToolsStatus } from "../../../../onboarding/__tests__/cloudProjectFixtures"
 
 /**
  * The Sessions step owns the activity window, monitoring, scanning, folders,
@@ -58,6 +59,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
     switch (command) {
       case "cloud_status":
         return Promise.resolve(emptyCloudSnapshot)
+      case "get_local_tools_status":
+        return Promise.resolve(localToolsStatus())
       case "get_settings":
         return Promise.resolve(DEFAULT_SETTINGS)
       case "get_scan_status":
@@ -444,8 +447,11 @@ describe("SessionsStepSettings Cloud preference", () => {
     expect(toggle).toHaveAttribute("aria-disabled", "true")
     expect(toggle).not.toBeChecked()
     expect(
-      screen.getByText("Your sessions stay on this device. No sessions are uploaded."),
-    ).toBeVisible()
+      screen.queryByText("Your sessions stay on this device. No sessions are uploaded."),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText("Available when Antiburn Cloud launches."),
+    ).not.toBeInTheDocument()
     expect(screen.queryByText(/Saved preference only/)).not.toBeInTheDocument()
     fireEvent.focus(toggle)
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
@@ -470,7 +476,7 @@ describe("SessionsStepSettings Cloud preference", () => {
     const signIn = await screen.findByRole("button", { name: "Sign in" })
     expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
     expect(screen.getByText("Not signed in")).toBeVisible()
-    expect(screen.getByText("You’re signed out on this device.")).toBeVisible()
+    expect(screen.queryByText("You’re signed out on this device.")).not.toBeInTheDocument()
     fireEvent.click(signIn)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_begin"))
   })

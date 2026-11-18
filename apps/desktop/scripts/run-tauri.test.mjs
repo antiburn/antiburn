@@ -22,6 +22,7 @@ test("all four development launchers use the separate debug configuration", asyn
   assert.equal(debug.identifier, "ai.antiburn.desktop.debug")
   for (const name of ["dev", "dev:bundle", "dev:cli", "dev:bundle:cli"]) {
     const args = scripts[name].split(" ")
+    assert.ok(args.includes("--with-cli"), `${name} must prepare the managed CLI payload`)
     assert.ok(
       args.some(
         (argument, index) =>
@@ -47,8 +48,14 @@ test("debug launchers select Cloud without changing release or caller options", 
   const { scripts } = JSON.parse(
     await readFile(new URL("../package.json", import.meta.url), "utf8"),
   )
-  const dev = scripts.dev.split(" ").slice(2)
-  const bundle = scripts["dev:bundle"].split(" ").slice(2)
+  const dev = scripts.dev
+    .split(" ")
+    .slice(2)
+    .filter((argument) => argument !== "--with-cli")
+  const bundle = scripts["dev:bundle"]
+    .split(" ")
+    .slice(2)
+    .filter((argument) => argument !== "--with-cli")
   const cases = [
     { name: "standard dev", input: dev, cloud: true },
     { name: "standard debug bundle", input: bundle, cloud: true },

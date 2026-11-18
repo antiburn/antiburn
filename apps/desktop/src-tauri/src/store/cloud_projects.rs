@@ -26,6 +26,49 @@ pub(crate) struct Suggestion {
 }
 
 impl Store {
+    /// Read bounded native-ID hints for the displayed local OpenCode projects.
+    /// Give each displayed CWD a share so one large project cannot hide the rest.
+    /// These IDs grant no database or CWD permission. Reopen each ID in an
+    /// authorized source and check its current recorded CWD before use.
+    pub(crate) fn cloud_opencode_session_ids(
+        &self,
+        cwds: &[String],
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        ensure!(
+            cwds.len() <= 32
+                && cwds.iter().all(|cwd| cwd.len() <= 4096)
+                && limit > 0
+                && limit <= 512,
+            "Choose bounded cached project metadata"
+        );
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT session_id FROM session
+             WHERE environment_key='native' AND wsl_distro IS NULL
+               AND agent='opencode' AND source_kind='providerDb'
+               AND source_format='\"open_code_v2_sqlite\"'
+               AND source_label='opencode:' || session_id || ':open_code_v2_sqlite'
+               AND length(CAST(session_id AS BLOB)) BETWEEN 1 AND 128
+               AND cwd=?1
+             ORDER BY session_id COLLATE BINARY LIMIT ?2",
+        )?;
+        let per_project = limit.div_ceil(cwds.len().max(1));
+        let mut ids = Vec::new();
+        for cwd in cwds {
+            let remaining = limit - ids.len();
+            if remaining == 0 {
+                break;
+            }
+            let rows = statement
+                .query_map(params![cwd, per_project.min(remaining) as u32], |row| {
+                    row.get(0)
+                })?;
+            ids.extend(rows.collect::<rusqlite::Result<Vec<String>>>()?);
+        }
+        Ok(ids)
+    }
+
     /// Page over every retained CWD, without a recency window or repository cap.
     /// Run in admitted blocking work. At most 256 small metadata rows are returned.
     pub(crate) fn cloud_project_suggestions_page(
@@ -86,7 +129,7 @@ impl Store {
         let mut statement = connection.prepare(
             "SELECT DISTINCT source_label FROM session
              WHERE environment_key='native' AND wsl_distro IS NULL
-               AND agent='claude' AND source_kind='file' AND source_label > ?1
+                AND agent='claude-code' AND source_kind='file' AND source_label > ?1
                AND length(CAST(source_label AS BLOB)) <= 4096
              ORDER BY source_label LIMIT ?2",
         )?;

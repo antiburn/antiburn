@@ -28,12 +28,19 @@ const CAPS_OFFLINE: usize = 2;
 const SUPPRESSED: usize = 3;
 const CONFLICT: usize = 4;
 const RESERVE_OFFLINE: usize = 5;
+const CAPACITY_ONE: usize = 6;
+const RESERVE_CAPACITY: usize = 7;
+const VERIFY_PENDING: usize = 8;
+const UNKNOWN_CAPACITY: usize = 9;
 
 struct Service {
     origin: String,
     mode: Arc<AtomicUsize>,
     requests: Arc<AtomicUsize>,
     reserves: Arc<AtomicUsize>,
+    capacity_rejections: Arc<AtomicUsize>,
+    reserve_identities: Arc<Mutex<Vec<CaptureIdentity>>>,
+    reserve_database: Arc<Mutex<Option<std::path::PathBuf>>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -46,6 +53,9 @@ impl Service {
         let mode = Arc::new(AtomicUsize::new(mode));
         let requests = Arc::new(AtomicUsize::new(0));
         let reserves = Arc::new(AtomicUsize::new(0));
+        let capacity_rejections = Arc::new(AtomicUsize::new(0));
+        let reserve_identities = Arc::new(Mutex::new(Vec::new()));
+        let reserve_database = Arc::new(Mutex::new(None::<std::path::PathBuf>));
         let stop = Arc::new(AtomicBool::new(false));
         let (worker_mode, worker_requests, worker_reserves, worker_stop) = (
             mode.clone(),
@@ -54,11 +64,15 @@ impl Service {
             stop.clone(),
         );
         let service_origin = origin.clone();
+        let worker_capacity_rejections = capacity_rejections.clone();
+        let worker_reserve_identities = reserve_identities.clone();
+        let worker_reserve_database = reserve_database.clone();
         let worker = std::thread::spawn(move || {
             let mut manifest: Option<CaptureManifest> = None;
             let mut receipts = Vec::<PartReceipt>::new();
             let mut pending_key: Option<ChunkKey> = None;
             let mut finalized = false;
+            let mut active = false;
             while !worker_stop.load(Ordering::Acquire) {
                 let mut stream = match listener.accept() {
                     Ok((stream, _)) => stream,
@@ -98,10 +112,49 @@ impl Service {
                     }
                 } else if line.contains("/reserve ") {
                     worker_reserves.fetch_add(1, Ordering::AcqRel);
+                    let identity: CaptureIdentity =
+                        serde_json::from_value(input["identity"].clone()).unwrap();
+                    if let Some(path) = worker_reserve_database.lock().unwrap().as_ref() {
+                        let connection = rusqlite::Connection::open_with_flags(
+                            path,
+                            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                        )
+                        .unwrap();
+                        let (state, retry_at): (String, Option<i64>) = connection
+                            .query_row(
+                                "SELECT json_extract(record_json,'$.state'),
+                                    json_extract(record_json,'$.reservation_retry_at')
+                                 FROM cloud_sync_job WHERE capture_id=?1",
+                                [&identity.capture_id],
+                                |row| Ok((row.get(0)?, row.get(1)?)),
+                            )
+                            .unwrap();
+                        assert_eq!(state, "pending");
+                        assert!(retry_at.is_none());
+                    }
+                    worker_reserve_identities.lock().unwrap().push(identity);
                     if mode == RESERVE_OFFLINE {
                         continue;
                     }
-                    if mode == SUPPRESSED
+                    if mode == UNKNOWN_CAPACITY {
+                        (
+                            429,
+                            serde_json::json!({"error": {
+                                "code":"unknown_limit", "retryable":true,
+                                "message":"Synthetic limit.",
+                            }}),
+                        )
+                    } else if mode == RESERVE_CAPACITY || (mode == CAPACITY_ONE && active) {
+                        worker_capacity_rejections.fetch_add(1, Ordering::AcqRel);
+                        (
+                            429,
+                            serde_json::json!({"error": {
+                                "code": "capture_limit", "retryable": true,
+                                "message": "Capture capacity is full.",
+                            }}),
+                        )
+                    } else if mode == SUPPRESSED
                         && input["identity"]["source_id"]
                             .as_str()
                             .unwrap()
@@ -123,6 +176,7 @@ impl Service {
                         manifest = None;
                         receipts.clear();
                         finalized = false;
+                        active = true;
                         (200, serde_json::json!({"reservation_id": "reservation"}))
                     }
                 } else if line.contains("/manifest ") {
@@ -153,6 +207,9 @@ impl Service {
                     (200, serde_json::to_value(plan).unwrap())
                 } else if line.starts_with("GET ") && line.contains("/status?") {
                     let saved = manifest.as_ref().unwrap();
+                    if finalized && mode != VERIFY_PENDING {
+                        active = false;
+                    }
                     (
                         200,
                         serde_json::to_value(ServerStatus {
@@ -160,7 +217,7 @@ impl Service {
                             manifest_sha256: saved.sha256().unwrap(),
                             plan_id: "plan".into(),
                             uploaded_parts: receipts.clone(),
-                            integrity_accepted: finalized,
+                            integrity_accepted: finalized && mode != VERIFY_PENDING,
                         })
                         .unwrap(),
                     )
@@ -206,6 +263,9 @@ impl Service {
             mode,
             requests,
             reserves,
+            capacity_rejections,
+            reserve_identities,
+            reserve_database,
             stop,
             worker: Some(worker),
         }
@@ -467,6 +527,84 @@ impl Fixture {
         }
         panic!("test capture did not become accepted");
     }
+
+    /// Advance only synthetic capacity deadlines without sleeping or changing IDs.
+    fn allow_capacity_retry(&mut self) {
+        for job in self
+            .store
+            .cloud_sync_jobs("account", "personal", &self.service.origin)
+            .unwrap()
+        {
+            if job.state == JobState::WaitingForCapacity {
+                self.store
+                    .defer_cloud_sync_reservation(&job, now() - 1)
+                    .unwrap();
+            }
+        }
+        self.runner.next_reservation = None;
+    }
+
+    fn restart_scheduler(&mut self) {
+        let base = self._directory.path().canonicalize().unwrap();
+        self.runner = Runner::default();
+        self.cache = super::super::projects::Cache::default();
+        self.host = capture::Host::new(&base);
+        self.store = Store::open(&base).unwrap();
+    }
+
+    /// Select only the final synthetic OpenCode ID; earlier IDs stay unapproved.
+    fn select_opencode(&mut self, sessions: usize) -> std::path::PathBuf {
+        let base = self._directory.path().canonicalize().unwrap();
+        let database = base.join("opencode.db");
+        let outside = base.join("unselected-project");
+        fs::create_dir(&outside).unwrap();
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE session_v2(id TEXT PRIMARY KEY, directory TEXT);
+                 CREATE TABLE session_message(
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
+                    seq INTEGER NOT NULL, data TEXT NOT NULL, UNIQUE(session_id,seq));",
+            )
+            .unwrap();
+        for index in 0..sessions {
+            connection
+                .execute(
+                    "INSERT INTO session_v2 VALUES (?1, ?2)",
+                    rusqlite::params![
+                        format!("session-{index:04}"),
+                        if index + 1 == sessions {
+                            &self.project
+                        } else {
+                            &outside
+                        }
+                        .to_str()
+                        .unwrap(),
+                    ],
+                )
+                .unwrap();
+        }
+        drop(connection);
+        self.policy = self
+            .store
+            .save_cloud_sync_policy(
+                "account",
+                "personal",
+                &self.service.origin,
+                &[SourceSelection {
+                    source_kind: SourceKind::OpenCodeSqliteV2,
+                    path: database.to_str().unwrap().into(),
+                }],
+                &[ProjectSelection {
+                    source_kind: SourceKind::OpenCodeSqliteV2,
+                    source_path: database.to_str().unwrap().into(),
+                    project_path: self.project.to_str().unwrap().into(),
+                }],
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        database
+    }
 }
 
 fn write_source(root: &Path, project: &Path, id: &str, message: &str) {
@@ -556,6 +694,505 @@ fn cloud_scheduler_cache_expiry_does_not_recapture_unchanged_sources_or_replace_
     assert_eq!(
         fixture.service.reserves.load(Ordering::Acquire),
         first_reservations + 1
+    );
+}
+
+#[test]
+fn cloud_scheduler_drains_each_capture_before_admitting_a_backfill_larger_than_service_capacity() {
+    let mut fixture = Fixture::new(CAPACITY_ONE, 0);
+    for index in 0..17 {
+        write_source(
+            &fixture.root,
+            &fixture.project,
+            &format!("backfill-{index:02}"),
+            "synthetic backfill",
+        );
+    }
+    for _ in 0..160 {
+        fixture.turn();
+        if fixture
+            .store
+            .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
+            .unwrap()
+            .0
+            == 18
+        {
+            break;
+        }
+    }
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
+            .unwrap()
+            .0,
+        18
+    );
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 18);
+    assert_eq!(
+        fixture.service.capacity_rejections.load(Ordering::Acquire),
+        0
+    );
+    assert!(fixture.host.spool().unwrap().entries().unwrap().is_empty());
+}
+
+#[test]
+fn cloud_scheduler_reservation_capacity_is_backpressure_not_a_permanent_fence() {
+    let mut fixture = Fixture::new(RESERVE_CAPACITY, 0);
+    *fixture.service.reserve_database.lock().unwrap() =
+        Some(fixture._directory.path().join("antiburn-debug.sqlite3"));
+    fixture.turn();
+    assert_eq!(
+        fixture.service.capacity_rejections.load(Ordering::Acquire),
+        1
+    );
+    let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert!(entry.reservation_id.is_none());
+    assert!(entry.manifest.is_none());
+    assert_eq!(fixture.runner.state, State::Syncing);
+    let job = fixture
+        .store
+        .cloud_sync_job(&entry.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, JobState::WaitingForCapacity);
+    assert!(fixture.runner.next_reservation.unwrap() > Instant::now());
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    fixture.runner = Runner::default();
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    fixture.service.mode.store(READY, Ordering::Release);
+    fixture.allow_capacity_retry();
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(saved.identity, entry.identity);
+    assert_eq!(saved.state, CaptureState::Queued);
+    assert_eq!(
+        *fixture.service.reserve_identities.lock().unwrap(),
+        vec![entry.identity.clone(), entry.identity.clone()]
+    );
+    fixture.accept_first();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
+    assert!(fixture.host.spool().unwrap().entries().unwrap().is_empty());
+}
+
+#[test]
+fn cloud_scheduler_does_not_infer_capacity_retry_from_unknown_old_errors() {
+    for mode in [RESERVE_OFFLINE, UNKNOWN_CAPACITY] {
+        let mut fixture = Fixture::new(mode, 0);
+        fixture.turn();
+        let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+        let before = fs::read(
+            fixture
+                ._directory
+                .path()
+                .join("cloud-capture-v1")
+                .join(&entry.identity.capture_id)
+                .join("record.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            fixture
+                .store
+                .cloud_sync_job(&entry.identity.capture_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            JobState::Interrupted
+        );
+        fixture.service.mode.store(READY, Ordering::Release);
+        fixture.runner.next_reconcile = None;
+        fixture.turn();
+        assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+        assert_eq!(
+            fs::read(
+                fixture
+                    ._directory
+                    .path()
+                    .join("cloud-capture-v1")
+                    .join(&entry.identity.capture_id)
+                    .join("record.json"),
+            )
+            .unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
+fn cloud_scheduler_capacity_retry_after_restart_rechecks_the_source_observation_and_current_project()
+ {
+    for change_cwd in [false, true] {
+        let mut fixture = Fixture::new(RESERVE_CAPACITY, 0);
+        fixture.turn();
+        let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+        let directory = fixture
+            ._directory
+            .path()
+            .join("cloud-capture-v1")
+            .join(&entry.identity.capture_id);
+        let before = saved_files(&directory);
+        let outside = fixture
+            ._directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("outside");
+        fs::create_dir(&outside).unwrap();
+        write_source(
+            &fixture.root,
+            if change_cwd {
+                &outside
+            } else {
+                &fixture.project
+            },
+            "session",
+            "changed source",
+        );
+        fixture.service.mode.store(READY, Ordering::Release);
+        fixture.allow_capacity_retry();
+        fixture.restart_scheduler();
+        fixture.turn();
+        assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+        let kept = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+        assert_eq!(kept, entry);
+        assert_eq!(saved_files(&directory), before);
+        assert_eq!(
+            fixture
+                .store
+                .cloud_sync_job(&entry.identity.capture_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            JobState::Interrupted
+        );
+    }
+}
+
+#[test]
+fn cloud_scheduler_capacity_retry_after_restart_interrupts_a_missing_native_id_without_changing_bytes()
+ {
+    for opencode in [false, true] {
+        let mut fixture = Fixture::new(RESERVE_CAPACITY, 0);
+        let database = opencode.then(|| fixture.select_opencode(1));
+        fixture.turn();
+        let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+        let directory = fixture
+            ._directory
+            .path()
+            .join("cloud-capture-v1")
+            .join(&entry.identity.capture_id);
+        let before = saved_files(&directory);
+        if let Some(database) = database {
+            rusqlite::Connection::open(database)
+                .unwrap()
+                .execute("DELETE FROM session_v2 WHERE id='session-0000'", [])
+                .unwrap();
+        } else {
+            fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+        }
+        fixture.service.mode.store(READY, Ordering::Release);
+        fixture.allow_capacity_retry();
+        fixture.restart_scheduler();
+        fixture.turn();
+        assert_eq!(fixture.runner.state, State::Interrupted);
+        let job = fixture
+            .store
+            .cloud_sync_job(&entry.identity.capture_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.identity, entry.identity);
+        assert_eq!(job.state, JobState::Interrupted);
+        assert!(job.reservation_retry_at.is_none());
+        assert_eq!(
+            fixture.host.spool().unwrap().entries().unwrap(),
+            vec![entry]
+        );
+        assert_eq!(saved_files(&directory), before);
+        assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    }
+}
+
+#[test]
+fn cloud_scheduler_capacity_retry_after_restart_does_not_treat_a_later_page_id_as_missing() {
+    let mut fixture = Fixture::new(RESERVE_CAPACITY, 0);
+    fixture.select_opencode(1025);
+    for _ in 0..3 {
+        fixture.turn();
+    }
+    let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    fixture.service.mode.store(READY, Ordering::Release);
+    fixture.allow_capacity_retry();
+    fixture.restart_scheduler();
+    fixture.turn();
+    let kept = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(kept.identity, entry.identity);
+    assert_eq!(kept.state, CaptureState::Queued);
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_scheduler_capacity_retry_cannot_reuse_a_narrowed_policy() {
+    let mut fixture = Fixture::new(RESERVE_CAPACITY, 0);
+    let extra = fixture
+        ._directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("extra");
+    fs::create_dir(&extra).unwrap();
+    let root = SourceSelection {
+        source_kind: SourceKind::ClaudeJsonl,
+        path: fixture.root.to_str().unwrap().into(),
+    };
+    let selected = ProjectSelection {
+        source_kind: SourceKind::ClaudeJsonl,
+        source_path: root.path.clone(),
+        project_path: fixture.project.to_str().unwrap().into(),
+    };
+    let mut projects = vec![
+        selected.clone(),
+        ProjectSelection {
+            project_path: extra.to_str().unwrap().into(),
+            ..selected.clone()
+        },
+    ];
+    projects.sort();
+    fixture.policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "personal",
+            &fixture.service.origin,
+            std::slice::from_ref(&root),
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let approved = fixture.policy.clone();
+    fixture.turn();
+    let before = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    fixture.policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "personal",
+            &fixture.service.origin,
+            &[root],
+            &[selected],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    fixture.allow_capacity_retry();
+    fixture.service.mode.store(READY, Ordering::Release);
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    assert_eq!(
+        fixture.host.spool().unwrap().entries().unwrap().remove(0),
+        before
+    );
+    let job = fixture
+        .store
+        .cloud_sync_job(&before.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(job.state, JobState::Fenced);
+    assert!(job.reservation_retry_at.is_none());
+    let roots = approved
+        .roots
+        .iter()
+        .map(|root| SourceSelection {
+            source_kind: root.source_kind,
+            path: root.path.clone(),
+        })
+        .collect::<Vec<_>>();
+    fixture.policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "personal",
+            &fixture.service.origin,
+            &roots,
+            &approved.projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    retry_saved_jobs(
+        &fixture.store,
+        fixture.host.spool().unwrap(),
+        &fixture.policy,
+        &|| true,
+    )
+    .unwrap();
+    fixture.runner.next_reconcile = None;
+    fixture.turn();
+    let retried = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_ne!(retried.identity.capture_id, before.identity.capture_id);
+    assert_eq!(retried.identity.source_id, before.identity.source_id);
+}
+
+#[test]
+fn cloud_scheduler_retains_bytes_and_defers_new_capture_until_integrity_acceptance() {
+    let mut fixture = Fixture::new(VERIFY_PENDING, 0);
+    write_source(&fixture.root, &fixture.project, "another", "synthetic");
+    for _ in 0..8 {
+        fixture.turn();
+    }
+    let entry = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(entry.state, CaptureState::AwaitingIntegrity);
+    assert!(entry.completion_submitted);
+    assert!(!entry.server_status.as_ref().unwrap().integrity_accepted);
+    let directory = fixture
+        ._directory
+        .path()
+        .join("cloud-capture-v1")
+        .join(&entry.identity.capture_id);
+    let before = saved_chunks(&directory);
+    assert!(!before.is_empty());
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    fixture.turn();
+    assert_eq!(saved_chunks(&directory), before);
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    fixture.service.mode.store(READY, Ordering::Release);
+    fixture.turn();
+    assert!(!directory.exists());
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
+            .unwrap()
+            .0,
+        1
+    );
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_scheduler_captures_a_selected_opencode_session_after_two_unselected_pages_without_duplicates()
+ {
+    let mut fixture = Fixture::new(READY, 0);
+    let database = fixture
+        ._directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("opencode.db");
+    let outside = fixture
+        ._directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("outside");
+    fs::create_dir(&outside).unwrap();
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE session_v2(id TEXT PRIMARY KEY, directory TEXT);
+         CREATE TABLE session_message(
+            id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL,
+            seq INTEGER NOT NULL, data TEXT NOT NULL, UNIQUE(session_id,seq));",
+        )
+        .unwrap();
+    connection
+        .execute(
+            "WITH RECURSIVE sessions(n) AS (
+            VALUES(0) UNION ALL SELECT n+1 FROM sessions WHERE n < 1024
+         )
+         INSERT INTO session_v2 SELECT printf('session-%04d',n), ?1 FROM sessions",
+            [outside.to_str().unwrap()],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE session_v2 SET directory=?1 WHERE id='session-1024'",
+            [fixture.project.to_str().unwrap()],
+        )
+        .unwrap();
+    drop(connection);
+    fixture.policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "personal",
+            &fixture.service.origin,
+            &[SourceSelection {
+                source_kind: SourceKind::OpenCodeSqliteV2,
+                path: database.to_str().unwrap().into(),
+            }],
+            &[ProjectSelection {
+                source_kind: SourceKind::OpenCodeSqliteV2,
+                source_path: database.to_str().unwrap().into(),
+                project_path: fixture.project.to_str().unwrap().into(),
+            }],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 0);
+    assert_eq!(
+        fixture
+            .runner
+            .discovery_cursor
+            .as_ref()
+            .unwrap()
+            .after
+            .as_deref(),
+        Some("session-0511")
+    );
+    fixture.policy = fixture
+        .store
+        .set_cloud_sync_paused(&fixture.policy, true)
+        .unwrap();
+    fixture.turn();
+    assert!(fixture.runner.discovery_cursor.is_none());
+    assert!(fixture.runner.next_reconcile.is_none());
+    fixture.policy = fixture
+        .store
+        .set_cloud_sync_paused(&fixture.policy, false)
+        .unwrap();
+    fixture.turn();
+    assert_eq!(
+        fixture
+            .runner
+            .discovery_cursor
+            .as_ref()
+            .unwrap()
+            .after
+            .as_deref(),
+        Some("session-0511")
+    );
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 0);
+    assert_eq!(
+        fixture
+            .runner
+            .discovery_cursor
+            .as_ref()
+            .unwrap()
+            .after
+            .as_deref(),
+        Some("session-1023")
+    );
+    fixture.turn();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    assert!(fixture.runner.discovery_cursor.is_none());
+    fixture.accept_first();
+    fixture.cache.expire_evidence();
+    fixture.runner.next_reconcile = None;
+    for _ in 0..4 {
+        fixture.turn();
+    }
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    assert_eq!(
+        fixture
+            .store
+            .lock()
+            .query_row("SELECT count(*) FROM cloud_sync_job", [], |row| row
+                .get::<_, u32>(0))
+            .unwrap(),
+        1
     );
 }
 
@@ -835,6 +1472,19 @@ impl Transport for Reservation {
     ) -> Result<(), TransportError> {
         unreachable!()
     }
+}
+
+fn saved_files(directory: &Path) -> BTreeMap<String, Vec<u8>> {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .map(|entry| {
+            (
+                entry.file_name().to_str().unwrap().to_owned(),
+                fs::read(entry.path()).unwrap(),
+            )
+        })
+        .collect()
 }
 
 fn saved_chunks(directory: &Path) -> BTreeMap<String, Vec<u8>> {

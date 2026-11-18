@@ -15,17 +15,31 @@ import {
   type CloudOngoingStatus,
   type DesktopCloudProjectGroup,
 } from "../../src/lib/cloud"
+import type { LocalToolsStatus } from "../../src/lib/ipcPayloads"
 
 /** Build preview-only account/request state; simulated success cannot establish product support. */
 export function cloudFixture(name: string): CloudPort {
   const dev = name.startsWith("dev-") ? name.slice(4) : null
   if (isCloudDevScenario(dev)) return createCloudDevPort(dev)
+  const settingsFolders = ["settings-folders", "settings-attention"].includes(name)
+  const homePaths =
+    name === "folders-long-paths" || settingsFolders || name === "settings-missing-sources"
   const authenticated = [
     "identity",
     "identity_error",
     "folders",
+    "folders-unchecked",
+    "folders-many",
+    "folders-long-paths",
+    "folders-empty-partial",
+    "folders-empty-paged",
     "empty",
     "complete",
+    "tools-ready",
+    "tools-pending",
+    "tools-failed",
+    "tools-unavailable",
+    "tools-live",
     "accepted",
     "partial",
     "failed",
@@ -37,11 +51,15 @@ export function cloudFixture(name: string): CloudPort {
     "settings-empty",
     "settings-storage-error",
     "settings-reopened",
+    "settings-folders",
+    "settings-attention",
+    "settings-missing-sources",
   ].includes(name)
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
     authEnabled: !["marketing", "returned", "marketing_failed"].includes(name),
-    syncEnabled: name === "settings-progress" || name === "settings-reopened",
+    syncEnabled:
+      name === "settings-progress" || name === "settings-reopened" || settingsFolders,
     captureEnabled: authenticated && name !== "unavailable",
     status: authenticated
       ? "signed_in"
@@ -57,7 +75,7 @@ export function cloudFixture(name: string): CloudPort {
     draft: {
       screen: ["identity", "identity_error"].includes(name)
         ? "identity"
-        : name === "complete"
+        : name === "complete" || name.startsWith("tools-")
           ? "complete"
           : authenticated
             ? "folders"
@@ -72,30 +90,55 @@ export function cloudFixture(name: string): CloudPort {
       : [
           { label: "Studio", count: 128 },
           { label: "Website", count: 64 },
-        ].map(({ label, count }) => ({
-          id: label,
-          environment: "native",
-          path: `/Example/${label}`,
-          label,
-          folderPaths:
-            label === "Studio"
-              ? [`/Example/${label}`, "/Example/worktrees/studio-menu-fix"]
-              : [`/Example/${label}`],
-          worktreeCount: label === "Studio" ? 1 : 0,
-          agents: ["claude"],
-          sessionCount: count,
-          captureSessionCount: count,
-          captureSupported: true,
-          groupingComplete: true,
-          projects: (label === "Studio"
-            ? [`/Example/${label}`, "/Example/worktrees/studio-menu-fix"]
-            : [`/Example/${label}`]
-          ).map((projectPath) => ({
-            sourceKind: "claude_jsonl",
-            sourcePath: `/Example/Sources/${label}`,
-            projectPath,
-          })),
-        }))
+          ...(homePaths
+            ? [
+                { label: "Tools", count: 18 },
+                { label: "Desktop", count: 42 },
+                { label: "Examples", count: 3 },
+                { label: "Integrations", count: 17 },
+                { label: "Docs", count: 9 },
+              ]
+            : []),
+          ...(name === "folders-long-paths" ? [{ label: "API", count: 23 }] : []),
+          ...(name === "folders-many"
+            ? [
+                { label: "Desktop", count: 42 },
+                { label: "Documentation preview and integrations", count: 9 },
+                { label: "Tools", count: 18 },
+                { label: "Examples", count: 3 },
+              ]
+            : []),
+        ].map(({ label, count }) => {
+          const path = homePaths ? `/Users/avery/dev/${label}` : `/Example/${label}`
+          const folderPaths =
+            label !== "Studio"
+              ? [path]
+              : homePaths
+                ? [
+                    path,
+                    "/Users/avery/dev/worktrees/studio-documentation-preview/feature-cloud-folder-layout-and-readable-paths",
+                    "/Users/avery/dev/worktrees/studio-integration-tests/feature-account-bound-sync-selection",
+                  ]
+                : [path, "/Example/worktrees/studio-menu-fix"]
+          return {
+            id: label,
+            environment: "native",
+            path,
+            label,
+            folderPaths,
+            worktreeCount: folderPaths.length - 1,
+            agents: ["claude"],
+            sessionCount: count,
+            captureSessionCount: count,
+            captureSupported: name !== "folders-unchecked",
+            groupingComplete: true,
+            projects: folderPaths.map((projectPath) => ({
+              sourceKind: "claude_jsonl" as const,
+              sourcePath: `/Example/Sources/${label}`,
+              projectPath,
+            })),
+          }
+        })
   if (name === "settings-reopened")
     groups.push({
       id: "NewProject",
@@ -154,8 +197,6 @@ export function cloudFixture(name: string): CloudPort {
       projectChoices: Object.fromEntries(groups.map((group) => [group.id, true])),
       acceptedCount: 41,
       queuedCount: 3,
-      interruptedCount: 1,
-      fencedCount: 1,
       progress: {
         negotiated: true,
         totalCompressedBytes: 8_388_608,
@@ -180,19 +221,67 @@ export function cloudFixture(name: string): CloudPort {
       projects: groups[0]!.projects,
       projectChoices: { Studio: true, Website: false },
     }
+  if (settingsFolders) {
+    const approved = groups.filter((group) => group.id !== "Website")
+    ongoing = {
+      ...ongoing,
+      storageKnown: true,
+      status: "syncing",
+      consentVersion: "desktop-project-sync-v1",
+      selectedSources: approved.map((group) => ({
+        sourceKind: "claude_jsonl",
+        path: group.projects[0]!.sourcePath,
+      })),
+      projects: approved.flatMap((group) => group.projects),
+      projectChoices: Object.fromEntries(
+        groups.map((group) => [group.id, group.id !== "Website"]),
+      ),
+      queuedCount: 2,
+      acceptedCount: 3,
+      fencedCount: name === "settings-attention" ? 1 : 0,
+    }
+  }
+  const toolsStatus = (phase: LocalToolsStatus["phase"], revision = 0): LocalToolsStatus => ({
+    revision,
+    phase,
+    cliInstalled: phase === "ready" || phase === "failed",
+    cliTested: phase === "ready",
+    skillInstalled: phase === "ready",
+    reason: phase === "failed" ? "cli_test_failed" : null,
+  })
+  let localTools = toolsStatus(
+    name === "tools-ready"
+      ? "ready"
+      : name === "complete" || name === "tools-pending" || name === "tools-live"
+        ? "pending"
+        : name === "tools-failed"
+          ? "failed"
+          : "unavailable",
+  )
   return {
+    displayHome: async () => "/Users/avery",
     ongoing: {
-      groups: async () => ({
-        groups,
-        sourceRoots: groups.flatMap((group) =>
-          group.projects.map((project) => ({
-            sourceKind: project.sourceKind,
-            path: project.sourcePath,
-          })),
-        ),
-        nextCursor: null,
-        partial: false,
-      }),
+      groups: async (_binding, after) => {
+        const emptyPage =
+          ["folders-empty-partial", "folders-empty-paged"].includes(name) && !after
+        return {
+          groups: emptyPage ? [] : groups,
+          sourceRoots:
+            emptyPage || name === "settings-missing-sources"
+              ? []
+              : groups.flatMap((group) =>
+                  group.projects.map((project) => ({
+                    sourceKind: project.sourceKind,
+                    path: project.sourcePath,
+                  })),
+                ),
+          nextCursor:
+            name === "folders-empty-paged" && !after
+              ? { environment: "native", cwd: "/Example/Next" }
+              : null,
+          partial: name === "folders-empty-partial",
+        }
+      },
       status: async () => ongoing,
       watch: async () => () => {},
       enable: async (consent) => {
@@ -246,7 +335,7 @@ export function cloudFixture(name: string): CloudPort {
       return value
     },
     signOut: async () => {
-      value = { ...emptyCloudSnapshot, status: "signed_out" }
+      value = { ...emptyCloudSnapshot, authEnabled: value.authEnabled, status: "signed_out" }
       return value
     },
     resetLocal: async () => {
@@ -254,7 +343,22 @@ export function cloudFixture(name: string): CloudPort {
       return value
     },
     pick: async () => ["/Example/New folder"],
-    agent: async () => (name === "complete" ? "pending" : "unavailable"),
+    localTools: {
+      read: async () => localTools,
+      watch: async (listener) => {
+        if (name !== "tools-live") return () => {}
+        const stops = (["pending", "ready", "failed"] as const).map((phase) => {
+          const event = `fixture:local-tools-${phase}`
+          const update = () => {
+            localTools = toolsStatus(phase, localTools.revision + 1)
+            listener(localTools)
+          }
+          window.addEventListener(event, update)
+          return () => window.removeEventListener(event, update)
+        })
+        return () => stops.forEach((stop) => stop())
+      },
+    },
     prepareSync: async () => {},
     start: async () =>
       name === "ambiguous"
@@ -283,7 +387,10 @@ export function CloudFixture() {
     name === "settings-progress" ||
     name === "settings-empty" ||
     name === "settings-storage-error" ||
-    name === "settings-reopened"
+    name === "settings-reopened" ||
+    name === "settings-folders" ||
+    name === "settings-attention" ||
+    name === "settings-missing-sources"
   )
     return <CloudSettingsFixture name={name} />
   return (
@@ -319,13 +426,6 @@ function CloudSettingsFixture({ name }: { name: string }) {
             <CloudAccount session={session} value={value}>
               <SettingsToggleRow
                 searchId="cloudUpload"
-                description={
-                  storageUnknown
-                    ? "Last known setting."
-                    : value.ongoing?.consentVersion === "desktop-project-sync-v1"
-                      ? "Upload existing and new sessions from the approved projects. Pausing keeps saved uploads."
-                      : "Choose projects and confirm full-content sync before enabling uploads."
-                }
                 checked={
                   value.ongoing?.consentVersion === "desktop-project-sync-v1" &&
                   !value.ongoing.paused
@@ -333,9 +433,9 @@ function CloudSettingsFixture({ name }: { name: string }) {
                 disabled={value.busy || storageUnknown || !value.ongoing?.consentVersion}
                 disabledTooltip={
                   storageUnknown
-                    ? "Check disk space and file permissions, then retry saved uploads."
+                    ? "Could not read saved uploads."
                     : !value.ongoing?.consentVersion
-                      ? "Choose projects and confirm full-content sync below."
+                      ? "Choose folders, then Start syncing."
                       : undefined
                 }
                 onChange={(enabled) => void session.controlSync(!enabled)}

@@ -8,25 +8,29 @@ export function prepareCliDev(
     buildPayload = build,
   } = {},
 ) {
-  if (!args.includes("--with-cli")) return args
+  const separator = args.indexOf("--")
+  const tauriArgs = separator < 0 ? args : args.slice(0, separator)
+  const forwardedArgs = separator < 0 ? [] : args.slice(separator)
+  if (!tauriArgs.includes("--with-cli")) return args
   const host = /^host: (.+)$/m.exec(readHost())?.[1]?.trim()
   if (!targets.includes(host)) throw new Error("Unsupported CLI development host")
-  const targetIndex = args.indexOf("--target")
+  const targetIndex = tauriArgs.indexOf("--target")
   const target =
     targetIndex >= 0
-      ? args[targetIndex + 1]
-      : args.find((arg) => arg.startsWith("--target="))?.slice(9)
-  const hasTarget = targetIndex >= 0 || args.some((arg) => arg.startsWith("--target="))
+      ? tauriArgs[targetIndex + 1]
+      : tauriArgs.find((arg) => arg.startsWith("--target="))?.slice(9)
+  const hasTarget = targetIndex >= 0 || tauriArgs.some((arg) => arg.startsWith("--target="))
   if (hasTarget && (!target || target.startsWith("-")))
     throw new Error("CLI development target requires a value")
   if (target && target !== host)
     throw new Error("CLI development setup requires the host target")
-  if (args[0] !== "dev" && !(args[0] === "build" && args.includes("--debug")))
+  if (tauriArgs[0] !== "dev" && !(tauriArgs[0] === "build" && tauriArgs.includes("--debug")))
     throw new Error("CLI development setup requires dev or build --debug")
   buildPayload(host)
   return [
-    ...args.filter((arg) => arg !== "--with-cli"),
+    ...tauriArgs.filter((arg) => arg !== "--with-cli"),
     "--config",
     "src-tauri/tauri.sidecar.conf.json",
+    ...forwardedArgs,
   ]
 }

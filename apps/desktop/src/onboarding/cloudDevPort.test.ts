@@ -18,7 +18,8 @@ describe("Cloud Dev simulation", () => {
           group.folderPaths.every((path) => path.startsWith("/Example/")),
         ),
       ).toBe(true)
-      if (scenario.startsWith("complete-")) expect(await port.agent()).toBe(scenario.slice(9))
+      if (scenario.startsWith("complete-"))
+        expect((await port.localTools.read()).phase).toBe(scenario.slice(9))
     }
   })
   it("cancels a simulated callback and disposes delayed work", async () => {

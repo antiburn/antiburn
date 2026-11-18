@@ -5,6 +5,7 @@ import { emptyCloudSnapshot, desktopCloudPort, type CloudSnapshot } from "../../
 import { CloudSession } from "../../onboarding/CloudSession"
 import { CloudAccount } from "./CloudAccount"
 import { SettingsTargetFocus } from "./SettingsTargetFocus"
+import { localToolsFixture } from "../../onboarding/__tests__/cloudProjectFixtures"
 
 function fixture(initial?: CloudSnapshot) {
   let value: CloudSnapshot = initial ?? {
@@ -42,7 +43,7 @@ function fixture(initial?: CloudSnapshot) {
         publish = listener
         return () => {}
       },
-      agent: async () => "unavailable",
+      localTools: localToolsFixture().port,
       resetLocal,
       signOut,
       save,
@@ -128,10 +129,7 @@ it("requires source selection and sends account-bound folder changes from Settin
   const source = await screen.findByRole("switch", {
     name: "Select /Example/Project for Cloud capture",
   })
-  const consent = screen.getByRole("checkbox", {
-    name: /Upload existing and new sessions in full/,
-  })
-  expect(consent).toBeDisabled()
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   const row = screen.getByText("Cloud folders").closest<HTMLElement>("[data-settings-control]")!
   row.scrollIntoView = vi.fn()
   new SettingsTargetFocus().attach(container, "sessions", "cloudFolders", 1)()
@@ -139,13 +137,13 @@ it("requires source selection and sends account-bound folder changes from Settin
   expect(source).not.toBeChecked()
   expect(save).not.toHaveBeenCalled()
   fireEvent.click(source)
-  await waitFor(() => expect(consent).toBeEnabled())
+  await waitFor(() => expect(source).toBeChecked())
   expect(save).toHaveBeenCalledWith(
     { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
     { accountId: "synthetic-account", destinationId: "synthetic-personal" },
     true,
   )
-  expect(screen.getByText(/It does not sign out your browser/)).toBeVisible()
+  expect(screen.queryByText(/It does not sign out your browser/)).not.toBeInTheDocument()
   expect(row).toHaveAttribute("data-settings-control", "cloudFolders")
 })
 
@@ -162,7 +160,7 @@ it("keeps revocation available when folder setup cannot load", async () => {
   const logout = await screen.findByRole("button", { name: "Sign out" })
   expect(logout).toBeEnabled()
   expect(screen.getByRole("button", { name: "Choose folders…" })).toBeDisabled()
-  expect(screen.getByRole("checkbox")).toBeDisabled()
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   fireEvent.click(logout)
   await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
 })
@@ -184,11 +182,9 @@ it("saves a desktop capture request from Settings after onboarding without claim
   const { session, prepareSync, start } = fixture(desktopCapture)
   render(<Account session={session} />)
   const save = await screen.findByRole("button", { name: "Save capture request" })
-  expect(save).toBeDisabled()
+  expect(save).toBeEnabled()
   expect(screen.getByText(/Choose the folders where Claude saves sessions/)).toBeVisible()
-  fireEvent.click(
-    screen.getByRole("checkbox", { name: /authorize a full-content capture request/ }),
-  )
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   expect(save).toBeEnabled()
   fireEvent.click(save)
   await waitFor(() => expect(start).toHaveBeenCalledOnce())
@@ -212,22 +208,19 @@ it.each([
     render(<Account session={session} />)
     const save = await screen.findByRole("button", { name: "Save capture request" })
     expect(save).toBeDisabled()
-    expect(screen.getByRole("checkbox")).toBeDisabled()
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
     fireEvent.click(save)
     expect(prepareSync).not.toHaveBeenCalled()
   },
 )
 
-it("clears desktop save confirmation when source selection changes", async () => {
+it("does not save or authorize a request when source selection changes", async () => {
   const { session, start } = fixture(desktopCapture)
   render(<Account session={session} />)
   const save = await screen.findByRole("button", { name: "Save capture request" })
-  const consent = screen.getByRole("checkbox")
-  fireEvent.click(consent)
   expect(save).toBeEnabled()
   fireEvent.click(screen.getByRole("switch"))
-  await waitFor(() => expect(consent).not.toBeChecked())
-  expect(save).toBeDisabled()
+  await waitFor(() => expect(save).toBeDisabled())
   expect(start).not.toHaveBeenCalled()
 })
 
@@ -245,9 +238,8 @@ it("selects OpenCode databases explicitly from Settings before typed content con
   })
   expect(source).toBeChecked()
   expect(screen.getByText("OpenCode V2: /Example/opencode/opencode.db")).toBeVisible()
-  const confirm = screen.getByRole("checkbox")
-  expect(confirm).not.toBeChecked()
-  fireEvent.click(confirm)
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
+  expect(prepareSync).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole("button", { name: "Save capture request" }))
   await waitFor(() => expect(prepareSync).toHaveBeenCalledOnce())
   expect(prepareSync).toHaveBeenCalledWith(

@@ -526,11 +526,12 @@ as its default. Each window owns one surface until the shell releases it.
 
 ## CLI runtime
 
-For source development with a prepared host CLI payload, use
-`pnpm --filter @antiburn/desktop dev:cli`; use `dev:bundle:cli` for a debug bundle.
-These commands build the CLI and add its resource mapping. Open Settings → CLI →
-Technical details → Repair to stage it. Ordinary `dev` and `dev:bundle` do not
-prepare the payload and remain unchanged.
+The `dev` and `dev:bundle` commands build and resource-map the host CLI payload.
+Their `:cli` aliases do the same work. The debug app stages it automatically.
+On macOS, it also installs the profile-bound `antiburn-debug` skill into the
+selected existing OpenCode profile. This is separate from vendor callback setup.
+Settings → CLI → Technical details → Repair retries setup without changing PATH,
+the release profile, or unrelated skills.
 
 Distribution builds package and automatically stage a durable per-user `antiburn-cli`.
 Settings → CLI reports runtime status and offers Test, Repair, and a copyable

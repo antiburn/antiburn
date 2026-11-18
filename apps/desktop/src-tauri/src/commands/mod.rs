@@ -321,6 +321,7 @@ pub async fn app_info(app: tauri::AppHandle) -> CommandResult<AppInfo> {
             pricing_catalog_version: crate::runtime_pricing::catalog_version(&app),
             schema_version: store.schema_version().map_err(fail)?,
             data_dir: store.state_dir().to_string_lossy().to_string(),
+            home_directory: home_dir().and_then(|path| path.to_str().map(str::to_owned)),
             indexed_sessions: store.session_count().map_err(fail)?,
             database_bytes: store.database_bytes(),
             // Real registration state, not a compile-time guess: a release build

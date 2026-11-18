@@ -2,18 +2,24 @@ import { beforeEach, expect, it, vi } from "vitest"
 import {
   cloudProjectSelectionKey,
   cloudProjectChoices,
+  cloudDisplayPath,
   selectedCloudProjectPaths,
   desktopCloudPort,
   type CaptureConsent,
   type CloudProjectGroup,
 } from "./cloud"
+import type { AppInfo } from "./ipcPayloads"
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   open: vi.fn(),
   hasShell: vi.fn(() => true),
-  appInfo: vi.fn(async () => ({ cloudEnabled: true })),
-  listen: vi.fn(async () => vi.fn()),
+  appInfo: vi.fn(async (): Promise<Pick<AppInfo, "cloudEnabled" | "homeDirectory">> => ({
+    cloudEnabled: true,
+  })),
+  listen: vi.fn(async (_event: string, _listener: (event: { payload: unknown }) => void) =>
+    vi.fn(),
+  ),
 }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }))
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.open }))
@@ -36,6 +42,63 @@ beforeEach(() => {
   mocks.appInfo.mockResolvedValue({ cloudEnabled: true })
   mocks.invoke.mockResolvedValue({ status: "upload_unavailable" })
   mocks.open.mockResolvedValue(null)
+})
+
+it.each([
+  ["/Users/avery/dev/Studio", "/Users/avery", "~/dev/Studio"],
+  ["/Users/avery", "/Users/avery/", "~"],
+  ["/Users/avery-other/dev/Studio", "/Users/avery", "/Users/avery-other/dev/Studio"],
+  ["/Users/jordan/dev/Studio", "/Users/avery", "/Users/jordan/dev/Studio"],
+  ["/Users/avery/dev/Studio", null, "/Users/avery/dev/Studio"],
+  ["C:\\Users\\Avery\\dev\\Studio", "C:\\Users\\Avery\\", "~\\dev\\Studio"],
+])("abbreviates only the current proved home in %s", (path, home, expected) => {
+  expect(cloudDisplayPath(path, home)).toBe(expected)
+})
+
+it("reads the display home from the shared desktop AppInfo contract", async () => {
+  expect(await desktopCloudPort.displayHome?.()).toBeNull()
+  mocks.appInfo.mockResolvedValue({
+    cloudEnabled: true,
+    homeDirectory: "/Users/avery",
+  })
+  expect(await desktopCloudPort.displayHome?.()).toBe("/Users/avery")
+  mocks.hasShell.mockReturnValue(false)
+  expect(await desktopCloudPort.displayHome?.()).toBeNull()
+})
+
+it("reads and observes local tools without using vendor integration status", async () => {
+  const status = {
+    revision: 3,
+    phase: "ready",
+    cliInstalled: true,
+    cliTested: true,
+    skillInstalled: true,
+    reason: null,
+  } as const
+  mocks.appInfo.mockResolvedValue({ cloudEnabled: false })
+  mocks.invoke.mockResolvedValue(status)
+  expect(await desktopCloudPort.localTools.read()).toEqual(status)
+  expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("get_local_tools_status")
+  const listener = vi.fn()
+  const stop = await desktopCloudPort.localTools.watch(listener)
+  expect(mocks.listen).toHaveBeenCalledWith("local-tools:changed", expect.any(Function))
+  mocks.listen.mock.calls[0]![1]({ payload: status })
+  expect(listener).toHaveBeenCalledExactlyOnceWith(status)
+  stop()
+})
+
+it("does not read or observe desktop tools in a browser preview", async () => {
+  mocks.hasShell.mockReturnValue(false)
+  expect(await desktopCloudPort.localTools.read()).toMatchObject({
+    phase: "unavailable",
+    cliInstalled: false,
+    cliTested: false,
+    skillInstalled: false,
+  })
+  const stop = await desktopCloudPort.localTools.watch(vi.fn())
+  stop()
+  expect(mocks.invoke).not.toHaveBeenCalled()
+  expect(mocks.listen).not.toHaveBeenCalled()
 })
 
 it("passes exact request bindings to desktop capture commands and returns their results", async () => {

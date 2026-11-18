@@ -9,6 +9,42 @@ import {
   type CloudSnapshot,
   type DesktopCloudProjectGroup,
 } from "../../lib/cloud"
+import type { LocalToolsStatus } from "../../lib/ipcPayloads"
+
+/** Synthetic tool evidence. This helper never reads an installed CLI or skill. */
+export function localToolsStatus(
+  phase: LocalToolsStatus["phase"] = "unavailable",
+  revision = 0,
+): LocalToolsStatus {
+  return {
+    revision,
+    phase,
+    cliInstalled: phase === "ready",
+    cliTested: phase === "ready",
+    skillInstalled: phase === "ready",
+    reason: phase === "failed" ? "setup_unavailable" : null,
+  }
+}
+
+/** Model independent tool events and reads at the renderer's IPC boundary. */
+export function localToolsFixture(initial = localToolsStatus()) {
+  let value = initial
+  let publish: (status: LocalToolsStatus) => void = () => {}
+  const port: Mocked<CloudPort["localTools"]> = {
+    read: vi.fn(async () => value),
+    watch: vi.fn<CloudPort["localTools"]["watch"]>(async (listener) => {
+      publish = listener
+      return vi.fn<() => void>()
+    }),
+  }
+  return {
+    port,
+    emit: (status: LocalToolsStatus) => {
+      value = status
+      publish(status)
+    },
+  }
+}
 
 /** Synthetic desktop metadata. No provider paths or credentials are read. */
 export function projectGroup(
@@ -69,6 +105,7 @@ export function cloudProjectFixture(): {
   ongoing: Mocked<CloudOngoingPort>
   emit: (patch: Partial<CloudSnapshot>) => void
   emitSync: (status: CloudOngoingStatus) => void
+  emitLocalTools: (status: LocalToolsStatus) => void
 } {
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
@@ -114,6 +151,7 @@ export function cloudProjectFixture(): {
       ongoingStatus({ status: "ready", consentVersion: "desktop-project-sync-v1" }),
     ),
   }
+  const localTools = localToolsFixture()
   const port: CloudPort = {
     ...desktopCloudPort,
     ongoing,
@@ -126,7 +164,7 @@ export function cloudProjectFixture(): {
       value = { ...value, draft }
       return value
     }),
-    agent: vi.fn(async () => "unavailable" as const),
+    localTools: localTools.port,
     prepareSync: vi.fn(async () => {}),
     start: vi.fn(async () => ({ status: "upload_unavailable" as const })),
   }
@@ -138,5 +176,6 @@ export function cloudProjectFixture(): {
       changed(value)
     },
     emitSync: (status: CloudOngoingStatus) => syncChanged(status),
+    emitLocalTools: localTools.emit,
   }
 }

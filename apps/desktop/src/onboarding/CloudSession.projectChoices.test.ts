@@ -72,7 +72,6 @@ it("keeps confirmed exclusions across reopen while new groups and unconfirmed ed
     session.selectProject("website", false)
     expect(saved.projectChoices).toEqual({})
     expect(port.save).not.toHaveBeenCalled()
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
     await session.startSync()
     expect(saved.projectChoices).toEqual({ studio: true, website: false })
     expect(saved.projects).toEqual(projectGroup().projects)
@@ -89,7 +88,6 @@ it("keeps confirmed exclusions across reopen while new groups and unconfirmed ed
     })
     expect(saved.projectChoices).not.toHaveProperty("new-project")
     expect(saved.projects.some((project) => project.projectPath === "/Example/New")).toBe(false)
-    await session.startSync()
     expect(ongoing.enable).toHaveBeenCalledTimes(1)
 
     session.selectProject("website", true)
@@ -98,10 +96,8 @@ it("keeps confirmed exclusions across reopen while new groups and unconfirmed ed
     stop = session.subscribe(vi.fn())
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     expect(session.getSnapshot().projects?.choices.website).toBe(false)
-    expect(session.getSnapshot().fullContentConsent).toBe(false)
     expect(saved.projectChoices).toEqual({ studio: true, website: false })
 
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
     await session.startSync()
     expect(saved.projectChoices).toEqual({ studio: true, website: false, "new-project": true })
     expect(saved.projects.some((project) => project.projectPath === "/Example/New")).toBe(true)
@@ -133,7 +129,6 @@ it("requires review instead of restoring unknown choices from an older policy", 
     await session.startSync()
     expect(ongoing.enable).not.toHaveBeenCalled()
     session.selectProject("studio", true)
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
     await session.startSync()
     expect(ongoing.enable).toHaveBeenCalledWith(
       expect.objectContaining({

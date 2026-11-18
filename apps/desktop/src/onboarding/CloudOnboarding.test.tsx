@@ -9,6 +9,7 @@ import {
   type CloudSnapshot,
 } from "../lib/cloud"
 import { CloudOnboarding, CloudProjectFolders } from "./CloudOnboarding"
+import { localToolsFixture } from "./__tests__/cloudProjectFixtures"
 
 const analytics = vi.hoisted(() => ({ action: vi.fn(), view: vi.fn() }))
 vi.mock("../lib/onboardingAnalytics", () => ({
@@ -40,7 +41,7 @@ function fixture(patch: Partial<CloudSnapshot> = {}) {
       notify = listener
       return () => {}
     },
-    agent: async () => "unavailable",
+    localTools: localToolsFixture().port,
     prepareSync: vi.fn(async () => {}),
     start,
     reconcile: async () => value.pendingSync?.result ?? { status: "upload_unavailable" },
@@ -64,10 +65,10 @@ it("saves desktop capture requests with truthful completion copy", async () => {
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
   const save = await screen.findByRole("button", { name: "Save capture request" })
-  expect(save).toBeDisabled()
+  expect(save).toBeEnabled()
   expect(screen.getByText(/Choose the folders where Claude saves sessions/)).toBeVisible()
   expect(screen.queryByText(/existing and future coding sessions/)).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole("checkbox"))
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   fireEvent.click(save)
   expect(await screen.findByRole("heading", { name: "Capture request saved" })).toBeVisible()
   expect(start).toHaveBeenCalledOnce()
@@ -84,7 +85,6 @@ it("does not claim a desktop request was saved when its result is unknown", asyn
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
   const save = await screen.findByRole("button", { name: "Save capture request" })
-  fireEvent.click(screen.getByRole("checkbox"))
   fireEvent.click(save)
   await waitFor(() => expect(screen.getByText("Capture request not confirmed")).toBeVisible())
   expect(
@@ -100,7 +100,6 @@ it("keeps source-listing recovery out of onboarding", async () => {
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
   const save = await screen.findByRole("button", { name: "Save capture request" })
-  fireEvent.click(screen.getByRole("checkbox"))
   fireEvent.click(save)
   expect(await screen.findByRole("heading", { name: "Capture request saved" })).toBeVisible()
   expect(screen.queryByRole("button", { name: /Retry/ })).not.toBeInTheDocument()
@@ -120,7 +119,6 @@ it("keeps Done available after a background busy rejection", async () => {
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
   const save = await screen.findByRole("button", { name: "Save capture request" })
-  fireEvent.click(screen.getByRole("checkbox"))
   fireEvent.click(save)
   await waitFor(() => expect(start).toHaveBeenCalledOnce())
   expect(screen.queryByText(CLOUD_BUSY_MESSAGE)).not.toBeInTheDocument()
@@ -143,9 +141,6 @@ it("keeps sync wording for simulated accepted operations", async () => {
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
   const sync = await screen.findByRole("button", { name: "Start syncing" })
-  fireEvent.click(
-    screen.getByRole("checkbox", { name: /Upload existing and new sessions in full/ }),
-  )
   fireEvent.click(sync)
   expect(
     await screen.findByRole("heading", { name: "Sessions sync in the background" }),
@@ -154,7 +149,7 @@ it("keeps sync wording for simulated accepted operations", async () => {
   expect(screen.queryByText("Upload unavailable")).not.toBeInTheDocument()
   expect(screen.queryByText(/not repositories/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Ask your agent/)).not.toBeInTheDocument()
-  expect(screen.getByText("Local agent setup unavailable")).toBeVisible()
+  expect(screen.getByText("Local tools unavailable")).toBeVisible()
 })
 
 it("keeps Done available while desktop preparation is pending", async () => {
@@ -163,7 +158,6 @@ it("keeps Done available while desktop preparation is pending", async () => {
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
   const save = await screen.findByRole("button", { name: "Save capture request" })
-  fireEvent.click(screen.getByRole("checkbox"))
   fireEvent.click(save)
   expect(screen.getByRole("button", { name: "Done" })).toBeEnabled()
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
@@ -270,13 +264,8 @@ it("offers explicit OpenCode database selection and stored-content consent witho
     expect(screen.getByText("OpenCode V2: /Example/opencode/opencode.db")).toBeVisible(),
   )
   expect(port.pick).toHaveBeenCalledWith("opencode_sqlite_v2")
-  expect(screen.getByText(/files saved inside an OpenCode session/)).toBeVisible()
-  expect(
-    screen.getByText(/External attachments and linked-file downloads are excluded/),
-  ).toBeVisible()
   const save = screen.getByRole("button", { name: "Save capture request" })
-  expect(save).toBeDisabled()
-  fireEvent.click(screen.getByRole("checkbox"))
+  expect(save).toBeEnabled()
   fireEvent.click(save)
   expect(await screen.findByRole("heading", { name: "Capture request saved" })).toBeVisible()
   expect(port.prepareSync).toHaveBeenCalledWith(expect.any(Array), expect.any(String), {
@@ -320,18 +309,15 @@ it("keeps one existing-style row and selection control per project group", () =>
   const select = vi.fn()
   render(<CloudProjectFolders groups={projectGroups} choices={{}} onSelect={select} />)
   expect(screen.getByText("Studio")).toBeVisible()
-  expect(screen.getByText("/Example/Studio", { selector: "small" })).toBeVisible()
-  expect(screen.getByText("12 sessions")).toBeVisible()
+  expect(screen.getByText("/Example/Studio")).toBeVisible()
+  expect(screen.getByText(/12 sessions/)).toBeVisible()
   expect(screen.getByText("2 worktrees")).toBeVisible()
   expect(screen.getByText("1 session")).toBeVisible()
   expect(screen.getAllByRole("switch")).toHaveLength(2)
   for (const control of screen.getAllByRole("switch")) expect(control).toBeChecked()
   expect(select).not.toHaveBeenCalled()
   expect(screen.queryByText(/database|Claude source|OpenCode/i)).not.toBeInTheDocument()
-  expect(screen.getByText("/Example/Studio", { selector: "small" })).toHaveAttribute(
-    "title",
-    projectGroups[0]!.memberPaths.join("\n"),
-  )
+  expect(screen.getByText("/Example/Studio")).toHaveAttribute("title", projectGroups[0]!.path)
   fireEvent.click(screen.getByRole("switch", { name: "Sync Studio: /Example/Studio" }))
   expect(select).toHaveBeenCalledExactlyOnceWith("studio", false)
 })
@@ -365,9 +351,6 @@ it("does not create child controls when worktrees or recorded CWD members change
   rerender(<CloudProjectFolders groups={updated} choices={{}} onSelect={select} />)
   expect(screen.getAllByRole("switch")).toHaveLength(2)
   expect(screen.getByText("13 sessions")).toBeVisible()
-  expect(screen.getByText("/Example/Studio", { selector: "small" })).toHaveAttribute(
-    "title",
-    updated[0]!.memberPaths.join("\n"),
-  )
+  expect(screen.getByText("/Example/Studio")).toHaveAttribute("title", updated[0]!.path)
   expect(select).not.toHaveBeenCalled()
 })

@@ -73,6 +73,49 @@ fn accepted(job: &Job) -> QueueEntry {
 }
 
 #[test]
+fn cloud_capacity_retry_deadline_survives_reopen_and_clears_before_pending_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let policy = policy(&store);
+    let original = job(&store, &policy);
+    assert!(original.reservation_retry_at.is_none());
+    assert!(
+        store
+            .set_cloud_sync_job_state(&original, JobState::WaitingForCapacity)
+            .is_err()
+    );
+    store
+        .defer_cloud_sync_reservation(&original, 10_000)
+        .unwrap();
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let waiting = store
+        .cloud_sync_job(&original.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(waiting.identity, original.identity);
+    assert_eq!(waiting.state, JobState::WaitingForCapacity);
+    assert_eq!(waiting.reservation_retry_at, Some(10_000));
+    store
+        .set_cloud_sync_job_state(&waiting, JobState::Pending)
+        .unwrap();
+    let pending = store
+        .cloud_sync_job(&original.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending.identity, original.identity);
+    assert!(pending.reservation_retry_at.is_none());
+    assert!(
+        serde_json::to_value(&pending)
+            .unwrap()
+            .get("reservation_retry_at")
+            .is_none()
+    );
+}
+
+#[test]
 fn cloud_ongoing_consent_is_separate_from_preferences_and_scoped_to_workspace() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();

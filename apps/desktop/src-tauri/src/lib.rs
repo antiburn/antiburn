@@ -84,6 +84,7 @@ mod cloud_dev;
 pub mod jev_cloudflare;
 pub mod jev_ollama;
 mod launch_intent;
+mod local_tools;
 mod main_window;
 #[cfg(feature = "memory-probe")]
 mod memory_probe;
@@ -398,6 +399,7 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        local_tools::start(app.handle());
         cli_install::start(app.handle());
         agent_integrations::desktop::start(app.handle(), |app, validation| {
             let runtime = match validation {

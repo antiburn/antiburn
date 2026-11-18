@@ -7,7 +7,6 @@ import {
   cloudProjectChoices,
   mergeCloudProjectGroups,
   cloudProjectSelectionKey,
-  type AgentReadiness,
   type CloudDraft,
   type CloudPort,
   type CloudScreen,
@@ -26,6 +25,7 @@ import {
 } from "../lib/cloud"
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
 import { personalCloudDestination } from "../lib/cloudDestination"
+import type { LocalToolsStatus } from "../lib/ipcPayloads"
 
 /** Compare consent-relevant roots without treating display-count changes as edits. */
 function selectedFoldersKey(value: CloudSnapshot) {
@@ -37,18 +37,36 @@ function selectedFoldersKey(value: CloudSnapshot) {
   )
 }
 
-/** One surface's view state. Consent stays in memory and never substitutes for desktop checks. */
+/** Bind a rendered Start action to authority and exact selection, not display counts. */
+function confirmationContextKey(value: CloudViewSnapshot) {
+  return JSON.stringify([
+    value.cloud.identity?.id,
+    value.cloud.destination?.id,
+    value.cloud.destination?.kind,
+    value.cloud.status,
+    value.cloud.captureEnabled,
+    value.cloud.setupError,
+    selectedFoldersKey(value.cloud),
+    value.projects?.selectionKey,
+  ])
+}
+
+/** One surface's view state. Only an explicit Start action grants content consent. */
 export interface CloudViewSnapshot {
+  /** Fence actions rendered before an account, source, or folder selection change. */
+  contextRevision: number
+  /** Current home is display-only. Raw source and project paths retain authority. */
+  homeDirectory: string | null
   cloud: CloudSnapshot
   screen: CloudScreen
   sync: SyncResult
-  agent: AgentReadiness
+  /** CLI and skill evidence is independent of Cloud authority and vendor hooks. */
+  localTools: LocalToolsStatus | null
+  /** A failed status read or subscription cannot establish current tool readiness. */
+  localToolsError: boolean
   busy: boolean
   error: string | null
   loaded: boolean
-  fullContentConsent: boolean
-  /** Exact project-path confirmation, never a saved legacy upload preference. */
-  fullContentConsentKey?: string | null
   /** Retry the saved request's listing even after a transient warning clears. */
   sourceListingNeedsRetry: boolean
   /** Desktop project discovery with local defaults. No selection write happens on load. */
@@ -118,26 +136,32 @@ function isCloudBusy(error: unknown) {
 }
 
 /**
- * Own one surface's Cloud view, timers, and in-memory content confirmation.
+ * Own one surface's Cloud view, timers, and explicit Start actions.
  * Desktop state owns credentials and durable requests. Events can arrive before
  * IPC replies; revisions reject late replies, and context changes clear consent.
  * Unsubscribing stops observation, not saved requests or desktop byte retention.
  */
 export class CloudSession {
   private snapshot: CloudViewSnapshot = {
+    contextRevision: 0,
+    homeDirectory: null,
     cloud: emptyCloudSnapshot,
     screen: "handoff",
     sync: { status: "unavailable" },
-    agent: "pending",
+    localTools: null,
+    localToolsError: false,
     busy: false,
     error: null,
     loaded: false,
-    fullContentConsent: false,
     sourceListingNeedsRetry: false,
   }
   private listeners = new Set<() => void>()
   private stop: (() => void) | undefined
   private stopOngoing: (() => void) | undefined
+  private stopLocalTools: (() => void) | undefined
+  private localToolsLoading = false
+  private localToolsEventGeneration = 0
+  private localToolsStatusRevision = -1
   private projectGeneration = 0
   private desktopProjects: DesktopCloudProjectGroup[] = []
   private projectSources: CloudSourceSelection[] = []
@@ -190,6 +214,9 @@ export class CloudSession {
         this.stop = undefined
         this.stopOngoing?.()
         this.stopOngoing = undefined
+        this.stopLocalTools?.()
+        this.stopLocalTools = undefined
+        this.localToolsLoading = false
         this.projectGeneration++
         clearTimeout(this.timer)
         document.removeEventListener("visibilitychange", this.visibility)
@@ -224,13 +251,14 @@ export class CloudSession {
   }
   /** Replace view state and notify subscribers without changing desktop authority. */
   private publish(patch: Partial<CloudViewSnapshot>) {
-    this.snapshot = { ...this.snapshot, ...patch }
+    this.snapshot = { ...this.snapshot, ...patch, contextRevision: this.consentRevision }
     this.listeners.forEach((listener) => listener())
     this.recordView()
     this.schedule()
   }
   /** Desktop state owns bindings. Clear consent on authority/root changes and let
    * completed desktop work clear a transient admission warning, not a real failure.
+   * Setup failures fence pending discovery and keep cached choices available.
    */
   private receive(value: CloudSnapshot) {
     this.revision++
@@ -260,6 +288,8 @@ export class CloudSession {
       this.confirmedProjectChoices = {}
       this.needsChoiceReview = false
       this.projectSyncStarted = false
+    } else if (value.setupError) {
+      this.projectGeneration++
     }
     const retryInvalidated =
       contextChanged ||
@@ -287,7 +317,9 @@ export class CloudSession {
       !value.identity ||
       value.status !== "signed_in"
         ? { projects: null, ongoing: null }
-        : {}),
+        : value.setupError && this.snapshot.projects
+          ? { projects: { ...this.snapshot.projects, loading: false } }
+          : {}),
       screen:
         value.identity &&
         (this.port.ongoing ? this.projectSyncStarted || value.syncEnabled : value.pendingSync)
@@ -295,7 +327,6 @@ export class CloudSession {
           : screen,
       loaded: true,
       ...(this.snapshot.error === CLOUD_BUSY_MESSAGE ? { error: null } : {}),
-      ...(contextChanged ? { fullContentConsent: false, fullContentConsentKey: null } : {}),
       ...(retryInvalidated ? { sourceListingNeedsRetry: false } : {}),
       ...(!this.port.ongoing && value.identity && value.pendingSync
         ? { sync: value.pendingSync.result }
@@ -365,22 +396,63 @@ export class CloudSession {
         })
     }
   }
-  /** Attach events before independent account/integration reads. Restore saved IDs
-   * without starting a request; Cloud admission cannot block integration readiness.
+  /** Observe tools without blocking account or folder reads. Order successful
+   * results by native revision. Later events take priority over query errors,
+   * which have no revision.
+   */
+  private async loadLocalTools() {
+    if (!this.active || this.localToolsLoading) return
+    const generation = this.generation
+    const current = () => this.active && generation === this.generation
+    this.localToolsLoading = true
+    let eventGeneration = this.localToolsEventGeneration
+    try {
+      if (!this.stopLocalTools) {
+        this.publish({ localTools: null, localToolsError: false })
+        const stop = await this.port.localTools.watch((localTools) => {
+          if (current() && localTools.revision >= this.localToolsStatusRevision) {
+            this.localToolsEventGeneration++
+            this.localToolsStatusRevision = localTools.revision
+            this.publish({ localTools, localToolsError: false })
+          }
+        })
+        if (!current()) {
+          stop()
+          return
+        }
+        this.stopLocalTools = stop
+      }
+      eventGeneration = this.localToolsEventGeneration
+      const localTools = await this.port.localTools.read()
+      if (current() && localTools.revision >= this.localToolsStatusRevision) {
+        this.localToolsStatusRevision = localTools.revision
+        this.publish({ localTools, localToolsError: false })
+      }
+    } catch {
+      if (current() && eventGeneration === this.localToolsEventGeneration)
+        this.publish({ localToolsError: true })
+    } finally {
+      if (current()) this.localToolsLoading = false
+    }
+  }
+  /** Attach events before independent account/tool reads. Restore saved IDs
+   * without starting a request; neither status path blocks the other.
    */
   load = async () => {
     const generation = this.generation
     this.publish({ busy: true, error: null })
+    void this.loadLocalTools()
     try {
       if (!this.stop) {
         const stop = await this.port.watch((value) => {
           if (this.active && generation === this.generation) {
+            const setupRecovered = !!this.snapshot.cloud.setupError && !value.setupError
             this.receive(value)
             if (
               this.port.ongoing &&
               this.projectBinding() &&
               !this.snapshot.busy &&
-              !this.snapshot.projects
+              (!this.snapshot.projects || setupRecovered)
             )
               void this.loadProjects()
           }
@@ -401,14 +473,18 @@ export class CloudSession {
         }
         this.stopOngoing = stop
       }
-      void this.port
-        .agent()
-        .then((agent) => {
-          if (this.active && generation === this.generation) this.publish({ agent })
-        })
-        .catch(() => {
-          if (this.active && generation === this.generation) this.publish({ agent: "failed" })
-        })
+      if (this.port.displayHome) {
+        void this.port
+          .displayHome()
+          .then((homeDirectory) => {
+            if (this.active && generation === this.generation) this.publish({ homeDirectory })
+          })
+          .catch(() => {
+            // A failed display lookup leaves raw paths visible without blocking setup.
+            if (this.active && generation === this.generation)
+              this.publish({ homeDirectory: null })
+          })
+      }
       const revision = this.revision
       const value = await this.port.read()
       if (!this.active || generation !== this.generation) return
@@ -457,7 +533,7 @@ export class CloudSession {
       return
     this.ongoingRevision++
     if (cloudUploadStatusUnknown(status)) {
-      this.setFullContentConsent(false)
+      this.invalidateContentConfirmation()
       this.publish({ ongoing: status })
       return
     }
@@ -474,7 +550,7 @@ export class CloudSession {
         !this.needsChoiceReview,
       )
       const selectionKey = this.projectSelectionKey(projects.groups, choices)
-      if (selectionKey !== projects.selectionKey) this.setFullContentConsent(false)
+      if (selectionKey !== projects.selectionKey) this.invalidateContentConfirmation()
       this.publish({
         ongoing: status,
         projects: {
@@ -551,7 +627,7 @@ export class CloudSession {
         choices: existing?.choices ?? {},
         loading: true,
         loaded: existing?.loaded ?? false,
-        partial: false,
+        partial: existing?.partial ?? false,
         hasMore: existing?.hasMore ?? false,
         needsChoiceReview: this.needsChoiceReview,
         error: null,
@@ -597,8 +673,7 @@ export class CloudSession {
         !this.needsChoiceReview,
       )
       const selectionKey = this.projectSelectionKey(viewGroups, choices)
-      if (this.snapshot.fullContentConsentKey !== selectionKey)
-        this.setFullContentConsent(false)
+      if (existing?.selectionKey !== selectionKey) this.invalidateContentConfirmation()
       this.publish({
         projects: {
           groups: viewGroups,
@@ -632,7 +707,7 @@ export class CloudSession {
     const projects = this.snapshot.projects
     if (!projects || projects.loading || !projects.groups.some((group) => group.id === id))
       return
-    this.setFullContentConsent(false)
+    this.invalidateContentConfirmation()
     this.projectChoices = { ...this.projectChoices, [id]: selected }
     const choices = { ...projects.choices, [id]: selected }
     this.publish({
@@ -712,18 +787,15 @@ export class CloudSession {
   /** Cancel while navigating away without adding a second action event. */
   cancelSilently = () => this.run(null, this.port.cancel)
   /** Ask desktop code to close this account generation and revoke only its grant. */
-  signOut = () => this.run("sign_out", this.port.signOut)
+  signOut = () => {
+    this.invalidateContentConfirmation()
+    return this.run("sign_out", this.port.signOut)
+  }
   /** Run only after the UI's separate reset confirmation; keep the remote warning. */
   resetLocal = () => this.run(null, this.port.resetLocal)
-  /** Change the current confirmation revision so in-flight preparation cannot reuse it. */
-  setFullContentConsent = (fullContentConsent: boolean, selectionKey: string | null = null) => {
-    const fullContentConsentKey = fullContentConsent ? selectionKey : null
-    if (
-      fullContentConsent !== this.snapshot.fullContentConsent ||
-      fullContentConsentKey !== (this.snapshot.fullContentConsentKey ?? null)
-    )
-      this.consentRevision++
-    this.publish({ fullContentConsent, fullContentConsentKey })
+  /** Fence in-flight work when its account, sources, or selected folders change. */
+  private invalidateContentConfirmation() {
+    this.consentRevision++
   }
   /** Bind every preference write to the currently observed personal destination. */
   private saveDraft(draft: CloudDraft, foldersEdited = true) {
@@ -779,7 +851,7 @@ export class CloudSession {
         }
       }
       if (!changed) return this.snapshot.cloud
-      this.setFullContentConsent(false)
+      this.invalidateContentConfirmation()
       return this.saveDraft({ ...this.snapshot.cloud.draft, folders })
     })
     if (this.port.ongoing) await this.loadProjects()
@@ -790,7 +862,7 @@ export class CloudSession {
     selected: boolean,
     sourceKind: CloudSourceKind = "claude_jsonl",
   ) => {
-    this.setFullContentConsent(false)
+    this.invalidateContentConfirmation()
     return this.run("select_folder", () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
@@ -804,7 +876,7 @@ export class CloudSession {
   }
   /** Remove a draft choice, not any saved request, source, or spool entry. */
   removeFolder = (path: string, sourceKind: CloudSourceKind = "claude_jsonl") => {
-    this.setFullContentConsent(false)
+    this.invalidateContentConfirmation()
     return this.run(null, () =>
       this.saveDraft({
         ...this.snapshot.cloud.draft,
@@ -814,8 +886,16 @@ export class CloudSession {
       }),
     )
   }
-  /** Save explicit consent once. Retry listing with the same ID, never a new upload. */
-  startSync = async () => {
+  /** Handle an explicit Start or Update click for the rendered context. Loading
+   * rows or changing a selection never calls this method. Retry keeps saved IDs.
+   */
+  startSync = async (context: CloudViewSnapshot = this.snapshot) => {
+    if (
+      !this.active ||
+      context.contextRevision !== this.consentRevision ||
+      confirmationContextKey(context) !== confirmationContextKey(this.snapshot)
+    )
+      return
     if (this.port.ongoing) {
       await this.startProjectSync()
       return
@@ -832,8 +912,6 @@ export class CloudSession {
       !!this.snapshot.cloud.setupError ||
       !this.snapshot.cloud.identity ||
       !destination ||
-      !this.snapshot.fullContentConsent ||
-      this.snapshot.fullContentConsentKey != null ||
       this.snapshot.cloud.pendingSync?.result.status === "cancelled" ||
       !selected.length
     )
@@ -884,7 +962,6 @@ export class CloudSession {
       this.snapshot.cloud.identity?.id === account &&
       personalCloudDestination(this.snapshot.cloud.destination ?? null)?.id === destinationId &&
       selectedFoldersKey(this.snapshot.cloud) === selectionKey &&
-      this.snapshot.fullContentConsent &&
       consentRevision === this.consentRevision &&
       !(
         this.snapshot.cloud.pendingSync?.requestId === requestId &&
@@ -956,9 +1033,7 @@ export class CloudSession {
       !projects?.loaded ||
       projects.loading ||
       projects.error ||
-      !selected.length ||
-      !this.snapshot.fullContentConsent ||
-      this.snapshot.fullContentConsentKey !== projects.selectionKey
+      !selected.length
     )
       return
     const selectedSources = this.projectSources.filter((source) =>

@@ -78,6 +78,9 @@ impl Policy {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum JobState {
     Pending,
+    /// A proved capacity refusal permits a same-ID reservation retry. Change to
+    /// Pending before retry I/O so uncertain delivery cannot keep this permission.
+    WaitingForCapacity,
     Queued,
     Interrupted,
     Fenced,
@@ -108,6 +111,10 @@ pub(crate) struct Job {
     pub project_folders: Vec<String>,
     pub observation_key: String,
     pub state: JobState,
+    /// Earliest capacity retry in Unix seconds. Absent outside the proved
+    /// waiting state; ordinary state changes clear this permission and deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation_retry_at: Option<i64>,
 }
 
 impl Job {
@@ -151,6 +158,11 @@ impl Job {
                 && !self.observation_key.is_empty()
                 && self.observation_key.len() <= 4096,
             "Cloud job binding changed"
+        );
+        ensure!(
+            (self.state == JobState::WaitingForCapacity) == self.reservation_retry_at.is_some()
+                && self.reservation_retry_at.is_none_or(|at| at > 0),
+            "Cloud capacity retry state changed"
         );
         Ok(())
     }
@@ -628,6 +640,7 @@ impl Store {
                 .collect(),
             observation_key: observation_key.into(),
             state: JobState::Pending,
+            reservation_retry_at: None,
         };
         job.validate()?;
         transaction.execute(
@@ -646,6 +659,22 @@ impl Store {
 
     /// Update host progress only under the job's fixed selection.
     pub(crate) fn set_cloud_sync_job_state(&self, job: &Job, state: JobState) -> Result<()> {
+        self.save_cloud_sync_job_state(job, state, None)
+    }
+
+    /// Save only a proved capacity refusal. The host owns the refusal evidence;
+    /// old empty or interrupted entries do not establish it.
+    pub(crate) fn defer_cloud_sync_reservation(&self, job: &Job, retry_at: i64) -> Result<()> {
+        self.save_cloud_sync_job_state(job, JobState::WaitingForCapacity, Some(retry_at))
+    }
+
+    /// Compare the complete prior job before changing progress or retry permission.
+    fn save_cloud_sync_job_state(
+        &self,
+        job: &Job,
+        state: JobState,
+        reservation_retry_at: Option<i64>,
+    ) -> Result<()> {
         ensure!(!state.terminal(), "Use the terminal outcome transaction");
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
@@ -656,6 +685,8 @@ impl Store {
             "Cloud job changed"
         );
         saved.state = state;
+        saved.reservation_retry_at = reservation_retry_at;
+        saved.validate()?;
         transaction.execute(
             "UPDATE cloud_sync_job SET record_json=?2 WHERE capture_id=?1",
             params![saved.identity.capture_id, encode(&saved, 16_384)?],
@@ -677,6 +708,7 @@ impl Store {
             "Cloud recovery state changed"
         );
         saved.state = JobState::Abandoned;
+        saved.reservation_retry_at = None;
         transaction.execute(
             "UPDATE cloud_sync_job SET record_json=?2 WHERE capture_id=?1",
             params![saved.identity.capture_id, encode(&saved, 16_384)?],
@@ -731,6 +763,7 @@ impl Store {
         });
         source.suppressed = true;
         saved.state = JobState::Suppressed;
+        saved.reservation_retry_at = None;
         transaction.execute(
             "INSERT INTO cloud_sync_source VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(account_id, destination_id, source_id) DO UPDATE SET record_json=excluded.record_json",
@@ -806,6 +839,7 @@ impl Store {
             params![entry.identity.account_id, entry.identity.destination_id, entry.identity.source_id, encode(&source, 16_384)?],
         )?;
         job.state = JobState::Accepted;
+        job.reservation_retry_at = None;
         transaction.execute(
             "UPDATE cloud_sync_job SET record_json=?2 WHERE capture_id=?1",
             params![job.identity.capture_id, encode(&job, 16_384)?],

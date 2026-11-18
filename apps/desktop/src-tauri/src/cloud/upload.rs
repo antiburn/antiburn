@@ -13,7 +13,7 @@ use std::{collections::BTreeMap, io::Read};
 const MAX_API_BYTES: u64 = 2 * 1024 * 1024;
 
 /// The engine admits only these fixed capture routes on its pinned resource.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum Route {
     Capabilities,
     Reserve,
@@ -102,6 +102,7 @@ pub(super) fn api_request(
 /// Safe operation outcome, separate from the capture library's closed errors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Failure {
+    Backpressure,
     Offline,
     Unauthorized,
     Conflict,
@@ -252,15 +253,40 @@ impl<'a> HttpTransport<'a> {
                         (Failure::SourceSuppressed, TransportError::Conflict)
                     }
                     409 => (Failure::Conflict, TransportError::Conflict),
+                    429 => (
+                        Failure::Backpressure,
+                        if !matches!(route, Route::Reserve) || capacity_refused(&response.body) {
+                            TransportError::Backpressure
+                        } else {
+                            // An unknown reserve response cannot permit new source reads.
+                            TransportError::Offline
+                        },
+                    ),
                     404 | 405 | 501 => (Failure::Unavailable, TransportError::Rejected),
                     500..=599 => (Failure::Offline, TransportError::Offline),
                     _ => (Failure::Rejected, TransportError::Rejected),
                 };
+                if failure == Failure::Backpressure {
+                    tracing::info!(
+                        event = "cloud_capture_api_backpressure",
+                        route = ?route,
+                        http_status = response.status,
+                        failure = ?failure,
+                    );
+                } else {
+                    tracing::warn!(
+                        event = "cloud_capture_api_failed",
+                        route = ?route,
+                        http_status = response.status,
+                        failure = ?failure,
+                    );
+                }
                 self.failure = Some(failure);
                 Err(error)
             }
             Err(error) => {
                 self.failure = Some(match error {
+                    TransportError::Backpressure => Failure::Backpressure,
                     TransportError::Offline => Failure::Offline,
                     TransportError::Unauthorized => Failure::Unauthorized,
                     TransportError::Conflict => Failure::Conflict,
@@ -281,6 +307,25 @@ impl<'a> HttpTransport<'a> {
             TransportError::Rejected
         })
     }
+}
+
+/// Only the closed capacity refusal proves that reserve created no reservation.
+fn capacity_refused(body: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Envelope {
+        error: CapacityError,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct CapacityError {
+        code: String,
+        retryable: bool,
+        #[serde(rename = "message")]
+        _message: serde::de::IgnoredAny,
+    }
+    serde_json::from_slice::<Envelope>(body)
+        .is_ok_and(|value| value.error.code == "capture_limit" && value.error.retryable)
 }
 
 /// Accept only the API's closed reserve error, never raw storage/provider text.

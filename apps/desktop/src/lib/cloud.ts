@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { open } from "@tauri-apps/plugin-dialog"
 import { appInfo, hasShell } from "./ipc"
 import { listen } from "./tauriEvents"
+import type { LocalToolsStatus } from "./ipcPayloads"
 
 /** Closed desktop auth states. A signed-in account still needs content consent. */
 export type CloudStatus =
@@ -53,6 +54,18 @@ export interface CloudProjectGroup {
  * neither that default nor a legacy upload preference grants content consent.
  */
 export type CloudProjectChoices = Readonly<Record<string, boolean>>
+/** Shorten the exact home prefix for display. Keep raw paths for selections and consent. */
+export function cloudDisplayPath(
+  path: string,
+  homeDirectory: string | null | undefined,
+): string {
+  const home = homeDirectory?.replace(/[\\/]+$/, "")
+  if (!home) return path
+  if (path === home) return "~"
+  return path.startsWith(`${home}/`) || path.startsWith(`${home}\\`)
+    ? `~${path.slice(home.length)}`
+    : path
+}
 /** Freeze only the selected groups' current path members for explicit approval.
  * Do not expand directories, discover worktrees, persist defaults, or infer access.
  * Desktop code must validate path boundaries and consent before it starts work.
@@ -282,8 +295,6 @@ export interface CloudSnapshot {
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
-/** Local coding-agent integration status, not Cloud authentication or upload status. */
-export type AgentReadiness = "pending" | "ready" | "unavailable" | "failed"
 /** Legacy saved-request states. Ongoing uploads use CloudOngoingStatus. */
 export type SyncResult =
   | {
@@ -309,6 +320,8 @@ export type SyncResult =
  * Saved requests survive observer teardown and account cleanup.
  */
 export interface CloudPort {
+  /** Current desktop home for display only. Missing proof keeps raw paths visible. */
+  displayHome?(): Promise<string | null>
   /** Desktop grouped project path. Legacy saved-request fixtures may omit it. */
   ongoing?: CloudOngoingPort | undefined
   /** Refresh desktop authority. A state event can precede this reply. */
@@ -331,8 +344,13 @@ export interface CloudPort {
   resetLocal(): Promise<CloudSnapshot>
   /** Ask for exact sources of one provider. Default hints never authorize reads. */
   pick(sourceKind?: CloudSourceKind): Promise<string[]>
-  /** Read local integration readiness independently of saved-request reconciliation. */
-  agent(): Promise<AgentReadiness>
+  /** Observe CLI and skill setup independently of Cloud and vendor integrations.
+   * Attach the listener before reading; neither operation installs or repairs tools.
+   */
+  localTools: {
+    read(): Promise<LocalToolsStatus>
+    watch(listener: (status: LocalToolsStatus) => void): Promise<() => void>
+  }
   /** Save exact account/root consent before listing. Reuse this ID after uncertainty. */
   prepareSync(folders: CloudFolder[], requestId: string, consent: CaptureConsent): Promise<void>
   /** List a legacy saved selection only; this command does not capture or upload bytes. */
@@ -389,6 +407,11 @@ async function cloudSyncCommand(
 }
 /** Invoke Cloud commands only when Rust AppInfo confirms the non-default feature. */
 export const desktopCloudPort: CloudPort = {
+  displayHome: async () => {
+    if (!hasShell()) return null
+    const info = await appInfo()
+    return info?.homeDirectory ?? null
+  },
   ongoing: {
     groups: async (binding, after) => {
       if (!(await cloudBuildEnabled()))
@@ -432,19 +455,22 @@ export const desktopCloudPort: CloudPort = {
     })
     return selected === null ? [] : Array.isArray(selected) ? selected : [selected]
   },
-  agent: async () => {
-    if (!(await cloudBuildEnabled())) return "unavailable"
-    const statuses = await invoke<{ phase: string }[]>("get_agent_integrations")
-    if (statuses.some((value) => value.phase === "active")) return "ready"
-    if (
-      statuses.some((value) =>
-        ["registered", "awaiting_trust", "reload_required", "pending_native_gate"].includes(
-          value.phase,
-        ),
-      )
-    )
-      return "pending"
-    return "unavailable"
+  localTools: {
+    read: async () =>
+      hasShell()
+        ? invoke<LocalToolsStatus>("get_local_tools_status")
+        : {
+            revision: 0,
+            phase: "unavailable",
+            cliInstalled: false,
+            cliTested: false,
+            skillInstalled: false,
+            reason: null,
+          },
+    watch: async (listener) =>
+      hasShell()
+        ? listen<LocalToolsStatus>("local-tools:changed", (event) => listener(event.payload))
+        : () => {},
   },
   prepareSync: async (folders, requestId, consent) => {
     await cloudSyncCommand("cloud_prepare_sync", { folders, requestId, consent })

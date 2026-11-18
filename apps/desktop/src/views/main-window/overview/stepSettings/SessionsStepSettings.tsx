@@ -201,17 +201,6 @@ export function SessionsStepSettings() {
             <CloudAccount session={cloudSession} value={cloud}>
               <SettingsToggleRow
                 searchId="cloudUpload"
-                description={
-                  cloudStorageUnknown
-                    ? cloudConsent
-                      ? "Last known setting."
-                      : "Setting unavailable."
-                    : cloudUnavailable
-                      ? "Available when Antiburn Cloud launches."
-                      : cloudConsent
-                        ? "Upload existing and new sessions from the approved projects. Pausing keeps saved uploads."
-                        : "Choose projects and confirm full-content sync before enabling uploads."
-                }
                 checked={
                   (!cloudUnavailable || cloudStorageUnknown) &&
                   cloudConsent &&
@@ -250,11 +239,6 @@ export function SessionsStepSettings() {
                 }}
               />
             </CloudAccount>
-            <p className="border-t border-separator px-4 py-3 type-footnote text-label-secondary">
-              {cloudUnavailable && !cloudStorageUnknown
-                ? "Your sessions stay on this device. No sessions are uploaded."
-                : "Cloud sync is optional. Local sessions and Checks use their own settings."}
-            </p>
           </Card>
         </SectionGroup>
       )}

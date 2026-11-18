@@ -184,6 +184,8 @@ pub(crate) struct Discovery {
     groups: Vec<Group>,
     source_roots: Vec<SourceSelection>,
     next_cursor: Option<Cursor>,
+    /// An inspection failed or exceeded a supported source/selection bound.
+    /// Normal provider pages and per-request scan budgets do not set this flag.
     partial: bool,
 }
 
@@ -258,7 +260,10 @@ fn context(environment: &str, cwd: &str) -> Context {
 
 /// Derive provider roots from existing local metadata and the provider adapter.
 /// This does not enumerate a second copy of provider directory layouts.
-fn known_sources(store: &Store) -> Result<(Vec<SourceSelection>, bool), String> {
+fn known_sources(
+    store: &Store,
+    opencode_databases: impl IntoIterator<Item = PathBuf>,
+) -> Result<(Vec<SourceSelection>, bool), String> {
     let mut roots = BTreeSet::new();
     let mut after = String::new();
     let mut partial = false;
@@ -304,7 +309,7 @@ fn known_sources(store: &Store) -> Result<(Vec<SourceSelection>, bool), String> 
             break;
         }
     }
-    for path in antiburn_local::discovery::agents::opencode::native_database_paths() {
+    for path in opencode_databases {
         if path.is_file()
             && let Some(path) = path
                 .canonicalize()
@@ -420,6 +425,53 @@ fn add_suggestion(
     group.agents.dedup();
 }
 
+/// Spend one shared discovery budget on cached ID hints and one provider page.
+/// Reopening proves the source independently of the cached project association.
+/// A failed source proof does not select a fallback reader.
+fn project_candidates(
+    root: &SourceSelection,
+    cached_opencode_ids: &[String],
+    remaining: &mut usize,
+    current: &dyn Fn() -> bool,
+) -> Result<Vec<antiburn_cloud_capture::Candidate>, String> {
+    let mut candidates = Vec::new();
+    if root.source_kind == SourceKind::OpenCodeSqliteV2 {
+        for id in cached_opencode_ids {
+            if !current() {
+                return Err("Cloud account changed.".into());
+            }
+            // Keep room for fresh page admission, even when every hint is stale.
+            if *remaining <= 1 {
+                break;
+            }
+            *remaining -= 1;
+            match antiburn_cloud_capture::reopen_opencode(
+                Path::new(&root.path),
+                id,
+                &sync::metadata_limits(),
+            ) {
+                Ok(candidate) => candidates.push(candidate),
+                Err(antiburn_cloud_capture::Error::SourceChanged) => {
+                    // A missing cached ID can belong to another database.
+                    // Fresh source-page admission below must still succeed.
+                }
+                Err(_) => return Err("Could not qualify the selected session source.".into()),
+            }
+        }
+    }
+    let (page, _) = sync::discover_root_page(root.source_kind, &root.path, None, *remaining)?;
+    *remaining -= page.len();
+    let mut seen: BTreeSet<String> = candidates
+        .iter()
+        .map(|candidate| candidate.source_id().to_owned())
+        .collect();
+    candidates.extend(
+        page.into_iter()
+            .filter(|candidate| seen.insert(candidate.source_id().to_owned())),
+    );
+    Ok(candidates)
+}
+
 /// Build one discovery page using only the current account's saved provider
 /// preferences. Suggestions and source access never create upload consent.
 fn discover_projects(
@@ -454,6 +506,16 @@ fn discover_projects(
             cwd: last.cwd.clone(),
         }
     });
+    let cached_opencode_ids = store
+        .cloud_opencode_session_ids(
+            &suggestions
+                .iter()
+                .filter(|suggestion| suggestion.environment == "native")
+                .map(|suggestion| suggestion.cwd.clone())
+                .collect::<Vec<_>>(),
+            512,
+        )
+        .map_err(|_| "Could not read cached session identities.")?;
     let mut groups = BTreeMap::new();
     cache.begin_scan();
     for suggestion in suggestions {
@@ -463,24 +525,23 @@ fn discover_projects(
         add_suggestion(cache, &mut groups, suggestion);
     }
     let mut qualified = Vec::new();
-    let mut discovered = 0usize;
+    let mut remaining = 512usize;
     let mut project_choices = 0usize;
     for root in roots {
         if !current() {
             return Err("Cloud account changed.".into());
         }
-        let candidates = match sync::discover_root(
-            root.source_kind,
-            &root.path,
-            512usize.saturating_sub(discovered),
-        ) {
-            Ok(candidates) => candidates,
-            Err(_) => {
-                partial = true;
-                continue;
-            }
-        };
-        discovered += candidates.len();
+        if remaining == 0 {
+            break;
+        }
+        let candidates =
+            match project_candidates(&root, &cached_opencode_ids, &mut remaining, current) {
+                Ok(candidates) => candidates,
+                Err(_) => {
+                    partial = true;
+                    continue;
+                }
+            };
         for candidate in candidates {
             if !current() {
                 return Err("Cloud account changed.".into());
@@ -493,7 +554,8 @@ fn discover_projects(
                 &sync::metadata_limits(),
             ) {
                 Ok(Some(evidence)) => evidence,
-                Ok(None) | Err(_) => {
+                Ok(None) => continue,
+                Err(_) => {
                     partial = true;
                     continue;
                 }
@@ -529,7 +591,7 @@ fn discover_projects(
                             cwd: project.to_owned(),
                             agents: vec![
                                 match root.source_kind {
-                                    SourceKind::ClaudeJsonl => "claude",
+                                    SourceKind::ClaudeJsonl => "claude-code",
                                     SourceKind::OpenCodeSqliteV2 => "opencode",
                                 }
                                 .into(),
@@ -626,7 +688,10 @@ pub(crate) async fn cloud_project_groups(
             &engine,
             &binding,
             after.as_ref(),
-            known_sources(&store)?,
+            known_sources(
+                &store,
+                antiburn_local::discovery::agents::opencode::native_database_paths(),
+            )?,
             &current,
         )
     })

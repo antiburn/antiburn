@@ -303,3 +303,206 @@ fn cloud_project_discovery_keeps_explicit_custom_access_within_existing_root_bou
     assert_eq!(roots.len(), 100);
     assert!(roots.iter().any(|root| root.path == path.to_str().unwrap()));
 }
+
+#[test]
+fn cloud_project_discovery_uses_recorded_claude_code_sources_at_the_production_boundary() {
+    let mut fixture = Fixture::new();
+    let source = fixture
+        .directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("claude");
+    fs::create_dir(&source).unwrap();
+    let transcript = source.join("synthetic-claude.jsonl");
+    fs::write(
+        &transcript,
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "synthetic-claude",
+                "cwd": fixture.project,
+                "message": {"role": "user", "content": "Synthetic fixture"}
+            })
+        ),
+    )
+    .unwrap();
+    fixture
+        .store
+        .lock()
+        .execute(
+            "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,cwd,
+                first_seen_at,last_seen_at,updated_at_epoch)
+             VALUES('native','claude-code','synthetic-claude','file',?1,?2,
+                'synthetic','synthetic',1)",
+            rusqlite::params![transcript.to_str().unwrap(), fixture.project],
+        )
+        .unwrap();
+    fixture.cache = Cache::default();
+    let known = known_sources(&fixture.store, Vec::new()).unwrap();
+    assert!(!known.1);
+    assert_eq!(
+        known.0,
+        vec![SourceSelection {
+            source_kind: SourceKind::ClaudeJsonl,
+            path: source.to_str().unwrap().into(),
+        }]
+    );
+    let discovery = fixture.discover(known.0);
+    assert!(!discovery.partial);
+    assert_eq!(discovery.groups.len(), 1);
+    let group = &discovery.groups[0];
+    assert_eq!(group.agents, vec!["claude-code"]);
+    assert_eq!(group.session_count, 1);
+    assert_eq!(group.capture_session_count, 1);
+    assert!(group.capture_supported);
+}
+
+#[test]
+fn cloud_project_discovery_does_not_report_ordinary_opencode_pages_as_inspection_failures() {
+    let mut fixture = Fixture::new();
+    let connection = rusqlite::Connection::open(&fixture.source.path).unwrap();
+    connection
+        .execute_batch(
+            "WITH RECURSIVE extra(n) AS (
+                VALUES(1) UNION ALL SELECT n+1 FROM extra WHERE n < 509
+             )
+             INSERT INTO session_v2(id,project_id,slug,directory,version,time_created,time_updated)
+             SELECT 'synthetic-extra-' || n, 'global', 'synthetic-extra-' || n,
+                '/Example/other', '2.3.0', 1, 2 FROM extra;",
+        )
+        .unwrap();
+    drop(connection);
+    let known = known_sources(&fixture.store, vec![PathBuf::from(&fixture.source.path)]).unwrap();
+    let discovery = fixture.discover(known.0);
+    assert!(!discovery.partial);
+    assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
+    assert!(
+        discovery
+            .groups
+            .iter()
+            .any(|group| group.path == fixture.project && group.capture_supported)
+    );
+}
+
+#[test]
+fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_source_page() {
+    let mut fixture = Fixture::new();
+    let outside = fixture
+        .directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("outside");
+    fs::create_dir(&outside).unwrap();
+    let connection = rusqlite::Connection::open(&fixture.source.path).unwrap();
+    connection
+        .execute(
+            "WITH RECURSIVE extra(n) AS (
+                VALUES(1) UNION ALL SELECT n+1 FROM extra WHERE n < 2417
+             )
+             INSERT INTO session_v2(id,project_id,slug,directory,version,time_created,time_updated)
+             SELECT printf('before-%04d',n), 'global', 'synthetic-extra-' || n,
+                ?1, '2.3.0', 1, 2 FROM extra;",
+            [outside.to_str().unwrap()],
+        )
+        .unwrap();
+    fixture
+        .store
+        .lock()
+        .execute(
+            "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,
+                source_format,cwd,first_seen_at,last_seen_at,updated_at_epoch)
+             VALUES('native','opencode','ses_main','providerDb',
+                'opencode:ses_main:open_code_v2_sqlite','\"open_code_v2_sqlite\"',?1,
+                'synthetic','synthetic',1)",
+            [&fixture.project],
+        )
+        .unwrap();
+    let known = known_sources(&fixture.store, vec![PathBuf::from(&fixture.source.path)]).unwrap();
+    let discovery = fixture.discover(known.0.clone());
+    let selected = discovery
+        .groups
+        .iter()
+        .find(|group| group.path == fixture.project)
+        .unwrap();
+    assert!(!discovery.partial);
+    assert!(selected.capture_supported);
+    assert_eq!(selected.capture_session_count, 1);
+    assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
+    assert!(
+        discovery
+            .groups
+            .iter()
+            .map(|group| group.capture_session_count)
+            .sum::<u32>()
+            <= 512
+    );
+    let next_source = fixture
+        .directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("later.db");
+    fs::copy(&fixture.source.path, &next_source).unwrap();
+    let bounded = fixture.discover(vec![
+        fixture.source.clone(),
+        SourceSelection {
+            source_kind: SourceKind::OpenCodeSqliteV2,
+            path: next_source.to_str().unwrap().into(),
+        },
+    ]);
+    assert!(!bounded.partial);
+    assert_eq!(bounded.source_roots, vec![fixture.source.clone()]);
+
+    connection
+        .execute(
+            "UPDATE session_v2 SET directory=?1 WHERE id='ses_main'",
+            [outside.to_str().unwrap()],
+        )
+        .unwrap();
+    let changed = fixture.discover(known.0.clone());
+    assert!(
+        !changed
+            .groups
+            .iter()
+            .find(|group| group.path == fixture.project)
+            .unwrap()
+            .capture_supported
+    );
+    connection
+        .execute_batch("CREATE TABLE session_unknown(session_id TEXT);")
+        .unwrap();
+    let unsupported = fixture.discover(known.0);
+    assert!(unsupported.partial);
+    assert!(unsupported.source_roots.is_empty());
+    assert!(
+        !unsupported
+            .groups
+            .iter()
+            .any(|group| group.capture_supported)
+    );
+}
+
+#[test]
+fn cloud_project_discovery_missing_cached_ids_are_hints_not_source_inspection_failures() {
+    let mut fixture = Fixture::new();
+    fixture
+        .store
+        .lock()
+        .execute(
+            "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,
+                source_format,cwd,first_seen_at,last_seen_at,updated_at_epoch)
+             VALUES('native','opencode','ses_missing','providerDb',
+                'opencode:ses_missing:open_code_v2_sqlite','\"open_code_v2_sqlite\"',?1,
+                'synthetic','synthetic',1)",
+            [&fixture.project],
+        )
+        .unwrap();
+    let discovery = fixture.discover(vec![fixture.source.clone()]);
+    assert!(!discovery.partial);
+    assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
+    assert!(discovery.groups[0].capture_supported);
+    assert_eq!(discovery.groups[0].capture_session_count, 4);
+}

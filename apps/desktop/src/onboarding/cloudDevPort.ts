@@ -2,7 +2,6 @@
 import avatar from "../assets/cloud-dev-avatar.jpg"
 import {
   emptyCloudSnapshot,
-  type AgentReadiness,
   type CloudPort,
   type CloudSnapshot,
   type CloudStatus,
@@ -286,7 +285,27 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
       return value
     },
     pick: async () => ["/Example/New folder"],
-    agent: async () => (completion ? (scenario.slice(9) as AgentReadiness) : "ready"),
+    localTools: {
+      read: async () => {
+        const phase =
+          scenario === "complete-pending"
+            ? "pending"
+            : scenario === "complete-unavailable"
+              ? "unavailable"
+              : scenario === "complete-failed"
+                ? "failed"
+                : "ready"
+        return {
+          revision: 0,
+          phase,
+          cliInstalled: phase === "ready",
+          cliTested: phase === "ready",
+          skillInstalled: phase === "ready",
+          reason: phase === "failed" ? "setup_unavailable" : null,
+        }
+      },
+      watch: async () => () => {},
+    },
     prepareSync: async () => {},
     start: async (_folders, requestId) => {
       clear()

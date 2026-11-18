@@ -5,9 +5,10 @@ import {
   cloudProjectFixture,
   ongoingStatus,
   projectGroup,
+  localToolsFixture,
 } from "./__tests__/cloudProjectFixtures"
 
-it("does not use grouped project consent to authorize a legacy provider-source request", async () => {
+it("does not use an older rendered selection to authorize a legacy provider-source request", async () => {
   const value: CloudSnapshot = {
     ...emptyCloudSnapshot,
     authEnabled: true,
@@ -25,7 +26,7 @@ it("does not use grouped project consent to authorize a legacy provider-source r
     ongoing: undefined,
     read: vi.fn(async () => value),
     watch: vi.fn(async () => () => {}),
-    agent: vi.fn(async () => "unavailable" as const),
+    localTools: localToolsFixture().port,
     prepareSync: vi.fn(async () => {}),
     start: vi.fn(async () => ({ status: "upload_unavailable" as const })),
   }
@@ -33,8 +34,21 @@ it("does not use grouped project consent to authorize a legacy provider-source r
   const stop = session.subscribe(vi.fn())
   try {
     await vi.waitFor(() => expect(session.getSnapshot().loaded).toBe(true))
-    session.setFullContentConsent(true, JSON.stringify(["/Example/Studio"]))
-    await session.startSync()
+    const rendered = {
+      ...session.getSnapshot(),
+      projects: {
+        groups: [],
+        choices: {},
+        loaded: true,
+        loading: false,
+        partial: false,
+        hasMore: false,
+        needsChoiceReview: false,
+        error: null,
+        selectionKey: JSON.stringify(["/Example/Studio"]),
+      },
+    }
+    await session.startSync(rendered)
     expect(port.prepareSync).not.toHaveBeenCalled()
     expect(port.start).not.toHaveBeenCalled()
   } finally {
@@ -57,7 +71,49 @@ it("attaches both listeners before reads and keeps initial group defaults in mem
     expect(session.getSnapshot().projects?.choices).toEqual({ studio: true })
     expect(port.save).not.toHaveBeenCalled()
     expect(ongoing.enable).not.toHaveBeenCalled()
-    expect(session.getSnapshot().fullContentConsent).toBe(false)
+  } finally {
+    stop()
+  }
+})
+
+it("loads display home without changing upload authority or an existing rendered Start", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  let finish!: (home: string | null) => void
+  port.displayHome = vi.fn(
+    () =>
+      new Promise<string | null>((resolve) => {
+        finish = resolve
+      }),
+  )
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    const rendered = session.getSnapshot()
+    expect(rendered.homeDirectory).toBeNull()
+    finish("/Users/avery")
+    await vi.waitFor(() => expect(session.getSnapshot().homeDirectory).toBe("/Users/avery"))
+    expect(ongoing.enable).not.toHaveBeenCalled()
+    await session.startSync(rendered)
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+  } finally {
+    stop()
+  }
+})
+
+it("keeps raw paths available when the display-home read fails", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  port.displayHome = vi.fn(async () => {
+    throw new Error("Synthetic display lookup failure")
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    expect(session.getSnapshot().homeDirectory).toBeNull()
+    expect(session.getSnapshot().error).toBeNull()
+    await session.startSync()
+    expect(ongoing.enable).toHaveBeenCalledOnce()
   } finally {
     stop()
   }
@@ -117,9 +173,7 @@ it("starts desktop ongoing sync with exact current members and matching folders 
   const stop = session.subscribe(vi.fn())
   try {
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
-    await session.startSync()
     expect(ongoing.enable).not.toHaveBeenCalled()
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
     await session.startSync()
     expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith({
       version: "desktop-project-sync-v1",
@@ -146,7 +200,7 @@ it("starts desktop ongoing sync with exact current members and matching folders 
   }
 })
 
-it("loads one page at a time and clears confirmation when a later page adds a group member", async () => {
+it("rejects an older rendered Start after a later page adds a group member", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const cursor = { environment: "native", cwd: "/Example/next" }
   ongoing.groups.mockResolvedValueOnce({
@@ -161,7 +215,7 @@ it("loads one page at a time and clears confirmation when a later page adds a gr
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     expect(ongoing.groups).toHaveBeenCalledTimes(1)
     expect(session.getSnapshot().projects?.hasMore).toBe(true)
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
+    const rendered = session.getSnapshot()
     ongoing.groups.mockResolvedValueOnce({
       groups: [
         projectGroup({
@@ -186,8 +240,8 @@ it("loads one page at a time and clears confirmation when a later page adds a gr
       { accountId: "synthetic-account", destinationId: "synthetic-personal" },
       cursor,
     ])
-    expect(session.getSnapshot().fullContentConsent).toBe(false)
     expect(session.getSnapshot().projects).toMatchObject({ hasMore: false, partial: true })
+    await session.startSync(rendered)
     expect(ongoing.enable).not.toHaveBeenCalled()
   } finally {
     stop()
@@ -206,7 +260,6 @@ it("does not admit a project whose desktop session folder was not returned", asy
   const stop = session.subscribe(vi.fn())
   try {
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
     await session.startSync()
     expect(ongoing.enable).not.toHaveBeenCalled()
   } finally {
@@ -247,13 +300,13 @@ it("keeps a newer desktop status instead of a stale pause reply", async () => {
   }
 })
 
-it("requires new confirmation when the provider source changes at the same project paths", async () => {
+it("requires a new rendered Start when the provider changes at the same project paths", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const session = new CloudSession(port, false, true)
   const stop = session.subscribe(vi.fn())
   try {
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
+    const rendered = session.getSnapshot()
     const selected = projectGroup().folderPaths.map((projectPath) => ({
       sourceKind: "opencode_sqlite_v2" as const,
       sourcePath: "/Example/OpenCode/opencode.db",
@@ -268,10 +321,8 @@ it("requires new confirmation when the provider source changes at the same proje
       partial: false,
     })
     await session.loadProjects()
-    expect(session.getSnapshot().fullContentConsent).toBe(false)
-    await session.startSync()
+    await session.startSync(rendered)
     expect(ongoing.enable).not.toHaveBeenCalled()
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
     await session.startSync()
     expect(ongoing.enable).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -327,7 +378,6 @@ it("does not resume legacy saved requests or let them replace ongoing preparatio
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     expect(session.getSnapshot().screen).toBe("folders")
     expect(port.reconcile).not.toHaveBeenCalled()
-    session.setFullContentConsent(true, session.getSnapshot().projects!.selectionKey)
     const pending = session.startSync()
     emit({ pendingSync: legacy })
     expect(session.getSnapshot()).toMatchObject({
@@ -340,3 +390,62 @@ it("does not resume legacy saved requests or let them replace ongoing preparatio
     stop()
   }
 })
+
+it("rejects an older rendered Start even when a folder is deselected and selected again", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    const rendered = session.getSnapshot()
+    session.selectProject("studio", false)
+    session.selectProject("studio", true)
+    await session.startSync(rendered)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+    await session.startSync(session.getSnapshot())
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+  } finally {
+    stop()
+  }
+})
+
+it.each(["account", "source", "selection"] as const)(
+  "does not apply a late enable reply after its %s changes",
+  async (change) => {
+    const { port, ongoing, emit } = cloudProjectFixture()
+    let finish!: (status: ReturnType<typeof ongoingStatus>) => void
+    ongoing.enable.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve
+        }),
+    )
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+      const rendered = session.getSnapshot()
+      const pending = session.startSync(rendered)
+      if (change === "account") {
+        emit({ identity: { id: "second-account", login: "Second" } })
+      } else if (change === "source") {
+        ongoing.groups.mockResolvedValueOnce({
+          groups: [projectGroup({ projects: [] })],
+          sourceRoots: [],
+          nextCursor: null,
+          partial: true,
+        })
+        await session.loadProjects()
+      } else {
+        session.selectProject("studio", false)
+      }
+      finish(ongoingStatus({ status: "ready", consentVersion: "desktop-project-sync-v1" }))
+      await pending
+      expect(session.getSnapshot().ongoing?.status).not.toBe("ready")
+      await session.startSync(rendered)
+      expect(ongoing.enable).toHaveBeenCalledOnce()
+    } finally {
+      stop()
+    }
+  },
+)
