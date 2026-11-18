@@ -339,6 +339,9 @@ Pause stops admission of further sensitive work and saves the paused
 state. It does not delete spools, undo requests already sent, or delete remote
 content. Sign-out and account changes also stop unauthorized work without
 retargeting or deleting saved captures.
+Signing in again to the same account and workspace resumes eligible saved uploads
+automatically. A new sign-in clears conflict cooldowns; it does not replace the capture,
+change its destination, expand folder consent, or resume a paused policy.
 
 Retryable HTTP 429 capacity rejections defer the current upload until its retry deadline.
 The desktop then retries the same saved capture ID after checking current source
@@ -357,6 +360,9 @@ Capture API requests use the configured resource origin and desktop-held credent
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.
 Upload locations never enter saved state, renderer status, or diagnostics.
+Resume diagnostics record closed states, whether a saved plan exists, request
+routes, renewal outcomes, timing, and retry delays. They never contain capture
+content, source paths, sign-in proof, signed URLs, or raw provider errors.
 
 The scheduler and capture spool serialize bounded work. Pending captures keep
 their original account, destination, service, source, capture ID, compressed

@@ -297,6 +297,11 @@ impl<'a> HttpTransport<'a> {
                     TransportError::Conflict => Failure::Conflict,
                     TransportError::Rejected => Failure::Rejected,
                 });
+                tracing::warn!(
+                    event = "cloud_capture_request_failed",
+                    route = ?route,
+                    failure = ?self.failure,
+                );
                 Err(error)
             }
         }
@@ -312,7 +317,16 @@ impl<'a> HttpTransport<'a> {
     ) -> Result<ApiResponse, TransportError> {
         match self.request(identity, route, body) {
             Err(_) if self.failure == Some(Failure::Conflict) => {
-                self.renew(identity, binding)?;
+                tracing::info!(event = "cloud_capture_renewal_started", route = ?route);
+                if let Err(error) = self.renew(identity, binding) {
+                    tracing::warn!(
+                        event = "cloud_capture_renewal_failed",
+                        route = ?route,
+                        failure = ?self.failure,
+                    );
+                    return Err(error);
+                }
+                tracing::info!(event = "cloud_capture_renewal_succeeded", route = ?route);
                 self.request(identity, route, body)
             }
             result => result,

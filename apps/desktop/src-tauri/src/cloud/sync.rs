@@ -150,6 +150,8 @@ struct Runner {
     next_reservation: Option<Instant>,
     /// Bound automatic rechecks of saved, post-reservation conflicts.
     conflict_rechecks: BTreeMap<String, Instant>,
+    /// A new sign-in clears conflict cooldowns, not saved account or policy bindings.
+    retry_grant_id: Option<String>,
     binding: Option<(String, String, Option<String>, String)>,
     discovery_cursor: Option<DiscoveryCursor>,
     cursor: Option<String>,
@@ -433,6 +435,15 @@ impl Runner {
             self.next_reservation = None;
             return Ok(());
         };
+        if self.retry_grant_id.as_deref() != Some(&session.grant_id) {
+            self.retry_grant_id = Some(session.grant_id.clone());
+            self.conflict_rechecks.clear();
+            self.next_reservation = None;
+            tracing::info!(
+                event = "cloud_sync_sign_in_changed",
+                conflict_rechecks_cleared = true
+            );
+        }
         let Some(policy) = store
             .cloud_sync_policy(&session.user.id, &session.workspace.id, &session.resource)
             .map_err(|_| "Could not read Cloud sync consent.")?
@@ -522,6 +533,7 @@ impl Runner {
             }
             let mut transport =
                 upload::HttpTransport::new(engine, account_current, current, origin, None);
+            let started = Instant::now();
             let result = host.spool()?.resume_step(&entry.identity, &mut transport);
             self.state = transport_state(transport.failure, &result);
             if result.is_ok() && job.state == JobState::Fenced && current() {
@@ -540,6 +552,22 @@ impl Runner {
                 self.conflict_rechecks.insert(
                     job.identity.capture_id.clone(),
                     Instant::now() + Duration::from_secs(60),
+                );
+            }
+            if job.state == JobState::Fenced || result.is_err() {
+                tracing::info!(
+                    event = "cloud_saved_upload_resume",
+                    capture_state = ?entry.state,
+                    job_state = ?job.state,
+                    upload_state = ?self.state,
+                    has_plan = entry.upload_plan.is_some(),
+                    succeeded = result.is_ok(),
+                    transport_failure = ?transport.failure,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    retry_after_seconds = self.conflict_rechecks
+                        .get(&job.identity.capture_id)
+                        .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs())
+                        .unwrap_or_default(),
                 );
             }
             if let Ok(step) = result

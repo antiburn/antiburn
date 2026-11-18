@@ -380,6 +380,7 @@ struct Authority {
     exchanges: AtomicUsize,
     sessions: AtomicUsize,
     revocations: AtomicUsize,
+    grant: AtomicUsize,
 }
 
 impl Authority {
@@ -389,7 +390,7 @@ impl Authority {
                 id: "account".into(),
                 display_name: "Example".into(),
             },
-            grant_id: "grant".into(),
+            grant_id: format!("grant-{}", self.grant.load(Ordering::Acquire)),
             device_name: "Example desktop".into(),
             workspace: Workspace {
                 id: "personal".into(),
@@ -420,7 +421,7 @@ impl AuthTransport for Arc<Authority> {
                 900
             },
             token_type: "Bearer".into(),
-            grant_id: "grant".into(),
+            grant_id: format!("grant-{}", self.grant.load(Ordering::Acquire)),
             user_id: "account".into(),
             workspace_id: "personal".into(),
             grant_expires_at: time::OffsetDateTime::from_unix_timestamp(self.deadline)
@@ -498,6 +499,7 @@ impl Fixture {
             exchanges: AtomicUsize::new(0),
             sessions: AtomicUsize::new(0),
             revocations: AtomicUsize::new(0),
+            grant: AtomicUsize::new(0),
         });
         let vault = Arc::new(crate::cloud::tests::MemoryVault::default());
         let mut engine = Engine::new(
@@ -825,6 +827,43 @@ fn cloud_scheduler_recovers_saved_bytes_when_the_conflict_cooldown_expires() {
     fixture.accept_first();
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
     assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_scheduler_new_sign_in_retries_saved_uploads_without_waiting_or_recapture() {
+    let mut fixture = Fixture::new(PART_CONFLICT, 0);
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::Fenced);
+    assert!(fixture.runner.conflict_rechecks[&saved.identity.capture_id] > Instant::now());
+    let original_grant = fixture.engine.session().unwrap().grant_id.clone();
+    fixture.engine.sign_out().unwrap();
+    fixture.authority.grant.fetch_add(1, Ordering::AcqRel);
+    let (_, _listener, attempt) = fixture.engine.begin(now(), 0).unwrap();
+    fixture
+        .engine
+        .callback(
+            &attempt,
+            auth::Callback::Code("synthetic-new-sign-in".into()),
+            now(),
+            || true,
+        )
+        .unwrap();
+    assert_ne!(fixture.engine.session().unwrap().grant_id, original_grant);
+    fixture.service.mode.store(IDLE_PART, Ordering::Release);
+    fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+    fixture.accept_first();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+    assert_eq!(
+        fixture
+            .service
+            .reserve_identities
+            .lock()
+            .unwrap()
+            .as_slice(),
+        std::slice::from_ref(&saved.identity),
+    );
 }
 
 #[test]
