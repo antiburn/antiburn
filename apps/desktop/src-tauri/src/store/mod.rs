@@ -1350,7 +1350,7 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
-    /// Mint or rotate the installation identifier.
+    /// Mint or replace the installation identifier.
     pub fn set_analytics_identity(&self, install_id: &str) -> Result<()> {
         self.set_analytics_identity_with_time(install_id, &now_rfc3339())
     }
@@ -1378,8 +1378,7 @@ impl Store {
     ///
     /// Both halves matter. Leaving the queue would send, on a later opt-in,
     /// events the reader withdrew consent for; leaving the identity would let
-    /// a later opt-in be joined to the earlier one, which is the whole thing
-    /// the rotation exists to prevent.
+    /// a later opt-in be joined to the earlier one.
     pub fn clear_analytics(&self) -> Result<()> {
         let mut connection = self.lock();
         let tx = connection.transaction()?;
