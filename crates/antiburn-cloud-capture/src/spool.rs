@@ -251,7 +251,7 @@ impl Spool {
         if (new_entry && count >= self.limits.queue_entries)
             || disk_reservation > self.limits.spool_bytes.saturating_sub(used)
         {
-            return Err(Error::Limit);
+            return Err(Error::SpoolCapacity);
         }
         let mut entry = QueueEntry {
             identity,
@@ -335,10 +335,11 @@ impl Spool {
 
     /// Reconcile and send at most one independently compressed saved chunk.
     ///
-    /// A turn negotiates the frozen plan, reconciles authoritative status, and
-    /// hashes at most the selected saved chunk before sending it. Completion
-    /// uses a later turn after all required upload receipts exist. Poll again
-    /// while the returned state is `AwaitingIntegrity`.
+    /// A turn negotiates only when no plan is saved, validates the saved plan,
+    /// reconciles authoritative status, and hashes at most the selected saved
+    /// chunk before sending it. Completion uses a later turn after all required
+    /// upload receipts exist. Poll again while the returned state is
+    /// `AwaitingIntegrity`. Unchanged status does not rewrite the queue record.
     ///
     /// The caller must recheck current consent and authorization before each
     /// turn. Errors never authorize a new identity, destination, or body.
@@ -371,13 +372,12 @@ impl Spool {
         }
         let manifest = entry.manifest.clone().ok_or(Error::CorruptSpool)?;
         let reservation = entry.reservation_id.clone().ok_or(Error::CorruptSpool)?;
-        let plan = transport.negotiate(&reservation, &manifest)?;
+        let plan = match entry.upload_plan.clone() {
+            Some(plan) => plan,
+            None => transport.negotiate(&reservation, &manifest)?,
+        };
         validate_plan(&plan, &manifest)?;
-        if let Some(saved) = &entry.upload_plan {
-            if saved != &plan {
-                return Err(Error::PlanChanged);
-            }
-        } else {
+        if entry.upload_plan.is_none() {
             entry.upload_plan = Some(plan.clone());
             self.save(&directory, &entry)?;
         }
@@ -431,11 +431,16 @@ impl Spool {
         let plan = entry.upload_plan.as_ref().ok_or(Error::CorruptSpool)?;
         let confirmed = validate_status(&status, manifest, plan)?;
         validate_status_progress(entry.server_status.as_ref(), &status)?;
-        if status.integrity_accepted {
-            entry.state = CaptureState::Accepted;
+        let state = if status.integrity_accepted {
+            CaptureState::Accepted
+        } else {
+            entry.state
+        };
+        if entry.state != state || entry.server_status.as_ref() != Some(&status) {
+            entry.state = state;
+            entry.server_status = Some(status);
+            self.save(directory, entry)?;
         }
-        entry.server_status = Some(status);
-        self.save(directory, entry)?;
         if entry.state == CaptureState::Accepted {
             self.release_accepted_bytes(&entry.identity.capture_id)?;
         }

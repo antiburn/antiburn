@@ -133,8 +133,8 @@ impl ProjectSelection {
 
     /// Match any owned recorded CWD against selected folder trees.
     ///
-    /// Unknown evidence returns false. A relevant unavailable or aliased path
-    /// returns an error, not permission. Directory checks read no file content.
+    /// Unknown or deleted CWDs do not match. Inaccessible or aliased paths return
+    /// an error, not permission. Directory checks read no file content.
     pub fn matches(&self, evidence: &ProjectEvidence) -> Result<bool> {
         if !evidence.complete {
             return Ok(false);
@@ -186,7 +186,10 @@ impl ProjectSelection {
         for folder in &self.folders {
             if path.starts_with(folder) {
                 verify_project_directory(folder)?;
-                verify_project_directory(path)?;
+                match verify_project_directory(path) {
+                    Err(Error::Io(std::io::ErrorKind::NotFound)) => continue,
+                    result => result?,
+                }
                 return Ok(true);
             }
         }

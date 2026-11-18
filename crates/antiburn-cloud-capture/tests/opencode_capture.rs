@@ -145,6 +145,40 @@ fn expanded(root: &Path, identity: &CaptureIdentity, stream: &CapturedStream) ->
 }
 
 #[test]
+fn session_digest_ignores_unrelated_writes_and_tracks_owned_values_and_dependencies() {
+    let (_temporary, database, connection) = fixture();
+    let candidate = selected(&database, "ses_main");
+    let limits = Limits::default();
+    let original = candidate.opencode_content_digest(&limits).unwrap();
+    connection
+        .execute(
+            "UPDATE session_message SET data='unrelated change' WHERE id='msg_child'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute("UPDATE credential SET value='unrelated global change'", [])
+        .unwrap();
+    assert_eq!(
+        candidate.opencode_content_digest(&limits).unwrap(),
+        original
+    );
+    connection.execute("UPDATE session_part SET data='owned change' WHERE message_id='msg_split' AND ordinal=0", []).unwrap();
+    let changed = candidate.opencode_content_digest(&limits).unwrap();
+    assert_ne!(changed, original);
+    connection.execute("UPDATE blob SET data=X'6e6577', bytes=3 WHERE hash='2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824'", []).unwrap();
+    assert_ne!(candidate.opencode_content_digest(&limits).unwrap(), changed);
+    assert!(
+        candidate
+            .opencode_content_digest(&Limits {
+                source_bytes: 1,
+                ..limits
+            })
+            .is_err()
+    );
+}
+
+#[test]
 fn separate_source_captures_keep_unknown_runtime_and_scoped_native_edges() {
     let (_temporary, database, _connection) = fixture();
     let directory = database.parent().unwrap().join("spool");

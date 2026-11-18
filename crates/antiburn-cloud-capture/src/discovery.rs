@@ -100,6 +100,32 @@ impl Candidate {
         }
     }
 
+    /// Hash this OpenCode session's exact bounded native export without saving it.
+    ///
+    /// The host must check current full-content consent and project admission
+    /// first. This local read creates no capture, reservation, or upload. It uses
+    /// the same ownership, schema, byte, and snapshot checks as capture. Unrelated
+    /// database writes do not change the digest. Never log or publish the digest.
+    /// Run on a bounded blocking worker. Other providers return `UnsupportedSource`.
+    pub fn opencode_content_digest(&self, limits: &Limits) -> Result<String> {
+        #[cfg(unix)]
+        if let CandidateSource::OpenCode(source) = &self.source {
+            use sha2::{Digest, Sha256};
+            let mut digest = Sha256::new();
+            crate::opencode::export(source, limits, |bytes| {
+                digest.update(bytes);
+                Ok(())
+            })?;
+            return Ok(digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect());
+        }
+        let _ = limits;
+        Err(Error::UnsupportedSource)
+    }
+
     /// Bind native keys to one stable account and device-local source root.
     /// Keep this source_scope_id when a directory access grant is replaced.
     ///
@@ -149,7 +175,61 @@ impl Candidate {
 /// fail discovery. Non-Unix systems return [`Error::UnsupportedPlatform`].
 pub fn discover_claude(project: &Path, limits: &Limits) -> Result<Vec<Candidate>> {
     limits.validate()?;
-    discover_directory(project, Arc::new(Directory::source(project)?), limits)
+    discover_directory(
+        project,
+        Arc::new(Directory::source(project)?),
+        limits,
+        None,
+        false,
+    )
+}
+
+/// One bounded Claude filename page. A cursor grants no source or project access.
+#[derive(Debug)]
+pub struct ClaudeDiscoveryPage {
+    /// Independent main and child candidates in native source-key order.
+    pub candidates: Vec<Candidate>,
+    /// Last returned source key when another page exists. Bind it to the same
+    /// authorized source and policy. Restart a sweep to find earlier inserts.
+    pub next_cursor: Option<String>,
+}
+
+/// List at most `Limits::discovery_sessions` Claude candidates after a source key.
+///
+/// Each call inspects bounded directory metadata through fresh admitted handles,
+/// retains at most one page plus one candidate, and reads no transcript bytes.
+/// Directory-entry bounds still apply across the root and children. The host
+/// authorizes the root and runs discovery on a bounded blocking worker.
+pub fn discover_claude_page(
+    project: &Path,
+    after: Option<&str>,
+    limits: &Limits,
+) -> Result<ClaudeDiscoveryPage> {
+    limits.validate()?;
+    if after
+        .is_some_and(|key| key.is_empty() || key.len() > 512 || key.chars().any(char::is_control))
+    {
+        return Err(Error::InvalidIdentity);
+    }
+    let mut candidates = discover_directory(
+        project,
+        Arc::new(Directory::source(project)?),
+        limits,
+        after,
+        true,
+    )?;
+    let next_cursor = if candidates.len() > limits.discovery_sessions {
+        candidates.pop();
+        candidates
+            .last()
+            .map(|candidate| candidate.source_id.clone())
+    } else {
+        None
+    };
+    Ok(ClaudeDiscoveryPage {
+        candidates,
+        next_cursor,
+    })
 }
 
 /// Discover bounded OpenCode V2 session identities in one authorized database.
@@ -350,6 +430,8 @@ fn discover_directory(
     project: &Path,
     root: Arc<Directory>,
     limits: &Limits,
+    after: Option<&str>,
+    paged: bool,
 ) -> Result<Vec<Candidate>> {
     let names = root.source_names(limits.discovery_entries)?;
     let mut visited = names.len();
@@ -382,6 +464,8 @@ fn discover_directory(
                         project_selection: None,
                     },
                     limits,
+                    after,
+                    paged,
                 )?;
             }
             continue;
@@ -439,6 +523,8 @@ fn discover_directory(
                     project_selection: None,
                 },
                 limits,
+                after,
+                paged,
             )?;
         }
     }
@@ -458,11 +544,22 @@ fn push_candidate(
     candidates: &mut Vec<Candidate>,
     candidate: Candidate,
     limits: &Limits,
+    after: Option<&str>,
+    paged: bool,
 ) -> Result<()> {
-    if candidates.len() >= limits.discovery_sessions {
+    if after.is_some_and(|after| candidate.source_id.as_str() <= after) {
+        return Ok(());
+    }
+    if !paged && candidates.len() >= limits.discovery_sessions {
         return Err(Error::Limit);
     }
-    candidates.push(candidate);
+    let index = candidates
+        .binary_search_by(|saved| saved.source_id.cmp(&candidate.source_id))
+        .unwrap_or_else(|index| index);
+    candidates.insert(index, candidate);
+    if paged && candidates.len() > limits.discovery_sessions + 1 {
+        candidates.pop();
+    }
     Ok(())
 }
 
@@ -484,7 +581,8 @@ mod tests {
         fs::create_dir(&decoy).unwrap();
         fs::write(decoy.join("outside.jsonl"), b"{}\n").unwrap();
         symlink(&decoy, &project).unwrap();
-        let candidates = discover_directory(&project, admitted, &Limits::default()).unwrap();
+        let candidates =
+            discover_directory(&project, admitted, &Limits::default(), None, false).unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].source_id(), "original");
     }

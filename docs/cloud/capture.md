@@ -59,6 +59,18 @@ display locator for the transcript or database; many OpenCode sessions share one
 path. Use `native_session_id()` and `source_id()` to identify selections, not that
 path alone. The host scopes candidates before assigning capture identities.
 
+`discover_claude_page` returns bounded pages in native source-key order, including
+independent child transcripts. Each call checks the bounded directory listing and
+retains one page plus one candidate. Bind cursors to the same authorized root and
+policy. Restart a sweep to find new entries before its cursor.
+
+After current full-content consent and project admission, the host can use
+`Candidate::opencode_content_digest` to check an approved session for changes.
+It hashes the same bounded native-row stream as capture, including proved owned
+dependencies, without saving or uploading bytes. Unrelated database writes do not
+change this digest. The check creates no reservation or capture; it does not
+replace capture's fresh snapshot or integrity checks.
+
 ### Project folder selection
 
 Source access and project permission are separate. A provider storage directory
@@ -72,6 +84,10 @@ prefix, so it can find CWD changes late in a session. It never spools or uploads
 content, reads companions or external files, or grants ongoing upload consent.
 Full capture still requires reservation first. The host must separately obtain
 and enforce current account-bound full-content upload consent.
+
+Deleted recorded CWDs do not match a selected tree. Another existing owned CWD
+can still admit the session. Missing approved roots, aliases, and permission
+failures remain errors rather than implicit permission.
 
 Claude reads through the admitted directory handle and keeps at most one
 `PROJECT_RECORD_BYTES` (8 MiB) record and 256 distinct CWD paths of at most
@@ -407,8 +423,11 @@ Reservation and completion are idempotent for the fixed capture ID.
 one ordered `Upload` or `Reuse` decision for every stream chunk, with its exact
 compressed digest. The plan separately declares required transfer bytes and
 reused bytes. The library verifies these sums and saves the plan before upload.
-Every later negotiation must return the exact same plan. A changed plan fails
-closed without changing saved bytes or progress.
+Resume validates and uses the saved plan without negotiating again. If a response
+is lost before the plan is saved, negotiation repeats with the same manifest and
+must return the original plan. Current status must bind that exact manifest and
+plan before upload or acceptance. Invalid bindings fail closed without changing
+saved bytes or progress.
 Plan digests register the expected saved bodies. They do not prove that stored
 bytes have passed integrity verification.
 
@@ -463,8 +482,15 @@ Before reading native content for full capture, the spool reserves conservative
 compressed size and room for two bounded queue records. Limits may be lowered
 within the supported bounds.
 
-`resume_step` reconciles status, hashes at most one selected saved chunk, and
-sends at most that chunk. It does not scan every saved part on each turn.
+`SpoolCapacity` distinguishes a queue or disk admission refusal before publication
+and reservation. The host may save a capacity wait and retry the same ID after
+fresh consent, source, and project checks. A missing entry with unknown delivery
+history does not establish this permission.
+
+`resume_step` negotiates only when no plan is saved, reconciles current status,
+hashes at most one selected saved chunk, and sends at most that chunk. It validates
+every status response but does not rewrite or sync the queue record when status
+and capture state are unchanged. It does not scan every saved part on each turn.
 Completion uses a later step after required uploads are confirmed. The host can
 round-robin pending captures and keep uncaptured selections in its own durable
 state. `resume` is a synchronous draining helper, not a fair scheduler.
@@ -481,11 +507,15 @@ bytes, and server-confirmed upload bytes. Before negotiation,
 not establish integrity acceptance. Plan and confirmed status survive restart.
 
 Completion intent is durable before submission. A lost completion response may
-repeat only the same idempotent request. Once submission succeeds, later steps
-poll its status rather than resubmitting it. HTTP 202, logout, auth loss,
-executor stop, or process exit never release bytes. Only status with exact
-bindings, all required upload receipts, and `integrity_accepted: true` permits
-automatic release. Every reused chunk remains local until this same acceptance.
+repeat only the same idempotent request. Once submission succeeds, later library
+steps poll its status rather than resubmitting it. After validated status still
+reports pending integrity, the host may replay the original completion request
+with bounded backoff. This replay must keep the same capture identity, reservation,
+manifest, and plan. It does not reset saved completion state or prove acceptance.
+HTTP 202, logout, auth loss, executor stop, or process exit never release bytes.
+Only status with exact bindings, all required upload receipts, and
+`integrity_accepted: true` permits automatic release. Every reused chunk remains
+local until this same acceptance.
 Explicit capture cancellation is the only other byte-release path.
 
 After integrity acceptance, the spool releases chunk files but keeps the bounded

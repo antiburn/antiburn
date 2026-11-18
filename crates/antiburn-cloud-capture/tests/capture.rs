@@ -10,6 +10,9 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+#[path = "capture/resume_tests.rs"]
+mod resume_tests;
+
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/cloud/capture-v1")
@@ -206,11 +209,14 @@ struct FakeTransport {
     confirmed: BTreeSet<ChunkKey>,
     uploaded: Vec<(ChunkKey, Vec<u8>)>,
     reserve_calls: usize,
+    negotiate_calls: usize,
+    status_calls: usize,
     complete_calls: usize,
     reuse_all: bool,
     accepted: bool,
     accept_on_complete: bool,
     fail_upload_after_receipt: bool,
+    fail_negotiate_after_registration: bool,
     fail_complete: bool,
     bad_identity: bool,
     bad_hash: bool,
@@ -259,7 +265,11 @@ impl FakeTransport {
             } else {
                 manifest.sha256().unwrap()
             },
-            plan_id: plan.plan_id.clone(),
+            plan_id: if self.change_plan {
+                "changed-plan".into()
+            } else {
+                plan.plan_id.clone()
+            },
             uploaded_parts: parts,
             integrity_accepted: self.accepted,
         }
@@ -287,7 +297,12 @@ impl Transport for FakeTransport {
         _: &str,
         manifest: &CaptureManifest,
     ) -> std::result::Result<UploadPlan, TransportError> {
+        self.negotiate_calls += 1;
         self.manifest = Some(manifest.clone());
+        if self.fail_negotiate_after_registration {
+            self.fail_negotiate_after_registration = false;
+            return Err(TransportError::Offline);
+        }
         let mut required_transfer_bytes = 0;
         let mut reused_bytes = 0;
         let chunks = manifest
@@ -344,6 +359,7 @@ impl Transport for FakeTransport {
         manifest: &CaptureManifest,
         plan: &UploadPlan,
     ) -> std::result::Result<ServerStatus, TransportError> {
+        self.status_calls += 1;
         if self.drop_previous_receipt && self.confirmed.len() > 1 {
             let first = self.uploaded.first().unwrap().0.clone();
             self.confirmed.remove(&first);
@@ -981,7 +997,7 @@ fn source_disk_and_queue_limits_stop_work_before_reservation() {
                 BTreeMap::new(),
                 &mut transport
             ),
-            Err(Error::Limit)
+            Err(Error::Limit | Error::SpoolCapacity)
         ));
         assert_eq!(transport.reserve_calls, 0);
     }
@@ -1012,7 +1028,7 @@ fn source_disk_and_queue_limits_stop_work_before_reservation() {
             BTreeMap::new(),
             &mut transport
         ),
-        Err(Error::Limit)
+        Err(Error::SpoolCapacity)
     ));
     drop(queue);
     assert_eq!(
@@ -1906,65 +1922,6 @@ fn inherited_fork_versions_do_not_become_owned_source_versions() {
 }
 
 #[test]
-fn frozen_plan_survives_restart_and_rejects_changed_negotiation() {
-    let temp = temporary();
-    let mut queue = spool(&temp);
-    let id = identity("main", "frozen-plan");
-    let mut transport = FakeTransport::default();
-    queue
-        .capture(
-            id.clone(),
-            &candidate("main"),
-            BTreeMap::new(),
-            &mut transport,
-        )
-        .unwrap();
-    let step = queue.resume_step(&id, &mut transport).unwrap();
-    let saved = step.entry.upload_plan.clone().unwrap();
-    let before = saved_chunks(
-        &temp.path().join("spool/frozen-plan"),
-        step.entry.manifest.as_ref().unwrap(),
-    );
-    drop(queue);
-    let mut queue = spool(&temp);
-    assert_eq!(
-        queue.entries().unwrap()[0].upload_plan.as_ref(),
-        Some(&saved)
-    );
-    transport.change_plan = true;
-    assert!(matches!(
-        queue.resume_step(&id, &mut transport),
-        Err(Error::PlanChanged)
-    ));
-    let retained = queue.entries().unwrap().remove(0);
-    assert_eq!(retained.upload_plan.as_ref(), Some(&saved));
-    assert_eq!(
-        before,
-        saved_chunks(
-            &temp.path().join("spool/frozen-plan"),
-            retained.manifest.as_ref().unwrap()
-        )
-    );
-    assert_eq!(transport.uploaded.len(), 1);
-    transport.change_plan = false;
-    transport.reuse_stream = Some("capture-metadata".into());
-    assert!(matches!(
-        queue.resume_step(&id, &mut transport),
-        Err(Error::PlanChanged)
-    ));
-    assert_eq!(
-        queue.entries().unwrap()[0].upload_plan.as_ref(),
-        Some(&saved)
-    );
-    transport.reuse_stream = None;
-    transport.accept_on_complete = true;
-    assert_eq!(
-        queue.resume(&id, &mut transport).unwrap().state,
-        CaptureState::Accepted
-    );
-}
-
-#[test]
 fn transfer_reuse_and_server_confirmation_have_separate_durable_totals() {
     let temp = temporary();
     let mut queue = spool(&temp);
@@ -2477,7 +2434,7 @@ fn queue_admission_keeps_both_record_slots_reserved_for_every_entry() {
             BTreeMap::new(),
             &mut transport
         ),
-        Err(Error::Limit)
+        Err(Error::SpoolCapacity)
     ));
     assert_eq!(transport.reserve_calls, 1);
     queue.resume_step(&first, &mut transport).unwrap();

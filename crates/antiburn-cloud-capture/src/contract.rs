@@ -733,6 +733,10 @@ pub enum Error {
     SourceChanged,
     /// A configured byte, count, size, or execution bound was reached.
     Limit,
+    /// Queue or disk capacity refused admission before publication or reservation.
+    /// A host may retry a new entry under the same ID after checking current
+    /// consent and source evidence. This does not authorize partial-capture retry.
+    SpoolCapacity,
     /// A saved record, private file, layout, or selected chunk fails validation.
     CorruptSpool,
     /// Another spool executor or a SQLite lock prevents current work.

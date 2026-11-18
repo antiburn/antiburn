@@ -68,6 +68,32 @@ fn claude_project_selection_includes_descendants_but_not_sibling_prefixes() {
 }
 
 #[test]
+fn deleted_recorded_cwd_does_not_block_an_existing_approved_cwd() {
+    let temp = temporary();
+    let source = directory(temp.path(), "provider");
+    let selected = directory(temp.path(), "app");
+    let deleted = selected.join("a-deleted-worktree");
+    let valid = directory(&selected, "z-existing");
+    let candidate = claude(
+        &source,
+        "session",
+        format!(
+            "{}{}",
+            record("session", &deleted),
+            record("session", &valid),
+        ),
+    );
+    let selection = ProjectSelection::new(vec![selected]).unwrap();
+    assert!(
+        selection
+            .matches(&candidate.project_evidence().unwrap())
+            .unwrap()
+    );
+    let admitted = selection.admit(&candidate).unwrap().unwrap();
+    assert_eq!(admitted.admitted_project_paths(), &[valid]);
+}
+
+#[test]
 fn claude_storage_names_tool_paths_and_unowned_cwds_do_not_grant_permission() {
     let temp = temporary();
     let selected = directory(temp.path(), "app");
