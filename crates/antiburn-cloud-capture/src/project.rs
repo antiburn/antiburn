@@ -77,6 +77,8 @@ impl ProjectEvidence {
         self.source_digest.as_deref()
     }
 
+    /// Build evidence from the directory recorded by the Unix OpenCode reader.
+    #[cfg(unix)]
     pub(crate) fn recorded(path: &str) -> Self {
         Self {
             paths: if valid_project_path(path) {
@@ -89,6 +91,8 @@ impl ProjectEvidence {
         }
     }
 
+    /// Keep a completed OpenCode lookup without an owned directory unapproved.
+    #[cfg(unix)]
     pub(crate) fn unknown() -> Self {
         Self {
             paths: Vec::new(),
