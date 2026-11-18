@@ -10,6 +10,9 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+#[path = "capture/resume_tests.rs"]
+mod resume_tests;
+
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/cloud/capture-v1")
@@ -49,17 +52,171 @@ fn sha(bytes: &[u8]) -> String {
         .collect()
 }
 
+#[test]
+fn project_admission_preserves_full_session_bytes_and_ignores_tool_paths() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let nested = project.join("nested");
+    let source = temp.path().join("provider-storage");
+    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir(&source).unwrap();
+    let mut native = format!(
+        "{}\n",
+        serde_json::json!({
+            "sessionId": "selected",
+            "cwd": project,
+            "tool": {"path": "/synthetic/outside/secret.txt", "cwd": "/synthetic/outside"},
+            "message": {
+                "text": "Keep all native content.",
+                "thinking": "Synthetic private thinking.",
+                "content": [{"type": "tool_result", "content": "synthetic output ".repeat(32 * 1024)}]
+            },
+            "unknown": [1, 2, 3]
+        })
+    );
+    native.push_str(&format!(
+        "{}\n",
+        serde_json::json!({"sessionId": "selected", "cwd": nested})
+    ));
+    assert!(native.len() > 64 * 1024);
+    fs::write(source.join("selected.jsonl"), &native).unwrap();
+    let candidate = reopen_claude(&source, "selected", None, &Limits::default()).unwrap();
+    let admitted = ProjectSelection::new(vec![project])
+        .unwrap()
+        .admit(&candidate)
+        .unwrap()
+        .unwrap();
+    assert_eq!(admitted.admitted_project_paths().len(), 2);
+    let mut spool = spool(&temp);
+    let mut transport = FakeTransport::default();
+    let entry = spool
+        .capture(
+            identity(admitted.source_id(), "project-capture"),
+            &admitted,
+            MetadataSections::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let manifest = entry.manifest.unwrap();
+    assert_eq!(manifest.streams[0].expanded_bytes, native.len() as u64);
+    assert_eq!(manifest.streams[0].expanded_sha256, sha(native.as_bytes()));
+    assert_eq!(transport.reserve_calls, 1);
+    assert!(transport.uploaded.is_empty());
+}
+
+#[test]
+fn project_admission_captures_full_session_when_owned_cwd_changes() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let outside = temp.path().join("outside");
+    let source = temp.path().join("provider-storage");
+    for path in [&project, &outside, &source] {
+        fs::create_dir(path).unwrap();
+    }
+    let mut native = format!(
+        "{}\n",
+        serde_json::json!({"sessionId": "selected", "cwd": project})
+    );
+    native.push_str(&"{\"noise\":true}\n".repeat(64 * 1024 / 10));
+    native.push_str(&format!(
+        "{}\n",
+        serde_json::json!({"sessionId": "selected", "cwd": outside})
+    ));
+    fs::write(source.join("selected.jsonl"), &native).unwrap();
+    let candidate = reopen_claude(&source, "selected", None, &Limits::default()).unwrap();
+    let admitted = ProjectSelection::new(vec![project])
+        .unwrap()
+        .admit(&candidate)
+        .unwrap()
+        .unwrap();
+    let mut spool = spool(&temp);
+    let mut transport = FakeTransport::default();
+    let result = spool
+        .capture(
+            identity(admitted.source_id(), "changing-cwd"),
+            &admitted,
+            MetadataSections::new(),
+            &mut transport,
+        )
+        .unwrap();
+    assert_eq!(result.state, CaptureState::Queued);
+    assert_eq!(
+        result.manifest.unwrap().streams[0].expanded_sha256,
+        sha(native.as_bytes())
+    );
+    assert_eq!(transport.reserve_calls, 1);
+    assert!(transport.uploaded.is_empty());
+}
+
+#[test]
+fn project_admission_rechecks_frozen_root_policy_not_one_cwd() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let nested = project.join("nested");
+    let outside = temp.path().join("outside");
+    let source = temp.path().join("provider-storage");
+    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::create_dir(&source).unwrap();
+    let path = source.join("selected.jsonl");
+    fs::write(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::json!({"sessionId": "selected", "cwd": project})
+        ),
+    )
+    .unwrap();
+    let candidate = reopen_claude(&source, "selected", None, &Limits::default()).unwrap();
+    let admitted = ProjectSelection::new(vec![project])
+        .unwrap()
+        .admit(&candidate)
+        .unwrap()
+        .unwrap();
+    let mut spool = spool(&temp);
+    let mut transport = FakeTransport::default();
+    for (capture_id, cwd, allowed) in [
+        ("changed-descendant", &nested, true),
+        ("removed-approved-cwd", &outside, false),
+    ] {
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::json!({"sessionId": "selected", "cwd": cwd})
+            ),
+        )
+        .unwrap();
+        let result = spool.capture(
+            identity(admitted.source_id(), capture_id),
+            &admitted,
+            MetadataSections::new(),
+            &mut transport,
+        );
+        if allowed {
+            assert_eq!(result.unwrap().state, CaptureState::Queued);
+        } else {
+            assert!(matches!(result, Err(Error::SourceChanged)));
+        }
+    }
+    assert_eq!(transport.reserve_calls, 2);
+    assert!(transport.uploaded.is_empty());
+}
+
 #[derive(Default)]
 struct FakeTransport {
     manifest: Option<CaptureManifest>,
     confirmed: BTreeSet<ChunkKey>,
     uploaded: Vec<(ChunkKey, Vec<u8>)>,
     reserve_calls: usize,
+    negotiate_calls: usize,
+    status_calls: usize,
     complete_calls: usize,
     reuse_all: bool,
     accepted: bool,
     accept_on_complete: bool,
     fail_upload_after_receipt: bool,
+    fail_negotiate_after_registration: bool,
     fail_complete: bool,
     bad_identity: bool,
     bad_hash: bool,
@@ -67,6 +224,8 @@ struct FakeTransport {
     reserve_mutation: Option<(PathBuf, Vec<u8>)>,
     reserve_failure: bool,
     drop_previous_receipt: bool,
+    keep_only_latest_receipt: bool,
+    lose_latest_receipt: bool,
     bad_manifest_digest: bool,
     reuse_stream: Option<String>,
     change_plan: bool,
@@ -108,7 +267,11 @@ impl FakeTransport {
             } else {
                 manifest.sha256().unwrap()
             },
-            plan_id: plan.plan_id.clone(),
+            plan_id: if self.change_plan {
+                "changed-plan".into()
+            } else {
+                plan.plan_id.clone()
+            },
             uploaded_parts: parts,
             integrity_accepted: self.accepted,
         }
@@ -136,7 +299,12 @@ impl Transport for FakeTransport {
         _: &str,
         manifest: &CaptureManifest,
     ) -> std::result::Result<UploadPlan, TransportError> {
+        self.negotiate_calls += 1;
         self.manifest = Some(manifest.clone());
+        if self.fail_negotiate_after_registration {
+            self.fail_negotiate_after_registration = false;
+            return Err(TransportError::Offline);
+        }
         let mut required_transfer_bytes = 0;
         let mut reused_bytes = 0;
         let chunks = manifest
@@ -193,7 +361,19 @@ impl Transport for FakeTransport {
         manifest: &CaptureManifest,
         plan: &UploadPlan,
     ) -> std::result::Result<ServerStatus, TransportError> {
+        self.status_calls += 1;
+        if self.keep_only_latest_receipt {
+            let latest = self.uploaded.last().map(|(key, _)| key);
+            self.confirmed.retain(|key| Some(key) == latest);
+        }
+        if self.lose_latest_receipt
+            && let Some((key, _)) = self.uploaded.last()
+        {
+            self.confirmed.remove(key);
+            self.lose_latest_receipt = false;
+        }
         if self.drop_previous_receipt && self.confirmed.len() > 1 {
+            self.drop_previous_receipt = false;
             let first = self.uploaded.first().unwrap().0.clone();
             self.confirmed.remove(&first);
         }
@@ -830,7 +1010,7 @@ fn source_disk_and_queue_limits_stop_work_before_reservation() {
                 BTreeMap::new(),
                 &mut transport
             ),
-            Err(Error::Limit)
+            Err(Error::Limit | Error::SpoolCapacity)
         ));
         assert_eq!(transport.reserve_calls, 0);
     }
@@ -861,7 +1041,7 @@ fn source_disk_and_queue_limits_stop_work_before_reservation() {
             BTreeMap::new(),
             &mut transport
         ),
-        Err(Error::Limit)
+        Err(Error::SpoolCapacity)
     ));
     drop(queue);
     assert_eq!(
@@ -1388,7 +1568,7 @@ fn native_companion_has_a_strict_byte_limit_before_reservation() {
 }
 
 #[test]
-fn regressed_server_receipts_block_completion_and_keep_all_chunks() {
+fn expired_server_receipts_reupload_saved_chunks_before_completion() {
     let temp = temporary();
     let project = temp.path().join("project");
     fs::create_dir(&project).unwrap();
@@ -1413,15 +1593,19 @@ fn regressed_server_receipts_block_completion_and_keep_all_chunks() {
             &mut transport,
         )
         .unwrap();
-    assert!(matches!(
-        queue.resume(&identity, &mut transport),
-        Err(Error::InvalidServerStatus)
-    ));
-    assert_eq!(transport.complete_calls, 0);
-    assert_eq!(transport.uploaded.len(), 2);
+    assert_eq!(
+        queue.resume(&identity, &mut transport).unwrap().state,
+        CaptureState::Queued
+    );
+    assert_eq!(
+        queue.resume(&identity, &mut transport).unwrap().state,
+        CaptureState::AwaitingIntegrity
+    );
+    assert_eq!(transport.complete_calls, 1);
+    assert_eq!(transport.uploaded.len(), 3);
+    assert_eq!(transport.uploaded[0], transport.uploaded[2]);
     let saved_status = queue.entries().unwrap().remove(0).server_status.unwrap();
-    assert_eq!(saved_status.uploaded_parts.len(), 1);
-    assert_eq!(saved_status.uploaded_parts[0].key.stream_id, "transcript");
+    assert_eq!(saved_status.uploaded_parts.len(), 2);
     for stream in ["transcript", "capture-metadata"] {
         assert!(
             temp.path()
@@ -1751,65 +1935,6 @@ fn inherited_fork_versions_do_not_become_owned_source_versions() {
             version: "2.1.278".into(),
             ownership: VersionOwnership::Inherited,
         }]
-    );
-}
-
-#[test]
-fn frozen_plan_survives_restart_and_rejects_changed_negotiation() {
-    let temp = temporary();
-    let mut queue = spool(&temp);
-    let id = identity("main", "frozen-plan");
-    let mut transport = FakeTransport::default();
-    queue
-        .capture(
-            id.clone(),
-            &candidate("main"),
-            BTreeMap::new(),
-            &mut transport,
-        )
-        .unwrap();
-    let step = queue.resume_step(&id, &mut transport).unwrap();
-    let saved = step.entry.upload_plan.clone().unwrap();
-    let before = saved_chunks(
-        &temp.path().join("spool/frozen-plan"),
-        step.entry.manifest.as_ref().unwrap(),
-    );
-    drop(queue);
-    let mut queue = spool(&temp);
-    assert_eq!(
-        queue.entries().unwrap()[0].upload_plan.as_ref(),
-        Some(&saved)
-    );
-    transport.change_plan = true;
-    assert!(matches!(
-        queue.resume_step(&id, &mut transport),
-        Err(Error::PlanChanged)
-    ));
-    let retained = queue.entries().unwrap().remove(0);
-    assert_eq!(retained.upload_plan.as_ref(), Some(&saved));
-    assert_eq!(
-        before,
-        saved_chunks(
-            &temp.path().join("spool/frozen-plan"),
-            retained.manifest.as_ref().unwrap()
-        )
-    );
-    assert_eq!(transport.uploaded.len(), 1);
-    transport.change_plan = false;
-    transport.reuse_stream = Some("capture-metadata".into());
-    assert!(matches!(
-        queue.resume_step(&id, &mut transport),
-        Err(Error::PlanChanged)
-    ));
-    assert_eq!(
-        queue.entries().unwrap()[0].upload_plan.as_ref(),
-        Some(&saved)
-    );
-    transport.reuse_stream = None;
-    transport.accept_on_complete = true;
-    assert_eq!(
-        queue.resume(&id, &mut transport).unwrap().state,
-        CaptureState::Accepted
     );
 }
 
@@ -2326,7 +2451,7 @@ fn queue_admission_keeps_both_record_slots_reserved_for_every_entry() {
             BTreeMap::new(),
             &mut transport
         ),
-        Err(Error::Limit)
+        Err(Error::SpoolCapacity)
     ));
     assert_eq!(transport.reserve_calls, 1);
     queue.resume_step(&first, &mut transport).unwrap();

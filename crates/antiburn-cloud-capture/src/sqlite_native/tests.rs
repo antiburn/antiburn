@@ -1108,7 +1108,7 @@ fn sqlite_interruption_returns_limit_without_provider_error_text() {
     .and_then(|mut writer| writer.begin_table("sample", &["key"], &["key"]));
     let error = result.unwrap_err();
     assert!(matches!(error, Error::Limit));
-    assert_eq!(error.to_string(), "native capture failed: Limit");
+    assert_eq!(error.to_string(), "desktop capture failed: Limit");
 }
 
 #[test]

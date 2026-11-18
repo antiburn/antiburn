@@ -1,7 +1,8 @@
-//! Network-free native capture. The non-default `cloud` feature enables the API.
+//! Network-free desktop capture of provider-native session source.
+//! The non-default `cloud` feature enables the API.
 //! See `docs/cloud/capture.md` for the public byte and transport contract.
 //!
-//! The native host supplies source access, consent, account and destination
+//! The desktop host supplies source access, consent, account and destination
 //! bindings, a `Transport`, and scheduling. This crate owns admitted source
 //! handles, exact saved chunks, queue records, and upload reconciliation.
 //! Renderer code must not own credentials, choose upload locations, or call these
@@ -26,6 +27,8 @@ mod metadata;
 #[cfg(all(feature = "cloud", unix))]
 mod opencode;
 #[cfg(feature = "cloud")]
+mod project;
+#[cfg(feature = "cloud")]
 mod protocol;
 #[cfg(feature = "cloud")]
 mod spool;
@@ -39,6 +42,14 @@ pub use contract::*;
 #[cfg(feature = "cloud")]
 pub use discovery::{Candidate, CaptureSourceKind, discover_claude, discover_opencode};
 #[cfg(feature = "cloud")]
+pub use discovery::{ClaudeDiscoveryPage, discover_claude_page};
+#[cfg(feature = "cloud")]
+pub use discovery::{OpenCodeDiscoveryPage, discover_opencode_page};
+#[cfg(feature = "cloud")]
+pub use discovery::{reopen_claude, reopen_opencode};
+#[cfg(feature = "cloud")]
 pub use metadata::*;
+#[cfg(feature = "cloud")]
+pub use project::{PROJECT_RECORD_BYTES, ProjectEvidence, ProjectSelection};
 #[cfg(feature = "cloud")]
 pub use spool::Spool;

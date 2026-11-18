@@ -402,7 +402,7 @@ impl AcceptedSourceFingerprint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureState {
-    /// Native capture did not finish. Cancel explicitly before using a new ID.
+    /// Desktop capture did not finish. Cancel explicitly before using a new ID.
     Preparing,
     /// Saved source is complete. Reconcile and upload from the spool only.
     Queued,
@@ -431,7 +431,7 @@ pub struct QueueEntry {
     pub manifest: Option<CaptureManifest>,
     /// First validated negotiation, kept unchanged through all later turns.
     pub upload_plan: Option<UploadPlan>,
-    /// Last validated authoritative status; confirmations cannot regress.
+    /// Last validated status. Provisional parts can expire before acceptance.
     pub server_status: Option<ServerStatus>,
     /// Completion returned success; false can still accompany saved intent.
     pub completion_submitted: bool,
@@ -475,7 +475,7 @@ pub struct ChunkKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChunkDisposition {
-    /// Transfer the saved body and obtain its authoritative upload receipt.
+    /// Transfer the saved body and obtain service confirmation of stored transfer.
     Upload,
     /// Use the service's protected base object but keep local retry bytes.
     Reuse,
@@ -486,7 +486,7 @@ pub enum ChunkDisposition {
 pub struct PlannedChunk {
     /// Exact stream-local chunk selected by this decision.
     pub key: ChunkKey,
-    /// Saved-body digest that must equal the manifest chunk digest.
+    /// Registered expected saved-body digest; must equal the manifest chunk digest.
     pub compressed_sha256: String,
     /// Frozen transfer or reuse choice, not a confirmation.
     pub disposition: ChunkDisposition,
@@ -496,6 +496,8 @@ pub struct PlannedChunk {
 ///
 /// Required and reused byte sums count compressed bodies. A reuse decision is
 /// not an upload receipt and does not permit early removal of local bytes.
+/// Chunk digests bind expected bodies and later receipts to this plan. The plan
+/// does not prove storage or byte integrity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UploadPlan {
     /// Exact request bindings from the manifest.
@@ -512,19 +514,30 @@ pub struct UploadPlan {
     pub reused_bytes: u64,
 }
 
-/// This receipt confirms an uploaded chunk, not a reuse decision.
+/// Service confirmation of a stored part for an uploaded chunk's bound request.
+///
+/// The enclosing [`ServerStatus`] supplies the identity, manifest, and plan
+/// binding. This receipt confirms transfer, not complete byte integrity, and
+/// never permits spool release by itself. Reuse decisions have no upload receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartReceipt {
     /// Uploaded chunk, never a reuse-only decision.
     pub key: ChunkKey,
-    /// Authoritatively confirmed saved-body digest.
+    /// Registered expected saved-body digest that identifies the acknowledged chunk.
+    ///
+    /// This must equal the manifest and frozen plan digest. It is a request
+    /// binding, not a claim that storage returned or independently verified SHA-256.
+    /// Never substitute an ETag or invent a verified checksum when none exists.
     pub compressed_sha256: String,
 }
 
 /// Authoritative status bound to the exact identity, manifest, and frozen plan.
 ///
-/// Uploaded receipts may grow but must not regress. Acceptance also requires
+/// Provisional receipts can disappear after storage expiry. Retry those chunks
+/// from saved bytes under the same plan. Acceptance cannot regress and requires
 /// receipts for every `Upload` decision; `Reuse` decisions must not appear here.
+/// Receipt digest matches establish expected-request bindings, not full byte
+/// integrity. Only `integrity_accepted` confirms complete capture verification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerStatus {
     /// Exact account, destination, source, and capture binding.
@@ -533,9 +546,15 @@ pub struct ServerStatus {
     pub manifest_sha256: String,
     /// Identifier of the unchanged saved plan.
     pub plan_id: String,
-    /// Confirmed upload receipts; duplicates and reuse receipts are invalid.
+    /// Stored-transfer confirmations; duplicates and reuse receipts are invalid.
     pub uploaded_parts: Vec<PartReceipt>,
-    /// True only after the service verifies and accepts the complete capture.
+    /// True only after the service reads and verifies the complete stored capture.
+    ///
+    /// Verification covers compressed and expanded chunk lengths and digests,
+    /// stream lengths and digests, and manifest and metadata bindings, including
+    /// reused chunks. Stored-part receipts or optional storage checksum metadata
+    /// cannot replace these checks. Only this acceptance permits automatic release
+    /// of local retry bytes.
     pub integrity_accepted: bool,
 }
 
@@ -577,6 +596,10 @@ pub struct ResumeStep {
 /// saved captures under the same identity after restoring current authorization.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportError {
+    /// The service asks the caller to retry the same operation later. A reserve
+    /// implementation must prove that capacity refusal created no reservation.
+    /// A generic HTTP 429 or unknown delivery does not establish this proof.
+    Backpressure,
     /// Network, timeout, or body I/O failed; remote success can remain unknown.
     Offline,
     /// Current authentication or consent does not permit the fixed request.
@@ -603,13 +626,22 @@ pub enum TransportError {
 /// diagnostics. Errors can follow remote success, so retry and status must be
 /// safe under the same frozen inputs.
 pub trait Transport {
-    /// Reserve the fixed capture identity before any native content is read.
+    /// Reserve the fixed identity before full desktop capture reads source content.
+    ///
+    /// A separate, authorized local project-evidence scan can read bounded native
+    /// transcript content before reservation. That scan never spools or uploads
+    /// content and does not grant ongoing full-content upload consent.
     ///
     /// `maximum_expanded_bytes` includes conservative generated-metadata space.
     /// Use the capture ID for reservation idempotency. Return a reservation ID
     /// with 1 through 128 ASCII letters, digits, hyphens, or underscores.
-    /// Failure leaves an interrupted `Preparing` entry; capture will not read a
-    /// later generation under that ID.
+    /// Failure leaves a `Preparing` entry. Only a proved [`TransportError::Backpressure`]
+    /// refusal can use [`crate::Spool::retry_reservation`] under the same capture ID.
+    /// The host must recheck current authorization and unchanged source observation,
+    /// then durably clear its saved capacity proof before reservation I/O.
+    /// The spool requires a present empty entry with no reservation or partial files.
+    /// Missing or quarantined entries cannot retry. Unknown delivery and other
+    /// failures cannot automatically read a later source generation.
     fn reserve(
         &mut self,
         identity: &CaptureIdentity,
@@ -628,12 +660,17 @@ pub trait Transport {
         manifest: &CaptureManifest,
     ) -> std::result::Result<UploadPlan, TransportError>;
 
-    /// Read authoritative receipts and acceptance for the frozen request.
+    /// Read service-confirmed stored transfers and acceptance for the frozen request.
     ///
     /// Do not infer confirmation from bytes sent or a successful upload response.
-    /// Receipts cover only `Upload` decisions and must not regress. Report
-    /// integrity acceptance only after verification of the complete capture,
-    /// including reused chunks and metadata.
+    /// Receipts cover only current `Upload` parts and can disappear before
+    /// acceptance when incomplete storage expires. Their digests
+    /// bind acknowledgments to registered expected chunks; they do not establish
+    /// full byte integrity or require storage-provided SHA-256 metadata. Report
+    /// integrity acceptance only after reading and verifying all stored bytes,
+    /// compressed and expanded chunks, streams, and metadata, including reused
+    /// chunks. Never treat an ETag as SHA-256 or report an unverified checksum as
+    /// verified.
     fn status(
         &mut self,
         reservation_id: &str,
@@ -678,9 +715,10 @@ pub trait Transport {
 /// Capture failures without native content, paths, or raw provider diagnostics.
 ///
 /// Errors do not cancel entries or authorize recapture. Inspect the saved state:
-/// `Preparing` requires explicit cancellation; a queued retry keeps its identity,
-/// metadata, plan, and saved bodies. Corruption can block the whole spool and
-/// needs operator recovery rather than automatic deletion.
+/// `Preparing` requires explicit cancellation unless a proved capacity refusal
+/// meets [`crate::Spool::retry_reservation`]'s empty-entry and host proof rules.
+/// A queued retry keeps its identity, metadata, plan, and saved bodies. Corruption
+/// can block the whole spool and needs operator recovery rather than deletion.
 #[derive(Debug)]
 pub enum Error {
     /// Filesystem error kind without the original path or error message.
@@ -697,6 +735,10 @@ pub enum Error {
     SourceChanged,
     /// A configured byte, count, size, or execution bound was reached.
     Limit,
+    /// Queue or disk capacity refused admission before publication or reservation.
+    /// A host may retry a new entry under the same ID after checking current
+    /// consent and source evidence. This does not authorize partial-capture retry.
+    SpoolCapacity,
     /// A saved record, private file, layout, or selected chunk fails validation.
     CorruptSpool,
     /// Another spool executor or a SQLite lock prevents current work.
@@ -713,7 +755,7 @@ pub enum Error {
     NotAccepted,
     /// Accepted work cannot be cancelled; the host must acknowledge its receipt.
     AlreadyAccepted,
-    /// Native source capture and private spooling require a supported Unix host.
+    /// Desktop capture and private spooling require a supported Unix host.
     UnsupportedPlatform,
     /// The saved manifest needs its original build; no migration is attempted.
     UnsupportedFormat,
@@ -725,10 +767,10 @@ impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if matches!(self, Self::UnsupportedFormat) {
             return formatter.write_str(
-                "native capture failed: unsupported capture format; use the original build to drain or cancel, or preserve a private copy for recovery",
+                "desktop capture failed: unsupported capture format; use the original build to drain or cancel, or preserve a private copy for recovery",
             );
         }
-        write!(formatter, "native capture failed: {self:?}")
+        write!(formatter, "desktop capture failed: {self:?}")
     }
 }
 

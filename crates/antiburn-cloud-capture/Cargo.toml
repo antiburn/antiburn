@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/antiburn/antiburn"
-description = "Feature-gated, network-free native capture and durable upload queue."
+description = "Feature-gated, network-free desktop capture and durable upload queue."
 publish = false
 
 [features]
@@ -38,6 +38,14 @@ required-features = ["cloud"]
 
 [[test]]
 name = "opencode_capture"
+required-features = ["cloud"]
+
+[[test]]
+name = "project_selection_integration_tests"
+required-features = ["cloud"]
+
+[[test]]
+name = "project_capture_integration_tests"
 required-features = ["cloud"]
 
 [[test]]

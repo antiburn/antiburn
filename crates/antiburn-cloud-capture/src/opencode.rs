@@ -10,7 +10,7 @@
 mod references;
 mod selection;
 
-use crate::{Error, Limits, Result};
+use crate::{Error, Limits, ProjectEvidence, Result};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::ffi::{CString, OsStr};
@@ -63,6 +63,17 @@ impl OpenCodeSource {
     pub(crate) fn key_for_session(&self, id: &str) -> Result<String> {
         native_key(&self.database.filename, id)
     }
+
+    /// Read only this session's bounded recorded CWD under the source binding.
+    pub(crate) fn project_evidence(&self, limits: &Limits) -> Result<ProjectEvidence> {
+        let deadline = Instant::now() + EXPORT_TIME;
+        let connection = self.database.connect(deadline)?;
+        let schema = selection::Schema::read(&connection, limits, deadline)?;
+        let evidence = schema.project_evidence(&connection, &self.session_id)?;
+        self.database.verify(Some(&connection))?;
+        connection.execute_batch("ROLLBACK").map_err(sql_error)?;
+        Ok(evidence)
+    }
 }
 
 /// Direct native edges from the same snapshot as exported values.
@@ -82,7 +93,23 @@ pub(crate) struct OpenCodeExport {
 /// partially migrated V2 stores fail visibly and never select a V1 fallback.
 /// Run this synchronous filesystem and SQLite work on a bounded blocking worker.
 pub(crate) fn discover(database: &Path, limits: &Limits) -> Result<Vec<OpenCodeSource>> {
+    let (sources, next_cursor) = discover_page(database, None, limits)?;
+    if next_cursor.is_some() {
+        return Err(Error::Limit);
+    }
+    Ok(sources)
+}
+
+/// Read one binary-ID page from a fresh, source-bound metadata snapshot.
+pub(crate) fn discover_page(
+    database: &Path,
+    after: Option<&str>,
+    limits: &Limits,
+) -> Result<(Vec<OpenCodeSource>, Option<String>)> {
     limits.validate()?;
+    if let Some(after) = after {
+        validate_id(after)?;
+    }
     let admitted = Arc::new(AdmittedDatabase::open(database)?);
     let deadline = Instant::now() + EXPORT_TIME;
     let connection = admitted.connect(deadline)?;
@@ -92,17 +119,26 @@ pub(crate) fn discover(database: &Path, limits: &Limits) -> Result<Vec<OpenCodeS
         .prepare(
             "SELECT CASE WHEN typeof(id) = 'text' AND octet_length(id) <= ?1
                          THEN id END
-               FROM session_v2 ORDER BY id COLLATE BINARY LIMIT ?2",
+               FROM session_v2 WHERE id COLLATE BINARY > ?2
+               ORDER BY id COLLATE BINARY LIMIT ?3",
         )
         .map_err(sql_error)?;
     let mut rows = statement
-        .query(params![MAX_ID_BYTES, limits.discovery_sessions + 1])
+        .query(params![
+            MAX_ID_BYTES,
+            after.unwrap_or(""),
+            limits.discovery_sessions + 1
+        ])
         .map_err(sql_error)?;
     let mut sources = Vec::new();
+    let mut next_cursor = None;
     while let Some(row) = rows.next().map_err(sql_error)? {
         check_deadline(deadline)?;
         if sources.len() == limits.discovery_sessions {
-            return Err(Error::Limit);
+            next_cursor = sources
+                .last()
+                .map(|source: &OpenCodeSource| source.session_id.clone());
+            break;
         }
         let id: Option<String> = row.get(0).map_err(sql_error)?;
         let id = id.ok_or(Error::InvalidSource)?;
@@ -117,7 +153,34 @@ pub(crate) fn discover(database: &Path, limits: &Limits) -> Result<Vec<OpenCodeS
     drop(statement);
     admitted.verify(Some(&connection))?;
     connection.execute_batch("ROLLBACK").map_err(sql_error)?;
-    Ok(sources)
+    Ok((sources, next_cursor))
+}
+
+/// Reopen one exact native ID without reading other session rows or payload.
+pub(crate) fn reopen(database: &Path, session_id: &str, limits: &Limits) -> Result<OpenCodeSource> {
+    validate_id(session_id)?;
+    let database = Arc::new(AdmittedDatabase::open(database)?);
+    let deadline = Instant::now() + EXPORT_TIME;
+    let connection = database.connect(deadline)?;
+    selection::Schema::read(&connection, limits, deadline)?;
+    let present: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_v2 WHERE id = ?1 COLLATE BINARY
+                AND typeof(id) = 'text' AND octet_length(id) BETWEEN 1 AND ?2)",
+            params![session_id, MAX_ID_BYTES],
+            |row| row.get(0),
+        )
+        .map_err(sql_error)?;
+    if !present {
+        return Err(Error::SourceChanged);
+    }
+    database.verify(Some(&connection))?;
+    connection.execute_batch("ROLLBACK").map_err(sql_error)?;
+    Ok(OpenCodeSource {
+        native_key: native_key(&database.filename, session_id)?,
+        database,
+        session_id: session_id.into(),
+    })
 }
 
 /// Export all proved session-owned source under one read-only SQLite snapshot.
@@ -134,6 +197,25 @@ where
     export_before(source, limits, emit, Instant::now() + EXPORT_TIME)
 }
 
+/// Check admitted project evidence in the same snapshot used for payload export.
+pub(crate) fn export_in_project<F>(
+    source: &OpenCodeSource,
+    limits: &Limits,
+    selection: &crate::ProjectSelection,
+    emit: F,
+) -> Result<OpenCodeExport>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
+    export_snapshot(
+        source,
+        limits,
+        emit,
+        Instant::now() + EXPORT_TIME,
+        Some(selection),
+    )
+}
+
 fn export_before<F>(
     source: &OpenCodeSource,
     limits: &Limits,
@@ -143,10 +225,28 @@ fn export_before<F>(
 where
     F: FnMut(&[u8]) -> Result<()>,
 {
+    export_snapshot(source, limits, emit, deadline, None)
+}
+
+fn export_snapshot<F>(
+    source: &OpenCodeSource,
+    limits: &Limits,
+    emit: F,
+    deadline: Instant,
+    project_selection: Option<&crate::ProjectSelection>,
+) -> Result<OpenCodeExport>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
     limits.validate()?;
     check_deadline(deadline)?;
     let connection = source.database.connect(deadline)?;
     let schema = selection::Schema::read(&connection, limits, deadline)?;
+    if let Some(selection) = project_selection
+        && !selection.matches(&schema.project_evidence(&connection, &source.session_id)?)?
+    {
+        return Err(Error::SourceChanged);
+    }
     let relationships = schema.relationships(&connection, &source.session_id)?;
     let tables = selection::select(&connection, &schema, &source.session_id, limits, deadline)?;
     source.database.verify(Some(&connection))?;
@@ -428,3 +528,7 @@ pub(super) fn bounded_text(
 #[cfg(all(test, unix))]
 #[path = "opencode/tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "opencode/discovery_integration_tests.rs"]
+mod discovery_tests;

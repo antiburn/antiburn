@@ -32,10 +32,10 @@ enum PreparedSource<'a> {
 
 /// Private saved bodies and durable queue records owned by one executor.
 ///
-/// The native host owns consent, credentials, request selection, and terminal
+/// The desktop host owns consent, credentials, request selection, and terminal
 /// state. This value owns the exclusive spool lock and all queue file changes.
 /// Drop it to stop execution; dropping it never cancels captures or deletes
-/// native bytes. Run its blocking methods on a bounded native worker, never on
+/// native bytes. Run its blocking methods on a bounded blocking worker, never on
 /// UI or async runtime threads. Other platforms return [`Error::UnsupportedPlatform`].
 pub struct Spool {
     root: Directory,
@@ -95,7 +95,9 @@ impl Spool {
     }
 
     /// The host must obtain consent and bind this source to the destination
-    /// before calling. No native content is read before reserve succeeds.
+    /// before calling. This full capture reads no native content until reserve
+    /// succeeds. Separately authorized local project-evidence scans can read
+    /// bounded transcript content before capture; they never upload it.
     ///
     /// Use a scoped candidate and a fresh, globally unique capture ID. Repeating
     /// an existing identity returns its saved entry without reading new source
@@ -133,7 +135,64 @@ impl Spool {
             Err(Error::Io(std::io::ErrorKind::NotFound)) => {}
             Err(error) => return Err(error),
         }
+        self.capture_source(identity, candidate, sections, transport, None)
+    }
+
+    /// Retry a proved capacity refusal under the same identity, without removing
+    /// the entry or replacing any saved bytes.
+    ///
+    /// The host must durably record a definitive reservation backpressure result,
+    /// clear that retry permission before this call, and recheck current consent,
+    /// source identity, source observation, and project admission. Unknown prior
+    /// errors do not permit this call. A crash after retry starts requires normal
+    /// interrupted-capture recovery, not another inferred capacity retry.
+    ///
+    /// Only a present `Preparing` entry with no reservation, manifest, plan,
+    /// status, completion, or files beyond `record.json` can retry. Missing,
+    /// quarantined, reserved, and partial entries fail without changing bytes.
+    pub fn retry_reservation(
+        &mut self,
+        identity: CaptureIdentity,
+        candidate: &Candidate,
+        sections: MetadataSections,
+        transport: &mut impl Transport,
+    ) -> Result<QueueEntry> {
+        identity.validate()?;
+        if identity.source_id != candidate.source_id {
+            return Err(Error::IdentityMismatch);
+        }
+        let directory = self.root.open_dir(&identity.capture_id)?;
+        let entry = self.read_directory_entry(&directory, &identity.capture_id)?;
+        if entry.identity != identity {
+            return Err(Error::IdentityMismatch);
+        }
+        if entry.state != CaptureState::Preparing
+            || entry.reservation_id.is_some()
+            || entry.manifest.is_some()
+            || entry.upload_plan.is_some()
+            || entry.server_status.is_some()
+            || entry.completion_submitted
+            || directory.names(2)? != ["record.json"]
+        {
+            return Err(Error::InterruptedCapture);
+        }
+        self.capture_source(identity, candidate, sections, transport, Some(directory))
+    }
+
+    /// Prepare bounded source reads and reserve before saving native bytes.
+    /// A supplied directory has already passed the empty-reservation retry checks.
+    fn capture_source(
+        &mut self,
+        identity: CaptureIdentity,
+        candidate: &Candidate,
+        sections: MetadataSections,
+        transport: &mut impl Transport,
+        directory: Option<Directory>,
+    ) -> Result<QueueEntry> {
         validate_sections(&sections)?;
+        if let Some(selection) = &candidate.project_selection {
+            selection.verify_directories()?;
+        }
         let (prepared, native_bytes, native_streams) = match &candidate.source {
             CandidateSource::Claude(source) => {
                 let mut files = vec![source.directory.source_file(&source.filename)?];
@@ -187,11 +246,12 @@ impl Spool {
         let (used, count) = self.usage()?;
         let maximum_compressed =
             maximum_expanded + native_bytes / 100 + native_streams as u64 * 1024 + 2048;
-        let disk_reservation = maximum_compressed + 2 * RECORD_BYTES;
-        if count >= self.limits.queue_entries
+        let new_entry = directory.is_none();
+        let disk_reservation = maximum_compressed + if new_entry { 2 * RECORD_BYTES } else { 0 };
+        if (new_entry && count >= self.limits.queue_entries)
             || disk_reservation > self.limits.spool_bytes.saturating_sub(used)
         {
-            return Err(Error::Limit);
+            return Err(Error::SpoolCapacity);
         }
         let mut entry = QueueEntry {
             identity,
@@ -202,7 +262,10 @@ impl Spool {
             server_status: None,
             completion_submitted: false,
         };
-        let directory = self.create_entry(&name, &entry)?;
+        let directory = match directory {
+            Some(directory) => directory,
+            None => self.create_entry(&entry.identity.capture_id, &entry)?,
+        };
         let reservation_id = transport.reserve(&entry.identity, maximum_expanded)?;
         if !safe_id(&reservation_id) {
             return Err(Error::InvalidServerStatus);
@@ -249,17 +312,26 @@ impl Spool {
 
     /// Drain saved parts synchronously. Schedulers should use resume_step.
     ///
-    /// Return after acceptance, completion submission, or a polling turn without
-    /// an upload. This helper is not a fair scheduler or a loop that waits for
+    /// Return after acceptance, completion submission, a polling turn without
+    /// an upload, or one bounded part pass plus a completion turn. This helper
+    /// is not a fair scheduler or a loop that waits for
     /// integrity acceptance. Errors retain the same retry identity and bodies.
     pub fn resume(
         &mut self,
         identity: &CaptureIdentity,
         transport: &mut impl Transport,
     ) -> Result<QueueEntry> {
+        let mut turns = 0usize;
         loop {
             let step = self.resume_step(identity, transport)?;
+            turns += 1;
+            let maximum_turns = step
+                .entry
+                .upload_plan
+                .as_ref()
+                .map_or(1, |plan| plan.chunks.len().saturating_add(1));
             if step.uploaded_chunk.is_none()
+                || turns >= maximum_turns
                 || matches!(
                     step.entry.state,
                     CaptureState::Accepted | CaptureState::Cancelled
@@ -272,10 +344,11 @@ impl Spool {
 
     /// Reconcile and send at most one independently compressed saved chunk.
     ///
-    /// A turn negotiates the frozen plan, reconciles authoritative status, and
-    /// hashes at most the selected saved chunk before sending it. Completion
-    /// uses a later turn after all required upload receipts exist. Poll again
-    /// while the returned state is `AwaitingIntegrity`.
+    /// A turn negotiates only when no plan is saved, validates the saved plan,
+    /// reconciles authoritative status, and hashes at most the selected saved
+    /// chunk before sending it. Completion uses a later turn after all required
+    /// upload receipts exist. Poll again while the returned state is
+    /// `AwaitingIntegrity`. Unchanged status does not rewrite the queue record.
     ///
     /// The caller must recheck current consent and authorization before each
     /// turn. Errors never authorize a new identity, destination, or body.
@@ -308,13 +381,12 @@ impl Spool {
         }
         let manifest = entry.manifest.clone().ok_or(Error::CorruptSpool)?;
         let reservation = entry.reservation_id.clone().ok_or(Error::CorruptSpool)?;
-        let plan = transport.negotiate(&reservation, &manifest)?;
+        let plan = match entry.upload_plan.clone() {
+            Some(plan) => plan,
+            None => transport.negotiate(&reservation, &manifest)?,
+        };
         validate_plan(&plan, &manifest)?;
-        if let Some(saved) = &entry.upload_plan {
-            if saved != &plan {
-                return Err(Error::PlanChanged);
-            }
-        } else {
+        if entry.upload_plan.is_none() {
             entry.upload_plan = Some(plan.clone());
             self.save(&directory, &entry)?;
         }
@@ -340,7 +412,7 @@ impl Spool {
             let status = transport.status(&reservation, &manifest, &plan)?;
             let confirmed = self.save_status(&directory, &mut entry, status)?;
             if !confirmed.contains(&planned.key) {
-                return Err(Error::InvalidServerStatus);
+                return Err(Error::Transport(crate::TransportError::Offline));
             }
             return step_result(entry, Some(planned.key.clone()));
         }
@@ -368,11 +440,25 @@ impl Spool {
         let plan = entry.upload_plan.as_ref().ok_or(Error::CorruptSpool)?;
         let confirmed = validate_status(&status, manifest, plan)?;
         validate_status_progress(entry.server_status.as_ref(), &status)?;
-        if status.integrity_accepted {
-            entry.state = CaptureState::Accepted;
+        let state = if status.integrity_accepted {
+            CaptureState::Accepted
+        } else if entry.state == CaptureState::AwaitingIntegrity
+            && plan.chunks.iter().any(|chunk| {
+                chunk.disposition == ChunkDisposition::Upload && !confirmed.contains(&chunk.key)
+            })
+        {
+            // Expired storage can lose provisional parts. Refill them from the
+            // same saved bytes, then resubmit the exact finalization request.
+            entry.completion_submitted = false;
+            CaptureState::Queued
+        } else {
+            entry.state
+        };
+        if entry.state != state || entry.server_status.as_ref() != Some(&status) {
+            entry.state = state;
+            entry.server_status = Some(status);
+            self.save(directory, entry)?;
         }
-        entry.server_status = Some(status);
-        self.save(directory, entry)?;
         if entry.state == CaptureState::Accepted {
             self.release_accepted_bytes(&entry.identity.capture_id)?;
         }
@@ -666,6 +752,12 @@ fn capture_claude(
     let mut streams = Vec::new();
     let mut scanner =
         NativeMetadata::new(&source.native_session_id, source.native_agent_id.as_deref());
+    let mut project_scanner = candidate.project_selection.as_ref().map(|_| {
+        crate::project::ClaudeProjectScan::new(
+            &source.native_session_id,
+            source.native_agent_id.as_deref(),
+        )
+    });
     let mut companion_bytes = Vec::new();
     let mut buffer = [0u8; 64 * 1024];
     let stream_count = files.len() + 1;
@@ -687,6 +779,9 @@ fn capture_claude(
             stream.write(bytes)?;
             if index == 0 {
                 scanner.feed(bytes);
+                if let Some(scan) = &mut project_scanner {
+                    scan.feed(bytes)?;
+                }
             } else {
                 companion_bytes.extend_from_slice(bytes);
             }
@@ -704,6 +799,9 @@ fn capture_claude(
         }
     }
     scanner.finish();
+    if let (Some(scan), Some(selection)) = (project_scanner, &candidate.project_selection) {
+        scan.validate_complete(selection)?;
+    }
     if scanner.owned_records == 0 && scanner.has_inherited_records {
         return Err(Error::InvalidSource);
     }
@@ -725,12 +823,19 @@ fn capture_opencode(
     let (id, role, schema) = stream_spec(CaptureSourceKind::OpenCodeSqliteV2, 0, 2);
     let maximum_compressed = limits.source_bytes + limits.source_bytes / 100 + 1024;
     let mut stream = ChunkStream::new(directory, id, maximum_compressed);
-    let exported = crate::opencode::export(source, limits, |bytes| {
+    let emit = |bytes: &[u8]| {
         if bytes.len() as u64 > limits.source_bytes.saturating_sub(stream.bytes) {
             return Err(Error::Limit);
         }
         stream.write(bytes)
-    })?;
+    };
+    let exported = match &candidate.project_selection {
+        Some(selection) => crate::opencode::export_in_project(source, limits, selection, emit)?,
+        None => crate::opencode::export(source, limits, emit)?,
+    };
+    if let Some(selection) = &candidate.project_selection {
+        selection.verify_directories()?;
+    }
     let stream = stream.finish(role, schema)?;
     let relationship = if let Some(parent) = exported.fork_session_id {
         if parent == source.native_session_id() {
