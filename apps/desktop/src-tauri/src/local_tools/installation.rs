@@ -14,7 +14,7 @@ use crate::cli_install::CliRuntime;
 use super::{DEBUG_IDENTIFIER, Reason};
 
 const OWNER: &str = "antiburn-debug-local-tools-v1";
-const SKILL: &str = include_str!("../../../../cli/skills/antiburn/SKILL.md");
+pub(super) const SKILL: &str = include_str!("../../../../cli/skills/antiburn/SKILL.md");
 const COMMAND: &str = "antiburn checks <session_id>";
 
 type Result<T> = std::result::Result<T, Reason>;
@@ -27,14 +27,14 @@ pub(super) struct Installation {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FileReceipt {
-    active: Option<Vec<u8>>,
-    pending: Option<Vec<u8>>,
+pub(super) struct FileReceipt {
+    pub(super) active: Option<Vec<u8>>,
+    pub(super) pending: Option<Vec<u8>>,
 }
 
 impl FileReceipt {
     /// Keep installed write-ahead bytes authorized through an interrupted upgrade.
-    fn prepare_replacement(&mut self, current: Option<&[u8]>, proposed: Vec<u8>) {
+    pub(super) fn prepare_replacement(&mut self, current: Option<&[u8]>, proposed: Vec<u8>) {
         if current.is_some() && current == self.pending.as_deref() {
             self.active = current.map(<[u8]>::to_vec);
         }
@@ -263,7 +263,7 @@ fn profile_environment(
     Ok(env)
 }
 
-fn check_owned(current: Option<&[u8]>, receipt: &FileReceipt) -> Result<()> {
+pub(super) fn check_owned(current: Option<&[u8]>, receipt: &FileReceipt) -> Result<()> {
     if current == receipt.active.as_deref()
         || receipt
             .pending
@@ -276,7 +276,7 @@ fn check_owned(current: Option<&[u8]>, receipt: &FileReceipt) -> Result<()> {
     }
 }
 
-fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
+pub(super) fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     let parent = path.parent().ok_or(Reason::SetupUnavailable)?;
     match fs::symlink_metadata(parent) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -292,7 +292,7 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-fn ensure_directory(path: &Path) -> Result<()> {
+pub(super) fn ensure_directory(path: &Path) -> Result<()> {
     if present(path)? {
         checked_directory(path)
     } else {
@@ -302,12 +302,12 @@ fn ensure_directory(path: &Path) -> Result<()> {
     }
 }
 
-fn checked_directory(path: &Path) -> Result<()> {
+pub(super) fn checked_directory(path: &Path) -> Result<()> {
     transaction::checked_directory(path).map_err(|_| Reason::ProfileUnavailable)?;
     antiburn_cli_runtime::validate_directory_ancestors(path).map_err(|_| Reason::ProfileUnavailable)
 }
 
-fn present(path: &Path) -> Result<bool> {
+pub(super) fn present(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -315,7 +315,11 @@ fn present(path: &Path) -> Result<bool> {
     }
 }
 
-fn save(path: &Path, receipt: &Receipt, previous: &mut Option<Vec<u8>>) -> Result<()> {
+pub(super) fn save(
+    path: &Path,
+    receipt: &impl Serialize,
+    previous: &mut Option<Vec<u8>>,
+) -> Result<()> {
     let bytes = serde_json::to_vec(receipt).map_err(|_| Reason::SetupUnavailable)?;
     if previous.as_deref() != Some(bytes.as_slice()) {
         publish(path, previous.as_deref(), &bytes)?;
@@ -325,7 +329,7 @@ fn save(path: &Path, receipt: &Receipt, previous: &mut Option<Vec<u8>>) -> Resul
 }
 
 /// Recheck directory and existing-file policy immediately before atomic publication.
-fn publish(path: &Path, expected: Option<&[u8]>, proposed: &[u8]) -> Result<()> {
+pub(super) fn publish(path: &Path, expected: Option<&[u8]>, proposed: &[u8]) -> Result<()> {
     checked_directory(path.parent().ok_or(Reason::SetupUnavailable)?)?;
     if present(path)? {
         antiburn_cli_runtime::validate_owned_file(path).map_err(|_| Reason::OwnedFileChanged)?;

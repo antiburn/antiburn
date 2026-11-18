@@ -151,6 +151,25 @@ ancestor ACLs, including the usual home-directory deny-delete entry, remain
 unchanged. Unrelated mutation grants block setup; it never fixes permissions or
 removes an ACL.
 
+### Claude Code skill on macOS
+
+The macOS release app installs the canonical
+[`SKILL.md`](../apps/cli/skills/antiburn/SKILL.md) at
+`~/.claude/skills/antiburn/SKILL.md` on launch. You do not need to open Claude Code
+or run a command. The app creates missing directories for that path but does not
+edit Claude settings or install hooks. It does not install the skill in a custom
+Claude configuration directory.
+
+The app keeps an ownership receipt in its data directory. On upgrade, it
+replaces only the bytes recorded in that receipt. It leaves existing unmanaged
+skills, local edits, removed managed files, and symbolic links untouched. If
+installation cannot finish, resolve any unwanted path conflict and relaunch.
+Do not delete the receipt to force an install.
+
+Installing the file does not prove that Claude Code loaded it. To run checks
+from the canonical skill, Claude Code still needs the standalone `antiburn`
+command on its PATH. Desktop installation does not put the bundled CLI there.
+
 ## Resolver and Settings contract
 
 `cli_install::resolve_cli(&tauri::AppHandle) -> Result<CliRuntime, String>` resolves
@@ -239,8 +258,8 @@ Do not copy private session data or captured machine paths into public docs.
    Windows native dependencies on the actual build hosts.
 3. Install offline with minimal GUI PATH in a disposable nonadmin account.
    Confirm stable native `capabilities --json` works independently of PATH and no
-   terminal export is created. Restart twice:
-   no duplicates, profile changes, vendor installs, unrelated writes or prompts.
+   terminal export is created. Restart twice. Check for duplicate files, changes
+   outside the documented paths, vendor hook installs, and prompts.
 4. Exercise collisions at each destination, missing/broken owned links, changed
    receipts/files, oversized/corrupt payloads, concurrent locks, interrupted
    publication, denied/other-owner/ACL/locked directories, and rollback artifacts.
@@ -252,6 +271,10 @@ Do not copy private session data or captured machine paths into public docs.
    the durable CLI. Record Gatekeeper behavior for both app and internal CLI.
    Confirm no sudo/admin/chown/chmod broadening, Full Disk Access or Accessibility
    request is required by installation. Denials must be actionable and bounded.
+   In the disposable profile, confirm first launch installs the canonical Claude
+   Code skill without opening Claude Code. Upgrade from a build that installed
+   the skill and verify that only receipt-owned bytes change. Repeat with an
+   unmanaged skill, an edited skill, and a symbolic link. Verify they stay intact.
 6. Linux: stage from an AppImage, unmount/remount or replace it, and execute the
    durable CLI. Windows: hold the old executable open while updating; the old
    runtime must continue to resolve, then retry after releasing the lock. Exercise

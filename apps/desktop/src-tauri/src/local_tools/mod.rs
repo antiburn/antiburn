@@ -1,8 +1,10 @@
-//! Debug CLI and skill setup, separate from vendor callback registration.
+//! Desktop skill setup, separate from vendor callback registration.
 //!
 //! See `docs/cli-installation.md` for profile binding and ownership rules.
 
 mod installation;
+#[cfg(target_os = "macos")]
+mod release_skill;
 mod state;
 
 use std::sync::Mutex;
@@ -105,11 +107,13 @@ fn disabled(app: &tauri::AppHandle) -> Option<Reason> {
     }
 }
 
-/// Register state before CLI startup can request debug tool setup.
+/// Register debug tool state and start release skill installation on macOS.
 pub(crate) fn start(app: &tauri::AppHandle) {
     app.manage(Controller {
         state: Mutex::new(state::State::new(Status::initial(disabled(app)))),
     });
+    #[cfg(target_os = "macos")]
+    release_skill::start(app);
 }
 
 struct Running<'a> {
