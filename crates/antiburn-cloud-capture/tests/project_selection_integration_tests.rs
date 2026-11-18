@@ -1,5 +1,7 @@
 #![cfg(all(unix, feature = "cloud"))]
 
+//! Synthetic native-file and SQLite project selection integration tests.
+
 use antiburn_cloud_capture::*;
 use rusqlite::{Connection, params};
 use serde_json::json;
@@ -266,7 +268,7 @@ fn claude_full_scan_finds_late_cwds_with_bounded_memory_and_explicit_byte_limits
     let first = directory(temp.path(), "first");
     let second = directory(temp.path(), "second");
     let mut bytes = record("changing", &first);
-    bytes.push_str(&"{\"opaque\":\"discard this content\"}\n".repeat(PROJECT_RECORD_BYTES / 10));
+    bytes.push_str(&"{\"opaque\":\"discard this content\"}\n".repeat(64 * 1024 / 10));
     bytes.push_str(&record("changing", &second));
     let candidate = claude(&source, "changing", &bytes);
     let evidence = candidate.project_evidence().unwrap();
@@ -276,13 +278,60 @@ fn claude_full_scan_finds_late_cwds_with_bounded_memory_and_explicit_byte_limits
     let expected: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(evidence.source_digest(), Some(expected.as_str()));
     let limits = Limits {
-        source_bytes: PROJECT_RECORD_BYTES as u64,
+        source_bytes: 64 * 1024,
         ..Limits::default()
     };
     assert!(matches!(
         candidate.project_evidence_with_limits(&limits),
         Err(Error::Limit)
     ));
+}
+
+#[test]
+fn large_ignored_tool_results_keep_multiple_owned_cwds_available() {
+    let temp = temporary();
+    let source = directory(temp.path(), "provider");
+    let first = directory(temp.path(), "first");
+    let second = directory(temp.path(), "second");
+    let tool_record = format!(
+        "{}\n",
+        json!({
+            "sessionId": "changing",
+            "cwd": first,
+            "message": {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "content": "synthetic output ".repeat(32 * 1024)
+                }]
+            },
+            "tool": {"cwd": "/synthetic/unapproved-tool-path"}
+        })
+    );
+    assert!(tool_record.len() > 64 * 1024);
+    assert!(tool_record.len() < PROJECT_RECORD_BYTES);
+    let candidate = claude(
+        &source,
+        "changing",
+        format!(
+            "{}{}{}",
+            record("changing", &first),
+            tool_record,
+            record("changing", &second)
+        ),
+    );
+    let evidence = candidate.project_evidence().unwrap();
+    assert!(evidence.scan_complete());
+    assert_eq!(evidence.project_paths(), &[first.clone(), second.clone()]);
+    for folder in [first, second] {
+        assert!(
+            ProjectSelection::new(vec![folder])
+                .unwrap()
+                .admit(&candidate)
+                .unwrap()
+                .is_some()
+        );
+    }
 }
 
 #[test]

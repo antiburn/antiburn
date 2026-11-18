@@ -14,11 +14,14 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// Read buffer and per-record bound for local Claude project evidence.
+/// Per-record bound for local Claude project evidence.
 ///
 /// A full metadata scan streams up to `Limits::source_bytes`, not just this many
-/// total bytes. Oversized records deny complete evidence but never change source.
-pub const PROJECT_RECORD_BYTES: usize = 64 * 1024;
+/// total bytes. The 8 MiB bound permits large recorded tool results while keeping
+/// memory bounded. Reads still use 64 KiB buffers. Larger records deny complete
+/// evidence but never change source.
+pub const PROJECT_RECORD_BYTES: usize = 8 * 1024 * 1024;
+const PROJECT_READ_BYTES: usize = 64 * 1024;
 const MAX_PATH_BYTES: usize = 4096;
 const MAX_SELECTED_FOLDERS: usize = 100;
 const MAX_PROJECT_PATHS: usize = 256;
@@ -291,7 +294,7 @@ fn scan_claude(source: &ClaudeSource, limits: &Limits) -> Result<ProjectEvidence
     let mut scan =
         ClaudeProjectScan::new(&source.native_session_id, source.native_agent_id.as_deref());
     let mut digest = Sha256::new();
-    let mut buffer = [0; PROJECT_RECORD_BYTES];
+    let mut buffer = [0; PROJECT_READ_BYTES];
     let mut remaining = before.len();
     while remaining > 0 {
         if Instant::now() >= deadline {

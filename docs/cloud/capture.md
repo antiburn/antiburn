@@ -72,12 +72,15 @@ Full capture still requires reservation first. The host must separately obtain
 and enforce current account-bound full-content upload consent.
 
 Claude reads through the admitted directory handle and keeps at most one
-`PROJECT_RECORD_BYTES` (64 KiB) record and 256 distinct CWD paths of at most
+`PROJECT_RECORD_BYTES` (8 MiB) record and 256 distinct CWD paths of at most
 4,096 UTF-8 bytes. It streams up to `Limits.source_bytes` (512 MiB by default)
 with a 30-second deadline. `project_evidence_with_limits` permits lower byte
 and schema bounds. An exceeded byte, path-count, or time bound returns `Limit`,
 not a complete-looking partial set. It inspects source-owned top-level `cwd`
 and discards message fields.
+Reads use 64 KiB buffers. Large tool results below the record bound do not hide
+other CWDs or prevent admission. A record above 8 MiB still makes the scan
+incomplete and blocks folder-selected capture; the library does not clip it.
 An owned Claude root needs its exact filename session ID, no child agent ID,
 and no true sidechain marker. A child needs its exact parent session ID and
 filename agent ID. Replayed records cannot supply the current source's CWD.

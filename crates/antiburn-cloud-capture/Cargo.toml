@@ -41,6 +41,14 @@ name = "opencode_capture"
 required-features = ["cloud"]
 
 [[test]]
+name = "project_selection_integration_tests"
+required-features = ["cloud"]
+
+[[test]]
+name = "project_capture_integration_tests"
+required-features = ["cloud"]
+
+[[test]]
 name = "metadata_schema"
 required-features = ["cloud"]
 

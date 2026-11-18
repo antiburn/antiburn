@@ -53,19 +53,29 @@ fn sha(bytes: &[u8]) -> String {
 fn project_admission_preserves_full_session_bytes_and_ignores_tool_paths() {
     let temp = temporary();
     let project = temp.path().join("project");
+    let nested = project.join("nested");
     let source = temp.path().join("provider-storage");
-    fs::create_dir(&project).unwrap();
+    fs::create_dir_all(&nested).unwrap();
     fs::create_dir(&source).unwrap();
-    let native = format!(
+    let mut native = format!(
         "{}\n",
         serde_json::json!({
             "sessionId": "selected",
             "cwd": project,
             "tool": {"path": "/synthetic/outside/secret.txt", "cwd": "/synthetic/outside"},
-            "message": {"text": "Keep all native content.", "thinking": "Synthetic private thinking."},
+            "message": {
+                "text": "Keep all native content.",
+                "thinking": "Synthetic private thinking.",
+                "content": [{"type": "tool_result", "content": "synthetic output ".repeat(32 * 1024)}]
+            },
             "unknown": [1, 2, 3]
         })
     );
+    native.push_str(&format!(
+        "{}\n",
+        serde_json::json!({"sessionId": "selected", "cwd": nested})
+    ));
+    assert!(native.len() > 64 * 1024);
     fs::write(source.join("selected.jsonl"), &native).unwrap();
     let candidate = reopen_claude(&source, "selected", None, &Limits::default()).unwrap();
     let admitted = ProjectSelection::new(vec![project])
@@ -73,6 +83,7 @@ fn project_admission_preserves_full_session_bytes_and_ignores_tool_paths() {
         .admit(&candidate)
         .unwrap()
         .unwrap();
+    assert_eq!(admitted.admitted_project_paths().len(), 2);
     let mut spool = spool(&temp);
     let mut transport = FakeTransport::default();
     let entry = spool
@@ -103,7 +114,7 @@ fn project_admission_captures_full_session_when_owned_cwd_changes() {
         "{}\n",
         serde_json::json!({"sessionId": "selected", "cwd": project})
     );
-    native.push_str(&"{\"noise\":true}\n".repeat(PROJECT_RECORD_BYTES / 10));
+    native.push_str(&"{\"noise\":true}\n".repeat(64 * 1024 / 10));
     native.push_str(&format!(
         "{}\n",
         serde_json::json!({"sessionId": "selected", "cwd": outside})
