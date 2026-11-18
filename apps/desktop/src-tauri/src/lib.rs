@@ -84,6 +84,7 @@ mod cloud_dev;
 pub mod jev_cloudflare;
 pub mod jev_ollama;
 mod launch_intent;
+mod local_tools;
 mod main_window;
 #[cfg(feature = "memory-probe")]
 mod memory_probe;
@@ -398,11 +399,14 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        local_tools::start(app.handle());
         cli_install::start(app.handle());
         agent_integrations::desktop::start(app.handle(), |app, validation| {
             let runtime = match validation {
                 agent_integrations::desktop::CliValidation::Fresh => cli_install::resolve_cli(app),
-                agent_integrations::desktop::CliValidation::Cached => cli_install::inspect_cli(app),
+                agent_integrations::desktop::CliValidation::Cached => {
+                    cli_install::inspect_cli(app).map_err(|error| error.to_string())
+                }
             };
             runtime.map(|runtime| agent_integrations::lifecycle::CliConnection {
                 executable: runtime.executable,
@@ -949,7 +953,7 @@ mod tests {
                 .iter()
                 .filter(|name| name.starts_with("cloud_"))
                 .count(),
-            if cfg!(feature = "cloud") { 12 } else { 0 }
+            if cfg!(feature = "cloud") { 19 } else { 0 }
         );
     }
 

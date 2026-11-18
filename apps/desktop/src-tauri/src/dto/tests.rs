@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn app_info_names_the_optional_display_home_without_changing_absolute_paths() {
+    let mut info = AppInfo {
+        app_version: "0.0.0".into(),
+        cloud_enabled: true,
+        debug_build: true,
+        arch: "aarch64".into(),
+        pricing_catalog_version: "synthetic".into(),
+        schema_version: 1,
+        data_dir: "/Example/app-data".into(),
+        home_directory: Some("/Example/home".into()),
+        indexed_sessions: 0,
+        database_bytes: 0,
+        updates_supported: false,
+        analytics_supported: false,
+        analytics_environment_disabled: false,
+        analytics_operator: None,
+    };
+    let wire = serde_json::to_value(&info).unwrap();
+    assert_eq!(wire["homeDirectory"], "/Example/home");
+    assert_eq!(wire["dataDir"], "/Example/app-data");
+    assert!(wire.get("home_directory").is_none());
+    info.home_directory = None;
+    assert_eq!(
+        serde_json::to_value(info).unwrap()["homeDirectory"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
 fn opencode_sqlite_dto_names_distinguish_v1_from_true_v2() {
     assert_eq!(
         serde_json::to_value(BurnCheckSourceFormat::from(

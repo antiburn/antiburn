@@ -95,7 +95,9 @@ it.each([true, false])(
     expect(await screen.findByRole("main", { name: "Antiburn Cloud setup" })).toBeVisible()
     if (configured) {
       expect(
-        await screen.findByText("Cloud could not connect. No sessions were uploaded."),
+        await screen.findByText(
+          "Cloud could not connect. Check your connection and try again.",
+        ),
       ).toBeVisible()
       expect(screen.getByRole("button", { name: "Connect in browser" })).toBeEnabled()
     } else {

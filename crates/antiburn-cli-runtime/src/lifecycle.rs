@@ -296,30 +296,72 @@ fn safe_dir(path: &Path, create: bool) -> Result<()> {
 fn check_ancestors(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
         if let Ok(m) = fs::symlink_metadata(ancestor) {
-            #[cfg(windows)]
-            super::windows::check_ancestor(ancestor, &m)?;
-            #[cfg(target_os = "macos")]
-            super::macos::check_ancestor(ancestor)?;
-            ensure!(
-                m.is_dir() && !m.file_type().is_symlink(),
-                "CLI directory ancestor is redirected"
-            );
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                // Root-owned platform ancestors can contain user directories.
-                ensure!(
-                    m.uid() == 0 || m.uid() == unsafe { libc::geteuid() },
-                    "CLI ancestor belongs to another user"
-                );
-                ensure!(
-                    m.mode() & 0o022 == 0 || (m.uid() == 0 && m.mode() & 0o1000 != 0),
-                    "CLI ancestor permits unrelated writes"
-                );
-            }
+            check_directory_ancestor(ancestor, &m)?;
         }
     }
     Ok(())
+}
+
+fn check_directory_ancestor(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = path;
+    #[cfg(windows)]
+    super::windows::check_ancestor(path, metadata)?;
+    #[cfg(target_os = "macos")]
+    super::macos::check_ancestor(path)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "CLI directory ancestor is redirected"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            directory_owner_is_safe(metadata.uid(), metadata.mode(), unsafe { libc::geteuid() }),
+            "CLI ancestor permits unrelated ownership or writes"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[path = "tests/path_policy_tests.rs"]
+mod path_policy_tests;
+
+#[cfg(unix)]
+fn directory_owner_is_safe(owner: u32, mode: u32, user: u32) -> bool {
+    (owner == 0 || owner == user) && (mode & 0o022 == 0 || (owner == 0 && mode & 0o1000 != 0))
+}
+
+/// Validate an existing directory and every ancestor without changing permissions.
+/// Reject missing, unreadable, or redirected paths and unrelated mutation rights.
+/// Root-owned OS directories and root-owned sticky directories remain permitted.
+/// On macOS, deny-only and read-only ancestor ACLs do not block validation.
+pub fn validate_directory_ancestors(path: &Path) -> Result<()> {
+    ensure!(
+        path.is_absolute()
+            && !path
+                .components()
+                .any(|part| part == std::path::Component::ParentDir),
+        "Managed paths must be absolute without parent traversal"
+    );
+    for ancestor in path.ancestors() {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        check_directory_ancestor(ancestor, &metadata)?;
+    }
+    Ok(())
+}
+
+/// Validate a managed regular file's ownership and mutation policy, without writes.
+/// Callers must also validate its parent with `validate_directory_ancestors`.
+/// Extended file ACLs are refused; existing permissions and ACLs remain unchanged.
+pub fn validate_owned_file(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "Managed file is redirected or is not a regular file"
+    );
+    check_owner(path, &metadata)
 }
 
 fn atomic_bytes(

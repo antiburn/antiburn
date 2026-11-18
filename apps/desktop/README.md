@@ -81,17 +81,17 @@ appear after completion unless an existing preference disables them.
 
 The introduction uses isolated example data to demonstrate Sessions, provider
 limits, the HUD, notifications, and Checks. Ordinary builds finish after Checks.
-Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
-Public builds keep Cloud disabled until launch. Development requires the explicit,
+Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Standard public builds keep Cloud disabled. Development requires the explicit,
 non-default Rust feature `cloud`.
 The desktop `dev` and `dev:bundle` launchers select it for debug development.
 Environment values cannot enable the feature. Builds without `cloud` register no
 Cloud commands, capabilities, account controls, callback scheme, or Cloud Dev menu.
 When both build-time origins are absent, debug Cloud builds use
 `http://localhost:3000` for both issuer and resource. Standard release Cloud builds
-require explicit HTTPS origins. The native build capability enables the existing Cloud
+require explicit HTTPS origins. The desktop build capability enables the existing Cloud
 teaching and setup screens; runtime service availability does not hide them.
-Setup can finish locally without content consent or saving a source request.
+Setup can finish locally without choosing projects or enabling uploads.
 See the
 [Cloud desktop contract](../../docs/cloud/desktop-contract.md).
 
@@ -113,19 +113,52 @@ WKWebView without enabling same-origin access or network connections.
 
 Manual Cloud builds place the Cloud account controls in Settings → Sessions,
 above Repositories. Connecting remains available after the introduction.
-Source choices and the legacy Upload sessions preference do not authorize
-capture. Full native content needs a separate confirmation for the selected
-account, destination, and explicitly selected sources. Choose native Claude
-`projects/<project>` directories or exact OpenCode V2 database files, not
-repository paths or inferred working directories. Settings keeps source choices separate for each account and personal
-destination. Signing out revokes only the current desktop connection; it does
-not sign out the browser or delete saved captures. OpenCode consent includes
-proved session-owned in-store blobs, but excludes external files and URL downloads.
-On supported Unix platforms, **Save capture request** keeps a durable selection
-with stable local IDs and reports **Upload unavailable**. It lists source names,
-not transcript content. Native capture reservation and upload transport remain
-unavailable, so no native content is captured or uploaded. There is no automatic
-future upload promise. Windows has no native capture fallback.
+On supported Unix platforms, **Start syncing** enables background capture and
+uploads only after explicit ongoing full-content consent for the verified account,
+personal destination, service, and selected project paths. Sign-in, a checked
+project row, source access, or the legacy **Upload sessions** preference cannot
+substitute for that consent. These development builds do not authorize production
+use. Windows has no desktop capture fallback.
+
+The project list uses bounded cached metadata from all discovered agents.
+Current local Git metadata can group a repository and its worktrees for display.
+Suggestions do not imply upload support: desktop uploads remain limited to
+Claude JSONL and supported OpenCode V2 SQLite sources. New choices default to
+selected in memory, without saving consent or enabling uploads. Saved opt-outs
+and explicit choices take precedence. **Start syncing** approves only the loaded
+selected groups and their exact current path members. New worktrees outside the
+approved folder trees need confirmation, even when Git groups them under the same
+project.
+
+Sessions match when any proved source-owned project or working directory (CWD)
+falls inside an approved folder or its descendants. CWD changes are valid.
+Tool/file-touch paths, provider storage directories, and parent/fork links do not
+add permission.
+A match uploads the full session, not a redacted subset; content from other paths
+or CWDs in that session remains included. Full content can contain private
+thinking, secrets, or file text. OpenCode V2 includes proved session-owned in-store
+blobs. External attachment files and URL downloads remain excluded.
+
+Project lookup can read bounded local transcript bytes without uploading them.
+Unknown or incomplete CWD evidence cannot authorize capture; a Claude record
+above 8 MiB makes the scan incomplete. The desktop source profile is capped at
+128 MiB per transcript or expanded OpenCode native-row stream, with lower limits
+when required by current service capabilities. Oversized source is not clipped.
+Settings provides explicit provider-source access when a supported source is missing.
+
+**Start syncing** does not wait for capture or upload to finish. **Done** remains
+available, and closing onboarding does not pause the saved background policy.
+In Settings → Sessions, **Upload sessions** pauses or resumes confirmed sync;
+**Retry saved uploads** retries saved work under its original bindings. Pausing,
+signing out, or changing accounts does not delete or retarget saved capture bytes.
+Automatic spool release requires verified integrity acceptance, not a successful
+transfer or progress count. Interrupted captures need recovery rather than
+automatic recapture.
+
+Legacy **Save capture request** commands remain discovery-only and report
+**Upload unavailable**. They do not grant ongoing upload consent or start the
+background sync policy. Local sessions and model-based Checks keep their separate
+controls.
 
 ## Layout
 
@@ -493,11 +526,12 @@ as its default. Each window owns one surface until the shell releases it.
 
 ## CLI runtime
 
-For source development with a prepared host CLI payload, use
-`pnpm --filter @antiburn/desktop dev:cli`; use `dev:bundle:cli` for a debug bundle.
-These commands build the CLI and add its resource mapping. Open Settings → CLI →
-Technical details → Repair to stage it. Ordinary `dev` and `dev:bundle` do not
-prepare the payload and remain unchanged.
+The `dev` and `dev:bundle` commands build and resource-map the host CLI payload.
+Their `:cli` aliases do the same work. The debug app stages it automatically.
+On macOS, it also installs the profile-bound `antiburn-debug` skill into the
+selected existing OpenCode profile. This is separate from vendor callback setup.
+Settings → CLI → Technical details → Repair retries setup without changing PATH,
+the release profile, or unrelated skills.
 
 Distribution builds package and automatically stage a durable per-user `antiburn-cli`.
 Settings → CLI reports runtime status and offers Test, Repair, and a copyable
@@ -695,9 +729,9 @@ validator together.
 
 ### Cloud Dev previews
 
-Debug builds also include **Reset onboarding** in the menu-bar icon's context menu. It restarts the full native onboarding flow at Welcome, replacing an open onboarding window. Sessions, preferences, and Cloud account state are preserved.
+Debug builds also include **Reset onboarding** in the menu-bar icon's context menu. It restarts the full desktop onboarding flow at Welcome, replacing an open onboarding window. Sessions, preferences, and Cloud account state are preserved.
 
-Builds with the explicit `cloud` feature and debug assertions include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. The standard desktop dev launchers select this feature. Builds without `cloud` or debug assertions omit the menu. **Full Walkthrough** opens a separate native window with an example account and folders. Connecting simulates a callback after a short wait. The preview does not connect to a service or upload native content. **Done** closes it. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
+Builds with the explicit `cloud` feature and debug assertions include **Cloud Dev** in the menu-bar icon's context menu and macOS **View → Cloud Dev**. The standard desktop dev launchers select this feature. Builds without `cloud` or debug assertions omit the menu. **Full Walkthrough** opens a separate preview window with an example account and folders. Connecting simulates a callback after a short wait. The preview does not connect to a service or upload native content. **Done** closes it. Back from sign-in restarts the walkthrough. Verified identity advances to folders automatically; the direct Signed In preview holds that screen for inspection.
 
 The other entries open auth recovery, folder and agent-readiness states directly. Dedicated sync progress and recovery screens are not part of onboarding. Completion entries show local completion with each agent-readiness state. Reopening any menu entry resets that preview.
 

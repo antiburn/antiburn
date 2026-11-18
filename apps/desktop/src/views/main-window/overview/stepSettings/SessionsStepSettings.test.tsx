@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { emptyCloudSnapshot } from "../../../../lib/cloud"
 import { DEFAULT_SETTINGS } from "../../../../lib/ipc"
 import { SessionsStepSettings } from "./SessionsStepSettings"
+import { localToolsStatus } from "../../../../onboarding/__tests__/cloudProjectFixtures"
 
 /**
  * The Sessions step owns the activity window, monitoring, scanning, folders,
@@ -58,6 +59,8 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
     switch (command) {
       case "cloud_status":
         return Promise.resolve(emptyCloudSnapshot)
+      case "get_local_tools_status":
+        return Promise.resolve(localToolsStatus())
       case "get_settings":
         return Promise.resolve(DEFAULT_SETTINGS)
       case "get_scan_status":
@@ -444,8 +447,11 @@ describe("SessionsStepSettings Cloud preference", () => {
     expect(toggle).toHaveAttribute("aria-disabled", "true")
     expect(toggle).not.toBeChecked()
     expect(
-      screen.getByText("Your sessions stay on this device. No sessions are uploaded."),
-    ).toBeVisible()
+      screen.queryByText("Your sessions stay on this device. No sessions are uploaded."),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText("Available when Antiburn Cloud launches."),
+    ).not.toBeInTheDocument()
     expect(screen.queryByText(/Saved preference only/)).not.toBeInTheDocument()
     fireEvent.focus(toggle)
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
@@ -470,69 +476,8 @@ describe("SessionsStepSettings Cloud preference", () => {
     const signIn = await screen.findByRole("button", { name: "Sign in" })
     expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
     expect(screen.getByText("Not signed in")).toBeVisible()
-    expect(screen.getByText("You’re signed out on this device.")).toBeVisible()
+    expect(screen.queryByText("You’re signed out on this device.")).not.toBeInTheDocument()
     fireEvent.click(signIn)
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_begin"))
-  })
-
-  it("saves local intent and keeps the existing eligibility controls together", async () => {
-    mockCommands({
-      app_info: { ...INFO, cloudEnabled: true },
-      cloud_status: { ...emptyCloudSnapshot, authEnabled: true },
-      set_settings: (args: { settings: unknown }) => args.settings,
-    })
-    const { container } = render(<SessionsStepSettings />)
-    await waitFor(() =>
-      expect(screen.getByRole("switch", { name: "Upload sessions" })).not.toHaveAttribute(
-        "aria-disabled",
-      ),
-    )
-    const toggle = screen.getByRole("switch", { name: "Upload sessions" })
-    await waitFor(() => expect(toggle).toBeEnabled())
-    expect(toggle).not.toBeChecked()
-    expect(
-      screen.getByText(
-        "Saved preference only. Folder choices and upload consent will be reviewed separately.",
-      ),
-    ).toBeVisible()
-    expect(screen.getByText(/Uploads are not available in this build/)).toBeVisible()
-    const controls = [...container.querySelectorAll("[data-settings-control]")].map((node) =>
-      node.getAttribute("data-settings-control"),
-    )
-    expect(controls.indexOf("cloudUpload")).toBeLessThan(controls.indexOf("sourceRepositories"))
-    expect(controls.indexOf("sourceRepositories")).toBeLessThan(
-      controls.indexOf("sourceNonRepoFolders"),
-    )
-    expect(controls.indexOf("sourceNonRepoFolders")).toBeLessThan(
-      controls.indexOf("sourceFolders"),
-    )
-    expect(controls.indexOf("sourceFolders")).toBeLessThan(controls.indexOf("monitoring"))
-    fireEvent.click(toggle)
-    await waitFor(() =>
-      expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: expect.objectContaining({ cloudUploadEnabled: true }),
-      }),
-    )
-    await waitFor(() => expect(toggle).toBeChecked())
-    expect(invoke.mock.calls.some(([command]) => command === "cloud_start_sync")).toBe(false)
-  })
-
-  it("honors saved Cloud and non-Git preferences", async () => {
-    mockCommands({
-      app_info: { ...INFO, cloudEnabled: true },
-      cloud_status: { ...emptyCloudSnapshot, authEnabled: true },
-      get_settings: {
-        ...DEFAULT_SETTINGS,
-        cloudUploadEnabled: true,
-        includeNonRepoFolders: false,
-      },
-    })
-    render(<SessionsStepSettings />)
-    await waitFor(() =>
-      expect(screen.getByRole("switch", { name: "Upload sessions" })).toBeChecked(),
-    )
-    expect(
-      screen.getByRole("switch", { name: "Include folders without Git" }),
-    ).not.toBeChecked()
   })
 })

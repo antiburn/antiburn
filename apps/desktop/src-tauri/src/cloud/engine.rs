@@ -19,6 +19,10 @@ struct Access {
     session: Session,
 }
 
+#[cfg(all(test, debug_assertions))]
+#[path = "tests/execution_http_integration_tests.rs"]
+mod execution_http_tests;
+
 /// Synchronous grant state machine used only inside admitted blocking work.
 /// The controller serializes every call; filesystem, vault, and short blocking
 /// HTTP operations must not execute on UI or Tokio runtime threads.
@@ -72,7 +76,63 @@ impl Engine {
         self.access
             .as_ref()
             .filter(|access| access.expires_at > (self.clock)())
+            .filter(|access| {
+                self.config.as_ref().is_some_and(|config| {
+                    access.session.resource == config.resource
+                        && access.session.iss == config.issuer
+                })
+            })
             .map(|access| &access.session)
+    }
+
+    /// Return the configured canonical API origin, not access authority.
+    pub(super) fn resource_origin(&self) -> Option<&str> {
+        self.config.as_ref().map(|config| config.resource.as_str())
+    }
+
+    /// Send one bounded capture API request without returning access proof.
+    /// Reject a changed service before credentials are used. Auth rotation uses
+    /// only the account fence; content pause blocks dispatch without revocation.
+    pub(super) fn capture_request(
+        &mut self,
+        identity: &antiburn_cloud_capture::CaptureIdentity,
+        resource_origin: &str,
+        route: super::upload::Route,
+        body: &impl serde::Serialize,
+        account_current: &dyn Fn() -> bool,
+        current: &dyn Fn() -> bool,
+    ) -> Result<super::upload::ApiResponse, antiburn_cloud_capture::TransportError> {
+        use antiburn_cloud_capture::TransportError;
+        if !account_current() || !current() || self.resource_origin() != Some(resource_origin) {
+            return Err(TransportError::Unauthorized);
+        }
+        self.refresh((self.clock)(), account_current)
+            .map_err(|failure| {
+                self.status = failure.into();
+                match failure {
+                    Failure::Offline | Failure::OfflineBeforeSend => TransportError::Offline,
+                    _ => TransportError::Unauthorized,
+                }
+            })?;
+        let config = self.config.as_ref().ok_or(TransportError::Unauthorized)?;
+        let access = self.access.as_ref().ok_or(TransportError::Unauthorized)?;
+        if !current()
+            || access.session.user.id != identity.account_id
+            || access.session.workspace.id != identity.destination_id
+            || access.expires_at <= (self.clock)()
+            || access.session.validate(config, (self.clock)()).is_err()
+        {
+            return Err(TransportError::Unauthorized);
+        }
+        let response = super::upload::api_request(config, &access.token, identity, route, body)?;
+        if matches!(response.status, 401 | 403) {
+            self.access = None;
+            self.status = AuthStatus::ReauthRequired;
+        }
+        if !current() || self.session().is_none() {
+            return Err(TransportError::Unauthorized);
+        }
+        Ok(response)
     }
 
     /// Reject reordered cleanup after a newer account operation owns the generation.
@@ -462,7 +522,7 @@ impl Engine {
         if self.access.as_ref().is_some_and(|access| {
             access.epoch == record.epoch
                 && access.expires_at > checked_at.saturating_add(30)
-                && access.session.expires_at > checked_at
+                && access.session.validate(&config, checked_at).is_ok()
                 && !access.token.is_empty()
         }) {
             self.status = AuthStatus::SignedIn;

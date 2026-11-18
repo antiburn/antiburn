@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-sync-status"
+description = "Enables the cloud_sync_status command without any pre-configured scope."
+commands.allow = ["cloud_sync_status"]
+
+[[permission]]
+identifier = "deny-cloud-sync-status"
+description = "Denies the cloud_sync_status command without any pre-configured scope."
+commands.deny = ["cloud_sync_status"]

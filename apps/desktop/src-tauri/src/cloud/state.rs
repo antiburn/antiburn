@@ -78,7 +78,7 @@ pub struct Record {
     pub cleanup: Cleanup,
 }
 
-/// Bind state files and lifetime process ownership to one native state directory.
+/// Bind state files and lifetime process ownership to one desktop state directory.
 /// The owner lock is not in-process serialization; the controller supplies that.
 pub struct StateStore {
     directory: PathBuf,

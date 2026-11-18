@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-retry-sync"
+description = "Enables the cloud_retry_sync command without any pre-configured scope."
+commands.allow = ["cloud_retry_sync"]
+
+[[permission]]
+identifier = "deny-cloud-retry-sync"
+description = "Denies the cloud_retry_sync command without any pre-configured scope."
+commands.deny = ["cloud_retry_sync"]

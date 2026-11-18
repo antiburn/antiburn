@@ -3031,6 +3031,9 @@ pub struct AppInfo {
     /// Absolute path of the app data directory, so a reader can find their own
     /// data without being told where it "should" be.
     pub data_dir: String,
+    /// Current user's home for display-only path shortening. Unknown stays null;
+    /// callers must keep absolute paths for reads and upload approval.
+    pub home_directory: Option<String>,
     /// Sessions currently in the local index.
     pub indexed_sessions: u32,
     /// Size of the local database on disk, in bytes. Zero when it has not been

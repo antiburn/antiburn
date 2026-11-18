@@ -1,4 +1,4 @@
-mod probe;
+pub(crate) mod probe;
 
 use crate::analytics::{self, event::CliOperation};
 pub use antiburn_cli_runtime::{CliInstallState, CliRuntime};
@@ -38,18 +38,34 @@ pub fn resolve_cli(app: &tauri::AppHandle) -> Result<CliRuntime, String> {
     installation(app)?.resolve().map_err(|e| e.to_string())
 }
 
-pub fn inspect_cli(app: &tauri::AppHandle) -> Result<CliRuntime, String> {
+/// Inspect cached receipt-bound bytes while retaining typed lock-contention errors.
+pub fn inspect_cli(app: &tauri::AppHandle) -> anyhow::Result<CliRuntime> {
     let cache = app.state::<Mutex<RuntimeDigestCache>>();
-    let mut cache = cache.lock().map_err(|e| e.to_string())?;
-    installation(app)?
+    let mut cache = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("CLI cache is unavailable"))?;
+    installation(app)
+        .map_err(anyhow::Error::msg)?
         .resolve_cached(&mut cache)
+}
+
+/// Keep this lock alive while probing or binding the returned runtime.
+/// This prevents another managed installer from replacing the tested executable.
+pub(crate) fn runtime_for_test(
+    app: &tauri::AppHandle,
+) -> Result<(std::fs::File, CliRuntime), String> {
+    installation(app)?
+        .runtime_for_test()
         .map_err(|e| e.to_string())
 }
 
 pub fn start(app: &tauri::AppHandle) {
     app.manage(Mutex::new(RuntimeDigestCache::default()));
-    // Source and debug builds stage the runtime only through explicit repair.
-    if !cfg!(feature = "distribution") || cfg!(debug_assertions) {
+    if !automatic_installation(
+        cfg!(feature = "distribution"),
+        cfg!(debug_assertions),
+        &app.config().identifier,
+    ) {
         return;
     }
     let app = app.clone();
@@ -72,10 +88,18 @@ pub fn start(app: &tauri::AppHandle) {
                     tracing::warn!(event = "cli_installation_unavailable", error = %error);
                 }
                 let _ = app.emit_to("settings", "cli-install:state", state);
+                crate::local_tools::request_setup(&app);
             }
-            Err(error) => tracing::warn!(event = "cli_installation_unavailable", error = %error),
+            Err(error) => {
+                tracing::warn!(event = "cli_installation_unavailable", error = %error);
+                crate::local_tools::request_setup(&app);
+            }
         }
     });
+}
+
+fn automatic_installation(distribution: bool, debug: bool, identifier: &str) -> bool {
+    (distribution && !debug) || (debug && identifier == crate::local_tools::DEBUG_IDENTIFIER)
 }
 
 fn healthy(state: &CliInstallState) -> bool {
@@ -102,13 +126,10 @@ pub async fn get_cli_install_state(app: tauri::AppHandle) -> Result<CliInstallSt
 pub async fn test_cli_installation(app: tauri::AppHandle) -> Result<CliRuntime, String> {
     let worker_app = app.clone();
     let result = async {
-        let (_lock, runtime) = tauri::async_runtime::spawn_blocking(move || {
-            installation(&worker_app)?
-                .runtime_for_test()
-                .map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| e.to_string())??;
+        let (_lock, runtime) =
+            tauri::async_runtime::spawn_blocking(move || runtime_for_test(&worker_app))
+                .await
+                .map_err(|e| e.to_string())??;
         probe::test(&runtime).await.map_err(|e| e.to_string())?;
         Ok(runtime)
     }
@@ -128,6 +149,7 @@ pub async fn repair_cli_installation(app: tauri::AppHandle) -> Result<CliInstall
         let diagnostic = i.reconcile().err().map(|e| e.to_string());
         let state = i.state(diagnostic);
         let _ = worker_app.emit_to("settings", "cli-install:state", &state);
+        crate::local_tools::request_setup(&worker_app);
         Ok(state)
     })
     .await
@@ -141,6 +163,22 @@ pub async fn repair_cli_installation(app: tauri::AppHandle) -> Result<CliInstall
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_setup_keeps_debug_and_release_profiles_separate() {
+        assert!(automatic_installation(
+            false,
+            true,
+            crate::local_tools::DEBUG_IDENTIFIER
+        ));
+        assert!(automatic_installation(true, false, "ai.antiburn.desktop"));
+        assert!(!automatic_installation(false, true, "ai.antiburn.desktop"));
+        assert!(!automatic_installation(
+            false,
+            false,
+            crate::local_tools::DEBUG_IDENTIFIER
+        ));
+    }
 
     #[test]
     fn completion_records_one_outcome_and_preserves_the_result() {

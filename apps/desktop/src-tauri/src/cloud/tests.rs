@@ -93,7 +93,7 @@ fn cloud_snapshot_fences_account_changes_after_blocking_store_reads() {
     assert!(snapshot.contains("engine.status == AuthStatus::SignedIn && session.is_none()"));
 }
 
-/// Synthetic secure-store substitute shared by native engine and HTTP boundary tests.
+/// Synthetic secure-store substitute shared by desktop engine and HTTP boundary tests.
 #[derive(Default)]
 pub(super) struct MemoryVault {
     value: Mutex<Option<Credential>>,

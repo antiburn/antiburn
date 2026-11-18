@@ -1,0 +1,13 @@
+diff --git a/dist/node/chunks/node.js b/dist/node/chunks/node.js
+index 797794fd975e746a691212c9fe265fca28167242..2b69bd192cf2e7bb5599e9ae84c9a588c2625aec 100644
+--- a/dist/node/chunks/node.js
++++ b/dist/node/chunks/node.js
+@@ -33561,7 +33561,7 @@ function formatError(payload, environment, sourceMapCache, bundledDevOutDir) {
+ 			const resolvedPath = normalizePath(path.resolve(environment.config.root, id.slice(1)));
+ 			if (moduleGraph.getModuleById(resolvedPath)) return resolvedPath;
+ 			const files = moduleGraph.getModulesByFile(resolvedPath);
+-			if (files && files.size) return files.values().next().value.id;
++			if (files && files.size) return files.values().next().value?.id ?? id;
+ 			return id;
+ 		},
+ 		getSourceMap(id) {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-project-groups"
+description = "Enables the cloud_project_groups command without any pre-configured scope."
+commands.allow = ["cloud_project_groups"]
+
+[[permission]]
+identifier = "deny-cloud-project-groups"
+description = "Denies the cloud_project_groups command without any pre-configured scope."
+commands.deny = ["cloud_project_groups"]

@@ -150,7 +150,7 @@
   accent-color: var(--color-brand);
 }
 .cloud-screen-complete {
-  grid-template-rows: minmax(360px, 1fr) minmax(180px, auto) minmax(80px, auto);
+  grid-template-rows: minmax(0, 1fr) minmax(180px, auto) minmax(80px, auto);
 }
 .cloud-ready-stage {
   padding: 24px 40px;

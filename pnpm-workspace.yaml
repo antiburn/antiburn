@@ -25,3 +25,6 @@ allowBuilds:
 
 # No other dependency can run an install script.
 onlyBuiltDependencies: []
+
+patchedDependencies:
+  vite@8.3.5: patches/vite@8.3.5.patch

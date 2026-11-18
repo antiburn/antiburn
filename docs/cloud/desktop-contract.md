@@ -1,7 +1,8 @@
 # Cloud desktop contract
 
-Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
-Public builds keep Cloud disabled until launch.
+Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Standard public builds keep Cloud disabled. This contract covers opt-in
+Cloud-enabled development builds, not production availability.
 
 Development builds use a browser-approved desktop connection, not a general
 OAuth or OpenID Connect service. Builds without the `cloud` feature include no Cloud commands,
@@ -21,10 +22,11 @@ a host-supplied `Transport`. These packages contain native source streams and
 capture metadata, not serialized local evidence, cost estimates, or Check results.
 See the [capture contract](capture.md) for source fidelity and transport rules.
 
-The current desktop Cloud path saves consent-bound source requests and lists
-native source identities. It does not execute native content capture or uploads.
-The library's capture and upload APIs do not make those operations available in
-the desktop.
+On supported Unix platforms, the desktop can capture and upload supported native
+sessions after separate, account-bound ongoing content consent. A desktop scheduler
+owns this work independently of the onboarding or Settings renderer. Project
+discovery alone does not start it. Legacy saved-request commands remain
+discovery-only and do not enable ongoing uploads.
 
 Local analysis needs no Cloud account or content consent. Model-based Burn Checks
 use their own configured connection and **Run checks** setting. They can send
@@ -32,7 +34,7 @@ selected inputs when Cloud is disabled; Cloud content consent does not authorize
 these provider requests. See [data and network requests](../../apps/desktop/README.md#data-and-network-requests)
 for the separate controls and input limits.
 
-## Native build gate
+## Desktop build gate
 
 Cloud requires the explicit, non-default Cargo feature `cloud`. Neither an
 environment variable nor the `distribution` feature enables it. The standard
@@ -43,7 +45,7 @@ Settings, source selections, saved requests, auth state, and retry files remain
 separate from the release app. Source selections can be reused within one profile;
 this does not move credentials between service origins.
 
-Native `AppInfo.cloudEnabled` enables the existing Cloud teaching and setup
+Desktop `AppInfo.cloudEnabled` enables the existing Cloud teaching and setup
 screens after Checks. Builds without Cloud finish after Checks, including when an
 older saved introduction points to a Cloud screen. Service configuration,
 offline errors, and unsupported capture platforms do not turn the build feature
@@ -64,7 +66,7 @@ that explicitly enables debug assertions uses the same debug behavior.
 Standard release builds keep Cloud disabled. Manually enabling `cloud` without
 debug assertions requires both HTTPS origins; it adds no implicit configuration.
 Route URLs still include the slash before the path. The resource origin owns
-the four native routes. Use an approved development service only.
+the desktop API routes. Use an approved development service only.
 
 The explicit feature command also works for a debug build:
 
@@ -73,10 +75,10 @@ cd apps/desktop
 pnpm tauri dev --features cloud --config src-tauri/tauri.debug.conf.json
 ```
 
-A manual Cloud build does not permit production use. System-browser and native
-credential-storage acceptance remain separate from synthetic checks. Native
-source requests can be saved, but the build has no capture reservation or upload
-transport.
+A manual Cloud build does not permit production use. System-browser and OS
+credential-storage acceptance remain separate from synthetic checks. Capture and
+upload also require current service capabilities and explicit ongoing content
+consent; a build feature or successful sign-in is not permission.
 
 ## Browser approval
 
@@ -109,13 +111,13 @@ Token responses bind opaque credentials to a grant, user, personal workspace,
 fixed grant deadline, `capture:write`, resource, and issuer. The flat session
 response supplies those same bindings, nullable display name, workspace name,
 device display label, and access deadline. Deadlines use RFC 3339 strings.
-Native validation compares the token and session bindings before saving a
+Desktop validation compares the token and session bindings before saving a
 refresh credential. A changed grant, account, destination, or fixed deadline
 cannot restore the saved connection.
 
-Native requests use the configured API origin:
+Desktop authentication requests use the configured API origin:
 
-| Request                   | Native proof                                                                                                 |
+| Request                   | Desktop proof                                                                                                |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `GET /desktop/authorize`  | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
 | `POST /v1/desktop/token`  | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
@@ -123,12 +125,12 @@ Native requests use the configured API origin:
 | `POST /v1/desktop/logout` | JSON `{refresh_token}`                                                                                       |
 
 Token, session, and logout requests send no cookies or Origin header. Token and
-logout proof does not use a bearer header. Native requests do not follow
+logout proof does not use a bearer header. Desktop requests do not follow
 redirects or retry automatically.
 
 ## Credential and logout safety
 
-Opaque access tokens stay in native memory for at most 15 minutes. Only the OS keyring stores rotating refresh
+Opaque access tokens stay in desktop process memory for at most 15 minutes. Only the OS keyring stores rotating refresh
 tokens. There is no plaintext or database fallback. The connection has a fixed
 one-year deadline. Refresh does not extend that deadline.
 
@@ -173,7 +175,7 @@ Decoded responses retain bounded logout proof even when token bounds or authorit
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
 
-Settings keeps the connection action available after onboarding. Native sign-out
+Settings keeps the connection action available after onboarding. Desktop sign-out
 first flushes a new signed-out generation. Browser cancellation changes only the
 pending browser-attempt generation; it does not cancel an established connection
 or its refresh. Sign-out revokes only this client's current
@@ -184,7 +186,7 @@ deletion without requiring that deleted credential or repeating remote logout.
 A deletion failure remains visible, and the closed marker blocks login
 restoration. Cleanup-only keyring records cannot restore an authenticated session.
 Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
-Status reads can rotate credentials or close access. Native state updates reach
+Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
 when authority changes.
@@ -203,115 +205,267 @@ retarget saved capture bytes.
 
 ## Destination and content consent
 
-Unknown current membership data blocks destination selection. The desktop does
-not infer membership from local settings.
+Only the currently verified account and personal destination can enable sync.
+Unknown membership or an explicit team destination blocks it; the desktop does
+not silently replace a team with personal. Consent also stays bound to the
+configured service origin. Account, destination, or service changes cannot
+retarget saved captures.
 
-The initial connection path supports personal workspaces only. It blocks an
-explicit team request instead of silently replacing it with personal. The general
-destination policy is personal for zero teams, automatic for one team, and
-an explicit account-bound saved team default for several teams. A removed default
-blocks capture until the user chooses again. Neither a new account nor a changed
-destination can reuse a previous content confirmation or retarget a saved
-capture. Changing selected sources clears the content confirmation too. Displayed
-count updates do not change that selection or its confirmation.
+Sign-in, source access, folder toggles, and the legacy local **Upload sessions**
+preference do not grant upload consent. Clicking **Start syncing** confirms
+full-content upload for the current selection. The folder screen's short subtitle
+states the scope; no separate consent checkbox or footer notice is required. `desktop-project-sync-v1`
+binds the account, personal destination, exact provider sources, and approved
+project/worktree paths, with full content and ongoing sync enabled and external
+attachments disabled. It covers existing sessions and new sessions in those
+approved folder trees while uploads remain enabled.
 
-Settings keeps source choices separate for each account and personal destination.
-Choose the provider explicitly: Claude `projects/<project>` directories or exact
-OpenCode V2 database files. The picker can start in OpenCode's known data directory,
-using the local root helper's environment and platform conventions. That hint
-does not enumerate databases, select sources, or establish source permission.
-Custom and channel databases remain explicit file choices.
-
-Discovery never infers sources from a repository, working directory, installed
-runtime version, or another provider. OpenCode support uses the structural
-[V2 source contract](opencode.md), including the characterized earlier and
-current shapes, not every future schema. V1 and unsafe or unsupported stores
-fail visibly without fallback. Path aliases and unsupported platforms fail too.
-A setup database error does not become empty or saved preferences. Setup errors
-do not hide account cleanup controls. Restore access or use a supported source
-before explicitly retrying a failed listing.
-
-Login, folder selection, and the legacy local Upload sessions preference do not
-grant content consent. The UI requires a separate full-content confirmation:
-messages, private thinking, tool calls and results, and session metadata can leave
-the device and may contain secrets or file text. Typed consent also includes
-proved session-owned content stored inside an authorized OpenCode database,
+Full native content includes messages, private thinking, tool calls and results,
+and session metadata. It can contain secrets or private file text. OpenCode V2
+also includes proved session-owned content stored inside the selected database,
 including native blobs. External attachment files, arbitrary linked files, and
-URL downloads remain excluded.
+URL downloads remain excluded. This consent remains separate from local analysis
+and model-based Checks.
 
-`native-full-content-v1` stays Claude-only with its existing flags and root list.
-Selections that include OpenCode require `native-full-content-v2`, an exact
-provider/path list, full-content confirmation, and external attachments disabled.
-Changing a provider at the same path clears the confirmation just like changing
-the path. A saved request ID cannot change its provider, roots, consent version,
-account, or destination.
+Changing the account, destination, provider source, or selected path membership
+invalidates any pending approval for an earlier selection. Count-only updates do
+not change consent. Settings saves folder opt-outs immediately and confirms
+additions before saving them.
 
-`syncEnabled` is false. On supported Unix platforms, `captureEnabled` permits
-**Save capture request** after explicit source selection and full-content
-confirmation. The native host saves the consent version, account, destination,
-and exact typed root selection before listing source identities. The capture
-library lists Claude filenames or OpenCode schema and bounded session IDs,
-without reading transcript, companion, message, instruction, job, or blob
-payloads. Root, child, detached-child, and fork sessions remain independent.
-The host freezes their capture IDs, scoped source IDs, and typed native locators.
-A source scope stays stable for the same account and local source when an access
-grant changes. Many OpenCode sessions share a database path but not an identity.
+### Project suggestions and worktrees
 
-New locators bind the provider, source scope, relative path, exact native session
-ID, and nullable Claude child agent ID. Claude paths are relative to the selected
-project directory. An OpenCode locator keeps the approved database filename
-relative to its parent; it does not authorize other files in that directory.
-OpenCode personas are not source agents. These saved locators are selection
-snapshots, not admitted source handles or continuing permission for payload reads.
-The store checks each typed locator against its full frozen source ID.
-Inconsistent records fail reads, lookup, and cancellation without changing saved JSON.
+The project list uses cached local session metadata from all discovered agents.
+It can show projects for agents that cannot upload. Counts describe local or
+provider-source discovery, not accepted Cloud sessions. Only qualified Claude and OpenCode
+V2 sources can produce upload jobs; a suggested project or checked row does not
+add support for another provider.
 
-These requests report **Upload unavailable**. No native content is captured or
-uploaded. There is no automatic future upload promise. A retry keeps the saved
-request and source IDs and does not rescan a completed selection. Reconciliation
-reads saved request state only. Account changes, logout, and grant replacement
-do not retarget requests or delete spools. Explicit request cancellation marks
-that selection cancelled through native IPC; this build has no request-cancellation
-control in onboarding or Settings. Cancellation does not delete remote data or
-unrelated captures.
+New onboarding project choices default to selected in renderer memory. Loading a page or
+toggling an onboarding row does not save ongoing consent or switch uploads on. Existing
+explicit choices and saved opt-outs take precedence over a new default.
+**Start syncing** approves only the currently loaded selected groups and their
+exact current path members. **Load more folders** does not approve unseen groups.
+Until confirmation, an existing saved policy stays unchanged.
 
-Legacy Claude requests retain their serialized shapes, consent, source scopes,
-IDs, and absolute transcript locators. Reading or reconciling a saved request
-does not convert those locators or inspect source paths. Completed and cancelled
-selections never rediscover. Unknown saved provider kinds fail without rewriting records.
-Stored capture hashes and retry bytes do not change.
+After initial consent, Settings switches show saved project permission rather
+than draft defaults. Turning a group off removes its approved bindings immediately.
+Turning it on requires the Settings confirmation dialog for its full sessions and
+current worktrees. The command checks the exact policy revision and group membership,
+then changes only that group. Other groups, unseen pages, and the global pause remain
+unchanged. The last group can be turned off without deleting saved captures.
+There is no Update button. Onboarding keeps its draft-and-Start flow without a dialog.
 
-One native host mutex and the capture library's spool lock serialize access.
-This build starts no uploader. It permits up to 128 saved requests, 100 roots per
-request, and 512 selected sources across both providers per request. Exceeding a
-discovery limit keeps the original request without a partial frozen selection.
-Full storage blocks new requests
-without removing old records. Source-request listing is not native ownership,
-capture-byte, or service-acceptance proof. The library's synthetic exporter and
-spool tests establish their separate byte contract.
+Confirmation saves the complete `projectChoices` map, including exclusions,
+atomically with the upload policy. Status returns the same map for reopen.
+These group choices are UI preferences, separate from provider-file preferences.
+Only the policy's approved `projects` grant upload permission. Older policies
+without a choice map load an empty map; the UI requires review before changing
+their selection.
 
-HTTP 202, upload completion, and a background operation ID do not prove integrity
-acceptance. A later upload integration must persist the accepted source
-fingerprint and terminal request in one checked transaction before it
-acknowledges the library's accepted receipt. That host path is not enabled here.
-Saved compressed retry bytes remain governed by the
-[capture contract](capture.md).
+For local paths, current local Git metadata can group a repository and its
+worktrees into one displayed project. This is a present-day display association,
+not historical session ownership or upload permission. Approval includes the
+exact current worktree paths in the selected group, including paths outside the
+main repository. A new worktree outside the already approved folder trees needs
+confirmation. Git association alone cannot add it to a saved policy. Foreign
+environment paths are not probed as local directories.
+
+Recorded project and working-directory (CWD) evidence controls session eligibility.
+Any proved source-owned CWD inside an approved folder or its descendants can match.
+Matching uses path components, so `/work/app` does not include `/work/app-other`.
+CWD changes during a session are valid. Provider storage paths, encoded Claude
+directory names, parent/fork links, file-touch paths, and tool CWDs grant no
+project permission. Each child and fork remains an independent native source.
+
+A matching session uploads in full. This is an allowlist, not redaction:
+messages and tool results from other CWDs or paths in the same session remain
+part of the upload.
+
+### Source access and discovery limits
+
+The desktop host finds supported provider sources through existing local metadata
+and provider adapters. Settings uses these default discoveries without source pickers.
+Source access does not permit every project in that directory or database.
+OpenCode support follows the structural [V2 source contract](opencode.md), not
+every historical or future release. V1 and unsafe or unsupported stores have no
+fallback. Windows has no desktop capture fallback.
+
+Project lookup can read bounded local Claude transcript bytes to collect recorded
+CWDs, but does not upload content. The host keeps a bounded metadata cache and
+checks source changes. Cached evidence can suggest work; new capture still needs
+fresh admission and a full project-policy check after reservation. Unknown or
+ambiguous owned CWDs cannot enable capture. A Claude record above 8 MiB makes the
+project scan incomplete; large tool results below that bound can retain valid
+CWD evidence. Malformed or incomplete records can also block admission.
+OpenCode's recorded session directory does not prove a complete historical CWD list.
+See [project folder selection](capture.md#project-folder-selection) for the source rules.
+
+Listings are bounded and can report partial results. Successful source listings
+contain at most 512 candidates across up to 100 source roots. A saved policy
+permits at most 100 source/project path bindings. Missing access, unsupported
+schemas, and exceeded bounds do not become a complete empty listing or permission
+to upload an excluded source. Restore access or retry discovery in Settings.
+Setup failures do not hide account cleanup controls.
+
+Before enabling sync or making a new capture, the desktop host checks current
+upload capabilities. The desktop source profile is at most 128 MiB per Claude
+transcript or expanded OpenCode native-row stream, and can be lower under the
+service's advertised total limit. Companion and metadata space remain included
+in the capture budget. Missing, disabled, or incompatible capabilities block new
+capture; the host does not clip source or fall back to guessed limits.
+
+### Background sync and saved bytes
+
+**Start syncing** moves onboarding to completion without waiting for capture,
+transfer, or integrity acceptance. **Done** remains available while setup or
+uploads are pending. Closing onboarding stops renderer observation, not the
+saved ongoing policy or desktop scheduler. Local tools setup remains
+independent of Cloud sync.
+
+Settings → Sessions shows the account, personal destination, upload switch,
+folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
+Folder-read and saved-upload failures use brief messages, with recovery actions
+when available. Known blocked or interrupted work remains visible while other
+uploads run or the policy is paused.
+Errors use an inline alert rather than muted routine status. Jobs excluded by the
+current folder policy retain their bytes but do not count as current upload failures.
+
+`storageKnown` is true only when saved-state reads succeed. When false, status
+counters and progress are unknown or last-known values, not current results. The desktop
+still publishes `storage_unavailable` when it cannot read saved files. Last-known
+values must match the current account, destination, and service.
+**Upload sessions** pauses or resumes the confirmed policy. For saved-upload errors,
+**Retry** retries permitted saved work without expanding the selection.
+`recoveryRequiredCount` identifies missing or incomplete local captures that
+cannot resume from their saved state. These count as interrupted, not queued.
+They do not block healthy sources. When only these failures remain, Settings
+shows a local-recovery message without a Retry button that cannot fix them.
+Pause stops admission of further sensitive work and saves the paused
+state. It does not delete spools, undo requests already sent, or delete remote
+content. Sign-out and account changes also stop unauthorized work without
+retargeting or deleting saved captures.
+Signing in again to the same account and workspace resumes eligible saved uploads
+automatically. A new sign-in clears conflict cooldowns but preserves capacity
+and offline backoff. It does not replace the capture, change its destination,
+expand folder consent, or resume a paused policy.
+
+Temporary request failures and HTTP 429 capacity rejections defer the current
+upload until its retry deadline. Valid `Retry-After` hints use a 1 to 300 second
+bound. A saved request's delay does not block other ready uploads.
+The desktop then retries the same saved capture ID after checking current source
+and policy bindings. Saved uploads take priority over new captures. Saved bytes
+remain intact. Historical unknown failures before reservation still require explicit **Retry**.
+
+A proved local queue or disk-capacity refusal before publication saves a separate
+wait. The same capture ID can retry after fresh source and project checks.
+Unknown missing entries cannot use that permission.
+
+Initial registration, part, and finalization conflicts first try renewal of the same reservation,
+manifest hash, and plan. Only a successful renewal permits one replay of the
+original request. This recovers idle expiry without reading source again or changing
+capture identity. Server authority, absolute expiry, writer, and cleanup fences still
+apply. Earlier fenced post-reservation uploads receive a bounded automatic recheck;
+persistent conflicts wait at least 60 seconds between attempts. Empty interrupted
+captures do not gain permission to read source through this recovery path.
+
+After sign-in, process restart, or explicit Retry, the scheduler checks saved
+finalization status. If integrity is still pending, it can replay the exact
+saved finalization once. This can restart stopped processing without new source
+reads or a new capture. Polling alone does not resubmit finalization.
+
+Time expiry is recoverable, including after a weekend offline. The service
+rechecks current authority and the saved request before renewing storage work.
+Expired incomplete parts can require transfer again from the same local bytes.
+This never grants permission to read source again, change the capture, or
+overwrite a newer publication. Deletion and cancellation remain final.
+
+Capture API requests use the configured resource origin and desktop-held credentials.
+Saved gzip bodies go only to validated, short-lived upload locations supplied
+for the bound request. Those body uploads carry no API bearer or cookies.
+Upload locations never enter saved state, renderer status, or diagnostics.
+Resume diagnostics record closed states, whether a saved plan exists, request
+routes, renewal outcomes, timing, and retry delays. They never contain capture
+content, source paths, sign-in proof, signed URLs, or raw provider errors.
+
+The scheduler and capture spool serialize bounded work. Pending captures keep
+their original account, destination, service, source, capture ID, compressed
+bytes, and frozen plan across restarts. Narrowing the approved folder policy
+blocks affected saved captures rather than removing part of their content.
+Jobs bind the approved tree used for admission, not unrelated folders in the
+same provider store. Removing an unrelated folder does not fence the job.
+Retry can replace only a present, verified empty capture that has no reservation.
+The desktop saves that recovery decision before removing the empty entry.
+Missing entries cannot start recovery or authorize recapture. They can only
+finish a previously saved empty-recovery decision. Partial captures and
+post-reservation interruptions keep their IDs and bytes; they are not replaced
+with newer source. Missing or unreadable saved state is not permission to discard
+retry files.
+
+HTTP 202, a successful upload request, transfer receipts, progress counters, and
+an operation ID do not prove full integrity acceptance. Automatic spool release
+requires exact bound status with `integrity_accepted: true` after full stored-byte
+verification. The host saves the accepted source fingerprint and terminal job
+state before acknowledging the retained library receipt. Explicit cancellation
+is the separate release path for an unaccepted capture, not remote deletion.
+Saved bytes and operator recovery remain governed by the [capture contract](capture.md).
+
+### Local tools status
+
+Completion reads `get_local_tools_status` and observes `local-tools:changed`.
+Both carry `{revision, phase, cliInstalled, cliTested, skillInstalled, reason}`. The phases
+are `pending`, `ready`, `unavailable`, and `failed`. Tool status is separate from
+Cloud authentication, folder discovery, and upload consent. Pending or failed tool
+setup does not block these paths or **Done**.
+
+The renderer attaches the listener before reading. It keeps the latest native
+revision in memory for the current app process. It ignores queries and events
+with lower revisions. A successful query can replace an intervening event when
+its revision is at least as recent. An accepted event supersedes a pending query
+error, which has no revision. Closing the observer rejects late replies
+and removes its listener. Tool setup can settle from events without a refresh
+control or polling.
+
+**Local tools ready** means the CLI passed its capability test and the generated
+skill and bound config match their ownership receipts. It does not prove host
+skill discovery, vendor callbacks, or native integration delivery. Failed setup
+points to **Repair** in Settings → CLI. That existing action retries debug tool
+setup while preserving ownership checks. Read-only status calls do not install
+or repair tools. See the [CLI contract](../cli-installation.md#debug-cli-and-skill)
+for profile and platform limits.
+
+### Legacy saved source requests
+
+`cloud_prepare_sync`, `cloud_start_sync`, and `cloud_reconcile_sync` retain the
+discovery-only saved-request contract. They do not create an ongoing policy or
+start desktop capture/upload. **Save capture request** on that compatibility path
+still reports **Upload unavailable**. Older `native-full-content-v1` and
+`native-full-content-v2` confirmations cannot become `desktop-project-sync-v1`
+consent.
+
+Legacy Claude and typed-provider requests retain their serialized consent,
+source scopes, capture IDs, and locators. Reading or reconciling a completed or
+cancelled selection does not rediscover it or convert its records. Unknown saved
+provider kinds fail without rewriting data. Cancellation does not remove
+unrelated captures or remote content.
 
 ## Validation
 
-Native checks use synthetic sessions, in-memory keyrings, temporary state files,
+Desktop checks use synthetic sessions, in-memory keyrings, temporary state files,
 separate test processes, and loopback sockets. They must cover PKCE, callback
 guards, generation fences, restart, uncertain refresh, keyring failure, fixed
-deadlines, logout, cross-process locking, typed source consent, stable legacy
-records, provider dispatch, and independent database sessions. Source checks use
-the public synthetic SQL fixtures in private temporary databases. Tests must not
-read user provider folders, installed databases, or real credentials.
+deadlines, logout, cross-process locking, ongoing account/project consent,
+multi-CWD matching, worktree grouping without implied permission, policy pause
+and retry, negotiated capture bounds, retained retry bytes, integrity acceptance,
+stable legacy records, provider dispatch, and independent database sessions.
+Source checks use the public synthetic SQL fixtures in private temporary
+databases. Tests must not read user provider folders, installed databases, or
+real credentials.
 
 Synthetic service-transport HTTP tests run only with debug assertions enabled.
 General Cloud tests remain enabled in every test profile. These mocks do not
 prove a live service connection.
 
-Run native formatting, Clippy, and focused Nextest checks with `--features cloud`.
+Run desktop Rust formatting, Clippy, and focused Nextest checks with `--features cloud`.
 Also check the ordinary build with `--no-default-features`. Frontend checks cover
 Cloud stores, consent, ordinary-build entry-point exclusion, and searchable
 Settings controls. System-browser and OS-keyring acceptance on each supported

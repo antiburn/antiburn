@@ -93,15 +93,63 @@ bounded enclosing `.app` lookup carries its bundle quarantine to the new inode.
 The app never strips quarantine. A signature remains embedded in the copied bytes.
 Actual Gatekeeper behavior still requires downloaded-build acceptance below.
 
-Source and debug builds stage the internal runtime only through explicit Repair. All files stay under the identifier-scoped `cli`
-directory.
-Run `pnpm --filter @antiburn/desktop dev:cli` for a source launch with the host
-CLI payload prepared and resource-mapped, or `dev:bundle:cli` for a debug bundle.
-These explicit commands compile the native CLI and then launch/build with both
-debug and sidecar configurations. Normal `dev` and `dev:bundle` do not prepare a
-payload; Repair requires one. Cross-target development requests are rejected.
-Use disposable profiles for development; do not exercise this against vendor
-configuration or the production Antiburn profile.
+The desktop `dev` and `dev:bundle` commands prepare and resource-map the host CLI
+payload before launching or bundling. Their `:cli` aliases do the same work.
+Cross-target development requests are rejected. Debug startup stages the runtime
+automatically only when the app identifier is `ai.antiburn.desktop.debug`.
+Other source builds still require explicit Repair. The installer does not change
+the release app's runtime or terminal commands from this debug profile.
+
+### Debug CLI and skill
+
+On macOS, the debug profile also installs a generated `antiburn-debug` skill in
+the selected existing OpenCode configuration root's
+`skills/antiburn-debug/SKILL.md`. An explicit `OPENCODE_CONFIG_DIR` selects that
+root. Otherwise, `XDG_CONFIG_HOME/opencode` or `~/.config/opencode` applies.
+A missing or unsafe selected root blocks setup; the app does not create an
+OpenCode profile or switch to another one. A saved receipt pins this selection.
+
+The generated skill uses the canonical
+[`apps/cli/skills/antiburn/SKILL.md`](../apps/cli/skills/antiburn/SKILL.md) body.
+Only its name and command binding differ. The command names the absolute internal
+CLI and passes `--config <debug-data>/cli/tools/config.json`. This config binds
+`ai.antiburn.desktop.debug` and `antiburn-debug.sqlite3` under the debug data
+directory's parent. CLI state and logs stay in `cli/tools`; prices use the debug
+profile's `model-pricing.json`. No global CLI config, PATH entry, shell profile,
+release skill, or vendor hook changes.
+
+Setup runs after CLI startup and explicit CLI Repair. It first tests the validated
+runtime with an empty PATH. A private write-ahead receipt in `cli/tools` owns the
+exact config and generated skill bytes. Healthy startup does not rewrite them.
+Interrupted writes can resume only from recorded bytes. Unknown, modified,
+removed, redirected, or differently selected files remain untouched and block
+setup. Keep those files for review; undo a conflicting local edit only if it is
+unwanted, then use CLI Repair or relaunch. Do not delete ownership receipts to
+force installation. Native metadata-preserving publication is currently supported
+only on macOS.
+
+`get_local_tools_status` is a read-only debug-window command.
+`local-tools:changed` carries the same `{revision, phase, cliInstalled, cliTested,
+skillInstalled, reason}` snapshot. `phase` is `pending`, `ready`, `unavailable`,
+or `failed`. The additional `revision` is monotonic within the app process. Clients
+discard query responses and events below their latest revision. A query rechecks
+its revision after filesystem inspection; queued setup stays pending until the
+last attempt finishes. `ready` means that the CLI passed its bounded capability test and the
+generated skill is installed. Status reads recheck owned files and the tested
+runtime digest. They do not install, repair, or invoke checks.
+
+Installed files do not prove that OpenCode selected or loaded the skill. Skill
+discovery, permissions, conflicting project skill IDs, and a real session call
+need separate host verification. This setup does not register callbacks or
+enable the closed native integration gates. The local `local_tools_setup`
+diagnostic contains only state, booleans, and fixed failure classes.
+
+Before publication, setup validates every directory ancestor's owner, write
+permissions, and macOS ACL mutation grants. Root-owned OS directories and
+root-owned sticky temporary directories remain allowed. Deny-only and read-only
+ancestor ACLs, including the usual home-directory deny-delete entry, remain
+unchanged. Unrelated mutation grants block setup; it never fixes permissions or
+removes an ACL.
 
 ## Resolver and Settings contract
 

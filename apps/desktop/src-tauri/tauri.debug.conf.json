@@ -4,6 +4,7 @@
   "app": {
     "security": {
       "capabilities": [
+        "local-tools",
         "default",
         "main-window",
         "onboarding",

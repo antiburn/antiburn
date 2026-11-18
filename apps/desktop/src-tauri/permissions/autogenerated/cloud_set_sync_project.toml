@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-set-sync-project"
+description = "Enables the cloud_set_sync_project command without any pre-configured scope."
+commands.allow = ["cloud_set_sync_project"]
+
+[[permission]]
+identifier = "deny-cloud-set-sync-project"
+description = "Denies the cloud_set_sync_project command without any pre-configured scope."
+commands.deny = ["cloud_set_sync_project"]

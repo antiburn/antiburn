@@ -25,10 +25,25 @@ macro_rules! with_app_commands {
             cloud::cloud_reconcile_sync => "cloud_reconcile_sync",
             #[cfg(feature = "cloud")]
             cloud::cloud_cancel_sync => "cloud_cancel_sync",
+            #[cfg(feature = "cloud")]
+            cloud::projects::cloud_project_groups => "cloud_project_groups",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_sync_projects => "cloud_sync_projects",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_sync_status => "cloud_sync_status",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_enable_sync => "cloud_enable_sync",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_set_sync_project => "cloud_set_sync_project",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_pause_sync => "cloud_pause_sync",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_retry_sync => "cloud_retry_sync",
 
             cli_install::get_cli_install_state => "get_cli_install_state",
             cli_install::test_cli_installation => "test_cli_installation",
             cli_install::repair_cli_installation => "repair_cli_installation",
+            local_tools::get_local_tools_status => "get_local_tools_status",
             agent_integrations::desktop::get_agent_integrations => "get_agent_integrations",
             agent_integrations::desktop::repair_agent_integration => "repair_agent_integration",
             agent_integrations::desktop::remove_agent_integration => "remove_agent_integration",
