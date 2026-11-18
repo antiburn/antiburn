@@ -2,7 +2,7 @@
 
 Desktop distribution builds package the native `antiburn` CLI target under the private runtime filename `antiburn-cli` and prepare its durable per-user runtime automatically. See [installation, ownership and acceptance](../../docs/cli-installation.md). Run `antiburn capabilities --json` without opening any database. The desktop launcher remains separately packaged.
 
-The CLI gives agent harnesses a small JSON interface for Antiburn check updates.
+The CLI gives agent harnesses a JSON interface for Antiburn check updates and local session search.
 
 **Current status:** `antiburn checks <session_id>` reads Antiburn's local SQLite database in read-only mode, derives six evidence-based checks with `antiburn-local`, synthesizes a bounded priced-session outlier from cached analysis, and returns only new or changed problematic findings. It omits raw evidence from stdout and tracks per-session changes in a separate local state file.
 
@@ -79,7 +79,7 @@ The optional JSON config lives at `dirs::config_dir()/antiburn/cli.json`. Pass `
 
 `data_root` is the directory before the app identifier. The identifier and database filename must each be one path component. If `pricing_snapshot_path` is absent, the CLI looks for `model-pricing.json` beside the selected database. The `price_outlier` values override the cohort and threshold defaults. The CLI creates its state file when it reserves delivery after a successful lookup. It does not create config, database, or pricing files. File tracing may create its diagnostic directory under the platform data root. Unknown config fields are errors. On macOS, the default platform data directory is `~/Library/Application Support`. On Linux, it is `$XDG_DATA_HOME` or `~/.local/share`. On Windows, it is the roaming application-data directory.
 
-The CLI initializes a JSON Lines tracing subscriber during startup. It appends structured events to `dirs::data_local_dir()/antiburn/cli/calls.log`, outside immutable runtime generations. Set `log_file` in `cli.json` to override this destination. New log directories/files use owner-only permissions on Unix; existing files are appended without changing their permissions. A successful lookup records the explicit session ID, evidence status, and number of new findings returned. It does not log evidence JSON, check results, prompts, or transcripts. If file tracing is unavailable, the CLI warns on stderr and continues. Do not commit this generated log.
+The `checks` command initializes a JSON Lines tracing subscriber during startup. It appends structured events to `dirs::data_local_dir()/antiburn/cli/calls.log`, outside immutable runtime generations. Set `log_file` in `cli.json` to override this destination. New log directories/files use owner-only permissions on Unix; existing files are appended without changing their permissions. A successful lookup records the explicit session ID, evidence status, and number of new findings returned. It does not log evidence JSON, check results, prompts, or transcripts. If file tracing is unavailable, the CLI warns on stderr and continues. Do not commit this generated log.
 
 Run the debug binary by its full path from this crate:
 
@@ -90,6 +90,48 @@ cargo build
 
 Checks write their own local diagnostic log. Capabilities does not initialize file
 logging or load config. Source builds do not install a shell command automatically.
+
+## Search local sessions
+
+```sh
+antiburn search "example migration" --limit 10
+```
+
+Search reads Antiburn's local database using the same discovery and `--config`
+options as checks. It matches a literal substring in stored session IDs and
+titles, ignoring ASCII case. It does not read transcripts and skips titles
+marked as first-message excerpts. Titles and activity timestamps can be `null`.
+Search reports an error if the database query exceeds its time or size limit.
+
+```json
+{
+  "source": "local",
+  "sessions": [
+    {
+      "identity": {
+        "environment_key": "native",
+        "agent": "pi",
+        "session_id": "example-session-id"
+      },
+      "title": "Example migration",
+      "updated_at_epoch": 1780000000
+    }
+  ],
+  "truncated": false
+}
+```
+
+Results list newest activity first, with unknown activity last. Ties sort by
+environment, agent, then session ID. The full identity is unique. Two sessions
+can share an ID if they come from different agents or environments.
+`--limit` takes 1 to 100 and overrides the `search_limit` value in `cli.json`,
+which defaults to 20. `truncated` is `true` when more matches exist than the
+limit allows. No matches return an empty `sessions` array. A missing or
+unreadable database gives an error on stderr and a non-zero exit code.
+
+Search does not write check state or logs. Cloud search and deduplication
+across local and Cloud results are not implemented. This command makes no
+network requests.
 
 ## Agent session identity: harness findings
 

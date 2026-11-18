@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use crate::config::Config;
 
 pub fn candidate_database_paths(config: &Config) -> Result<Vec<PathBuf>, String> {
+    find_database_path(config).map(|path| vec![path])
+}
+
+/// Resolve the configured product database without creating it.
+pub(crate) fn find_database_path(config: &Config) -> Result<PathBuf, String> {
     let data_root = match &config.data_root {
         Some(path) => path.clone(),
         None => dirs::data_dir()
@@ -15,7 +20,7 @@ pub fn candidate_database_paths(config: &Config) -> Result<Vec<PathBuf>, String>
             path.display()
         ));
     }
-    Ok(vec![path])
+    Ok(path)
 }
 
 pub(crate) fn database_path(config: &Config, data_root: PathBuf) -> PathBuf {

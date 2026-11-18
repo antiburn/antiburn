@@ -9,6 +9,8 @@ use serde::Deserialize;
 const DEFAULT_APP_IDENTIFIER: &str = "ai.antiburn.desktop";
 const DEFAULT_DATABASE_FILENAME: &str = "antiburn.sqlite3";
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_SEARCH_LIMIT: u16 = 20;
+pub(crate) const MAX_SEARCH_LIMIT: u16 = 100;
 const DEFAULT_PRICE_OUTLIER_MAX_SESSIONS: usize = 16;
 const DEFAULT_PRICE_OUTLIER_MAX_AGE_HOURS: u64 = 72;
 const DEFAULT_PRICE_OUTLIER_MINIMUM_PRICED_SESSIONS: usize = 8;
@@ -30,6 +32,7 @@ pub struct Config {
     pub app_identifier: String,
     pub database_filename: String,
     pub busy_timeout: Duration,
+    pub search_limit: u16,
     pub state_file: Option<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub pricing_snapshot_path: Option<PathBuf>,
@@ -43,6 +46,7 @@ struct ConfigOverrides {
     app_identifier: Option<String>,
     database_filename: Option<String>,
     busy_timeout_ms: Option<u64>,
+    search_limit: Option<u16>,
     state_file: Option<PathBuf>,
     log_file: Option<PathBuf>,
     pricing_snapshot_path: Option<PathBuf>,
@@ -92,6 +96,7 @@ impl Config {
             app_identifier: DEFAULT_APP_IDENTIFIER.to_owned(),
             database_filename: DEFAULT_DATABASE_FILENAME.to_owned(),
             busy_timeout: Duration::from_millis(DEFAULT_BUSY_TIMEOUT_MS),
+            search_limit: DEFAULT_SEARCH_LIMIT,
             state_file: None,
             log_file: None,
             pricing_snapshot_path: None,
@@ -118,6 +123,14 @@ impl Config {
         }
         if let Some(busy_timeout_ms) = overrides.busy_timeout_ms {
             config.busy_timeout = Duration::from_millis(busy_timeout_ms);
+        }
+        if let Some(search_limit) = overrides.search_limit {
+            if !(1..=MAX_SEARCH_LIMIT).contains(&search_limit) {
+                return Err(format!(
+                    "search_limit must be between 1 and {MAX_SEARCH_LIMIT}"
+                ));
+            }
+            config.search_limit = search_limit;
         }
         config.state_file = overrides.state_file;
         config.log_file = overrides.log_file;

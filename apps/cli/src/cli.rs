@@ -1,13 +1,15 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
+
+use crate::config::MAX_SEARCH_LIMIT;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "antiburn",
     bin_name = "antiburn",
     version,
-    about = "Read Antiburn check updates for an agent session"
+    about = "Read Antiburn check updates and search local sessions"
 )]
 pub struct Cli {
     #[arg(
@@ -36,6 +38,30 @@ pub enum Command {
         #[arg(long, requires = "consumer")]
         ack: Option<String>,
     },
+    /// Search local Antiburn session IDs and titles. Return JSON only.
+    Search(SearchArgs),
+}
+
+/// Search terms and optional result limit supplied on the command line.
+#[derive(Debug, Args)]
+pub struct SearchArgs {
+    /// Literal substring to match, ignoring ASCII case.
+    #[arg(value_parser = parse_search_query)]
+    pub(crate) query: String,
+    /// Maximum number of results to return (1 to 100).
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=i64::from(MAX_SEARCH_LIMIT)))]
+    pub(crate) limit: Option<u16>,
+}
+
+fn parse_search_query(value: &str) -> Result<String, String> {
+    if value.chars().any(char::is_control) {
+        return Err("search query cannot contain control characters".into());
+    }
+    let query = value.trim();
+    if query.is_empty() || query.len() > 512 {
+        return Err("search query must contain 1 to 512 bytes after trimming".into());
+    }
+    Ok(query.to_owned())
 }
 
 #[cfg(test)]
