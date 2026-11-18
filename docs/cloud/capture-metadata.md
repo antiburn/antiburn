@@ -1,9 +1,9 @@
 # Capture metadata
 
 Every [native capture](capture.md) has one separate `capture-metadata` stream.
-Its compact UTF-8 JSON uses the same `CaptureMetadata` structure for Claude JSONL
-and OpenCode SQLite sources. Native file bytes and typed SQLite cells stay in
-their own streams. Metadata does not rewrite either source.
+Its compact UTF-8 JSON uses the same `CaptureMetadata` structure for Claude JSONL,
+Codex JSONL, Pi JSONL, and OpenCode SQLite sources. Native file bytes and typed
+SQLite cells stay in their own streams. Metadata does not rewrite the source.
 
 The [JSON Schema](capture-metadata.schema.json) uses Draft 2020-12 and integer
 `version: 1`. It describes the full metadata object, not the capture manifest or
@@ -33,6 +33,10 @@ This is a synthetic OpenCode-shaped metadata object with no optional sections:
 
 Claude uses `agent: "claude-code"` and `source_format: "ClaudeJsonl"`. Its
 session ID and optional child agent ID come from the admitted source identity.
+Codex uses `agent: "codex"` and `source_format: "CodexJsonl"`. Its first owned
+rollout header supplies the session ID, and `native_agent_id` is null.
+Pi uses `agent: "pi"` and `source_format: "PiJsonl"`. Its first owned session
+header supplies the session ID, and `native_agent_id` is null.
 OpenCode uses its native session ID; a persona is not `native_agent_id`.
 Capture IDs, account IDs, destination IDs, queue state, and automatic capture
 timestamps do not belong in this object.
@@ -44,6 +48,12 @@ or `unknown` ownership. Its two completeness flags describe scan limits, not
 complete retained history. OpenCode leaves the source version null, the
 observations empty, and both flags false. A native creation or import version
 does not prove which runtime produced the session's whole history.
+Codex can retain one owned `cli_version` observation from the first header.
+It leaves the source version null and both flags false. See the
+[Codex source contract](codex.md) for ownership and relationship rules.
+Pi leaves the source version null, the observations empty, and both flags false.
+Its header version identifies the format, not a runtime. See
+[Pi session capture](pi.md) for the file and header rules.
 
 `relationship` is `unknown`, or a directly proved `child` or `fork` with
 `parent_source_id` and `proof`. An edge grants no access and does not mean that
@@ -89,35 +99,49 @@ binds the crate's compact JSON encoding of `data`, not pretty-printed JSON or th
 whole envelope. Times range from 1 through 253,402,300,799,999 Unix milliseconds.
 A digest proves a byte binding, not the truth of a claim.
 
-## Git context example
+## Desktop Git checkout
 
-This synthetic section records a checkout at capture time. It does not prove
-the checkout, branch, or worktree used during earlier session execution. The
-library does not collect Git state automatically.
+Desktop can add the optional `antiburn.git-checkout` section just before a new
+capture. It uses the first admitted recorded working directory in path order
+and checks that it is still a local directory without aliases. The checkout
+root must also be inside a folder selected for upload. Desktop makes bounded
+local Git reads and checks the commit and checkout again before saving. If
+these checks fail, capture proceeds without the Git section.
+
+This observation describes the local checkout at capture time. It does not
+prove which commit, branch, or worktree the session used earlier. The recorded
+working directory stays in the native source. The capture library does not
+collect Git state on its own.
+
+| Data field | Rule |
+| --- | --- |
+| `commit` | Required. The checked-out commit as 40 or 64 lowercase hex digits. |
+| `kind` | Required. `checkout` for a regular checkout or `worktree` for a linked Git worktree. |
+| `branch` | Optional. The checked-out branch name, up to 255 UTF-8 bytes. Absent for detached HEAD. |
+| `repository` | Optional. The `owner` and `name` from a supported `github.com` address in the local `origin` configuration. Desktop does not verify the repository on GitHub. |
+
+Desktop accepts direct HTTPS, SSH (`ssh://git@`), and SCP-style (`git@`) GitHub
+clone addresses. It omits unsupported or ambiguous addresses. The section
+contains no raw remote URL, URL credentials, or local paths.
 
 ```json
 {
-  "schema": "example.capture-git.v1",
-  "producer": {"name": "synthetic-host", "version": "1.0.0"},
+  "schema": "antiburn.git-checkout.v1",
+  "producer": {"name": "antiburn-desktop", "version": "0.11.1"},
   "observation": {"kind": "observed_at", "unix_millis": 1794873600000},
   "evidence": [{
     "kind": "local_observation",
-    "method": "synthetic-git-snapshot",
-    "data_sha256": "f7c5e56d25c1a96d91e0c7a70b1c651cea500d6854f5d95f055f9f4d3edd2660"
+    "method": "git-checkout",
+    "data_sha256": "bde8ad553bd8db9886acecf30f95539a84d54e9e2f56ec15b93bfa38947e2fd8"
   }],
   "data": {
     "branch": "example",
-    "head": "0123456789abcdef0123456789abcdef01234567",
-    "historical_execution_context": false,
-    "observation_scope": "capture_time",
-    "synthetic": true
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "kind": "checkout",
+    "repository": {"name": "example-repo", "owner": "example-owner"}
   }
 }
 ```
-
-Place it under a key such as `example.capture-git`. A current local checkout
-cannot fill missing historical context. Only accepted native evidence can
-support a claim about the session's earlier execution.
 
 ## Session billing evidence example
 
@@ -231,3 +255,8 @@ does not. The saved metadata stream and manifest digest still bind the actual
 timestamp and exact bytes. Freeze all metadata, observation boundaries, native
 bytes, and compressed bodies for a pending retry. New metadata must not replace
 that saved capture.
+
+Desktop reads Git only when it is ready to start a capture. A Git-only change
+does not trigger an automatic recapture. Upload retries reuse the saved Git
+section and its original observation time. An earlier attempt that stopped
+before saving capture bytes has no Git section to reuse.

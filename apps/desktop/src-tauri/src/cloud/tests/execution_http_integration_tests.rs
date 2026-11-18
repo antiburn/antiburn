@@ -292,6 +292,15 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
         Some("Bearer synthetic-api-access")
     );
     assert!(request.body.is_empty());
+    let mut extended = valid.clone();
+    extended["source_formats"] =
+        serde_json::json!(["ClaudeJsonl", "future-format", "OpenCodeSqliteV2"]);
+    let limits = serde_json::from_value::<upload::Capabilities>(extended)
+        .unwrap()
+        .limits()
+        .unwrap();
+    assert_eq!(limits.capture_bytes, 256 * 1024 * 1024);
+
     for body in [
         {
             let mut value = valid.clone();
@@ -306,6 +315,12 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
         {
             let mut value = valid.clone();
             value["source_formats"] = serde_json::json!(["unknown"]);
+            value
+        },
+        {
+            let mut value = valid.clone();
+            value["source_formats"] =
+                serde_json::json!(["ClaudeJsonl", "OpenCodeSqliteV2", "future", "future"]);
             value
         },
         serde_json::json!({}),

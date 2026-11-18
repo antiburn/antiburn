@@ -71,14 +71,13 @@ impl ProjectEvidence {
     /// Return the full streamed Claude transcript digest, when available.
     ///
     /// This local cache value is not a capture fingerprint, authorization, or a
-    /// freshness check. OpenCode returns `None`: this lookup never reads or hashes
-    /// the whole database. The host owns cache keys, invalidation, and eviction.
+    /// freshness check. Other sources return `None` because their lookups do
+    /// not hash the full source. The host owns cache keys and eviction.
     pub fn source_digest(&self) -> Option<&str> {
         self.source_digest.as_deref()
     }
 
-    /// Build evidence from the directory recorded by the Unix OpenCode reader.
-    #[cfg(unix)]
+    /// Build evidence from a provider's proved recorded directory.
     pub(crate) fn recorded(path: &str) -> Self {
         Self {
             paths: if valid_project_path(path) {
@@ -91,8 +90,7 @@ impl ProjectEvidence {
         }
     }
 
-    /// Keep a completed OpenCode lookup without an owned directory unapproved.
-    #[cfg(unix)]
+    /// Keep a completed header or row lookup without an owned directory unapproved.
     pub(crate) fn unknown() -> Self {
         Self {
             paths: Vec::new(),
@@ -229,7 +227,8 @@ impl Candidate {
     /// its admitted handle, retaining only bounded records and CWD paths. These
     /// reads can include session content. Only source-owned top-level `cwd` proves
     /// a path. Encoded directory names, tool paths, and lineage grant nothing.
-    /// OpenCode reads only bounded schema and this session's `directory` cell.
+    /// Codex and Pi use the bounded first header. OpenCode reads only
+    /// bounded schema and this session's `directory` cell.
     ///
     /// This synchronous scan does not reserve, spool, upload, or grant ongoing
     /// upload consent. Run it on a bounded blocking worker. The host owns bounded
@@ -248,6 +247,12 @@ impl Candidate {
         limits.validate()?;
         match &self.source {
             CandidateSource::Claude(source) => scan_claude(source, limits),
+            CandidateSource::Codex(source) => {
+                source.project_evidence(limits, crate::codex::project_evidence)
+            }
+            CandidateSource::Pi(source) => {
+                source.project_evidence(limits, crate::pi::project_evidence)
+            }
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => source.project_evidence(limits),
         }
