@@ -49,6 +49,146 @@ fn sha(bytes: &[u8]) -> String {
         .collect()
 }
 
+#[test]
+fn project_admission_preserves_full_session_bytes_and_ignores_tool_paths() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let source = temp.path().join("provider-storage");
+    fs::create_dir(&project).unwrap();
+    fs::create_dir(&source).unwrap();
+    let native = format!(
+        "{}\n",
+        serde_json::json!({
+            "sessionId": "selected",
+            "cwd": project,
+            "tool": {"path": "/synthetic/outside/secret.txt", "cwd": "/synthetic/outside"},
+            "message": {"text": "Keep all native content.", "thinking": "Synthetic private thinking."},
+            "unknown": [1, 2, 3]
+        })
+    );
+    fs::write(source.join("selected.jsonl"), &native).unwrap();
+    let candidate = reopen_claude(&source, "selected", None, &Limits::default()).unwrap();
+    let admitted = ProjectSelection::new(vec![project])
+        .unwrap()
+        .admit(&candidate)
+        .unwrap()
+        .unwrap();
+    let mut spool = spool(&temp);
+    let mut transport = FakeTransport::default();
+    let entry = spool
+        .capture(
+            identity(admitted.source_id(), "project-capture"),
+            &admitted,
+            MetadataSections::new(),
+            &mut transport,
+        )
+        .unwrap();
+    let manifest = entry.manifest.unwrap();
+    assert_eq!(manifest.streams[0].expanded_bytes, native.len() as u64);
+    assert_eq!(manifest.streams[0].expanded_sha256, sha(native.as_bytes()));
+    assert_eq!(transport.reserve_calls, 1);
+    assert!(transport.uploaded.is_empty());
+}
+
+#[test]
+fn project_admission_captures_full_session_when_owned_cwd_changes() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let outside = temp.path().join("outside");
+    let source = temp.path().join("provider-storage");
+    for path in [&project, &outside, &source] {
+        fs::create_dir(path).unwrap();
+    }
+    let mut native = format!(
+        "{}\n",
+        serde_json::json!({"sessionId": "selected", "cwd": project})
+    );
+    native.push_str(&"{\"noise\":true}\n".repeat(PROJECT_RECORD_BYTES / 10));
+    native.push_str(&format!(
+        "{}\n",
+        serde_json::json!({"sessionId": "selected", "cwd": outside})
+    ));
+    fs::write(source.join("selected.jsonl"), &native).unwrap();
+    let candidate = reopen_claude(&source, "selected", None, &Limits::default()).unwrap();
+    let admitted = ProjectSelection::new(vec![project])
+        .unwrap()
+        .admit(&candidate)
+        .unwrap()
+        .unwrap();
+    let mut spool = spool(&temp);
+    let mut transport = FakeTransport::default();
+    let result = spool
+        .capture(
+            identity(admitted.source_id(), "changing-cwd"),
+            &admitted,
+            MetadataSections::new(),
+            &mut transport,
+        )
+        .unwrap();
+    assert_eq!(result.state, CaptureState::Queued);
+    assert_eq!(
+        result.manifest.unwrap().streams[0].expanded_sha256,
+        sha(native.as_bytes())
+    );
+    assert_eq!(transport.reserve_calls, 1);
+    assert!(transport.uploaded.is_empty());
+}
+
+#[test]
+fn project_admission_rechecks_frozen_root_policy_not_one_cwd() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let nested = project.join("nested");
+    let outside = temp.path().join("outside");
+    let source = temp.path().join("provider-storage");
+    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::create_dir(&source).unwrap();
+    let path = source.join("selected.jsonl");
+    fs::write(
+        &path,
+        format!(
+            "{}\n",
+            serde_json::json!({"sessionId": "selected", "cwd": project})
+        ),
+    )
+    .unwrap();
+    let candidate = reopen_claude(&source, "selected", None, &Limits::default()).unwrap();
+    let admitted = ProjectSelection::new(vec![project])
+        .unwrap()
+        .admit(&candidate)
+        .unwrap()
+        .unwrap();
+    let mut spool = spool(&temp);
+    let mut transport = FakeTransport::default();
+    for (capture_id, cwd, allowed) in [
+        ("changed-descendant", &nested, true),
+        ("removed-approved-cwd", &outside, false),
+    ] {
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::json!({"sessionId": "selected", "cwd": cwd})
+            ),
+        )
+        .unwrap();
+        let result = spool.capture(
+            identity(admitted.source_id(), capture_id),
+            &admitted,
+            MetadataSections::new(),
+            &mut transport,
+        );
+        if allowed {
+            assert_eq!(result.unwrap().state, CaptureState::Queued);
+        } else {
+            assert!(matches!(result, Err(Error::SourceChanged)));
+        }
+    }
+    assert_eq!(transport.reserve_calls, 2);
+    assert!(transport.uploaded.is_empty());
+}
+
 #[derive(Default)]
 struct FakeTransport {
     manifest: Option<CaptureManifest>,

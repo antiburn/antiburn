@@ -49,6 +49,8 @@ pub struct Candidate {
     pub(crate) source: CandidateSource,
     pub(crate) source_id: String,
     pub(crate) source_scope: Option<String>,
+    pub(crate) project_paths: Vec<PathBuf>,
+    pub(crate) project_selection: Option<crate::ProjectSelection>,
 }
 
 impl Candidate {
@@ -167,12 +169,127 @@ pub fn discover_opencode(database: &Path, limits: &Limits) -> Result<Vec<Candida
                 source_id: source.native_key().into(),
                 source: CandidateSource::OpenCode(source),
                 source_scope: None,
+                project_paths: Vec::new(),
+                project_selection: None,
             })
             .collect())
     }
     #[cfg(not(unix))]
     {
         let _ = database;
+        Err(Error::UnsupportedPlatform)
+    }
+}
+
+/// Re-admit one saved Claude native locator without reading its transcript.
+///
+/// The host must first authorize the exact source directory again. IDs come
+/// from native filenames, not renderer paths. This opens no other session body
+/// and does not reuse a previous project permission. Scope and admit the result
+/// under current project selections before capture. Run on a blocking worker.
+pub fn reopen_claude(
+    project: &Path,
+    native_session_id: &str,
+    native_agent_id: Option<&str>,
+    limits: &Limits,
+) -> Result<Candidate> {
+    limits.validate()?;
+    if !safe_id(native_session_id)
+        || (native_session_id == "audit" && native_agent_id.is_none())
+        || native_agent_id.is_some_and(|id| !safe_id(id) || !safe_id(&format!("agent-{id}")))
+    {
+        return Err(Error::InvalidIdentity);
+    }
+    let root = Arc::new(Directory::source(project)?);
+    let (directory, filename, path, source_id, relationship) = match native_agent_id {
+        None => {
+            let filename = format!("{native_session_id}.jsonl");
+            (
+                root,
+                filename.clone(),
+                project.join(&filename),
+                native_session_id.to_owned(),
+                Relationship::Unknown,
+            )
+        }
+        Some(agent) => {
+            let directory = root
+                .source_dir(native_session_id)?
+                .source_dir("subagents")?;
+            let filename = format!("agent-{agent}.jsonl");
+            (
+                Arc::new(directory),
+                filename.clone(),
+                project
+                    .join(native_session_id)
+                    .join("subagents")
+                    .join(&filename),
+                format!("{native_session_id}/subagents/agent-{agent}"),
+                Relationship::Child {
+                    parent_source_id: native_session_id.into(),
+                    proof: "claude-subagents-layout-v1".into(),
+                },
+            )
+        }
+    };
+    let file = directory.source_file(&filename)?;
+    let metadata = file.metadata()?;
+    if !crate::filesystem::same_source(&metadata, &metadata) {
+        return Err(Error::InvalidSource);
+    }
+    let companion = if native_agent_id.is_some() {
+        let name = filename.replace(".jsonl", ".meta.json");
+        match directory.kind(&name) {
+            Ok(EntryKind::File) => Some(name),
+            Err(Error::Io(std::io::ErrorKind::NotFound)) => None,
+            Ok(_) => return Err(Error::InvalidSource),
+            Err(error) => return Err(error),
+        }
+    } else {
+        None
+    };
+    Ok(Candidate {
+        source: CandidateSource::Claude(ClaudeSource {
+            path,
+            directory,
+            filename,
+            companion,
+            native_session_id: native_session_id.into(),
+            native_agent_id: native_agent_id.map(str::to_owned),
+            relationship,
+        }),
+        source_id,
+        source_scope: None,
+        project_paths: Vec::new(),
+        project_selection: None,
+    })
+}
+
+/// Re-admit one saved OpenCode V2 identity without enumerating other sessions.
+///
+/// The host must authorize the exact database again. This reads schema and one
+/// bounded native ID, not payload or parent content. Scope and admit the result
+/// under current project selections before capture. Run on a blocking worker.
+pub fn reopen_opencode(
+    database: &Path,
+    native_session_id: &str,
+    limits: &Limits,
+) -> Result<Candidate> {
+    limits.validate()?;
+    #[cfg(unix)]
+    {
+        let source = crate::opencode::reopen(database, native_session_id, limits)?;
+        Ok(Candidate {
+            source_id: source.native_key().into(),
+            source: CandidateSource::OpenCode(source),
+            source_scope: None,
+            project_paths: Vec::new(),
+            project_selection: None,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (database, native_session_id);
         Err(Error::UnsupportedPlatform)
     }
 }
@@ -209,6 +326,8 @@ fn discover_directory(
                         }),
                         source_id: id,
                         source_scope: None,
+                        project_paths: Vec::new(),
+                        project_selection: None,
                     },
                     limits,
                 )?;
@@ -264,6 +383,8 @@ fn discover_directory(
                     }),
                     source_id: format!("{id}/subagents/{agent_id}"),
                     source_scope: None,
+                    project_paths: Vec::new(),
+                    project_selection: None,
                 },
                 limits,
             )?;

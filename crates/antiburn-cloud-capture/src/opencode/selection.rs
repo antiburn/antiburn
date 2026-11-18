@@ -246,6 +246,31 @@ impl Schema {
         Ok(())
     }
 
+    /// Read this source-owned CWD only, never project tables or parent sessions.
+    pub(super) fn project_evidence(
+        &self,
+        connection: &Connection,
+        id: &str,
+    ) -> Result<crate::ProjectEvidence> {
+        if !self.columns["session_v2"].contains("directory") {
+            return Ok(crate::ProjectEvidence::unknown());
+        }
+        let value: Option<Option<String>> = connection
+            .query_row(
+                "SELECT CASE WHEN typeof(directory) = 'text'
+                    AND octet_length(directory) BETWEEN 1 AND 4096 THEN directory END
+                 FROM session_v2 WHERE id = ?1 COLLATE BINARY",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql_error)?;
+        let value = value.ok_or(Error::SourceChanged)?;
+        Ok(value.map_or_else(crate::ProjectEvidence::unknown, |path| {
+            crate::ProjectEvidence::recorded(&path)
+        }))
+    }
+
     /// Read direct edges only; never query the referenced parent's source.
     pub(super) fn relationships(
         &self,

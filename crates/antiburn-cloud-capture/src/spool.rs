@@ -95,7 +95,9 @@ impl Spool {
     }
 
     /// The host must obtain consent and bind this source to the destination
-    /// before calling. No native content is read before reserve succeeds.
+    /// before calling. This full capture reads no native content until reserve
+    /// succeeds. Separately authorized local project-evidence scans can read
+    /// bounded transcript content before capture; they never upload it.
     ///
     /// Use a scoped candidate and a fresh, globally unique capture ID. Repeating
     /// an existing identity returns its saved entry without reading new source
@@ -134,6 +136,9 @@ impl Spool {
             Err(error) => return Err(error),
         }
         validate_sections(&sections)?;
+        if let Some(selection) = &candidate.project_selection {
+            selection.verify_directories()?;
+        }
         let (prepared, native_bytes, native_streams) = match &candidate.source {
             CandidateSource::Claude(source) => {
                 let mut files = vec![source.directory.source_file(&source.filename)?];
@@ -666,6 +671,12 @@ fn capture_claude(
     let mut streams = Vec::new();
     let mut scanner =
         NativeMetadata::new(&source.native_session_id, source.native_agent_id.as_deref());
+    let mut project_scanner = candidate.project_selection.as_ref().map(|_| {
+        crate::project::ClaudeProjectScan::new(
+            &source.native_session_id,
+            source.native_agent_id.as_deref(),
+        )
+    });
     let mut companion_bytes = Vec::new();
     let mut buffer = [0u8; 64 * 1024];
     let stream_count = files.len() + 1;
@@ -687,6 +698,9 @@ fn capture_claude(
             stream.write(bytes)?;
             if index == 0 {
                 scanner.feed(bytes);
+                if let Some(scan) = &mut project_scanner {
+                    scan.feed(bytes)?;
+                }
             } else {
                 companion_bytes.extend_from_slice(bytes);
             }
@@ -704,6 +718,9 @@ fn capture_claude(
         }
     }
     scanner.finish();
+    if let (Some(scan), Some(selection)) = (project_scanner, &candidate.project_selection) {
+        scan.validate_complete(selection)?;
+    }
     if scanner.owned_records == 0 && scanner.has_inherited_records {
         return Err(Error::InvalidSource);
     }
@@ -725,12 +742,19 @@ fn capture_opencode(
     let (id, role, schema) = stream_spec(CaptureSourceKind::OpenCodeSqliteV2, 0, 2);
     let maximum_compressed = limits.source_bytes + limits.source_bytes / 100 + 1024;
     let mut stream = ChunkStream::new(directory, id, maximum_compressed);
-    let exported = crate::opencode::export(source, limits, |bytes| {
+    let emit = |bytes: &[u8]| {
         if bytes.len() as u64 > limits.source_bytes.saturating_sub(stream.bytes) {
             return Err(Error::Limit);
         }
         stream.write(bytes)
-    })?;
+    };
+    let exported = match &candidate.project_selection {
+        Some(selection) => crate::opencode::export_in_project(source, limits, selection, emit)?,
+        None => crate::opencode::export(source, limits, emit)?,
+    };
+    if let Some(selection) = &candidate.project_selection {
+        selection.verify_directories()?;
+    }
     let stream = stream.finish(role, schema)?;
     let relationship = if let Some(parent) = exported.fork_session_id {
         if parent == source.native_session_id() {

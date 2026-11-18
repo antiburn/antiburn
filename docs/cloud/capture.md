@@ -57,6 +57,86 @@ display locator for the transcript or database; many OpenCode sessions share one
 path. Use `native_session_id()` and `source_id()` to identify selections, not that
 path alone. The host scopes candidates before assigning capture identities.
 
+### Project folder selection
+
+Source access and project permission are separate. A provider storage directory
+or database can contain sessions for excluded projects. Granting source access
+does not permit upload of every session in that store.
+
+After the host obtains local source access, `Candidate::project_evidence()`
+streams recorded project/CWD evidence. This local lookup can read session content
+before reservation. It can read the full bounded Claude transcript, not just a
+prefix, so it can find CWD changes late in a session. It never spools or uploads
+content, reads companions or external files, or grants ongoing upload consent.
+Full capture still requires reservation first. The host must separately obtain
+and enforce current account-bound full-content upload consent.
+
+Claude reads through the admitted directory handle and keeps at most one
+`PROJECT_RECORD_BYTES` (64 KiB) record and 256 distinct CWD paths of at most
+4,096 UTF-8 bytes. It streams up to `Limits.source_bytes` (512 MiB by default)
+with a 30-second deadline. `project_evidence_with_limits` permits lower byte
+and schema bounds. An exceeded byte, path-count, or time bound returns `Limit`,
+not a complete-looking partial set. It inspects source-owned top-level `cwd`
+and discards message fields.
+An owned Claude root needs its exact filename session ID, no child agent ID,
+and no true sidechain marker. A child needs its exact parent session ID and
+filename agent ID. Replayed records cannot supply the current source's CWD.
+OpenCode reads only bounded schema and the exact session's
+`session_v2.directory` cell, not messages or other payload tables.
+That cell supplies current recorded metadata, not a complete historical CWD list.
+
+`ProjectEvidence::project_paths()` returns sorted distinct proved paths.
+Multiple owned CWDs are valid; they do not conflict. Missing or invalid CWDs
+grant nothing. Malformed, oversized, unfinished, or ambiguous unowned records
+make `scan_complete()` false. Such a result can help local discovery, but cannot
+admit capture.
+The encoded Claude directory name, provider storage path, project identifier,
+parent or fork links, tool CWD, and touched file paths never supply permission.
+The scan does not infer a repository root or perform Git reads.
+
+The native host owns metadata caching, source-change checks, and eviction.
+Claude's `source_digest()` reports the full streamed transcript SHA-256 as a
+local cache value, not permission, freshness proof, or a capture fingerprint.
+OpenCode returns no whole-source digest because this lookup does not read the
+whole database. The library owns no global cache or background metadata service.
+
+`ProjectSelection::new` accepts up to 100 explicitly approved project folders.
+`matches` includes the selected path and descendants by path component:
+`/work/app` includes `/work/app/src`, but not `/work/app-other`. Paths must be
+existing absolute directories without lexical aliases or symlink components.
+Unavailable or aliased paths fail closed. A separate worktree outside the
+selected tree needs its own folder selection.
+
+`ProjectSelection::admit` returns an independent candidate when any proved owned
+CWD matches an approved folder tree. It freezes the approved root policy, not one
+exact CWD. `admitted_project_paths()` returns all initially matched CWDs.
+The host owns project/worktree grouping and must keep each approved worktree path
+in that policy. A group label does not merge captures or grant access to another
+path. The single-path getters return the first path only; use the plural getters
+for discovery and grouping.
+The host binds folder choices to the current account, destination, and explicit
+full-content consent. Empty selections permit nothing.
+
+Capture rechecks the frozen approved root policy after reservation. OpenCode
+checks the same snapshot used for payload export. Claude checks the full stream
+as it captures. CWD changes remain valid when any proved owned CWD still matches
+the approved trees. If none matches, or the full check is incomplete, capture
+cannot publish uploadable bytes. Preserve the source and inspect it locally;
+do not weaken folder permission or clip the transcript to retry.
+Sources without proved owned CWDs remain unavailable for folder-selected capture.
+
+A matched session uploads in full under the existing source contract. Folder
+selection does not remove messages, tool results, or file text that names paths
+outside that folder. It also retains records from other CWDs in that session.
+External files remain outside capture.
+
+`reopen_claude` and `reopen_opencode` re-admit one saved native locator without
+enumerating other sessions or reading payload. They do not restore a saved
+project permission. The host must authorize source access again, retain its
+stable account/source scope, and admit the reopened candidate against current
+folder choices before a new capture. All these calls block and need a bounded
+native worker. Saved upload retries continue from immutable spool bytes.
+
 ### Claude files
 
 Discovery reads directory entries and metadata, not native content. It admits:
@@ -323,12 +403,29 @@ compressed digest. The plan separately declares required transfer bytes and
 reused bytes. The library verifies these sums and saves the plan before upload.
 Every later negotiation must return the exact same plan. A changed plan fails
 closed without changing saved bytes or progress.
+Plan digests register the expected saved bodies. They do not prove that stored
+bytes have passed integrity verification.
 
 `ServerStatus` binds the same identity, manifest digest, and plan ID. Its
 `uploaded_parts` confirm uploaded chunks only. A reuse decision is not an upload
 receipt. Unknown keys, duplicates, reused chunks in uploaded receipts, wrong
 hashes, or regressed confirmations fail closed. Confirmation never comes from
 local bytes sent or a successful HTTP upload alone.
+
+Each `PartReceipt.compressed_sha256` is the registered expected saved-body digest.
+It binds the service's stored-part acknowledgment to the expected chunk in the
+manifest and frozen plan. It does not claim that storage returned SHA-256 or
+independently verified those bytes. A transfer receipt confirms the stored part
+and its request identity, not full capture integrity. Optional storage checksum
+metadata can be unavailable without changing this distinction. Never use an ETag
+as SHA-256 or describe an unavailable checksum as verified. The library still
+requires an exact digest match against the bound request.
+
+Only `integrity_accepted: true` confirms that the service has read and verified
+the complete stored capture. Verification covers compressed and expanded chunk
+lengths and digests, stream lengths and digests, and manifest and metadata
+bindings, including reused chunks. Transfer receipts and storage checksum
+metadata do not replace those full-byte checks or permit automatic spool release.
 
 Each negotiated logical chunk can map to one remote object. Its complete saved
 gzip body can be the single final multipart part for that object's upload.
@@ -356,8 +453,9 @@ Default bounds are 512 MiB per Claude transcript or expanded OpenCode native-row
 stream, 64 KiB per companion and generated metadata stream, 1 GiB expanded capture
 size, 512 queue entries, and 2 GiB of spool bytes. A record cannot exceed 512 KiB.
 File streaming reads use 64 KiB buffers; SQLite uses bounded cell fragments.
-Before native reads, capture reserves conservative compressed size and room for
-two bounded queue records. Limits may be lowered within the supported bounds.
+Before reading native content for full capture, the spool reserves conservative
+compressed size and room for two bounded queue records. Limits may be lowered
+within the supported bounds.
 
 `resume_step` reconciles status, hashes at most one selected saved chunk, and
 sends at most that chunk. It does not scan every saved part on each turn.

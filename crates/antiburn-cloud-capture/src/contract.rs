@@ -475,7 +475,7 @@ pub struct ChunkKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChunkDisposition {
-    /// Transfer the saved body and obtain its authoritative upload receipt.
+    /// Transfer the saved body and obtain service confirmation of stored transfer.
     Upload,
     /// Use the service's protected base object but keep local retry bytes.
     Reuse,
@@ -486,7 +486,7 @@ pub enum ChunkDisposition {
 pub struct PlannedChunk {
     /// Exact stream-local chunk selected by this decision.
     pub key: ChunkKey,
-    /// Saved-body digest that must equal the manifest chunk digest.
+    /// Registered expected saved-body digest; must equal the manifest chunk digest.
     pub compressed_sha256: String,
     /// Frozen transfer or reuse choice, not a confirmation.
     pub disposition: ChunkDisposition,
@@ -496,6 +496,8 @@ pub struct PlannedChunk {
 ///
 /// Required and reused byte sums count compressed bodies. A reuse decision is
 /// not an upload receipt and does not permit early removal of local bytes.
+/// Chunk digests bind expected bodies and later receipts to this plan. The plan
+/// does not prove storage or byte integrity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UploadPlan {
     /// Exact request bindings from the manifest.
@@ -512,12 +514,20 @@ pub struct UploadPlan {
     pub reused_bytes: u64,
 }
 
-/// This receipt confirms an uploaded chunk, not a reuse decision.
+/// Service confirmation of a stored part for an uploaded chunk's bound request.
+///
+/// The enclosing [`ServerStatus`] supplies the identity, manifest, and plan
+/// binding. This receipt confirms transfer, not complete byte integrity, and
+/// never permits spool release by itself. Reuse decisions have no upload receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartReceipt {
     /// Uploaded chunk, never a reuse-only decision.
     pub key: ChunkKey,
-    /// Authoritatively confirmed saved-body digest.
+    /// Registered expected saved-body digest that identifies the acknowledged chunk.
+    ///
+    /// This must equal the manifest and frozen plan digest. It is a request
+    /// binding, not a claim that storage returned or independently verified SHA-256.
+    /// Never substitute an ETag or invent a verified checksum when none exists.
     pub compressed_sha256: String,
 }
 
@@ -525,6 +535,8 @@ pub struct PartReceipt {
 ///
 /// Uploaded receipts may grow but must not regress. Acceptance also requires
 /// receipts for every `Upload` decision; `Reuse` decisions must not appear here.
+/// Receipt digest matches establish expected-request bindings, not full byte
+/// integrity. Only `integrity_accepted` confirms complete capture verification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerStatus {
     /// Exact account, destination, source, and capture binding.
@@ -533,9 +545,15 @@ pub struct ServerStatus {
     pub manifest_sha256: String,
     /// Identifier of the unchanged saved plan.
     pub plan_id: String,
-    /// Confirmed upload receipts; duplicates and reuse receipts are invalid.
+    /// Stored-transfer confirmations; duplicates and reuse receipts are invalid.
     pub uploaded_parts: Vec<PartReceipt>,
-    /// True only after the service verifies and accepts the complete capture.
+    /// True only after the service reads and verifies the complete stored capture.
+    ///
+    /// Verification covers compressed and expanded chunk lengths and digests,
+    /// stream lengths and digests, and manifest and metadata bindings, including
+    /// reused chunks. Stored-part receipts or optional storage checksum metadata
+    /// cannot replace these checks. Only this acceptance permits automatic release
+    /// of local retry bytes.
     pub integrity_accepted: bool,
 }
 
@@ -603,7 +621,11 @@ pub enum TransportError {
 /// diagnostics. Errors can follow remote success, so retry and status must be
 /// safe under the same frozen inputs.
 pub trait Transport {
-    /// Reserve the fixed capture identity before any native content is read.
+    /// Reserve the fixed identity before full native capture reads content.
+    ///
+    /// A separate, authorized local project-evidence scan can read bounded native
+    /// transcript content before reservation. That scan never spools or uploads
+    /// content and does not grant ongoing full-content upload consent.
     ///
     /// `maximum_expanded_bytes` includes conservative generated-metadata space.
     /// Use the capture ID for reservation idempotency. Return a reservation ID
@@ -628,12 +650,16 @@ pub trait Transport {
         manifest: &CaptureManifest,
     ) -> std::result::Result<UploadPlan, TransportError>;
 
-    /// Read authoritative receipts and acceptance for the frozen request.
+    /// Read service-confirmed stored transfers and acceptance for the frozen request.
     ///
     /// Do not infer confirmation from bytes sent or a successful upload response.
-    /// Receipts cover only `Upload` decisions and must not regress. Report
-    /// integrity acceptance only after verification of the complete capture,
-    /// including reused chunks and metadata.
+    /// Receipts cover only `Upload` decisions and must not regress. Their digests
+    /// bind acknowledgments to registered expected chunks; they do not establish
+    /// full byte integrity or require storage-provided SHA-256 metadata. Report
+    /// integrity acceptance only after reading and verifying all stored bytes,
+    /// compressed and expanded chunks, streams, and metadata, including reused
+    /// chunks. Never treat an ETag as SHA-256 or report an unverified checksum as
+    /// verified.
     fn status(
         &mut self,
         reservation_id: &str,

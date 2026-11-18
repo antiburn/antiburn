@@ -26,6 +26,8 @@ mod metadata;
 #[cfg(all(feature = "cloud", unix))]
 mod opencode;
 #[cfg(feature = "cloud")]
+mod project;
+#[cfg(feature = "cloud")]
 mod protocol;
 #[cfg(feature = "cloud")]
 mod spool;
@@ -39,6 +41,10 @@ pub use contract::*;
 #[cfg(feature = "cloud")]
 pub use discovery::{Candidate, CaptureSourceKind, discover_claude, discover_opencode};
 #[cfg(feature = "cloud")]
+pub use discovery::{reopen_claude, reopen_opencode};
+#[cfg(feature = "cloud")]
 pub use metadata::*;
+#[cfg(feature = "cloud")]
+pub use project::{PROJECT_RECORD_BYTES, ProjectEvidence, ProjectSelection};
 #[cfg(feature = "cloud")]
 pub use spool::Spool;

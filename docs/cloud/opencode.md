@@ -1,5 +1,8 @@
 # OpenCode native capture
 
+Antiburn Cloud is not live. [Sign up for the waiting list](https://antiburn.com/cloud/).
+This contract describes development-only capture; public builds keep Cloud disabled.
+
 OpenCode capture preserves session-owned SQLite values for later document
 projection. It does not use normalized metrics, start OpenCode, read external
 attachment files, or download URLs. See [native capture](capture.md) for consent,
@@ -29,6 +32,37 @@ database file's inode is an admission fence, not a logical session key.
 Discovery and capture are synchronous blocking operations. Hosts must run them
 on bounded blocking workers, not UI or async runtime threads. A saved native-host
 source request is not captured payload or permission to execute a later read.
+
+Project permission remains separate from database access. The optional
+`Candidate::project_evidence()` lookup reads only the exact session's bounded
+`session_v2.directory` value and schema. It does not inspect messages, tool paths,
+project tables, or another session. The value must be a valid absolute path of at
+most 4,096 UTF-8 bytes. A missing column, null, wrong SQLite type, invalid path, or
+oversized value leaves the project unknown.
+
+Use `ProjectSelection::admit` to filter by account-approved project/CWD folders
+and descendants. It matches any proved owned CWD in the source evidence.
+Sibling path prefixes do not match. A database path or provider
+root never grants project permission. Children and forks need their own recorded
+CWD; parent and fork links grant nothing. Worktrees outside the selected folder
+need separate selection. See [project folder selection](capture.md#project-folder-selection)
+for bounded Claude lookup and directory alias rules.
+
+`reopen_opencode` admits one saved native ID without enumerating other sessions.
+The host must re-authorize the database, add its stable source scope, and apply
+current project permission before new capture. Capture freezes that approved root
+policy and checks it in the native export snapshot, after reservation. A changed
+directory still matches when it remains in an approved folder tree. An unknown
+or nonmatching CWD cannot publish an uploadable capture.
+The native stream still contains the full selected session, including stored
+content that names files outside the selected folder. Selection does not change
+SQLite types, native bytes, stream versions, or saved retry bytes.
+
+Local metadata reads are separate from full capture and ongoing upload consent.
+An authorized local Claude metadata scan can read bounded transcript content
+before reservation to find all recorded owned CWDs. No metadata scan uploads
+content. The host owns bounded metadata caches and project/worktree grouping;
+this library performs no Git reads or background discovery.
 
 ## Structural V2 support
 
