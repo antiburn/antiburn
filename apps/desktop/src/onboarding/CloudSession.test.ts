@@ -16,6 +16,7 @@ function fixture(initial: CloudSnapshot = emptyCloudSnapshot) {
   let notify: (next: CloudSnapshot) => void = () => {}
   const stop = vi.fn()
   const port: CloudPort = {
+    ongoing: undefined,
     read: vi.fn(async () => value),
     watch: vi.fn(async (listener) => {
       notify = listener
@@ -684,7 +685,7 @@ it("blocks a team destination without selecting personal instead", async () => {
   stop()
 })
 
-const nativeCapture: CloudSnapshot = {
+const desktopCapture: CloudSnapshot = {
   ...signedIn,
   captureEnabled: true,
   syncEnabled: false,
@@ -698,8 +699,8 @@ const nativeCapture: CloudSnapshot = {
   },
 }
 
-it("saves a native capture request after onboarding with exact sorted selected roots", async () => {
-  const { port } = fixture(nativeCapture)
+it("saves a desktop capture request after onboarding with exact sorted selected roots", async () => {
+  const { port } = fixture(desktopCapture)
   vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
   const session = new CloudSession(port, false)
   const stop = session.subscribe(vi.fn())
@@ -708,7 +709,7 @@ it("saves a native capture request after onboarding with exact sorted selected r
   expect(port.prepareSync).not.toHaveBeenCalled()
   session.setFullContentConsent(true)
   await session.startSync()
-  const folders = nativeCapture.draft.folders.filter((folder) => folder.selected)
+  const folders = desktopCapture.draft.folders.filter((folder) => folder.selected)
   const consent = {
     version: "native-full-content-v1",
     accountId: "synthetic",
@@ -727,8 +728,8 @@ it("saves a native capture request after onboarding with exact sorted selected r
   stop()
 })
 
-it("retries native preparation with the same request ID after an unconfirmed save", async () => {
-  const { port } = fixture(nativeCapture)
+it("retries desktop preparation with the same request ID after an unconfirmed save", async () => {
+  const { port } = fixture(desktopCapture)
   vi.mocked(port.prepareSync).mockRejectedValueOnce(new Error("write failed"))
   vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
   const session = new CloudSession(port, false)
@@ -745,8 +746,8 @@ it("retries native preparation with the same request ID after an unconfirmed sav
   stop()
 })
 
-it("retries native source listing with the saved request ID without preparing it again", async () => {
-  const { port } = fixture(nativeCapture)
+it("retries desktop source listing with the saved request ID without preparing it again", async () => {
+  const { port } = fixture(desktopCapture)
   vi.mocked(port.start).mockRejectedValueOnce(new Error("response lost"))
   vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
   vi.mocked(port.reconcile).mockResolvedValue({ status: "upload_unavailable" })
@@ -765,7 +766,7 @@ it("retries native source listing with the saved request ID without preparing it
 })
 
 it("clears consent before a delayed source edit can finish during preparation", async () => {
-  const { port } = fixture(nativeCapture)
+  const { port } = fixture(desktopCapture)
   let finishPrepare!: () => void
   let finishSave!: (value: CloudSnapshot) => void
   port.prepareSync = vi.fn(
@@ -785,16 +786,16 @@ it("clears consent before a delayed source edit can finish during preparation", 
   await settle()
   session.setFullContentConsent(true)
   const preparation = session.startSync()
-  const edit = session.selectFolder(nativeCapture.draft.folders[0]!.path, false)
+  const edit = session.selectFolder(desktopCapture.draft.folders[0]!.path, false)
   expect(session.getSnapshot().fullContentConsent).toBe(false)
   finishPrepare()
   await preparation
   expect(port.start).not.toHaveBeenCalled()
   finishSave({
-    ...nativeCapture,
+    ...desktopCapture,
     draft: {
-      ...nativeCapture.draft,
-      folders: nativeCapture.draft.folders.map((folder, index) => ({
+      ...desktopCapture.draft,
+      folders: desktopCapture.draft.folders.map((folder, index) => ({
         ...folder,
         selected: index === 0 ? false : folder.selected,
       })),
@@ -805,9 +806,9 @@ it("clears consent before a delayed source edit can finish during preparation", 
 })
 
 it.each(["resolved", "rejected"] as const)(
-  "settles native preparation after consent is cleared when its reply is %s",
+  "settles desktop preparation after consent is cleared when its reply is %s",
   async (reply) => {
-    const { port } = fixture(nativeCapture)
+    const { port } = fixture(desktopCapture)
     let finishPrepare!: () => void
     let rejectPrepare!: (error: Error) => void
     port.prepareSync = vi.fn(
@@ -842,7 +843,7 @@ it.each(["resolved", "rejected"] as const)(
 it.each(["same account", "new account"] as const)(
   "keeps a newer request's starting progress for the %s after an older preparation finishes",
   async (account) => {
-    const { port, emit } = fixture(nativeCapture)
+    const { port, emit } = fixture(desktopCapture)
     let finishPrepare!: () => void
     port.prepareSync = vi.fn(
       () =>
@@ -857,7 +858,7 @@ it.each(["same account", "new account"] as const)(
     const pending = session.startSync()
     session.setFullContentConsent(false)
     const next: CloudSnapshot = {
-      ...nativeCapture,
+      ...desktopCapture,
       ...(account === "new account"
         ? {
             identity: { id: "synthetic-new-account", login: "another" },
@@ -878,7 +879,7 @@ it.each(["same account", "new account"] as const)(
 )
 
 it("keeps a newer sign-in busy after an older preparation finishes", async () => {
-  const { port, emit } = fixture(nativeCapture)
+  const { port, emit } = fixture(desktopCapture)
   let finishPrepare!: () => void
   let finishBegin!: (value: CloudSnapshot) => void
   port.prepareSync = vi.fn(
@@ -920,11 +921,11 @@ it("keeps a newer sign-in busy after an older preparation finishes", async () =>
   stop()
 })
 
-it("reports listing failure after the native prepare event and retries the same saved request", async () => {
-  const { port, emit } = fixture(nativeCapture)
+it("reports listing failure after the desktop prepare event and retries the same saved request", async () => {
+  const { port, emit } = fixture(desktopCapture)
   port.prepareSync = vi.fn(async (_folders, requestId) => {
     emit({
-      ...nativeCapture,
+      ...desktopCapture,
       pendingSync: { requestId, result: { status: "upload_unavailable" } },
     })
   })
@@ -941,7 +942,7 @@ it("reports listing failure after the native prepare event and retries the same 
   })
   const id = vi.mocked(port.prepareSync).mock.calls[0]![1]
   emit({
-    ...nativeCapture,
+    ...desktopCapture,
     pendingSync: { requestId: id, result: { status: "upload_unavailable" } },
   })
   expect(session.getSnapshot().error).toContain("Could not finish listing sources")
@@ -953,9 +954,9 @@ it("reports listing failure after the native prepare event and retries the same 
   stop()
 })
 
-it("restores a saved native request without content consent or a new submission", async () => {
+it("restores a saved desktop request without content consent or a new submission", async () => {
   const { port } = fixture({
-    ...nativeCapture,
+    ...desktopCapture,
     pendingSync: { requestId: "saved-capture", result: { status: "upload_unavailable" } },
   })
   vi.mocked(port.reconcile).mockResolvedValue({ status: "upload_unavailable" })
@@ -975,7 +976,7 @@ it("restores a saved native request without content consent or a new submission"
 
 it("loads agent readiness when reconciliation emits state before its reply", async () => {
   const saved: CloudSnapshot = {
-    ...nativeCapture,
+    ...desktopCapture,
     pendingSync: { requestId: "saved", result: { status: "upload_unavailable" } },
   }
   const { port, emit } = fixture(saved)
@@ -995,7 +996,7 @@ it("loads agent readiness when reconciliation emits state before its reply", asy
 
 it("loads agent readiness independently when an initial busy read is followed by a saved snapshot", async () => {
   const saved: CloudSnapshot = {
-    ...nativeCapture,
+    ...desktopCapture,
     pendingSync: { requestId: "saved", result: { status: "upload_unavailable" } },
   }
   const { port, emit } = fixture(saved)
@@ -1019,7 +1020,7 @@ it("loads agent readiness independently when an initial busy read is followed by
     screen: "complete",
     agent: "ready",
     error: null,
-    cloud: { identity: nativeCapture.identity, pendingSync: { requestId: "saved" } },
+    cloud: { identity: desktopCapture.identity, pendingSync: { requestId: "saved" } },
   })
   expect(port.read).toHaveBeenCalledOnce()
   expect(port.prepareSync).not.toHaveBeenCalled()
@@ -1028,9 +1029,9 @@ it("loads agent readiness independently when an initial busy read is followed by
 })
 
 it("clears consent on every observed surface when a status read closes authority", async () => {
-  let value = nativeCapture
+  let value = desktopCapture
   const listeners = new Set<(next: CloudSnapshot) => void>()
-  const { port } = fixture(nativeCapture)
+  const { port } = fixture(desktopCapture)
   port.watch = async (listener) => {
     listeners.add(listener)
     return () => listeners.delete(listener)
@@ -1069,7 +1070,7 @@ it("does not navigate an unsupported connection through a failing draft save", a
   const { port } = fixture({
     ...signedIn,
     draft: { screen: "handoff", folders: [] },
-    setupError: "Native capture is not supported on this platform.",
+    setupError: "Desktop capture is not supported on this platform.",
   })
   const session = new CloudSession(port, false)
   const stop = session.subscribe(vi.fn())
@@ -1079,15 +1080,15 @@ it("does not navigate an unsupported connection through a failing draft save", a
   expect(session.getSnapshot()).toMatchObject({
     screen: "identity",
     error: null,
-    cloud: { setupError: "Native capture is not supported on this platform." },
+    cloud: { setupError: "Desktop capture is not supported on this platform." },
   })
   stop()
 })
 
 it.each(["signed_out", "reauth_required", "credential_failed"] as const)(
-  "blocks a native save outside the current signed-in context: %s",
+  "blocks a desktop save outside the current signed-in context: %s",
   async (status) => {
-    const { port } = fixture({ ...nativeCapture, status })
+    const { port } = fixture({ ...desktopCapture, status })
     const session = new CloudSession(port, false, true)
     const stop = session.subscribe(vi.fn())
     await settle()
@@ -1098,8 +1099,8 @@ it.each(["signed_out", "reauth_required", "credential_failed"] as const)(
   },
 )
 
-it("blocks a native save when setup could not load", async () => {
-  const { port } = fixture({ ...nativeCapture, setupError: "Could not read Cloud setup." })
+it("blocks a desktop save when setup could not load", async () => {
+  const { port } = fixture({ ...desktopCapture, setupError: "Could not read Cloud setup." })
   const session = new CloudSession(port, false)
   const stop = session.subscribe(vi.fn())
   await settle()
@@ -1109,8 +1110,8 @@ it("blocks a native save when setup could not load", async () => {
   stop()
 })
 
-it("does not start native capture after the window closes during preparation", async () => {
-  const { port } = fixture(nativeCapture)
+it("does not start desktop capture after the window closes during preparation", async () => {
+  const { port } = fixture(desktopCapture)
   let finish!: () => void
   port.prepareSync = vi.fn(
     () =>
@@ -1132,7 +1133,7 @@ it("does not start native capture after the window closes during preparation", a
 })
 
 it("does not reuse an earlier confirmation after consent is cleared and checked again", async () => {
-  const { port } = fixture(nativeCapture)
+  const { port } = fixture(desktopCapture)
   let finish!: () => void
   port.prepareSync = vi.fn(
     () =>
@@ -1154,8 +1155,8 @@ it("does not reuse an earlier confirmation after consent is cleared and checked 
   stop()
 })
 
-it("fences late native results and creates a new request for changed roots", async () => {
-  const { port, emit } = fixture(nativeCapture)
+it("rejects late desktop results and creates a new request for changed folders", async () => {
+  const { port, emit } = fixture(desktopCapture)
   let finish!: (result: Awaited<ReturnType<CloudPort["start"]>>) => void
   vi.mocked(port.start).mockImplementationOnce(
     () =>
@@ -1170,7 +1171,7 @@ it("fences late native results and creates a new request for changed roots", asy
   const pending = session.startSync()
   await settle()
   emit({
-    ...nativeCapture,
+    ...desktopCapture,
     draft: {
       screen: "complete",
       folders: [{ path: "/Example/claude/projects/new", selected: true }],
@@ -1194,7 +1195,7 @@ it("fences late native results and creates a new request for changed roots", asy
 })
 
 it("shows safe admission rejection without clearing authority or source consent", async () => {
-  const { port, emit } = fixture(nativeCapture)
+  const { port, emit } = fixture(desktopCapture)
   port.save = vi.fn(async () => {
     throw CLOUD_BUSY_MESSAGE
   })
@@ -1208,14 +1209,14 @@ it("shows safe admission rejection without clearing authority or source consent"
     cloud: { status: "signed_in" },
     fullContentConsent: true,
   })
-  emit(nativeCapture)
+  emit(desktopCapture)
   expect(session.getSnapshot().error).toBeNull()
   expect(session.getSnapshot().fullContentConsent).toBe(true)
   stop()
 })
 
-it("returns a rejected busy preparation to source selection and retries the same ID", async () => {
-  const { port } = fixture(nativeCapture)
+it("keeps a rejected busy preparation on completion and retries the same ID", async () => {
+  const { port } = fixture(desktopCapture)
   vi.mocked(port.prepareSync).mockRejectedValueOnce(CLOUD_BUSY_MESSAGE)
   vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
   const session = new CloudSession(port, false, true)
@@ -1224,7 +1225,7 @@ it("returns a rejected busy preparation to source selection and retries the same
   session.setFullContentConsent(true)
   await session.startSync()
   expect(session.getSnapshot()).toMatchObject({
-    screen: "folders",
+    screen: "complete",
     sync: { status: "unavailable" },
     error: CLOUD_BUSY_MESSAGE,
     fullContentConsent: true,
@@ -1238,11 +1239,11 @@ it("returns a rejected busy preparation to source selection and retries the same
   stop()
 })
 
-it("keeps source-listing retry state after a busy listing and an unchanged native event", async () => {
-  const { port, emit } = fixture(nativeCapture)
+it("keeps source-listing retry state after a busy listing and an unchanged desktop event", async () => {
+  const { port, emit } = fixture(desktopCapture)
   port.prepareSync = vi.fn(async (_folders, requestId) => {
     emit({
-      ...nativeCapture,
+      ...desktopCapture,
       pendingSync: { requestId, result: { status: "upload_unavailable" } },
     })
   })
@@ -1261,7 +1262,7 @@ it("keeps source-listing retry state after a busy listing and an unchanged nativ
   })
   const requestId = vi.mocked(port.prepareSync).mock.calls[0]![1]
   emit({
-    ...nativeCapture,
+    ...desktopCapture,
     pendingSync: { requestId, result: { status: "upload_unavailable" } },
   })
   expect(session.getSnapshot()).toMatchObject({
@@ -1280,8 +1281,8 @@ it("keeps source-listing retry state after a busy listing and an unchanged nativ
   stop()
 })
 
-it("does not expose other raw native or provider errors as an admission warning", async () => {
-  const { port } = fixture(nativeCapture)
+it("does not expose other raw desktop or provider errors as an admission warning", async () => {
+  const { port } = fixture(desktopCapture)
   port.save = vi.fn(async () => {
     throw new Error("synthetic private provider detail")
   })
@@ -1294,7 +1295,7 @@ it("does not expose other raw native or provider errors as an admission warning"
 })
 
 it("adds an explicitly picked OpenCode database and confirms a typed mixed-provider selection", async () => {
-  const { port } = fixture(nativeCapture)
+  const { port } = fixture(desktopCapture)
   vi.mocked(port.pick).mockResolvedValue(["/Example/opencode/opencode.db"])
   vi.mocked(port.start).mockResolvedValue({ status: "upload_unavailable" })
   const session = new CloudSession(port, false, true)
@@ -1334,7 +1335,7 @@ it("adds an explicitly picked OpenCode database and confirms a typed mixed-provi
 
 it("fences a late saved selection when the provider changes at the same path", async () => {
   const initial: CloudSnapshot = {
-    ...nativeCapture,
+    ...desktopCapture,
     draft: { screen: "folders", folders: [{ path: "/Example/source", selected: true }] },
   }
   const { port, emit } = fixture(initial)

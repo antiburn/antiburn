@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useSyncExternalStore } from "react"
 import { expect, it, vi } from "vitest"
-import { emptyCloudSnapshot, nativeCloudPort, type CloudSnapshot } from "../../lib/cloud"
+import { emptyCloudSnapshot, desktopCloudPort, type CloudSnapshot } from "../../lib/cloud"
 import { CloudSession } from "../../onboarding/CloudSession"
 import { CloudAccount } from "./CloudAccount"
 import { SettingsTargetFocus } from "./SettingsTargetFocus"
@@ -35,7 +35,8 @@ function fixture(initial?: CloudSnapshot) {
   const pick = vi.fn(async () => ["/Example/opencode/opencode.db"])
   const session = new CloudSession(
     {
-      ...nativeCloudPort,
+      ...desktopCloudPort,
+      ongoing: undefined,
       read: async () => value,
       watch: async (listener) => {
         publish = listener
@@ -78,15 +79,13 @@ function Account({ session }: { session: CloudSession }) {
 it("requires an explicit reset and keeps the remote warning while reconnecting", async () => {
   const { session, resetLocal, emit } = fixture()
   render(<Account session={session} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Reset local connection" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in on this device" }))
   expect(resetLocal).not.toHaveBeenCalled()
-  expect(screen.getByText(/this does not revoke the old connection/)).toBeVisible()
-  fireEvent.click(screen.getByRole("button", { name: "Reset and keep warning" }))
+  expect(screen.getByText(/the old connection may still have access to Cloud/)).toBeVisible()
+  fireEvent.click(screen.getByRole("button", { name: "Reset sign-in" }))
   await waitFor(() => expect(resetLocal).toHaveBeenCalledOnce())
   expect(await screen.findByRole("button", { name: "Sign in" })).toBeEnabled()
-  expect(
-    screen.getByText(/Cloud has not confirmed revocation of an earlier connection/),
-  ).toBeVisible()
+  expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
   act(() =>
     emit({
       ...emptyCloudSnapshot,
@@ -98,19 +97,17 @@ it("requires an explicit reset and keeps the remote warning while reconnecting",
     }),
   )
   expect(screen.getByText("Signed in as Example")).toBeVisible()
-  expect(
-    screen.getByText(/Cloud has not confirmed revocation of an earlier connection/),
-  ).toBeVisible()
+  expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
 })
 
 it("canceling the reset confirmation does not call a native cleanup action", async () => {
   const { session, resetLocal, signOut } = fixture()
   render(<Account session={session} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Reset local connection" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in on this device" }))
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
   expect(resetLocal).not.toHaveBeenCalled()
   expect(signOut).not.toHaveBeenCalled()
-  expect(screen.getByRole("button", { name: "Reset local connection" })).toBeVisible()
+  expect(screen.getByRole("button", { name: "Reset sign-in on this device" })).toBeVisible()
 })
 
 it("requires source selection and sends account-bound folder changes from Settings", async () => {
@@ -131,7 +128,9 @@ it("requires source selection and sends account-bound folder changes from Settin
   const source = await screen.findByRole("switch", {
     name: "Select /Example/Project for Cloud capture",
   })
-  const consent = screen.getByRole("checkbox", { name: /upload full native session content/ })
+  const consent = screen.getByRole("checkbox", {
+    name: /Upload existing and new sessions in full/,
+  })
   expect(consent).toBeDisabled()
   const row = screen.getByText("Cloud folders").closest<HTMLElement>("[data-settings-control]")!
   row.scrollIntoView = vi.fn()
@@ -168,7 +167,7 @@ it("keeps revocation available when folder setup cannot load", async () => {
   await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
 })
 
-const nativeCapture: CloudSnapshot = {
+const desktopCapture: CloudSnapshot = {
   ...emptyCloudSnapshot,
   authEnabled: true,
   captureEnabled: true,
@@ -181,12 +180,12 @@ const nativeCapture: CloudSnapshot = {
   },
 }
 
-it("saves a native capture request from Settings after onboarding without claiming upload", async () => {
-  const { session, prepareSync, start } = fixture(nativeCapture)
+it("saves a desktop capture request from Settings after onboarding without claiming upload", async () => {
+  const { session, prepareSync, start } = fixture(desktopCapture)
   render(<Account session={session} />)
   const save = await screen.findByRole("button", { name: "Save capture request" })
   expect(save).toBeDisabled()
-  expect(screen.getByText(/Choose native Claude projects\/<project>/)).toBeVisible()
+  expect(screen.getByText(/Choose the folders where Claude saves sessions/)).toBeVisible()
   fireEvent.click(
     screen.getByRole("checkbox", { name: /authorize a full-content capture request/ }),
   )
@@ -207,9 +206,9 @@ it.each([
   { status: "reauth_required" as const },
   { setupError: "Could not read Cloud setup." },
 ])(
-  "disables native saves without selected sources and current personal context: %j",
+  "disables desktop saves without selected sources and current personal context: %j",
   async (patch) => {
-    const { session, prepareSync } = fixture({ ...nativeCapture, ...patch })
+    const { session, prepareSync } = fixture({ ...desktopCapture, ...patch })
     render(<Account session={session} />)
     const save = await screen.findByRole("button", { name: "Save capture request" })
     expect(save).toBeDisabled()
@@ -219,8 +218,8 @@ it.each([
   },
 )
 
-it("clears native save confirmation when source selection changes", async () => {
-  const { session, start } = fixture(nativeCapture)
+it("clears desktop save confirmation when source selection changes", async () => {
+  const { session, start } = fixture(desktopCapture)
   render(<Account session={session} />)
   const save = await screen.findByRole("button", { name: "Save capture request" })
   const consent = screen.getByRole("checkbox")
@@ -234,7 +233,7 @@ it("clears native save confirmation when source selection changes", async () => 
 
 it("selects OpenCode databases explicitly from Settings before typed content confirmation", async () => {
   const { session, pick, save, prepareSync } = fixture({
-    ...nativeCapture,
+    ...desktopCapture,
     draft: { screen: "complete", folders: [] },
   })
   render(<Account session={session} />)

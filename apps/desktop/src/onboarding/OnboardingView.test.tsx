@@ -175,7 +175,7 @@ it("reports an unresponsive example without blocking navigation", () => {
   vi.useRealTimers()
 })
 
-it("pauses the demo when the host document hides and respects native visibility on return", () => {
+it("pauses the demo when the host document hides and respects desktop visibility on return", () => {
   const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false)
   const view = render(
     <OnboardingView step="sessions" onStepChange={vi.fn()} onComplete={vi.fn()} />,
@@ -249,7 +249,7 @@ it("does not consume animation time before the demo is ready", () => {
   vi.useRealTimers()
 })
 
-it("does not time out a demo while its native window is hidden", () => {
+it("does not time out a demo while its desktop window is hidden", () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
   const props = { step: "sessions" as const, onStepChange: vi.fn(), onComplete: vi.fn() }
   const view = render(<OnboardingView {...props} visible={false} />)

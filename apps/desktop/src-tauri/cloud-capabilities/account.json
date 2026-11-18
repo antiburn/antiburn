@@ -14,6 +14,12 @@
     "allow-cloud-start-sync",
     "allow-cloud-prepare-sync",
     "allow-cloud-reconcile-sync",
-    "allow-cloud-cancel-sync"
+    "allow-cloud-cancel-sync",
+    "allow-cloud-project-groups",
+    "allow-cloud-sync-projects",
+    "allow-cloud-sync-status",
+    "allow-cloud-enable-sync",
+    "allow-cloud-pause-sync",
+    "allow-cloud-retry-sync"
   ]
 }

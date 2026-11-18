@@ -2078,9 +2078,9 @@ These layouts are for development builds. Antiburn Cloud is not live, and public
 builds keep it disabled. The public Cloud page is a [waiting-list signup](https://antiburn.com/cloud/).
 
 The separate Cloud setup uses the onboarding semantic palette, existing control and
-popover radii, and existing motion durations. The badge reserves the native title
-bar area. The centered handoff and identity cards lead to a selected-by-default folder
-draft and truthful sync and integration status. Reduced motion removes entrances.
+popover radii, and existing motion durations. The badge reserves the desktop title
+bar area. The centered handoff and identity cards lead to an in-memory folder
+selection and truthful sync and integration status. Reduced motion removes entrances.
 Folder row and card geometry is local to `src/onboarding/cloud.css`; no data or
 authentication state comes from the teaching iframe.
 
@@ -2092,8 +2092,40 @@ The full question occupies its final layout and has one accessible label.
 The folder footer has no separator. Hidden windows pause Cloud entrances;
 reduced motion shows all text immediately. Verified identity advances automatically after the prototype’s identity handoff delay; hidden windows suspend the delay.
 
-Cloud completion status matches the approved prototype: a 6px green dot in a 10px icon column, an 8px text gap, and a green 12px tick only for a ready agent. Accepted/running sync pulses opacity from 1 to 0.4 with `--cloud-sync-pulse-duration`; hidden windows pause it and reduced motion disables it. The inactive dot uses onboarding-muted. Terminal sync states do not pulse. The completion heading uses “Sessions syncing! Your agent is ready” for all completion states. The footer reports the actual sync and agent status, including the selected folder count and “Agent setup / Ask from your coding agent” when ready.
+Cloud completion status matches the approved prototype: a 6px green dot in a 10px icon column, an 8px text gap, and a green 12px tick only for a ready local agent. Accepted/running sync pulses opacity from 1 to 0.4 with `--cloud-sync-pulse-duration`; hidden windows pause it and reduced motion disables it. The inactive dot uses onboarding-muted. Terminal sync states do not pulse. The completion heading and footer report the actual sync state. Local agent readiness stays separate from Cloud access and does not promise a Cloud query integration. The ready local status reads "Local agent ready / Local integration is active".
 
-Cloud folder rows match the prototype with a 72px minimum height, 18px folder icon, session count, and a selected-by-default switch. The list has a 280px maximum height. No per-row remove button or Not now footer action is shown. Native counts use known repository metadata; unavailable counts are explicit. Start syncing transitions directly to completion without waiting for acceptance. Done stays available during background preparation, submission and reconciliation; no dedicated sync or recovery screen is shown.
+Cloud folder rows match the prototype with a 72px minimum height, 18px folder icon, session count, and a selected-by-default switch. The list has a 280px maximum height. No per-row remove button or Not now footer action is shown. Desktop counts use known repository metadata; unavailable counts are explicit. Start syncing transitions directly to completion without waiting for acceptance. Done stays available during background preparation, submission and reconciliation; no dedicated sync or recovery screen is shown.
+
+Project selection uses one row and one selection control per desktop project group.
+The row shows its name, main path, distinct-session count, and worktree count.
+The keyboard-accessible "Included folders" disclosure lists every current path
+member. Desktop evidence owns
+grouping and recorded project/CWD paths, including CWD changes during a session;
+provider database paths and file paths in tool calls are not project membership.
+Desktop captures preserve the provider's native session format, such as Claude JSONL.
+New groups show as selected without saving that default. Start requires separate
+full-content confirmation for the current selected path members. A later external
+worktree does not inherit that confirmation. Counts and display order do not change
+the selection.
+
+Start saves confirmed group choices, including exclusions, with the desktop sync
+policy. Unconfirmed edits stay in memory. Restoring these choices never uses
+provider-file preferences or grants access to new paths. A policy without saved
+choice history requires one review before the user updates it.
+
+Project discovery reads one bounded page at a time. "Load more folders" adds the
+next page without saving defaults. Start approves only the current shown members
+with confirmed Claude or OpenCode V2 session files. Other agents can appear as folder
+suggestions, with upload support marked unavailable. Provider-source pickers stay
+in Settings and do not authorize every project in a source. The Upload sessions
+switch pauses or resumes the saved ongoing policy; the old local upload preference
+does not grant consent. Transfer counters and saved-upload retry controls appear
+only in Settings. Folder content can scroll without moving the completion action
+out of the footer.
+
+The project list does not shrink to make room for consent text. Consent puts the
+account and destination on one line and uses the existing compact spacing.
+Settings places the upload switch and saved-upload status before folder editing.
+An empty folder list shows the next action instead of a disabled consent form.
 
 The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding, and an 18px reserved status line to match the prototype. Auth handoff has the prototype footer separator; Learn more keeps its approved plain footer. Identity uses a circular 64px image and a 24px green badge with a 3px paper border and contrasting action ink.

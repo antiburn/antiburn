@@ -25,6 +25,18 @@ macro_rules! with_app_commands {
             cloud::cloud_reconcile_sync => "cloud_reconcile_sync",
             #[cfg(feature = "cloud")]
             cloud::cloud_cancel_sync => "cloud_cancel_sync",
+            #[cfg(feature = "cloud")]
+            cloud::projects::cloud_project_groups => "cloud_project_groups",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_sync_projects => "cloud_sync_projects",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_sync_status => "cloud_sync_status",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_enable_sync => "cloud_enable_sync",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_pause_sync => "cloud_pause_sync",
+            #[cfg(feature = "cloud")]
+            cloud::sync::cloud_retry_sync => "cloud_retry_sync",
 
             cli_install::get_cli_install_state => "get_cli_install_state",
             cli_install::test_cli_installation => "test_cli_installation",

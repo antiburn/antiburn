@@ -11,9 +11,12 @@ mod engine;
 #[cfg(debug_assertions)]
 mod http_tests;
 mod loopback;
+pub(crate) mod projects;
 mod state;
+pub(crate) mod sync;
 #[cfg(test)]
 mod tests;
+mod upload;
 mod work;
 
 use crate::store::cloud_capture::SourceKind;
@@ -147,13 +150,15 @@ pub struct Snapshot {
     draft: Draft,
 }
 
-/// One native owner serializes auth and capture operations. Atomic generations
+/// One desktop owner serializes auth and capture operations. Atomic generations
 /// invalidate queued work before it can acquire a mutex or publish old authority.
 pub(crate) struct Controller {
     blocking: BlockingWork,
     setup_ready: AtomicBool,
     engine: Mutex<Engine>,
     capture: Mutex<capture::Host>,
+    sync: sync::Scheduler,
+    project_cache: Mutex<projects::Cache>,
     attempt_generation: AtomicU64,
     account_generation: AtomicU64,
     recorded_status: Mutex<AuthStatus>,
@@ -227,8 +232,23 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
                 }
             }
         });
+    let sync_enabled = session
+        .filter(|_| setup_error.is_none())
+        .is_some_and(|session| {
+            match app.state::<crate::store::Store>().cloud_sync_policy(
+                &session.user.id,
+                &session.workspace.id,
+                &session.resource,
+            ) {
+                Ok(policy) => policy.is_some_and(|policy| !policy.paused),
+                Err(_) => {
+                    setup_error = Some("Could not read Cloud sync consent.".into());
+                    false
+                }
+            }
+        });
     if session.is_some() && !cfg!(unix) {
-        setup_error = Some("Native capture is not supported on this platform.".into());
+        setup_error = Some("Desktop capture is not supported on this platform.".into());
     }
     let current = current();
     let session = session.filter(|_| current && engine.session().is_some());
@@ -240,8 +260,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     Snapshot {
         auth_enabled: engine.config.is_some(),
         capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
-        // Authentication alone does not authorize capture.
-        sync_enabled: false,
+        sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
             AuthStatus::Cancelled
         } else if engine.status == AuthStatus::SignedIn && session.is_none() {
@@ -323,6 +342,8 @@ pub fn initialize(
         blocking: BlockingWork::default(),
         setup_ready: AtomicBool::new(false),
         capture: Mutex::new(capture::Host::new(directory)),
+        sync: sync::Scheduler::default(),
+        project_cache: Mutex::new(projects::Cache::default()),
         engine: Mutex::new(Engine::new(
             Config::from_build(),
             Box::new(KeyringVault::new(
@@ -336,6 +357,7 @@ pub fn initialize(
         account_generation: AtomicU64::new(0),
         recorded_status: Mutex::new(AuthStatus::Idle),
     });
+    sync::start(app.clone());
     Ok(())
 }
 
@@ -531,7 +553,7 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     .await
 }
 
-/// Fence account/browser work before waiting for cleanup admission. Native state
+/// Fence account/browser work before waiting for cleanup admission. Desktop state
 /// closes access before revocation and secure deletion; source bytes stay intact.
 #[tauri::command]
 pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
@@ -635,6 +657,16 @@ pub async fn cloud_save_draft(
             folder.session_count = None;
             folder.session_count_is_partial = false;
         }
+        if capture::selected_roots(&previous.folders) != capture::selected_roots(&value.folders)
+            && let Some(policy) = store
+                .cloud_sync_policy(&session.user.id, &session.workspace.id, &session.resource)
+                .map_err(|_| "Could not read Cloud sync consent.")?
+        {
+            controller.sync.generation.fetch_add(1, Ordering::AcqRel);
+            store
+                .set_cloud_sync_paused(&policy, true)
+                .map_err(|_| "Could not pause Cloud sync for the changed sources.")?;
+        }
         let encoded = serde_json::to_string(&value).map_err(|_| "Could not save Cloud setup.")?;
         store
             .save_cloud_draft(&session.user.id, &session.workspace.id, &encoded)
@@ -673,7 +705,7 @@ pub async fn cloud_prepare_sync(
     let work = app.state::<Controller>().blocking.clone();
     work.run(Priority::Normal, move || {
         if !cfg!(unix) {
-            return Err("Native capture is not supported on this platform.".into());
+            return Err("Desktop capture is not supported on this platform.".into());
         }
         if !capture::valid_request_id(&request_id) || folders.len() > 100 {
             return Err("Choose a valid capture request and source selection.".into());
@@ -768,7 +800,7 @@ fn capture_request(
         CaptureAction::Discover => controller
             .capture
             .lock()
-            .map_err(|_| "Native capture is unavailable.")?
+            .map_err(|_| "Desktop capture is unavailable.")?
             .discover(&store, &request, current)?,
     };
     publish(app, &engine);

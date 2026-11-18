@@ -9,6 +9,15 @@ describe("Cloud Dev simulation", () => {
       expect(value.draft.folders.every((folder) => folder.path.startsWith("/Example/"))).toBe(
         true,
       )
+      const projects = await port.ongoing!.groups(
+        { accountId: "cloud-dev-account", destinationId: "cloud-dev-personal" },
+        null,
+      )
+      expect(
+        projects.groups.every((group) =>
+          group.folderPaths.every((path) => path.startsWith("/Example/")),
+        ),
+      ).toBe(true)
       if (scenario.startsWith("complete-")) expect(await port.agent()).toBe(scenario.slice(9))
     }
   })
@@ -34,22 +43,35 @@ describe("Cloud Dev simulation", () => {
     await port.begin()
     await vi.advanceTimersByTimeAsync(1800)
     expect((await port.read()).identity?.login).toBe("example")
-    await port.start([], "test", {
-      version: "native-full-content-v1",
+    const groups = await port.ongoing!.groups(
+      { accountId: "cloud-dev-account", destinationId: "cloud-dev-personal" },
+      null,
+    )
+    await port.ongoing!.enable({
+      version: "desktop-project-sync-v1",
       accountId: "cloud-dev-account",
       destinationId: "cloud-dev-personal",
       fullContent: true,
       attachments: false,
-      selectedRoots: [],
+      ongoing: true,
+      selectedSources: groups.sourceRoots,
+      projects: groups.groups.flatMap((group) => group.projects),
+      projectChoices: Object.fromEntries(groups.groups.map((group) => [group.id, true])),
     })
     await vi.advanceTimersByTimeAsync(1500)
-    expect((await port.read()).pendingSync?.result.status).toBe("syncing")
-    await port.cancelSync("test")
+    expect((await port.ongoing!.status())?.status).toBe("syncing")
+    await port.ongoing!.pause({
+      accountId: "cloud-dev-account",
+      destinationId: "cloud-dev-personal",
+    })
     await vi.runAllTimersAsync()
-    expect((await port.read()).pendingSync?.result.status).toBe("cancelled")
-    await port.reconcile("test")
+    expect((await port.ongoing!.status())?.status).toBe("paused")
+    await port.ongoing!.retry({
+      accountId: "cloud-dev-account",
+      destinationId: "cloud-dev-personal",
+    })
     await vi.runAllTimersAsync()
-    expect((await port.read()).pendingSync?.result.status).toBe("syncing")
+    expect((await port.ongoing!.status())?.status).toBe("syncing")
     stop()
     expect((await createCloudDevPort("walkthrough").read()).identity).toBeNull()
   })

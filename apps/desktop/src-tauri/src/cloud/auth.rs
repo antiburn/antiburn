@@ -1,4 +1,4 @@
-//! First-party wire validation and the OS credential boundary for the native engine.
+//! First-party wire validation and the OS credential boundary for the desktop engine.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use url::Url;
 
 /// Display metadata for browser consent, not a physical-device identity.
 pub const DEVICE_NAME: &str = "Antiburn desktop";
-/// The only first-party permission accepted by this native connection.
+/// The only first-party permission accepted by this desktop connection.
 pub const SCOPE: &str = "capture:write";
 /// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
 pub const MAX_ACCESS_SECONDS: u64 = 900;
@@ -434,7 +434,7 @@ pub enum TokenRequest<'a> {
     },
 }
 
-/// Send the native engine's first-party requests without retries or redirects.
+/// Send the desktop engine's first-party requests without retries or redirects.
 ///
 /// Implementors must bound responses and keep cookies, Origin, and raw errors
 /// out of this boundary. Only `session` sends access bearer proof. The controller
@@ -457,7 +457,7 @@ pub trait Transport: Send + Sync {
 pub struct HttpTransport;
 /// Check each request URL before attaching proof. Debug loopback HTTP bypasses
 /// proxies so plaintext credentials stay on the local connection.
-fn client(url: &Url) -> Result<reqwest::blocking::Client, Failure> {
+pub(super) fn client(url: &Url) -> Result<reqwest::blocking::Client, Failure> {
     let local_http = debug_loopback_http(url);
     if (url.scheme() != "https" && !local_http)
         || !url.username().is_empty()
@@ -471,7 +471,13 @@ fn client(url: &Url) -> Result<reqwest::blocking::Client, Failure> {
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
         .timeout(Duration::from_secs(15));
-    if local_http {
+    let loopback = match url.host() {
+        Some(url::Host::Domain("localhost")) => true,
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        _ => false,
+    };
+    if loopback {
         builder = builder.no_proxy();
     }
     builder.build().map_err(|_| Failure::Offline)

@@ -32,7 +32,49 @@ impl Store {
                 record_json TEXT NOT NULL CHECK(length(record_json) <= 1048576)
             );
             CREATE INDEX IF NOT EXISTS cloud_capture_request_owner
-                ON cloud_capture_request(account_id, destination_id, created_at);",
+                ON cloud_capture_request(account_id, destination_id, created_at);
+            CREATE TABLE IF NOT EXISTS cloud_sync_policy (
+                account_id TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                record_json TEXT NOT NULL CHECK(length(record_json) <= 524288),
+                PRIMARY KEY(account_id, destination_id)
+            );
+            CREATE TABLE IF NOT EXISTS cloud_sync_scope (
+                account_id TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                source_scope_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY(account_id, destination_id, source_kind, root_path)
+            );
+            CREATE TABLE IF NOT EXISTS cloud_sync_service_scope (
+                account_id TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                resource_origin TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                source_scope_id TEXT NOT NULL UNIQUE,
+                PRIMARY KEY(account_id, destination_id, resource_origin, source_kind, root_path)
+            );
+            CREATE TABLE IF NOT EXISTS cloud_sync_job (
+                capture_id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                record_json TEXT NOT NULL CHECK(length(record_json) <= 16384)
+            );
+            CREATE INDEX IF NOT EXISTS cloud_sync_job_owner
+                ON cloud_sync_job(account_id, destination_id, source_id);
+            CREATE INDEX IF NOT EXISTS cloud_sync_job_active
+                ON cloud_sync_job(account_id, destination_id)
+                WHERE json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned');
+            CREATE TABLE IF NOT EXISTS cloud_sync_source (
+                account_id TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                record_json TEXT NOT NULL CHECK(length(record_json) <= 16384),
+                PRIMARY KEY(account_id, destination_id, source_id)
+            );",
         )?;
         transaction.commit()?;
         Ok(())

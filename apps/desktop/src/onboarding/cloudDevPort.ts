@@ -1,4 +1,4 @@
-/** Isolated preview data and timers. This module never uses native credentials or source I/O. */
+/** Isolated preview data and timers. This module never uses desktop credentials or source I/O. */
 import avatar from "../assets/cloud-dev-avatar.jpg"
 import {
   emptyCloudSnapshot,
@@ -7,8 +7,10 @@ import {
   type CloudSnapshot,
   type CloudStatus,
   type SyncResult,
+  type CloudOngoingStatus,
+  type DesktopCloudProjectGroup,
 } from "../lib/cloud"
-/** Closed native-menu scenarios; unknown values must not select a preview. */
+/** Closed desktop-menu scenarios; unknown values must not select a preview. */
 export const cloudDevScenarios = [
   "walkthrough",
   "marketing",
@@ -30,9 +32,9 @@ export const cloudDevScenarios = [
   "complete-unavailable",
   "complete-failed",
 ] as const
-/** One synthetic scenario, not a service response or native account state. */
+/** One synthetic scenario, not a service response or desktop account state. */
 export type CloudDevScenario = (typeof cloudDevScenarios)[number]
-/** Validate native preview selection before reading it as a scenario. */
+/** Validate desktop preview selection before reading it as a scenario. */
 export function isCloudDevScenario(value: unknown): value is CloudDevScenario {
   return typeof value === "string" && cloudDevScenarios.some((scenario) => scenario === value)
 }
@@ -55,7 +57,8 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
     authEnabled: scenario !== "marketing",
-    syncEnabled: !["unavailable", "marketing"].includes(scenario),
+    syncEnabled: completion,
+    captureEnabled: !["unavailable", "marketing"].includes(scenario),
     status: signedIn
       ? "signed_in"
       : ["walkthrough", "auth", "marketing"].includes(scenario)
@@ -75,22 +78,76 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
             ? "identity"
             : "folders"
           : "handoff",
-      folders:
-        scenario === "empty"
-          ? []
-          : [
-              { path: "/Example/Studio", selected: true, sessionCount: 128 },
-              { path: "/Example/Website", selected: true, sessionCount: 64 },
-            ],
+      folders: [],
     },
   }
   const listeners = new Set<(snapshot: CloudSnapshot) => void>()
+  const syncListeners = new Set<(status: CloudOngoingStatus) => void>()
+  const groups: DesktopCloudProjectGroup[] =
+    scenario === "empty"
+      ? []
+      : [
+          ["Studio", 128],
+          ["Website", 64],
+        ].map(([name, count]) => ({
+          id: `cloud-dev-${name}`,
+          environment: "native",
+          path: `/Example/${name}`,
+          label: String(name),
+          folderPaths: [`/Example/${name}`],
+          worktreeCount: 0,
+          agents: ["claude"],
+          sessionCount: Number(count),
+          captureSessionCount: Number(count),
+          captureSupported: true,
+          groupingComplete: true,
+          projects: [
+            {
+              sourceKind: "claude_jsonl",
+              sourcePath: `/Example/Sources/${name}`,
+              projectPath: `/Example/${name}`,
+            },
+          ],
+        }))
+  let ongoing: CloudOngoingStatus = {
+    storageKnown: completion,
+    status: completion ? "ready" : "consent_required",
+    accountId: identity.id,
+    destinationId: "cloud-dev-personal",
+    consentVersion: completion ? "desktop-project-sync-v1" : null,
+    paused: false,
+    selectedSources: completion
+      ? groups.flatMap((group) =>
+          group.projects.map((project) => ({
+            sourceKind: project.sourceKind,
+            path: project.sourcePath,
+          })),
+        )
+      : [],
+    projects: completion ? groups.flatMap((group) => group.projects) : [],
+    projectChoices: completion
+      ? Object.fromEntries(groups.map((group) => [group.id, true]))
+      : {},
+    queuedCount: 0,
+    interruptedCount: 0,
+    fencedCount: 0,
+    acceptedCount: 0,
+    suppressedCount: 0,
+    progress: {
+      negotiated: false,
+      totalCompressedBytes: 0,
+      requiredTransferBytes: 0,
+      reusedBytes: 0,
+      confirmedUploadBytes: 0,
+    },
+  }
   const timers = new Set<ReturnType<typeof setTimeout>>()
   const clear = () => {
     timers.forEach(clearTimeout)
     timers.clear()
   }
   const publish = () => listeners.forEach((listener) => listener(value))
+  const publishSync = () => syncListeners.forEach((listener) => listener(ongoing))
   const later = (action: () => void, delay: number) => {
     const timer = setTimeout(() => {
       timers.delete(timer)
@@ -110,7 +167,74 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
       }, delay)
     }
   }
+  const ongoingProgress = () => {
+    later(() => {
+      ongoing = { ...ongoing, status: "syncing", queuedCount: 2 }
+      publishSync()
+    }, 1500)
+    if (scenario !== "walkthrough")
+      later(() => {
+        ongoing = { ...ongoing, status: "ready", queuedCount: 0, acceptedCount: 2 }
+        publishSync()
+      }, 3500)
+  }
   return {
+    ongoing: {
+      groups: async () => ({
+        groups,
+        sourceRoots: groups.flatMap((group) =>
+          group.projects.map((project) => ({
+            sourceKind: project.sourceKind,
+            path: project.sourcePath,
+          })),
+        ),
+        nextCursor: null,
+        partial: false,
+      }),
+      status: async () => ongoing,
+      watch: async (listener) => {
+        syncListeners.add(listener)
+        return () => {
+          syncListeners.delete(listener)
+          if (!listeners.size && !syncListeners.size) clear()
+        }
+      },
+      enable: async (consent) => {
+        clear()
+        ongoing = {
+          ...ongoing,
+          storageKnown: true,
+          status: "ready",
+          consentVersion: consent.version,
+          selectedSources: consent.selectedSources,
+          projects: consent.projects,
+          projectChoices: consent.projectChoices,
+          paused: false,
+        }
+        value = { ...value, syncEnabled: true }
+        publish()
+        publishSync()
+        ongoingProgress()
+        return ongoing
+      },
+      pause: async () => {
+        clear()
+        ongoing = { ...ongoing, status: "paused", paused: true }
+        value = { ...value, syncEnabled: false }
+        publish()
+        publishSync()
+        return ongoing
+      },
+      retry: async () => {
+        if (!ongoing.consentVersion) throw new Error("Confirm Cloud sync first.")
+        ongoing = { ...ongoing, status: "ready", paused: false }
+        value = { ...value, syncEnabled: true }
+        publish()
+        publishSync()
+        ongoingProgress()
+        return ongoing
+      },
+    },
     read: async () => value,
     watch: async (listener) => {
       listeners.add(listener)
