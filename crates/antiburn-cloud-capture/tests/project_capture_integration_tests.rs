@@ -1,6 +1,6 @@
 #![cfg(all(unix, feature = "cloud"))]
 
-//! SQLite project permission checks at the native capture boundary.
+//! SQLite project permission checks at the desktop capture boundary.
 
 use antiburn_cloud_capture::*;
 use rusqlite::Connection;

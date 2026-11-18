@@ -30,7 +30,7 @@ separators. The host adds its stable account and authorized-root scope. The
 database file's inode is an admission fence, not a logical session key.
 
 Discovery and capture are synchronous blocking operations. Hosts must run them
-on bounded blocking workers, not UI or async runtime threads. A saved native-host
+on bounded blocking workers, not UI or async runtime threads. A saved desktop-host
 source request is not captured payload or permission to execute a later read.
 
 Project permission remains separate from database access. The optional
