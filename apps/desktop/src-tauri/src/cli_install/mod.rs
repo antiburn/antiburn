@@ -38,12 +38,15 @@ pub fn resolve_cli(app: &tauri::AppHandle) -> Result<CliRuntime, String> {
     installation(app)?.resolve().map_err(|e| e.to_string())
 }
 
-pub fn inspect_cli(app: &tauri::AppHandle) -> Result<CliRuntime, String> {
+/// Inspect cached receipt-bound bytes while retaining typed lock-contention errors.
+pub fn inspect_cli(app: &tauri::AppHandle) -> anyhow::Result<CliRuntime> {
     let cache = app.state::<Mutex<RuntimeDigestCache>>();
-    let mut cache = cache.lock().map_err(|e| e.to_string())?;
-    installation(app)?
+    let mut cache = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("CLI cache is unavailable"))?;
+    installation(app)
+        .map_err(anyhow::Error::msg)?
         .resolve_cached(&mut cache)
-        .map_err(|e| e.to_string())
 }
 
 /// Keep this lock alive while probing or binding the returned runtime.

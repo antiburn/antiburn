@@ -1094,7 +1094,7 @@ export class CloudSession {
             : saved
               ? {
                   error:
-                    "Could not finish listing sources. Your request is saved. Retry source listing.",
+                    "Could not finish listing sources. Your request is saved. Retry in Settings > Sessions.",
                 }
               : {}),
         })

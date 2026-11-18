@@ -87,6 +87,7 @@ export function ongoingStatus(patch: Partial<CloudOngoingStatus> = {}): CloudOng
     acceptedCount: 0,
     queuedCount: 0,
     interruptedCount: 0,
+    recoveryRequiredCount: 0,
     fencedCount: 0,
     suppressedCount: 0,
     progress: {

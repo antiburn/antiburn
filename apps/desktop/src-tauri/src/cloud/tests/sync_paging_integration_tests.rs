@@ -111,6 +111,98 @@ fn cloud_scheduler_pages_wait_for_queue_drain_and_use_current_recorded_cwds() {
 }
 
 #[test]
+fn cloud_scheduler_pages_multiple_claude_roots_without_discarding_earlier_selections() {
+    let (directory, mut policy, project, _) = fixture();
+    policy.roots.clear();
+    policy.projects.clear();
+    for root_index in 0..2 {
+        let root = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(format!("claude-{root_index}"));
+        fs::create_dir(&root).unwrap();
+        for index in 0..300 {
+            let id = format!("session-{index:04}");
+            fs::write(
+                root.join(format!("{id}.jsonl")),
+                format!(
+                    "{}\n",
+                    serde_json::json!({
+                        "sessionId": id, "cwd": project, "type": "user",
+                    })
+                ),
+            )
+            .unwrap();
+        }
+        policy.roots.push(RootScope {
+            path: root.to_str().unwrap().into(),
+            source_scope_id: format!("scope-{root_index}"),
+            source_kind: SourceKind::ClaudeJsonl,
+        });
+        policy.projects.push(ProjectSelection {
+            source_kind: SourceKind::ClaudeJsonl,
+            source_path: root.to_str().unwrap().into(),
+            project_path: project.to_str().unwrap().into(),
+        });
+    }
+    let mut cache = super::super::projects::Cache::default();
+    let (first, cursor, blocked) =
+        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    assert_eq!(first.len(), 512);
+    assert!(!blocked);
+    let (second, cursor, blocked) =
+        discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
+    assert_eq!(second.len(), 88);
+    assert!(!blocked);
+    assert!(cursor.is_none());
+    let ids: BTreeSet<_> = first
+        .iter()
+        .chain(&second)
+        .map(|selection| selection.candidate.source_id())
+        .collect();
+    assert_eq!(ids.len(), 600);
+}
+
+#[test]
+fn cloud_scheduler_content_observation_errors_do_not_discard_healthy_pages() {
+    let (_directory, policy, _, _) = fixture();
+    let connection = rusqlite::Connection::open(&policy.roots[0].path).unwrap();
+    connection.execute("INSERT INTO session_message VALUES ('broken','session-0001','user',1,?1)",
+        [r#"{"files":[{"uri":"media:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#]).unwrap();
+    let mut cache = super::super::projects::Cache::default();
+    let (first, cursor, blocked) =
+        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    assert!(blocked);
+    assert_eq!(first.len(), 511);
+    assert_eq!(first[0].candidate.native_session_id(), "session-0000");
+    assert_eq!(first[1].candidate.native_session_id(), "session-0002");
+    let (second, cursor, blocked) =
+        discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
+    assert!(!blocked);
+    assert_eq!(second.len(), 512);
+    let (last, cursor, blocked) =
+        discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
+    assert!(!blocked);
+    assert!(cursor.is_none());
+    assert_eq!(last.len(), 1);
+}
+
+#[test]
+fn cloud_scheduler_pause_before_content_observation_stops_discovery() {
+    let (_directory, policy, _, _) = fixture();
+    let calls = std::cell::Cell::new(0);
+    let current = || {
+        calls.set(calls.get() + 1);
+        calls.get() < 3
+    };
+    let mut cache = super::super::projects::Cache::default();
+    let result = discover_policy_page(&policy, &current, &mut cache, &DiscoveryCursor::default());
+    assert!(result.is_err());
+    assert_eq!(calls.get(), 3);
+}
+
+#[test]
 fn cloud_scheduler_page_cursors_reset_for_each_authority_and_policy_binding() {
     let (_directory, policy, _project, _outside) = fixture();
     let mut runner = Runner::default();

@@ -665,6 +665,7 @@ fn discover_projects(
             return Err("Cloud account changed.".into());
         }
         if remaining == 0 {
+            partial = true;
             break;
         }
         let candidates =

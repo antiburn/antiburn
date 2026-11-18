@@ -292,29 +292,44 @@ function CloudProjectsAccount({
       : projects.loaded
         ? "Could not update folders."
         : "Could not load folders."
-    : value.cloud.setupError
-      ? value.cloud.captureEnabled
-        ? "Could not read Cloud folders."
-        : "Uploads are unavailable on this device."
-      : null
+    : projects?.loaded && projects.partial && !projects.hasMore && projects.groups.length === 0
+      ? "Could not finish loading folders."
+      : value.cloud.setupError
+        ? value.cloud.captureEnabled
+          ? "Could not read Cloud folders."
+          : "Uploads are unavailable on this device."
+        : null
+  const recoveryRequiredCount = policy?.recoveryRequiredCount ?? 0
+  const interruptedError =
+    recoveryRequiredCount > 0
+      ? "Some sessions need local recovery. Saved data is kept."
+      : uploadErrors.interrupted
   const uploadError = storageUnknown
     ? "Could not read saved uploads."
     : policy
-      ? (uploadErrors[policy.status] ??
+      ? ((policy.status === "interrupted" ? interruptedError : uploadErrors[policy.status]) ??
         (policy.fencedCount > 0
           ? uploadErrors.fenced
           : policy.interruptedCount > 0
-            ? uploadErrors.interrupted
+            ? interruptedError
             : null))
       : null
   const error = value.error ? null : (folderError ?? uploadError)
+  const retryableUploads =
+    recoveryRequiredCount === 0 ||
+    storageUnknown ||
+    (policy &&
+      (policy.queuedCount > 0 ||
+        policy.fencedCount > 0 ||
+        policy.interruptedCount > recoveryRequiredCount ||
+        (policy.status !== "interrupted" && !!uploadErrors[policy.status])))
   const retry = folderError
     ? value.cloud.setupError
       ? value.cloud.captureEnabled
         ? () => void session.load()
         : null
       : () => void session.loadProjects()
-    : hasConsent && policy?.status !== "reauth_required"
+    : hasConsent && policy?.status !== "reauth_required" && retryableUploads
       ? () => void session.controlSync(false)
       : null
   const empty =

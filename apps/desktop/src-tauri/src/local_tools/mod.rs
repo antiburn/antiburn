@@ -226,6 +226,31 @@ async fn setup(app: &tauri::AppHandle) -> Snapshot {
     }
 }
 
+/// Return busy errors without turning temporary contention into stored failure.
+fn inspect_ready(
+    snapshot: &Snapshot,
+    inspected: anyhow::Result<cli_install::CliRuntime>,
+    inspect_files: impl FnOnce(&cli_install::CliRuntime) -> Result<(), Reason>,
+) -> Result<Result<(), Reason>, String> {
+    if inspected.as_ref().is_err_and(|error| {
+        matches!(
+            error.downcast_ref::<std::fs::TryLockError>(),
+            Some(std::fs::TryLockError::WouldBlock)
+        )
+    }) {
+        return Err(
+            "Local CLI inspection is busy. Retry after the other operation finishes.".into(),
+        );
+    }
+    Ok((|| {
+        let runtime = inspected.map_err(|_| Reason::CliUnavailable)?;
+        if Some(runtime.sha256.as_str()) != snapshot.tested_sha256.as_deref() {
+            return Err(Reason::CliTestFailed);
+        }
+        inspect_files(&runtime)
+    })())
+}
+
 /// Inspect setup without installing files or changing vendor configuration.
 /// A ready snapshot remains valid only for its tested CLI digest and owned files.
 #[tauri::command]
@@ -240,13 +265,9 @@ pub async fn get_local_tools_status(app: tauri::AppHandle) -> Result<Status, Str
         return Ok(snapshot.status);
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let checked = (|| {
-            let runtime = cli_install::inspect_cli(&app).map_err(|_| Reason::CliUnavailable)?;
-            if Some(&runtime.sha256) != snapshot.tested_sha256.as_ref() {
-                return Err(Reason::CliTestFailed);
-            }
-            installation::Installation::for_app(&app)?.inspect(&runtime)
-        })();
+        let checked = inspect_ready(&snapshot, cli_install::inspect_cli(&app), |runtime| {
+            installation::Installation::for_app(&app)?.inspect(runtime)
+        })?;
         let (status, changed) = app
             .state::<Controller>()
             .state

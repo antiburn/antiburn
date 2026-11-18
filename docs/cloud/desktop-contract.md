@@ -229,7 +229,8 @@ and model-based Checks.
 
 Changing the account, destination, provider source, or selected path membership
 invalidates any pending approval for an earlier selection. Count-only updates do
-not change consent. Updating saved folders requires clicking the update action.
+not change consent. Settings saves folder opt-outs immediately and confirms
+additions before saving them.
 
 ### Project suggestions and worktrees
 
@@ -335,26 +336,48 @@ still publishes `storage_unavailable` when it cannot read saved files. Last-know
 values must match the current account, destination, and service.
 **Upload sessions** pauses or resumes the confirmed policy. For saved-upload errors,
 **Retry** retries permitted saved work without expanding the selection.
+`recoveryRequiredCount` identifies missing or incomplete local captures that
+cannot resume from their saved state. These count as interrupted, not queued.
+They do not block healthy sources. When only these failures remain, Settings
+shows a local-recovery message without a Retry button that cannot fix them.
 Pause stops admission of further sensitive work and saves the paused
 state. It does not delete spools, undo requests already sent, or delete remote
 content. Sign-out and account changes also stop unauthorized work without
 retargeting or deleting saved captures.
 Signing in again to the same account and workspace resumes eligible saved uploads
-automatically. A new sign-in clears conflict cooldowns; it does not replace the capture,
-change its destination, expand folder consent, or resume a paused policy.
+automatically. A new sign-in clears conflict cooldowns but preserves capacity
+and offline backoff. It does not replace the capture, change its destination,
+expand folder consent, or resume a paused policy.
 
-Retryable HTTP 429 capacity rejections defer the current upload until its retry deadline.
+Temporary request failures and HTTP 429 capacity rejections defer the current
+upload until its retry deadline. Valid `Retry-After` hints use a 1 to 300 second
+bound. A saved request's delay does not block other ready uploads.
 The desktop then retries the same saved capture ID after checking current source
 and policy bindings. Saved uploads take priority over new captures. Saved bytes
 remain intact. Historical unknown failures before reservation still require explicit **Retry**.
 
-Part and finalization conflicts first try renewal of the same reservation,
+A proved local queue or disk-capacity refusal before publication saves a separate
+wait. The same capture ID can retry after fresh source and project checks.
+Unknown missing entries cannot use that permission.
+
+Initial registration, part, and finalization conflicts first try renewal of the same reservation,
 manifest hash, and plan. Only a successful renewal permits one replay of the
 original request. This recovers idle expiry without reading source again or changing
 capture identity. Server authority, absolute expiry, writer, and cleanup fences still
 apply. Earlier fenced post-reservation uploads receive a bounded automatic recheck;
 persistent conflicts wait at least 60 seconds between attempts. Empty interrupted
 captures do not gain permission to read source through this recovery path.
+
+After sign-in, process restart, or explicit Retry, the scheduler checks saved
+finalization status. If integrity is still pending, it can replay the exact
+saved finalization once. This can restart stopped processing without new source
+reads or a new capture. Polling alone does not resubmit finalization.
+
+Time expiry is recoverable, including after a weekend offline. The service
+rechecks current authority and the saved request before renewing storage work.
+Expired incomplete parts can require transfer again from the same local bytes.
+This never grants permission to read source again, change the capture, or
+overwrite a newer publication. Deletion and cancellation remain final.
 
 Capture API requests use the configured resource origin and desktop-held credentials.
 Saved gzip bodies go only to validated, short-lived upload locations supplied
@@ -368,6 +391,8 @@ The scheduler and capture spool serialize bounded work. Pending captures keep
 their original account, destination, service, source, capture ID, compressed
 bytes, and frozen plan across restarts. Narrowing the approved folder policy
 blocks affected saved captures rather than removing part of their content.
+Jobs bind the approved tree used for admission, not unrelated folders in the
+same provider store. Removing an unrelated folder does not fence the job.
 Retry can replace only a present, verified empty capture that has no reservation.
 The desktop saves that recovery decision before removing the empty entry.
 Missing entries cannot start recovery or authorize recapture. They can only

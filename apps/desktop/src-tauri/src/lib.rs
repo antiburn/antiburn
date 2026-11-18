@@ -404,7 +404,9 @@ pub fn run() {
         agent_integrations::desktop::start(app.handle(), |app, validation| {
             let runtime = match validation {
                 agent_integrations::desktop::CliValidation::Fresh => cli_install::resolve_cli(app),
-                agent_integrations::desktop::CliValidation::Cached => cli_install::inspect_cli(app),
+                agent_integrations::desktop::CliValidation::Cached => {
+                    cli_install::inspect_cli(app).map_err(|error| error.to_string())
+                }
             };
             runtime.map(|runtime| agent_integrations::lifecycle::CliConnection {
                 executable: runtime.executable,

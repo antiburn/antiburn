@@ -8,7 +8,7 @@ use antiburn_cloud_capture::{
     UploadPlan,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{collections::BTreeMap, io::Read};
+use std::{collections::BTreeMap, io::Read, time::Duration};
 
 const MAX_API_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -42,6 +42,7 @@ impl Route {
 pub(super) struct ApiResponse {
     pub status: u16,
     pub body: Vec<u8>,
+    pub retry_after: Option<Duration>,
 }
 
 /// Send only to the configured API origin. The caller must validate the current
@@ -90,6 +91,11 @@ pub(super) fn api_request(
         .send()
         .map_err(|_| TransportError::Offline)?;
     let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(retry_delay);
     let mut body = Vec::new();
     response
         .take(MAX_API_BYTES + 1)
@@ -98,7 +104,26 @@ pub(super) fn api_request(
     if body.len() as u64 > MAX_API_BYTES {
         return Err(TransportError::Rejected);
     }
-    Ok(ApiResponse { status, body })
+    Ok(ApiResponse {
+        status,
+        body,
+        retry_after,
+    })
+}
+
+/// Bound service-directed waits. Invalid hints leave the caller's normal backoff.
+fn retry_delay(value: &str) -> Option<Duration> {
+    let seconds = value.parse::<u64>().ok().or_else(|| {
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc2822)
+            .ok()
+            .map(|deadline| {
+                deadline
+                    .unix_timestamp()
+                    .saturating_sub(super::now())
+                    .max(1) as u64
+            })
+    })?;
+    Some(Duration::from_secs(seconds.clamp(1, 300)))
 }
 
 /// Safe operation outcome, separate from the capture library's closed errors.
@@ -150,14 +175,21 @@ impl Capabilities {
     }
 }
 
-/// Query current scoped service support before admitting a new content capture.
+/// Keep a safe capability failure and its service-directed retry delay.
+#[derive(Debug)]
+pub(super) struct CapabilityFailure {
+    pub failure: Failure,
+    pub retry_after: Option<Duration>,
+}
+
+/// Keep server backoff with capability failures before any capture job exists.
 pub(super) fn capabilities(
     engine: &mut Engine,
     account: &str,
     destination: &str,
     account_current: &dyn Fn() -> bool,
     current: &dyn Fn() -> bool,
-) -> Result<antiburn_cloud_capture::Limits, Failure> {
+) -> Result<antiburn_cloud_capture::Limits, CapabilityFailure> {
     let identity = CaptureIdentity {
         capture_id: "capabilities".into(),
         account_id: account.into(),
@@ -166,16 +198,26 @@ pub(super) fn capabilities(
     };
     let origin = engine
         .resource_origin()
-        .ok_or(Failure::Unavailable)?
+        .ok_or(CapabilityFailure {
+            failure: Failure::Unavailable,
+            retry_after: None,
+        })?
         .to_owned();
     let mut transport = HttpTransport::new(engine, account_current, current, &origin, None);
     let response = transport
         .request(&identity, Route::Capabilities, &())
-        .map_err(|_| transport.failure.unwrap_or(Failure::Rejected))?;
-    let value: Capabilities = transport
-        .decode(response)
-        .map_err(|_| transport.failure.unwrap_or(Failure::Rejected))?;
-    value.limits()
+        .map_err(|_| CapabilityFailure {
+            failure: transport.failure.unwrap_or(Failure::Rejected),
+            retry_after: transport.retry_after,
+        })?;
+    let value: Capabilities = transport.decode(response).map_err(|_| CapabilityFailure {
+        failure: transport.failure.unwrap_or(Failure::Rejected),
+        retry_after: transport.retry_after,
+    })?;
+    value.limits().map_err(|failure| CapabilityFailure {
+        failure,
+        retry_after: None,
+    })
 }
 
 /// Candidate-owned public metadata required by reservation before payload reads.
@@ -210,6 +252,7 @@ pub(super) struct HttpTransport<'a> {
     source: Option<Source>,
     resource_origin: String,
     pub failure: Option<Failure>,
+    pub retry_after: Option<Duration>,
 }
 
 impl<'a> HttpTransport<'a> {
@@ -230,6 +273,7 @@ impl<'a> HttpTransport<'a> {
             source,
             resource_origin: resource_origin.into(),
             failure: None,
+            retry_after: None,
         }
     }
 
@@ -248,6 +292,7 @@ impl<'a> HttpTransport<'a> {
             self.current,
         ) {
             Ok(response) => {
+                self.retry_after = response.retry_after;
                 let (failure, error) = match response.status {
                     200..=299 => {
                         self.failure = None;
@@ -313,7 +358,7 @@ impl<'a> HttpTransport<'a> {
         identity: &CaptureIdentity,
         route: Route,
         body: &impl Serialize,
-        binding: &Context<'_>,
+        binding: &impl Serialize,
     ) -> Result<ApiResponse, TransportError> {
         match self.request(identity, route, body) {
             Err(_) if self.failure == Some(Failure::Conflict) => {
@@ -368,40 +413,21 @@ fn capacity_refused(body: &[u8]) -> bool {
 fn api_error_is(body: &[u8], code: &str, retryable: bool) -> bool {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
-    struct Envelope {
-        error: ApiError,
-    }
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
     struct ApiError {
         code: String,
         retryable: bool,
         #[serde(rename = "message")]
-        _message: serde::de::IgnoredAny,
+        _message: String,
+        #[serde(rename = "requestId")]
+        _request_id: String,
     }
-    serde_json::from_slice::<Envelope>(body)
-        .is_ok_and(|value| value.error.code == code && value.error.retryable == retryable)
+    serde_json::from_slice::<ApiError>(body)
+        .is_ok_and(|value| value.code == code && value.retryable == retryable)
 }
 
 /// Accept only the API's closed reserve error, never raw storage/provider text.
 fn source_suppressed(body: &[u8]) -> bool {
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Envelope {
-        error: ApiError,
-    }
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ApiError {
-        code: String,
-        retryable: bool,
-        message: String,
-    }
-    serde_json::from_slice::<Envelope>(body).is_ok_and(|value| {
-        value.error.code == "source_suppressed"
-            && !value.error.retryable
-            && value.error.message == "Cloud deletion prevents automatic reimport."
-    })
+    api_error_is(body, "source_suppressed", false)
 }
 
 #[derive(Serialize)]
@@ -547,11 +573,14 @@ impl Transport for HttpTransport<'_> {
         reservation_id: &str,
         manifest: &CaptureManifest,
     ) -> Result<UploadPlan, TransportError> {
-        let response = self.request(
+        let response = self.request_with_renewal(
             &manifest.identity,
             Route::Manifest,
             &serde_json::json!({
                 "reservation_id": reservation_id, "manifest": manifest,
+            }),
+            &serde_json::json!({
+                "reservation_id": reservation_id, "manifest_sha256": null, "plan_id": null,
             }),
         )?;
         self.decode(response)
@@ -563,11 +592,9 @@ impl Transport for HttpTransport<'_> {
         manifest: &CaptureManifest,
         plan: &UploadPlan,
     ) -> Result<ServerStatus, TransportError> {
-        let response = self.request(
-            &manifest.identity,
-            Route::Status,
-            &Context::new(reservation_id, plan),
-        )?;
+        let binding = Context::new(reservation_id, plan);
+        let response =
+            self.request_with_renewal(&manifest.identity, Route::Status, &binding, &binding)?;
         self.decode(response)
     }
 

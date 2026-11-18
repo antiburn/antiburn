@@ -518,7 +518,7 @@ fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_
             path: next_source.to_str().unwrap().into(),
         },
     ]);
-    assert!(!bounded.partial);
+    assert!(bounded.partial);
     assert_eq!(bounded.source_roots, vec![fixture.source.clone()]);
 
     connection

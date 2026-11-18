@@ -81,6 +81,9 @@ pub(crate) enum JobState {
     /// A proved capacity refusal permits a same-ID reservation retry. Change to
     /// Pending before retry I/O so uncertain delivery cannot keep this permission.
     WaitingForCapacity,
+    /// Local capacity refused capture before spool publication or reservation.
+    /// Retry the same ID only after fresh source and project checks.
+    WaitingForLocalCapacity,
     Queued,
     Interrupted,
     Fenced,
@@ -160,7 +163,10 @@ impl Job {
             "Cloud job binding changed"
         );
         ensure!(
-            (self.state == JobState::WaitingForCapacity) == self.reservation_retry_at.is_some()
+            matches!(
+                self.state,
+                JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
+            ) == self.reservation_retry_at.is_some()
                 && self.reservation_retry_at.is_none_or(|at| at > 0),
             "Cloud capacity retry state changed"
         );
@@ -737,11 +743,12 @@ impl Store {
                 .projects
                 .iter()
                 .filter(|project| {
-                    policy.roots.iter().any(|root| {
-                        root.source_scope_id == source_scope_id
-                            && root.source_kind == project.source_kind
-                            && root.path == project.source_path
-                    })
+                    Path::new(project_path).starts_with(&project.project_path)
+                        && policy.roots.iter().any(|root| {
+                            root.source_scope_id == source_scope_id
+                                && root.source_kind == project.source_kind
+                                && root.path == project.source_path
+                        })
                 })
                 .map(|project| project.project_path.clone())
                 .collect(),
@@ -773,6 +780,11 @@ impl Store {
     /// old empty or interrupted entries do not establish it.
     pub(crate) fn defer_cloud_sync_reservation(&self, job: &Job, retry_at: i64) -> Result<()> {
         self.save_cloud_sync_job_state(job, JobState::WaitingForCapacity, Some(retry_at))
+    }
+
+    /// Save a proved local-capacity refusal before any capture entry or request.
+    pub(crate) fn defer_cloud_sync_local_capture(&self, job: &Job, retry_at: i64) -> Result<()> {
+        self.save_cloud_sync_job_state(job, JobState::WaitingForLocalCapacity, Some(retry_at))
     }
 
     /// Compare the complete prior job before changing progress or retry permission.
@@ -937,7 +949,19 @@ impl Store {
         let source = SourceState {
             resource_origin: job.resource_origin.clone(),
             fingerprint: Some(fingerprint),
-            observation_key: Some(job.observation_key.clone()),
+            observation_key: Some(
+                entry
+                    .manifest
+                    .as_ref()
+                    .and_then(|manifest| {
+                        manifest
+                            .streams
+                            .iter()
+                            .find(|stream| stream.stream_id == "native-rows")
+                    })
+                    .map(|stream| format!("opencode-native-v1:{}", stream.expanded_sha256))
+                    .unwrap_or_else(|| job.observation_key.clone()),
+            ),
             suppressed: previous.is_some_and(|source| source.suppressed),
         };
         transaction.execute(

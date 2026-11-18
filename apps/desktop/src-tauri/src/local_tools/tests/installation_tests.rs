@@ -1,4 +1,6 @@
+use super::super::{Phase, Snapshot, Status, inspect_ready, state};
 use super::*;
+use sha2::{Digest, Sha256};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt, symlink};
 
@@ -28,6 +30,156 @@ impl Fixture {
             installation: Installation { data, profile },
             _root: root,
         }
+    }
+
+    fn install_cli(&mut self) -> antiburn_cli_runtime::Installation {
+        let payload = self
+            ._root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("cli-payload");
+        fs::DirBuilder::new().mode(0o700).create(&payload).unwrap();
+        let bytes = b"synthetic CLI payload";
+        fs::write(payload.join(antiburn_cli_runtime::file_name()), bytes).unwrap();
+        let manifest = antiburn_cli_runtime::Manifest {
+            schema: 1,
+            target: antiburn_cli_runtime::TARGET.into(),
+            executable: antiburn_cli_runtime::file_name().into(),
+            version: "0.1.0".into(),
+            sha256: Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            delivery_protocols: vec!["delivery-v1".into()],
+        };
+        fs::write(
+            payload.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let cli = antiburn_cli_runtime::Installation {
+            root: self.installation.data.join("cli"),
+            terminal: self.installation.data.join("cli/terminal/antiburn-cli"),
+            payload,
+            target: manifest.target,
+        };
+        cli.reconcile().unwrap();
+        self.runtime = cli.resolve().unwrap();
+        cli
+    }
+}
+
+#[test]
+fn lock_contention_does_not_store_failure_or_block_later_file_inspection() {
+    let mut fixture = Fixture::new();
+    let cli = fixture.install_cli();
+    let i = &fixture.installation;
+    i.reconcile(&fixture.runtime).unwrap();
+    let mut state = state::State::new(Status::initial(None));
+    let (_, worker) = state.begin_setup();
+    state.finish_setup(
+        worker.unwrap(),
+        Snapshot {
+            status: Status {
+                revision: 0,
+                phase: Phase::Ready,
+                cli_installed: true,
+                cli_tested: true,
+                skill_installed: true,
+                reason: None,
+            },
+            tested_sha256: Some(fixture.runtime.sha256.clone()),
+        },
+    );
+    let snapshot = state.snapshot();
+    let (lock, _) = cli.runtime_for_test().unwrap();
+    let mut cache = antiburn_cli_runtime::RuntimeDigestCache::default();
+    let inspected = cli.resolve_cached(&mut cache);
+    assert!(matches!(
+        inspected
+            .as_ref()
+            .unwrap_err()
+            .downcast_ref::<fs::TryLockError>(),
+        Some(fs::TryLockError::WouldBlock)
+    ));
+    let busy = inspect_ready(&snapshot, inspected, |_| {
+        panic!("Busy inspection must not inspect generated files")
+    });
+    assert!(busy.unwrap_err().contains("Retry"));
+    assert_eq!(state.snapshot().status.revision, snapshot.status.revision);
+    assert_eq!(state.snapshot().status.phase, Phase::Ready);
+    drop(lock);
+
+    let checked = inspect_ready(&snapshot, cli.resolve_cached(&mut cache), |runtime| {
+        i.inspect(runtime)
+    })
+    .unwrap();
+    assert_eq!(checked, Ok(()));
+    let (status, changed) = state.apply_inspection(snapshot.status.revision, checked);
+    assert!(!changed);
+    assert_eq!(status.phase, Phase::Ready);
+
+    fs::write(i.skill_directory().join("SKILL.md"), b"User edit").unwrap();
+    let checked = inspect_ready(&snapshot, cli.resolve_cached(&mut cache), |runtime| {
+        i.inspect(runtime)
+    })
+    .unwrap();
+    let (status, changed) = state.apply_inspection(snapshot.status.revision, checked);
+    assert!(changed);
+    assert_eq!(status.phase, Phase::Failed);
+    assert_eq!(status.reason, Some(Reason::OwnedFileChanged));
+}
+
+#[test]
+fn interrupted_upgrade_keeps_the_previous_pending_generation_authorized() {
+    let installed = b"previous pending skill";
+    let mut receipt = FileReceipt {
+        active: None,
+        pending: Some(installed.to_vec()),
+    };
+    receipt.prepare_replacement(Some(installed), b"new skill".to_vec());
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    let mut restored: FileReceipt = serde_json::from_slice(&bytes).unwrap();
+    assert!(check_owned(Some(installed), &restored).is_ok());
+    restored.prepare_replacement(Some(installed), b"later build skill".to_vec());
+    assert!(check_owned(Some(installed), &restored).is_ok());
+    assert_eq!(
+        check_owned(Some(b"user edit"), &restored),
+        Err(Reason::OwnedFileChanged)
+    );
+}
+
+#[test]
+fn interrupted_upgrade_preserves_unknown_bytes_and_the_pending_receipt() {
+    for target in ["config", "skill"] {
+        let fixture = Fixture::new();
+        let i = &fixture.installation;
+        i.reconcile(&fixture.runtime).unwrap();
+        let (mut receipt, _) = i.receipt().unwrap().unwrap();
+        receipt.config.pending = receipt.config.active.take();
+        receipt.skill.pending = receipt.skill.active.take();
+        let receipt_path = i.tools().join("receipt.json");
+        let receipt_bytes = serde_json::to_vec(&receipt).unwrap();
+        fs::write(&receipt_path, &receipt_bytes).unwrap();
+        let config_path = i.tools().join("config.json");
+        let skill_path = i.skill_directory().join("SKILL.md");
+        fs::write(
+            if target == "config" {
+                &config_path
+            } else {
+                &skill_path
+            },
+            b"User edit",
+        )
+        .unwrap();
+        let config_bytes = fs::read(&config_path).unwrap();
+        let skill_bytes = fs::read(&skill_path).unwrap();
+
+        assert_eq!(i.reconcile(&fixture.runtime), Err(Reason::OwnedFileChanged));
+        assert_eq!(fs::read(&receipt_path).unwrap(), receipt_bytes);
+        assert_eq!(fs::read(&config_path).unwrap(), config_bytes);
+        assert_eq!(fs::read(&skill_path).unwrap(), skill_bytes);
     }
 }
 

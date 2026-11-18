@@ -186,7 +186,7 @@ the measurement definitions and event review contract in
 
 Keep test files focused:
 
-- Small Rust test blocks can stay inline when the full source file remains short and readable. Move larger blocks to feature-local `tests/<file>_tests.rs`, using `#[cfg(test)]` and `#[path = "tests/<file>_tests.rs"] mod tests;` when private access is needed.
+- Small Rust test blocks can stay inline when the full source file remains short and readable. Put public-API-only tests in the external `tests/` target. For private access, move larger blocks to feature-local `tests/<file>_tests.rs` and include them with `#[cfg(test)]` and `#[path = "tests/<file>_tests.rs"] mod tests;`. Every test file under `src/` needs a module declaration.
 - Tests that open test database connections are integration tests, including temporary SQLite stores. Name them `tests/<file>_integration_tests.rs`. Use an external test target or a path-mounted module; do not expose production internals just for test placement.
 - Keep TypeScript/React tests in colocated `*.test.ts`/`*.test.tsx` files, or a nearby `__tests__/` folder for larger feature suites. Keep fixtures and render helpers near their tests.
 - Use `*.integration.test.ts(x)` for real service boundaries and the existing browser suite for E2E checks. Mocked component tests do not prove database or native-service behavior.

@@ -550,6 +550,14 @@ it("keeps cached exclusions during a failed read and leaves new groups unapprove
 
 it("does not turn an initial folder read failure into an empty list", async () => {
   const { port, ongoing } = cloudProjectFixture()
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      status: "interrupted",
+      consentVersion: "desktop-project-sync-v1",
+      interruptedCount: 1,
+      recoveryRequiredCount: 1,
+    }),
+  )
   ongoing.groups.mockRejectedValueOnce(new Error("Synthetic read failure"))
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
@@ -559,15 +567,66 @@ it("does not turn an initial folder read failure into an empty list", async () =
     screen.queryByRole("button", { name: "Choose Claude session folders…" }),
   ).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Retry folder list" })).toBeEnabled()
+  expect(screen.queryByText(/Some sessions need local recovery/)).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Retry saved uploads" })).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
-it.each([
-  { partial: true, nextCursor: null },
-  { partial: false, nextCursor: { environment: "native", cwd: "/Example/Next" } },
-])("does not claim an incomplete empty discovery is complete: %j", async (page) => {
+it("retries an incomplete empty folder listing without saving upload permission", async () => {
   const { port, ongoing } = cloudProjectFixture()
-  ongoing.groups.mockResolvedValue({ groups: [], sourceRoots: [], ...page })
+  ongoing.groups.mockResolvedValueOnce({
+    groups: [],
+    sourceRoots: [],
+    nextCursor: null,
+    partial: true,
+  })
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  const retry = await screen.findByRole("button", { name: "Retry folder list" })
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not finish loading folders.")
+  expect(screen.queryByText("No session folders found.")).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Load more folders" })).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
+  ).not.toBeInTheDocument()
+  expect(ongoing.groups).toHaveBeenCalledOnce()
+  let finish!: (page: Awaited<ReturnType<typeof ongoing.groups>>) => void
+  ongoing.groups.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+  )
+  fireEvent.click(retry)
+  await waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
+  expect(ongoing.groups).toHaveBeenLastCalledWith(expect.anything(), null)
+  expect(retry).toBeDisabled()
+  await act(async () =>
+    finish({
+      groups: [projectGroup()],
+      sourceRoots: [{ sourceKind: "claude_jsonl", path: "/Example/claude/projects/studio" }],
+      nextCursor: null,
+      partial: false,
+    }),
+  )
+  expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Retry folder list" })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeEnabled()
+  expect(ongoing.retry).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(port.save).not.toHaveBeenCalled()
+})
+
+it("does not claim an empty discovery with another page is complete", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.groups.mockResolvedValue({
+    groups: [],
+    sourceRoots: [],
+    partial: false,
+    nextCursor: { environment: "native", cwd: "/Example/Next" },
+  })
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   await waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
@@ -576,6 +635,8 @@ it.each([
     screen.queryByRole("button", { name: "Choose Claude session folders…" }),
   ).not.toBeInTheDocument()
   expect(screen.queryByText(/Could not|unavailable|blocked/)).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Load more folders" })).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Retry folder list" })).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
@@ -606,6 +667,90 @@ it.each([
     expect(screen.queryByText(/uploaded ·|Transferred/)).not.toBeInTheDocument()
   },
 )
+
+it.each([
+  { status: "interrupted" as const, paused: false },
+  { status: "paused" as const, paused: true },
+  { status: "syncing" as const, paused: false },
+])("does not offer upload retry for recovery-only jobs while $status", async (patch) => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      consentVersion: "desktop-project-sync-v1",
+      projectChoices: { studio: true },
+      projects: projectGroup().projects,
+      interruptedCount: 2,
+      recoveryRequiredCount: 2,
+      ...patch,
+    }),
+  )
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  const message = await screen.findByText(
+    "Some sessions need local recovery. Saved data is kept.",
+  )
+  expect(message.closest('[role="alert"]')).toHaveClass("text-system-red-text")
+  expect(screen.queryByText("Some sessions could not be prepared.")).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Retry saved uploads" })).not.toBeInTheDocument()
+  expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeEnabled()
+  expect(ongoing.retry).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it.each([
+  { status: "interrupted" as const, interruptedCount: 2 },
+  { status: "interrupted" as const, queuedCount: 1 },
+  { status: "syncing" as const, fencedCount: 1 },
+  { status: "fenced" as const },
+  { status: "offline" as const },
+  { status: "upload_unavailable" as const },
+  { status: "storage_unavailable" as const, storageKnown: false },
+])("keeps upload retry for other saved-work problems: %j", async (patch) => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      consentVersion: "desktop-project-sync-v1",
+      projectChoices: { studio: true },
+      projects: projectGroup().projects,
+      interruptedCount: 1,
+      recoveryRequiredCount: 1,
+      ...patch,
+    }),
+  )
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  const retry = await screen.findByRole("button", { name: "Retry saved uploads" })
+  expect(retry).toBeEnabled()
+  if (patch.status === "interrupted") {
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Some sessions need local recovery. Saved data is kept.",
+    )
+  }
+  fireEvent.click(retry)
+  await waitFor(() => expect(ongoing.retry).toHaveBeenCalledOnce())
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("keeps interrupted upload retry compatible with an older status without a recovery count", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const saved = ongoingStatus({
+    status: "interrupted",
+    consentVersion: "desktop-project-sync-v1",
+    projectChoices: { studio: true },
+    projects: projectGroup().projects,
+    interruptedCount: 1,
+  })
+  delete saved.recoveryRequiredCount
+  ongoing.status.mockResolvedValue(saved)
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  expect(await screen.findByText("Some sessions could not be prepared.")).toBeVisible()
+  expect(screen.queryByText(/Some sessions need local recovery/)).not.toBeInTheDocument()
+  const retry = screen.getByRole("button", { name: "Retry saved uploads" })
+  expect(retry).toBeEnabled()
+  fireEvent.click(retry)
+  await waitFor(() => expect(ongoing.retry).toHaveBeenCalledOnce())
+})
 
 it("does not expose an unsupported team destination or route it to personal", async () => {
   const { port, ongoing, emit } = cloudProjectFixture()

@@ -250,6 +250,10 @@ export interface CloudOngoingStatus {
   projectChoices?: CloudProjectChoices
   queuedCount: number
   interruptedCount: number
+  /** Included in interruptedCount, but upload retry cannot recover these jobs.
+   * Older replies omit this count; treat it as zero.
+   */
+  recoveryRequiredCount?: number
   fencedCount: number
   acceptedCount: number
   suppressedCount: number

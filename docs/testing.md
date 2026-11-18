@@ -16,13 +16,16 @@ tests/
   capture_integration_tests.rs
 ```
 
-Use a path-mounted module when tests need private access:
+Every test file under `src/` needs a module declaration; Cargo does not discover
+these files automatically. Use a path-mounted module when tests need private access:
 
 ```rust
 #[cfg(test)]
 #[path = "tests/source_tests.rs"]
 mod tests;
 ```
+
+Put tests that use only public APIs in the external `tests/` target.
 
 A test that opens a test database connection is an integration test, including a disposable SQLite store. Name the file `tests/<file>_integration_tests.rs`. Pure validation and rule tests use `<file>_tests.rs`. Use an external test target or a path-mounted module as appropriate; do not expose private production functions solely to move tests.
 

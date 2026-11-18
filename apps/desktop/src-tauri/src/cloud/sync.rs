@@ -15,7 +15,8 @@ use crate::store::{
 };
 use antiburn_cloud_capture::{
     Candidate, CaptureState, Limits, MetadataSections, QueueEntry, TransferProgress,
-    discover_claude, discover_opencode, discover_opencode_page,
+    Transport as _, discover_claude, discover_claude_page, discover_opencode,
+    discover_opencode_page,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -118,6 +119,7 @@ pub(crate) struct Status {
     project_choices: BTreeMap<String, bool>,
     queued_count: u32,
     interrupted_count: u32,
+    recovery_required_count: u32,
     fenced_count: u32,
     accepted_count: u32,
     suppressed_count: u32,
@@ -148,8 +150,10 @@ struct Runner {
     candidates: VecDeque<Selection>,
     next_reconcile: Option<Instant>,
     next_reservation: Option<Instant>,
-    /// Bound automatic rechecks of saved, post-reservation conflicts.
-    conflict_rechecks: BTreeMap<String, Instant>,
+    /// Bound retries of saved requests without delaying unrelated captures.
+    retry_deadlines: BTreeMap<String, (Instant, upload::Failure)>,
+    /// Replay submitted finalization once per sign-in, restart, or explicit retry.
+    finalization_submissions: BTreeSet<String>,
     /// A new sign-in clears conflict cooldowns, not saved account or policy bindings.
     retry_grant_id: Option<String>,
     binding: Option<(String, String, Option<String>, String)>,
@@ -296,12 +300,15 @@ impl Runner {
         {
             return;
         }
+        if self.discovery_cursor.is_none() {
+            self.discovery_blocked = false;
+        }
         let cursor = self.discovery_cursor.clone().unwrap_or_default();
         match discover_policy_page(policy, current, cache, &cursor) {
-            Ok((candidates, next_cursor)) => {
+            Ok((candidates, next_cursor, blocked)) => {
                 self.candidates = candidates.into();
                 self.discovery_cursor = next_cursor;
-                self.discovery_blocked = false;
+                self.discovery_blocked |= blocked;
                 self.next_reconcile = self
                     .discovery_cursor
                     .is_none()
@@ -432,13 +439,14 @@ impl Runner {
             self.candidates.clear();
             self.discovery_cursor = None;
             self.next_reconcile = None;
-            self.next_reservation = None;
             return Ok(());
         };
-        if self.retry_grant_id.as_deref() != Some(&session.grant_id) {
+        let sign_in_changed = self.retry_grant_id.as_deref() != Some(&session.grant_id);
+        if sign_in_changed {
             self.retry_grant_id = Some(session.grant_id.clone());
-            self.conflict_rechecks.clear();
-            self.next_reservation = None;
+            self.retry_deadlines
+                .retain(|_, (_, reason)| *reason != upload::Failure::Conflict);
+            self.finalization_submissions.clear();
             tracing::info!(
                 event = "cloud_sync_sign_in_changed",
                 conflict_rechecks_cleared = true
@@ -474,17 +482,42 @@ impl Runner {
             )
             .map_err(|_| "Could not read saved capture jobs.")?;
         restore_jobs(store, &mut jobs, &entries)?;
-        if jobs.iter().any(|job| {
-            job.state != JobState::Recovering
-                && !entries.iter().any(|entry| entry.identity == job.identity)
-        }) {
-            return Err(
-                "Saved capture state is missing. Restore it under its original ID before retrying."
-                    .into(),
-            );
+        for job in &mut jobs {
+            if !current() {
+                return Ok(());
+            }
+            let entry = entries.iter().find(|entry| entry.identity == job.identity);
+            let next = if entry.is_none()
+                && !matches!(
+                    job.state,
+                    JobState::Recovering | JobState::WaitingForLocalCapacity
+                ) {
+                JobState::Interrupted
+            } else if sign_in_changed
+                && job.state == JobState::Interrupted
+                && entry.is_some_and(|entry| {
+                    matches!(
+                        entry.state,
+                        CaptureState::Queued | CaptureState::AwaitingIntegrity
+                    )
+                })
+                && job.allowed(&policy)
+            {
+                JobState::Queued
+            } else {
+                continue;
+            };
+            if next != job.state {
+                store
+                    .set_cloud_sync_job_state(job, next)
+                    .map_err(|_| "Could not save capture recovery state.")?;
+                job.state = next;
+            }
         }
-        self.conflict_rechecks
+        self.retry_deadlines
             .retain(|id, _| jobs.iter().any(|job| &job.identity.capture_id == id));
+        self.finalization_submissions
+            .retain(|id| jobs.iter().any(|job| &job.identity.capture_id == id));
         let pending = entries
             .iter()
             .filter(|entry| {
@@ -495,18 +528,16 @@ impl Runner {
                         CaptureState::Queued | CaptureState::AwaitingIntegrity
                     )
                     && jobs.iter().any(|job| {
-                        job.state != JobState::Recovering
-                            && (job.state != JobState::Fenced
-                                || self
-                                    .conflict_rechecks
-                                    .get(&job.identity.capture_id)
-                                    .is_none_or(|deadline| *deadline <= Instant::now()))
+                        !matches!(job.state, JobState::Recovering | JobState::Interrupted)
+                            && self
+                                .retry_deadlines
+                                .get(&job.identity.capture_id)
+                                .is_none_or(|(deadline, _)| *deadline <= Instant::now())
                             && job.identity == entry.identity
                             && job.allowed(&policy)
                     })
             })
             .collect::<Vec<_>>();
-        self.refresh_candidates(&policy, current, cache);
         if !pending.is_empty() {
             let entry = pending
                 .iter()
@@ -526,21 +557,56 @@ impl Runner {
                 .as_deref()
                 .ok_or("Confirm Cloud sync for this service.")?;
             if job.state == JobState::Fenced {
-                self.conflict_rechecks.insert(
+                self.retry_deadlines.insert(
                     job.identity.capture_id.clone(),
-                    Instant::now() + Duration::from_secs(60),
+                    (
+                        Instant::now() + Duration::from_secs(60),
+                        upload::Failure::Conflict,
+                    ),
                 );
             }
             let mut transport =
                 upload::HttpTransport::new(engine, account_current, current, origin, None);
             let started = Instant::now();
-            let result = host.spool()?.resume_step(&entry.identity, &mut transport);
+            let mut result = host.spool()?.resume_step(&entry.identity, &mut transport);
+            if let Ok(step) = &result
+                && step.entry.state == CaptureState::AwaitingIntegrity
+                && step.entry.completion_submitted
+                && entry.completion_submitted
+                && self
+                    .finalization_submissions
+                    .insert(entry.identity.capture_id.clone())
+            {
+                let saved = &step.entry;
+                let replay = match (&saved.reservation_id, &saved.manifest, &saved.upload_plan) {
+                    (Some(reservation), Some(manifest), Some(plan)) => transport
+                        .complete(reservation, manifest, plan)
+                        .map_err(antiburn_cloud_capture::Error::Transport),
+                    _ => Err(antiburn_cloud_capture::Error::CorruptSpool),
+                };
+                tracing::info!(
+                    event = "cloud_saved_finalization_replayed",
+                    succeeded = replay.is_ok(),
+                );
+                if let Err(error) = replay {
+                    self.finalization_submissions
+                        .remove(&entry.identity.capture_id);
+                    result = Err(error);
+                }
+            }
+            if result
+                .as_ref()
+                .is_ok_and(|step| step.entry.completion_submitted)
+            {
+                self.finalization_submissions
+                    .insert(entry.identity.capture_id.clone());
+            }
             self.state = transport_state(transport.failure, &result);
             if result.is_ok() && job.state == JobState::Fenced && current() {
                 store
                     .set_cloud_sync_job_state(job, JobState::Queued)
                     .map_err(|_| "Could not save recovered capture progress.")?;
-                self.conflict_rechecks.remove(&job.identity.capture_id);
+                self.retry_deadlines.remove(&job.identity.capture_id);
             }
             if result.is_err()
                 && self.state == State::Fenced
@@ -549,10 +615,32 @@ impl Runner {
                 store
                     .set_cloud_sync_job_state(job, JobState::Fenced)
                     .map_err(|_| "Could not save fenced capture state.")?;
-                self.conflict_rechecks.insert(
+                self.retry_deadlines.insert(
                     job.identity.capture_id.clone(),
-                    Instant::now() + Duration::from_secs(60),
+                    (
+                        Instant::now() + Duration::from_secs(60),
+                        upload::Failure::Conflict,
+                    ),
                 );
+            }
+            if result.is_err() && matches!(self.state, State::Offline | State::Syncing) {
+                let delay = transport.retry_after.unwrap_or(RESERVATION_RETRY_DELAY);
+                self.retry_deadlines.insert(
+                    job.identity.capture_id.clone(),
+                    (
+                        Instant::now() + delay,
+                        transport.failure.unwrap_or(upload::Failure::Offline),
+                    ),
+                );
+                if transport.failure == Some(upload::Failure::Backpressure) {
+                    self.next_reservation = Some(Instant::now() + delay);
+                }
+            } else if result.is_err()
+                && matches!(self.state, State::Interrupted | State::UploadUnavailable)
+            {
+                store
+                    .set_cloud_sync_job_state(job, JobState::Interrupted)
+                    .map_err(|_| "Could not save interrupted capture state.")?;
             }
             if job.state == JobState::Fenced || result.is_err() {
                 tracing::info!(
@@ -564,9 +652,9 @@ impl Runner {
                     succeeded = result.is_ok(),
                     transport_failure = ?transport.failure,
                     elapsed_ms = started.elapsed().as_millis() as u64,
-                    retry_after_seconds = self.conflict_rechecks
+                    retry_after_seconds = self.retry_deadlines
                         .get(&job.identity.capture_id)
-                        .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_secs())
+                        .map(|(deadline, _)| deadline.saturating_duration_since(Instant::now()).as_secs())
                         .unwrap_or_default(),
                 );
             }
@@ -582,11 +670,14 @@ impl Runner {
             }
             return Ok(());
         }
+        self.refresh_candidates(&policy, current, cache);
         if self
             .next_reservation
             .is_some_and(|time| time > Instant::now())
         {
-            self.state = State::Syncing;
+            if self.state != State::Offline {
+                self.state = State::Syncing;
+            }
             return Ok(());
         }
         self.next_reservation = None;
@@ -602,10 +693,12 @@ impl Runner {
         // Reopen one due job directly. A filtered or incomplete discovery page
         // cannot prove that its saved source has moved or disappeared.
         if let Some(job) = jobs.iter().find(|job| {
-            job.state == JobState::WaitingForCapacity
-                && job
-                    .reservation_retry_at
-                    .is_some_and(|deadline| deadline <= now())
+            matches!(
+                job.state,
+                JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
+            ) && job
+                .reservation_retry_at
+                .is_some_and(|deadline| deadline <= now())
         }) {
             if !current() {
                 return Ok(());
@@ -644,7 +737,12 @@ impl Runner {
                 .find(|job| job.identity.source_id == selection.candidate.source_id());
             if saved.is_some_and(|job| {
                 !job.allowed(&policy)
-                    || !matches!(job.state, JobState::Pending | JobState::WaitingForCapacity)
+                    || !matches!(
+                        job.state,
+                        JobState::Pending
+                            | JobState::WaitingForCapacity
+                            | JobState::WaitingForLocalCapacity
+                    )
             }) {
                 continue;
             }
@@ -674,8 +772,12 @@ impl Runner {
                 .map_err(|_| "Could not read accepted source state.")?
                 .is_some_and(|source| {
                     source.suppressed
-                        || (saved.is_none_or(|job| job.state != JobState::WaitingForCapacity)
-                            && source.observation_key.as_deref() == Some(&selection.observation))
+                        || (saved.is_none_or(|job| {
+                            !matches!(
+                                job.state,
+                                JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
+                            )
+                        }) && source.observation_key.as_deref() == Some(&selection.observation))
                 })
             {
                 continue;
@@ -689,12 +791,21 @@ impl Runner {
             ) {
                 Ok(limits) => limits,
                 Err(failure) => {
-                    self.state = match failure {
+                    self.state = match failure.failure {
                         upload::Failure::Backpressure => {
-                            self.next_reservation = Some(Instant::now() + RESERVATION_RETRY_DELAY);
+                            self.next_reservation = Some(
+                                Instant::now()
+                                    + failure.retry_after.unwrap_or(RESERVATION_RETRY_DELAY),
+                            );
                             State::Syncing
                         }
-                        upload::Failure::Offline => State::Offline,
+                        upload::Failure::Offline => {
+                            self.next_reservation = Some(
+                                Instant::now()
+                                    + failure.retry_after.unwrap_or(RESERVATION_RETRY_DELAY),
+                            );
+                            State::Offline
+                        }
                         upload::Failure::Unauthorized => State::ReauthRequired,
                         _ => State::UploadUnavailable,
                     };
@@ -703,7 +814,12 @@ impl Runner {
                 }
             };
             host.configure_limits(limits.clone())?;
-            let waiting = saved.filter(|job| job.state == JobState::WaitingForCapacity);
+            let waiting = saved.filter(|job| {
+                matches!(
+                    job.state,
+                    JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
+                )
+            });
             let folders = if let Some(job) = waiting {
                 job.project_folders
                     .iter()
@@ -715,17 +831,25 @@ impl Runner {
                     .projects
                     .iter()
                     .filter(|project| {
-                        policy.roots.iter().any(|root| {
-                            root.source_scope_id == selection.scope
-                                && root.source_kind == project.source_kind
-                                && root.path == project.source_path
-                        })
+                        Path::new(&selection.project).starts_with(&project.project_path)
+                            && policy.roots.iter().any(|root| {
+                                root.source_scope_id == selection.scope
+                                    && root.source_kind == project.source_kind
+                                    && root.path == project.source_path
+                            })
                     })
                     .map(|project| Path::new(&project.project_path).to_owned())
                     .collect()
             };
-            let projects = antiburn_cloud_capture::ProjectSelection::new(folders)
-                .and_then(|projects| projects.admit_with_limits(&selection.candidate, &limits));
+            let project_selection = antiburn_cloud_capture::ProjectSelection::new(folders);
+            let projects = project_selection
+                .as_ref()
+                .map_err(|_| ())
+                .and_then(|projects| {
+                    projects
+                        .admit_with_limits(&selection.candidate, &limits)
+                        .map_err(|_| ())
+                });
             if !current() {
                 self.state = State::Paused;
                 return Ok(());
@@ -770,7 +894,10 @@ impl Runner {
                 job
             };
             let retry_reservation = job.state == JobState::WaitingForCapacity;
-            if retry_reservation {
+            if matches!(
+                job.state,
+                JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
+            ) {
                 let root = policy
                     .roots
                     .iter()
@@ -790,7 +917,18 @@ impl Runner {
                     )
                     .and_then(|evidence| {
                         evidence
-                            .map(|evidence| candidate_observation(&selection.candidate, &evidence))
+                            .map(|evidence| {
+                                if !current() {
+                                    return Err("Cloud upload controls changed.".into());
+                                }
+                                candidate_observation(
+                                    &selection.candidate,
+                                    &evidence,
+                                    project_selection
+                                        .as_ref()
+                                        .map_err(|_| "Cloud project selection changed.")?,
+                                )
+                            })
                             .transpose()
                     });
                 if !current() {
@@ -852,6 +990,9 @@ impl Runner {
                 store.suppress_cloud_sync(&job).map_err(
                     |_| "Could not save the Cloud deletion outcome. Saved captures are kept.",
                 )?;
+                host.spool()?.cancel(&job.identity).map_err(
+                    |_| "Cloud deletion is saved, but its empty local entry needs cleanup.",
+                )?;
                 self.state = State::Ready;
                 return Ok(());
             }
@@ -862,10 +1003,6 @@ impl Runner {
                     antiburn_cloud_capture::TransportError::Backpressure
                 ))
             );
-            if capacity_refused {
-                self.next_reservation = Some(Instant::now() + RESERVATION_RETRY_DELAY);
-                self.candidates.push_front(selection);
-            }
             let saved_entries = host
                 .spool()?
                 .entries()
@@ -894,20 +1031,40 @@ impl Runner {
                     JobState::WaitingForCapacity
                 }
                 Some(_) => JobState::Interrupted,
-                None => JobState::Pending,
+                None if matches!(result, Err(antiburn_cloud_capture::Error::SpoolCapacity)) => {
+                    JobState::WaitingForLocalCapacity
+                }
+                None => JobState::Interrupted,
             };
             if state == JobState::WaitingForCapacity {
+                let delay = transport.retry_after.unwrap_or(RESERVATION_RETRY_DELAY);
+                self.next_reservation = Some(Instant::now() + delay);
+                self.candidates.push_front(selection);
                 // Round up persisted seconds so a restart cannot shorten the delay.
-                let retry_at = now().saturating_add(RESERVATION_RETRY_DELAY.as_secs() as i64 + 1);
+                let retry_at = now().saturating_add(delay.as_secs() as i64 + 1);
                 store
                     .defer_cloud_sync_reservation(&job, retry_at)
                     .map_err(|_| "Could not save reservation backpressure.")?;
+            } else if state == JobState::WaitingForLocalCapacity {
+                let delay = RESERVATION_RETRY_DELAY;
+                self.next_reservation = Some(Instant::now() + delay);
+                self.candidates.push_front(selection);
+                store
+                    .defer_cloud_sync_local_capture(
+                        &job,
+                        now().saturating_add(delay.as_secs() as i64 + 1),
+                    )
+                    .map_err(|_| "Could not save local capture backpressure.")?;
+                self.state = State::Syncing;
             } else {
                 store
                     .set_cloud_sync_job_state(&job, state)
                     .map_err(|_| "Could not save capture progress.")?;
             }
-            if result.is_err() && transport.failure.is_none() {
+            if result.is_err()
+                && transport.failure.is_none()
+                && state != JobState::WaitingForLocalCapacity
+            {
                 self.state = State::Interrupted;
             }
             return Ok(());
@@ -923,10 +1080,13 @@ impl Runner {
                 .any(|job| job.allowed(&policy) && job.state == JobState::Fenced)
         {
             State::Fenced
-        } else if jobs
-            .iter()
-            .any(|job| job.allowed(&policy) && job.state == JobState::WaitingForCapacity)
-        {
+        } else if jobs.iter().any(|job| {
+            job.allowed(&policy)
+                && matches!(
+                    job.state,
+                    JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
+                )
+        }) {
             State::Syncing
         } else {
             State::Ready
@@ -995,6 +1155,11 @@ fn restore_jobs(store: &Store, jobs: &mut [Job], entries: &[QueueEntry]) -> Resu
                     JobState::WaitingForCapacity
                 }
                 CaptureState::Preparing => JobState::Interrupted,
+                CaptureState::Queued | CaptureState::AwaitingIntegrity
+                    if job.state == JobState::Interrupted =>
+                {
+                    continue;
+                }
                 CaptureState::Queued | CaptureState::AwaitingIntegrity => JobState::Queued,
                 CaptureState::Accepted | CaptureState::Cancelled => continue,
             };
@@ -1041,21 +1206,9 @@ fn retry_saved_jobs(
         }
         let entry = entries.iter().find(|entry| entry.identity == job.identity);
         if entry.is_none() && job.state != JobState::Recovering {
-            return Err(
-                "Saved capture state is missing. Restore it under its original ID before retrying."
-                    .into(),
-            );
+            continue;
         }
-        let empty_preparing = entry.is_some_and(|entry| {
-            matches!(
-                entry.state,
-                CaptureState::Preparing | CaptureState::Cancelled
-            ) && entry.reservation_id.is_none()
-                && entry.manifest.is_none()
-                && entry.upload_plan.is_none()
-                && entry.server_status.is_none()
-                && !entry.completion_submitted
-        });
+        let empty_preparing = entry.is_some_and(empty_preparation);
         if matches!(
             job.state,
             JobState::Interrupted | JobState::Pending | JobState::Recovering | JobState::Fenced
@@ -1075,7 +1228,7 @@ fn retry_saved_jobs(
             store
                 .abandon_cloud_sync_preparing(&job)
                 .map_err(|_| "Could not finish capture recovery. Retry again.")?;
-        } else if job.state == JobState::Fenced
+        } else if matches!(job.state, JobState::Fenced | JobState::Interrupted)
             && entry.is_some_and(|entry| {
                 matches!(
                     entry.state,
@@ -1089,6 +1242,19 @@ fn retry_saved_jobs(
         }
     }
     Ok(())
+}
+
+/// Only this saved shape permits explicit retry to replace an empty preparation.
+/// It never authorizes automatic rereading of source.
+fn empty_preparation(entry: &QueueEntry) -> bool {
+    matches!(
+        entry.state,
+        CaptureState::Preparing | CaptureState::Cancelled
+    ) && entry.reservation_id.is_none()
+        && entry.manifest.is_none()
+        && entry.upload_plan.is_none()
+        && entry.server_status.is_none()
+        && !entry.completion_submitted
 }
 
 fn transport_state<T>(
@@ -1110,10 +1276,11 @@ fn transport_state<T>(
         Some(upload::Failure::Offline) => State::Offline,
         Some(upload::Failure::Unauthorized) => State::ReauthRequired,
         Some(upload::Failure::Unavailable) => State::UploadUnavailable,
-        Some(upload::Failure::Conflict | upload::Failure::Rejected) => State::Fenced,
+        Some(upload::Failure::Conflict) => State::Fenced,
+        Some(upload::Failure::Rejected) => State::Interrupted,
         Some(upload::Failure::SourceSuppressed) => State::Ready,
         None if result.is_ok() => State::Syncing,
-        None => State::Fenced,
+        None => State::Interrupted,
     }
 }
 
@@ -1130,7 +1297,7 @@ fn discover_policy(policy: &Policy, current: &dyn Fn() -> bool) -> Result<Vec<Se
         &mut super::projects::Cache::default(),
         &DiscoveryCursor::default(),
     )
-    .map(|(candidates, _)| candidates)
+    .map(|(candidates, _, _)| candidates)
 }
 
 pub(super) fn metadata_limits() -> Limits {
@@ -1141,16 +1308,17 @@ pub(super) fn metadata_limits() -> Limits {
 }
 
 /// Inspect at most 512 candidates across the remaining roots in one sweep page.
-/// Cursor movement is returned only after current project evidence succeeds.
+/// Keep bad sessions visible without discarding healthy selections or the cursor.
 fn discover_policy_page(
     policy: &Policy,
     current: &dyn Fn() -> bool,
     cache: &mut super::projects::Cache,
     cursor: &DiscoveryCursor,
-) -> Result<(Vec<Selection>, Option<DiscoveryCursor>), String> {
+) -> Result<(Vec<Selection>, Option<DiscoveryCursor>, bool), String> {
     cache.begin_scan();
     let mut selected = Vec::new();
     let mut discovered = 0usize;
+    let mut blocked = false;
     for (index, root) in policy.roots.iter().enumerate().skip(cursor.root) {
         if !current() {
             return Err("Cloud account changed.".into());
@@ -1183,21 +1351,28 @@ fn discover_policy_page(
                 source_kind: root.source_kind,
                 path: root.path.clone(),
             };
-            let Some(evidence) = cache.evidence(
+            let evidence = cache.evidence(
                 &policy.account_id,
                 &policy.destination_id,
                 &root_selection,
                 &candidate,
                 &metadata_limits(),
-            )?
-            else {
-                continue;
+            );
+            let evidence = match evidence {
+                Ok(Some(evidence)) => evidence,
+                Ok(None) => continue,
+                Err(_) => {
+                    blocked = true;
+                    continue;
+                }
             };
-            if !projects
-                .matches(&evidence)
-                .map_err(|_| "Could not check the recorded project.")?
-            {
-                continue;
+            match projects.matches(&evidence) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => {
+                    blocked = true;
+                    continue;
+                }
             }
             let project = evidence
                 .project_paths()
@@ -1210,7 +1385,16 @@ fn discover_policy_page(
                 .and_then(Path::to_str)
                 .ok_or("Could not bind the recorded project.")?
                 .to_owned();
-            let observation = candidate_observation(&candidate, &evidence)?;
+            if !current() {
+                return Err("Cloud upload controls changed.".into());
+            }
+            let observation = match candidate_observation(&candidate, &evidence, &projects) {
+                Ok(observation) => observation,
+                Err(_) => {
+                    blocked = true;
+                    continue;
+                }
+            };
             if policy.allows(&root.source_scope_id, &project) {
                 selected.push(Selection {
                     candidate: candidate
@@ -1232,6 +1416,7 @@ fn discover_policy_page(
                     root: index,
                     after: Some(after),
                 }),
+                blocked,
             ));
         }
         if discovered == 512 && index + 1 < policy.roots.len() {
@@ -1241,10 +1426,11 @@ fn discover_policy_page(
                     root: index + 1,
                     after: None,
                 }),
+                blocked,
             ));
         }
     }
-    Ok((selected, None))
+    Ok((selected, None, blocked))
 }
 
 /// Compare a fresh source generation and bounded metadata digest with the fixed
@@ -1252,9 +1438,17 @@ fn discover_policy_page(
 fn candidate_observation(
     candidate: &Candidate,
     evidence: &antiburn_cloud_capture::ProjectEvidence,
+    projects: &antiburn_cloud_capture::ProjectSelection,
 ) -> Result<String, String> {
     use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(&(source_observation(candidate)?, evidence.source_digest()))
+    if candidate.source_kind() == antiburn_cloud_capture::CaptureSourceKind::OpenCodeSqliteV2 {
+        return candidate
+            .opencode_content_digest(&metadata_limits(), projects)
+            .map(|digest| format!("opencode-native-v1:{digest}"))
+            .map_err(|_| "Could not check the approved session's native content.".into());
+    }
+    let observation = source_observation(candidate)?;
+    let bytes = serde_json::to_vec(&(observation, evidence.source_digest()))
         .map_err(|_| "Could not record a source observation.")?;
     Ok(Sha256::digest(bytes)
         .iter()
@@ -1262,8 +1456,7 @@ fn candidate_observation(
         .collect())
 }
 
-/// Read one bounded provider page. Claude retains complete-directory discovery;
-/// OpenCode uses fresh binary-ID pages without a whole-database session cap.
+/// Read one bounded provider page using stable native keys and fresh source checks.
 pub(super) fn discover_root_page(
     kind: SourceKind,
     path: &str,
@@ -1274,9 +1467,16 @@ pub(super) fn discover_root_page(
         return Err("Session discovery is still loading.".into());
     }
     match kind {
-        SourceKind::ClaudeJsonl => {
-            discover_root(kind, path, remaining).map(|candidates| (candidates, None))
-        }
+        SourceKind::ClaudeJsonl => discover_claude_page(
+            Path::new(path),
+            after,
+            &Limits {
+                discovery_sessions: remaining,
+                ..Limits::default()
+            },
+        )
+        .map(|page| (page.candidates, page.next_cursor))
+        .map_err(|_| "Could not list the selected Claude source.".into()),
         SourceKind::OpenCodeSqliteV2 => discover_opencode_page(
             Path::new(path),
             after,
@@ -1410,14 +1610,36 @@ fn status(
     let jobs = store
         .cloud_sync_jobs(&session.user.id, &session.workspace.id, &session.resource)
         .map_err(|_| "Could not read capture progress.")?;
+    let entries = host
+        .spool()?
+        .entries()
+        .map_err(|_| "Could not read saved capture progress.")?;
     for job in &jobs {
         if !job.allowed(&policy) {
             continue;
         }
+        let entry = entries.iter().find(|entry| entry.identity == job.identity);
+        if (entry.is_none()
+            && !matches!(
+                job.state,
+                JobState::Recovering | JobState::WaitingForLocalCapacity
+            ))
+            || entry.is_some_and(|entry| {
+                matches!(
+                    entry.state,
+                    CaptureState::Preparing | CaptureState::Cancelled
+                ) && !empty_preparation(entry)
+            })
+        {
+            status.interrupted_count += 1;
+            status.recovery_required_count += 1;
+            continue;
+        }
         match job.state {
-            JobState::Pending | JobState::WaitingForCapacity | JobState::Queued => {
-                status.queued_count += 1
-            }
+            JobState::Pending
+            | JobState::WaitingForCapacity
+            | JobState::WaitingForLocalCapacity
+            | JobState::Queued => status.queued_count += 1,
             JobState::Interrupted | JobState::Recovering => status.interrupted_count += 1,
             JobState::Fenced => status.fenced_count += 1,
             JobState::Accepted | JobState::Suppressed | JobState::Abandoned => {}
@@ -1432,19 +1654,6 @@ fn status(
         .map_err(|_| "Could not read accepted source state.")?;
     status.progress.negotiated = true;
     let mut has_progress = false;
-    let entries = host
-        .spool()?
-        .entries()
-        .map_err(|_| "Could not read saved capture progress.")?;
-    if jobs.iter().any(|job| {
-        job.state != JobState::Recovering
-            && !entries.iter().any(|entry| entry.identity == job.identity)
-    }) {
-        return Err(
-            "Saved capture state is missing. Restore it under its original ID before retrying."
-                .into(),
-        );
-    }
     for entry in entries {
         if entry.identity.account_id == session.user.id
             && entry.identity.destination_id == session.workspace.id
@@ -1630,6 +1839,9 @@ pub(crate) async fn cloud_enable_sync(
     app: tauri::AppHandle,
     mut consent: Consent,
 ) -> Result<Status, String> {
+    if !cfg!(unix) {
+        return Err("Session capture is not supported on this platform.".into());
+    }
     let work = app.state::<Controller>().blocking.clone();
     let wake = app.state::<Controller>().sync.wake.clone();
     let content_generation = app
@@ -1939,7 +2151,8 @@ pub(crate) async fn cloud_set_sync_project(
                 .map_err(|_| "Cloud sync is unavailable.")?;
             if change.selected && !saved.paused {
                 runner.next_reconcile = None;
-                runner.conflict_rechecks.clear();
+                runner.retry_deadlines.clear();
+                runner.finalization_submissions.clear();
                 runner.state = State::Ready;
             }
             let result =
@@ -2061,6 +2274,8 @@ async fn control(
                 .lock()
                 .map_err(|_| "Cloud sync is unavailable.")?;
             runner.next_reconcile = None;
+            runner.retry_deadlines.clear();
+            runner.finalization_submissions.clear();
             runner.state = if paused { State::Paused } else { State::Ready };
             let mut host = controller
                 .capture

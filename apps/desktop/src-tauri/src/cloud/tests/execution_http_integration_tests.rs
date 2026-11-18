@@ -154,6 +154,85 @@ fn cloud_execution_http_reserve_uses_exact_desktop_wire_and_api_bearer() {
 }
 
 #[test]
+fn cloud_execution_http_reserve_capacity_requires_the_flat_typed_error() {
+    use super::super::upload::{HttpTransport, Source};
+    use antiburn_cloud_capture::TransportError;
+    let valid = serde_json::json!({
+        "code": "capture_limit", "message": "Any safe explanation.",
+        "retryable": true, "requestId": "synthetic-request",
+    });
+    for (body, expected) in [
+        (valid.clone(), TransportError::Backpressure),
+        (serde_json::json!({"error": valid}), TransportError::Offline),
+        (
+            serde_json::json!({"message":"capture_limit", "retryable":true}),
+            TransportError::Offline,
+        ),
+        (
+            serde_json::json!({"code":"capture_limit","message":null,"retryable":true,"requestId":"synthetic"}),
+            TransportError::Offline,
+        ),
+        (
+            serde_json::json!({"code":"capture_limit","message":"capacity","retryable":false,"requestId":"synthetic"}),
+            TransportError::Offline,
+        ),
+    ] {
+        let (origin, worker) = server(429, body.to_string(), "Retry-After: 73\r\n");
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = connected(directory.path(), &origin);
+        let mut transport = HttpTransport::new(
+            &mut engine,
+            &|| true,
+            &|| true,
+            &origin,
+            Some(Source {
+                agent: "claude-code",
+                source_format: "ClaudeJsonl",
+                native_session_id: "session".into(),
+            }),
+        );
+        assert_eq!(transport.reserve(&identity(), 100), Err(expected));
+        assert_eq!(transport.retry_after, Some(Duration::from_secs(73)));
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn cloud_execution_http_retry_after_accepts_dates_and_bounds_untrusted_waits() {
+    use super::super::upload::Route;
+    let future = (time::OffsetDateTime::now_utc() + time::Duration::seconds(120))
+        .format(&time::format_description::well_known::Rfc2822)
+        .unwrap();
+    for (value, range) in [
+        ("0".to_owned(), Some(1..=1)),
+        ("999999".to_owned(), Some(300..=300)),
+        (future, Some(110..=120)),
+        ("Sun, 06 Nov 1994 08:49:37 GMT".to_owned(), Some(1..=1)),
+        ("not a delay".to_owned(), None),
+        ("-20".to_owned(), None),
+    ] {
+        let (origin, worker) = server(503, "{}".into(), &format!("Retry-After: {value}\r\n"));
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = connected(directory.path(), &origin);
+        let response = engine
+            .capture_request(
+                &identity(),
+                &origin,
+                Route::Capabilities,
+                &(),
+                &|| true,
+                &|| true,
+            )
+            .unwrap();
+        match range {
+            Some(range) => assert!(range.contains(&response.retry_after.unwrap().as_secs())),
+            None => assert!(response.retry_after.is_none()),
+        }
+        worker.join().unwrap();
+    }
+}
+
+#[test]
 fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
     use super::super::upload::Route;
     let (origin, server) = server(200, "{}".into(), "");
@@ -322,16 +401,17 @@ fn cloud_execution_http_changed_origin_rejects_saved_work_before_auth_or_upload(
 #[test]
 fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression() {
     use super::super::upload::{Failure, HttpTransport, Source};
-    let valid = serde_json::json!({"error": {
+    let valid = serde_json::json!({
         "code": "source_suppressed", "retryable": false,
-        "message": "Cloud deletion prevents automatic reimport.",
-    }});
+        "message": "This session was deleted from Cloud. It will not upload again automatically.",
+        "requestId": "synthetic-request",
+    });
     for (body, expected) in [
         (valid.clone(), Failure::SourceSuppressed),
         (
             {
                 let mut value = valid.clone();
-                value["error"]["retryable"] = true.into();
+                value["retryable"] = true.into();
                 value
             },
             Failure::Conflict,
@@ -339,7 +419,7 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
         (
             {
                 let mut value = valid.clone();
-                value["error"]["code"] = "capture_conflict".into();
+                value["code"] = "capture_conflict".into();
                 value
             },
             Failure::Conflict,
@@ -347,10 +427,10 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
         (
             {
                 let mut value = valid.clone();
-                value["error"]["message"] = "untrusted detail".into();
+                value["message"] = "A different safe explanation.".into();
                 value
             },
-            Failure::Conflict,
+            Failure::SourceSuppressed,
         ),
         (
             serde_json::json!({"code":"source_suppressed","retryable":false}),
@@ -375,7 +455,18 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
         assert_eq!(transport.failure, Some(expected));
         worker.join().unwrap();
     }
-    let (origin, worker) = server(409, valid.to_string(), "");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let worker = std::thread::spawn(move || {
+        let body = valid.to_string();
+        let mut requests = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            requests.push(read_request(&mut stream));
+            write!(stream, "HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+        requests
+    });
     let directory = tempfile::tempdir().unwrap();
     let mut engine = connected(directory.path(), &origin);
     let mut transport = HttpTransport::new(&mut engine, &|| true, &|| true, &origin, None);
@@ -388,9 +479,19 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
         source_fingerprint: "b".repeat(64),
         streams: Vec::new(),
     };
-    assert!(transport.negotiate("reservation", &manifest).is_err());
+    let plan = UploadPlan {
+        identity: identity(),
+        manifest_sha256: "a".repeat(64),
+        plan_id: "synthetic-plan".into(),
+        chunks: Vec::new(),
+        required_transfer_bytes: 0,
+        reused_bytes: 0,
+    };
+    assert!(transport.status("reservation", &manifest, &plan).is_err());
     assert_eq!(transport.failure, Some(Failure::Conflict));
-    worker.join().unwrap();
+    let requests = worker.join().unwrap();
+    assert!(requests[0].line.contains("/status?"));
+    assert!(requests[1].line.contains("/renew "));
 }
 
 #[test]

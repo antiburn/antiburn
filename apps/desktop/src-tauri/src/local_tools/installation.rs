@@ -32,6 +32,16 @@ struct FileReceipt {
     pending: Option<Vec<u8>>,
 }
 
+impl FileReceipt {
+    /// Keep installed write-ahead bytes authorized through an interrupted upgrade.
+    fn prepare_replacement(&mut self, current: Option<&[u8]>, proposed: Vec<u8>) {
+        if current.is_some() && current == self.pending.as_deref() {
+            self.active = current.map(<[u8]>::to_vec);
+        }
+        self.pending = Some(proposed);
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Receipt {
@@ -205,8 +215,12 @@ impl Installation {
         {
             return self.inspect(runtime);
         }
-        receipt.config.pending = Some(config.clone());
-        receipt.skill.pending = Some(skill.clone());
+        receipt
+            .config
+            .prepare_replacement(current_config.as_deref(), config.clone());
+        receipt
+            .skill
+            .prepare_replacement(current_skill.as_deref(), skill.clone());
         save(&tools.join("receipt.json"), &receipt, &mut receipt_bytes)?;
         ensure_directory(&self.profile.join("skills"))?;
         ensure_directory(&self.skill_directory())?;
