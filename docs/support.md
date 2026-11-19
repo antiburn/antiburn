@@ -273,6 +273,12 @@ index lighter. Deleting a transcript from disk does not immediately delete what
 antiburn derived from it; that data follows the selected retention period unless the
 session or local index is deleted first. The agents' own files are never touched.
 
+**The local store gives unused space back.** Removed data leaves free space inside the
+database file. About 10 minutes after launch, and then once a day, antiburn compacts
+the file when at least 256 MB and a quarter of it is free. It also trims the database's
+write log, which is capped at 64 MB. Compaction pauses local writes for a few seconds
+on a large store.
+
 **Discovery and the checks report share one current window.** Every recurring pass —
 launch, the periodic tick, a watcher burst, a settings change, an explicit rescan —
 discovers sessions last active within 30 days, the same window the checks report

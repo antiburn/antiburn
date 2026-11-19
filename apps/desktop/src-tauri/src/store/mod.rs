@@ -40,6 +40,8 @@ pub(crate) mod memories;
 pub(crate) mod native_tool_results;
 pub use native_tool_results::{ToolResultBatch, ToolResultPublishOptions};
 pub(crate) mod burn_checks;
+mod maintenance;
+pub use maintenance::VacuumThreshold;
 pub mod model;
 mod onboarding;
 mod project_deferrals;
@@ -609,6 +611,12 @@ impl Store {
         // the documented companion: a crash can lose the last commit, which for
         // a rebuildable cache is cheaper than an fsync per transaction.
         connection.pragma_update(None, "journal_mode", "WAL").ok();
+        // Without a limit, the WAL file stays at its largest size forever.
+        connection.pragma_update(
+            None,
+            "journal_size_limit",
+            maintenance::WAL_SIZE_LIMIT_BYTES,
+        )?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
