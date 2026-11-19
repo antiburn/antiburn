@@ -72,14 +72,21 @@ impl Store {
         let vacuumed = before.free_bytes >= threshold.min_free_bytes
             && before.file_bytes > 0
             && before.free_bytes as f64 / before.file_bytes as f64 >= threshold.min_free_ratio;
-        if vacuumed {
-            connection.execute_batch("VACUUM")?;
-        }
+        let vacuum = if vacuumed {
+            connection.execute_batch("VACUUM")
+        } else {
+            Ok(())
+        };
         // In WAL mode a vacuum writes every live page through the WAL. A
         // TRUNCATE checkpoint copies those pages back and empties the log.
-        // The first column is 1 when a reader blocked the checkpoint.
-        let busy: i64 =
-            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        // The checkpoint also runs after a failed vacuum, which rolls back
+        // and loses no data. The first column is 1 when a reader blocked
+        // the checkpoint.
+        let checkpoint = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            row.get::<_, i64>(0)
+        });
+        vacuum?;
+        let busy = checkpoint?;
         let after = page_use(&connection)?;
         Ok(StorageUpkeep {
             file_bytes_before: before.file_bytes,

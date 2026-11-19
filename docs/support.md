@@ -275,9 +275,10 @@ session or local index is deleted first. The agents' own files are never touched
 
 **The local store gives unused space back.** Removed data leaves free space inside the
 database file. About 10 minutes after launch, and then once a day, antiburn compacts
-the file when at least 256 MB and a quarter of it is free. It also trims the database's
-write log, which is capped at 64 MB. Compaction pauses local writes for a few seconds
-on a large store.
+the file when at least 256 MB and a quarter of it is free. It also empties the
+database's write log. A large write or a long read can make the write log grow for a
+time; after each reset, SQLite trims it back to 64 MB or less. Compaction pauses local
+writes for a few seconds on a large store.
 
 **Discovery and the checks report share one current window.** Every recurring pass —
 launch, the periodic tick, a watcher burst, a settings change, an explicit rescan —
