@@ -389,7 +389,9 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   or when a new installation identifier is created.
   Its generator is memory-only, but each queued event stores the value on disk
   until that event is sent or removed. Background events do not extend its
-  inactivity timeout. It does not measure a user visit or time spent. Because each event is
+  inactivity timeout. A background-only session has no inactivity timeout; its ID
+  changes with the first user-oriented event or another reset.
+  It does not measure a user visit or time spent. Because each event is
   timestamped and the installation identifier persists, the events
   do show roughly when events were captured and can group an installation's
   activity over months or years; they do not show

@@ -856,6 +856,9 @@ describe("SettingsView", () => {
     expect(
       screen.getByText(/background events do not extend that timeout/i),
     ).toBeInTheDocument()
+    expect(
+      screen.getByText(/a background-only session has no inactivity timeout/i),
+    ).toBeInTheDocument()
     expect(screen.getByText(/roughly when analytics events were captured/i)).toBeInTheDocument()
     expect(
       screen.getByText(/each event waiting to be sent keeps a copy on disk/i),

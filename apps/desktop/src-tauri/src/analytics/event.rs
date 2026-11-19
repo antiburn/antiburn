@@ -417,7 +417,9 @@ pub struct Event {
     /// when the process exits, and is replaced after
     /// [`super::SESSION_TIMEOUT`] of inactivity. The generator cannot continue
     /// into another run. It rolls after 30 minutes without a user-oriented event;
-    /// background telemetry does not refresh that timeout. Queued event payloads
+    /// background telemetry does not refresh that timeout. Background-only
+    /// sessions have no inactivity timeout. The first user-oriented event starts
+    /// a new session. Queued event payloads
     /// include the captured value until delivery or withdrawal. The persistent
     /// [`Event::anonymous_id`] remains the longest-lived generator state here.
     pub session_id: String,

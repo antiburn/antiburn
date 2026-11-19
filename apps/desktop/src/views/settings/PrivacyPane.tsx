@@ -344,8 +344,9 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 event waiting to be sent keeps a copy on disk. Newly captured events get a new
                 id after 30 minutes without a user-oriented analytics event, when antiburn
                 restarts, or when a new installation id is created. Background events do not
-                extend that timeout. One app run can have more than one id, so it does not
-                measure a visit or time spent.
+                extend that timeout. A background-only session has no inactivity timeout; its id
+                changes with the first user-oriented event or another reset. One app run can
+                have more than one id, so it does not measure a visit or time spent.
               </p>
             </Disclosure>
             <Disclosure label="How the starting default works">

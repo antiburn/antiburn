@@ -108,12 +108,141 @@ fn reenable_after_opt_out_creates_a_fresh_identity_and_session() {
         .queue_analytics_event("antiburn.app_launched", "{}")
         .unwrap();
 
-    clear_local_state(&store);
+    let enabled = store.settings().unwrap();
+    let mut disabled = enabled.clone();
+    disabled.analytics_enabled = false;
+    store
+        .replace_settings_with_transition(&disabled, |tx, previous, saved| {
+            prepare_opt_out_payload(tx, previous, saved, "antiburn:test")
+        })
+        .unwrap();
+    assert!(store.analytics_opt_out_pending().unwrap());
+    store
+        .replace_settings_preserving_interface_scale(&enabled, |tx, previous, saved| {
+            prepare_opt_out_payload(tx, previous, saved, "antiburn:test")
+        })
+        .unwrap();
+    assert!(!store.analytics_opt_out_pending().unwrap());
     assert!(store.analytics_identity().unwrap().is_none());
     assert!(store.pending_analytics_events(10).unwrap().is_empty());
     let fresh = current_identity_pair(&store, true).unwrap();
     assert_ne!(fresh.0, previous.0);
     assert_ne!(fresh.1, previous.1);
     assert_eq!(current_identity_pair(&store, true), Some(fresh));
+    reset_session();
+}
+
+#[test]
+fn failed_withdrawal_blocks_reenable_and_retries_after_restart() {
+    let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+    for table in ["analytics_event", "analytics_identity"] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        store.set_analytics_identity(EXISTING_ID).unwrap();
+        store
+            .queue_analytics_event("antiburn.app_launched", "{}")
+            .unwrap();
+        let mut disabled = store.settings().unwrap();
+        disabled.analytics_enabled = false;
+        store
+            .replace_settings_with_transition(&disabled, |tx, previous, saved| {
+                prepare_opt_out_payload(tx, previous, saved, "antiburn:test")
+            })
+            .unwrap();
+        // Delivery can remove the final signal before local cleanup fails.
+        store
+            .lock()
+            .execute(
+                "DELETE FROM analytics_event WHERE name = 'antiburn.analytics_opted_out'",
+                [],
+            )
+            .unwrap();
+        let pending = store.pending_analytics_events(10).unwrap();
+        store
+            .lock()
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_cleanup BEFORE DELETE ON {table}
+             BEGIN SELECT RAISE(ABORT, 'synthetic cleanup failure'); END;"
+            ))
+            .unwrap();
+
+        assert!(clear_local_state(&store).is_err());
+        assert!(store.analytics_opt_out_pending().unwrap());
+        assert_eq!(store.analytics_identity().unwrap().unwrap().0, EXISTING_ID);
+        assert_eq!(store.pending_analytics_events(10).unwrap(), pending);
+        let mut enabled = disabled.clone();
+        enabled.analytics_enabled = true;
+        assert!(
+            store
+                .replace_settings_preserving_interface_scale(&enabled, |tx, previous, saved| {
+                    prepare_opt_out_payload(tx, previous, saved, "antiburn:test")
+                })
+                .is_err()
+        );
+        assert!(!store.settings().unwrap().analytics_enabled);
+        assert!(!store.settings_snapshot().analytics_enabled);
+        drop(store);
+
+        let reopened = Store::open(directory.path()).unwrap();
+        assert!(clear_pending_withdrawal(&reopened, false).is_err());
+        assert!(reopened.analytics_opt_out_pending().unwrap());
+        reopened
+            .lock()
+            .execute_batch("DROP TRIGGER reject_cleanup;")
+            .unwrap();
+        clear_pending_withdrawal(&reopened, false).unwrap();
+        assert!(!reopened.analytics_opt_out_pending().unwrap());
+        assert!(reopened.analytics_identity().unwrap().is_none());
+        assert!(reopened.pending_analytics_events(10).unwrap().is_empty());
+        assert!(!reopened.settings().unwrap().analytics_enabled);
+        reopened
+            .replace_settings_preserving_interface_scale(&enabled, |tx, previous, saved| {
+                prepare_opt_out_payload(tx, previous, saved, "antiburn:test")
+            })
+            .unwrap();
+        assert_ne!(
+            current_identity_pair(&reopened, true).unwrap().0,
+            EXISTING_ID
+        );
+    }
+    reset_session();
+}
+
+#[test]
+fn failed_environment_cleanup_stays_pending_without_the_override_after_restart() {
+    let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.set_analytics_identity(EXISTING_ID).unwrap();
+    store
+        .queue_analytics_event("antiburn.app_launched", "{}")
+        .unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TRIGGER reject_cleanup BEFORE DELETE ON analytics_identity
+         BEGIN SELECT RAISE(ABORT, 'synthetic cleanup failure'); END;",
+        )
+        .unwrap();
+    assert!(clear_pending_withdrawal(&store, true).is_err());
+    assert!(store.analytics_opt_out_pending().unwrap());
+    drop(store);
+
+    let reopened = Store::open(directory.path()).unwrap();
+    assert!(reopened.settings().unwrap().analytics_enabled);
+    assert!(clear_pending_withdrawal(&reopened, false).is_err());
+    assert!(reopened.analytics_opt_out_pending().unwrap());
+    reopened
+        .lock()
+        .execute_batch("DROP TRIGGER reject_cleanup;")
+        .unwrap();
+    clear_pending_withdrawal(&reopened, false).unwrap();
+    assert!(!reopened.analytics_opt_out_pending().unwrap());
+    assert!(reopened.analytics_identity().unwrap().is_none());
+    assert!(reopened.pending_analytics_events(10).unwrap().is_empty());
+    assert_ne!(
+        current_identity_pair(&reopened, true).unwrap().0,
+        EXISTING_ID
+    );
     reset_session();
 }

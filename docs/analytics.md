@@ -91,7 +91,9 @@ analytics state is removed, so these events show roughly **when events were
 captured** and can group an installation's activity over months or years.
 The `sessionId` groups captured events separated by less than 30 minutes of
 user-oriented-event inactivity. User-origin UI events refresh that timeout;
-automatic and background telemetry do not. A quiet app process can receive more
+automatic and background telemetry do not. A background-only session has no
+inactivity timeout. Its ID changes with the first user-oriented event or another
+reset. A quiet app process can receive more
 than one ID, so it does not define a user visit or time spent. None of these
 fields can show the content or identity of what antiburn was used _on_. Resource
 ranges can indicate coarse work intensity and data volume. This is stated
@@ -109,6 +111,13 @@ its `sessionId`, so a queued event keeps that value on disk until it is sent or
 removed. Restarting antiburn or creating a new installation identifier creates
 a new session value for newly captured events. Events already in the queue keep
 their original values. Upgrading preserves the existing installation ID and queue.
+
+Withdrawal stays pending if local cleanup fails, including after the final
+opt-out event has been delivered. Pending withdrawal blocks ordinary capture and
+delivery. Startup retries cleanup without another final delivery attempt.
+Re-enabling analytics clears the old identifier, queue, and pending withdrawal in
+the same transaction that saves the enabled preference. A cleanup failure rolls
+back that save, so the withdrawn identity and events cannot be reused.
 
 ### Agent and provider categories
 

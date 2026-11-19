@@ -473,10 +473,10 @@ mod enabled {
         config::operator()
     }
 
-    /// Persist the withdrawal event with the preference change.
+    /// Persist withdrawal or complete cleanup with the preference change.
     ///
     /// The transaction makes the user's decision and the event durable as one
-    /// unit. A crash after commit cannot restore consent or lose the signal.
+    /// unit. Re-enable must fail if the transaction cannot clear withdrawn data.
     pub fn prepare_opt_out_in_transaction(
         app: &tauri::AppHandle,
         transaction: &rusqlite::Transaction<'_>,
@@ -497,6 +497,12 @@ mod enabled {
         saved: &AppSettings,
         app_version: &str,
     ) -> anyhow::Result<()> {
+        if !previous.analytics_enabled && saved.analytics_enabled {
+            return Store::clear_analytics_in(transaction);
+        }
+        if previous.analytics_enabled && !saved.analytics_enabled {
+            Store::mark_analytics_withdrawal_in(transaction)?;
+        }
         if !previous.analytics_enabled
             || saved.analytics_enabled
             || !available()
@@ -571,9 +577,12 @@ mod enabled {
     /// permission, the same rule every notifier in this app follows. The
     pub fn allowed(app: &tauri::AppHandle) -> bool {
         capture_allowed(available(), environment_disabled(), || {
-            app.try_state::<Store>()
-                .and_then(|store| store.settings().ok())
-                .map(|settings| settings.analytics_enabled)
+            app.try_state::<Store>().and_then(|store| {
+                Some(
+                    store.settings().ok()?.analytics_enabled
+                        && !store.analytics_opt_out_pending().ok()?,
+                )
+            })
         })
     }
 
@@ -1945,7 +1954,7 @@ mod enabled {
         }
         if saved.analytics_enabled {
             if !previous.analytics_enabled {
-                finish_reenabled_opt_out(app);
+                finish_reenabled_opt_out();
             }
             return;
         }
@@ -1985,13 +1994,11 @@ mod enabled {
         ACTIVE_OPT_OUT_GENERATION.store(0, Ordering::Release);
     }
 
-    fn finish_reenabled_opt_out(app: &tauri::AppHandle) {
+    fn finish_reenabled_opt_out() {
         cancel_opt_out();
-        if let Some(store) = app.try_state::<Store>() {
-            clear_local_state(&store);
-        } else {
-            reset_suppression();
-        }
+        // The settings transaction clears stored state before consent is enabled.
+        reset_session();
+        reset_suppression();
     }
 
     fn finish_opt_out(app: &tauri::AppHandle, generation: u64) {
@@ -2012,23 +2019,38 @@ mod enabled {
                 .ok()
                 .is_some_and(|settings| !settings.analytics_enabled)
         {
-            clear_local_state(&store);
-            cancel_opt_out();
+            match clear_local_state(&store) {
+                Ok(()) => cancel_opt_out(),
+                Err(error) => ::tracing::warn!(event = "analytics_cleanup_failed", error = %error),
+            }
         }
     }
 
     /// Remove all analytics state after either opt-out mechanism is used.
-    fn clear_local_state(store: &Store) {
+    fn clear_local_state(store: &Store) -> anyhow::Result<()> {
         // Final cleanup withdraws anything that was not delivered. The run
         // identifier lives in memory, so it also needs a separate reset.
-        {
+        let result = {
             let _capture = CAPTURE_LOCK
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = store.clear_analytics();
+            let result = store.clear_analytics();
             reset_session();
-        }
+            result
+        };
         reset_suppression();
+        result
+    }
+
+    /// Retry incomplete withdrawal before startup can capture or deliver events.
+    fn clear_pending_withdrawal(store: &Store, environment_disabled: bool) -> anyhow::Result<()> {
+        if environment_disabled
+            || !store.settings()?.analytics_enabled
+            || store.analytics_opt_out_pending()?
+        {
+            clear_local_state(store)?;
+        }
+        Ok(())
     }
 
     /// Install the TLS crypto provider this crate's client needs.
@@ -2047,18 +2069,13 @@ mod enabled {
 
     /// Start the background flusher. A no-op in any build that cannot transmit.
     pub fn install(app: &tauri::AppHandle) {
-        if environment_disabled() {
-            if let Some(store) = app.try_state::<Store>() {
-                clear_local_state(&store);
-            }
-            return;
-        }
-        // A crash after the atomic opt-out transaction leaves its signal on
-        // disk. The next launch completes withdrawal without retrying it.
         if let Some(store) = app.try_state::<Store>()
-            && store.analytics_opt_out_pending().unwrap_or(false)
+            && let Err(error) = clear_pending_withdrawal(&store, environment_disabled())
         {
-            clear_local_state(&store);
+            ::tracing::warn!(event = "analytics_cleanup_failed", error = %error);
+        }
+        if environment_disabled() {
+            return;
         }
         if !available() {
             return;
@@ -3063,7 +3080,7 @@ mod enabled {
                 .queue_analytics_event(EventName::BurnCheckDirectoryOpened.as_str(), "{}")
                 .unwrap();
 
-            clear_local_state(&store);
+            clear_local_state(&store).unwrap();
 
             assert!(store.pending_analytics_events(10).unwrap().is_empty());
             assert!(store.analytics_identity().unwrap().is_none());
@@ -3159,7 +3176,9 @@ mod enabled {
             reset_session();
             let start = std::time::Instant::now();
             let background = current_session_id_at(false, start);
-            let user = current_session_id_at(true, start + Duration::from_secs(5 * 60));
+            let later = start + Duration::from_secs(2 * 60 * 60);
+            assert_eq!(background, current_session_id_at(false, later));
+            let user = current_session_id_at(true, later);
             assert_ne!(background, user);
             reset_session();
         }
@@ -3644,7 +3663,7 @@ mod enabled {
             assert_eq!(store.analytics_event_count().unwrap(), 0);
             assert!(store.analytics_identity().unwrap().is_some());
 
-            clear_local_state(&store);
+            clear_local_state(&store).unwrap();
             assert!(store.analytics_identity().unwrap().is_none());
             assert_eq!(store.analytics_event_count().unwrap(), 0);
         }
@@ -3691,7 +3710,7 @@ mod enabled {
                     ));
                     assert!(matches!(outcome, FlushOutcome::Failed { .. }));
                     let _ = worker.join();
-                    clear_local_state(&store);
+                    clear_local_state(&store).unwrap();
                     assert!(store.analytics_identity().unwrap().is_none());
                     assert_eq!(store.analytics_event_count().unwrap(), 0);
                     continue;
@@ -3707,7 +3726,7 @@ mod enabled {
                     timeout,
                 ));
                 assert!(matches!(outcome, FlushOutcome::Failed { .. }));
-                clear_local_state(&store);
+                clear_local_state(&store).unwrap();
                 assert!(store.analytics_identity().unwrap().is_none());
                 assert_eq!(store.analytics_event_count().unwrap(), 0);
             }
@@ -3764,7 +3783,7 @@ mod enabled {
             ));
             assert_eq!(outcome, FlushOutcome::Suspended);
             assert_eq!(store.analytics_event_count().unwrap(), 1);
-            clear_local_state(&store);
+            clear_local_state(&store).unwrap();
             assert_eq!(store.analytics_event_count().unwrap(), 0);
             assert!(store.analytics_identity().unwrap().is_none());
         }
