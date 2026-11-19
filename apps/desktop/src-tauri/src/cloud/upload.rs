@@ -3,12 +3,17 @@
 //! renderer state, tracing, or errors.
 
 use super::{auth, engine::Engine};
+use crate::store::cloud_capture::SourceKind;
 use antiburn_cloud_capture::{
-    CaptureIdentity, CaptureManifest, Chunk, ChunkKey, ServerStatus, Transport, TransportError,
-    UploadPlan,
+    CaptureIdentity, CaptureManifest, Chunk, ChunkKey, Limits, ServerStatus, Transport,
+    TransportError, UploadPlan,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{collections::BTreeMap, io::Read, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Read,
+    time::Duration,
+};
 
 const MAX_API_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -27,7 +32,7 @@ pub(super) enum Route {
 impl Route {
     fn path(self, capture: &str) -> String {
         match self {
-            Self::Capabilities => "/v1/desktop/captures/capabilities".into(),
+            Self::Capabilities => "/v1/desktop/captures/capabilities?contract=2".into(),
             Self::Reserve => "/v1/desktop/captures/reserve".into(),
             Self::Manifest => format!("/v1/desktop/captures/{capture}/manifest"),
             Self::Status => format!("/v1/desktop/captures/{capture}/status"),
@@ -149,31 +154,48 @@ pub(super) struct Capabilities {
     source_formats: Vec<String>,
 }
 
+/// Validated service bounds and exact format names.
+pub(super) struct UploadCapabilities {
+    pub limits: Limits,
+    formats: BTreeSet<String>,
+}
+
+impl UploadCapabilities {
+    /// An advertised format must match a local exporter exactly.
+    pub(super) fn supports(&self, kind: SourceKind) -> bool {
+        self.formats.contains(kind.upload_names().1)
+    }
+}
+
 impl Capabilities {
     /// Keep capture below the current service bound without clipping source.
-    pub(super) fn limits(&self) -> Result<antiburn_cloud_capture::Limits, Failure> {
+    pub(super) fn validate(self) -> Result<UploadCapabilities, Failure> {
         use antiburn_cloud_capture::{CHUNK_BYTES, METADATA_BYTES};
-        let formats = self
-            .source_formats
-            .iter()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
-        // A service can add formats before this client has their exporters.
-        // Require the formats this client sends and keep enforcing all limits.
+        let format_count = self.source_formats.len();
+        let formats = self.source_formats.into_iter().collect::<BTreeSet<_>>();
         if !self.enabled
             || self.max_expanded_bytes > 1024 * 1024 * 1024
             || self.max_expanded_bytes <= 2 * METADATA_BYTES
             || self.chunk_expanded_bytes != CHUNK_BYTES
-            || formats.len() != self.source_formats.len()
-            || !formats.contains("ClaudeJsonl")
-            || !formats.contains("OpenCodeSqliteV2")
+            || formats.len() != format_count
+            || ![
+                SourceKind::ClaudeJsonl,
+                SourceKind::OpenCodeSqliteV2,
+                SourceKind::CodexJsonl,
+                SourceKind::PiJsonl,
+            ]
+            .iter()
+            .any(|kind| formats.contains(kind.upload_names().1))
         {
             return Err(Failure::Unavailable);
         }
-        Ok(antiburn_cloud_capture::Limits {
-            source_bytes: (self.max_expanded_bytes - 2 * METADATA_BYTES).min(128 * 1024 * 1024),
-            capture_bytes: self.max_expanded_bytes,
-            ..antiburn_cloud_capture::Limits::default()
+        Ok(UploadCapabilities {
+            limits: Limits {
+                source_bytes: (self.max_expanded_bytes - 2 * METADATA_BYTES).min(128 * 1024 * 1024),
+                capture_bytes: self.max_expanded_bytes,
+                ..Limits::default()
+            },
+            formats,
         })
     }
 }
@@ -192,7 +214,7 @@ pub(super) fn capabilities(
     destination: &str,
     account_current: &dyn Fn() -> bool,
     current: &dyn Fn() -> bool,
-) -> Result<antiburn_cloud_capture::Limits, CapabilityFailure> {
+) -> Result<UploadCapabilities, CapabilityFailure> {
     let identity = CaptureIdentity {
         capture_id: "capabilities".into(),
         account_id: account.into(),
@@ -217,7 +239,7 @@ pub(super) fn capabilities(
         failure: transport.failure.unwrap_or(Failure::Rejected),
         retry_after: transport.retry_after,
     })?;
-    value.limits().map_err(|failure| CapabilityFailure {
+    value.validate().map_err(|failure| CapabilityFailure {
         failure,
         retry_after: None,
     })
@@ -233,13 +255,7 @@ pub(super) struct Source {
 impl Source {
     /// Select exact public provider names, not an installed producer version.
     pub(super) fn from_candidate(candidate: &antiburn_cloud_capture::Candidate) -> Self {
-        use antiburn_cloud_capture::CaptureSourceKind;
-        let (agent, source_format) = match candidate.source_kind() {
-            CaptureSourceKind::ClaudeJsonl => ("claude-code", "ClaudeJsonl"),
-            CaptureSourceKind::CodexJsonl => ("codex", "CodexJsonl"),
-            CaptureSourceKind::PiJsonl => ("pi", "PiJsonl"),
-            CaptureSourceKind::OpenCodeSqliteV2 => ("opencode", "OpenCodeSqliteV2"),
-        };
+        let (agent, source_format) = SourceKind::from(candidate.source_kind()).upload_names();
         Self {
             agent,
             source_format,

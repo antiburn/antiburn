@@ -6,7 +6,7 @@ use super::{
     AuthStatus,
     auth::{
         self, Attempt, Callback, Config, Credential, Failure, Session, TokenRequest, Transport,
-        Vault,
+        Vault, Workspace,
     },
     loopback::Listener,
     state::{Cleanup, Guard, Phase, Record, StateStore},
@@ -38,6 +38,7 @@ pub struct Engine {
     pub cleanup: Cleanup,
     pub local_reset_available: bool,
     pub generation: u64,
+    target: Option<(String, Workspace)>,
 }
 
 impl Engine {
@@ -60,7 +61,54 @@ impl Engine {
             cleanup: Cleanup::None,
             local_reset_available: false,
             generation: 0,
+            target: None,
         }
+    }
+
+    /// Use the same browser and rotation rules with separate workspace credentials.
+    pub(super) fn workspace_engine(
+        &self,
+        identifier: String,
+        account: String,
+        workspace: Workspace,
+    ) -> Result<Self, Failure> {
+        let config = self.config.clone().ok_or(Failure::Unavailable)?;
+        let namespace = auth::workspace_namespace(&config, &account, &workspace.id);
+        let state = self.state.workspace(&namespace);
+        let vault = auth::KeyringVault::new(identifier, &state.workspace_vault_namespace());
+        let mut engine = Self::new(
+            Some(config),
+            Box::new(vault),
+            Box::new(auth::HttpTransport),
+            state,
+        );
+        engine.target = Some((account, workspace));
+        Ok(engine)
+    }
+
+    /// Read only a team lifecycle marker. A warning never modifies the Personal slot.
+    pub(super) fn workspace_cleanup_unconfirmed(
+        &self,
+        account: &str,
+        workspace: &str,
+    ) -> Result<bool, Failure> {
+        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+        let state = self
+            .state
+            .workspace(&auth::workspace_namespace(config, account, workspace));
+        let record = state.lock()?.read()?;
+        Ok(record.cleanup.blocks_connection() || record.cleanup.prior_unconfirmed())
+    }
+
+    fn matches_target(&self, session: &Session) -> bool {
+        self.target.as_ref().map_or(
+            session.workspace.kind == auth::WorkspaceKind::Personal,
+            |(account, workspace)| {
+                session.user.id == *account
+                    && session.workspace.id == workspace.id
+                    && session.workspace.kind == workspace.kind
+            },
+        )
     }
 
     /// Use a deterministic clock for synthetic authority tests.
@@ -88,6 +136,32 @@ impl Engine {
     /// Return the configured canonical API origin, not access authority.
     pub(super) fn resource_origin(&self) -> Option<&str> {
         self.config.as_ref().map(|config| config.resource.as_str())
+    }
+
+    /// Fetch eligible destinations with the current bearer. The list is not a grant.
+    pub(super) fn workspaces(
+        &mut self,
+        binding: &super::DestinationBinding,
+        current: &dyn Fn() -> bool,
+    ) -> Result<Option<Vec<Workspace>>, Failure> {
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        self.refresh((self.clock)(), current)?;
+        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+        let access = self.access.as_ref().ok_or(Failure::ReauthRequired)?;
+        if !current()
+            || !self
+                .session()
+                .is_some_and(|session| binding.matches(session))
+        {
+            return Err(Failure::Cancelled);
+        }
+        let result = self.transport.workspaces(config, &access.token)?;
+        if !current() || self.session().is_none() {
+            return Err(Failure::Cancelled);
+        }
+        Ok(result)
     }
 
     /// Send one bounded capture API request without returning access proof.
@@ -197,6 +271,10 @@ impl Engine {
             ("code_challenge_method", "S256"),
             ("device_name", auth::DEVICE_NAME),
         ]);
+        if let Some((_, workspace)) = &self.target {
+            url.query_pairs_mut()
+                .append_pair("workspace_id", &workspace.id);
+        }
         self.access = None;
         self.attempt = Some(attempt.clone());
         self.status = AuthStatus::Opening;
@@ -329,7 +407,7 @@ impl Engine {
                 }
                 self.transport.session(&config, &tokens.access_token)
             })
-            .and_then(|session| {
+            .and_then(|mut session| {
                 let checked_at = started_at.max((self.clock)());
                 session.validate(&config, checked_at)?;
                 let expires_at = started_at
@@ -341,6 +419,35 @@ impl Engine {
                 }
                 if !tokens.matches_session(&session) {
                     return Err(Failure::InvalidResponse);
+                }
+                if let Some((account, workspace)) = &self.target
+                    && session.user.id == *account
+                    && session.workspace.id == workspace.id
+                {
+                    // The flat session proves the ID. The verified picker supplied its kind.
+                    session.workspace.kind = workspace.kind.clone();
+                }
+                if !self.matches_target(&session) {
+                    return Err(Failure::InvalidResponse);
+                }
+                // The legacy session response does not carry a workspace kind.
+                // On initial approval, do not save a team grant in the Personal slot.
+                if previous.is_none() && self.target.is_none() {
+                    if !current() {
+                        return Err(Failure::Cancelled);
+                    }
+                    if self
+                        .transport
+                        .workspaces(&config, &tokens.access_token)?
+                        .is_some_and(|workspaces| {
+                            !workspaces.iter().any(|workspace| {
+                                workspace.id == session.workspace.id
+                                    && workspace.kind == auth::WorkspaceKind::Personal
+                            })
+                        })
+                    {
+                        return Err(Failure::InvalidResponse);
+                    }
                 }
                 if previous.is_some_and(|previous| {
                     previous
@@ -543,9 +650,10 @@ impl Engine {
             || credential.issuer != config.issuer
             || credential.resource != config.resource
             || credential.session.as_ref().is_none_or(|session| {
-                session
-                    .validate_grant(&config, started_at.max((self.clock)()))
-                    .is_err()
+                !self.matches_target(session)
+                    || session
+                        .validate_grant(&config, started_at.max((self.clock)()))
+                        .is_err()
             })
         {
             return Err(Failure::ReauthRequired);
@@ -648,17 +756,36 @@ impl Engine {
         self.finish_local_deletion(&mut guard, record)
     }
 
+    fn can_reset_record(&self, record: &Record) -> bool {
+        self.attempt.is_none()
+            && (matches!(record.cleanup, Cleanup::Revoke { .. })
+                || (self.target.is_some() && record.phase == Phase::Pending))
+    }
+
+    /// Read team recovery from disk without refreshing or revoking a grant.
+    pub(super) fn workspace_recovery(&self) -> Result<super::workspace_grants::Recovery, Failure> {
+        let record = self.state.lock()?.read()?;
+        let recoverable = self.can_reset_record(&record);
+        Ok(super::workspace_grants::Recovery {
+            local_reset_available: recoverable
+                && self.vault.read().is_ok_and(|proof| proof.is_none()),
+            remote_revocation_unconfirmed: record.cleanup.blocks_connection()
+                || record.cleanup.prior_unconfirmed()
+                || (record.phase == Phase::Pending && self.attempt.is_none()),
+        })
+    }
+
     /// Permit reconnect only after explicit confirmation and an empty vault.
     /// Keep uncertainty about older remote connections; never delete source bytes.
     pub fn reset_local(&mut self) -> Result<(), Failure> {
-        self.access = None;
-        self.attempt = None;
         let mut guard = self.state.lock()?;
         let record = guard.read()?;
-        if !matches!(record.cleanup, Cleanup::Revoke { .. }) || self.vault.read()?.is_some() {
+        if !self.can_reset_record(&record) || self.vault.read()?.is_some() {
             return Err(Failure::Unavailable);
         }
         guard.replace(Phase::SignedOut, Cleanup::RemoteUnconfirmed)?;
+        self.access = None;
+        self.attempt = None;
         self.cleanup = Cleanup::RemoteUnconfirmed;
         self.local_reset_available = false;
         self.status = AuthStatus::SignedOut;

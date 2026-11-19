@@ -387,7 +387,7 @@ fn merge_sources(
     ))
 }
 
-fn group_id(environment: &str, path: &str) -> String {
+pub(super) fn group_id(environment: &str, path: &str) -> String {
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
     let bytes = serde_json::to_vec(&(environment, path)).expect("string tuple serialization");
@@ -410,10 +410,11 @@ pub(super) fn confirm_group_projects(
         .transpose()
         .map_err(|_| "Could not read saved provider sources.")?
         .unwrap_or_default();
-    let (known, _) = known_sources(
+    let (mut known, _) = known_sources(
         store,
         antiburn_local::discovery::agents::opencode::native_database_paths(),
     )?;
+    known.extend(super::file_sources::roots());
     let (roots, _) = merge_sources(known, &saved.folders)?;
     let mut by_source = BTreeMap::<&SourceSelection, BTreeSet<String>>::new();
     let mut contexts = BTreeMap::new();
@@ -723,13 +724,7 @@ fn discover_projects(
                         Suggestion {
                             environment: "native".into(),
                             cwd: project.to_owned(),
-                            agents: vec![
-                                match root.source_kind {
-                                    SourceKind::ClaudeJsonl => "claude-code",
-                                    SourceKind::OpenCodeSqliteV2 => "opencode",
-                                }
-                                .into(),
-                            ],
+                            agents: vec![root.source_kind.upload_names().0.into()],
                             session_count: 0,
                         },
                     );
@@ -779,7 +774,7 @@ fn discover_projects(
 }
 
 /// Page cached suggestions without saving initial ON rows or changing consent.
-/// Provider-specific capture remains limited to qualified Claude and OpenCode V2.
+/// Only native exporter evidence can qualify a folder for capture.
 #[tauri::command]
 pub(crate) async fn cloud_project_groups(
     app: tauri::AppHandle,
@@ -816,16 +811,18 @@ pub(crate) async fn cloud_project_groups(
             .project_cache
             .lock()
             .map_err(|_| "Project discovery is unavailable.")?;
+        let (mut known, partial) = known_sources(
+            &store,
+            antiburn_local::discovery::agents::opencode::native_database_paths(),
+        )?;
+        known.extend(super::file_sources::roots());
         discover_projects(
             &store,
             &mut cache,
             &engine,
             &binding,
             after.as_ref(),
-            known_sources(
-                &store,
-                antiburn_local::discovery::agents::opencode::native_database_paths(),
-            )?,
+            (known, partial),
             &current,
         )
     })

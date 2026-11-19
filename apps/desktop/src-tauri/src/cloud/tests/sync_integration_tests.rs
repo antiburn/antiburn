@@ -33,6 +33,9 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
         account_id: "account".into(),
         destination_id: "personal".into(),
         resource_origin: Some("https://api.example".into()),
+        issuer_origin: Some("https://api.example".into()),
+        team_grant_id: None,
+        workspace_name: None,
         consent_version: ONGOING_CONSENT_VERSION.into(),
         revision: "revision".into(),
         roots: vec![RootScope {
@@ -309,8 +312,9 @@ fn cloud_sync_opencode_reservation_uses_verified_service_limits() {
         "source_formats": ["ClaudeJsonl", "OpenCodeSqliteV2"],
     }))
     .unwrap()
-    .limits()
-    .unwrap();
+    .validate()
+    .unwrap()
+    .limits;
     let candidate = discover_opencode(&database, &limits)
         .unwrap()
         .into_iter()

@@ -949,11 +949,15 @@ mod tests {
         let commands: &[&str] = with_app_commands!(names);
         assert_eq!(commands.contains(&"cloud_begin"), cfg!(feature = "cloud"));
         assert_eq!(
+            commands.contains(&"cloud_workspaces"),
+            cfg!(feature = "cloud")
+        );
+        assert_eq!(
             commands
                 .iter()
                 .filter(|name| name.starts_with("cloud_"))
                 .count(),
-            if cfg!(feature = "cloud") { 19 } else { 0 }
+            if cfg!(feature = "cloud") { 22 } else { 0 }
         );
     }
 

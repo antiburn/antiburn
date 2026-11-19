@@ -34,7 +34,7 @@ function Account({ session }: { session: CloudSession }) {
   return <CloudAccount session={session} value={value} />
 }
 
-it("saves a folder off immediately and confirms turning it back on", async () => {
+it("saves both folder choices immediately without a second prompt", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.status.mockResolvedValue(
     ongoingStatus({
@@ -64,12 +64,7 @@ it("saves a folder off immediately and confirms turning it back on", async () =>
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   await waitFor(() => expect(toggle).not.toBeChecked())
   fireEvent.click(toggle)
-  expect(screen.getByRole("dialog")).toHaveAccessibleName("Upload sessions from Studio?")
-  expect(ongoing.setProject).toHaveBeenCalledOnce()
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-  expect(ongoing.setProject).toHaveBeenCalledOnce()
-  fireEvent.click(toggle)
-  fireEvent.click(screen.getByRole("button", { name: "Allow uploads" }))
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   await waitFor(() => expect(ongoing.setProject).toHaveBeenCalledTimes(2))
   expect(ongoing.setProject).toHaveBeenLastCalledWith(
     expect.objectContaining({
@@ -81,7 +76,7 @@ it("saves a folder off immediately and confirms turning it back on", async () =>
   expect(await screen.findByText("Uploads on")).toBeVisible()
 })
 
-it("does not apply a dialog after its saved policy changes", async () => {
+it("does not apply a folder choice from an older saved policy", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
   const saved = ongoingStatus({
     status: "ready",
@@ -92,9 +87,10 @@ it("does not apply a dialog after its saved policy changes", async () => {
   ongoing.status.mockResolvedValue(saved)
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  fireEvent.click(await screen.findByRole("switch", { name: /Sync Studio/ }))
+  await screen.findByRole("switch", { name: /Sync Studio/ })
+  const context = session.getSnapshot()
   act(() => emitSync({ ...saved, policyRevision: "new-policy" }))
-  fireEvent.click(screen.getByRole("button", { name: "Allow uploads" }))
+  await session.setSavedProject(context, "studio", true)
   expect(ongoing.setProject).not.toHaveBeenCalled()
 })
 
@@ -122,13 +118,60 @@ it.each([false, true])(
     fireEvent.click(toggle)
     if (progress) act(() => emitSync(saved))
     await act(async () => reject(new Error("Synthetic failure")))
-    expect(
-      await screen.findByText("Could not confirm the folder change. Try the switch again."),
-    ).toBeVisible()
+    expect(await screen.findByText("Could not update the folder. Try again.")).toBeVisible()
     expect(toggle).toBeChecked()
     expect(toggle).toBeEnabled()
   },
 )
+
+it("turns off a discovered but disconnected team folder by exact saved path", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const group = projectGroup()
+  const path = group.path
+  const otherPath = "/Example/Unavailable"
+  const savedFolders = [
+    { groupId: "saved-discovered", path },
+    { groupId: "saved-unavailable", path: otherPath },
+  ]
+  const projects = [group.projects[0]!, { ...group.projects[0]!, projectPath: otherPath }]
+  const team = ongoingStatus({
+    status: "reauth_required",
+    storageKnown: false,
+    workspaceName: "Example Team",
+    destinationId: "synthetic-team",
+    consentVersion: "desktop-project-sync-v1",
+    projects,
+    savedFolders,
+  })
+  ongoing.status.mockResolvedValue(ongoingStatus({ teamStatuses: [team] }))
+  ongoing.setProject.mockImplementation(async (change) => {
+    if (change.groupId !== "saved-discovered") throw new Error("Unrelated path is unreadable")
+    return { ...team, projects: projects.slice(1), savedFolders: savedFolders.slice(1) }
+  })
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  await waitFor(() => expect(session.getSnapshot().projects?.groups[0]?.path).toBe(path))
+  expect(screen.queryByRole("switch", { name: /Sync Studio:/ })).toBeNull()
+  fireEvent.click(screen.getByRole("switch", { name: `Sync ${path} to Example Team` }))
+  await waitFor(() =>
+    expect(ongoing.setProject).toHaveBeenCalledWith({
+      accountId: "synthetic-account",
+      destinationId: "synthetic-team",
+      groupId: "saved-discovered",
+      folderPaths: [path],
+      projects: [],
+      selected: false,
+      expectedPolicyRevision: "synthetic-policy",
+    }),
+  )
+  await waitFor(() =>
+    expect(screen.queryByRole("switch", { name: `Sync ${path} to Example Team` })).toBeNull(),
+  )
+  expect(
+    screen.getByRole("switch", { name: `Sync ${otherPath} to Example Team` }),
+  ).toBeChecked()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
 
 it("keeps missing saved folders checked and available for revocation", async () => {
   const { port, ongoing } = cloudProjectFixture()
@@ -167,6 +210,100 @@ it("keeps missing saved folders checked and available for revocation", async () 
     ),
   )
 })
+
+it("keeps a saved team folder bound to that team after membership is lost", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const group = projectGroup()
+  const team = ongoingStatus({
+    status: "ready",
+    workspaceName: "Example Team",
+    destinationId: "synthetic-team",
+    consentVersion: "desktop-project-sync-v1",
+    policyRevision: "synthetic-team-policy",
+    projects: group.projects,
+  })
+  ongoing.status.mockResolvedValue(ongoingStatus({ teamStatuses: [team] }))
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", kind: "personal" as const, name: "Personal" },
+    { id: "synthetic-other-team", kind: "team" as const, name: "Other Team" },
+  ])
+  ongoing.setProject.mockResolvedValue({
+    ...team,
+    status: "reauth_required",
+    storageKnown: false,
+    projects: [],
+    policyRevision: "synthetic-team-off",
+  })
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const toggle = await screen.findByRole("switch", { name: /Sync Studio: .* to Example Team/ })
+  act(() => emitSync({ ...team, status: "reauth_required", storageKnown: false }))
+  expect(screen.getByText("Example Team · Disconnected")).toBeVisible()
+  expect(toggle).toBeChecked()
+  expect(toggle).toBeEnabled()
+  expect(screen.queryByRole("combobox", { name: /Sync Studio/ })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
+
+  fireEvent.click(toggle)
+  await waitFor(() =>
+    expect(ongoing.setProject).toHaveBeenCalledWith({
+      accountId: "synthetic-account",
+      destinationId: "synthetic-team",
+      groupId: group.id,
+      selected: false,
+      projects: [],
+      folderPaths: group.folderPaths,
+      expectedPolicyRevision: "synthetic-team-policy",
+    }),
+  )
+  const choice = await screen.findByRole("combobox", { name: /Sync Studio/ })
+  expect(choice).toHaveValue("")
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it.each([false, true])(
+  "restores the exact off control for a disconnected team folder without a discovered group: %s",
+  async (overlappingGroup) => {
+    const { port, ongoing } = cloudProjectFixture()
+    const path = "/Example"
+    const team = ongoingStatus({
+      status: "reauth_required",
+      storageKnown: false,
+      workspaceName: "Example Team",
+      destinationId: "synthetic-team",
+      consentVersion: "desktop-project-sync-v1",
+      projects: [{ ...projectGroup().projects[0]!, projectPath: path }],
+      savedFolders: [{ groupId: "saved-synthetic-group", path }],
+    })
+    ongoing.status.mockResolvedValue(ongoingStatus({ teamStatuses: [team] }))
+    if (!overlappingGroup)
+      ongoing.groups.mockRejectedValue(new Error("Synthetic discovery failure"))
+    ongoing.setProject.mockResolvedValue({ ...team, projects: [], savedFolders: [] })
+    const session = new CloudSession(port, false, true)
+    render(<Account session={session} />)
+    if (overlappingGroup) {
+      await waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+      expect(screen.queryByRole("switch", { name: /Sync Studio/ })).toBeNull()
+    } else {
+      expect(await screen.findByText("Could not load folders.")).toBeVisible()
+    }
+    const toggle = await screen.findByRole("switch", { name: `Sync ${path} to Example Team` })
+    expect(toggle).toBeChecked()
+    expect(toggle).toBeEnabled()
+    fireEvent.click(toggle)
+    await waitFor(() =>
+      expect(ongoing.setProject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destinationId: "synthetic-team",
+          groupId: "saved-synthetic-group",
+          selected: false,
+          folderPaths: [path],
+        }),
+      ),
+    )
+    await waitFor(() => expect(toggle).not.toBeInTheDocument())
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  },
+)
 
 it.each([
   ["/Example", true],

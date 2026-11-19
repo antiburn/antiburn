@@ -25,6 +25,7 @@ pub struct Config {
     pub authorization: Url,
     pub token: Url,
     pub session: Url,
+    pub workspaces: Url,
     pub revocation: Url,
 }
 
@@ -73,6 +74,7 @@ impl Config {
             token: resource_url.join("v1/desktop/token").ok()?,
             revocation: resource_url.join("v1/desktop/logout").ok()?,
             session: resource_url.join("v1/desktop/session").ok()?,
+            workspaces: resource_url.join("v1/desktop/workspaces").ok()?,
         })
     }
 }
@@ -113,7 +115,7 @@ pub struct User {
     pub display_name: String,
 }
 
-/// Destination kind used to reject team grants in the personal-only native path.
+/// The kind of a verified workspace or an available destination in its list.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
@@ -128,6 +130,13 @@ pub struct Workspace {
     pub id: String,
     pub name: String,
     pub kind: WorkspaceKind,
+}
+
+impl Workspace {
+    /// Validate display data before it reaches grant selection or the renderer.
+    pub(super) fn valid(&self) -> bool {
+        bounded(&self.id, 256) && bounded(&self.name, 256)
+    }
 }
 
 /// Desktop grant authority, not captured coding-session metadata.
@@ -162,9 +171,7 @@ impl Session {
             || !bounded(&self.user.display_name, 256)
             || !bounded(&self.grant_id, 256)
             || !bounded(&self.device_name, 100)
-            || !bounded(&self.workspace.id, 256)
-            || !bounded(&self.workspace.name, 256)
-            || self.workspace.kind != WorkspaceKind::Personal
+            || !self.workspace.valid()
             || self.resource != config.resource
             || self.scope != SCOPE
             || self.iss != config.issuer
@@ -381,6 +388,14 @@ impl KeyringVault {
         }
     }
 }
+
+/// Derive an isolated slot from exact authority IDs, never from display labels.
+pub(super) fn workspace_namespace(config: &Config, account: &str, workspace: &str) -> String {
+    let binding = serde_json::to_vec(&(&config.issuer, &config.resource, account, workspace))
+        .expect("string tuple serialization");
+    URL_SAFE_NO_PAD.encode(Sha256::digest(binding))
+}
+
 impl Vault for KeyringVault {
     fn read(&self) -> Result<Option<Credential>, Failure> {
         let entry = keyring::Entry::new(&self.service, &self.account)
@@ -437,7 +452,7 @@ pub enum TokenRequest<'a> {
 /// Send the desktop engine's first-party requests without retries or redirects.
 ///
 /// Implementors must bound responses and keep cookies, Origin, and raw errors
-/// out of this boundary. Only `session` sends access bearer proof. The controller
+/// out of this boundary. Only reads of session and workspace state send access bearer proof. The controller
 /// serializes credential operations; transport success does not grant access.
 /// Implementors can block only inside admitted Cloud blocking work.
 pub trait Transport: Send + Sync {
@@ -448,6 +463,11 @@ pub trait Transport: Send + Sync {
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure>;
     /// Read current server authority; the engine checks all returned bindings.
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
+    /// Return current selectable destinations, or `None` when the route is absent.
+    /// A list grants no upload authority for any of its entries.
+    fn workspaces(&self, _: &Config, _: &str) -> Result<Option<Vec<Workspace>>, Failure> {
+        Ok(None)
+    }
     /// Return success only for synchronous HTTP 204 confirming this proof's grant.
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
@@ -540,6 +560,57 @@ impl Transport for HttpTransport {
                 .map_err(|_| Failure::Offline)?,
         )?;
         response.try_into()
+    }
+    fn workspaces(&self, config: &Config, access: &str) -> Result<Option<Vec<Workspace>>, Failure> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WorkspaceResponse {
+            workspaces: Vec<WorkspaceEntry>,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WorkspaceEntry {
+            workspace_id: String,
+            name: String,
+            #[serde(rename = "type")]
+            kind: WorkspaceKind,
+        }
+
+        let response = client(&config.workspaces)?
+            .get(config.workspaces.clone())
+            .bearer_auth(access)
+            .send()
+            .map_err(|_| Failure::Offline)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let WorkspaceResponse { workspaces } = decode(response)?;
+        let workspaces: Vec<_> = workspaces
+            .into_iter()
+            .map(|value| Workspace {
+                id: value.workspace_id,
+                name: value.name,
+                kind: value.kind,
+            })
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        if workspaces.len() > 100
+            || !workspaces.iter().all(|workspace| {
+                workspace.valid()
+                    && workspace.id.len() == 36
+                    && workspace.id.bytes().enumerate().all(|(index, byte)| {
+                        if matches!(index, 8 | 13 | 18 | 23) {
+                            byte == b'-'
+                        } else {
+                            byte.is_ascii_hexdigit()
+                        }
+                    })
+                    && seen.insert(workspace.id.to_ascii_lowercase())
+            })
+        {
+            return Err(Failure::InvalidResponse);
+        }
+        Ok(Some(workspaces))
     }
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure> {
         let response = client(&config.revocation)?

@@ -160,6 +160,7 @@ struct FakeTransport {
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
     returned_session: Mutex<Option<Session>>,
+    returned_workspaces: Mutex<Option<Vec<Workspace>>>,
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
     token_grant: Mutex<Option<String>>,
@@ -233,6 +234,73 @@ impl Transport for Arc<FakeTransport> {
         }
         Ok(())
     }
+    fn workspaces(&self, _: &Config, _: &str) -> Result<Option<Vec<Workspace>>, Failure> {
+        Ok(self.returned_workspaces.lock().unwrap().clone())
+    }
+}
+
+#[test]
+fn cloud_lost_team_callback_resets_locally_without_blocking_personal() {
+    let mut fixture = Fixture::new();
+    let account = session().user.id;
+    let team = Workspace {
+        id: "synthetic-team".into(),
+        name: "Example Team".into(),
+        kind: WorkspaceKind::Team,
+    };
+    let mut scoped = fixture
+        .engine
+        .workspace_engine("synthetic".into(), account.clone(), team.clone())
+        .unwrap();
+    scoped.vault = Box::new(Arc::new(MemoryVault::default()));
+    let (_, _listener, _) = scoped.begin(now(), 1).unwrap();
+    assert!(
+        scoped.reset_local().is_err(),
+        "a live callback is not abandoned"
+    );
+    drop(scoped);
+
+    let mut restarted = fixture
+        .engine
+        .workspace_engine("synthetic".into(), account.clone(), team.clone())
+        .unwrap();
+    restarted.vault = Box::new(Arc::new(MemoryVault::default()));
+    restarted.reset_local().unwrap();
+    assert!(
+        fixture
+            .engine
+            .workspace_cleanup_unconfirmed(&account, &team.id)
+            .unwrap()
+    );
+    assert!(restarted.cleanup.prior_unconfirmed());
+    assert!(restarted.begin(now(), 2).is_ok());
+    fixture.sign_in();
+    assert_eq!(
+        fixture.engine.session().unwrap().workspace.kind,
+        WorkspaceKind::Personal
+    );
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn cloud_personal_slot_rejects_a_verified_team_workspace() {
+    let mut fixture = Fixture::new();
+    let mut team = session().workspace;
+    team.kind = WorkspaceKind::Team;
+    *fixture.transport.returned_workspaces.lock().unwrap() = Some(vec![team]);
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    assert_eq!(
+        fixture.engine.callback(
+            &attempt,
+            auth::Callback::Code("synthetic-code".into()),
+            101,
+            || true,
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.session().is_none());
+    assert!(fixture.vault.read().unwrap().is_none());
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
 }
 
 fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTransport>) -> Engine {

@@ -106,6 +106,133 @@ fn connected(directory: &Path, origin: &str) -> Engine {
     engine
 }
 
+#[test]
+fn cloud_explicit_team_approval_uses_its_own_grant_and_capture_bearer() {
+    use super::super::upload;
+    use crate::cloud::auth::{Vault, Workspace, WorkspaceKind};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let service_origin = origin.clone();
+    let team_id = "12345678-1234-1234-1234-123456789abc";
+    let worker = std::thread::spawn(move || {
+        let responses = [
+            (
+                "/v1/desktop/token",
+                serde_json::json!({
+                    "access_token":"team-bearer", "refresh_token":"team-refresh", "expires_in": 200,
+                    "token_type":"Bearer", "grant_id":"team-grant", "user_id":"synthetic-user",
+                    "workspace_id":team_id, "grant_expires_at":"1970-01-01T02:46:40Z",
+                    "scope":"capture:write", "resource":service_origin, "iss":service_origin,
+                }),
+            ),
+            (
+                "/v1/desktop/session",
+                serde_json::json!({
+                    "user_id":"synthetic-user", "display_name":"Example", "workspace_id":team_id,
+                    "workspace_name":"Example Team", "grant_id":"team-grant", "device_name":"Example",
+                    "scope":"capture:write", "resource":service_origin, "iss":service_origin,
+                    "grant_expires_at":"1970-01-01T02:46:40Z", "access_expires_at":"1970-01-01T00:05:00Z",
+                }),
+            ),
+            (
+                "/v1/desktop/captures/capabilities?contract=2",
+                serde_json::json!({
+                    "enabled":true, "max_expanded_bytes":268435456,
+                    "chunk_expanded_bytes":8388608, "source_formats":["CodexJsonl"],
+                }),
+            ),
+        ];
+        listener.set_nonblocking(true).unwrap();
+        for (index, (path, body)) in responses.into_iter().enumerate() {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(3))
+                    }
+                    Err(error) => panic!("Mock team request was not sent: {}", error.kind()),
+                }
+            };
+            let request = read_request(&mut stream);
+            assert_eq!(
+                request.line,
+                format!(
+                    "{} {path} HTTP/1.1",
+                    if index == 0 { "POST" } else { "GET" }
+                )
+            );
+            assert!(!request.headers.contains_key("cookie"));
+            assert!(!request.headers.contains_key("origin"));
+            assert_eq!(
+                request.headers.get("authorization").map(String::as_str),
+                (index != 0).then_some("Bearer team-bearer")
+            );
+            let body = body.to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let config = Config::parse(&origin, &origin).unwrap();
+    let personal_vault = Arc::new(super::super::tests::MemoryVault::default());
+    let team_vault = Arc::new(super::super::tests::MemoryVault::default());
+    let mut personal = Engine::new(
+        Some(config.clone()),
+        Box::new(personal_vault.clone()),
+        Box::new(auth::HttpTransport),
+        StateStore::new(directory.path()),
+    )
+    .with_clock(|| 100);
+    let namespace = auth::workspace_namespace(&config, "synthetic-user", team_id);
+    let mut team = Engine::new(
+        Some(config),
+        Box::new(team_vault.clone()),
+        Box::new(auth::HttpTransport),
+        personal.state.workspace(&namespace),
+    )
+    .with_clock(|| 100);
+    team.target = Some((
+        "synthetic-user".into(),
+        Workspace {
+            id: team_id.into(),
+            name: "Example Team".into(),
+            kind: WorkspaceKind::Team,
+        },
+    ));
+    let (legacy_url, _personal_listener, _) = personal.begin(100, 1).unwrap();
+    assert!(!legacy_url.contains("workspace_id"));
+    let (team_url, _listener, attempt) = team.begin(100, 2).unwrap();
+    assert!(team_url.contains(&format!("workspace_id={team_id}")));
+    team.callback(
+        &attempt,
+        auth::Callback::Code("team-code".into()),
+        101,
+        || true,
+    )
+    .unwrap();
+    assert_eq!(team.session().unwrap().workspace.kind, WorkspaceKind::Team);
+    assert!(personal_vault.read().unwrap().is_none());
+    assert_eq!(
+        team_vault.read().unwrap().unwrap().refresh_token,
+        "team-refresh"
+    );
+    assert!(
+        upload::capabilities(
+            &mut team,
+            "synthetic-user",
+            "synthetic-personal",
+            &|| true,
+            &|| true
+        )
+        .is_err()
+    );
+    assert!(upload::capabilities(&mut team, "synthetic-user", team_id, &|| true, &|| true).is_ok());
+    worker.join().unwrap();
+}
+
 fn identity() -> CaptureIdentity {
     CaptureIdentity {
         capture_id: "capture-synthetic".into(),
@@ -264,6 +391,7 @@ fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
 #[test]
 fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed_contracts() {
     use super::super::upload;
+    use crate::store::cloud_capture::SourceKind;
     let valid = serde_json::json!({
         "enabled": true, "max_expanded_bytes": 256 * 1024 * 1024,
         "chunk_expanded_bytes": 8 * 1024 * 1024,
@@ -272,7 +400,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     let (origin, worker) = server(200, valid.to_string(), "");
     let directory = tempfile::tempdir().unwrap();
     let mut engine = connected(directory.path(), &origin);
-    let limits = upload::capabilities(
+    let caps = upload::capabilities(
         &mut engine,
         "synthetic-user",
         "synthetic-personal",
@@ -280,12 +408,14 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
         &|| true,
     )
     .unwrap();
-    assert_eq!(limits.source_bytes, 128 * 1024 * 1024);
-    assert_eq!(limits.capture_bytes, 256 * 1024 * 1024);
+    assert_eq!(caps.limits.source_bytes, 128 * 1024 * 1024);
+    assert_eq!(caps.limits.capture_bytes, 256 * 1024 * 1024);
+    assert!(!caps.supports(SourceKind::CodexJsonl));
+    assert!(!caps.supports(SourceKind::PiJsonl));
     let request = worker.join().unwrap();
     assert_eq!(
         request.line,
-        "GET /v1/desktop/captures/capabilities HTTP/1.1"
+        "GET /v1/desktop/captures/capabilities?contract=2 HTTP/1.1"
     );
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
@@ -293,13 +423,15 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     );
     assert!(request.body.is_empty());
     let mut extended = valid.clone();
-    extended["source_formats"] =
-        serde_json::json!(["ClaudeJsonl", "future-format", "OpenCodeSqliteV2"]);
-    let limits = serde_json::from_value::<upload::Capabilities>(extended)
+    extended["source_formats"] = serde_json::json!(["CodexJsonl", "future-format", "PiJsonl"]);
+    let caps = serde_json::from_value::<upload::Capabilities>(extended)
         .unwrap()
-        .limits()
+        .validate()
         .unwrap();
-    assert_eq!(limits.capture_bytes, 256 * 1024 * 1024);
+    assert_eq!(caps.limits.capture_bytes, 256 * 1024 * 1024);
+    assert!(caps.supports(SourceKind::CodexJsonl));
+    assert!(caps.supports(SourceKind::PiJsonl));
+    assert!(!caps.supports(SourceKind::ClaudeJsonl));
 
     for body in [
         {
@@ -326,7 +458,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
         serde_json::json!({}),
     ] {
         let value = serde_json::from_value::<upload::Capabilities>(body);
-        assert!(value.map(|value| value.limits().is_err()).unwrap_or(true));
+        assert!(value.map(|value| value.validate().is_err()).unwrap_or(true));
     }
     let (origin, worker) = server(404, "{}".into(), "");
     let directory = tempfile::tempdir().unwrap();

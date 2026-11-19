@@ -30,6 +30,8 @@ pub(crate) enum SourceKind {
     ClaudeJsonl,
     #[serde(rename = "opencode_sqlite_v2")]
     OpenCodeSqliteV2,
+    CodexJsonl,
+    PiJsonl,
 }
 
 impl SourceKind {
@@ -37,18 +39,35 @@ impl SourceKind {
     pub(crate) fn is_claude(&self) -> bool {
         *self == Self::ClaudeJsonl
     }
+
+    /// Whether the source binding is a provider directory rather than a database file.
+    pub(crate) fn is_directory(self) -> bool {
+        self != Self::OpenCodeSqliteV2
+    }
+
+    /// Public API agent and format strings for this source.
+    pub(crate) fn upload_names(self) -> (&'static str, &'static str) {
+        match self {
+            Self::ClaudeJsonl => ("claude-code", "ClaudeJsonl"),
+            Self::OpenCodeSqliteV2 => ("opencode", "OpenCodeSqliteV2"),
+            Self::CodexJsonl => ("codex", "CodexJsonl"),
+            Self::PiJsonl => ("pi", "PiJsonl"),
+        }
+    }
+
+    /// New file exporters require an explicit service capability.
+    pub(crate) fn is_codex_or_pi(self) -> bool {
+        matches!(self, Self::CodexJsonl | Self::PiJsonl)
+    }
 }
 
-impl TryFrom<CaptureSourceKind> for SourceKind {
-    type Error = anyhow::Error;
-
-    fn try_from(value: CaptureSourceKind) -> Result<Self> {
+impl From<CaptureSourceKind> for SourceKind {
+    fn from(value: CaptureSourceKind) -> Self {
         match value {
-            CaptureSourceKind::ClaudeJsonl => Ok(Self::ClaudeJsonl),
-            CaptureSourceKind::OpenCodeSqliteV2 => Ok(Self::OpenCodeSqliteV2),
-            CaptureSourceKind::CodexJsonl | CaptureSourceKind::PiJsonl => {
-                anyhow::bail!("This source is not enabled for sync.")
-            }
+            CaptureSourceKind::ClaudeJsonl => Self::ClaudeJsonl,
+            CaptureSourceKind::OpenCodeSqliteV2 => Self::OpenCodeSqliteV2,
+            CaptureSourceKind::CodexJsonl => Self::CodexJsonl,
+            CaptureSourceKind::PiJsonl => Self::PiJsonl,
         }
     }
 }
@@ -122,6 +141,9 @@ impl SourceLocator {
                 URL_SAFE_NO_PAD.encode(&self.relative_path),
                 URL_SAFE_NO_PAD.encode(&self.native_session_id)
             ),
+            SourceKind::CodexJsonl | SourceKind::PiJsonl => {
+                anyhow::bail!("This format is not supported in legacy capture requests.")
+            }
         };
         Ok(format!("{}/{native_key}", self.source_scope_id))
     }

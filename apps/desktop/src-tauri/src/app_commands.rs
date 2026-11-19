@@ -6,6 +6,12 @@ macro_rules! with_app_commands {
             #[cfg(feature = "cloud")]
             cloud::cloud_status => "cloud_status",
             #[cfg(feature = "cloud")]
+            cloud::cloud_workspaces => "cloud_workspaces",
+            #[cfg(feature = "cloud")]
+            cloud::workspace_grants::cloud_connect_workspace => "cloud_connect_workspace",
+            #[cfg(feature = "cloud")]
+            cloud::workspace_grants::cloud_reset_workspace => "cloud_reset_workspace",
+            #[cfg(feature = "cloud")]
             cloud::cloud_begin => "cloud_begin",
             #[cfg(feature = "cloud")]
             cloud::cloud_cancel => "cloud_cancel",

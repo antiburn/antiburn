@@ -11,7 +11,13 @@ import {
   UserRound,
 } from "lucide-react"
 import appIcon from "../assets/app-icon.png"
-import { cloudSourceKey, cloudSourceKind, desktopCloudPort, type CloudPort } from "../lib/cloud"
+import {
+  cloudSourceKey,
+  cloudSourceKind,
+  cloudSourceLabel,
+  desktopCloudPort,
+  type CloudPort,
+} from "../lib/cloud"
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import {
   CloudSession,
@@ -69,18 +75,31 @@ export function CloudOnboarding({
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
+  const ongoing = value.lastTeamSync ?? value.ongoing
   const syncReady = grouped
-    ? value.ongoing?.storageKnown === true &&
-      ["ready", "syncing"].includes(value.ongoing.status)
+    ? ongoing?.storageKnown === true && ["ready", "syncing"].includes(ongoing.status)
     : ["accepted", "syncing"].includes(value.sync.status)
   const syncing = grouped
-    ? syncReady &&
-      (value.ongoing?.status === "syncing" || (value.ongoing?.queuedCount ?? 0) > 0)
+    ? syncReady && (ongoing?.status === "syncing" || (ongoing?.queuedCount ?? 0) > 0)
     : syncReady
   const syncUncertain = ["ambiguous", "failed", "cancelled"].includes(value.sync.status)
   const selectedFolders = grouped
     ? (projects?.groups.filter((group) => projects.choices[group.id] ?? true).length ?? 0)
     : value.cloud.draft.folders.filter((folder) => folder.selected).length
+  const workspaceNames = [
+    ...new Set(
+      projects?.groups
+        .filter((group) => projects.choices[group.id] ?? true)
+        .map((group) => {
+          const id = projects.targets?.[group.id]
+          return id
+            ? (projects.workspaces?.find((workspace) => workspace.id === id)?.name ??
+                "Selected workspace unavailable")
+            : value.cloud.destination?.name
+        })
+        .filter(Boolean) ?? [],
+    ),
+  ]
   const folderMessage =
     error ??
     value.error ??
@@ -293,7 +312,8 @@ export function CloudOnboarding({
                 id="cloud-sync-destination"
                 className="rounded-control bg-surface-card px-2 py-1 type-footnote"
               >
-                {value.cloud.destination.name} · {value.cloud.identity.login}
+                {workspaceNames.join(", ") || value.cloud.destination.name} ·{" "}
+                {value.cloud.identity.login}
               </span>
             )}
           </div>
@@ -304,6 +324,12 @@ export function CloudOnboarding({
                 choices={projects.choices}
                 disabled={disabled || projects.loading}
                 homeDirectory={value.homeDirectory}
+                workspaces={projects.workspaces}
+                destinationId={value.cloud.destination?.id}
+                targets={projects.targets}
+                onWorkspaceSelect={
+                  session.canConnectTeamWorkspace ? session.selectProjectWorkspace : undefined
+                }
                 onSelect={session.selectProject}
               />
             ) : (
@@ -328,8 +354,7 @@ export function CloudOnboarding({
                           {folder.path.split(/[\\/]/).filter(Boolean).at(-1) ?? folder.path}
                         </strong>
                         <small className="type-callout text-onboarding-muted">
-                          {captureEnabled &&
-                            `${cloudSourceKind(folder) === "opencode_sqlite_v2" ? "OpenCode V2" : "Claude"}: `}
+                          {captureEnabled && `${cloudSourceLabel(folder)}: `}
                           {folder.path}
                         </small>
                       </span>
@@ -501,14 +526,14 @@ export function CloudOnboarding({
                 />
                 <strong className="type-headline">
                   {grouped
-                    ? value.ongoing && cloudUploadStatusUnknown(value.ongoing)
-                      ? cloudOngoingStatusMessage(value.ongoing)
+                    ? ongoing && cloudUploadStatusUnknown(ongoing)
+                      ? cloudOngoingStatusMessage(ongoing)
                       : value.sync.status === "starting"
                         ? "Starting background sync"
                         : value.sync.status === "ambiguous"
                           ? "Cloud sync not confirmed"
-                          : value.ongoing
-                            ? cloudOngoingStatusMessage(value.ongoing)
+                          : ongoing
+                            ? cloudOngoingStatusMessage(ongoing)
                             : "Cloud sync not confirmed"
                     : captureEnabled
                       ? "Upload unavailable"

@@ -38,6 +38,7 @@ fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>
     config.authorization = origin.join("desktop/authorize").unwrap();
     config.token = origin.join("v1/desktop/token").unwrap();
     config.session = origin.join("v1/desktop/session").unwrap();
+    config.workspaces = origin.join("v1/desktop/workspaces").unwrap();
     config.revocation = origin.join("v1/desktop/logout").unwrap();
     let reply = reply.map(|(status, body)| (status, body.to_owned()));
     let worker = std::thread::spawn(move || {
@@ -84,6 +85,47 @@ fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>
         }
     });
     (config, worker)
+}
+
+#[test]
+fn cloud_http_workspace_list_uses_only_the_current_bearer() {
+    let (config, worker) = server(
+        200,
+        r#"{"workspaces":[{"workspace_id":"12345678-1234-1234-1234-123456789abc","name":"Example","type":"team"}]}"#,
+    );
+    let workspaces = HttpTransport
+        .workspaces(&config, "synthetic-access")
+        .unwrap()
+        .unwrap();
+    assert_eq!(workspaces[0].id, "12345678-1234-1234-1234-123456789abc");
+    assert_eq!(workspaces[0].kind, super::auth::WorkspaceKind::Team);
+    let request = worker.join().unwrap();
+    assert_eq!(request.line, "GET /v1/desktop/workspaces HTTP/1.1");
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer synthetic-access")
+    );
+    assert!(request.body.is_empty());
+    request.native_only();
+
+    let (config, worker) = server(404, "{}");
+    assert!(
+        HttpTransport
+            .workspaces(&config, "synthetic-access")
+            .unwrap()
+            .is_none()
+    );
+    worker.join().unwrap();
+
+    let (config, worker) = server(
+        200,
+        r#"{"workspaces":[{"workspace_id":"12345678-1234-1234-1234-123456789abc","name":"A","type":"personal"},{"workspace_id":"12345678-1234-1234-1234-123456789abc","name":"B","type":"team"}]}"#,
+    );
+    assert_eq!(
+        HttpTransport.workspaces(&config, "synthetic-access"),
+        Err(Failure::InvalidResponse)
+    );
+    worker.join().unwrap();
 }
 
 #[test]

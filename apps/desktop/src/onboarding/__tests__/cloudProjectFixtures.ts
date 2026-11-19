@@ -165,6 +165,8 @@ export function cloudProjectFixture(): {
   const port: CloudPort = {
     ...desktopCloudPort,
     ongoing,
+    workspaces: vi.fn(async () => null),
+    connectWorkspace: undefined,
     read: vi.fn(async () => value),
     watch: vi.fn(async (listener) => {
       changed = listener
