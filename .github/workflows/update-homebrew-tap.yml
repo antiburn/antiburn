@@ -95,6 +95,7 @@ jobs:
         run: |
           node --test scripts/update-homebrew-cask.test.mjs
           brew tap --custom-remote antiburn/tap "$GITHUB_WORKSPACE/tap"
+          brew trust --cask antiburn/tap/antiburn
           CASK_PATH="$(brew --repository antiburn/tap)/Casks/antiburn.rb"
           node scripts/update-homebrew-cask.mjs "$RELEASE_TAG" "$CASK_PATH"
           brew style --cask antiburn/tap/antiburn
