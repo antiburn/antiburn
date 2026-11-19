@@ -827,7 +827,6 @@ test("routes files that only the shell reads from outside its workspace to the s
   for (const [file, frontend] of [
     ["docs/analytics.md", false],
     ["apps/desktop/interface-scale.json", true],
-    ["apps/desktop/src/onboarding/demo/csp.txt", true],
     ["apps/desktop/src/views/SettingsView.tsx", true],
   ]) {
     const outputs = plan("ready", [file]);
@@ -840,6 +839,13 @@ test("routes files that only the shell reads from outside its workspace to the s
   const mixed = plan("ready", ["README.md", "docs/analytics.md"]);
   assert.equal(mixed.run_desktop, "true");
   assert.equal(desktopWorkspaces(mixed), "shell");
+});
+
+test("routes the demo CSP to the frontend without a Rust reader", () => {
+  const outputs = plan("ready", ["apps/desktop/src/onboarding/demo/csp.txt"]);
+  assert.equal(outputs.run_frontend, "true");
+  assert.equal(outputs.run_desktop, "false");
+  assert.equal(outputs.engine_workspaces, "");
 });
 
 test("routes engine fixtures that other workspaces embed to those workspaces", () => {

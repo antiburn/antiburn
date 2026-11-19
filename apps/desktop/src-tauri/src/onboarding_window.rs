@@ -14,7 +14,6 @@ use crate::window_readiness::{OpenAction, WindowReadiness, renderer_generation_s
 
 pub(crate) const LABEL: &str = "onboarding";
 const URL: &str = "onboarding.html";
-const DEMO_CSP: &str = include_str!("../../src/onboarding/demo/csp.txt");
 const VISIBILITY_EVENT: &str = "onboarding:visibility";
 const WIDTH: f64 = 860.0;
 const HEIGHT: f64 = 620.0;
@@ -144,14 +143,6 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         .maximizable(false)
         .zoom_hotkeys_enabled(false)
         .visible(false)
-        .on_web_resource_request(|request, response| {
-            if request.uri().path() == "/onboarding-demo/index.html" {
-                response.headers_mut().insert(
-                    tauri::http::header::CONTENT_SECURITY_POLICY,
-                    tauri::http::HeaderValue::from_static(DEMO_CSP.trim()),
-                );
-            }
-        })
         .on_page_load(move |window, payload| {
             #[cfg(feature = "memory-probe")]
             if payload.event() == tauri::webview::PageLoadEvent::Finished {
