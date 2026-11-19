@@ -27,7 +27,7 @@ export const SETTINGS_SEARCH_TARGETS = {
   startAtLogin: { pane: "general", label: "Start at login", aliases: ["startup", "launch"] },
   cloudUpload: {
     pane: "sessions",
-    label: "Upload sessions to Personal",
+    label: "Upload sessions to Antiburn Cloud",
     aliases: ["Upload sessions", "Antiburn Cloud", "cloud upload"],
     feature: "cloud",
   },

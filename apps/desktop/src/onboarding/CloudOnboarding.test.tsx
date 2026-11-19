@@ -319,7 +319,7 @@ it("keeps one existing-style row and selection control per project group", () =>
   expect(screen.queryByText(/database|Claude source|OpenCode/i)).not.toBeInTheDocument()
   expect(screen.getByText("/Example/Studio")).toHaveAttribute("title", projectGroups[0]!.path)
   fireEvent.click(screen.getByRole("switch", { name: "Sync Studio: /Example/Studio" }))
-  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false)
+  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false, undefined)
 })
 
 it("preserves an explicit group opt-out while new groups show selected without a write", () => {

@@ -5,8 +5,8 @@
 use super::{
     AuthStatus,
     auth::{
-        self, Attempt, Callback, Config, Credential, Failure, Session, TokenRequest, Transport,
-        Vault, Workspace,
+        self, Attempt, Callback, Config, Credential, EligibleWorkspace, Failure, Session,
+        TokenRequest, Transport, Vault, Workspace, WorkspaceKind,
     },
     loopback::Listener,
     state::{Cleanup, Guard, Phase, Record, StateStore},
@@ -38,7 +38,7 @@ pub struct Engine {
     pub cleanup: Cleanup,
     pub local_reset_available: bool,
     pub generation: u64,
-    target: Option<(String, Workspace)>,
+    cleanup_only: bool,
 }
 
 impl Engine {
@@ -61,11 +61,11 @@ impl Engine {
             cleanup: Cleanup::None,
             local_reset_available: false,
             generation: 0,
-            target: None,
+            cleanup_only: false,
         }
     }
 
-    /// Use the same browser and rotation rules with separate workspace credentials.
+    /// Open an old workspace slot for recovery or revocation only.
     pub(super) fn workspace_engine(
         &self,
         identifier: String,
@@ -82,7 +82,7 @@ impl Engine {
             Box::new(auth::HttpTransport),
             state,
         );
-        engine.target = Some((account, workspace));
+        engine.cleanup_only = true;
         Ok(engine)
     }
 
@@ -97,18 +97,9 @@ impl Engine {
             .state
             .workspace(&auth::workspace_namespace(config, account, workspace));
         let record = state.lock()?.read()?;
-        Ok(record.cleanup.blocks_connection() || record.cleanup.prior_unconfirmed())
-    }
-
-    fn matches_target(&self, session: &Session) -> bool {
-        self.target.as_ref().map_or(
-            session.workspace.kind == auth::WorkspaceKind::Personal,
-            |(account, workspace)| {
-                session.user.id == *account
-                    && session.workspace.id == workspace.id
-                    && session.workspace.kind == workspace.kind
-            },
-        )
+        Ok(record.cleanup.blocks_connection()
+            || record.cleanup.prior_unconfirmed()
+            || record.phase == Phase::Pending)
     }
 
     /// Use a deterministic clock for synthetic authority tests.
@@ -138,12 +129,13 @@ impl Engine {
         self.config.as_ref().map(|config| config.resource.as_str())
     }
 
-    /// Fetch eligible destinations with the current bearer. The list is not a grant.
-    pub(super) fn workspaces(
+    /// Fetch a fresh eligible list without exposing the bearer. Missing or changed
+    /// Personal anchors fail closed. Callers must match each exact Team generation.
+    pub(super) fn eligible_workspaces(
         &mut self,
         binding: &super::DestinationBinding,
         current: &dyn Fn() -> bool,
-    ) -> Result<Option<Vec<Workspace>>, Failure> {
+    ) -> Result<Vec<EligibleWorkspace>, Failure> {
         if !current() {
             return Err(Failure::Cancelled);
         }
@@ -161,6 +153,9 @@ impl Engine {
         if !current() || self.session().is_none() {
             return Err(Failure::Cancelled);
         }
+        if personal_anchor(&result)?.id != access.session.workspace.id {
+            return Err(Failure::InvalidResponse);
+        }
         Ok(result)
     }
 
@@ -170,13 +165,14 @@ impl Engine {
     pub(super) fn capture_request(
         &mut self,
         identity: &antiburn_cloud_capture::CaptureIdentity,
-        resource_origin: &str,
+        binding: (&str, Option<&str>),
         route: super::upload::Route,
         body: &impl serde::Serialize,
         account_current: &dyn Fn() -> bool,
         current: &dyn Fn() -> bool,
     ) -> Result<super::upload::ApiResponse, antiburn_cloud_capture::TransportError> {
         use antiburn_cloud_capture::TransportError;
+        let (resource_origin, membership_generation) = binding;
         if !account_current() || !current() || self.resource_origin() != Some(resource_origin) {
             return Err(TransportError::Unauthorized);
         }
@@ -192,14 +188,37 @@ impl Engine {
         let access = self.access.as_ref().ok_or(TransportError::Unauthorized)?;
         if !current()
             || access.session.user.id != identity.account_id
-            || access.session.workspace.id != identity.destination_id
             || access.expires_at <= (self.clock)()
             || access.session.validate(config, (self.clock)()).is_err()
         {
             return Err(TransportError::Unauthorized);
         }
+        if let Some(generation) = membership_generation {
+            let eligible = self
+                .transport
+                .workspaces(config, &access.token)
+                .map_err(|error| match error {
+                    Failure::Offline | Failure::OfflineBeforeSend => TransportError::Offline,
+                    _ => TransportError::Unauthorized,
+                })?;
+            if !personal_anchor(&eligible)
+                .is_ok_and(|anchor| anchor.id == access.session.workspace.id)
+                || !eligible.iter().any(|entry| {
+                    entry.workspace.kind == WorkspaceKind::Team
+                        && entry.workspace.id == identity.destination_id
+                        && entry.membership_generation.as_deref() == Some(generation)
+                })
+            {
+                return Err(TransportError::Unauthorized);
+            }
+        } else if access.session.workspace.id != identity.destination_id {
+            return Err(TransportError::Unauthorized);
+        }
+        if !account_current() || !current() || self.session().is_none() {
+            return Err(TransportError::Unauthorized);
+        }
         let response = super::upload::api_request(config, &access.token, identity, route, body)?;
-        if matches!(response.status, 401 | 403) {
+        if response.status == 401 || (response.status == 403 && membership_generation.is_none()) {
             self.access = None;
             self.status = AuthStatus::ReauthRequired;
         }
@@ -235,6 +254,9 @@ impl Engine {
         now: i64,
         generation: u64,
     ) -> Result<(String, Listener, Attempt), Failure> {
+        if self.cleanup_only {
+            return Err(Failure::Unavailable);
+        }
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
         let (mut guard, record) = self.read_state()?;
         if record.cleanup.blocks_connection() || record.phase == Phase::Active {
@@ -261,6 +283,7 @@ impl Engine {
             generation,
         };
         let mut url = config.authorization.clone();
+        let device_name = auth::device_name();
         url.query_pairs_mut().extend_pairs([
             ("redirect_uri", attempt.callback.as_str()),
             ("state", attempt.state.as_str()),
@@ -269,12 +292,8 @@ impl Engine {
                 auth::challenge(&attempt.verifier).as_str(),
             ),
             ("code_challenge_method", "S256"),
-            ("device_name", auth::DEVICE_NAME),
+            ("device_name", device_name.as_str()),
         ]);
-        if let Some((_, workspace)) = &self.target {
-            url.query_pairs_mut()
-                .append_pair("workspace_id", &workspace.id);
-        }
         self.access = None;
         self.attempt = Some(attempt.clone());
         self.status = AuthStatus::Opening;
@@ -407,7 +426,15 @@ impl Engine {
                 }
                 self.transport.session(&config, &tokens.access_token)
             })
-            .and_then(|mut session| {
+            .and_then(|account| {
+                if !tokens.matches_session(&account) {
+                    return Err(Failure::InvalidResponse);
+                }
+                if !current() {
+                    return Err(Failure::Cancelled);
+                }
+                let eligible = self.transport.workspaces(&config, &tokens.access_token)?;
+                let session = account.with_personal(personal_anchor(&eligible)?.clone())?;
                 let checked_at = started_at.max((self.clock)());
                 session.validate(&config, checked_at)?;
                 let expires_at = started_at
@@ -416,38 +443,6 @@ impl Engine {
                     .min(session.access_expires_at);
                 if expires_at <= checked_at {
                     return Err(Failure::InvalidResponse);
-                }
-                if !tokens.matches_session(&session) {
-                    return Err(Failure::InvalidResponse);
-                }
-                if let Some((account, workspace)) = &self.target
-                    && session.user.id == *account
-                    && session.workspace.id == workspace.id
-                {
-                    // The flat session proves the ID. The verified picker supplied its kind.
-                    session.workspace.kind = workspace.kind.clone();
-                }
-                if !self.matches_target(&session) {
-                    return Err(Failure::InvalidResponse);
-                }
-                // The legacy session response does not carry a workspace kind.
-                // On initial approval, do not save a team grant in the Personal slot.
-                if previous.is_none() && self.target.is_none() {
-                    if !current() {
-                        return Err(Failure::Cancelled);
-                    }
-                    if self
-                        .transport
-                        .workspaces(&config, &tokens.access_token)?
-                        .is_some_and(|workspaces| {
-                            !workspaces.iter().any(|workspace| {
-                                workspace.id == session.workspace.id
-                                    && workspace.kind == auth::WorkspaceKind::Personal
-                            })
-                        })
-                    {
-                        return Err(Failure::InvalidResponse);
-                    }
                 }
                 if previous.is_some_and(|previous| {
                     previous
@@ -475,6 +470,7 @@ impl Engine {
             resource: config.resource.clone(),
             refresh_token: tokens.refresh_token.clone(),
             cleanup_refresh_tokens: Vec::new(),
+            account_grant: true,
             session: Some(session.clone()),
         };
         if self.vault.write(Some(&credential)).is_err() {
@@ -538,6 +534,7 @@ impl Engine {
             } else {
                 vec![tokens.refresh_token.clone()]
             },
+            account_grant: false,
             session: None,
         };
         if self.vault.write(Some(&cleanup)).is_err() {
@@ -645,15 +642,16 @@ impl Engine {
         guard.write(&record)?;
         self.cleanup = record.cleanup;
         let credential = self.vault.read()?.ok_or(Failure::ReauthRequired)?;
-        if credential.epoch != record.epoch
+        if self.cleanup_only
+            || !credential.account_grant
+            || credential.epoch != record.epoch
             || !credential.cleanup_refresh_tokens.is_empty()
             || credential.issuer != config.issuer
             || credential.resource != config.resource
             || credential.session.as_ref().is_none_or(|session| {
-                !self.matches_target(session)
-                    || session
-                        .validate_grant(&config, started_at.max((self.clock)()))
-                        .is_err()
+                session
+                    .validate_grant(&config, started_at.max((self.clock)()))
+                    .is_err()
             })
         {
             return Err(Failure::ReauthRequired);
@@ -759,7 +757,7 @@ impl Engine {
     fn can_reset_record(&self, record: &Record) -> bool {
         self.attempt.is_none()
             && (matches!(record.cleanup, Cleanup::Revoke { .. })
-                || (self.target.is_some() && record.phase == Phase::Pending))
+                || (self.cleanup_only && record.phase == Phase::Pending))
     }
 
     /// Read team recovery from disk without refreshing or revoking a grant.
@@ -791,4 +789,16 @@ impl Engine {
         self.status = AuthStatus::SignedOut;
         Ok(())
     }
+}
+
+/// The Personal adapter requires exactly one eligible Personal workspace.
+fn personal_anchor(eligible: &[EligibleWorkspace]) -> Result<&Workspace, Failure> {
+    let mut personal = eligible
+        .iter()
+        .filter(|entry| entry.workspace.kind == WorkspaceKind::Personal);
+    let first = personal.next().ok_or(Failure::InvalidResponse)?;
+    if personal.next().is_some() || first.membership_generation.is_some() {
+        return Err(Failure::InvalidResponse);
+    }
+    Ok(&first.workspace)
 }

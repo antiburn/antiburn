@@ -17,8 +17,12 @@ import {
 } from "../../src/lib/cloud"
 import type { LocalToolsStatus } from "../../src/lib/ipcPayloads"
 
+const teamName = "Example Team for Design, Documentation, and Developer Experience"
+
 /** Build preview-only account/request state; simulated success cannot establish product support. */
 export function cloudFixture(name: string): CloudPort {
+  const params = new URLSearchParams(window.location.search)
+  const footerPreview = params.has("footerPreview")
   const dev = name.startsWith("dev-") ? name.slice(4) : null
   if (isCloudDevScenario(dev)) return createCloudDevPort(dev)
   const settingsFolders = ["settings-folders", "settings-attention"].includes(name)
@@ -53,6 +57,7 @@ export function cloudFixture(name: string): CloudPort {
     "settings-reopened",
     "settings-folders",
     "settings-attention",
+    "settings-team-confirmation",
     "settings-missing-sources",
   ].includes(name)
   let value: CloudSnapshot = {
@@ -184,6 +189,28 @@ export function cloudFixture(name: string): CloudPort {
       confirmedUploadBytes: 0,
     },
   }
+  if (name === "settings-team-confirmation") {
+    const saved = groups[0]!
+    ongoing = {
+      ...ongoing,
+      storageKnown: true,
+      deviceUploadEnabled: true,
+      teamStatuses: [
+        {
+          ...ongoing,
+          status: "reauth_required",
+          accountId: "synthetic",
+          destinationId: "synthetic-team",
+          workspaceName: teamName,
+          consentVersion: "desktop-project-sync-v1",
+          policyRevision: "fixture-stale-team",
+          folderConfirmationRequired: true,
+          projects: saved.projects,
+          savedFolders: saved.folderPaths.map((path) => ({ groupId: `saved-${path}`, path })),
+        },
+      ],
+    }
+  }
   if (name === "settings-progress" || name === "settings-storage-error")
     ongoing = {
       ...ongoing,
@@ -227,7 +254,7 @@ export function cloudFixture(name: string): CloudPort {
     ongoing = {
       ...ongoing,
       storageKnown: true,
-      status: "syncing",
+      status: footerPreview ? "ready" : "syncing",
       consentVersion: "desktop-project-sync-v1",
       selectedSources: approved.map((group) => ({
         sourceKind: "claude_jsonl",
@@ -239,7 +266,9 @@ export function cloudFixture(name: string): CloudPort {
       ),
       queuedCount: 2,
       acceptedCount: 3,
-      fencedCount: name === "settings-attention" ? 1 : 0,
+      fencedCount: name === "settings-attention" || params.has("footerFailure") ? 1 : 0,
+      retryAvailable: name === "settings-attention" || params.has("footerFailure"),
+      deviceUploadEnabled: true,
     }
   }
   const toolsStatus = (phase: LocalToolsStatus["phase"], revision = 0): LocalToolsStatus => ({
@@ -259,9 +288,27 @@ export function cloudFixture(name: string): CloudPort {
           ? "failed"
           : "unavailable",
   )
+  let failTeamSave = params.get("saveFailure") === "1"
   return {
     displayHome: async () => "/Users/avery",
+    ...(name === "settings-team-confirmation"
+      ? {
+          workspaces: async () => [
+            { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+            { id: "synthetic-team", name: teamName, kind: "team" as const },
+          ],
+        }
+      : {}),
     ongoing: {
+      watch: async (listener) => {
+        const finish = () => {
+          ongoing = { ...ongoing, backfillInProgress: false }
+          listener(ongoing)
+        }
+        const event = "cloud-fixture:finish-backfill"
+        window.addEventListener(event, finish)
+        return () => window.removeEventListener(event, finish)
+      },
       groups: async (_binding, after) => {
         const emptyPage =
           ["folders-empty-partial", "folders-empty-paged"].includes(name) && !after
@@ -284,7 +331,48 @@ export function cloudFixture(name: string): CloudPort {
         }
       },
       status: async () => ongoing,
-      watch: async () => () => {},
+      confirmTeamFolders: async ({
+        accountId,
+        destinationId,
+        expectedPolicyRevision,
+        folderPaths,
+        additions,
+      }) => {
+        const team = ongoing.teamStatuses?.[0]
+        if (
+          !team ||
+          team.accountId !== accountId ||
+          team.destinationId !== destinationId ||
+          team.policyRevision !== expectedPolicyRevision ||
+          JSON.stringify(folderPaths) !==
+            JSON.stringify(team.savedFolders?.map(({ path }) => path))
+        )
+          throw new Error("Unexpected synthetic Team confirmation.")
+        if (failTeamSave) {
+          failTeamSave = false
+          throw new Error("Synthetic save failure.")
+        }
+        const added = Object.values(additions ?? {}).flat()
+        if (
+          additions &&
+          JSON.stringify(added) !==
+            JSON.stringify(groups.find(({ id }) => id === "Website")?.projects)
+        )
+          throw new Error("Unexpected synthetic Team additions.")
+        const saved = {
+          ...team,
+          status: "ready" as const,
+          folderConfirmationRequired: false,
+          policyRevision: "fixture-renewed-team",
+          projects: [...team.projects, ...added],
+          savedFolders: [
+            ...(team.savedFolders ?? []),
+            ...added.map(({ projectPath: path }) => ({ groupId: `saved-${path}`, path })),
+          ],
+        }
+        ongoing = { ...ongoing, teamStatuses: [saved] }
+        return saved
+      },
       enable: async (consent) => {
         if (name === "ambiguous") throw new Error("Synthetic unknown result")
         ongoing = {
@@ -318,12 +406,21 @@ export function cloudFixture(name: string): CloudPort {
         }
         return ongoing
       },
-      pause: async () => {
-        ongoing = { ...ongoing, paused: true, status: "paused" }
+      setEnabled: async (enabled) => {
+        ongoing = {
+          ...ongoing,
+          deviceUploadEnabled: enabled,
+          paused: !enabled,
+          status: enabled ? "ready" : "paused",
+        }
         return ongoing
       },
       retry: async () => {
         ongoing = { ...ongoing, paused: false, status: "ready" }
+        return ongoing
+      },
+      backfill: async () => {
+        ongoing = { ...ongoing, backfillInProgress: true }
         return ongoing
       },
     },
@@ -401,6 +498,7 @@ export function CloudFixture() {
     name === "settings-reopened" ||
     name === "settings-folders" ||
     name === "settings-attention" ||
+    name === "settings-team-confirmation" ||
     name === "settings-missing-sources"
   )
     return <CloudSettingsFixture name={name} />
@@ -426,6 +524,9 @@ function CloudSettingsFixture({ name }: { name: string }) {
     session.getSnapshot,
   )
   const storageUnknown = cloudUploadStatusUnknown(value.ongoing)
+  const hasSavedFolders =
+    value.ongoing?.consentVersion === "desktop-project-sync-v1" ||
+    Object.values(value.teamStatuses ?? {}).some((team) => team.projects.length > 0)
   return (
     <main
       className="h-full overflow-y-auto bg-surface-window p-6 text-label"
@@ -437,15 +538,19 @@ function CloudSettingsFixture({ name }: { name: string }) {
             <CloudAccount session={session} value={value}>
               <SettingsToggleRow
                 searchId="cloudUpload"
-                checked={
-                  value.ongoing?.consentVersion === "desktop-project-sync-v1" &&
-                  !value.ongoing.paused
+                description={
+                  hasSavedFolders && value.deviceUploadEnabled === false && !storageUnknown
+                    ? "Uploads are paused on this device."
+                    : undefined
                 }
-                disabled={value.busy || storageUnknown || !value.ongoing?.consentVersion}
+                checked={
+                  hasSavedFolders && (value.deviceUploadEnabled ?? !value.ongoing?.paused)
+                }
+                disabled={value.busy || storageUnknown || !hasSavedFolders}
                 disabledTooltip={
                   storageUnknown
                     ? "Could not read saved uploads."
-                    : !value.ongoing?.consentVersion
+                    : !hasSavedFolders
                       ? "Choose folders, then Start syncing."
                       : undefined
                 }
