@@ -20,6 +20,13 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Changed
+
+- Analytics installation IDs no longer change every 30 days. Your current ID
+  and queued events are kept on upgrade, so analytics can group activity from
+  one installation over longer periods. Turning analytics off still deletes
+  the local ID and unsent events; turning it back on starts a new ID.
+
 ## [0.11.1] - 2026-11-16
 
 ### Changed

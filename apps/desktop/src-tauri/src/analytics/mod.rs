@@ -10,11 +10,11 @@
 //!   from a clean checkout of this repository is in that state.
 //! - **The payload cannot carry the reader's work.** See [`event`], where the
 //!   closed struct is the enforcement rather than a review convention.
-//! - **The identifier cannot build a longitudinal profile.** It is random and
-//!   rotates on [`IDENTITY_LIFETIME_DAYS`]; opting out destroys it, so opting
-//!   back in is a new identity that cannot be joined to the old one. The
-//!   `sessionId` generator state is weaker still — held in memory and gone
-//!   when the process exits. Queued payloads include that value until delivery.
+//! - **The installation identifier persists.** It is random and has no
+//!   scheduled expiry. Events can group one installation's activity over time.
+//!   Opt-out removes the local identifier. Re-enable creates a fresh identifier.
+//!   The `sessionId` generator stays in memory and resets on process exit.
+//!   Queued payloads keep their captured identifiers until delivery or removal.
 //!
 //! What this module cannot enforce is what happens after delivery. Retention
 //! and IP handling belong to whoever operates the endpoint, are stated in the
@@ -427,9 +427,6 @@ mod enabled {
     };
     use super::{config, delivery, event, resources};
     use crate::store::{AppSettings, Store};
-
-    /// How long an installation identifier lives before it is replaced.
-    pub const IDENTITY_LIFETIME_DAYS: i64 = 30;
 
     /// How long a run identifier survives without a user-oriented event.
     ///
@@ -1816,12 +1813,13 @@ mod enabled {
         cancel_hud_exposure();
     }
 
-    /// The identifier to stamp on an event, minting or rotating it as needed.
+    /// Reuse the stored installation identifier or create one if none exists.
+    ///
+    /// Preserve existing identifiers across upgrades, regardless of their mint
+    /// timestamps. Return no identifier when the store cannot read or save it.
+    /// Call this under `IDENTITY_SESSION_LOCK` to serialize first capture.
     fn current_install_id(store: &Store) -> Option<String> {
-        let existing = store.analytics_identity().ok()?;
-        if let Some((id, minted_at)) = existing
-            && !older_than_lifetime(&minted_at)
-        {
+        if let Some((id, _minted_at)) = store.analytics_identity().ok()? {
             return Some(id);
         }
         let fresh = random_identifier();
@@ -1831,7 +1829,7 @@ mod enabled {
         Some(fresh)
     }
 
-    /// Serialize the two identifiers so rotation cannot produce a mixed pair.
+    /// Serialize identity creation so concurrent captures use one identifier pair.
     fn current_identity_pair(store: &Store, user_oriented: bool) -> Option<(String, String)> {
         let _guard = IDENTITY_SESSION_LOCK
             .lock()
@@ -1840,20 +1838,6 @@ mod enabled {
             current_install_id(store)?,
             current_session_id(user_oriented),
         ))
-    }
-
-    /// Whether a mint stamp is old enough that the identifier should roll over.
-    ///
-    /// An unparsable stamp rotates rather than persisting: erring towards a new
-    /// identifier loses a little continuity, and erring the other way would keep
-    /// one alive indefinitely on a clock this code could not read.
-    fn older_than_lifetime(minted_at: &str) -> bool {
-        let Ok(minted) =
-            time::OffsetDateTime::parse(minted_at, &time::format_description::well_known::Rfc3339)
-        else {
-            return true;
-        };
-        (time::OffsetDateTime::now_utc() - minted).whole_days() >= IDENTITY_LIFETIME_DAYS
     }
 
     /// The current run identifier and the last user-oriented event time.
@@ -2319,6 +2303,9 @@ mod enabled {
         use super::*;
 
         static SUPPRESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        #[path = "identity_integration_tests.rs"]
+        mod identity;
 
         fn unrecognized_summary(
             sessions: u64,
@@ -3177,49 +3164,6 @@ mod enabled {
             reset_session();
         }
 
-        #[test]
-        fn installation_rotation_cannot_reuse_or_mix_the_previous_session() {
-            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
-            let directory = tempfile::tempdir().unwrap();
-            let store = std::sync::Arc::new(Store::open_in_memory(directory.path()).unwrap());
-            let old_install = "11111111-1111-4111-8111-111111111111";
-            store
-                .set_analytics_identity_at(old_install, "2000-01-01T00:00:00Z")
-                .unwrap();
-            let old_payload = r#"{"anonymousId":"old","sessionId":"old-run"}"#;
-            store
-                .queue_analytics_event("antiburn.app_launched", old_payload)
-                .unwrap();
-            reset_session();
-            let old_session = current_session_id(true);
-
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-            let workers: Vec<_> = (0..2)
-                .map(|_| {
-                    let store = store.clone();
-                    let barrier = barrier.clone();
-                    std::thread::spawn(move || {
-                        barrier.wait();
-                        current_identity_pair(&store, true).unwrap()
-                    })
-                })
-                .collect();
-            barrier.wait();
-            let pairs: Vec<_> = workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap())
-                .collect();
-
-            assert_eq!(pairs[0], pairs[1]);
-            assert_ne!(pairs[0].0, old_install);
-            assert_ne!(pairs[0].1, old_session);
-            assert_eq!(
-                store.pending_analytics_events(10).unwrap()[0].1,
-                old_payload
-            );
-            reset_session();
-        }
-
         /// A frequent pass is the scheduler's business; a frequent event in the
         /// payload is not. Only a changed outcome survives, and recovering from a
         /// failure counts as a change.
@@ -3544,13 +3488,6 @@ mod enabled {
             assert!(quota_incident_bucket_is_new("rate_limit", "1-9"));
             assert!(provider_incident_bucket_is_new("capacity", "1-9"));
             reset_suppression();
-        }
-
-        #[test]
-        fn an_unreadable_mint_stamp_rotates_rather_than_persisting() {
-            assert!(older_than_lifetime("not a timestamp"));
-            assert!(older_than_lifetime("2000-01-01T00:00:00Z"));
-            assert!(!older_than_lifetime(&crate::store::now_rfc3339()));
         }
 
         fn collector(

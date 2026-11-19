@@ -79,8 +79,9 @@ network channels. Neither is required for the app to work.
 Analytics must keep all properties documented in [docs/analytics.md](docs/analytics.md):
 official configured builds can record launch and first-run progress before
 setup completes, Settings → Privacy provides the opt-out, payloads contain no
-work or credentials, identifiers
-rotate, and builds without a configured endpoint send nothing.
+work or credentials, installation identifiers persist across restarts and upgrades
+without scheduled rotation, opt-out removes the local identifier and queued events,
+re-enable creates a fresh identifier, and builds without a configured endpoint send nothing.
 
 Model-based check analytics record saved master enablement and provider
 setup/test outcomes with closed values. They do not classify authored YAML checks

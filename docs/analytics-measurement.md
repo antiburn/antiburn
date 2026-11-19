@@ -95,9 +95,14 @@ public catalog for exact properties and delivery gates.
 
 ## Measurement definitions
 
-Use reporting installations, not people. Installation IDs rotate after 30 days
-and reset after opt-out/re-enable. Do not add a stable identifier or use IP,
-user-agent, or device information to join rotations.
+Use reporting installations, not people. Installation IDs persist across restarts
+and upgrades without scheduled replacement. They reset after opt-out/re-enable or
+removal of local analytics state. Do not add account or hardware identifiers or
+use IP, user-agent, or device information to join different installation IDs.
+
+Segment reports at the first shipping app version without ID rotation. Earlier
+builds replace IDs after 30 days; an upgrade preserves the current ID but cannot
+recover earlier identities. A downgrade to an older build can resume rotation.
 
 | Question                                           | Definition                                                                                                                                                                                                                                       | Decision supported                                               |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
@@ -111,8 +116,8 @@ user-agent, or device information to join rotations.
 Use capture time for behavior, deduplicate retries by `messageId`, and allow a
 documented late-arrival window before finalizing cohorts. Segment by app version
 and OS so older builds and unsupported features do not enter new-event
-denominators. Installation rotation and missing delivery bias retention
-downward; a first-seen ID is not necessarily a new install. Opted-out and
+denominators. Rotation in older builds, identity resets, and missing delivery
+bias retention downward; a first-seen ID is not necessarily a new install. Opted-out and
 unconfigured builds are unobserved, so analytics cannot establish total users,
 opt-out rates, uninstalls, or precise long-term retention.
 
@@ -565,7 +570,7 @@ Explicit actions refresh the analytics session timeout. Views and outcomes
 leave the timeout alone. Exclude onboarding from core-use, activation, and
 retention counts. Use the first supporting app version and segment by OS.
 Deduplicate delivery by `messageId`, use capture time, and allow late arrival.
-An installation can revisit onboarding across sessions. The standard rotating
+An installation can revisit onboarding across sessions. The persistent
 installation ID is the reporting unit. Process exit, analytics gates, and
 delivery loss can leave steps unobserved. These events contain no onboarding
 flow identifier, work data, counts, paths, accounts, or credentials. The
@@ -1194,8 +1199,8 @@ arbitrary payload properties.
   only with an available runtime and no installation diagnostic. Test succeeds
   only after capabilities validation. No arbitrary failure reasons or new wire
   properties enter the payload.
-- **Privacy and rollout:** Existing consent, disabled-build, endpoint, identity
-  rotation and delivery rules apply. This event adds no CLI paths, CLI versions,
+- **Privacy and rollout:** Existing consent, disabled-build, endpoint, identity,
+  and delivery rules apply. This event adds no CLI paths, CLI versions,
   payload digests, command output or diagnostic strings. Standard analytics envelope
   fields still apply. Reports begin with the first shipping
   build containing this producer; earlier Settings views are not a baseline for
