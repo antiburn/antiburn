@@ -223,7 +223,7 @@ export function SessionsStepSettings() {
                       : cloudUnavailable
                         ? "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available."
                         : !cloudConsent
-                          ? "Choose projects and confirm full-content sync below."
+                          ? "Choose folders for Personal below."
                           : undefined
                 }
                 onChange={(next) => {

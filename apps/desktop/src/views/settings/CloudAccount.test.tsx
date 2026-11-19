@@ -1,11 +1,20 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useSyncExternalStore } from "react"
 import { expect, it, vi } from "vitest"
-import { emptyCloudSnapshot, desktopCloudPort, type CloudSnapshot } from "../../lib/cloud"
+import {
+  emptyCloudSnapshot,
+  desktopCloudPort,
+  type CloudSnapshot,
+  type CloudWorkspaceConnection,
+} from "../../lib/cloud"
 import { CloudSession } from "../../onboarding/CloudSession"
 import { CloudAccount } from "./CloudAccount"
 import { SettingsTargetFocus } from "./SettingsTargetFocus"
-import { localToolsFixture } from "../../onboarding/__tests__/cloudProjectFixtures"
+import {
+  cloudProjectFixture,
+  localToolsFixture,
+  ongoingStatus,
+} from "../../onboarding/__tests__/cloudProjectFixtures"
 
 function fixture(initial?: CloudSnapshot) {
   let value: CloudSnapshot = initial ?? {
@@ -16,6 +25,7 @@ function fixture(initial?: CloudSnapshot) {
     localResetAvailable: true,
   }
   let publish: (value: CloudSnapshot) => void = () => {}
+  let publishWorkspace: (value: CloudWorkspaceConnection) => void = () => {}
   const resetLocal = vi.fn(async () => {
     value = {
       ...emptyCloudSnapshot,
@@ -43,6 +53,10 @@ function fixture(initial?: CloudSnapshot) {
         publish = listener
         return () => {}
       },
+      watchWorkspace: async (listener) => {
+        publishWorkspace = listener
+        return () => {}
+      },
       localTools: localToolsFixture().port,
       resetLocal,
       signOut,
@@ -65,6 +79,7 @@ function fixture(initial?: CloudSnapshot) {
     reconcile,
     pick,
     emit: (next: CloudSnapshot) => publish(next),
+    emitWorkspace: (next: CloudWorkspaceConnection) => publishWorkspace(next),
   }
 }
 
@@ -109,6 +124,85 @@ it("canceling the reset confirmation does not call a native cleanup action", asy
   expect(resetLocal).not.toHaveBeenCalled()
   expect(signOut).not.toHaveBeenCalled()
   expect(screen.getByRole("button", { name: "Reset sign-in on this device" })).toBeVisible()
+})
+
+it("resets only the team eligible for local recovery and keeps its remote warning", async () => {
+  const accountId = "synthetic-account"
+  const team = ongoingStatus({
+    accountId,
+    destinationId: "synthetic-team",
+    workspaceName: "Example Team",
+    status: "reauth_required",
+    localResetAvailable: true,
+    remoteRevocationUnconfirmed: true,
+  })
+  const otherTeam = ongoingStatus({
+    ...team,
+    destinationId: "other-team",
+    workspaceName: "Other Team",
+    localResetAvailable: false,
+  })
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.status.mockResolvedValue(ongoingStatus({ teamStatuses: [team, otherTeam] }))
+  const resetWorkspace = vi.fn(async () => "signed_out" as const)
+  port.resetWorkspace = resetWorkspace
+  const resetLocal = vi.spyOn(port, "resetLocal")
+  const signOut = vi.spyOn(port, "signOut")
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in for Example Team" }))
+  expect(screen.queryByRole("button", { name: "Reset sign-in for Other Team" })).toBeNull()
+  expect(resetWorkspace).not.toHaveBeenCalled()
+  expect(screen.getByText(/does not close the old Cloud connection/)).toBeVisible()
+  resetWorkspace.mockRejectedValueOnce(new Error("Synthetic keyring failure"))
+  const confirm = screen.getByRole("button", { name: "Confirm reset for Example Team" })
+  fireEvent.click(confirm)
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not reset this team's sign-in",
+  )
+  await waitFor(() => expect(confirm).toBeEnabled())
+  fireEvent.click(confirm)
+  await waitFor(() =>
+    expect(resetWorkspace).toHaveBeenLastCalledWith(
+      { accountId, destinationId: "synthetic-personal" },
+      "synthetic-team",
+    ),
+  )
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: /reset.*Example Team/i })).toBeNull(),
+  )
+  expect(screen.getByText(/earlier connection for Example Team is closed/)).toBeVisible()
+  expect(screen.getByText("Signed in as Example")).toBeVisible()
+  expect(session.getSnapshot().workspaceConnections?.["other-team"]).toMatchObject({
+    localResetAvailable: false,
+    remoteRevocationUnconfirmed: true,
+  })
+  expect(resetLocal).not.toHaveBeenCalled()
+  expect(signOut).not.toHaveBeenCalled()
+})
+
+it("uses native eligibility events for the signed-in account even without a selected folder", async () => {
+  const accountId = "synthetic-account"
+  const { session, emitWorkspace } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "signed_in",
+    identity: { id: accountId, login: "Example" },
+    destination: { id: "synthetic-personal", name: "Personal", kind: "personal" },
+  })
+  render(<Account session={session} />)
+  await screen.findByText("Signed in as Example")
+  const team: CloudWorkspaceConnection = {
+    accountId,
+    workspaceId: "synthetic-team",
+    workspaceName: "Example Team",
+    status: "revocation_unconfirmed",
+  }
+  act(() => emitWorkspace(team))
+  act(() => emitWorkspace({ ...team, accountId: "other-account", localResetAvailable: true }))
+  expect(screen.queryByRole("button", { name: "Reset sign-in for Example Team" })).toBeNull()
+  act(() => emitWorkspace({ ...team, localResetAvailable: true }))
+  expect(screen.getByRole("button", { name: "Reset sign-in for Example Team" })).toBeEnabled()
 })
 
 it("requires source selection and sends account-bound folder changes from Settings", async () => {

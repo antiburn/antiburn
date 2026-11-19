@@ -72,6 +72,17 @@ it("submits Start immediately after the desktop capability was verified", async 
   await pending
 })
 
+it("resets the exact workspace through gated desktop IPC", async () => {
+  mocks.invoke.mockResolvedValue("signed_out")
+  await expect(desktopCloudPort.resetWorkspace!(binding, "synthetic-team")).resolves.toBe(
+    "signed_out",
+  )
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_reset_workspace", {
+    binding,
+    workspaceId: "synthetic-team",
+  })
+})
+
 it.each(["browser", "ordinary build"])("keeps ongoing IPC unreachable in %s", async (build) => {
   if (build === "browser") mocks.hasShell.mockReturnValue(false)
   else mocks.appInfo.mockResolvedValue({ cloudEnabled: false })
@@ -82,6 +93,9 @@ it.each(["browser", "ordinary build"])("keeps ongoing IPC unreachable in %s", as
   await expect(port.enable(consent)).rejects.toThrow("unavailable")
   await expect(port.pause(binding)).rejects.toThrow("unavailable")
   await expect(port.retry(binding)).rejects.toThrow("unavailable")
+  await expect(desktopCloudPort.resetWorkspace!(binding, "synthetic-team")).resolves.toBe(
+    "unavailable",
+  )
   expect(mocks.invoke).not.toHaveBeenCalled()
   expect(mocks.listen).not.toHaveBeenCalled()
 })

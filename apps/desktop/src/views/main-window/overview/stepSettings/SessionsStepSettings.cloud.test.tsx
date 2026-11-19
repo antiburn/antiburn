@@ -101,7 +101,7 @@ it("does not turn an old true upload preference into ongoing content consent", a
   mockCloud(false, true)
   render(<SessionsStepSettings />)
   await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
-  const upload = screen.getByRole("switch", { name: "Upload sessions" })
+  const upload = screen.getByRole("switch", { name: "Upload sessions to Personal" })
   expect(upload).not.toBeChecked()
   expect(upload).toHaveAttribute("aria-disabled", "true")
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
@@ -124,10 +124,23 @@ it("does not turn an old true upload preference into ongoing content consent", a
   expect(screen.getByRole("switch", { name: "Include folders without Git" })).not.toBeChecked()
 })
 
-it("uses the existing upload switch to pause and resume the saved desktop policy", async () => {
-  mockCloud(true, false)
+it("pauses and resumes Personal without changing team uploads", async () => {
+  mockCloud(true, false, {
+    teamStatuses: [
+      ongoingStatus({
+        destinationId: "synthetic-team",
+        workspaceName: "Example Team",
+        consentVersion: "desktop-project-sync-v1",
+        projects: projectGroup().projects,
+        status: "ready",
+      }),
+    ],
+  })
   const { container } = render(<SessionsStepSettings />)
-  const upload = () => screen.getByRole("switch", { name: "Upload sessions" })
+  const upload = () => screen.getByRole("switch", { name: "Upload sessions to Personal" })
+  const teamFolder = await screen.findByRole("switch", {
+    name: "Sync Studio: /Example/Studio to Example Team",
+  })
   await waitFor(() => expect(upload()).toBeChecked())
   expect(
     screen.queryByText(
@@ -146,6 +159,8 @@ it("uses the existing upload switch to pause and resume the saved desktop policy
     }),
   )
   await waitFor(() => expect(upload()).not.toBeChecked())
+  expect(screen.getByText("Personal: Uploads paused")).toBeVisible()
+  expect(teamFolder).toBeChecked()
   await waitFor(() => expect(upload()).not.toHaveAttribute("aria-disabled", "true"))
   fireEvent.click(upload())
   await waitFor(() =>
@@ -175,7 +190,7 @@ it("keeps unreadable saved-upload state visible without extra status paragraphs"
   render(<SessionsStepSettings />)
   expect(await screen.findByText("Could not read saved uploads.")).toBeVisible()
   await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
-  const upload = screen.getByRole("switch", { name: "Upload sessions" })
+  const upload = screen.getByRole("switch", { name: "Upload sessions to Personal" })
   expect(upload).toBeChecked()
   expect(upload).toHaveAttribute("aria-disabled", "true")
   expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()

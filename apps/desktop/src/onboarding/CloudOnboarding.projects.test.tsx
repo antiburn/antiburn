@@ -40,6 +40,95 @@ it("uses Start as explicit grouped consent without saving row defaults", async (
   expect(done).toHaveBeenCalledOnce()
 })
 
+it("requires a folder workspace choice and keeps unsupported team uploads off", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+  ])
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  const workspace = await screen.findByRole("combobox", {
+    name: "Sync Studio: /Example/Studio",
+  })
+  const start = screen.getByRole("button", { name: "Start syncing" })
+  expect(workspace).toHaveValue("")
+  expect(start).toBeDisabled()
+  expect(
+    screen.getByRole("option", { name: "Example Team (uploads unavailable)" }),
+  ).toBeDisabled()
+  fireEvent.change(workspace, { target: { value: "synthetic-team" } })
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(start).toBeDisabled()
+  fireEvent.change(workspace, { target: { value: "synthetic-personal" } })
+  expect(start).toBeEnabled()
+  fireEvent.click(start)
+  await waitFor(() =>
+    expect(ongoing.enable).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destinationId: "synthetic-personal",
+        projectChoices: { studio: true },
+      }),
+    ),
+  )
+})
+
+it("keeps the folder switch for one verified workspace", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+  ])
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  expect(
+    await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" }),
+  ).toBeChecked()
+  expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("opens explicit team approval and sends the folder only to that workspace", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const connect = vi.fn(async () => "signed_in" as const)
+  port.connectWorkspace = connect
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+  ])
+  ongoing.enable.mockResolvedValueOnce(
+    ongoingStatus({
+      status: "ready",
+      destinationId: "synthetic-team",
+      consentVersion: "desktop-project-sync-v1",
+    }),
+  )
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  fireEvent.change(await screen.findByRole("combobox", { name: /Sync Studio/ }), {
+    target: { value: "synthetic-team" },
+  })
+  await waitFor(() =>
+    expect(connect).toHaveBeenCalledWith(
+      { accountId: "synthetic-account", destinationId: "synthetic-personal" },
+      "synthetic-team",
+    ),
+  )
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  const start = screen.getByRole("button", { name: "Start syncing" })
+  await waitFor(() => expect(start).toBeEnabled())
+  fireEvent.click(start)
+  expect(await screen.findByText("Background sync enabled")).toBeVisible()
+  expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      destinationId: "synthetic-team",
+      projects: projectGroup().projects,
+    }),
+  )
+})
+
 it("keeps Done available while the desktop enable command is pending", async () => {
   const { port, ongoing } = cloudProjectFixture()
   let finish!: (value: CloudOngoingStatus) => void

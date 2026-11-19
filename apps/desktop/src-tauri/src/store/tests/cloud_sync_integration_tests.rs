@@ -73,6 +73,251 @@ fn accepted(job: &Job) -> QueueEntry {
 }
 
 #[test]
+fn cloud_personal_consent_and_jobs_do_not_follow_an_issuer_change() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let first = policy(&store);
+    let old_job = job(&store, &first);
+    let other_issuer = "https://issuer.example";
+    assert!(old_job.allowed(&first));
+    let mut legacy_job = old_job.clone();
+    legacy_job.issuer_origin = None;
+    assert!(!legacy_job.allowed(&first));
+    assert!(
+        store
+            .cloud_sync_policy_for_origins("account", "personal", ORIGIN, other_issuer)
+            .unwrap()
+            .is_none()
+    );
+
+    let (roots, projects) = selections();
+    let replacement = store
+        .save_cloud_sync_policy_for_grant(
+            ("account", "personal", ORIGIN, other_issuer, None),
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert_eq!(replacement.resource_origin, first.resource_origin);
+    assert_eq!(replacement.roots, first.roots);
+    assert!(!old_job.allowed(&replacement));
+    assert_eq!(
+        store.cloud_sync_job(&old_job.identity.capture_id).unwrap(),
+        Some(old_job)
+    );
+
+    store
+        .lock()
+        .execute(
+            "UPDATE cloud_sync_policy SET record_json=json_remove(record_json, '$.issuerOrigin')",
+            [],
+        )
+        .unwrap();
+    assert!(
+        store
+            .cloud_sync_policy_for_origins("account", "personal", ORIGIN, other_issuer)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cloud_source_upgrade_keeps_the_legacy_receipt_and_deletion_marker() {
+    const LEGACY_SCOPE: &str = "legacy-source-scope";
+    const SOURCE_ID: &str = "legacy-source-scope/session";
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let (roots, projects) = selections();
+    store
+        .lock()
+        .execute(
+            "INSERT INTO cloud_sync_service_scope VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "account",
+                "personal",
+                ORIGIN,
+                serde_json::to_string(&roots[0].source_kind).unwrap(),
+                roots[0].path,
+                LEGACY_SCOPE
+            ],
+        )
+        .unwrap();
+    let old = policy(&store);
+    assert_eq!(old.roots[0].source_scope_id, LEGACY_SCOPE);
+    let sent = job(&store, &old);
+    let receipt = accepted(&sent);
+    store.accept_cloud_sync(&receipt).unwrap();
+    let deleted = store
+        .enqueue_cloud_sync(
+            &old,
+            LEGACY_SCOPE,
+            &sent.project_path,
+            SOURCE_ID,
+            "before deletion",
+        )
+        .unwrap()
+        .unwrap();
+    store.suppress_cloud_sync(&deleted).unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "UPDATE cloud_sync_policy SET record_json=json_remove(record_json, '$.issuerOrigin');
+             UPDATE cloud_sync_job SET record_json=json_remove(record_json, '$.issuer_origin');",
+        )
+        .unwrap();
+    drop(store);
+
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    assert!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap()
+            .is_none()
+    );
+    let renewed = store
+        .save_cloud_sync_policy_for_grant(
+            (
+                "account",
+                "personal",
+                ORIGIN,
+                "https://issuer.example",
+                None,
+            ),
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let saved_scope = &renewed.roots[0].source_scope_id;
+    assert_eq!(saved_scope, LEGACY_SCOPE);
+    let source = store
+        .cloud_sync_source("account", "personal", ORIGIN, SOURCE_ID)
+        .unwrap()
+        .unwrap();
+    assert!(source.suppressed);
+    assert_eq!(source.fingerprint, receipt.accepted_source_fingerprint());
+    let legacy = store
+        .cloud_sync_job(&deleted.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert!(legacy.issuer_origin.is_none());
+    assert!(!legacy.allowed(&renewed));
+    assert!(
+        store
+            .enqueue_cloud_sync(
+                &renewed,
+                saved_scope,
+                &sent.project_path,
+                SOURCE_ID,
+                "changed after upgrade",
+            )
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn cloud_only_jobs_with_a_known_issuer_hold_active_queue_slots() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let old = policy(&store);
+    let scope = &old.roots[0].source_scope_id;
+    let enqueue = |policy: &Policy, index| {
+        store.enqueue_cloud_sync(
+            policy,
+            scope,
+            "/Example/project",
+            &format!("{scope}/session-{index}"),
+            "observation",
+        )
+    };
+    let mut known = None;
+    for index in 0..MAX_ACTIVE_JOBS {
+        known = enqueue(&old, index).unwrap();
+        assert!(known.is_some());
+    }
+    let known = known.unwrap();
+    let (roots, projects) = selections();
+    let current = store
+        .save_cloud_sync_policy_for_grant(
+            (
+                "account",
+                "personal",
+                ORIGIN,
+                "https://issuer.example",
+                None,
+            ),
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert!(!known.allowed(&current));
+    assert_eq!(
+        enqueue(&current, MAX_ACTIVE_JOBS).unwrap_err().to_string(),
+        "Cloud queue is full"
+    );
+    store
+        .lock()
+        .execute(
+            "UPDATE cloud_sync_job SET record_json=json_remove(record_json, '$.issuer_origin')
+         WHERE capture_id<>?1",
+            [&known.identity.capture_id],
+        )
+        .unwrap();
+
+    assert!(enqueue(&current, MAX_ACTIVE_JOBS - 1).unwrap().is_none());
+    let fresh = enqueue(&current, 0).unwrap().unwrap();
+    let unrelated = enqueue(&current, MAX_ACTIVE_JOBS).unwrap().unwrap();
+    assert_eq!(
+        store
+            .cloud_sync_jobs("account", "personal", ORIGIN)
+            .unwrap(),
+        vec![known, fresh, unrelated]
+    );
+}
+
+#[test]
+fn cloud_team_job_cannot_use_a_replacement_grant_for_the_same_workspace() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let (roots, projects) = selections();
+    let saved_for = |grant| {
+        store
+            .save_cloud_sync_policy_for_grant(
+                (
+                    "account",
+                    "team",
+                    ORIGIN,
+                    ORIGIN,
+                    Some((grant, "Example Team")),
+                ),
+                &roots,
+                &projects,
+                &BTreeMap::new(),
+            )
+            .unwrap()
+    };
+    let first = saved_for("grant-one");
+    let job = job(&store, &first);
+    assert!(job.allowed(&first));
+    assert!(!job.allowed(&saved_for("grant-two")));
+    assert_eq!(job.identity.destination_id, "team");
+}
+
+#[test]
 fn cloud_capacity_retry_deadline_survives_reopen_and_clears_before_pending_work() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();

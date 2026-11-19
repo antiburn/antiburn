@@ -5,6 +5,9 @@
   "windows": ["main", "settings", "onboarding"],
   "permissions": [
     "allow-cloud-status",
+    "allow-cloud-workspaces",
+    "allow-cloud-connect-workspace",
+    "allow-cloud-reset-workspace",
     "allow-cloud-begin",
     "allow-cloud-cancel",
     "allow-cloud-sign-out",

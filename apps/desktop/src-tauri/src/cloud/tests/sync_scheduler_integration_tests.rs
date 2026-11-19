@@ -45,6 +45,7 @@ const PART_CAPACITY: usize = 19;
 const PART_REJECTED: usize = 20;
 const CAPS_CAPACITY: usize = 21;
 const REPLACED_PART: usize = 22;
+const CODEX_AND_PI: usize = 23;
 
 struct Service {
     origin: String,
@@ -130,7 +131,7 @@ impl Service {
                 {
                     assert_eq!((line.clone(), body.clone()), previous);
                 }
-                let (status, output) = if line.contains("/capabilities ") {
+                let (status, output) = if line.contains("/capabilities?contract=2 ") {
                     if mode == CAPS_OFFLINE {
                         continue;
                     }
@@ -139,12 +140,16 @@ impl Service {
                     } else if mode == CAPS_MISSING {
                         (404, serde_json::json!({}))
                     } else {
+                        let mut formats = vec!["ClaudeJsonl", "OpenCodeSqliteV2"];
+                        if mode == CODEX_AND_PI {
+                            formats.extend(["CodexJsonl", "PiJsonl"]);
+                        }
                         (
                             200,
                             serde_json::json!({
                                 "enabled": true, "max_expanded_bytes": 256 * 1024 * 1024,
                                 "chunk_expanded_bytes": 8 * 1024 * 1024,
-                                "source_formats": ["ClaudeJsonl", "OpenCodeSqliteV2"],
+                                "source_formats": formats,
                             }),
                         )
                     }
@@ -152,6 +157,17 @@ impl Service {
                     worker_reserves.fetch_add(1, Ordering::AcqRel);
                     let identity: CaptureIdentity =
                         serde_json::from_value(input["identity"].clone()).unwrap();
+                    if mode == CODEX_AND_PI {
+                        let id = input["native_session_id"].as_str().unwrap();
+                        let (agent, format) = if identity.source_id.contains("/codex/") {
+                            ("codex", "CodexJsonl")
+                        } else {
+                            ("pi", "PiJsonl")
+                        };
+                        assert!(identity.source_id.ends_with(&format!("/{agent}/{id}")));
+                        assert_eq!(input["agent"], agent);
+                        assert_eq!(input["source_format"], format);
+                    }
                     if let Some(path) = worker_reserve_database.lock().unwrap().as_ref() {
                         let connection = rusqlite::Connection::open_with_flags(
                             path,
@@ -442,6 +458,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> (String, BTreeMap<String, S
 
 struct Authority {
     origin: String,
+    workspace: Workspace,
     deadline: i64,
     content_generation: Arc<AtomicU64>,
     pause_stage: usize,
@@ -460,11 +477,7 @@ impl Authority {
             },
             grant_id: format!("grant-{}", self.grant.load(Ordering::Acquire)),
             device_name: "Example desktop".into(),
-            workspace: Workspace {
-                id: "personal".into(),
-                name: "Personal".into(),
-                kind: WorkspaceKind::Personal,
-            },
+            workspace: self.workspace.clone(),
             resource: self.origin.clone(),
             scope: "capture:write".into(),
             iss: self.origin.clone(),
@@ -491,7 +504,7 @@ impl AuthTransport for Arc<Authority> {
             token_type: "Bearer".into(),
             grant_id: format!("grant-{}", self.grant.load(Ordering::Acquire)),
             user_id: "account".into(),
-            workspace_id: "personal".into(),
+            workspace_id: self.workspace.id.clone(),
             grant_expires_at: time::OffsetDateTime::from_unix_timestamp(self.deadline)
                 .unwrap()
                 .format(&time::format_description::well_known::Rfc3339)
@@ -529,8 +542,280 @@ struct Fixture {
     project: std::path::PathBuf,
 }
 
+#[test]
+fn conflicting_workspace_folder_disables_existing_scheduler_before_requests() {
+    let mut fixture = Fixture::new(READY, 0);
+    let root = &fixture.policy.roots[0];
+    let project = fixture.project.join("nested");
+    fs::create_dir(&project).unwrap();
+    fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "team",
+            &fixture.service.origin,
+            &[SourceSelection {
+                source_kind: root.source_kind,
+                path: root.path.clone(),
+            }],
+            &[ProjectSelection {
+                source_kind: root.source_kind,
+                source_path: root.path.clone(),
+                project_path: project.to_str().unwrap().into(),
+            }],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::WorkspaceConflict);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), 0);
+    assert!(fixture.host.spool().unwrap().entries().unwrap().is_empty());
+}
+
+#[test]
+fn queued_workspace_upload_uses_saved_paths_when_another_folder_is_enabled() {
+    let mut fixture = Fixture::new(READY, 0);
+    let other_folder = fixture.project.with_file_name("another-project");
+    fs::create_dir(&other_folder).unwrap();
+    let transcript = fixture.root.join("session.jsonl");
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap(),
+        "{}",
+        serde_json::json!({
+            "sessionId": "session", "cwd": other_folder, "version": "2.1.55", "type": "user",
+            "message": {"role": "user", "content": "Synthetic second folder"},
+        })
+    )
+    .unwrap();
+    fixture.turn();
+    let queued = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(queued.state, CaptureState::Queued);
+    let job = fixture
+        .store
+        .cloud_sync_job(&queued.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        job.recorded_project_paths
+            .unwrap()
+            .contains(&other_folder.to_str().unwrap().to_owned())
+    );
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fs::remove_file(transcript).unwrap();
+
+    let root = &fixture.policy.roots[0];
+    fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "team",
+            &fixture.service.origin,
+            &[SourceSelection {
+                source_kind: root.source_kind,
+                path: root.path.clone(),
+            }],
+            &[ProjectSelection {
+                source_kind: root.source_kind,
+                source_path: root.path.clone(),
+                project_path: other_folder.to_str().unwrap().into(),
+            }],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    fixture.restart_scheduler();
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::WorkspaceConflict);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+    assert_eq!(
+        fixture.host.spool().unwrap().entries().unwrap(),
+        vec![queued]
+    );
+}
+
+#[test]
+fn one_session_that_matches_two_workspace_folders_does_not_reserve() {
+    let mut fixture = Fixture::new(READY, 0);
+    let other_folder = fixture.project.with_file_name("another-project");
+    fs::create_dir(&other_folder).unwrap();
+    let root = &fixture.policy.roots[0];
+    fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "team",
+            &fixture.service.origin,
+            &[SourceSelection {
+                source_kind: root.source_kind,
+                path: root.path.clone(),
+            }],
+            &[ProjectSelection {
+                source_kind: root.source_kind,
+                source_path: root.path.clone(),
+                project_path: other_folder.to_str().unwrap().into(),
+            }],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(fixture.root.join("session.jsonl"))
+        .unwrap();
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({
+            "sessionId": "session", "cwd": other_folder, "version": "2.1.55", "type": "user",
+            "message": {"role": "user", "content": "Synthetic second folder"},
+        })
+    )
+    .unwrap();
+
+    fixture.turn();
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::WorkspaceConflict);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), 0);
+    assert!(fixture.host.spool().unwrap().entries().unwrap().is_empty());
+}
+
+#[test]
+fn codex_and_pi_scheduler_requires_folder_consent_and_advertised_formats() {
+    let mut fixture = Fixture::new(READY, 0);
+    let codex_root = fixture.root.join("codex");
+    let pi_root = fixture.root.join("pi");
+    let codex_day = codex_root.join("2026/11/19");
+    let pi_folder = pi_root.join("--synthetic--");
+    fs::create_dir_all(&codex_day).unwrap();
+    fs::create_dir_all(&pi_folder).unwrap();
+    let codex_id = "12345678-1234-1234-1234-123456789abc";
+    let pi_id = "abcdef12-1234-1234-1234-123456789abc";
+    let outside_id = "eeeeeeee-1234-1234-1234-123456789abc";
+    let cwd = &fixture.project;
+    fs::write(
+        codex_day.join(format!("rollout-2026-11-19T12-00-00-{codex_id}.jsonl")),
+        format!(
+            "{}\n{{\"type\":\"response_item\"}}\n",
+            serde_json::json!({
+                "type":"session_meta", "payload":{"id":codex_id,"cwd":cwd,"cli_version":"1.2.3"}
+            })
+        ),
+    )
+    .unwrap();
+    fs::write(
+        pi_folder.join(format!("2026-11-19T12-00-00Z_{pi_id}.jsonl")),
+        format!(
+            "{}\n{{\"type\":\"synthetic\"}}\n",
+            serde_json::json!({
+                "type":"session","id":pi_id,"cwd":cwd,"version":3
+            })
+        ),
+    )
+    .unwrap();
+    fs::write(
+        pi_folder.join(format!("2026-11-19T12-00-00Z_{outside_id}.jsonl")),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type":"session","id":outside_id,"cwd":&fixture.root
+            })
+        ),
+    )
+    .unwrap();
+    let roots = [
+        SourceSelection {
+            source_kind: SourceKind::CodexJsonl,
+            path: codex_root.to_str().unwrap().into(),
+        },
+        SourceSelection {
+            source_kind: SourceKind::PiJsonl,
+            path: pi_root.to_str().unwrap().into(),
+        },
+    ];
+    let projects = roots.each_ref().map(|root| ProjectSelection {
+        source_kind: root.source_kind,
+        source_path: root.path.clone(),
+        project_path: cwd.to_str().unwrap().into(),
+    });
+    fixture.policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "personal",
+            &fixture.service.origin,
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::UploadUnavailable);
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 0);
+    assert!(fixture.host.spool().unwrap().entries().unwrap().is_empty());
+
+    fixture.service.mode.store(CODEX_AND_PI, Ordering::Release);
+    fixture.runner.next_reconcile = None;
+    fixture.turn();
+    let entries = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].manifest.is_some());
+    assert!(entries[0].upload_plan.is_none());
+
+    fixture.service.mode.store(READY, Ordering::Release);
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::UploadUnavailable);
+    assert_eq!(
+        fixture.service.requests.load(Ordering::Acquire),
+        requests + 1
+    );
+    let saved = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(saved[0].identity, entries[0].identity);
+    assert_eq!(saved[0].manifest, entries[0].manifest);
+    assert!(saved[0].upload_plan.is_none());
+
+    fixture.service.mode.store(CODEX_AND_PI, Ordering::Release);
+    fixture.runner.retry_deadlines.clear();
+    for _ in 0..30 {
+        fixture.turn();
+    }
+    let ids = fixture.service.reserve_identities.lock().unwrap();
+    assert_eq!(ids.len(), 2);
+    assert!(
+        ids.iter()
+            .any(|id| id.source_id.ends_with(&format!("/codex/{codex_id}")))
+    );
+    assert!(
+        ids.iter()
+            .any(|id| id.source_id.ends_with(&format!("/pi/{pi_id}")))
+    );
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
+            .unwrap()
+            .0,
+        2
+    );
+}
+
 impl Fixture {
     fn new(mode: usize, pause_stage: usize) -> Self {
+        Self::for_workspace(
+            mode,
+            pause_stage,
+            Workspace {
+                id: "personal".into(),
+                name: "Personal".into(),
+                kind: WorkspaceKind::Personal,
+            },
+        )
+    }
+
+    fn for_workspace(mode: usize, pause_stage: usize, workspace: Workspace) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let base = directory.path().canonicalize().unwrap();
         let root = base.join("desktop-sources");
@@ -542,10 +827,15 @@ impl Fixture {
         let store = Store::open(&base).unwrap();
         store.initialize_cloud_setup().unwrap();
         let policy = store
-            .save_cloud_sync_policy(
-                "account",
-                "personal",
-                &service.origin,
+            .save_cloud_sync_policy_for_grant(
+                (
+                    "account",
+                    &workspace.id,
+                    &service.origin,
+                    &service.origin,
+                    (workspace.kind == WorkspaceKind::Team)
+                        .then_some(("grant-0", workspace.name.as_str())),
+                ),
                 &[SourceSelection {
                     source_kind: SourceKind::ClaudeJsonl,
                     path: root.to_str().unwrap().into(),
@@ -561,6 +851,7 @@ impl Fixture {
         let content_generation = Arc::new(AtomicU64::new(0));
         let authority = Arc::new(Authority {
             origin: service.origin.clone(),
+            workspace: workspace.clone(),
             deadline: now() + 86_400,
             content_generation: content_generation.clone(),
             pause_stage,
@@ -576,6 +867,14 @@ impl Fixture {
             Box::new(authority.clone()),
             StateStore::new(&base),
         );
+        if workspace.kind == WorkspaceKind::Team {
+            let mut team = engine
+                .workspace_engine("synthetic".into(), "account".into(), workspace)
+                .unwrap();
+            team.vault = engine.vault;
+            team.transport = Box::new(authority.clone());
+            engine = team;
+        }
         let (_, _listener, attempt) = engine.begin(now(), 0).unwrap();
         engine
             .callback(
@@ -647,7 +946,11 @@ impl Fixture {
             self.turn();
             if self
                 .store
-                .cloud_sync_outcome_counts("account", "personal", &self.service.origin)
+                .cloud_sync_outcome_counts(
+                    "account",
+                    &self.policy.destination_id,
+                    &self.service.origin,
+                )
                 .unwrap()
                 .0
                 == 1
@@ -749,6 +1052,30 @@ impl Fixture {
             .unwrap();
         database
     }
+}
+
+#[test]
+fn cloud_team_scheduler_uploads_only_with_the_grant_that_approved_its_folders() {
+    let workspace = Workspace {
+        id: "team".into(),
+        name: "Example Team".into(),
+        kind: WorkspaceKind::Team,
+    };
+    let mut complete = Fixture::for_workspace(READY, 0, workspace.clone());
+    complete.accept_first();
+    assert_eq!(
+        complete.service.reserve_identities.lock().unwrap()[0].destination_id,
+        "team"
+    );
+    let mut replaced = Fixture::for_workspace(READY, 0, workspace);
+    replaced.turn();
+    assert_eq!(replaced.host.spool().unwrap().entries().unwrap().len(), 1);
+    let requests = replaced.service.requests.load(Ordering::Acquire);
+    replaced.sign_in_again();
+    replaced.turn();
+    assert_eq!(replaced.runner.state, State::Fenced);
+    assert_eq!(replaced.service.requests.load(Ordering::Acquire), requests);
+    assert_eq!(replaced.host.spool().unwrap().entries().unwrap().len(), 1);
 }
 
 fn write_source(root: &Path, project: &Path, id: &str, message: &str) {
@@ -2039,6 +2366,75 @@ fn cloud_scheduler_captures_a_selected_opencode_session_after_two_unselected_pag
                 .get::<_, u32>(0))
             .unwrap(),
         1
+    );
+}
+
+#[test]
+fn cloud_scheduler_upgrades_issuerless_queued_capture_without_touching_its_spool() {
+    let mut fixture = Fixture::new(READY, 0);
+    fixture.turn();
+    let old = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(old.state, CaptureState::Queued);
+    let old_directory = fixture
+        ._directory
+        .path()
+        .join("cloud-capture-v1")
+        .join(&old.identity.capture_id);
+    let old_chunks = saved_chunks(&old_directory);
+    assert!(!old_chunks.is_empty());
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fixture
+        .store
+        .lock()
+        .execute_batch(
+            "UPDATE cloud_sync_policy SET record_json=json_remove(record_json, '$.issuerOrigin');
+         UPDATE cloud_sync_job SET record_json=json_remove(record_json, '$.issuer_origin');",
+        )
+        .unwrap();
+    let legacy = fixture
+        .store
+        .cloud_sync_job(&old.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert!(legacy.issuer_origin.is_none());
+    assert!(!legacy.state.terminal());
+    fixture.restart_scheduler();
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::ConsentRequired);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+
+    let root = SourceSelection {
+        source_kind: SourceKind::ClaudeJsonl,
+        path: fixture.root.to_str().unwrap().into(),
+    };
+    fixture.policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "personal",
+            &fixture.service.origin,
+            &[root],
+            &fixture.policy.projects,
+            &fixture.policy.project_choices,
+        )
+        .unwrap();
+    fixture.restart_scheduler();
+    fixture.turn();
+    let identities = fixture.service.reserve_identities.lock().unwrap();
+    assert_eq!(identities.len(), 2);
+    assert_eq!(identities[0], old.identity);
+    assert_ne!(identities[1].capture_id, old.identity.capture_id);
+    assert_eq!(identities[1].source_id, old.identity.source_id);
+    let entries = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.contains(&old));
+    assert_eq!(saved_chunks(&old_directory), old_chunks);
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_job(&old.identity.capture_id)
+            .unwrap(),
+        Some(legacy)
     );
 }
 

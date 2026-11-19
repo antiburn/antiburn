@@ -4,6 +4,7 @@ import {
   cloudDisplayPath,
   type CloudProjectChoices,
   type CloudProjectGroup,
+  type CloudWorkspace,
 } from "../lib/cloud"
 
 /** Show the main path and counts. Keep raw paths as selection authority. */
@@ -52,6 +53,77 @@ export function CloudProjectFolderSummary({
   )
 }
 
+/** Choose this folder's destination. The caller owns approval and content consent. */
+export function CloudFolderSyncControl({
+  label,
+  descriptionId,
+  selected,
+  disabled,
+  workspaces,
+  destinationId,
+  selectedWorkspace,
+  onWorkspaceSelect,
+  onSelect,
+}: {
+  label: string
+  descriptionId: string
+  selected: boolean
+  disabled: boolean
+  workspaces?: readonly CloudWorkspace[] | undefined
+  destinationId?: string | undefined
+  selectedWorkspace?: string | undefined
+  onWorkspaceSelect?: ((id: string) => void) | undefined
+  onSelect: (selected: boolean) => void
+}) {
+  const unavailableChoice =
+    selectedWorkspace && !workspaces?.some((workspace) => workspace.id === selectedWorkspace)
+  if (destinationId && ((workspaces?.length ?? 0) > 1 || unavailableChoice)) {
+    return (
+      <select
+        aria-label={label}
+        aria-describedby={descriptionId}
+        className="rounded-control bg-surface-card px-2 py-1 type-footnote text-label"
+        value={selected ? (selectedWorkspace ?? destinationId) : ""}
+        disabled={disabled}
+        onChange={(event) => {
+          const target = event.currentTarget.value
+          if (target === "" || target === destinationId) onSelect(target === destinationId)
+          else if (workspaces?.some((workspace) => workspace.id === target))
+            onWorkspaceSelect?.(target)
+        }}
+      >
+        <option value="">Don't sync</option>
+        {unavailableChoice && (
+          <option value={selectedWorkspace} disabled>
+            Selected workspace unavailable
+          </option>
+        )}
+        {workspaces?.map((workspace) => (
+          <option
+            key={workspace.id}
+            value={workspace.id}
+            disabled={workspace.id !== destinationId && !onWorkspaceSelect}
+          >
+            {workspace.name}
+            {workspace.id !== destinationId && !onWorkspaceSelect
+              ? " (uploads unavailable)"
+              : ""}
+          </option>
+        ))}
+      </select>
+    )
+  }
+  return (
+    <ToggleSwitch
+      aria-label={label}
+      aria-describedby={descriptionId}
+      checked={selected}
+      disabled={disabled}
+      onCheckedChange={onSelect}
+    />
+  )
+}
+
 /** Show one local choice per project. Only Start saves the current selection.
  * Pass an empty list only after a complete, successful discovery.
  */
@@ -60,12 +132,20 @@ export function CloudProjectFolders({
   choices,
   disabled = false,
   homeDirectory,
+  workspaces,
+  destinationId,
+  targets,
+  onWorkspaceSelect,
   onSelect,
 }: {
   groups: readonly CloudProjectGroup[]
   choices: CloudProjectChoices
   disabled?: boolean
   homeDirectory?: string | null | undefined
+  workspaces?: readonly CloudWorkspace[] | undefined
+  destinationId?: string | undefined
+  targets?: Readonly<Record<string, string>> | undefined
+  onWorkspaceSelect?: ((project: string, workspace: string) => void) | undefined
   onSelect: (projectId: string, selected: boolean) => void
 }) {
   return (
@@ -85,12 +165,16 @@ export function CloudProjectFolders({
                 homeDirectory={homeDirectory}
               />
             </div>
-            <ToggleSwitch
-              aria-label={`Sync ${group.name}: ${group.path}`}
-              aria-describedby={`cloud-folder-${encodeURIComponent(group.id)}`}
-              checked={choices[group.id] ?? true}
+            <CloudFolderSyncControl
+              label={`Sync ${group.name}: ${group.path}`}
+              descriptionId={`cloud-folder-${encodeURIComponent(group.id)}`}
+              selected={choices[group.id] ?? true}
               disabled={disabled}
-              onCheckedChange={(selected) => onSelect(group.id, selected)}
+              workspaces={workspaces}
+              destinationId={destinationId}
+              selectedWorkspace={targets?.[group.id]}
+              onWorkspaceSelect={onWorkspaceSelect && ((id) => onWorkspaceSelect(group.id, id))}
+              onSelect={(selected) => onSelect(group.id, selected)}
             />
           </div>
         ))

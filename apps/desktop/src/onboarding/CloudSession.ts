@@ -22,6 +22,9 @@ import {
   type CloudDestinationBinding,
   type CloudProjectCursor,
   type CloudSourceSelection,
+  type CloudWorkspace,
+  type CloudWorkspaceConnection,
+  type CloudWorkspaceRecovery,
 } from "../lib/cloud"
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
 import { personalCloudDestination } from "../lib/cloudDestination"
@@ -73,6 +76,8 @@ export interface CloudViewSnapshot {
   projects?: {
     groups: CloudProjectGroup[]
     choices: CloudProjectChoices
+    workspaces?: readonly CloudWorkspace[] | undefined
+    targets?: Readonly<Record<string, string>> | undefined
     loading: boolean
     loaded: boolean
     partial: boolean
@@ -83,6 +88,9 @@ export interface CloudViewSnapshot {
   } | null
   /** Desktop-owned ongoing policy and transfer counters, separate from local agents. */
   ongoing?: CloudOngoingStatus | null
+  lastTeamSync?: CloudOngoingStatus | null
+  teamStatuses?: Readonly<Record<string, CloudOngoingStatus>> | undefined
+  workspaceConnections?: Readonly<Record<string, CloudWorkspaceRecovery>>
 }
 const messages = {
   idle: "",
@@ -121,6 +129,7 @@ export const cloudOngoingStatusMessage = (value: CloudOngoingStatus) => {
     offline: "Cloud is offline",
     reauth_required: "Reconnect to Cloud",
     upload_unavailable: "Cloud upload unavailable",
+    workspace_conflict: "A session or folder matches more than one workspace.",
     fenced: "Some uploads need attention",
     interrupted: "Some sessions could not be prepared",
     storage_unavailable: "Could not open saved uploads",
@@ -158,6 +167,7 @@ export class CloudSession {
   private listeners = new Set<() => void>()
   private stop: (() => void) | undefined
   private stopOngoing: (() => void) | undefined
+  private stopWorkspace: (() => void) | undefined
   private stopLocalTools: (() => void) | undefined
   private localToolsLoading = false
   private localToolsEventGeneration = 0
@@ -167,6 +177,7 @@ export class CloudSession {
   private projectSources: CloudSourceSelection[] = []
   private projectCursor: CloudProjectCursor | null = null
   private projectChoices: CloudProjectChoices = {}
+  private projectTargets: Record<string, string> = {}
   private confirmedProjectChoices: CloudProjectChoices = {}
   private needsChoiceReview = false
   private ongoingRevision = 0
@@ -214,6 +225,8 @@ export class CloudSession {
         this.stop = undefined
         this.stopOngoing?.()
         this.stopOngoing = undefined
+        this.stopWorkspace?.()
+        this.stopWorkspace = undefined
         this.stopLocalTools?.()
         this.stopLocalTools = undefined
         this.localToolsLoading = false
@@ -285,10 +298,11 @@ export class CloudSession {
       this.projectSources = []
       this.projectCursor = null
       this.projectChoices = {}
+      this.projectTargets = {}
       this.confirmedProjectChoices = {}
       this.needsChoiceReview = false
       this.projectSyncStarted = false
-    } else if (value.setupError) {
+    } else if (value.setupError && value.setupError !== this.snapshot.cloud.setupError) {
       this.projectGeneration++
     }
     const retryInvalidated =
@@ -316,7 +330,13 @@ export class CloudSession {
       destinationChanged ||
       !value.identity ||
       value.status !== "signed_in"
-        ? { projects: null, ongoing: null }
+        ? {
+            projects: null,
+            ongoing: null,
+            lastTeamSync: null,
+            teamStatuses: {},
+            workspaceConnections: {},
+          }
         : value.setupError && this.snapshot.projects
           ? { projects: { ...this.snapshot.projects, loading: false } }
           : {}),
@@ -473,6 +493,16 @@ export class CloudSession {
         }
         this.stopOngoing = stop
       }
+      if (this.port.watchWorkspace && !this.stopWorkspace) {
+        const stop = await this.port.watchWorkspace((connection) => {
+          if (this.active && generation === this.generation) this.receiveWorkspace(connection)
+        })
+        if (!this.active || generation !== this.generation) {
+          stop()
+          return
+        }
+        this.stopWorkspace = stop
+      }
       if (this.port.displayHome) {
         void this.port
           .displayHome()
@@ -519,10 +549,75 @@ export class CloudSession {
         })
     }
   }
+  /** Apply exact-team state even when no folder is selected in this window. */
+  private receiveWorkspace(connection: CloudWorkspaceConnection) {
+    const { accountId, workspaceId, status, ...recovery } = connection
+    const binding = this.projectBinding(true)
+    if (binding?.accountId !== accountId || binding.destinationId === workspaceId) return
+    this.receiveWorkspaceRecovery({ accountId, workspaceId, ...recovery })
+    if (!Object.values(this.projectTargets).includes(workspaceId)) return
+    this.publish({
+      error:
+        status === "signed_in" || status === "signed_out"
+          ? null
+          : status === "waiting" || status === "opening"
+            ? "Approve the team in your browser before starting sync."
+            : recovery.localResetAvailable
+              ? "Team approval did not finish. Reset its sign-in in Cloud Settings to try again."
+              : "Team approval did not finish. Try again.",
+    })
+  }
+  /** Merge recovery from the native team status read or a newer approval event. */
+  private receiveWorkspaceRecovery(recovery: CloudWorkspaceRecovery) {
+    if (
+      recovery.localResetAvailable === undefined &&
+      recovery.remoteRevocationUnconfirmed === undefined
+    )
+      return
+    const id = recovery.workspaceId
+    const previous = this.snapshot.workspaceConnections?.[id]
+    this.publish({
+      workspaceConnections: {
+        ...this.snapshot.workspaceConnections,
+        [id]: {
+          ...recovery,
+          workspaceName: recovery.workspaceName ?? previous?.workspaceName,
+        },
+      },
+    })
+  }
   /** Accept only the observed account's policy. No status event grants new consent. */
   private receiveOngoing(status: CloudOngoingStatus) {
     const { identity, destination, status: authStatus } = this.snapshot.cloud
     const personal = personalCloudDestination(destination ?? null)
+    if (
+      identity &&
+      personal &&
+      authStatus === "signed_in" &&
+      status.accountId === identity.id &&
+      status.destinationId &&
+      status.destinationId !== personal.id &&
+      status.consentVersion === "desktop-project-sync-v1"
+    ) {
+      const previous = this.snapshot.teamStatuses?.[status.destinationId]
+      const savedFolders =
+        status.savedFolders ??
+        previous?.savedFolders?.filter((folder) =>
+          status.projects.some((project) => project.projectPath === folder.path),
+        )
+      const team = {
+        ...status,
+        workspaceName: status.workspaceName ?? previous?.workspaceName,
+        savedFolders,
+      }
+      this.publish({
+        teamStatuses: { ...this.snapshot.teamStatuses, [status.destinationId]: team },
+        ...(this.snapshot.lastTeamSync?.destinationId === status.destinationId
+          ? { lastTeamSync: team }
+          : {}),
+      })
+      return
+    }
     if (
       !identity ||
       !personal ||
@@ -547,7 +642,7 @@ export class CloudSession {
         projects.groups,
         this.confirmedProjectChoices,
         this.projectChoices,
-        !this.needsChoiceReview,
+        this.defaultProjectSelection(projects.workspaces),
       )
       const selectionKey = this.projectSelectionKey(projects.groups, choices)
       if (selectionKey !== projects.selectionKey) this.invalidateContentConfirmation()
@@ -569,6 +664,14 @@ export class CloudSession {
       ? { accountId: identity.id, destinationId: personal.id }
       : null
   }
+  /** Keep destination choices explicit when a team policy already exists. */
+  private defaultProjectSelection(workspaces?: readonly CloudWorkspace[]) {
+    return (
+      !this.needsChoiceReview &&
+      (workspaces?.length ?? 0) <= 1 &&
+      Object.keys(this.snapshot.teamStatuses ?? {}).length === 0
+    )
+  }
   /** Require desktop project members and returned source roots together. This is
    * metadata support, not content consent; other-agent suggestions stay visible.
    */
@@ -587,9 +690,16 @@ export class CloudSession {
   /** Use typed desktop selections only. Suggestions from other agents stay display-only. */
   private selectedProjects(
     choices: CloudProjectChoices = this.snapshot.projects?.choices ?? {},
+    destination?: string,
   ): CloudProjectSelection[] {
     const selections = this.desktopProjects
-      .filter((group) => choices[group.id] ?? true)
+      .filter(
+        (group) =>
+          (choices[group.id] ?? true) &&
+          (!destination ||
+            (this.projectTargets[group.id] ?? this.snapshot.cloud.destination?.id) ===
+              destination),
+      )
       .flatMap((group) => this.supportedProjectSelections(group))
     return [
       ...new Map(selections.map((project) => [JSON.stringify(project), project])).values(),
@@ -601,10 +711,16 @@ export class CloudSession {
     )
   }
   /** Include provider/source bindings in confirmation, not just the visible folder names. */
-  private projectSelectionKey(groups: CloudProjectGroup[], choices: CloudProjectChoices) {
+  private projectSelectionKey(
+    groups: CloudProjectGroup[],
+    choices: CloudProjectChoices,
+    workspaces = this.snapshot.projects?.workspaces,
+  ) {
     return JSON.stringify([
       cloudProjectSelectionKey(groups, choices),
       this.selectedProjects(choices),
+      Object.entries(this.projectTargets).sort(),
+      (workspaces ?? []).map((workspace) => [workspace.id, workspace.kind]).sort(),
     ])
   }
   /** Fence one Settings confirmation even while its group is excluded from Start. */
@@ -627,19 +743,21 @@ export class CloudSession {
    */
   loadProjects = async (more = false) => {
     const port = this.port.ongoing
-    const binding = this.projectBinding()
+    const binding = this.projectBinding(!more)
     if (!port || !binding || this.snapshot.projects?.loading || (more && !this.projectCursor))
       return
     const generation = ++this.projectGeneration
     const current = () =>
       this.active &&
       generation === this.projectGeneration &&
-      JSON.stringify(this.projectBinding()) === JSON.stringify(binding)
+      JSON.stringify(this.projectBinding(!more)) === JSON.stringify(binding)
     const existing = this.snapshot.projects
     this.publish({
       projects: {
         groups: existing?.groups ?? [],
         choices: existing?.choices ?? {},
+        workspaces: existing?.workspaces,
+        targets: existing?.targets,
         loading: true,
         loaded: existing?.loaded ?? false,
         partial: existing?.partial ?? false,
@@ -650,11 +768,48 @@ export class CloudSession {
       },
     })
     try {
+      let workspaces = existing?.workspaces
       if (!more) {
         const revision = this.ongoingRevision
+        const previousTeams = this.snapshot.teamStatuses
+        const previousConnections = this.snapshot.workspaceConnections
         const status = await port.status()
         if (!current()) return
+        if (
+          status?.accountId === binding.accountId &&
+          status.destinationId === binding.destinationId
+        )
+          for (const team of status.teamStatuses ?? []) {
+            const id = team.destinationId
+            if (!id || id === binding.destinationId || team.accountId !== binding.accountId)
+              continue
+            if (previousTeams?.[id] === this.snapshot.teamStatuses?.[id])
+              this.receiveOngoing(team)
+            if (previousConnections?.[id] === this.snapshot.workspaceConnections?.[id])
+              this.receiveWorkspaceRecovery({
+                accountId: team.accountId,
+                workspaceId: id,
+                workspaceName: team.workspaceName,
+                localResetAvailable: team.localResetAvailable,
+                remoteRevocationUnconfirmed: team.remoteRevocationUnconfirmed,
+              })
+          }
         if (status && revision === this.ongoingRevision) this.receiveOngoing(status)
+        if (this.snapshot.cloud.setupError) {
+          this.publish({ projects: { ...this.snapshot.projects!, loading: false } })
+          return
+        }
+        if (this.port.workspaces) {
+          workspaces = (await this.port.workspaces(binding)) ?? undefined
+          if (!current()) return
+          if (
+            workspaces &&
+            !workspaces.some(
+              ({ id, kind }) => id === binding.destinationId && kind === "personal",
+            )
+          )
+            throw new Error("The signed-in workspace is not available for selection.")
+        }
       }
       const cursor = more ? this.projectCursor : null
       const page = await port.groups(binding, cursor)
@@ -686,14 +841,16 @@ export class CloudSession {
         viewGroups,
         this.confirmedProjectChoices,
         this.projectChoices,
-        !this.needsChoiceReview,
+        this.defaultProjectSelection(workspaces),
       )
-      const selectionKey = this.projectSelectionKey(viewGroups, choices)
+      const selectionKey = this.projectSelectionKey(viewGroups, choices, workspaces ?? [])
       if (existing?.selectionKey !== selectionKey) this.invalidateContentConfirmation()
       this.publish({
         projects: {
           groups: viewGroups,
           choices,
+          workspaces,
+          targets: this.projectTargets,
           loaded: true,
           loading: false,
           partial: page.partial || (more && (existing?.partial ?? false)),
@@ -719,29 +876,75 @@ export class CloudSession {
   /** Extend the visible draft only after an explicit page request. */
   loadMoreProjects = () => this.loadProjects(true)
   /** Change one local group choice. Start, not a checkbox or a default, saves consent. */
-  selectProject = (id: string, selected: boolean) => {
+  selectProject = (id: string, selected: boolean, target?: string) => {
     const projects = this.snapshot.projects
     if (!projects || projects.loading || !projects.groups.some((group) => group.id === id))
       return
     this.invalidateContentConfirmation()
+    this.projectTargets = { ...this.projectTargets }
+    delete this.projectTargets[id]
+    if (selected && target) this.projectTargets[id] = target
     this.projectChoices = { ...this.projectChoices, [id]: selected }
     const choices = { ...projects.choices, [id]: selected }
     this.publish({
       projects: {
         ...projects,
         choices,
+        targets: this.projectTargets,
         selectionKey: this.projectSelectionKey(projects.groups, choices),
       },
     })
   }
+
+  /** Stage one listed team and start its browser approval without enabling upload. */
+  selectProjectWorkspace = async (project: string, workspace: string) => {
+    const binding = this.projectBinding()
+    const connect = this.port.connectWorkspace
+    if (
+      binding &&
+      connect &&
+      !this.snapshot.busy &&
+      this.snapshot.projects?.workspaces?.some(
+        ({ id, kind }) => id === workspace && kind === "team",
+      )
+    ) {
+      this.selectProject(project, true, workspace)
+      const generation = this.generation
+      const revision = this.consentRevision
+      const current = () =>
+        this.active && generation === this.generation && revision === this.consentRevision
+      this.publish({ busy: true, error: null })
+      try {
+        const status = await connect(binding, workspace)
+        if (current() && status !== "signed_in")
+          this.publish({
+            error:
+              status === "waiting"
+                ? "Approve the team in your browser before starting sync."
+                : "Could not verify the selected team.",
+          })
+      } catch {
+        if (current()) this.publish({ error: "Could not connect this team workspace." })
+      } finally {
+        if (this.active && generation === this.generation) this.publish({ busy: false })
+      }
+    }
+  }
+
+  get canConnectTeamWorkspace() {
+    return !!this.port.connectWorkspace
+  }
   /** Keep saved local grants visible when discovery loses a folder. Show grants
    * above or inside a group by directory boundary, never by a partial name.
    */
-  projectHasSavedPermission = (id: string) => {
+  projectHasSavedPermission = (
+    id: string,
+    policy: Pick<CloudOngoingStatus, "projects"> | null | undefined = this.snapshot.ongoing,
+  ) => {
     const group = this.desktopProjects.find((item) => item.id === id)
     return (
       group?.environment === "native" &&
-      !!this.snapshot.ongoing?.projects.some((project) =>
+      !!policy?.projects.some((project) =>
         [group.path, ...group.folderPaths].some(
           (path) =>
             path === project.projectPath ||
@@ -751,38 +954,61 @@ export class CloudSession {
       )
     )
   }
-  /** Save one Settings switch. The caller confirms additions before invoking this. */
-  setSavedProject = async (context: CloudViewSnapshot, id: string, selected: boolean) => {
+  /** Save the explicit Settings folder choice without a second prompt. */
+  setSavedProject = async (
+    context: CloudViewSnapshot,
+    id: string,
+    selected: boolean,
+    team?: string,
+  ) => {
     const port = this.port.ongoing
-    const binding = this.projectBinding(!selected)
+    const anchor = this.projectBinding(!selected)
+    const binding = anchor && { ...anchor, destinationId: team ?? anchor.destinationId }
     const group = this.desktopProjects.find((item) => item.id === id)
-    const policyRevision = context.ongoing?.policyRevision
+    const policyOf = (value: CloudViewSnapshot) =>
+      team ? value.teamStatuses?.[team] : value.ongoing
+    const policy = policyOf(this.snapshot)
+    const policyRevision = policyOf(context)?.policyRevision
+    const savedFolder = team && policy?.savedFolders?.find((folder) => folder.groupId === id)
     if (
       !this.active ||
       !port ||
       !binding ||
-      !group ||
+      (!group && !savedFolder) ||
       !policyRevision ||
-      policyRevision !== this.snapshot.ongoing?.policyRevision ||
+      policyRevision !== policy?.policyRevision ||
+      (team && selected) ||
       this.snapshot.busy ||
       this.syncInFlight ||
-      this.snapshot.projects?.loading ||
-      this.snapshot.ongoing?.consentVersion !== "desktop-project-sync-v1" ||
-      !this.snapshot.ongoing.storageKnown ||
+      (!team && this.snapshot.projects?.loading) ||
+      (selected && !!this.snapshot.projects?.error) ||
+      policy?.consentVersion !== "desktop-project-sync-v1" ||
+      (!team && !policy.storageKnown) ||
       context.contextRevision !== this.consentRevision ||
       confirmationContextKey(context) !== confirmationContextKey(this.snapshot)
     )
       return
-    if (
-      selected &&
-      context.projects?.groups.find((item) => item.id === id)?.confirmationKey !==
-        this.projectConfirmationKey(group)
-    )
-      return
-    const projects = selected ? this.supportedProjectSelections(group) : []
-    if (selected && !projects.length) return
+    let projects: CloudProjectSelection[] = []
+    if (selected) {
+      if (
+        !group ||
+        context.projects?.groups.find((item) => item.id === id)?.confirmationKey !==
+          this.projectConfirmationKey(group)
+      )
+        return
+      projects = this.supportedProjectSelections(group)
+      if (!projects.length) return
+    }
+    const folderPaths = group
+      ? selected
+        ? group.folderPaths
+        : [...new Set([group.path, ...group.folderPaths])]
+      : savedFolder
+        ? [savedFolder.path]
+        : []
     const generation = this.generation
     const revision = this.ongoingRevision
+    if (team && group) this.selectProject(id, false)
     this.publish({ busy: true, error: null })
     try {
       const status = await port.setProject({
@@ -790,26 +1016,30 @@ export class CloudSession {
         groupId: id,
         selected,
         projects,
-        folderPaths: selected
-          ? group.folderPaths
-          : [...new Set([group.path, ...group.folderPaths])],
+        folderPaths,
         expectedPolicyRevision: policyRevision,
       })
-      if (this.active && generation === this.generation && revision === this.ongoingRevision)
+      if (
+        this.active &&
+        generation === this.generation &&
+        (team
+          ? policyOf(this.snapshot)?.policyRevision === policyRevision
+          : revision === this.ongoingRevision)
+      )
         this.receiveOngoing(status)
     } catch {
       if (
         this.active &&
         generation === this.generation &&
         this.snapshot.cloud.identity?.id === binding.accountId &&
-        this.snapshot.cloud.destination?.id === binding.destinationId
+        this.snapshot.cloud.destination?.id === anchor?.destinationId
       )
-        this.publish({ error: "Could not confirm the folder change. Try the switch again." })
+        this.publish({ error: "Could not update the folder. Try again." })
     } finally {
       if (this.active && generation === this.generation) this.publish({ busy: false })
     }
   }
-  /** Pause or retry the saved policy without expanding its sources or project paths. */
+  /** Pause or retry only Personal uploads, without changing saved folders. */
   controlSync = async (paused: boolean) => {
     const port = this.port.ongoing
     const binding = this.projectBinding(true)
@@ -884,6 +1114,53 @@ export class CloudSession {
   }
   /** Run only after the UI's separate reset confirmation; keep the remote warning. */
   resetLocal = () => this.run(null, this.port.resetLocal)
+  /** Reset one proved team slot without changing Personal, other teams, or consent. */
+  resetWorkspace = async (workspaceId: string) => {
+    const binding = this.projectBinding(true)
+    const connection = this.snapshot.workspaceConnections?.[workspaceId]
+    const reset = this.port.resetWorkspace
+    if (
+      !this.active ||
+      !binding ||
+      !connection?.localResetAvailable ||
+      !reset ||
+      this.snapshot.busy
+    )
+      return false
+    const generation = this.generation
+    const current = () =>
+      this.active &&
+      generation === this.generation &&
+      this.projectBinding(true)?.accountId === binding.accountId &&
+      this.projectBinding(true)?.destinationId === binding.destinationId
+    this.publish({ busy: true, error: null })
+    try {
+      const status = await reset(binding, workspaceId)
+      if (!current()) return false
+      if (status !== "signed_out") {
+        this.publish({ error: "Could not reset this team's sign-in. Try again." })
+        return false
+      }
+      if (this.snapshot.workspaceConnections?.[workspaceId] === connection)
+        this.receiveWorkspace({
+          ...connection,
+          status,
+          localResetAvailable: false,
+          remoteRevocationUnconfirmed: true,
+        })
+      return true
+    } catch (error) {
+      if (current())
+        this.publish({
+          error: isCloudBusy(error)
+            ? CLOUD_BUSY_MESSAGE
+            : "Could not reset this team's sign-in. Try again.",
+        })
+      return false
+    } finally {
+      if (this.active && generation === this.generation) this.publish({ busy: false })
+    }
+  }
   /** Fence in-flight work when its account, sources, or selected folders change. */
   private invalidateContentConfirmation() {
     this.consentRevision++
@@ -1113,7 +1390,16 @@ export class CloudSession {
     const port = this.port.ongoing
     const binding = this.projectBinding()
     const projects = this.snapshot.projects
-    const selected = this.selectedProjects()
+    const choicesForStart = { ...projects?.choices }
+    for (const group of projects?.groups ?? []) {
+      if (
+        Object.values(this.snapshot.teamStatuses ?? {}).some((policy) =>
+          this.projectHasSavedPermission(group.id, policy),
+        )
+      )
+        choicesForStart[group.id] = false
+    }
+    const selected = this.selectedProjects(choicesForStart)
     if (
       !port ||
       !binding ||
@@ -1127,37 +1413,115 @@ export class CloudSession {
       !selected.length
     )
       return
-    const selectedSources = this.projectSources.filter((source) =>
-      selected.some(
-        (project) =>
-          project.sourceKind === source.sourceKind && project.sourcePath === source.path,
+    const destinations = [
+      ...new Set(
+        projects.groups
+          .filter((group) => group.captureSupported && (choicesForStart[group.id] ?? true))
+          .map((group) => this.projectTargets[group.id] ?? binding.destinationId),
       ),
-    )
+    ]
+    const teams = destinations.filter((id) => id !== binding.destinationId)
+    if (destinations.length > 1) {
+      this.publish({
+        error: "Enable folders for one workspace at a time. No folder choices were saved.",
+      })
+      return
+    }
+    const connectWorkspace = this.port.connectWorkspace
     const generation = this.generation
     const consentRevision = this.consentRevision
     const revision = this.ongoingRevision
+    const current = () =>
+      this.active && generation === this.generation && consentRevision === this.consentRevision
+    if (teams.length) {
+      if (
+        !connectWorkspace ||
+        teams.some((id) => !projects.workspaces?.some((workspace) => workspace.id === id))
+      ) {
+        this.publish({ error: "A selected team is unavailable. Check the folder choices." })
+        return
+      }
+      this.syncInFlight = true
+      this.publish({ busy: true, error: null })
+      try {
+        for (const team of teams) {
+          if (!current()) return
+          const status = await connectWorkspace(binding, team)
+          if (!current()) return
+          if (status !== "signed_in") {
+            this.publish({
+              error:
+                status === "waiting"
+                  ? "Approve the team in your browser, then choose Start syncing again."
+                  : "Could not verify the selected team. No folders were enabled.",
+            })
+            return
+          }
+        }
+      } catch (error) {
+        if (current())
+          this.publish({
+            error: isCloudBusy(error)
+              ? CLOUD_BUSY_MESSAGE
+              : "Could not connect this team workspace.",
+          })
+        return
+      } finally {
+        this.syncInFlight = false
+        if (this.active && generation === this.generation) this.publish({ busy: false })
+      }
+    }
+    if (!current()) return
     if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
     this.syncInFlight = true
     this.projectSyncStarted = true
     const starting: SyncResult = { status: "starting" }
     this.publish({ screen: "complete", sync: starting, error: null })
     try {
-      const status = await port.enable({
-        ...binding,
-        version: "desktop-project-sync-v1",
-        selectedSources,
-        projects: selected,
-        projectChoices: { ...this.confirmedProjectChoices, ...projects.choices },
-        fullContent: true,
-        ongoing: true,
-        attachments: false,
-      })
+      let personalStatus: CloudOngoingStatus | undefined
+      for (const destinationId of destinations) {
+        if (!current()) return
+        const choices = Object.fromEntries(
+          Object.entries(choicesForStart).filter(
+            ([group]) =>
+              (this.projectTargets[group] ?? binding.destinationId) === destinationId,
+          ),
+        )
+        const selected = this.selectedProjects(choices, destinationId)
+        if (!selected.length) continue
+        const status = await port.enable({
+          ...binding,
+          destinationId,
+          version: "desktop-project-sync-v1",
+          selectedSources: this.projectSources.filter((source) =>
+            selected.some(
+              (project) =>
+                project.sourceKind === source.sourceKind && project.sourcePath === source.path,
+            ),
+          ),
+          projects: selected,
+          projectChoices: {
+            ...(destinationId === binding.destinationId ? this.confirmedProjectChoices : {}),
+            ...choices,
+          },
+          fullContent: true,
+          ongoing: true,
+          attachments: false,
+        })
+        if (current() && destinationId === binding.destinationId) personalStatus = status
+        else if (current() && destinationId !== binding.destinationId)
+          this.publish({
+            lastTeamSync: status,
+            teamStatuses: { ...this.snapshot.teamStatuses, [destinationId]: status },
+          })
+      }
       if (
         this.active &&
         generation === this.generation &&
         consentRevision === this.consentRevision
       ) {
-        if (revision === this.ongoingRevision) this.receiveOngoing(status)
+        if (personalStatus && revision === this.ongoingRevision)
+          this.receiveOngoing(personalStatus)
         this.projectChoices = {}
         this.publish({ sync: { status: "idle" }, screen: "complete" })
       }

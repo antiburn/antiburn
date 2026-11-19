@@ -6,22 +6,30 @@ import {
   cloudUploadStatusUnknown,
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
-import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
+import {
+  CloudFolderSyncControl,
+  CloudProjectFolderSummary,
+} from "../../onboarding/CloudOnboardingFolders"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
-import { ConnectionDialog } from "./ConnectionDialog"
 import { personalCloudDestination } from "../../lib/cloudDestination"
 import {
   CLOUD_BUSY_MESSAGE,
+  cloudDisplayPath,
   cloudSourceKey,
   cloudSourceKind,
+  cloudSourceLabel,
   type CloudOngoingStatus,
+  type CloudProjectGroup,
+  type CloudWorkspaceRecovery,
 } from "../../lib/cloud"
 
 const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
   offline: "Cloud is offline.",
   reauth_required: "Sign in again to resume uploads.",
   upload_unavailable: "Cloud uploads are unavailable.",
+  workspace_conflict:
+    "A session or folder matches more than one workspace. Turn off one of the conflicting folder choices.",
   fenced: "Could not resume saved uploads.",
   interrupted: "Some sessions could not be prepared.",
   storage_unavailable: "Could not read saved uploads.",
@@ -173,6 +181,26 @@ export function CloudAccount({
           )}
         </div>
       )}
+      {Object.values(value.workspaceConnections ?? {})
+        .filter(
+          (connection) =>
+            connection.localResetAvailable || connection.remoteRevocationUnconfirmed,
+        )
+        .map((connection) => (
+          <TeamConnectionRecovery
+            key={`${connection.accountId}:${connection.workspaceId}`}
+            connection={connection}
+            name={
+              value.projects?.workspaces?.find(
+                (workspace) => workspace.id === connection.workspaceId,
+              )?.name ??
+              connection.workspaceName ??
+              `team workspace (${connection.workspaceId})`
+            }
+            busy={value.busy}
+            reset={session.resetWorkspace}
+          />
+        ))}
       {children}
       {session.projectSyncSupported ? (
         <CloudProjectsAccount session={session} value={value} />
@@ -190,10 +218,7 @@ export function CloudAccount({
                     className="flex items-center justify-between gap-3"
                   >
                     <span className="min-w-0 break-all type-callout text-label">
-                      {cloudSourceKind(folder) === "opencode_sqlite_v2"
-                        ? "OpenCode V2"
-                        : "Claude"}
-                      : {folder.path}
+                      {cloudSourceLabel(folder)}: {folder.path}
                     </span>
                     <ToggleSwitch
                       aria-label={`Select ${folder.path} for Cloud capture`}
@@ -255,6 +280,66 @@ export function CloudAccount({
   )
 }
 
+/** Reset only the named team's sign-in. Keep the remote warning after local reset. */
+function TeamConnectionRecovery({
+  connection,
+  name,
+  busy,
+  reset,
+}: {
+  connection: CloudWorkspaceRecovery
+  name: string
+  busy: boolean
+  reset: (workspaceId: string) => Promise<boolean>
+}) {
+  const [confirm, setConfirm] = useState(false)
+  return (
+    <div className="flex flex-col items-start gap-2 px-4 py-3">
+      {connection.remoteRevocationUnconfirmed ? (
+        <p className="type-footnote text-label-secondary" role="status">
+          Cloud has not confirmed that the earlier connection for {name} is closed. Close it in
+          Cloud settings in your browser.
+        </p>
+      ) : (
+        <p className="type-footnote text-label-secondary" role="status">
+          Browser approval did not finish for {name}.
+        </p>
+      )}
+      {connection.localResetAvailable &&
+        (confirm ? (
+          <>
+            <p className="type-callout text-label">
+              Reset sign-in for {name} on this device? This lets you try again but does not
+              close the old Cloud connection.
+            </p>
+            <div className="flex gap-2">
+              <button
+                className="ui-push-button"
+                disabled={busy}
+                onClick={async () => {
+                  if (await reset(connection.workspaceId)) setConfirm(false)
+                }}
+              >
+                Confirm reset for {name}
+              </button>
+              <button
+                className="ui-push-button"
+                disabled={busy}
+                onClick={() => setConfirm(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        ) : (
+          <button className="ui-push-button" disabled={busy} onClick={() => setConfirm(true)}>
+            Reset sign-in for {name}
+          </button>
+        ))}
+    </div>
+  )
+}
+
 /** Keep initial choices local until Start. Saved switches revoke immediately or
  * require confirmation before adding content permission.
  */
@@ -266,11 +351,6 @@ function CloudProjectsAccount({
   value: CloudViewSnapshot
 }) {
   const projects = value.projects
-  const [confirm, setConfirm] = useState<{
-    id: string
-    name: string
-    context: CloudViewSnapshot
-  } | null>(null)
   const policy = value.ongoing
   const hasConsent = policy?.consentVersion === "desktop-project-sync-v1"
   const storageUnknown = cloudUploadStatusUnknown(policy)
@@ -329,7 +409,10 @@ function CloudProjectsAccount({
         ? () => void session.load()
         : null
       : () => void session.loadProjects()
-    : hasConsent && policy?.status !== "reauth_required" && retryableUploads
+    : hasConsent &&
+        policy?.status !== "reauth_required" &&
+        policy?.status !== "workspace_conflict" &&
+        retryableUploads
       ? () => void session.controlSync(false)
       : null
   const empty =
@@ -341,8 +424,70 @@ function CloudProjectsAccount({
     !value.cloud.setupError &&
     !value.error &&
     projects.groups.length === 0
+  const teamPolicies = Object.entries(value.teamStatuses ?? {})
+  const hasTeamFolders = teamPolicies.some(([, team]) => team.projects.length > 0)
+  const savedTeams = (id: string) =>
+    teamPolicies.filter(([, policy]) => session.projectHasSavedPermission(id, policy))
+  const showsSavedTeamFolder = (
+    group: CloudProjectGroup,
+    policy: CloudOngoingStatus,
+    path: string,
+  ) =>
+    (group.path === path || group.memberPaths.includes(path)) &&
+    session.projectHasSavedPermission(group.id, policy)
+  const teamName = (id: string, policy: CloudOngoingStatus) =>
+    projects?.workspaces?.find((workspace) => workspace.id === id)?.name ??
+    policy.workspaceName ??
+    `Team workspace (${id})`
+  const teamStatus = (policy: CloudOngoingStatus) =>
+    policy.status === "reauth_required"
+      ? "Disconnected"
+      : policy.paused
+        ? "Paused"
+        : policy.status === "fenced"
+          ? "Needs attention"
+          : null
+  const savedTeamControl = (
+    folderId: string,
+    label: string,
+    team: string,
+    teamPolicy: CloudOngoingStatus,
+    descriptionId?: string,
+  ) => (
+    <div key={team} className="flex items-center justify-end gap-2">
+      <span className="break-all type-footnote text-label-secondary">
+        {teamName(team, teamPolicy)}
+        {teamStatus(teamPolicy) && ` · ${teamStatus(teamPolicy)}`}
+      </span>
+      <ToggleSwitch
+        aria-label={`${label} to ${teamName(team, teamPolicy)}`}
+        aria-describedby={descriptionId}
+        checked
+        disabled={value.busy || starting || !teamPolicy.policyRevision}
+        onCheckedChange={(next) => {
+          if (!next) void session.setSavedProject(value, folderId, false, team)
+        }}
+      />
+    </div>
+  )
+  const exactTeamFolders = teamPolicies.flatMap(([team, policy]) =>
+    (policy.savedFolders ?? [])
+      .filter(
+        (folder) =>
+          policy.status === "reauth_required" ||
+          !projects?.groups.some((group) => showsSavedTeamFolder(group, policy, folder.path)),
+      )
+      .map((folder) => ({ ...folder, team, policy })),
+  )
   const selected = (id: string) =>
-    hasConsent ? session.projectHasSavedPermission(id) : (projects?.choices[id] ?? true)
+    savedTeams(id).length > 0 ||
+    (hasConsent ? session.projectHasSavedPermission(id) : (projects?.choices[id] ?? true))
+  const startableFolder = projects?.groups.some(
+    (group) =>
+      group.captureSupported &&
+      (projects.choices[group.id] ?? true) &&
+      !savedTeams(group.id).length,
+  )
   const syncState = hasConsent
     ? policy.paused
       ? "Uploads paused"
@@ -358,6 +503,11 @@ function CloudProjectsAccount({
     <>
       <SettingsRow
         searchId="cloudFolders"
+        description={
+          hasTeamFolders
+            ? "Enabling a folder uploads full sessions from it and its worktrees. Turn off a saved team folder before choosing another destination."
+            : "Enabling a folder uploads full sessions from it and its worktrees."
+        }
         trailing={
           projects?.loaded && projects.groups.length > 0 ? (
             <span className="type-footnote text-label-secondary">
@@ -367,37 +517,89 @@ function CloudProjectsAccount({
         }
       >
         <div className="mt-3 flex max-h-64 flex-col gap-3 overflow-y-auto">
-          {projects?.groups.map((group) => (
-            <div
-              key={group.id}
-              className="flex items-start justify-between gap-[var(--space-md)]"
-            >
-              <Folder size={16} className="mt-0.5 shrink-0 text-label-secondary" aria-hidden />
-              <div className="min-w-0 flex-1 type-callout text-label">
-                <strong className="block truncate">{group.name}</strong>
-                <CloudProjectFolderSummary
-                  id={`cloud-settings-folder-${encodeURIComponent(group.id)}`}
-                  group={group}
-                  homeDirectory={value.homeDirectory}
+          {projects?.groups.map((group) => {
+            const teams = savedTeams(group.id)
+            const displayedTeams = teams.filter(
+              ([, team]) =>
+                !team.savedFolders ||
+                (team.status !== "reauth_required" &&
+                  team.savedFolders.some((folder) =>
+                    showsSavedTeamFolder(group, team, folder.path),
+                  )),
+            )
+            const showChoice = teams.length === 0 || session.projectHasSavedPermission(group.id)
+            if (!showChoice && displayedTeams.length === 0) return null
+            const showPersonal =
+              hasConsent && (teams.length > 0 || (projects.workspaces?.length ?? 0) > 1)
+            const label = `Sync ${group.name}: ${group.path}`
+            const descriptionId = `cloud-settings-folder-${encodeURIComponent(group.id)}`
+            return (
+              <div
+                key={group.id}
+                className="flex items-start justify-between gap-[var(--space-md)]"
+              >
+                <Folder
+                  size={16}
+                  className="mt-0.5 shrink-0 text-label-secondary"
+                  aria-hidden
                 />
+                <div className="min-w-0 flex-1 type-callout text-label">
+                  <strong className="block truncate">{group.name}</strong>
+                  <CloudProjectFolderSummary
+                    id={descriptionId}
+                    group={group}
+                    homeDirectory={value.homeDirectory}
+                  />
+                </div>
+                <div className="flex flex-col items-end gap-2">
+                  {displayedTeams.map(([team, teamPolicy]) =>
+                    savedTeamControl(group.id, label, team, teamPolicy, descriptionId),
+                  )}
+                  {showChoice && (
+                    <div className="flex items-center justify-end gap-2">
+                      {showPersonal && (
+                        <span className="type-footnote text-label-secondary">Personal</span>
+                      )}
+                      <CloudFolderSyncControl
+                        label={showPersonal ? `${label} to Personal` : label}
+                        descriptionId={descriptionId}
+                        selected={selected(group.id)}
+                        workspaces={hasConsent ? undefined : projects.workspaces}
+                        destinationId={value.cloud.destination?.id}
+                        selectedWorkspace={projects.targets?.[group.id]}
+                        onWorkspaceSelect={
+                          !hasConsent && session.canConnectTeamWorkspace
+                            ? (id) => session.selectProjectWorkspace(group.id, id)
+                            : undefined
+                        }
+                        disabled={
+                          value.busy ||
+                          starting ||
+                          storageUnknown ||
+                          projects.loading ||
+                          (!selected(group.id) &&
+                            (!!value.cloud.setupError ||
+                              !!projects.error ||
+                              !group.captureSupported))
+                        }
+                        onSelect={(next) => {
+                          if (!hasConsent) session.selectProject(group.id, next)
+                          else void session.setSavedProject(value, group.id, next)
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
-              <ToggleSwitch
-                aria-label={`Sync ${group.name}: ${group.path}`}
-                aria-describedby={`cloud-settings-folder-${encodeURIComponent(group.id)}`}
-                checked={selected(group.id)}
-                disabled={
-                  value.busy ||
-                  starting ||
-                  storageUnknown ||
-                  projects.loading ||
-                  (!selected(group.id) && (!!value.cloud.setupError || !group.captureSupported))
-                }
-                onCheckedChange={(next) => {
-                  if (!hasConsent) session.selectProject(group.id, next)
-                  else if (next) setConfirm({ id: group.id, name: group.name, context: value })
-                  else void session.setSavedProject(value, group.id, false)
-                }}
-              />
+            )
+          })}
+          {exactTeamFolders.map(({ groupId, path, team, policy }) => (
+            <div key={`${team}:${groupId}`} className="flex items-start justify-between gap-3">
+              <Folder size={16} className="mt-0.5 shrink-0 text-label-secondary" aria-hidden />
+              <span className="min-w-0 flex-1 break-all type-callout text-label" title={path}>
+                {cloudDisplayPath(path, value.homeDirectory)}
+              </span>
+              {savedTeamControl(groupId, `Sync ${path}`, team, policy)}
             </div>
           ))}
           {!projects?.loaded && !projects?.error && !value.cloud.setupError && (
@@ -405,7 +607,7 @@ function CloudProjectsAccount({
               Loading folders…
             </p>
           )}
-          {empty && (
+          {empty && exactTeamFolders.length === 0 && (
             <p className="type-footnote text-label-secondary">No session folders found.</p>
           )}
         </div>
@@ -432,11 +634,9 @@ function CloudProjectsAccount({
               !projects?.loaded ||
               projects.loading ||
               !!projects.error ||
-              !projects.groups.some(
-                (group) => group.captureSupported && (projects.choices[group.id] ?? true),
-              )
+              !startableFolder
             }
-            aria-description={`Sync full sessions from the selected folders and their worktrees to ${value.cloud.destination?.name ?? "the selected destination"} for ${value.cloud.identity.login}.`}
+            aria-description={`Sync full sessions from the selected folders and their worktrees to their chosen workspaces for ${value.cloud.identity.login}.`}
             onClick={() => void session.startSync(value)}
           >
             {starting ? "Starting…" : "Start syncing"}
@@ -445,7 +645,7 @@ function CloudProjectsAccount({
       )}
       {syncState && !error && !value.error && (
         <p role="status" className="px-4 pb-3 type-footnote text-label-secondary">
-          {syncState}
+          {hasTeamFolders ? `Personal: ${syncState}` : syncState}
         </p>
       )}
       {error && (
@@ -454,11 +654,17 @@ function CloudProjectsAccount({
           role="alert"
         >
           <CircleAlert size={15} className="shrink-0" aria-hidden="true" />
-          <span>{error}</span>
+          <span>{hasTeamFolders && !folderError ? `Personal: ${error}` : error}</span>
           {retry && (
             <button
               className="underline underline-offset-4"
-              aria-label={folderError ? "Retry folder list" : "Retry saved uploads"}
+              aria-label={
+                folderError
+                  ? "Retry folder list"
+                  : hasTeamFolders
+                    ? "Retry saved uploads to Personal"
+                    : "Retry saved uploads"
+              }
               disabled={value.busy || starting || projects?.loading}
               onClick={retry}
             >
@@ -466,38 +672,6 @@ function CloudProjectsAccount({
             </button>
           )}
         </div>
-      )}
-      {confirm && (
-        <ConnectionDialog
-          title={`Upload sessions from ${confirm.name}?`}
-          onCancel={() => setConfirm(null)}
-        >
-          <div className="flex flex-col gap-4 px-4 pb-4">
-            <p className="type-callout text-label-secondary">
-              Cloud will upload full sessions from this folder and its worktrees to your
-              personal workspace.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                className="ui-push-button"
-                disabled={value.busy}
-                onClick={() => setConfirm(null)}
-              >
-                Cancel
-              </button>
-              <button
-                className="ui-push-button"
-                disabled={value.busy}
-                onClick={async () => {
-                  await session.setSavedProject(confirm.context, confirm.id, true)
-                  setConfirm(null)
-                }}
-              >
-                {value.busy ? "Allowing uploads…" : "Allow uploads"}
-              </button>
-            </div>
-          </div>
-        </ConnectionDialog>
       )}
     </>
   )

@@ -285,6 +285,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 # This dev-dependency resolves the engine counters for test builds only.
 # Release runtime builds exclude it.
 antiburn-local = { path = "../../../crates/antiburn-local", features = [
