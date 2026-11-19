@@ -5,7 +5,7 @@ import {
   emptyCloudSnapshot,
   desktopCloudPort,
   type CloudSnapshot,
-  type CloudWorkspaceConnection,
+  type CloudWorkspaceRecovery,
 } from "../../lib/cloud"
 import { CloudSession } from "../../onboarding/CloudSession"
 import { CloudAccount } from "./CloudAccount"
@@ -25,7 +25,7 @@ function fixture(initial?: CloudSnapshot) {
     localResetAvailable: true,
   }
   let publish: (value: CloudSnapshot) => void = () => {}
-  let publishWorkspace: (value: CloudWorkspaceConnection) => void = () => {}
+  let publishWorkspace: (value: CloudWorkspaceRecovery) => void = () => {}
   const resetLocal = vi.fn(async () => {
     value = {
       ...emptyCloudSnapshot,
@@ -36,6 +36,10 @@ function fixture(initial?: CloudSnapshot) {
     return value
   })
   const signOut = vi.fn(async () => value)
+  const cancel = vi.fn(async () => {
+    value = { ...value, status: "cancelled" }
+    return value
+  })
   const save = vi.fn(async (draft: CloudSnapshot["draft"]) => {
     value = { ...value, draft }
     return value
@@ -60,6 +64,7 @@ function fixture(initial?: CloudSnapshot) {
       localTools: localToolsFixture().port,
       resetLocal,
       signOut,
+      cancel,
       save,
       prepareSync,
       start,
@@ -73,13 +78,14 @@ function fixture(initial?: CloudSnapshot) {
     session,
     resetLocal,
     signOut,
+    cancel,
     save,
     prepareSync,
     start,
     reconcile,
     pick,
     emit: (next: CloudSnapshot) => publish(next),
-    emitWorkspace: (next: CloudWorkspaceConnection) => publishWorkspace(next),
+    emitWorkspace: (next: CloudWorkspaceRecovery) => publishWorkspace(next),
   }
 }
 
@@ -91,6 +97,24 @@ function Account({ session }: { session: CloudSession }) {
   )
   return <CloudAccount session={session} value={value} />
 }
+
+it("lets the user cancel a pending browser approval from Settings", async () => {
+  const { session, cancel, signOut } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "waiting",
+  })
+  render(<Account session={session} />)
+  expect(
+    await screen.findByText("Approve this device in your browser to finish signing in."),
+  ).toBeVisible()
+  const action = screen.getByRole("button", { name: "Cancel sign-in" })
+  action.focus()
+  fireEvent.click(action)
+  expect(await screen.findByRole("button", { name: "Sign in" })).toHaveFocus()
+  expect(cancel).toHaveBeenCalledOnce()
+  expect(signOut).not.toHaveBeenCalled()
+})
 
 it("requires an explicit reset and keeps the remote warning while reconnecting", async () => {
   const { session, resetLocal, emit } = fixture()
@@ -150,15 +174,21 @@ it("resets only the team eligible for local recovery and keeps its remote warnin
   const signOut = vi.spyOn(port, "signOut")
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in for Example Team" }))
-  expect(screen.queryByRole("button", { name: "Reset sign-in for Other Team" })).toBeNull()
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Clear old connection for Example Team" }),
+  )
+  expect(
+    screen.queryByRole("button", { name: "Clear old connection for Other Team" }),
+  ).toBeNull()
   expect(resetWorkspace).not.toHaveBeenCalled()
-  expect(screen.getByText(/does not close the old Cloud connection/)).toBeVisible()
+  expect(
+    screen.getByText(/does not close it in Cloud or change which folders sync/),
+  ).toBeVisible()
   resetWorkspace.mockRejectedValueOnce(new Error("Synthetic keyring failure"))
-  const confirm = screen.getByRole("button", { name: "Confirm reset for Example Team" })
+  const confirm = screen.getByRole("button", { name: "Confirm cleanup for Example Team" })
   fireEvent.click(confirm)
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Could not reset this team's sign-in",
+    "Could not clear the old Team connection",
   )
   await waitFor(() => expect(confirm).toBeEnabled())
   fireEvent.click(confirm)
@@ -169,7 +199,7 @@ it("resets only the team eligible for local recovery and keeps its remote warnin
     ),
   )
   await waitFor(() =>
-    expect(screen.queryByRole("button", { name: /reset.*Example Team/i })).toBeNull(),
+    expect(screen.queryByRole("button", { name: /clear.*Example Team/i })).toBeNull(),
   )
   expect(screen.getByText(/earlier connection for Example Team is closed/)).toBeVisible()
   expect(screen.getByText("Signed in as Example")).toBeVisible()
@@ -181,7 +211,7 @@ it("resets only the team eligible for local recovery and keeps its remote warnin
   expect(signOut).not.toHaveBeenCalled()
 })
 
-it("uses native eligibility events for the signed-in account even without a selected folder", async () => {
+it("uses legacy cleanup events only for the signed-in account", async () => {
   const accountId = "synthetic-account"
   const { session, emitWorkspace } = fixture({
     ...emptyCloudSnapshot,
@@ -192,17 +222,21 @@ it("uses native eligibility events for the signed-in account even without a sele
   })
   render(<Account session={session} />)
   await screen.findByText("Signed in as Example")
-  const team: CloudWorkspaceConnection = {
+  const team: CloudWorkspaceRecovery = {
     accountId,
     workspaceId: "synthetic-team",
     workspaceName: "Example Team",
-    status: "revocation_unconfirmed",
+    remoteRevocationUnconfirmed: true,
   }
   act(() => emitWorkspace(team))
   act(() => emitWorkspace({ ...team, accountId: "other-account", localResetAvailable: true }))
-  expect(screen.queryByRole("button", { name: "Reset sign-in for Example Team" })).toBeNull()
+  expect(
+    screen.queryByRole("button", { name: "Clear old connection for Example Team" }),
+  ).toBeNull()
   act(() => emitWorkspace({ ...team, localResetAvailable: true }))
-  expect(screen.getByRole("button", { name: "Reset sign-in for Example Team" })).toBeEnabled()
+  expect(
+    screen.getByRole("button", { name: "Clear old connection for Example Team" }),
+  ).toBeEnabled()
 })
 
 it("requires source selection and sends account-bound folder changes from Settings", async () => {

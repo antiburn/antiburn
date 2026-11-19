@@ -39,6 +39,19 @@ impl Store {
                 record_json TEXT NOT NULL CHECK(length(record_json) <= 524288),
                 PRIMARY KEY(account_id, destination_id)
             );
+            CREATE TABLE IF NOT EXISTS cloud_device_upload (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                enabled INTEGER NOT NULL CHECK(enabled IN (0, 1))
+            );
+            INSERT INTO cloud_device_upload (id, enabled)
+                SELECT 1, NOT EXISTS(
+                    SELECT 1 FROM cloud_sync_policy
+                    WHERE CASE WHEN json_valid(record_json)
+                        THEN COALESCE(json_extract(record_json, '$.paused'), 1)
+                        ELSE 1 END
+                )
+                WHERE EXISTS (SELECT 1 FROM cloud_sync_policy)
+                ON CONFLICT(id) DO NOTHING;
              CREATE TABLE IF NOT EXISTS cloud_workspace_slot (
                  issuer TEXT NOT NULL,
                  resource TEXT NOT NULL,
@@ -88,8 +101,8 @@ impl Store {
         Ok(())
     }
 
-    /// Index only literal grant slots that Desktop prepares before browser handoff.
-    /// The index contains no proof, and a row never authorizes restoration or capture.
+    /// Add a synthetic legacy slot for cleanup tests. New connections never create slots.
+    #[cfg(test)]
     pub(crate) fn register_cloud_workspace_slot(
         &self,
         issuer: &str,
@@ -119,46 +132,6 @@ impl Store {
         }
         transaction.commit()?;
         Ok(())
-    }
-
-    /// Activate a verified slot only for the current Personal connection.
-    /// A different Personal grant cannot automatically resume team jobs.
-    pub(crate) fn set_cloud_workspace_anchor(
-        &self,
-        issuer: &str,
-        resource: &str,
-        account: &str,
-        workspace: &str,
-        anchor: &str,
-    ) -> Result<()> {
-        let changed = self.lock().execute(
-            "UPDATE cloud_workspace_slot SET anchor_grant_id=?5
-             WHERE issuer=?1 AND resource=?2 AND account_id=?3 AND workspace_id=?4",
-            params![issuer, resource, account, workspace, anchor],
-        )?;
-        ensure!(changed == 1, "Missing workspace connection");
-        Ok(())
-    }
-
-    /// Index exact team slots activated by the current Personal connection.
-    pub(crate) fn active_cloud_workspace_slots(
-        &self,
-        issuer: &str,
-        resource: &str,
-        account: &str,
-        anchor: &str,
-    ) -> Result<Vec<String>> {
-        let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT workspace_id FROM cloud_workspace_slot
-             WHERE issuer=?1 AND resource=?2 AND account_id=?3 AND anchor_grant_id=?4
-             ORDER BY workspace_id LIMIT 17",
-        )?;
-        let slots = statement
-            .query_map(params![issuer, resource, account, anchor], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<String>>>()?;
-        ensure!(slots.len() <= 16, "Too many workspace connections");
-        Ok(slots)
     }
 
     /// Return the exact slots for this installation and service, including slots

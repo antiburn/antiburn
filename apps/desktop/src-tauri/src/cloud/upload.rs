@@ -32,7 +32,7 @@ pub(super) enum Route {
 impl Route {
     fn path(self, capture: &str) -> String {
         match self {
-            Self::Capabilities => "/v1/desktop/captures/capabilities?contract=2".into(),
+            Self::Capabilities => "/v1/desktop/captures/capabilities".into(),
             Self::Reserve => "/v1/desktop/captures/reserve".into(),
             Self::Manifest => format!("/v1/desktop/captures/{capture}/manifest"),
             Self::Status => format!("/v1/desktop/captures/{capture}/status"),
@@ -211,14 +211,14 @@ pub(super) struct CapabilityFailure {
 pub(super) fn capabilities(
     engine: &mut Engine,
     account: &str,
-    destination: &str,
+    destination: (&str, Option<&str>),
     account_current: &dyn Fn() -> bool,
     current: &dyn Fn() -> bool,
 ) -> Result<UploadCapabilities, CapabilityFailure> {
     let identity = CaptureIdentity {
         capture_id: "capabilities".into(),
         account_id: account.into(),
-        destination_id: destination.into(),
+        destination_id: destination.0.into(),
         source_id: "capabilities".into(),
     };
     let origin = engine
@@ -228,7 +228,8 @@ pub(super) fn capabilities(
             retry_after: None,
         })?
         .to_owned();
-    let mut transport = HttpTransport::new(engine, account_current, current, &origin, None);
+    let mut transport = HttpTransport::new(engine, account_current, current, &origin, None)
+        .with_membership_generation(destination.1);
     let response = transport
         .request(&identity, Route::Capabilities, &())
         .map_err(|_| CapabilityFailure {
@@ -272,8 +273,11 @@ pub(super) struct HttpTransport<'a> {
     current: &'a dyn Fn() -> bool,
     source: Option<Source>,
     resource_origin: String,
+    membership_generation: Option<String>,
     pub failure: Option<Failure>,
     pub retry_after: Option<Duration>,
+    /// Status and renewal both refused the exact frozen binding with a conflict.
+    pub status_renewal_conflict: bool,
 }
 
 impl<'a> HttpTransport<'a> {
@@ -293,9 +297,17 @@ impl<'a> HttpTransport<'a> {
             current,
             source,
             resource_origin: resource_origin.into(),
+            membership_generation: None,
             failure: None,
             retry_after: None,
+            status_renewal_conflict: false,
         }
+    }
+
+    /// Pin the Team membership from the saved job or explicit folder approval.
+    pub(super) fn with_membership_generation(mut self, generation: Option<&str>) -> Self {
+        self.membership_generation = generation.map(str::to_owned);
+        self
     }
 
     fn request(
@@ -306,7 +318,7 @@ impl<'a> HttpTransport<'a> {
     ) -> Result<ApiResponse, TransportError> {
         match self.engine.capture_request(
             identity,
-            &self.resource_origin,
+            (&self.resource_origin, self.membership_generation.as_deref()),
             route,
             body,
             self.account_current,
@@ -385,6 +397,8 @@ impl<'a> HttpTransport<'a> {
             Err(_) if self.failure == Some(Failure::Conflict) => {
                 tracing::info!(event = "cloud_capture_renewal_started", route = ?route);
                 if let Err(error) = self.renew(identity, binding) {
+                    self.status_renewal_conflict =
+                        matches!(route, Route::Status) && self.failure == Some(Failure::Conflict);
                     tracing::warn!(
                         event = "cloud_capture_renewal_failed",
                         route = ?route,
@@ -422,6 +436,18 @@ impl<'a> HttpTransport<'a> {
             self.failure = Some(Failure::Rejected);
             TransportError::Rejected
         })
+    }
+
+    /// Replay only the saved finalization. Do not try to renew from this path.
+    pub(super) fn replay_saved_finalization(
+        &mut self,
+        reservation: &str,
+        manifest: &CaptureManifest,
+        plan: &UploadPlan,
+    ) -> Result<(), TransportError> {
+        let binding = Context::new(reservation, plan);
+        let response = self.request(&manifest.identity, Route::Finalize, &binding)?;
+        check_finalization_response(&response)
     }
 }
 
@@ -578,6 +604,7 @@ impl Transport for HttpTransport<'_> {
             "agent": source.agent,
             "source_format": source.source_format,
             "native_session_id": source.native_session_id,
+            "membership_generation": self.membership_generation,
         });
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -677,10 +704,14 @@ impl Transport for HttpTransport<'_> {
         let binding = Context::new(reservation_id, plan);
         let response =
             self.request_with_renewal(&manifest.identity, Route::Finalize, &binding, &binding)?;
-        if response.status == 202 {
-            Ok(())
-        } else {
-            Err(TransportError::Rejected)
-        }
+        check_finalization_response(&response)
+    }
+}
+
+fn check_finalization_response(response: &ApiResponse) -> Result<(), TransportError> {
+    if response.status == 202 {
+        Ok(())
+    } else {
+        Err(TransportError::Rejected)
     }
 }

@@ -1,5 +1,8 @@
 use super::*;
-use auth::{Credential, Session, TokenRequest, Tokens, Transport, Vault, WorkspaceKind};
+use auth::{
+    AccountSession, Credential, EligibleWorkspace, Session, TokenRequest, Tokens, Transport, Vault,
+    WorkspaceKind,
+};
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
@@ -200,14 +203,14 @@ impl Transport for Arc<FakeTransport> {
                 .clone()
                 .unwrap_or_else(|| session().grant_id),
             user_id: session().user.id,
-            workspace_id: session().workspace.id,
+            legacy_workspace_claim: false,
             grant_expires_at: "1970-01-01T02:46:40Z".into(),
             scope: auth::SCOPE.into(),
             resource: config().resource,
             iss: config().issuer,
         })
     }
-    fn session(&self, _: &Config, _: &str) -> Result<Session, Failure> {
+    fn session(&self, _: &Config, _: &str) -> Result<AccountSession, Failure> {
         if let Some(action) = &self.on_session {
             action();
         }
@@ -222,7 +225,8 @@ impl Transport for Arc<FakeTransport> {
             .lock()
             .unwrap()
             .clone()
-            .unwrap_or_else(session))
+            .unwrap_or_else(session)
+            .into())
     }
     fn revoke(&self, _: &Config, refresh: &str) -> Result<(), Failure> {
         self.revocations.fetch_add(1, Ordering::AcqRel);
@@ -234,8 +238,20 @@ impl Transport for Arc<FakeTransport> {
         }
         Ok(())
     }
-    fn workspaces(&self, _: &Config, _: &str) -> Result<Option<Vec<Workspace>>, Failure> {
-        Ok(self.returned_workspaces.lock().unwrap().clone())
+    fn workspaces(&self, _: &Config, _: &str) -> Result<Vec<EligibleWorkspace>, Failure> {
+        Ok(self
+            .returned_workspaces
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| vec![session().workspace])
+            .into_iter()
+            .map(|workspace| EligibleWorkspace {
+                membership_generation: (workspace.kind == WorkspaceKind::Team)
+                    .then(|| "synthetic-membership".into()),
+                workspace,
+            })
+            .collect())
     }
 }
 
@@ -253,11 +269,13 @@ fn cloud_lost_team_callback_resets_locally_without_blocking_personal() {
         .workspace_engine("synthetic".into(), account.clone(), team.clone())
         .unwrap();
     scoped.vault = Box::new(Arc::new(MemoryVault::default()));
-    let (_, _listener, _) = scoped.begin(now(), 1).unwrap();
-    assert!(
-        scoped.reset_local().is_err(),
-        "a live callback is not abandoned"
-    );
+    scoped
+        .state
+        .lock()
+        .unwrap()
+        .replace(state::Phase::Pending, state::Cleanup::None)
+        .unwrap();
+    assert!(matches!(scoped.begin(now(), 1), Err(Failure::Unavailable)));
     drop(scoped);
 
     let mut restarted = fixture
@@ -273,7 +291,10 @@ fn cloud_lost_team_callback_resets_locally_without_blocking_personal() {
             .unwrap()
     );
     assert!(restarted.cleanup.prior_unconfirmed());
-    assert!(restarted.begin(now(), 2).is_ok());
+    assert!(matches!(
+        restarted.begin(now(), 2),
+        Err(Failure::Unavailable)
+    ));
     fixture.sign_in();
     assert_eq!(
         fixture.engine.session().unwrap().workspace.kind,
@@ -418,7 +439,7 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
     assert_eq!(config().resource, "https://api.example");
     assert_eq!(
         config().authorization.as_str(),
-        "https://api.example/desktop/authorize"
+        "https://api.example/desktop/authorize/account"
     );
     assert_eq!(
         config().session.as_str(),
@@ -449,7 +470,7 @@ fn cloud_authorize_uses_only_first_party_fields_and_literal_ephemeral_loopback()
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(url.origin().ascii_serialization(), "https://api.example");
     assert_eq!(fields.len(), 5);
-    assert_eq!(fields["device_name"], auth::DEVICE_NAME);
+    assert!(fields["device_name"] == auth::device_name());
     assert_eq!(fields["code_challenge_method"], "S256");
     let callback = url::Url::parse(&fields["redirect_uri"]).unwrap();
     assert_eq!(callback.host_str(), Some("127.0.0.1"));

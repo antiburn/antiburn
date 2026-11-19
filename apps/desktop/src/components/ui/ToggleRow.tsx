@@ -1,4 +1,4 @@
-import type { HTMLAttributes, ReactNode } from "react"
+import { useId, type HTMLAttributes, type ReactNode } from "react"
 
 import { Tooltip } from "../presentation/Tooltip"
 import { Row } from "./Row"
@@ -17,18 +17,21 @@ export function ToggleRow({
   ...rootProps
 }: {
   label: string
-  description?: string
+  description?: string | undefined
   checked: boolean
   onChange: (next: boolean) => void
   dimmed?: boolean
   disabled?: boolean
   disabledTooltip?: ReactNode
 } & Omit<HTMLAttributes<HTMLDivElement>, "title" | "onChange" | "children">) {
+  const id = useId()
+  const descriptionId = description ? id : undefined
   const toggle = (
     <ToggleSwitch
       checked={checked}
       onCheckedChange={onChange}
       aria-label={label}
+      aria-describedby={descriptionId}
       disabled={disabled}
     />
   )
@@ -37,6 +40,7 @@ export function ToggleRow({
     <Row
       label={label}
       description={description}
+      descriptionId={descriptionId}
       dimmed={dimmed}
       {...rootProps}
       trailing={
@@ -45,6 +49,7 @@ export function ToggleRow({
             <span
               aria-checked={checked}
               aria-disabled="true"
+              aria-describedby={descriptionId}
               aria-label={label}
               className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-control"
               data-disabled-tooltip-trigger=""

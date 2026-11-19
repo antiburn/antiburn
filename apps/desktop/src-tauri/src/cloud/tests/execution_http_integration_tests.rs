@@ -107,39 +107,46 @@ fn connected(directory: &Path, origin: &str) -> Engine {
 }
 
 #[test]
-fn cloud_explicit_team_approval_uses_its_own_grant_and_capture_bearer() {
-    use super::super::upload;
-    use crate::cloud::auth::{Vault, Workspace, WorkspaceKind};
+fn cloud_account_bearer_reserves_only_the_exact_team_membership() {
+    use super::super::upload::{HttpTransport, Source};
+    use crate::cloud::auth::Vault;
+    use antiburn_cloud_capture::TransportError;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let service_origin = origin.clone();
     let team_id = "12345678-1234-1234-1234-123456789abc";
+    let personal_id = "00000000-0000-0000-0000-000000000001";
+    let generation = "opaque-membership";
     let worker = std::thread::spawn(move || {
+        let workspaces = serde_json::json!({"workspaces":[
+            {"workspace_id":personal_id,"name":"Personal","type":"personal","membership_generation":null},
+            {"workspace_id":team_id,"name":"Example Team","type":"team","membership_generation":generation}
+        ]});
         let responses = [
             (
                 "/v1/desktop/token",
                 serde_json::json!({
-                    "access_token":"team-bearer", "refresh_token":"team-refresh", "expires_in": 200,
-                    "token_type":"Bearer", "grant_id":"team-grant", "user_id":"synthetic-user",
-                    "workspace_id":team_id, "grant_expires_at":"1970-01-01T02:46:40Z",
+                    "access_token":"account-bearer", "refresh_token":"account-refresh", "expires_in": 200,
+                    "token_type":"Bearer", "grant_id":"account-grant", "user_id":"synthetic-user",
+                    "grant_expires_at":"1970-01-01T02:46:40Z",
                     "scope":"capture:write", "resource":service_origin, "iss":service_origin,
                 }),
             ),
             (
                 "/v1/desktop/session",
                 serde_json::json!({
-                    "user_id":"synthetic-user", "display_name":"Example", "workspace_id":team_id,
-                    "workspace_name":"Example Team", "grant_id":"team-grant", "device_name":"Example",
+                    "user_id":"synthetic-user", "display_name":"Example",
+                    "grant_id":"account-grant", "device_name":"Example",
                     "scope":"capture:write", "resource":service_origin, "iss":service_origin,
                     "grant_expires_at":"1970-01-01T02:46:40Z", "access_expires_at":"1970-01-01T00:05:00Z",
                 }),
             ),
+            ("/v1/desktop/workspaces", workspaces.clone()),
+            ("/v1/desktop/workspaces", workspaces.clone()),
+            ("/v1/desktop/workspaces", workspaces),
             (
-                "/v1/desktop/captures/capabilities?contract=2",
-                serde_json::json!({
-                    "enabled":true, "max_expanded_bytes":268435456,
-                    "chunk_expanded_bytes":8388608, "source_formats":["CodexJsonl"],
-                }),
+                "/v1/desktop/captures/reserve",
+                serde_json::json!({"reservation_id":"team-reservation"}),
             ),
         ];
         listener.set_nonblocking(true).unwrap();
@@ -162,74 +169,76 @@ fn cloud_explicit_team_approval_uses_its_own_grant_and_capture_bearer() {
                 request.line,
                 format!(
                     "{} {path} HTTP/1.1",
-                    if index == 0 { "POST" } else { "GET" }
+                    if matches!(index, 0 | 5) {
+                        "POST"
+                    } else {
+                        "GET"
+                    }
                 )
             );
             assert!(!request.headers.contains_key("cookie"));
             assert!(!request.headers.contains_key("origin"));
             assert_eq!(
                 request.headers.get("authorization").map(String::as_str),
-                (index != 0).then_some("Bearer team-bearer")
+                (index != 0).then_some("Bearer account-bearer")
             );
+            if index == 5 {
+                let body = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap();
+                assert_eq!(body["identity"]["destination_id"], team_id);
+                assert_eq!(body["membership_generation"], generation);
+            }
             let body = body.to_string();
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
     });
     let directory = tempfile::tempdir().unwrap();
     let config = Config::parse(&origin, &origin).unwrap();
-    let personal_vault = Arc::new(super::super::tests::MemoryVault::default());
-    let team_vault = Arc::new(super::super::tests::MemoryVault::default());
-    let mut personal = Engine::new(
-        Some(config.clone()),
-        Box::new(personal_vault.clone()),
+    let vault = Arc::new(super::super::tests::MemoryVault::default());
+    let mut engine = Engine::new(
+        Some(config),
+        Box::new(vault.clone()),
         Box::new(auth::HttpTransport),
         StateStore::new(directory.path()),
     )
     .with_clock(|| 100);
-    let namespace = auth::workspace_namespace(&config, "synthetic-user", team_id);
-    let mut team = Engine::new(
-        Some(config),
-        Box::new(team_vault.clone()),
-        Box::new(auth::HttpTransport),
-        personal.state.workspace(&namespace),
-    )
-    .with_clock(|| 100);
-    team.target = Some((
-        "synthetic-user".into(),
-        Workspace {
-            id: team_id.into(),
-            name: "Example Team".into(),
-            kind: WorkspaceKind::Team,
-        },
-    ));
-    let (legacy_url, _personal_listener, _) = personal.begin(100, 1).unwrap();
-    assert!(!legacy_url.contains("workspace_id"));
-    let (team_url, _listener, attempt) = team.begin(100, 2).unwrap();
-    assert!(team_url.contains(&format!("workspace_id={team_id}")));
-    team.callback(
-        &attempt,
-        auth::Callback::Code("team-code".into()),
-        101,
-        || true,
-    )
-    .unwrap();
-    assert_eq!(team.session().unwrap().workspace.kind, WorkspaceKind::Team);
-    assert!(personal_vault.read().unwrap().is_none());
-    assert_eq!(
-        team_vault.read().unwrap().unwrap().refresh_token,
-        "team-refresh"
-    );
-    assert!(
-        upload::capabilities(
-            &mut team,
-            "synthetic-user",
-            "synthetic-personal",
-            &|| true,
-            &|| true
+    let (url, _listener, attempt) = engine.begin(100, 1).unwrap();
+    assert!(!url.contains("workspace_id"));
+    engine
+        .callback(
+            &attempt,
+            auth::Callback::Code("account-code".into()),
+            101,
+            || true,
         )
-        .is_err()
+        .unwrap();
+    assert_eq!(engine.session().unwrap().workspace.id, personal_id);
+    assert_eq!(
+        vault.read().unwrap().unwrap().refresh_token,
+        "account-refresh"
     );
-    assert!(upload::capabilities(&mut team, "synthetic-user", team_id, &|| true, &|| true).is_ok());
+    let target = CaptureIdentity {
+        destination_id: team_id.into(),
+        ..identity()
+    };
+    for (generation, expected) in [
+        ("wrong-membership", Err(TransportError::Unauthorized)),
+        (generation, Ok("team-reservation".into())),
+    ] {
+        let mut transport = HttpTransport::new(
+            &mut engine,
+            &|| true,
+            &|| true,
+            &origin,
+            Some(Source {
+                agent: "codex",
+                source_format: "CodexJsonl",
+                native_session_id: "synthetic".into(),
+            }),
+        )
+        .with_membership_generation(Some(generation));
+        assert_eq!(transport.reserve(&target, 1024), expected);
+    }
+    assert!(engine.session().is_some());
     worker.join().unwrap();
 }
 
@@ -276,6 +285,7 @@ fn cloud_execution_http_reserve_uses_exact_desktop_wire_and_api_bearer() {
         serde_json::json!({
             "identity": identity(), "maximum_expanded_bytes": 123_456,
             "agent": "claude-code", "source_format": "ClaudeJsonl", "native_session_id": "session",
+            "membership_generation": null,
         })
     );
 }
@@ -344,7 +354,7 @@ fn cloud_execution_http_retry_after_accepts_dates_and_bounds_untrusted_waits() {
         let response = engine
             .capture_request(
                 &identity(),
-                &origin,
+                (&origin, None),
                 Route::Capabilities,
                 &(),
                 &|| true,
@@ -368,7 +378,7 @@ fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
     engine
         .capture_request(
             &identity(),
-            &origin,
+            (&origin, None),
             Route::Status,
             &serde_json::json!({
                 "plan_id": "plan-one", "manifest_sha256": "a".repeat(64),
@@ -403,7 +413,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     let caps = upload::capabilities(
         &mut engine,
         "synthetic-user",
-        "synthetic-personal",
+        ("synthetic-personal", None),
         &|| true,
         &|| true,
     )
@@ -415,7 +425,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     let request = worker.join().unwrap();
     assert_eq!(
         request.line,
-        "GET /v1/desktop/captures/capabilities?contract=2 HTTP/1.1"
+        "GET /v1/desktop/captures/capabilities HTTP/1.1"
     );
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
@@ -467,7 +477,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
         upload::capabilities(
             &mut engine,
             "synthetic-user",
-            "synthetic-personal",
+            ("synthetic-personal", None),
             &|| true,
             &|| { true }
         )
@@ -484,7 +494,7 @@ fn cloud_execution_http_rechecks_account_and_generation_before_sending_bearer() 
     assert!(matches!(
         engine.capture_request(
             &identity(),
-            "http://127.0.0.1:1",
+            ("http://127.0.0.1:1", None),
             Route::Reserve,
             &(),
             &|| true,
@@ -497,7 +507,7 @@ fn cloud_execution_http_rechecks_account_and_generation_before_sending_bearer() 
     assert!(matches!(
         engine.capture_request(
             &changed,
-            "http://127.0.0.1:1",
+            ("http://127.0.0.1:1", None),
             Route::Reserve,
             &(),
             &|| true,
@@ -518,7 +528,7 @@ fn cloud_execution_http_changed_origin_rejects_saved_work_before_auth_or_upload(
     assert!(matches!(
         engine.capture_request(
             &identity(),
-            original,
+            (original, None),
             Route::Reserve,
             &(),
             &|| true,

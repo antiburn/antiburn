@@ -25,7 +25,7 @@ import {
   cloudOngoingStatusMessage,
   cloudUploadStatusUnknown,
 } from "./CloudSession"
-import { CloudProjectFolders } from "./CloudOnboardingFolders"
+import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -83,23 +83,88 @@ export function CloudOnboarding({
     ? syncReady && (ongoing?.status === "syncing" || (ongoing?.queuedCount ?? 0) > 0)
     : syncReady
   const syncUncertain = ["ambiguous", "failed", "cancelled"].includes(value.sync.status)
+  const destination = value.cloud.destination
+  const personalDestination = destination?.kind === "personal" ? destination : undefined
+  const workspaces = projects?.workspaces ?? (personalDestination ? [personalDestination] : [])
+  const hasWorkspaceChoice = workspaces.length > 1
+  const savedTeamPolicies = Object.values(value.teamStatuses ?? {})
+  const skipImplicitSelection =
+    !hasWorkspaceChoice &&
+    (value.ongoing?.consentVersion === "desktop-project-sync-v1" ||
+      savedTeamPolicies.length > 0)
+  const folderChoices = skipImplicitSelection
+    ? Object.fromEntries(
+        projects?.groups.map(({ id }) => [
+          id,
+          !!projects.choices[id] && !!projects.targets?.[id],
+        ]) ?? [],
+      )
+    : projects?.choices
+  const savedDestinations = new Map<string, string>()
+  for (const group of projects?.groups ?? []) {
+    if (personalDestination && session.projectHasSavedPermission(group.id)) {
+      savedDestinations.set(group.id, cloudWorkspaceLabel(personalDestination))
+      continue
+    }
+    const policy = savedTeamPolicies.find((team) =>
+      session.projectHasSavedPermission(group.id, team),
+    )
+    if (policy) {
+      const team = workspaces.find((workspace) => workspace.id === policy.destinationId)
+      savedDestinations.set(group.id, team ? cloudWorkspaceLabel(team) : "Team workspace")
+    }
+  }
+  const selectedProjects = projects?.groups.filter(
+    (group) =>
+      group.captureSupported &&
+      !savedDestinations.has(group.id) &&
+      (folderChoices?.[group.id] ?? !hasWorkspaceChoice),
+  )
   const selectedFolders = grouped
-    ? (projects?.groups.filter((group) => projects.choices[group.id] ?? true).length ?? 0)
+    ? (selectedProjects?.length ?? 0)
     : value.cloud.draft.folders.filter((folder) => folder.selected).length
-  const workspaceNames = [
+  const needsWorkspaceChoice =
+    hasWorkspaceChoice && selectedProjects?.some((group) => !projects?.targets?.[group.id])
+  const selectedWorkspaceIds = [
     ...new Set(
-      projects?.groups
-        .filter((group) => projects.choices[group.id] ?? true)
-        .map((group) => {
-          const id = projects.targets?.[group.id]
-          return id
-            ? (projects.workspaces?.find((workspace) => workspace.id === id)?.name ??
-                "Selected workspace unavailable")
-            : value.cloud.destination?.name
-        })
-        .filter(Boolean) ?? [],
+      selectedProjects?.flatMap((group) => {
+        const target =
+          projects?.targets?.[group.id] ??
+          (hasWorkspaceChoice ? undefined : personalDestination?.id)
+        return target ? [target] : []
+      }),
     ),
   ]
+  const workspaceLabels = selectedWorkspaceIds.map((id) => {
+    const workspace = workspaces.find((candidate) => candidate.id === id)
+    return workspace ? cloudWorkspaceLabel(workspace) : "Selected workspace unavailable"
+  })
+  const workspaceUnavailable = selectedWorkspaceIds.some(
+    (id) => !workspaces.some((workspace) => workspace.id === id),
+  )
+  const workspaceConflict = selectedWorkspaceIds.length > 1
+  const workspaceSummary =
+    projects?.error || !personalDestination
+      ? "Workspace availability could not be confirmed"
+      : !projects?.loaded
+        ? "Checking workspace destinations…"
+        : needsWorkspaceChoice
+          ? "Choose a sync destination"
+          : workspaceLabels.length
+            ? `Sync ${workspaceConflict ? "destinations" : "destination"}: ${workspaceLabels.join(" · ")}`
+            : hasWorkspaceChoice
+              ? "No sync destination selected"
+              : `Available destination: ${cloudWorkspaceLabel(personalDestination)}`
+  const workspaceNote = workspaceUnavailable
+    ? "A selected workspace can’t receive uploads. Choose another destination or Don't sync."
+    : needsWorkspaceChoice
+      ? "Choose a workspace or Don't sync for each marked folder before starting."
+      : workspaceConflict
+        ? "Start syncing uses one workspace at a time. Set folders for any other workspace to Don't sync, then add them in Settings."
+        : hasWorkspaceChoice
+          ? "Choose a destination for each folder you want to sync. Start syncing uses one workspace at a time."
+          : null
+  const showWorkspaceNote = grouped && projects?.loaded && !projects.loading && !projects.error
   const folderMessage =
     error ??
     value.error ??
@@ -307,30 +372,50 @@ export function CloudOnboarding({
             <span id="cloud-sync-selection">
               {selectedFolders} {selectedFolders === 1 ? "folder" : "folders"} selected
             </span>
-            {value.cloud.identity && value.cloud.destination && (
+            {(grouped || (value.cloud.identity && destination)) && (
               <span
                 id="cloud-sync-destination"
-                className="rounded-control bg-surface-card px-2 py-1 type-footnote"
+                className="min-w-0 wrap-anywhere rounded-control bg-surface-card px-2 py-1 type-footnote"
+                aria-live="polite"
               >
-                {workspaceNames.join(", ") || value.cloud.destination.name} ·{" "}
-                {value.cloud.identity.login}
+                {grouped ? workspaceSummary : destination?.name}
+                {value.cloud.identity && ` · ${value.cloud.identity.login}`}
               </span>
             )}
           </div>
+          {showWorkspaceNote && workspaceNote && (
+            <p
+              id="cloud-workspace-note"
+              className="type-callout text-onboarding-muted"
+              role="status"
+            >
+              {workspaceNote}
+            </p>
+          )}
           {grouped ? (
             projects && (projects.groups.length > 0 || projectListComplete) ? (
               <CloudProjectFolders
                 groups={projects.groups}
-                choices={projects.choices}
-                disabled={disabled || projects.loading}
-                homeDirectory={value.homeDirectory}
-                workspaces={projects.workspaces}
-                destinationId={value.cloud.destination?.id}
-                targets={projects.targets}
-                onWorkspaceSelect={
-                  session.canConnectTeamWorkspace ? session.selectProjectWorkspace : undefined
+                choices={folderChoices ?? {}}
+                disabled={
+                  disabled ||
+                  projects.loading ||
+                  !!projects.error ||
+                  !!value.cloud.setupError ||
+                  !personalDestination
                 }
-                onSelect={session.selectProject}
+                homeDirectory={value.homeDirectory}
+                workspaces={workspaces}
+                destinationId={personalDestination?.id}
+                targets={projects.targets}
+                savedDestinations={savedDestinations}
+                onSelect={(id, selected, workspace) =>
+                  session.selectProject(
+                    id,
+                    selected,
+                    selected ? (workspace ?? personalDestination?.id) : undefined,
+                  )
+                }
               />
             ) : (
               <div className="cloud-folder-list min-h-0! max-h-none! flex-1">
@@ -644,13 +729,21 @@ export function CloudOnboarding({
                         cloudUploadStatusUnknown(value.ongoing) ||
                         projects.loading ||
                         !!projects.error ||
-                        !projects.groups.some(
-                          (group) =>
-                            group.captureSupported && (projects.choices[group.id] ?? true),
-                        )
+                        needsWorkspaceChoice ||
+                        workspaceUnavailable ||
+                        workspaceConflict ||
+                        selectedFolders === 0
                       : !value.cloud.draft.folders.some((folder) => folder.selected))
                   }
-                  aria-describedby="cloud-sync-description cloud-sync-selection cloud-sync-destination"
+                  aria-describedby={[
+                    "cloud-sync-description",
+                    "cloud-sync-selection",
+                    (grouped || (value.cloud.identity && destination)) &&
+                      "cloud-sync-destination",
+                    showWorkspaceNote && workspaceNote && "cloud-workspace-note",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   onClick={() => void session.startSync(value)}
                 >
                   {captureEnabled ? "Save capture request" : "Start syncing"}

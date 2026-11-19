@@ -104,7 +104,6 @@ fn cloud_status_lists_disconnected_team_consent_only_for_the_verified_personal_s
         )
         .unwrap();
 
-    let grants = super::super::workspace_grants::WorkspaceGrants::default();
     let mut runners = BTreeMap::new();
     // A previously live status must not claim ready without a current grant.
     runners.insert(
@@ -116,16 +115,22 @@ fn cloud_status_lists_disconnected_team_consent_only_for_the_verified_personal_s
                 destination_id: Some(TEAM.into()),
                 policy_revision: Some(saved.revision.clone()),
                 storage_known: true,
+                retry_available: true,
                 queued_count: 7,
                 ..Status::default()
             }),
             ..Runner::default()
         },
     );
-    let anchor = anchor(directory.path());
-    let installation = (&anchor, "synthetic");
-    let statuses =
-        saved_team_statuses(&store, Some(&personal()), &grants, &runners, installation).unwrap();
+    let mut anchor = anchor(directory.path());
+    let statuses = saved_team_statuses(
+        &store,
+        Some(&personal()),
+        &runners,
+        (&mut anchor, "synthetic"),
+        None,
+    )
+    .unwrap();
     let wire = serde_json::to_value(Status {
         team_statuses: statuses,
         ..Status::default()
@@ -141,6 +146,8 @@ fn cloud_status_lists_disconnected_team_consent_only_for_the_verified_personal_s
     assert_eq!(team["consentVersion"], ONGOING_CONSENT_VERSION);
     assert_eq!(team["policyRevision"], saved.revision);
     assert_eq!(team["storageKnown"], false);
+    assert_eq!(team["retryAvailable"], false);
+    assert_eq!(team["folderConfirmationRequired"], false);
     assert_eq!(team["queuedCount"], 0);
     assert_eq!(
         team["savedFolders"],
@@ -156,40 +163,207 @@ fn cloud_status_lists_disconnected_team_consent_only_for_the_verified_personal_s
         saved_team_statuses(
             &store,
             Some(&team_principal),
-            &grants,
             &runners,
-            installation
+            (&mut anchor, "synthetic"),
+            None,
         )
         .unwrap()
         .is_empty()
     );
     assert!(
-        saved_team_statuses(&store, None, &grants, &runners, installation)
+        saved_team_statuses(&store, None, &runners, (&mut anchor, "synthetic"), None)
             .unwrap()
             .is_empty()
     );
 }
 
 #[test]
-fn cloud_team_cancellation_and_lost_callback_report_exact_reset_recovery() {
-    use super::super::workspace_grants::{WorkspaceGrants, emit};
-    use tauri::Listener;
+fn cloud_team_folder_confirmation_requires_current_eligibility_and_stale_consent() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let legacy = policy(&store, ACCOUNT, TEAM, RESOURCE, ISSUER);
+    let eligible = |id: &str, kind, generation: Option<&str>| auth::EligibleWorkspace {
+        workspace: auth::Workspace {
+            id: id.into(),
+            name: "Example Team".into(),
+            kind,
+        },
+        membership_generation: generation.map(str::to_owned),
+    };
+    let team = |generation| eligible(TEAM, auth::WorkspaceKind::Team, Some(generation));
+    let confirm_required = |policy, entries: Option<&[auth::EligibleWorkspace]>| {
+        team_policy_status(policy, None, entries).folder_confirmation_required
+    };
+    assert!(!confirm_required(&legacy, None));
+    assert!(!confirm_required(&legacy, Some(&[])));
+    assert!(!confirm_required(
+        &legacy,
+        Some(&[eligible(
+            "other-team",
+            auth::WorkspaceKind::Team,
+            Some("member")
+        )])
+    ));
+    assert!(!confirm_required(
+        &legacy,
+        Some(&[eligible(TEAM, auth::WorkspaceKind::Personal, None)])
+    ));
+    assert!(!confirm_required(
+        &legacy,
+        Some(&[eligible(TEAM, auth::WorkspaceKind::Team, None)])
+    ));
+    assert!(confirm_required(&legacy, Some(&[team("member")])));
+    let wire =
+        serde_json::to_value(team_policy_status(&legacy, None, Some(&[team("member")]))).unwrap();
+    assert_eq!(wire["folderConfirmationRequired"], true);
+    let renewed = store
+        .renew_cloud_team_sync_policy(
+            (
+                ACCOUNT,
+                TEAM,
+                RESOURCE,
+                ISSUER,
+                Some(("member", "Example Team")),
+            ),
+            &legacy.revision,
+            &[FIRST.into(), SECOND.into()].into(),
+            None,
+            || true,
+        )
+        .unwrap();
+    assert!(!confirm_required(&renewed, Some(&[team("member")])));
+    assert!(!confirm_required(&renewed, None));
+    assert!(confirm_required(&renewed, Some(&[team("new-member")])));
+}
 
+#[test]
+fn cloud_retry_availability_is_false_when_device_upload_is_off() {
+    let status = Status {
+        retry_available: true,
+        team_statuses: vec![Status {
+            retry_available: true,
+            ..Status::default()
+        }],
+        ..Status::default()
+    };
+    let value = serde_json::to_value(status.with_device_upload_enabled(false)).unwrap();
+    assert_eq!(value["retryAvailable"], false);
+    assert_eq!(value["teamStatuses"][0]["retryAvailable"], false);
+}
+
+#[test]
+fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let mut policy = policy(&store, ACCOUNT, TEAM, RESOURCE, ISSUER);
+    policy.team_grant_id = None;
+    policy.membership_generation = Some("synthetic-membership".into());
+    let session = personal();
+    let key = (ACCOUNT.into(), TEAM.into());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let cursor = DiscoveryCursor {
+        root: 0,
+        after: Some("kept-page".into()),
+    };
+    let mut runners = BTreeMap::from([(
+        key.clone(),
+        Runner {
+            team: Some((TEAM.into(), "synthetic-membership".into())),
+            last_status: Some(Status {
+                account_id: Some(ACCOUNT.into()),
+                destination_id: Some(TEAM.into()),
+                policy_revision: Some(policy.revision.clone()),
+                retry_available: true,
+                recovery_required_count: 2,
+                ..Status::default()
+            }),
+            last_status_origin: Some(RESOURCE.into()),
+            retry_grant_id: Some(session.grant_id.clone()),
+            backfill_revision: Some(policy.revision.clone()),
+            discovery_cursor: Some(cursor.clone()),
+            retry_deadlines: BTreeMap::from([(
+                "saved".into(),
+                (deadline, upload::Failure::Offline),
+            )]),
+            conflict_attempts: BTreeMap::from([("saved".into(), 2)]),
+            conflict_finalization_replays: BTreeMap::from([("saved".into(), 1)]),
+            ..Runner::default()
+        },
+    )]);
+    let policies = [policy];
+    let mut observed = Vec::new();
+    assert!(
+        verified_team_turns(
+            &policies,
+            &session,
+            &mut runners,
+            Err(auth::Failure::Offline),
+            |status| observed.push(status)
+        )
+        .is_empty()
+    );
+    assert_eq!(observed[0].status, State::Offline);
+    assert!(observed[0].backfill_in_progress);
+    assert_eq!(observed[0].recovery_required_count, 2);
+    assert!(!observed[0].retry_available);
+    assert_eq!(runners[&key].discovery_cursor.as_ref(), Some(&cursor));
+    assert_eq!(runners[&key].retry_deadlines["saved"].0, deadline);
+    assert_eq!(runners[&key].conflict_attempts["saved"], 2);
+    assert_eq!(runners[&key].conflict_finalization_replays["saved"], 1);
+    let eligible = [auth::EligibleWorkspace {
+        workspace: auth::Workspace {
+            id: TEAM.into(),
+            name: "Example Team".into(),
+            kind: auth::WorkspaceKind::Team,
+        },
+        membership_generation: Some("synthetic-membership".into()),
+    }];
+    assert_eq!(
+        verified_team_turns(&policies, &session, &mut runners, Ok(&eligible), |_| {}).len(),
+        1
+    );
+    assert_eq!(runners[&key].discovery_cursor.as_ref(), Some(&cursor));
+    assert!(verified_team_turns(&policies, &session, &mut runners, Ok(&[]), |_| {}).is_empty());
+    assert!(runners.is_empty());
+}
+
+#[test]
+fn cloud_retry_keeps_discovery_and_unrelated_saved_retry_timers() {
+    let deadline = Instant::now();
+    let mut runner = Runner {
+        next_reconcile: Some(deadline),
+        next_reservation: Some(deadline),
+        retry_deadlines: BTreeMap::from([
+            ("retry-this".into(), (deadline, upload::Failure::Offline)),
+            (
+                "keep-this".into(),
+                (deadline, upload::Failure::Backpressure),
+            ),
+        ]),
+        finalization_submissions: BTreeSet::from(["retry-this".into(), "keep-this".into()]),
+        ..Runner::default()
+    };
+    runner.retry(&BTreeSet::from(["retry-this".into()]));
+    assert_eq!(runner.next_reconcile, Some(deadline));
+    assert_eq!(runner.next_reservation, Some(deadline));
+    assert!(!runner.retry_deadlines.contains_key("retry-this"));
+    assert!(runner.retry_deadlines.contains_key("keep-this"));
+    assert_eq!(
+        runner.finalization_submissions,
+        BTreeSet::from(["keep-this".into()])
+    );
+}
+
+#[test]
+fn cloud_legacy_team_cleanup_warning_does_not_create_a_policy() {
+    use super::super::state::{Cleanup, Phase};
     const LOST: &str = "synthetic-lost-team";
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
     store.initialize_cloud_setup().unwrap();
-    let anchor = anchor(directory.path());
-    let app = tauri::test::mock_app();
-    let settings = tauri::WebviewWindowBuilder::new(&app, "settings", Default::default())
-        .build()
-        .unwrap();
-    let (send, events) = std::sync::mpsc::channel();
-    settings.listen("cloud:workspace-changed", move |event| {
-        send.send(serde_json::from_str::<serde_json::Value>(event.payload()).unwrap())
-            .unwrap();
-    });
-    let mut grants = WorkspaceGrants::default();
+    let mut anchor = anchor(directory.path());
     for workspace in [TEAM, LOST] {
         if workspace == TEAM {
             policy(&store, ACCOUNT, workspace, RESOURCE, ISSUER);
@@ -197,59 +371,43 @@ fn cloud_team_cancellation_and_lost_callback_report_exact_reset_recovery() {
         store
             .register_cloud_workspace_slot(ISSUER, RESOURCE, ACCOUNT, workspace)
             .unwrap();
-        let open = || {
-            let mut engine = anchor
-                .workspace_engine(
-                    app.config().identifier.clone(),
-                    ACCOUNT.into(),
-                    auth::Workspace {
-                        id: workspace.into(),
-                        name: "Example Team".into(),
-                        kind: auth::WorkspaceKind::Team,
-                    },
-                )
-                .unwrap();
-            engine.vault = Box::new(Arc::new(crate::cloud::tests::MemoryVault::default()));
-            engine
-        };
-        let mut engine = open();
-        let (_, listener, _) = engine.begin(now(), 1).unwrap();
-        let key = (ACCOUNT.into(), workspace.into());
-        if workspace == TEAM {
-            grants.install_test_slot(key, engine, true);
-            grants.cancel_pending(2, |key, engine| emit(app.handle(), key, engine, || true));
-        } else {
-            // A restart drops the listener and in-memory attempt, not the pending marker.
-            drop(listener);
-            drop(engine);
-            grants.install_test_slot(key, open(), false);
-        }
+        let engine = anchor
+            .workspace_engine(
+                "synthetic".into(),
+                ACCOUNT.into(),
+                auth::Workspace {
+                    id: workspace.into(),
+                    name: "Example Team".into(),
+                    kind: auth::WorkspaceKind::Team,
+                },
+            )
+            .unwrap();
+        // This warning-only phase does not read the keyring.
+        engine
+            .state
+            .lock()
+            .unwrap()
+            .replace(Phase::SignedOut, Cleanup::RemoteUnconfirmed)
+            .unwrap();
     }
-    let assert_flags = |value: &serde_json::Value, reset| {
-        assert_eq!(value["localResetAvailable"], reset);
+    let assert_flags = |value: &serde_json::Value| {
+        assert_eq!(value["localResetAvailable"], false);
         assert_eq!(value["remoteRevocationUnconfirmed"], true);
     };
-    let event = events.try_recv().unwrap();
-    assert_eq!(event["accountId"], ACCOUNT);
-    assert_eq!(event["workspaceId"], TEAM);
-    assert_eq!(event["status"], "revocation_unconfirmed");
-    assert_flags(&event, true);
-
-    let read_as = |grants: &WorkspaceGrants, principal: &auth::Session| {
+    let mut read_as = |principal: &auth::Session| {
         serde_json::to_value(Status {
             team_statuses: saved_team_statuses(
                 &store,
                 Some(principal),
-                grants,
                 &BTreeMap::new(),
-                (&anchor, &app.config().identifier),
+                (&mut anchor, "synthetic"),
+                None,
             )
             .unwrap(),
             ..Status::default()
         })
         .unwrap()
     };
-    let read = |grants: &WorkspaceGrants| read_as(grants, &personal());
     for principal in [
         auth::Session {
             iss: "https://other-issuer.example".into(),
@@ -267,9 +425,9 @@ fn cloud_team_cancellation_and_lost_callback_report_exact_reset_recovery() {
             ..personal()
         },
     ] {
-        assert!(read_as(&grants, &principal).get("teamStatuses").is_none());
+        assert!(read_as(&principal).get("teamStatuses").is_none());
     }
-    let before = read(&grants);
+    let before = read_as(&personal());
     let index = |id| {
         before["teamStatuses"]
             .as_array()
@@ -280,8 +438,8 @@ fn cloud_team_cancellation_and_lost_callback_report_exact_reset_recovery() {
     };
     let team = index(TEAM);
     let lost = index(LOST);
-    assert_flags(&before["teamStatuses"][team], true);
-    assert_flags(&before["teamStatuses"][lost], true);
+    assert_flags(&before["teamStatuses"][team]);
+    assert_flags(&before["teamStatuses"][lost]);
     let lost_only = &before["teamStatuses"][lost];
     assert_eq!(lost_only["accountId"], ACCOUNT);
     assert_eq!(lost_only["status"], "reauth_required");
@@ -289,34 +447,6 @@ fn cloud_team_cancellation_and_lost_callback_report_exact_reset_recovery() {
     assert!(lost_only["policyRevision"].is_null());
     assert_eq!(lost_only["projects"], serde_json::json!([]));
     assert!(lost_only.get("savedFolders").is_none());
-
-    grants
-        .reset(app.handle(), &anchor, (ACCOUNT.into(), TEAM.into()), || {
-            true
-        })
-        .unwrap();
-    let event = events.try_recv().unwrap();
-    assert_eq!(event["workspaceId"], TEAM);
-    assert_eq!(event["status"], "signed_out");
-    assert_flags(&event, false);
-    let after = read(&grants);
-    assert_flags(&after["teamStatuses"][team], false);
-    assert_eq!(after["teamStatuses"][lost], before["teamStatuses"][lost]);
-
-    grants
-        .reset(app.handle(), &anchor, (ACCOUNT.into(), LOST.into()), || {
-            true
-        })
-        .unwrap();
-    let event = events.try_recv().unwrap();
-    assert_eq!(event["workspaceId"], LOST);
-    assert_flags(&event, false);
-    assert_flags(&read(&grants)["teamStatuses"][lost], false);
-    // After reset, a fresh slot reads the warning from disk without accessing the vault.
-    assert_flags(
-        &read(&WorkspaceGrants::default())["teamStatuses"][lost],
-        false,
-    );
 }
 
 #[test]
@@ -368,7 +498,7 @@ fn cloud_disconnected_team_off_uses_exact_saved_path_and_current_revision() {
         storage_known: true,
         ..Status::default()
     };
-    let disconnected = team_policy_status(&updated, Some(stale));
+    let disconnected = team_policy_status(&updated, Some(stale), None);
     assert_eq!(disconnected.status, State::ReauthRequired);
     assert!(!disconnected.storage_known);
     assert_eq!(disconnected.saved_folders.unwrap()[0].path, SECOND);

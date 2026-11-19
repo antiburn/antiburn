@@ -1,4 +1,4 @@
-import { FileText, Folder, GitBranch } from "lucide-react"
+import { ChevronDown, FileText, Folder, GitBranch } from "lucide-react"
 import { ToggleSwitch } from "../components/ui/ToggleSwitch"
 import {
   cloudDisplayPath,
@@ -7,16 +7,21 @@ import {
   type CloudWorkspace,
 } from "../lib/cloud"
 
+const chooseWorkspace = ":choose-workspace"
+
 /** Show the main path and counts. Keep raw paths as selection authority. */
 export function CloudProjectFolderSummary({
   group,
   homeDirectory,
   id,
+  stackPath = false,
 }: {
   group: CloudProjectGroup
   homeDirectory?: string | null | undefined
   /** Connect the row's selection control to its path and counts. */
   id?: string
+  /** Give the full path a wrapping line above the counts. */
+  stackPath?: boolean
 }) {
   const sessionLabel =
     group.sessionCount == null
@@ -29,13 +34,16 @@ export function CloudProjectFolderSummary({
   return (
     <div
       id={id}
-      className="flex min-w-0 items-center gap-2 type-callout text-label-secondary"
+      className={`flex min-w-0 items-center type-callout text-label-secondary${stackPath ? " flex-wrap gap-x-2 gap-y-1" : " gap-2"}`}
       aria-description={[group.path, sessionLabel, worktreeLabel].filter(Boolean).join(" · ")}
     >
-      <span className="min-w-0 truncate" title={group.path}>
+      <span
+        className={stackPath ? "min-w-0 basis-full wrap-anywhere" : "min-w-0 truncate"}
+        title={group.path}
+      >
         {cloudDisplayPath(group.path, homeDirectory)}
       </span>
-      <span aria-hidden>·</span>
+      {!stackPath && <span aria-hidden>·</span>}
       <span className="cloud-folder-count inline-flex shrink-0 items-center gap-1">
         <FileText size={12} aria-hidden />
         <span className="whitespace-nowrap">{sessionLabel}</span>
@@ -62,7 +70,9 @@ export function CloudFolderSyncControl({
   workspaces,
   destinationId,
   selectedWorkspace,
-  onWorkspaceSelect,
+  typedWorkspaceLabels = false,
+  wrapWorkspaceLabel = false,
+  needsWorkspaceChoice = false,
   onSelect,
 }: {
   label: string
@@ -72,45 +82,73 @@ export function CloudFolderSyncControl({
   workspaces?: readonly CloudWorkspace[] | undefined
   destinationId?: string | undefined
   selectedWorkspace?: string | undefined
-  onWorkspaceSelect?: ((id: string) => void) | undefined
-  onSelect: (selected: boolean) => void
+  /** Show the workspace type and limit dropdown width without changing selection behavior. */
+  typedWorkspaceLabels?: boolean
+  /** Wrap the selected label while keeping the native select as the only control. */
+  wrapWorkspaceLabel?: boolean
+  /** Ask for a destination when a checked draft has no workspace binding. */
+  needsWorkspaceChoice?: boolean
+  onSelect: (selected: boolean, destination?: string) => void
 }) {
   const unavailableChoice =
     selectedWorkspace && !workspaces?.some((workspace) => workspace.id === selectedWorkspace)
   if (destinationId && ((workspaces?.length ?? 0) > 1 || unavailableChoice)) {
-    return (
+    const value = needsWorkspaceChoice
+      ? chooseWorkspace
+      : selected
+        ? (selectedWorkspace ?? destinationId)
+        : ""
+    const workspaceLabel = (workspace: CloudWorkspace) =>
+      typedWorkspaceLabels ? cloudWorkspaceLabel(workspace) : workspace.name
+    const options = [
+      { id: "", label: "Don't sync" },
+      ...(needsWorkspaceChoice
+        ? [{ id: chooseWorkspace, label: "Choose a workspace", disabled: true }]
+        : []),
+      ...(unavailableChoice
+        ? [{ id: selectedWorkspace, label: "Selected workspace unavailable", disabled: true }]
+        : []),
+      ...(workspaces?.map((workspace) => ({
+        id: workspace.id,
+        label: workspaceLabel(workspace),
+      })) ?? []),
+    ]
+    const picker = (
       <select
         aria-label={label}
         aria-describedby={descriptionId}
-        className="rounded-control bg-surface-card px-2 py-1 type-footnote text-label"
-        value={selected ? (selectedWorkspace ?? destinationId) : ""}
+        className={
+          wrapWorkspaceLabel
+            ? "absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-default"
+            : `rounded-control bg-surface-card px-2 py-1 type-footnote text-label${typedWorkspaceLabels ? " min-h-8 min-w-0 max-w-[min(100%,12rem)] truncate" : ""}`
+        }
+        value={value}
         disabled={disabled}
         onChange={(event) => {
           const target = event.currentTarget.value
-          if (target === "" || target === destinationId) onSelect(target === destinationId)
+          if (target === "") onSelect(false)
           else if (workspaces?.some((workspace) => workspace.id === target))
-            onWorkspaceSelect?.(target)
+            onSelect(true, target)
         }}
       >
-        <option value="">Don't sync</option>
-        {unavailableChoice && (
-          <option value={selectedWorkspace} disabled>
-            Selected workspace unavailable
-          </option>
-        )}
-        {workspaces?.map((workspace) => (
-          <option
-            key={workspace.id}
-            value={workspace.id}
-            disabled={workspace.id !== destinationId && !onWorkspaceSelect}
-          >
-            {workspace.name}
-            {workspace.id !== destinationId && !onWorkspaceSelect
-              ? " (uploads unavailable)"
-              : ""}
+        {options.map((option) => (
+          <option key={option.id} value={option.id} disabled={"disabled" in option}>
+            {option.label}
           </option>
         ))}
       </select>
+    )
+    if (!wrapWorkspaceLabel) return picker
+    return (
+      <div
+        className={`relative flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-control bg-surface-card px-2 py-1 type-footnote text-label has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent-fill ${disabled ? "opacity-50" : ""}`}
+      >
+        <span className="min-w-0 wrap-anywhere" aria-hidden="true">
+          {options.find(({ id }) => id === value)?.label}
+        </span>
+        <ChevronDown size={13} className="shrink-0" aria-hidden="true" />
+        {picker}
+      </div>
     )
   }
   return (
@@ -124,6 +162,14 @@ export function CloudFolderSyncControl({
   )
 }
 
+/** Distinguish workspace types, even when their names match. */
+export function cloudWorkspaceLabel({ kind, name }: Pick<CloudWorkspace, "kind" | "name">) {
+  if (kind === "team") return `Team workspace: ${name}`
+  return name.trim().toLowerCase() === "personal"
+    ? "Personal workspace"
+    : `Personal workspace: ${name}`
+}
+
 /** Show one local choice per project. Only Start saves the current selection.
  * Pass an empty list only after a complete, successful discovery.
  */
@@ -135,7 +181,7 @@ export function CloudProjectFolders({
   workspaces,
   destinationId,
   targets,
-  onWorkspaceSelect,
+  savedDestinations,
   onSelect,
 }: {
   groups: readonly CloudProjectGroup[]
@@ -145,8 +191,9 @@ export function CloudProjectFolders({
   workspaces?: readonly CloudWorkspace[] | undefined
   destinationId?: string | undefined
   targets?: Readonly<Record<string, string>> | undefined
-  onWorkspaceSelect?: ((project: string, workspace: string) => void) | undefined
-  onSelect: (projectId: string, selected: boolean) => void
+  /** Name the saved destination for folders outside the onboarding batch. */
+  savedDestinations?: ReadonlyMap<string, string>
+  onSelect: (projectId: string, selected: boolean, destination?: string) => void
 }) {
   return (
     <div
@@ -154,30 +201,64 @@ export function CloudProjectFolders({
       aria-label="Cloud project folders"
     >
       {groups.length ? (
-        groups.map((group) => (
-          <div key={group.id} className="cloud-folder-row items-start!">
-            <Folder size={16} className="mt-0.5 shrink-0" aria-hidden />
-            <div className="min-w-0 flex-1">
-              <strong className="block truncate type-title-3 font-medium!">{group.name}</strong>
-              <CloudProjectFolderSummary
-                id={`cloud-folder-${encodeURIComponent(group.id)}`}
-                group={group}
-                homeDirectory={homeDirectory}
-              />
+        groups.map((group) => {
+          const descriptionId = `cloud-folder-${encodeURIComponent(group.id)}`
+          const target = targets?.[group.id]
+          const unavailable =
+            !!target && !workspaces?.some((workspace) => workspace.id === target)
+          const showPicker = !!destinationId && ((workspaces?.length ?? 0) > 1 || unavailable)
+          const selected = choices[group.id] ?? !showPicker
+          const savedDestination = savedDestinations?.get(group.id)
+          return (
+            <div
+              key={group.id}
+              className={`cloud-folder-row items-start!${showPicker ? " flex-wrap" : ""}`}
+            >
+              <Folder size={16} className="mt-0.5 shrink-0" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <strong className="block truncate type-title-3 font-medium!">
+                  {group.name}
+                </strong>
+                <CloudProjectFolderSummary
+                  id={descriptionId}
+                  group={group}
+                  homeDirectory={homeDirectory}
+                />
+              </div>
+              {savedDestination ? (
+                <span className="basis-full type-callout text-onboarding-muted">
+                  Sync is already set up for {savedDestination}. Manage it in Settings.
+                </span>
+              ) : (
+                <div
+                  className={
+                    showPicker
+                      ? "flex min-w-0 basis-full items-center gap-2 sm:basis-auto"
+                      : undefined
+                  }
+                >
+                  {showPicker && (
+                    <span className="type-callout text-onboarding-muted">Sync destination</span>
+                  )}
+                  <CloudFolderSyncControl
+                    label={`${showPicker ? "Sync destination for" : "Sync"} ${group.name}: ${group.path}`}
+                    descriptionId={descriptionId}
+                    selected={selected && (!showPicker || group.captureSupported === true)}
+                    disabled={disabled || (showPicker && !group.captureSupported)}
+                    workspaces={workspaces}
+                    destinationId={destinationId}
+                    selectedWorkspace={target}
+                    typedWorkspaceLabels
+                    needsWorkspaceChoice={
+                      showPicker && selected && group.captureSupported === true && !target
+                    }
+                    onSelect={(enabled, workspace) => onSelect(group.id, enabled, workspace)}
+                  />
+                </div>
+              )}
             </div>
-            <CloudFolderSyncControl
-              label={`Sync ${group.name}: ${group.path}`}
-              descriptionId={`cloud-folder-${encodeURIComponent(group.id)}`}
-              selected={choices[group.id] ?? true}
-              disabled={disabled}
-              workspaces={workspaces}
-              destinationId={destinationId}
-              selectedWorkspace={targets?.[group.id]}
-              onWorkspaceSelect={onWorkspaceSelect && ((id) => onWorkspaceSelect(group.id, id))}
-              onSelect={(selected) => onSelect(group.id, selected)}
-            />
-          </div>
-        ))
+          )
+        })
       ) : (
         <p className="cloud-empty type-body text-onboarding-muted">
           No project folders found in your available sessions.
