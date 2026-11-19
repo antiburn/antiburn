@@ -20,6 +20,8 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-19
+
 ### Changed
 
 - Analytics installation IDs no longer change every 30 days. Your current ID
@@ -31,6 +33,10 @@ CI changes, and documentation that no user acts on stay out — see
 
 - On Linux, onboarding examples load instead of showing “The example could not
   load. You can continue.”
+- Reclaim unused local database space and keep its write-ahead log from
+  growing indefinitely.
+- Decode numeric model answers and saved savings correctly when precise JSON
+  number handling is enabled.
 
 ## [0.11.1] - 2026-11-16
 
