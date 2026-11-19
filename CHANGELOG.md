@@ -27,6 +27,11 @@ CI changes, and documentation that no user acts on stay out — see
   one installation over longer periods. Turning analytics off still deletes
   the local ID and unsent events; turning it back on starts a new ID.
 
+### Fixed
+
+- On Linux, onboarding examples load instead of showing “The example could not
+  load. You can continue.”
+
 ## [0.11.1] - 2026-11-16
 
 ### Changed
