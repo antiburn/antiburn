@@ -476,14 +476,17 @@ pub async fn set_settings(
                 let result = store.replace_settings_preserving_interface_scale(
                     &settings,
                     |tx, previous, saved| {
-                        // The preference must still save when analytics serialization or
-                        // queue storage fails. The withdrawal signal is best effort.
-                        let _ = crate::analytics::prepare_opt_out_in_transaction(
+                        let analytics_result = crate::analytics::prepare_opt_out_in_transaction(
                             &database_app,
                             tx,
                             previous,
                             saved,
                         );
+                        // Opt-out saves even if its final signal fails. Re-enable must
+                        // clear withdrawn data before the preference can commit.
+                        if saved.analytics_enabled {
+                            analytics_result?;
+                        }
                         crate::store::apply_session_retention_in(
                             tx,
                             saved.session_data_retention_days,

@@ -26,8 +26,9 @@ environment for a second, process-level opt-out.
   transcripts. Provider requests are not analytics. See
   [Burn Checks](burn-check/README.md).
 - Official builds can record launch events from startup.
-- The installation identifier is random, is not derived from anything about
-  your machine, and is replaced every 30 days.
+- The installation identifier is random and is not derived from anything about
+  your machine. It persists across restarts and upgrades without scheduled
+  replacement, so events from one installation can be grouped over time.
 - Turning the control off deletes the identifier and everything queued.
 - A build with no endpoint configured sends nothing at all. That includes every
   development build and **every build made from a clean checkout of this
@@ -53,8 +54,8 @@ anything else to be put.
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
 | `platform`                      | Constant. The surface class the collector partitions on.                                                                                                                                                                                                                                                                                                                                                                                                          | `desktop`                               |
 | `messageId`                     | Random per-event id, so a redelivered event is not counted twice.                                                                                                                                                                                                                                                                                                                                                                                                 | `9f2c…`                                 |
-| `anonymousId`                   | The rotating installation identifier.                                                                                                                                                                                                                                                                                                                                                                                                                             | `4b81…`                                 |
-| `sessionId`                     | Groups a window of captured analytics events. Its generator is held in memory, but the value is written into each event queued on disk. Replaced after 30 minutes without a user-oriented event; background telemetry does not refresh the timeout. Also replaced whenever antiburn restarts or the installation identifier rotates.                                                                                                                              | `7d10…`                                 |
+| `anonymousId`                   | The persistent installation identifier.                                                                                                                                                                                                                                                                                                                                                                                                                           | `4b81…`                                 |
+| `sessionId`                     | Groups a window of captured analytics events. Its generator is held in memory, but the value is written into each event queued on disk. Replaced after 30 minutes without a user-oriented event; background telemetry does not refresh the timeout. Also replaced whenever antiburn restarts or a new installation identifier is created.                                                                                                                         | `7d10…`                                 |
 | `event`                         | The event name, from the closed catalog below.                                                                                                                                                                                                                                                                                                                                                                                                                    | `antiburn.scan_completed`               |
 | `originalTimestamp`             | When it happened, UTC.                                                                                                                                                                                                                                                                                                                                                                                                                                            | `2026-08-19T09:14:02Z`                  |
 | `sentAt`                        | When it was delivered. Added at send, not at capture.                                                                                                                                                                                                                                                                                                                                                                                                             | `2026-08-19T09:15:02Z`                  |
@@ -85,11 +86,14 @@ anything else to be put.
 
 ### What the two timestamps make possible
 
-Each event is timestamped and the installation identifier lasts up to 30 days,
-so these events show roughly **when events were captured** within that window.
+Each event is timestamped and the installation identifier persists until local
+analytics state is removed, so these events show roughly **when events were
+captured** and can group an installation's activity over months or years.
 The `sessionId` groups captured events separated by less than 30 minutes of
 user-oriented-event inactivity. User-origin UI events refresh that timeout;
-automatic and background telemetry do not. A quiet app process can receive more
+automatic and background telemetry do not. A background-only session has no
+inactivity timeout. Its ID changes with the first user-oriented event or another
+reset. A quiet app process can receive more
 than one ID, so it does not define a user visit or time spent. None of these
 fields can show the content or identity of what antiburn was used _on_. Resource
 ranges can indicate coarse work intensity and data volume. This is stated
@@ -99,12 +103,21 @@ not really an enumeration.
 ### Why there are two identifiers
 
 The receiving server's contract requires both, and they are not equally
-durable. `anonymousId` is stored on disk and lasts up to 30 days. The live
+durable. `anonymousId` is stored on disk and has no scheduled expiry. Turning
+analytics off removes it; enabling analytics again starts with a fresh ID.
+Removing the app's local analytics state also removes the ID. The live
 `sessionId` generator exists only in memory. Each serialized event also contains
 its `sessionId`, so a queued event keeps that value on disk until it is sent or
-removed. Restarting antiburn or rotating the installation identifier creates a
-new value for newly captured events. Events already in the queue keep their
-original value.
+removed. Restarting antiburn or creating a new installation identifier creates
+a new session value for newly captured events. Events already in the queue keep
+their original values. Upgrading preserves the existing installation ID and queue.
+
+Withdrawal stays pending if local cleanup fails, including after the final
+opt-out event has been delivered. Pending withdrawal blocks ordinary capture and
+delivery. Startup retries cleanup without another final delivery attempt.
+Re-enabling analytics clears the old identifier, queue, and pending withdrawal in
+the same transaction that saves the enabled preference. A cleanup failure rolls
+back that save, so the withdrawn identity and events cannot be reused.
 
 ### Agent and provider categories
 

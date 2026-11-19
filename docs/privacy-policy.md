@@ -1,6 +1,6 @@
 # Privacy policy
 
-Effective: 30 October 2026
+Effective: 19 November 2026
 
 This policy explains first-party analytics and optional model-based Burn Check assessment
 requests sent by the antiburn desktop application.
@@ -184,12 +184,21 @@ no endpoint, model, instruction text, session excerpt, finding details, prompt,
 API key, path, or session identifier.
 The separate provider assessment request is not a first-party analytics event.
 
-The installation identifier is random and changes every 30 days. The live
+The installation identifier is random and persists across restarts and upgrades
+without scheduled replacement. This lets us group events from one installation
+over months or years. Turning analytics off deletes the local identifier;
+enabling analytics again creates a fresh one. Removing local analytics state also
+removes the identifier. If local cleanup fails, analytics stays blocked and startup
+retries cleanup. Re-enabling analytics requires successful deletion of the old
+identifier and queued events. Upgrading preserves the current identifier and queued
+events. The live
 analytics-session identifier is generated in memory and changes when the app
-restarts, when the installation identifier rotates, or after 30 minutes without
+restarts, when a new installation identifier is created, or after 30 minutes without
 a user-oriented analytics event. Each queued event contains the identifier, so that
 serialized value remains in the local analytics queue on disk until the event
-is sent or removed. Background events do not extend the inactivity timeout. One
+is sent or removed. Background events do not extend the inactivity timeout.
+A session containing only background events has no inactivity timeout. Its ID
+changes with the first user-oriented event or another reset. One
 app run can contain more than one analytics session; it does not measure a user visit or time
 spent. Neither identifier comes from your hardware, account, name, or email
 address.

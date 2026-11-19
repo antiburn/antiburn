@@ -175,7 +175,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # Runtime scheduling and async process I/O. The non-default Cloud feature adds net.
 tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time", "process", "io-util"] }
 url = "2"
-# Sixteen unpredictable bytes for the rotating installation identifier. Already
+# Sixteen unpredictable bytes for the installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
 getrandom = "0.4"
 # OS-native filesystem events (FSEvents / inotify / ReadDirectoryChangesW) for
