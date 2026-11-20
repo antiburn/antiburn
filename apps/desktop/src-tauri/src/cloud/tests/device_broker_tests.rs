@@ -15,7 +15,6 @@ fn claim() -> DeviceSession {
         origin: "https://cloud.example.test".into(),
         access_token: "synthetic-access".into(),
         personal_workspace_id: "synthetic-personal".into(),
-        workspace_ids: vec!["synthetic-personal".into(), "synthetic-team".into()],
     }
 }
 
@@ -72,8 +71,7 @@ async fn sends_only_the_current_device_claim_as_a_single_line() {
         json!({
             "origin": "https://cloud.example.test",
             "access_token": "synthetic-access",
-            "personal_workspace_id": "synthetic-personal",
-            "workspace_ids": ["synthetic-personal", "synthetic-team"]
+            "personal_workspace_id": "synthetic-personal"
         })
     );
     task.abort();
@@ -104,13 +102,13 @@ async fn rejects_stale_and_invalid_requests_without_sending_proof() {
 }
 
 #[tokio::test]
-async fn returns_unavailable_instead_of_truncating_a_workspace_list() {
+async fn returns_unavailable_instead_of_truncating_a_claim() {
     let directory = directory();
     let (path, task) = start(
         directory.path(),
         || {
             let mut session = claim();
-            session.workspace_ids = (0..2_000).map(|_| "x".repeat(36)).collect();
+            session.access_token = "x".repeat(MAX_RESPONSE);
             std::future::ready(Some((7, session)))
         },
         |_| true,
@@ -131,7 +129,7 @@ fn binds_privately_and_recovers_only_after_the_previous_owner_exits() {
     assert_eq!(metadata.uid(), effective_uid());
     assert_eq!(
         fs::metadata(directory.path()).unwrap().mode() & 0o777,
-        0o700
+        0o755
     );
     assert!(bind(directory.path()).is_err());
     assert_eq!(fs::symlink_metadata(&socket).unwrap().ino(), metadata.ino());

@@ -1,15 +1,15 @@
 //! Check the current account grant before the local broker can use its bearer.
 //! This module is private to the engine so no caller can bypass these checks.
 
-use super::{Engine, personal_anchor};
+use super::Engine;
 use crate::cloud::auth::{CAPTURE_AND_SESSION_SCOPE, Failure, WorkspaceKind};
 
-/// Return only the four fields that the private broker can send to the CLI.
-type DeviceGrant = (String, String, String, Vec<String>);
+/// Return only the three fields that the private broker can send to the CLI.
+type DeviceGrant = (String, String, String);
 
 impl Engine {
-    /// Restore through the existing rotation path and fetch the current workspace
-    /// list. Call only in admitted Cloud work with the account generation fence.
+    /// Restore through the existing rotation path and use the verified Personal
+    /// workspace. Call only in admitted Cloud work with the account fence.
     /// Existing capture-only grants do not authorize this handoff.
     pub(in crate::cloud) fn cli_device_session(
         &mut self,
@@ -33,22 +33,10 @@ impl Engine {
         {
             return Err(Failure::Unavailable);
         }
-        let eligible = self.transport.workspaces(config, &access.token)?;
-        if !current() || self.session().is_none() {
-            return Err(Failure::Cancelled);
-        }
-        let personal = personal_anchor(&eligible)?;
-        if personal.id != session.workspace.id {
-            return Err(Failure::InvalidResponse);
-        }
         Ok((
             config.resource.clone(),
             access.token.clone(),
-            personal.id.clone(),
-            eligible
-                .into_iter()
-                .map(|entry| entry.workspace.id)
-                .collect(),
+            session.workspace.id.clone(),
         ))
     }
 }

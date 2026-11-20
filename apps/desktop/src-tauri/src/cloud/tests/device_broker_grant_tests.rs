@@ -5,18 +5,11 @@ use crate::cloud::{
     state::{Cleanup, Phase, StateStore},
     tests::{MemoryVault, session},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 
-struct Workspaces {
-    personal_id: &'static str,
-    current: Arc<AtomicBool>,
-    cancel: bool,
-}
+struct NoRequests;
 
-impl crate::cloud::auth::Transport for Workspaces {
+impl crate::cloud::auth::Transport for NoRequests {
     fn exchange(&self, _: &Config, _: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         panic!("a cached, unexpired token does not need to rotate")
     }
@@ -25,39 +18,16 @@ impl crate::cloud::auth::Transport for Workspaces {
         panic!("a cached, unexpired token does not need to rotate")
     }
 
-    fn workspaces(&self, _: &Config, bearer: &str) -> Result<Vec<EligibleWorkspace>, Failure> {
-        assert_eq!(bearer, "synthetic-access");
-        assert_ne!(
-            self.personal_id, "",
-            "capture-only grants cannot call this route"
-        );
-        if self.cancel {
-            self.current.store(false, Ordering::Release);
-        }
-        let mut personal = session().workspace;
-        personal.id = self.personal_id.into();
-        Ok(vec![
-            EligibleWorkspace {
-                workspace: personal,
-                membership_generation: None,
-            },
-            EligibleWorkspace {
-                workspace: crate::cloud::auth::Workspace {
-                    id: "synthetic-team".into(),
-                    name: "Team".into(),
-                    kind: WorkspaceKind::Team,
-                },
-                membership_generation: Some("synthetic-membership".into()),
-            },
-        ])
+    fn workspaces(&self, _: &Config, _: &str) -> Result<Vec<EligibleWorkspace>, Failure> {
+        panic!("the broker uses the verified Personal workspace without another request")
     }
 
     fn revoke(&self, _: &Config, _: &str) -> Result<(), Failure> {
-        panic!("a workspace read does not revoke a grant")
+        panic!("a broker request does not revoke a grant")
     }
 }
 
-fn engine(directory: &std::path::Path, scope: &str, workspaces: Workspaces) -> Engine {
+fn engine(directory: &std::path::Path, scope: &str) -> Engine {
     let mut session = session();
     session.scope = scope.into();
     let config = Config::parse(&session.iss, &session.resource).unwrap();
@@ -70,7 +40,7 @@ fn engine(directory: &std::path::Path, scope: &str, workspaces: Workspaces) -> E
     let mut engine = Engine::new(
         Some(config),
         Box::new(Arc::new(MemoryVault::default())),
-        Box::new(workspaces),
+        Box::new(NoRequests),
         state,
     )
     .with_clock(|| 1);
@@ -84,57 +54,25 @@ fn engine(directory: &std::path::Path, scope: &str, workspaces: Workspaces) -> E
 }
 
 #[test]
-fn returns_only_read_capable_grants_with_verified_workspace_ids() {
+fn returns_the_verified_personal_workspace_without_another_request() {
     let directory = tempfile::tempdir().unwrap();
-    let current = Arc::new(AtomicBool::new(true));
-    let mut engine = engine(
-        directory.path(),
-        CAPTURE_AND_SESSION_SCOPE,
-        Workspaces {
-            personal_id: "synthetic-personal",
-            current: current.clone(),
-            cancel: false,
-        },
-    );
-    let (origin, bearer, personal, workspaces) = engine
-        .cli_device_session(&|| current.load(Ordering::Acquire))
-        .unwrap();
+    let mut engine = engine(directory.path(), CAPTURE_AND_SESSION_SCOPE);
+    let (origin, bearer, personal) = engine.cli_device_session(&|| true).unwrap();
     assert_eq!(origin, "https://api.example");
     assert_eq!(bearer, "synthetic-access");
     assert_eq!(personal, "synthetic-personal");
-    assert_eq!(workspaces, ["synthetic-personal", "synthetic-team"]);
 }
 
 #[test]
-fn rejects_capture_only_grants_wrong_anchors_and_cancelled_reads() {
-    for (scope, personal_id, cancel, expected) in [
-        (CAPTURE_SCOPE, "", false, Failure::Unavailable),
-        (
-            CAPTURE_AND_SESSION_SCOPE,
-            "wrong-personal",
-            false,
-            Failure::InvalidResponse,
-        ),
-        (
-            CAPTURE_AND_SESSION_SCOPE,
-            "synthetic-personal",
-            true,
-            Failure::Cancelled,
-        ),
+fn rejects_capture_only_grants_and_cancelled_reads() {
+    for (scope, current, expected) in [
+        (CAPTURE_SCOPE, true, Failure::Unavailable),
+        (CAPTURE_AND_SESSION_SCOPE, false, Failure::Cancelled),
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let current = Arc::new(AtomicBool::new(true));
-        let mut engine = engine(
-            directory.path(),
-            scope,
-            Workspaces {
-                personal_id,
-                current: current.clone(),
-                cancel,
-            },
-        );
+        let mut engine = engine(directory.path(), scope);
         assert!(matches!(
-            engine.cli_device_session(&|| current.load(Ordering::Acquire)),
+            engine.cli_device_session(&|| current),
             Err(error) if error == expected
         ));
     }
