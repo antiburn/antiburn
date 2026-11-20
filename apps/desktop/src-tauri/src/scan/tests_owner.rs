@@ -221,13 +221,25 @@ fn batch(logs: Vec<SessionLog>) -> DiscoveryBatch {
 
 #[test]
 fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
-    let historical = ScanController::default();
+    let refresh = ScanController::default();
+    let now = tokio::time::Instant::now();
+    let agents = BTreeSet::from([AgentKind::Claude, AgentKind::Codex]);
+    refresh
+        .source_refreshes()
+        .next_allowed
+        .extend(agents.iter().map(|agent| (*agent, now + TICK)));
     super::super::retry_superseded_project_deferrals(
-        &historical,
+        &refresh,
         &ScanTrigger::SourceRefresh {
-            agents: vec![AgentKind::Claude.slug()],
+            agents: agents.iter().map(|agent| agent.slug()).collect(),
         },
     );
+    assert!(refresh.take_pending_trigger().0.is_none());
+    assert!(refresh.source_refreshes().take_due(now).is_empty());
+    assert_eq!(refresh.source_refreshes().take_due(now + TICK), agents);
+
+    let historical = ScanController::default();
+    super::super::retry_superseded_project_deferrals(&historical, &ScanTrigger::HistoricalScan);
     assert!(matches!(
         historical
             .pending_trigger

@@ -259,11 +259,15 @@ fn uses_history_window(trigger: &ScanTrigger) -> bool {
 }
 
 fn retry_superseded_project_deferrals(controller: &ScanController, trigger: &ScanTrigger) {
-    controller.request(if uses_history_window(trigger) {
-        ScanTrigger::HistoricalScan
-    } else {
-        ScanTrigger::WatcherOverflow
-    });
+    match trigger {
+        ScanTrigger::SourceRefresh { agents } => {
+            for agent in agents.iter().filter_map(|slug| AgentKind::from_slug(slug)) {
+                controller.request_source_refresh(agent);
+            }
+        }
+        ScanTrigger::HistoricalScan => controller.request(ScanTrigger::HistoricalScan),
+        _ => controller.request(ScanTrigger::WatcherOverflow),
+    }
 }
 
 fn pass_covers_work(
