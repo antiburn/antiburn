@@ -24,7 +24,7 @@ const THIRD: &str = "ba31b6f6-6541-4767-91ab-b22b68c760dd";
 const REVISION: &str = "e352e672-d152-4e97-a063-428bdeefb26a";
 const KEY: &str = "synthetic-device-access-token";
 const CURSOR: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const ROUTE_PREFIX: &str = "/v1/devices/workspaces";
+const ROUTE_PREFIX: &str = "/v1/workspaces";
 
 struct Fixture {
     root: TempDir,
@@ -295,7 +295,8 @@ fn item(id: &str, title: &str, key: Option<&str>) -> Value {
 fn list(workspace: &str, items: Vec<Value>) -> String {
     http(
         "200 OK",
-        &json!({"workspace_id": workspace, "items": items, "truncated": false}).to_string(),
+        &json!({"workspace_id": workspace, "items": items, "page": {"next_cursor": null}})
+            .to_string(),
     )
 }
 
@@ -325,7 +326,7 @@ fn a_cloud_access_denial_never_returns_local_content() {
     assert_private_error(output, "Cloud access denied");
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
@@ -343,7 +344,7 @@ fn a_redirect_is_not_followed_or_included_in_the_error() {
     assert_private_error(output, "Cloud request failed");
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&limit=2"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&page%5Bsize%5D=2"),
     );
     assert!(
         matches!(listener.accept(), Err(error) if error.kind() == ErrorKind::WouldBlock),
@@ -369,7 +370,7 @@ fn rejects_out_of_range_cloud_timeouts_before_network_io() {
 fn searches_cloud_without_opening_the_local_database() {
     let (origin, server) = serve(http(
         "200 OK",
-        &json!({"items": [item(SESSION, "Cloud match", None)]}).to_string(),
+        &json!({"items": [item(SESSION, "Cloud match", None)], "page": {"next_cursor": "another-page"}}).to_string(),
     ));
     let fixture = Fixture::new(&origin);
     let result = read_success(fixture.run(&["search", "A + B", "--source", "cloud"]));
@@ -377,9 +378,10 @@ fn searches_cloud_without_opening_the_local_database() {
     assert_eq!(result["workspace_id"], WORKSPACE);
     assert_eq!(result["sessions"][0]["cloud"]["id"], SESSION);
     assert!(result["sources"].get("local").is_none());
+    assert_eq!(result["sources"]["cloud"]["truncated"], true);
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=A+%2B+B&limit=20"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=A+%2B+B&page%5Bsize%5D=20"),
     );
 }
 
@@ -462,7 +464,7 @@ fn merges_only_exact_accepted_source_bindings() {
     assert!(matches[5].get("local").is_none());
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&limit=6"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&page%5Bsize%5D=6"),
     );
     assert_eq!(std::fs::read(database).unwrap(), before);
 }
@@ -504,7 +506,7 @@ fn opencode_merging_requires_the_exact_bound_database_path() {
         "sample"
     );
     assert_eq!(result["sessions"][0]["cloud"]["id"], SESSION);
-    let route = format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=Select+this&limit=20");
+    let route = format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=Select+this&page%5Bsize%5D=20");
     assert_cloud_request(server, &route);
 
     let (new_origin, server) = serve(list(WORKSPACE, vec![remote]));
@@ -537,7 +539,7 @@ fn explicit_combined_search_cannot_hide_cloud_access_denial() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&limit=20"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&page%5Bsize%5D=20"),
     );
 }
 
@@ -558,7 +560,7 @@ fn rejects_the_wrong_workspace_and_duplicate_cloud_ids() {
         );
         assert_cloud_request(
             server,
-            &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&limit=20"),
+            &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions?q=sample&page%5Bsize%5D=20"),
         );
     }
 }
@@ -568,7 +570,7 @@ fn document(session: &str, revision: &str, cursor: Option<&str>) -> String {
     http(
         "200 OK",
         &format!(
-            r#"{{"workspace_id":"{WORKSPACE}","session_id":"{session}","revision":"{revision}","stale":true,"messages":[{{"role":"user","sequence":90071992547409931234567890}}],"next_cursor":{cursor}}}"#
+            r#"{{"workspace_id":"{WORKSPACE}","session_id":"{session}","revision":"{revision}","stale":true,"messages":[{{"role":"user","sequence":90071992547409931234567890}}],"page":{{"next_cursor":{cursor}}}}}"#
         ),
     )
 }
@@ -592,7 +594,7 @@ fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
     assert_eq!(first["document"]["messages"][0]["role"], "user");
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 
     let cursor = first["document"]["next_cursor"].as_str().unwrap();
@@ -609,7 +611,9 @@ fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
         }
         assert_cloud_request(
             server,
-            &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}?after={CURSOR}"),
+            &format!(
+                "{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document?page%5Bafter%5D={CURSOR}"
+            ),
         );
     }
     let other_connection = Fixture::new("http://127.0.0.1:1");
@@ -639,7 +643,7 @@ fn displays_one_cloud_document_page_in_text_mode() {
     )));
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
@@ -653,7 +657,7 @@ fn rejects_a_different_document() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
@@ -661,7 +665,7 @@ fn rejects_a_different_document() {
 fn restarts_without_the_cursor_after_publication_replacement() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let fixture = Fixture::new(&format!("http://{}", listener.local_addr().unwrap()));
-    let route = format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}");
+    let route = format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document");
     let args = ["get", SESSION, "--source", "cloud"];
 
     let server = serve_on(
@@ -679,7 +683,7 @@ fn restarts_without_the_cursor_after_publication_replacement() {
     let mut continuation = args.to_vec();
     continuation.extend(["--after", cursor]);
     assert_private_error(fixture.run(&continuation), "Start again without --after");
-    assert_cloud_request(server, &format!("{route}?after={CURSOR}"));
+    assert_cloud_request(server, &format!("{route}?page%5Bafter%5D={CURSOR}"));
 
     let server = serve_on(listener, document(SESSION, OTHER, None));
     let replacement = read_success(fixture.run(&args));
@@ -732,7 +736,7 @@ fn rejects_an_oversized_success_body_without_showing_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
 
@@ -746,6 +750,6 @@ fn rejects_a_malformed_success_body_without_showing_it() {
     );
     assert_cloud_request(
         server,
-        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}"),
+        &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}/document"),
     );
 }
