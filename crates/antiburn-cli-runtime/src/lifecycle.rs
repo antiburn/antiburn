@@ -395,6 +395,8 @@ fn atomic_bytes(
             super::macos::copy_attributes(source, &file)?;
         }
         file.sync_all()?;
+        #[cfg(target_os = "macos")]
+        validate_owned_file(&temp)?;
         #[cfg(windows)]
         super::windows::check_owned(&temp, &file.metadata()?)?;
         // Windows replacement opens the staging file without sharing.
@@ -411,10 +413,15 @@ fn atomic_bytes(
             fs::rename(&temp, path)
                 .context("CLI replacement deferred; destination may be locked")?;
         } else {
-            fs::hard_link(&temp, path).context(
-                "CLI destination appeared during publication or does not support native links",
-            )?;
-            fs::remove_file(&temp)?;
+            #[cfg(target_os = "macos")]
+            super::macos::rename_exclusive(&temp, path)?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                fs::hard_link(&temp, path).context(
+                    "CLI destination appeared during publication or does not support native links",
+                )?;
+                fs::remove_file(&temp)?;
+            }
         }
         sync_dir(parent)?;
         Ok(())
@@ -804,6 +811,29 @@ impl Installation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn first_receipt_publication_keeps_one_name_and_preserves_collisions() {
+        use std::os::unix::fs::MetadataExt;
+
+        let f = Fixture::new();
+        f.i.reconcile_at_startup().unwrap();
+        let path = f.i.root.join("receipt.json");
+        let bytes = fs::read(&path).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.nlink(), 1);
+        assert!(atomic_bytes(&path, b"collision", false, None, false).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&path).unwrap().ino(), metadata.ino());
+        assert!(fs::read_dir(&f.i.root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".cli-stage-")
+        }));
+    }
 
     struct Fixture {
         _temp: tempfile::TempDir,

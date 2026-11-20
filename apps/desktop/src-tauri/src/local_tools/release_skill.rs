@@ -11,7 +11,7 @@ use tauri::Manager;
 use super::Reason;
 use super::installation::{
     FileReceipt, SKILL, check_owned, checked_directory, ensure_directory, present, publish,
-    read_optional, render_skill, save,
+    read_optional, render_skill,
 };
 use crate::agent_integrations::transaction;
 use crate::cli_install::CliRuntime;
@@ -37,6 +37,8 @@ struct FirstPublication {
     device: u64,
     inode: u64,
     token: [u8; 16],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stage: Option<String>,
 }
 
 impl FirstPublication {
@@ -64,7 +66,17 @@ impl FirstPublication {
             device: metadata.dev(),
             inode: metadata.ino(),
             token,
+            stage: None,
         })
+    }
+
+    fn stage_path(&self, path: &Path) -> Option<PathBuf> {
+        let name = self.stage.as_deref()?;
+        let nonce = name.strip_prefix(".antiburn-")?.strip_suffix(".tmp")?;
+        if nonce.len() != 32 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(path.with_file_name(name))
     }
 
     fn matches(&self, path: &Path) -> bool {
@@ -185,13 +197,31 @@ fn reconcile(data: &Path, home: &Path, proposed: &[u8]) -> Result<(), Reason> {
             first_publication: None,
         }
     };
-    let current = read_optional(&skill_path)?;
-    if receipt.skill.active.is_none()
-        && let Some(current) = current.as_deref()
-    {
-        finish_first_publication(&skill_path, current, &mut receipt)?;
-        if current == proposed {
-            return save(&receipt_path, &receipt, &mut receipt_bytes);
+    let mut current = read_optional(&skill_path)?;
+    if receipt.skill.active.is_none() {
+        if current.is_none()
+            && let Some(proof) = &receipt.first_publication
+        {
+            // If neither path exists, the user may have removed the published skill.
+            let stage = proof
+                .stage_path(&skill_path)
+                .ok_or(Reason::OwnedFileChanged)?;
+            current = Some(publish_first(
+                &stage,
+                &skill_path,
+                receipt
+                    .skill
+                    .pending
+                    .as_deref()
+                    .ok_or(Reason::OwnershipConflict)?,
+                proof,
+            )?);
+        }
+        if let Some(installed) = current.as_deref() {
+            finish_first_publication(&skill_path, installed, &mut receipt)?;
+            if installed == proposed {
+                return save(&receipt_path, &receipt, &mut receipt_bytes);
+            }
         }
     }
     check_owned(current.as_deref(), &receipt.skill)?;
@@ -207,11 +237,18 @@ fn reconcile(data: &Path, home: &Path, proposed: &[u8]) -> Result<(), Reason> {
         ensure_directory(path)?;
     }
     if current.is_none() {
-        publish_first(&skill_path, proposed, |proof| {
-            receipt.first_publication = Some(proof);
-            save(&receipt_path, &receipt, &mut receipt_bytes).map_err(|_| "state_unavailable")
-        })?;
-        let installed = read_optional(&skill_path)?.ok_or(Reason::OwnedFileChanged)?;
+        let (stage, proof) = stage_first(&skill_path, proposed)?;
+        receipt.first_publication = Some(proof);
+        save(&receipt_path, &receipt, &mut receipt_bytes)?;
+        let installed = publish_first(
+            &stage,
+            &skill_path,
+            proposed,
+            receipt
+                .first_publication
+                .as_ref()
+                .ok_or(Reason::OwnershipConflict)?,
+        )?;
         finish_first_publication(&skill_path, &installed, &mut receipt)?;
     } else {
         if current.as_deref() != Some(proposed) {
@@ -222,15 +259,53 @@ fn reconcile(data: &Path, home: &Path, proposed: &[u8]) -> Result<(), Reason> {
     save(&receipt_path, &receipt, &mut receipt_bytes)
 }
 
-/// Record the file proof before the atomic rename makes the skill visible.
+/// Create an initial receipt without leaving a second link after a crash.
+fn save(path: &Path, receipt: &Receipt, previous: &mut Option<Vec<u8>>) -> Result<(), Reason> {
+    if previous.is_some() {
+        return super::installation::save(path, receipt, previous);
+    }
+    let bytes = serde_json::to_vec(receipt).map_err(|_| Reason::SetupUnavailable)?;
+    let (stage, ()) =
+        transaction::stage_new(path, &bytes, |_| Ok(())).map_err(|_| Reason::SetupUnavailable)?;
+    transaction::publish_staged_new(&stage, path, |current| current == bytes)
+        .map_err(|_| Reason::SetupUnavailable)?;
+    *previous = Some(bytes);
+    Ok(())
+}
+
+/// Record the stage name and identity before the skill becomes visible.
+fn stage_first(path: &Path, proposed: &[u8]) -> Result<(PathBuf, FirstPublication), Reason> {
+    let (stage, mut proof) = transaction::stage_new(path, proposed, FirstPublication::mark)
+        .map_err(|_| Reason::SetupUnavailable)?;
+    proof.stage = Some(
+        stage
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(Reason::SetupUnavailable)?
+            .into(),
+    );
+    Ok((stage, proof))
+}
+
+/// A retry can publish only the unchanged staged file from the receipt.
 fn publish_first(
+    stage: &Path,
     path: &Path,
-    proposed: &[u8],
-    journal: impl FnOnce(FirstPublication) -> transaction::Result<()>,
-) -> Result<(), Reason> {
-    checked_directory(path.parent().ok_or(Reason::SetupUnavailable)?)?;
-    transaction::publish_new_with_journal(path, proposed, FirstPublication::mark, journal)
-        .map_err(|_| Reason::SetupUnavailable)
+    pending: &[u8],
+    proof: &FirstPublication,
+) -> Result<Vec<u8>, Reason> {
+    if !present(stage)? {
+        return Err(Reason::OwnedFileChanged);
+    }
+    transaction::publish_staged_new(stage, path, |current| {
+        current == pending && proof.matches(stage)
+    })
+    .map_err(|error| match error {
+        "unsafe_config_file" => Reason::OwnedFileChanged,
+        "concurrent_config_change" => Reason::OwnershipConflict,
+        _ => Reason::SetupUnavailable,
+    })?;
+    read_optional(path)?.ok_or(Reason::OwnedFileChanged)
 }
 
 /// Promote pending bytes only when the current file is the exact staged file.

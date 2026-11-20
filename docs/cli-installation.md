@@ -164,6 +164,9 @@ to a custom Claude configuration directory.
 The app keeps an ownership receipt in its data directory. On upgrade, it
 replaces only the bytes recorded in that receipt. It leaves existing unmanaged
 skills, local edits, removed managed files, and symbolic links untouched. If
+the first install stops after the receipt records a staged file, the app
+can finish only from that exact stage or the exact file already published.
+An unsafe staged file, including a file with an extended ACL, is not published. If
 installation cannot finish, resolve any unwanted path conflict and use CLI Repair
 or relaunch. Do not delete the receipt to force an install.
 

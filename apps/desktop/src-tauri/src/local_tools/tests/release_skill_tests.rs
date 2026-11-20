@@ -50,29 +50,166 @@ impl Fixture {
         render_skill(SKILL, &self.runtime().executable, None).unwrap()
     }
 
-    /// Stop after publication, before the release writes the active receipt.
-    fn publish_pending_first(&self, proposed: &[u8], race: impl FnOnce()) -> Result<(), Reason> {
+    /// Stop with a durable stage and pending receipt, before the skill is visible.
+    fn stage_pending_first(&self, proposed: &[u8]) -> (PathBuf, FirstPublication) {
         ensure_directory(self.receipt().parent().unwrap()).unwrap();
         fs::create_dir_all(self.skill().parent().unwrap()).unwrap();
-        publish_first(&self.skill(), proposed, |proof| {
-            save(
-                &self.receipt(),
-                &Receipt {
-                    owner: OWNER.into(),
-                    profile: self.home.join(".claude"),
-                    skill: FileReceipt {
-                        active: None,
-                        pending: Some(proposed.to_vec()),
-                    },
-                    first_publication: Some(proof),
-                },
-                &mut None,
-            )
-            .unwrap();
-            race();
-            Ok(())
-        })
+        let (stage, proof) = stage_first(&self.skill(), proposed).unwrap();
+        let receipt = Receipt {
+            owner: OWNER.into(),
+            profile: self.home.join(".claude"),
+            skill: FileReceipt {
+                active: None,
+                pending: Some(proposed.to_vec()),
+            },
+            first_publication: Some(proof),
+        };
+        save(&self.receipt(), &receipt, &mut None).unwrap();
+        (stage, receipt.first_publication.unwrap())
     }
+
+    /// Stop after the rename, before the release writes the active receipt.
+    fn publish_pending_first(&self, proposed: &[u8], race: impl FnOnce()) -> Result<(), Reason> {
+        let (stage, proof) = self.stage_pending_first(proposed);
+        race();
+        publish_first(&stage, &self.skill(), proposed, &proof).map(|_| ())
+    }
+}
+
+#[test]
+fn initial_receipt_publish_leaves_one_link_and_never_replaces_a_collision() {
+    let f = Fixture::new();
+    ensure_directory(f.receipt().parent().unwrap()).unwrap();
+    let receipt = Receipt {
+        owner: OWNER.into(),
+        profile: f.home.join(".claude"),
+        skill: FileReceipt {
+            active: None,
+            pending: Some(f.proposed()),
+        },
+        first_publication: None,
+    };
+    let mut previous = None;
+    save(&f.receipt(), &receipt, &mut previous).unwrap();
+    let metadata = fs::metadata(f.receipt()).unwrap();
+    assert_eq!(metadata.nlink(), 1);
+    assert_eq!(read_optional(&f.receipt()).unwrap(), previous);
+    let mut missing = None;
+    assert_eq!(
+        save(&f.receipt(), &receipt, &mut missing),
+        Err(Reason::SetupUnavailable)
+    );
+    assert!(missing.is_none());
+    assert_eq!(read_optional(&f.receipt()).unwrap(), previous);
+    assert_eq!(fs::metadata(f.receipt()).unwrap().ino(), metadata.ino());
+}
+
+#[test]
+fn retry_publishes_the_recorded_stage_without_replacing_its_inode() {
+    let f = Fixture::new();
+    let proposed = f.proposed();
+    let (stage, _) = f.stage_pending_first(&proposed);
+    let inode = fs::metadata(&stage).unwrap().ino();
+    assert!(!f.skill().exists());
+    f.install().unwrap();
+    assert!(!stage.exists());
+    assert_eq!(fs::metadata(f.skill()).unwrap().ino(), inode);
+    assert_eq!(fs::read(f.skill()).unwrap(), proposed);
+}
+
+#[test]
+fn retry_does_not_recreate_a_skill_removed_before_finalizing_the_receipt() {
+    let f = Fixture::new();
+    f.publish_pending_first(&f.proposed(), || {}).unwrap();
+    let receipt = fs::read(f.receipt()).unwrap();
+    fs::remove_file(f.skill()).unwrap();
+    assert_eq!(f.install(), Err(Reason::OwnedFileChanged));
+    assert!(!f.skill().exists());
+    assert_eq!(fs::read(f.receipt()).unwrap(), receipt);
+}
+
+#[test]
+fn legacy_publication_proof_can_finalize_an_installed_skill_but_not_restore_it() {
+    for removed in [false, true] {
+        let f = Fixture::new();
+        f.publish_pending_first(&f.proposed(), || {}).unwrap();
+        let path = f.receipt();
+        let mut saved = read_optional(&path).unwrap();
+        let mut receipt: Receipt = serde_json::from_slice(saved.as_deref().unwrap()).unwrap();
+        receipt.first_publication.as_mut().unwrap().stage = None;
+        save(&path, &receipt, &mut saved).unwrap();
+        if removed {
+            fs::remove_file(f.skill()).unwrap();
+            assert_eq!(f.install(), Err(Reason::OwnedFileChanged));
+            assert!(!f.skill().exists());
+        } else {
+            f.install().unwrap();
+            assert_eq!(fs::read(f.skill()).unwrap(), f.proposed());
+        }
+    }
+}
+
+#[test]
+fn retry_does_not_publish_a_replaced_or_redirected_stage() {
+    for redirect in [false, true] {
+        let f = Fixture::new();
+        let (stage, _) = f.stage_pending_first(&f.proposed());
+        let replacement = f.home.join("other");
+        fs::copy(&stage, &replacement).unwrap();
+        fs::remove_file(&stage).unwrap();
+        let expected = if redirect {
+            symlink(&replacement, &stage).unwrap();
+            Reason::OwnedFileChanged
+        } else {
+            fs::rename(&replacement, &stage).unwrap();
+            Reason::OwnershipConflict
+        };
+        assert_eq!(f.install(), Err(expected));
+        assert!(!f.skill().exists());
+        assert!(stage.exists());
+    }
+}
+
+#[test]
+fn inherited_file_acl_blocks_publication_until_corrected() {
+    let f = Fixture::new();
+    let parent = f.home.join(".claude/skills");
+    fs::create_dir_all(&parent).unwrap();
+    let entry =
+        "everyone allow read,readattr,readextattr,readsecurity,file_inherit,directory_inherit";
+    let change_acl = |operation| {
+        assert!(
+            std::process::Command::new("/bin/chmod")
+                .args([operation, entry])
+                .arg(&parent)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    change_acl("+a");
+    let result = f.install();
+    change_acl("-a");
+    assert_eq!(result, Err(Reason::SetupUnavailable));
+    assert!(!f.skill().exists());
+    assert!(
+        fs::read_dir(f.skill().parent().unwrap())
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    let receipt: Receipt = serde_json::from_slice(&fs::read(f.receipt()).unwrap()).unwrap();
+    assert!(receipt.first_publication.is_none());
+    assert!(
+        std::process::Command::new("/bin/chmod")
+            .arg("-N")
+            .arg(f.skill().parent().unwrap())
+            .status()
+            .unwrap()
+            .success()
+    );
+    f.install().unwrap();
+    assert_eq!(fs::read(f.skill()).unwrap(), f.proposed());
 }
 
 #[test]
