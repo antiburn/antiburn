@@ -32,13 +32,13 @@ pub(super) enum Route {
 impl Route {
     fn path(self, capture: &str) -> String {
         match self {
-            Self::Capabilities => "/v1/desktop/captures/capabilities".into(),
-            Self::Reserve => "/v1/desktop/captures/reserve".into(),
-            Self::Manifest => format!("/v1/desktop/captures/{capture}/manifest"),
-            Self::Status => format!("/v1/desktop/captures/{capture}/status"),
-            Self::Parts => format!("/v1/desktop/captures/{capture}/parts"),
-            Self::Finalize => format!("/v1/desktop/captures/{capture}/finalize"),
-            Self::Renew => format!("/v1/desktop/captures/{capture}/renew"),
+            Self::Capabilities => "/v1/devices/captures/capabilities".into(),
+            Self::Reserve => "/v1/devices/captures/reserve".into(),
+            Self::Manifest => format!("/v1/devices/captures/{capture}/manifest"),
+            Self::Status => format!("/v1/devices/captures/{capture}/status"),
+            Self::Parts => format!("/v1/devices/captures/{capture}/parts"),
+            Self::Finalize => format!("/v1/devices/captures/{capture}/finalize"),
+            Self::Renew => format!("/v1/devices/captures/{capture}/renew"),
         }
     }
 }

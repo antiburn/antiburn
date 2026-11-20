@@ -4,7 +4,7 @@ Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.co
 Standard public builds keep Cloud disabled. This contract covers opt-in
 Cloud-enabled development builds, not production availability.
 
-Development builds use a browser-approved desktop connection, not a general
+Development builds use a browser-approved device connection, not a general
 OAuth or OpenID Connect service. Builds without the `cloud` feature include no Cloud commands,
 capabilities, callback scheme, account controls, or Cloud onboarding step. Local
 sessions and Checks do not need Cloud.
@@ -67,7 +67,7 @@ that explicitly enables debug assertions uses the same debug behavior.
 Standard release builds keep Cloud disabled. Manually enabling `cloud` without
 debug assertions requires both HTTPS origins; it adds no implicit configuration.
 Route URLs still include the slash before the path. The resource origin owns
-the desktop API routes. Use an approved development service only.
+the device API routes. Use an approved development service only.
 
 The explicit feature command also works for a debug build:
 
@@ -107,18 +107,18 @@ revocation. An unresolved team approval does not block Personal sign-in. An
 explicit browser denial does not need a reset.
 
 The browser must name the workspace, permitted action, and device before the user
-approves the connection. The approved scope covers this first-party desktop
-client only. It does not grant general API-client or third-party authorization.
+approves the connection. The approved scope covers the first-party device
+connection only. It does not grant general API-client or third-party authorization.
 Token responses bind opaque credentials to an account grant, user,
 fixed grant deadline, scope, resource, and issuer. The session
 response supplies those same bindings, a nullable display name,
 the device label, and the access deadline. Deadlines use RFC 3339 strings.
 Desktop accepts only these exact scope strings:
 
-- `capture:write sessions:list sessions:read` permits capture and lets the
-  client search and read sessions the signed-in user can access. The service
-  still checks the user's current access. Desktop capture uses only the
-  capture permission.
+- New approvals use `capture:write sessions:list sessions:read`. This scope
+  permits capture and authorizes search and reads for sessions the signed-in
+  user can access. The service still checks the user's current access. Desktop
+  capture uses only the capture permission.
 - `capture:write` permits capture only. Older account grants keep this scope
   when refreshed.
 
@@ -127,18 +127,18 @@ refresh credential. A changed grant, account, scope, or fixed deadline
 cannot restore the saved connection. To receive the broader scope on an older
 connection, sign in again instead of refreshing the old grant.
 
-Desktop authentication requests use the configured API origin:
+Device authentication requests use the configured API origin:
 
-| Request                      | Desktop proof                                                                                                |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /desktop/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
-| `POST /v1/desktop/token`     | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
-| `GET /v1/desktop/session`    | Access bearer                                                                                                |
-| `GET /v1/desktop/workspaces` | Access bearer                                                                                                |
-| `POST /v1/desktop/logout`    | JSON `{refresh_token}`                                                                                       |
+| Request                          | Proof                                                                                                       |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
+| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
+| `GET /v1/devices/session`        | Access bearer                                                                                              |
+| `GET /v1/devices/workspaces`     | Access bearer                                                                                              |
+| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                     |
 
 Desktop uses the short OS hostname as `device_name`. It omits the domain suffix
-and falls back to `Antiburn desktop` if the name is unavailable or unsuitable.
+and falls back to `Antiburn Desktop` if the name is unavailable or unsuitable.
 The label is sent when starting browser approval and is saved for that
 connection. A rename does not change labels on existing connections.
 
@@ -363,7 +363,7 @@ to upload an excluded source. Restore access or retry discovery in Settings.
 Setup failures do not hide account cleanup controls.
 
 Before enabling sync or making a capture, Desktop reads
-`GET /v1/desktop/captures/capabilities`. It sends only formats in the response: `ClaudeJsonl`,
+`GET /v1/devices/captures/capabilities`. It sends only formats in the response: `ClaudeJsonl`,
 `OpenCodeSqliteV2`, `CodexJsonl`, or `PiJsonl`. The source limit is at most 128 MiB
 per transcript or expanded OpenCode native-row stream. A lower advertised limit
 can apply. Missing support blocks new capture without truncating or dropping
@@ -466,7 +466,8 @@ Expired incomplete parts can require transfer again from the same local bytes.
 This never grants permission to read source again, change the capture, or
 overwrite a newer publication. Deletion and cancellation remain final.
 
-Capture API requests use the configured resource origin and desktop-held credentials.
+Capture API requests use `/v1/devices/captures` on the configured resource origin
+and use credentials held by Desktop.
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.
 Upload locations never enter saved state, renderer status, or diagnostics.

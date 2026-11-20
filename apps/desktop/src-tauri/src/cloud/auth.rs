@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{ffi::OsStr, io::Read, time::Duration};
 use url::Url;
 
-const DEFAULT_DEVICE_NAME: &str = "Antiburn desktop";
+const DEFAULT_DEVICE_NAME: &str = "Antiburn Desktop";
 
 /// Returns display metadata for the browser consent page, not a device ID.
 /// Run on a blocking worker. The lookup uses local OS settings, not DNS.
@@ -103,11 +103,11 @@ impl Config {
         Some(Self {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
-            authorization: resource_url.join("desktop/authorize/account").ok()?,
-            token: resource_url.join("v1/desktop/token").ok()?,
-            revocation: resource_url.join("v1/desktop/logout").ok()?,
-            session: resource_url.join("v1/desktop/session").ok()?,
-            workspaces: resource_url.join("v1/desktop/workspaces").ok()?,
+            authorization: resource_url.join("devices/authorize/account").ok()?,
+            token: resource_url.join("v1/devices/token").ok()?,
+            revocation: resource_url.join("v1/devices/logout").ok()?,
+            session: resource_url.join("v1/devices/session").ok()?,
+            workspaces: resource_url.join("v1/devices/workspaces").ok()?,
         })
     }
 }

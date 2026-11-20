@@ -262,7 +262,7 @@ export function CloudOnboarding({
             </h1>
             <p className="type-onboarding-body text-onboarding-muted">
               {value.cloud.authEnabled
-                ? "Approve this desktop connection in your browser."
+                ? "Approve this device in your browser."
                 : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
