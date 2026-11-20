@@ -163,7 +163,35 @@ grant it belongs to.
 
 ## Credential and logout safety
 
-Opaque access tokens stay in desktop process memory for at most 15 minutes. Only the OS keyring stores rotating refresh
+### Read sessions from the CLI
+
+On macOS and Linux, a Cloud-enabled CLI can reuse an active, read-capable
+device connection from a running Antiburn Desktop app. The app owns sign-in
+and refresh. It gives the CLI short-lived access proof over a private local
+socket that checks the OS user. It does not write the access proof to a file or
+give the CLI the refresh credential. This does not isolate processes that run
+as the same OS user.
+
+The CLI starts with the Personal workspace. It can request another workspace
+by ID. The service checks current workspace and session permissions on every
+search and document read. It uses the workspace session API, not a device-only
+or CLI-only endpoint. A connection approved only for upload cannot serve
+CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
+where the service offers them.
+
+| Request | Device scope | Page fields the CLI uses |
+| --- | --- | --- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | `items`, `page.next_cursor` |
+| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
+
+Send the access token as `Authorization: Bearer <token>`. A cursor continues
+the same document revision; it does not grant access. The service checks
+permission again when the CLI reads the next page.
+
+### Device credentials
+
+Opaque access tokens expire after at most 15 minutes. The app and CLI keep
+them in memory. Only the OS keyring stores rotating refresh
 tokens. There is no plaintext or database fallback. The connection has a fixed
 one-year deadline. Refresh does not extend that deadline.
 

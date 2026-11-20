@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
 import {
   artifactPaths,
   targets,
@@ -10,14 +11,29 @@ import {
 test("build uses the public CLI artifact and stages the private payload name", () => {
   assert.match(
     artifactPaths("x86_64-unknown-linux-gnu").source,
-    /apps\/cli\/target\/sidecar-build\/x86_64-unknown-linux-gnu\/release\/antiburn$/,
+    /apps[\\/]cli[\\/]target[\\/]sidecar-build[\\/]x86_64-unknown-linux-gnu[\\/]release[\\/]antiburn$/,
   );
-  const paths = artifactPaths("x86_64-unknown-linux-gnu", "/isolated/target");
-  assert.equal(paths.source, "/isolated/target/x86_64-unknown-linux-gnu/release/antiburn");
-  assert.match(paths.destination, /cli-payload\/antiburn-cli$/);
-  const windows = artifactPaths("aarch64-pc-windows-msvc", "/isolated/target");
-  assert.equal(windows.source, "/isolated/target/aarch64-pc-windows-msvc/release/antiburn.exe");
+  const targetDir = join("isolated", "target");
+  const paths = artifactPaths("x86_64-unknown-linux-gnu", targetDir);
+  assert.equal(
+    paths.source,
+    join(targetDir, "x86_64-unknown-linux-gnu", "release", "antiburn"),
+  );
+  assert.match(paths.destination, /cli-payload[\\/]antiburn-cli$/);
+  const windows = artifactPaths("aarch64-pc-windows-msvc", targetDir);
+  assert.equal(
+    windows.source,
+    join(targetDir, "aarch64-pc-windows-msvc", "release", "antiburn.exe"),
+  );
   assert.match(windows.destination, /cli-payload[\\/]antiburn-cli\.exe$/);
+  const cloud = artifactPaths("aarch64-pc-windows-msvc", targetDir, {
+    cloudDev: true,
+  });
+  assert.equal(
+    cloud.source,
+    join(targetDir, "aarch64-pc-windows-msvc", "debug", "antiburn.exe"),
+  );
+  assert.equal(cloud.destination, windows.destination);
 });
 
 test("CLI architecture rejects mislabeled binaries for all six release targets", () => {

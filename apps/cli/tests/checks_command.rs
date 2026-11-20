@@ -17,7 +17,8 @@ fn public_command_help_and_version_use_antiburn_name() {
     let help = Command::new(executable).arg("--help").output().unwrap();
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).unwrap();
-    assert!(help.starts_with("Read Antiburn check updates"));
+    assert!(help.contains("check updates"));
+    assert!(help.contains("Search session IDs and titles"));
     assert!(help.contains("Usage: antiburn "));
     assert!(!help.contains("antiburn-cli"));
 

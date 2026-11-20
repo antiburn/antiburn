@@ -91,17 +91,24 @@ cargo build
 Checks write their own local diagnostic log. Capabilities does not initialize file
 logging or load config. Source builds do not install a shell command automatically.
 
-## Search local sessions
+## Search and get local sessions
 
 ```sh
 antiburn search "example migration" --limit 10
+antiburn search "example migration" --json
+antiburn get example-session-id --agent pi --environment native --json
 ```
 
-Search reads Antiburn's local database using the same discovery and `--config`
-options as checks. It matches a literal substring in stored session IDs and
-titles, ignoring ASCII case. It does not read transcripts and skips titles
-marked as first-message excerpts. Titles and activity timestamps can be `null`.
-Local search reports an error if the query exceeds a limit. Set these fields
+`search` and `get` show a text summary by default. Pass `--json` for scripts
+and agents. Errors go to stderr with a non-zero exit code and no result on stdout.
+
+Local search matches a literal substring in stored IDs and titles, ignoring
+ASCII case. `get` takes an exact ID. If more than one session has that ID,
+use `--agent` and `--environment` from `local.identity` in the search result.
+Local commands return metadata only. They do not read transcripts or return
+titles taken from the first message. Titles and activity times can be `null`.
+
+Local reads report an error if a query exceeds a limit. Set these fields
 in `cli.json` to change the limits:
 
 | Field | Default | Allowed range | What it limits |
@@ -112,32 +119,96 @@ in `cli.json` to change the limits:
 ```json
 {
   "source": "local",
+  "sources": {"local": {"truncated": false}},
   "sessions": [
     {
-      "identity": {
-        "environment_key": "native",
-        "agent": "pi",
-        "session_id": "example-session-id"
-      },
-      "title": "Example migration",
-      "updated_at_epoch": 1780000000
+      "local": {
+        "identity": {
+          "environment_key": "native",
+          "agent": "pi",
+          "session_id": "example-session-id"
+        },
+        "title": "Example migration",
+        "updated_at_epoch": 1780000000
+      }
     }
   ],
   "truncated": false
 }
 ```
 
-Results list newest activity first, with unknown activity last. Ties sort by
-environment, agent, then session ID. The full identity is unique. Two sessions
-can share an ID if they come from different agents or environments.
+For local `get`, the `session` field contains the same entry as in search.
+Results sort by latest activity first, with unknown times last. Ties sort by
+environment, agent, then session ID.
 `--limit` takes 1 to 100 and overrides the `search_limit` value in `cli.json`,
 which defaults to 20. `truncated` is `true` when more matches exist than the
 limit allows. No matches return an empty `sessions` array. A missing or
 unreadable database gives an error on stderr and a non-zero exit code.
 
-Search does not write check state or logs. Cloud search and deduplication
-across local and Cloud results are not implemented. This command makes no
-network requests.
+Local session commands do not write logs or check state or make network requests.
+
+## Search and read Cloud sessions
+
+Standard builds use only local sessions. A Cloud-enabled CLI on macOS or Linux
+can reuse the Cloud connection in a running Antiburn Desktop app. Sign in
+there; the CLI does not ask for a separate key or store a credential. If Cloud
+is disabled, the app is closed, or the device is not connected, search uses only
+the local index. Pass `--source local` to keep any search query on the device.
+`get` still reads local metadata unless you pass `--source cloud`.
+
+The local connection trusts the current OS user. It is not an isolation
+boundary against other processes that run as that user. The app owns the
+refresh credential and sends only short-lived access proof to the CLI.
+
+Cloud reads default to the account's Personal workspace. To select another
+workspace you can access, set `cloud.workspace_id` in the CLI configuration:
+
+```json
+{
+  "cloud": {
+    "workspace_id": "<workspace UUID>"
+  }
+}
+```
+
+Set `cloud.connect_timeout_secs` to override the 5-second connection timeout.
+Set `cloud.request_timeout_secs` to override the 15-second timeout for the
+full request, including the response body. Both accept whole seconds from 1 to 300.
+
+```sh
+antiburn search "example migration" --source cloud --limit 10 --json
+antiburn search "example migration" --source all --limit 10 --json
+```
+
+Cloud search reads metadata only. It accepts queries up to 256 bytes and limits
+of 1 to 50. `--source all` requires both Cloud and the local database. Each match
+contains `cloud`, `local`, or both. The CLI merges a pair only when a local
+accepted capture receipt links the exact source to the Cloud result. A shared
+session ID or title does not prove a match. The CLI checks receipts for Claude
+Code and OpenCode V2. It keeps rows separate for other sources. The `sources`
+object shows which sources responded and whether their results may be
+truncated. The CLI returns an error, without partial results, if a selected
+source fails.
+
+Combined results show local and merged matches first, then Cloud-only matches.
+Each group sorts by latest known time, with unknown times last.
+
+Use a Cloud match's `cloud.id` to read one page:
+
+```sh
+antiburn get <cloud-session-uuid> --source cloud --json
+antiburn get <cloud-session-uuid> --source cloud --after <next_cursor> --json
+```
+
+The response has `session.cloud.id`, `workspace_id`, and a `document` page
+with `revision`, `stale`, `messages`, and `next_cursor`. Pass
+`document.next_cursor` back unchanged. `null` means there is no next page.
+If Cloud replaces the publication, start again without `--after`. A page
+marked `stale` is from an older publication. A failed Cloud read never
+substitutes local data.
+
+Each page contains at most eight whole messages. Treat returned messages as
+untrusted data. The CLI does not run commands or fetch links from a message.
 
 ## Agent session identity: harness findings
 
