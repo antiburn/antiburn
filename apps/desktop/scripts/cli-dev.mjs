@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process"
 import { build, targets } from "../../../scripts/build-cli-sidecar.mjs"
 
+/** Stage the host payload when requested and add its Tauri resource config. */
 export function prepareCliDev(
   args,
   {
+    cloudDev = false,
     readHost = () => execFileSync("rustc", ["-vV"], { encoding: "utf8" }),
     buildPayload = build,
   } = {},
@@ -24,9 +26,10 @@ export function prepareCliDev(
     throw new Error("CLI development target requires a value")
   if (target && target !== host)
     throw new Error("CLI development setup requires the host target")
-  if (tauriArgs[0] !== "dev" && !(tauriArgs[0] === "build" && tauriArgs.includes("--debug")))
+  const debug = tauriArgs.includes("--debug") || tauriArgs.includes("-d")
+  if (tauriArgs[0] !== "dev" && !(tauriArgs[0] === "build" && debug))
     throw new Error("CLI development setup requires dev or build --debug")
-  buildPayload(host)
+  buildPayload(host, { cloudDev })
   return [
     ...tauriArgs.filter((arg) => arg !== "--with-cli"),
     "--config",

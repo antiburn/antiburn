@@ -34,7 +34,7 @@ test("manual launch without CLI preparation does not read the host or build payl
   assert.equal(prepareCliDev(args, { readHost: fail, buildPayload: fail }), args)
 })
 
-test("CLI preparation preserves Cloud features and other Tauri options", () => {
+test("CLI preparation stages the Cloud payload without changing Tauri options", () => {
   const input = [
     "dev",
     "--with-cli",
@@ -48,8 +48,12 @@ test("CLI preparation preserves Cloud features and other Tauri options", () => {
   ]
   assert.deepEqual(
     prepareCliDev(input, {
+      cloudDev: true,
       readHost: () => "host: aarch64-apple-darwin",
-      buildPayload: () => {},
+      buildPayload: (target, options) => {
+        assert.equal(target, "aarch64-apple-darwin")
+        assert.deepEqual(options, { cloudDev: true })
+      },
     }),
     [
       ...input.filter((argument) => argument !== "--with-cli"),
@@ -59,18 +63,19 @@ test("CLI preparation preserves Cloud features and other Tauri options", () => {
   )
 })
 
-test("debug bundles are prepared and build failures prevent launching", () => {
-  const args = ["build", "--debug", "--with-cli"]
-  assert.throws(
-    () =>
-      prepareCliDev(args, {
-        readHost: () => "host: aarch64-apple-darwin",
-        buildPayload: () => {
-          throw new Error("build failed")
-        },
-      }),
-    /build failed/,
-  )
+test("both debug bundle flags prepare the payload and stop on build failure", () => {
+  for (const flag of ["--debug", "-d"]) {
+    assert.throws(
+      () =>
+        prepareCliDev(["build", flag, "--with-cli"], {
+          readHost: () => "host: aarch64-apple-darwin",
+          buildPayload: () => {
+            throw new Error("build failed")
+          },
+        }),
+      /build failed/,
+    )
+  }
 })
 
 test("unsupported and cross-target development requests fail before building", () => {

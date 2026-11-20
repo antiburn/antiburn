@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const sidecarTargetDir = join(root, "apps/cli/target/sidecar-build");
 export const targets = [
   "aarch64-apple-darwin",
   "x86_64-apple-darwin",
@@ -14,13 +15,20 @@ export const targets = [
   "x86_64-unknown-linux-gnu",
 ];
 
+/** Match the Cargo profile to its artifact path. Both profiles stage the same payload name. */
 export function artifactPaths(
   target,
-  targetDir = join(root, "apps/cli/target/sidecar-build"),
+  targetDir = sidecarTargetDir,
+  { cloudDev = false } = {},
 ) {
   const windows = target.includes("windows");
   return {
-    source: join(targetDir, target, "release", windows ? "antiburn.exe" : "antiburn"),
+    source: join(
+      targetDir,
+      target,
+      cloudDev ? "debug" : "release",
+      windows ? "antiburn.exe" : "antiburn",
+    ),
     destination: join(
       root,
       "apps/desktop/src-tauri/cli-payload",
@@ -54,14 +62,15 @@ export function validateArchitecture(bytes, target) {
   if (!valid) throw new Error(`CLI architecture does not match ${target}`);
 }
 
-export function build(target) {
+/** Build and finalize a release payload unless the Desktop debug launcher selects Cloud. */
+export function build(target, { cloudDev = false } = {}) {
   if (!targets.includes(target))
     throw new Error("Pass one supported --target triple");
-  const paths = artifactPaths(target);
+  const paths = artifactPaths(target, sidecarTargetDir, { cloudDev });
   const manifest = join(root, "apps/cli/Cargo.toml");
   const env = {
     ...process.env,
-    CARGO_TARGET_DIR: join(root, "apps/cli/target/sidecar-build"),
+    CARGO_TARGET_DIR: sidecarTargetDir,
   };
   if (target.includes("windows")) {
     if (env.CARGO_ENCODED_RUSTFLAGS)
@@ -73,7 +82,8 @@ export function build(target) {
     [
       "build",
       "--locked",
-      "--release",
+      // Cloud development uses debug assertions to allow local HTTP origins.
+      ...(cloudDev ? ["--features", "cloud"] : ["--release"]),
       "--manifest-path",
       manifest,
       "--target",
