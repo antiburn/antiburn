@@ -55,8 +55,15 @@ pub struct SearchArgs {
     /// Maximum results (1 to 100 locally; 1 to 50 for Cloud or combined search).
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..=i64::from(MAX_SEARCH_LIMIT)))]
     pub(crate) limit: Option<u16>,
-    /// Choose a source. The default also searches Cloud when a device is connected.
-    #[arg(long, value_enum)]
+    #[arg(
+        long,
+        value_enum,
+        help = if cfg!(all(feature = "cloud", unix)) {
+            "Choose a source. The default includes Cloud when a device is connected."
+        } else {
+            "Choose a source. This build searches local sessions only."
+        },
+    )]
     pub(crate) source: Option<SearchMode>,
     /// Print structured JSON instead of a text summary.
     #[arg(long)]
@@ -70,9 +77,11 @@ pub(crate) enum SearchMode {
     Local,
     /// Search only the configured Cloud workspace.
     #[cfg(feature = "cloud")]
+    #[value(hide = !cfg!(unix))]
     Cloud,
     /// Search both sources and merge only confirmed matches.
     #[cfg(feature = "cloud")]
+    #[value(hide = !cfg!(unix))]
     All,
 }
 
@@ -92,7 +101,7 @@ pub struct GetArgs {
     pub(crate) environment: Option<String>,
     /// Continue with the next cursor from the previous page.
     #[cfg(feature = "cloud")]
-    #[arg(long)]
+    #[arg(long, hide = !cfg!(unix))]
     pub(crate) after: Option<String>,
     /// Print structured JSON instead of a text summary.
     #[arg(long)]
@@ -105,6 +114,7 @@ pub(crate) enum GetSource {
     Local,
     /// Read one page of the Cloud document. Never substitute local data.
     #[cfg(feature = "cloud")]
+    #[value(hide = !cfg!(unix))]
     Cloud,
 }
 

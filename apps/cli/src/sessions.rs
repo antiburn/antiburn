@@ -247,7 +247,7 @@ async fn cloud_client(config: &Config) -> Result<cloud::CloudClient, String> {
 }
 
 /// Render untrusted metadata on one terminal line without control codes.
-fn safe_text(value: &str) -> String {
+pub(super) fn safe_text(value: &str) -> String {
     value
         .chars()
         .map(|character| {

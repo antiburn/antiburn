@@ -156,6 +156,10 @@ is disabled, the app is closed, or the device is not connected, search uses only
 the local index. Pass `--source local` to keep any search query on the device.
 `get` still reads local metadata unless you pass `--source cloud`.
 
+The local connection trusts the current OS user. It is not an isolation
+boundary against other processes that run as that user. The app owns the
+refresh credential and sends only short-lived access proof to the CLI.
+
 Cloud reads default to the account's Personal workspace. To select another
 workspace you can access, set `cloud.workspace_id` in the CLI configuration:
 

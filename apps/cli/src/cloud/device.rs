@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum DeviceReply {
@@ -12,6 +13,7 @@ enum DeviceReply {
     Unavailable { status: Unavailable },
 }
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Unavailable {
@@ -24,7 +26,6 @@ pub(super) struct Connection {
     pub origin: String,
     pub access_token: String,
     pub personal_workspace_id: Uuid,
-    pub workspace_ids: Vec<Uuid>,
 }
 
 #[cfg(unix)]
@@ -57,11 +58,16 @@ pub(super) async fn current(config: &Config) -> Result<Option<Connection>, Strin
         || !socket.file_type().is_socket()
         || socket.uid() != user
         || socket.mode() & 0o077 != 0
+        || tokio::fs::canonicalize(&data)
+            .await
+            .map_err(|_| unavailable)?
+            != data
     {
         return Err(unavailable.into());
     }
 
-    tokio::time::timeout(Duration::from_secs(5), async {
+    // Desktop may need to refresh and verify a saved connection before replying.
+    tokio::time::timeout(Duration::from_secs(55), async {
         let mut stream = match UnixStream::connect(path).await {
             Ok(stream) => stream,
             Err(error) if error.kind() == ErrorKind::ConnectionRefused => return Ok(None),

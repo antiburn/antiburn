@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -33,7 +34,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(origin: &str) -> Self {
-        let root = tempfile::tempdir_in("/tmp").unwrap();
+        let root = tempfile::tempdir_in(std::fs::canonicalize("/tmp").unwrap()).unwrap();
         std::fs::create_dir(root.path().join("ai.antiburn.desktop")).unwrap();
         let config = root.path().join("cli.json");
         std::fs::write(
@@ -86,8 +87,7 @@ impl Fixture {
                             let body = json!({
                                 "origin": self.origin,
                                 "access_token": KEY,
-                                "personal_workspace_id": WORKSPACE,
-                                "workspace_ids": [WORKSPACE]
+                                "personal_workspace_id": WORKSPACE
                             });
                             writeln!(stream, "{body}").unwrap();
                             break;
@@ -400,6 +400,25 @@ fn default_search_stays_local_without_a_device_connection() {
 }
 
 #[test]
+fn rejects_an_unprotected_device_socket_but_local_search_ignores_it() {
+    let fixture = Fixture::new("http://127.0.0.1:1");
+    fixture.local_database("http://127.0.0.1:1");
+    let path = fixture
+        .root
+        .path()
+        .join("ai.antiburn.desktop/cloud-device.sock");
+    let _listener = UnixListener::bind(&path).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666)).unwrap();
+    let run = |args: &[&str]| fixture.command().args(args).output().unwrap();
+    assert_private_error(
+        run(&["search", "sample", "--source", "cloud", "--json"]),
+        "could not read the local device connection",
+    );
+    let local = read_success(run(&["search", "sample", "--source", "local", "--json"]));
+    assert_eq!(local["source"], "local");
+}
+
+#[test]
 fn merges_only_exact_accepted_source_bindings() {
     let mut older = item(OTHER, "Cloud two", Some("scope/sample-two"));
     older["started_at"] = json!("1970-01-01T00:00:15.100Z");
@@ -556,7 +575,12 @@ fn document(session: &str, revision: &str, cursor: Option<&str>) -> String {
 
 #[test]
 fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
-    let (origin, server) = serve(document(SESSION, REVISION, Some(CURSOR)));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = serve_on(
+        listener.try_clone().unwrap(),
+        document(SESSION, REVISION, Some(CURSOR)),
+    );
     let fixture = Fixture::new(&origin);
     let output = fixture.run(&["get", SESSION, "--source", "cloud"]);
     assert!(String::from_utf8_lossy(&output.stdout).contains("90071992547409931234567890"));
@@ -573,8 +597,10 @@ fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
 
     let cursor = first["document"]["next_cursor"].as_str().unwrap();
     for (revision, expected) in [(REVISION, true), (OTHER, false)] {
-        let (origin, server) = serve(document(SESSION, revision, None));
-        let fixture = Fixture::new(&origin);
+        let server = serve_on(
+            listener.try_clone().unwrap(),
+            document(SESSION, revision, None),
+        );
         let output = fixture.run(&["get", SESSION, "--source", "cloud", "--after", cursor]);
         if expected {
             assert!(read_success(output)["document"]["next_cursor"].is_null());
@@ -586,6 +612,11 @@ fn reads_one_page_and_keeps_the_exact_publication_and_message_values() {
             &format!("{ROUTE_PREFIX}/{WORKSPACE}/sessions/{SESSION}?after={CURSOR}"),
         );
     }
+    let other_connection = Fixture::new("http://127.0.0.1:1");
+    assert_private_error(
+        other_connection.run(&["get", SESSION, "--source", "cloud", "--after", cursor]),
+        "invalid document cursor",
+    );
 }
 
 #[test]
@@ -602,8 +633,9 @@ fn displays_one_cloud_document_page_in_text_mode() {
     assert!(text.contains(&format!("Cloud: {SESSION}")));
     assert!(text.contains(&format!("Document revision: {REVISION}")));
     assert!(text.contains("Messages on this page: 1"));
+    let origin_key = URL_SAFE_NO_PAD.encode(Sha256::digest(&origin));
     assert!(text.contains(&format!(
-        "Next page: --after {WORKSPACE}.{SESSION}.{REVISION}.{CURSOR}"
+        "Next page: --after {origin_key}.{WORKSPACE}.{SESSION}.{REVISION}.{CURSOR}"
     )));
     assert_cloud_request(
         server,
