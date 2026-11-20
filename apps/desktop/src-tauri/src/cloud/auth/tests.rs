@@ -224,7 +224,7 @@ fn cloud_legacy_keyring_record_can_revoke_but_never_refresh() {
 
 #[test]
 fn cloud_account_approval_requires_one_personal_anchor_and_rotation_cannot_change_it() {
-    use super::{Callback, SCOPE};
+    use super::{CAPTURE_SCOPE, Callback};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Script {
@@ -244,7 +244,7 @@ fn cloud_account_approval_requires_one_personal_anchor_and_rotation_cannot_chang
                 user_id: "synthetic-user".into(),
                 legacy_workspace_claim: false,
                 grant_expires_at: "1970-01-01T02:46:40Z".into(),
-                scope: SCOPE.into(),
+                scope: CAPTURE_SCOPE.into(),
                 resource: config.resource.clone(),
                 iss: config.issuer.clone(),
             })
@@ -255,7 +255,7 @@ fn cloud_account_approval_requires_one_personal_anchor_and_rotation_cannot_chang
                 display_name: None,
                 grant_id: "synthetic-grant".into(),
                 device_name: "Example desktop".into(),
-                scope: SCOPE.into(),
+                scope: CAPTURE_SCOPE.into(),
                 resource: config.resource.clone(),
                 grant_expires_at: "1970-01-01T02:46:40Z".into(),
                 access_expires_at: "1970-01-01T00:03:20Z".into(),
@@ -613,7 +613,7 @@ mod debug_http {
                     kind: WorkspaceKind::Personal,
                 },
                 resource: old.resource.clone(),
-                scope: super::super::SCOPE.into(),
+                scope: super::super::CAPTURE_SCOPE.into(),
                 iss: old.issuer.clone(),
                 expires_at: 10_000,
                 access_expires_at: 160,

@@ -110,12 +110,22 @@ The browser must name the workspace, permitted action, and device before the use
 approves the connection. The approved scope covers this first-party desktop
 client only. It does not grant general API-client or third-party authorization.
 Token responses bind opaque credentials to an account grant, user,
-fixed grant deadline, `capture:write`, resource, and issuer. The session
+fixed grant deadline, scope, resource, and issuer. The session
 response supplies those same bindings, a nullable display name,
 the device label, and the access deadline. Deadlines use RFC 3339 strings.
-Desktop validation compares the token and session bindings before saving a
-refresh credential. A changed grant, account, or fixed deadline
-cannot restore the saved connection.
+Desktop accepts only these exact scope strings:
+
+- `capture:write sessions:list sessions:read` permits capture and lets the
+  client search and read sessions the signed-in user can access. The service
+  still checks the user's current access. Desktop capture uses only the
+  capture permission.
+- `capture:write` permits capture only. Older account grants keep this scope
+  when refreshed.
+
+Desktop requires the token and session bindings to match before it saves a
+refresh credential. A changed grant, account, scope, or fixed deadline
+cannot restore the saved connection. To receive the broader scope on an older
+connection, sign in again instead of refreshing the old grant.
 
 Desktop authentication requests use the configured API origin:
 

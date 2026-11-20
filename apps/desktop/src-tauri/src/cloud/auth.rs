@@ -33,8 +33,16 @@ fn short_hostname(hostname: &OsStr) -> Option<&str> {
         && !label.eq_ignore_ascii_case("localhost"))
     .then_some(label)
 }
-/// The only first-party permission accepted by this desktop connection.
-pub const SCOPE: &str = "capture:write";
+/// Scope for existing capture-only account grants.
+pub const CAPTURE_SCOPE: &str = "capture:write";
+/// Scope for account grants that can also search and read sessions.
+pub const CAPTURE_AND_SESSION_SCOPE: &str = "capture:write sessions:list sessions:read";
+
+/// Accept only the service's exact scope strings. Do not normalize or split them.
+fn supported_scope(scope: &str) -> bool {
+    matches!(scope, CAPTURE_SCOPE | CAPTURE_AND_SESSION_SCOPE)
+}
+
 /// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
 pub const MAX_ACCESS_SECONDS: u64 = 900;
 /// Maximum initial fixed grant lifetime in seconds.
@@ -207,7 +215,7 @@ impl Session {
             || self.workspace.kind != WorkspaceKind::Personal
             || !self.workspace.valid()
             || self.resource != config.resource
-            || self.scope != SCOPE
+            || !supported_scope(&self.scope)
             || self.iss != config.issuer
             || self.expires_at <= now
             || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
@@ -304,7 +312,7 @@ impl Tokens {
         if !bounded(&self.grant_id, 256)
             || !bounded(&self.user_id, 256)
             || self.legacy_workspace_claim
-            || self.scope != SCOPE
+            || !supported_scope(&self.scope)
             || self.resource != config.resource
             || self.iss != config.issuer
             || expires_at <= now

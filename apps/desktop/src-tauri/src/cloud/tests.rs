@@ -167,6 +167,7 @@ struct FakeTransport {
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
     token_grant: Mutex<Option<String>>,
+    token_scope: Mutex<Option<&'static str>>,
     token_expires_in: Mutex<Option<u64>>,
     fail_revoke_for: Mutex<Option<String>>,
     seen: Mutex<Vec<String>>,
@@ -205,7 +206,12 @@ impl Transport for Arc<FakeTransport> {
             user_id: session().user.id,
             legacy_workspace_claim: false,
             grant_expires_at: "1970-01-01T02:46:40Z".into(),
-            scope: auth::SCOPE.into(),
+            scope: self
+                .token_scope
+                .lock()
+                .unwrap()
+                .unwrap_or(auth::CAPTURE_SCOPE)
+                .into(),
             resource: config().resource,
             iss: config().issuer,
         })
@@ -1012,6 +1018,85 @@ fn cloud_refresh_uses_the_grant_deadline_not_the_previous_access_deadline() {
     fixture.engine.refresh(200, || true).unwrap();
     assert!(fixture.engine.session().is_some());
     assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_sign_in_rejects_mismatched_or_unsupported_scopes() {
+    use auth::{CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE};
+
+    for (token_scope, session_scope) in [
+        (CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE),
+        (CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE),
+        ("capture:write sessions:list", "capture:write sessions:list"),
+        (
+            "sessions:list sessions:read capture:write",
+            "sessions:list sessions:read capture:write",
+        ),
+    ] {
+        let mut fixture = Fixture::new();
+        *fixture.transport.token_scope.lock().unwrap() = Some(token_scope);
+        *fixture.transport.returned_session.lock().unwrap() = Some(Session {
+            scope: session_scope.into(),
+            ..session()
+        });
+        let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+        assert_eq!(
+            fixture.engine.callback(
+                &attempt,
+                auth::Callback::Code("synthetic-code".into()),
+                101,
+                || true
+            ),
+            Err(Failure::ReauthRequired),
+            "{token_scope:?} vs {session_scope:?}",
+        );
+        assert!(fixture.engine.session().is_none());
+        assert!(fixture.vault.read().unwrap().is_none());
+        assert_eq!(
+            *fixture.transport.revoked.lock().unwrap(),
+            ["synthetic-refresh-0"]
+        );
+    }
+}
+
+#[test]
+fn cloud_refresh_after_restart_requires_the_original_scope() {
+    use auth::{CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE};
+
+    for initial in [CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE] {
+        for returned in [CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE] {
+            let mut fixture = Fixture::new();
+            *fixture.transport.token_scope.lock().unwrap() = Some(initial);
+            *fixture.transport.returned_session.lock().unwrap() = Some(Session {
+                scope: initial.into(),
+                ..session()
+            });
+            fixture.sign_in();
+            assert_eq!(fixture.engine.session().unwrap().scope, initial);
+
+            *fixture.transport.token_scope.lock().unwrap() = Some(returned);
+            *fixture.transport.returned_session.lock().unwrap() = Some(Session {
+                scope: returned.into(),
+                ..session()
+            });
+            fixture.restart();
+            let result = fixture.engine.refresh(200, || true);
+            if initial == returned {
+                result.unwrap();
+                assert_eq!(fixture.engine.session().unwrap().scope, initial);
+                assert!(fixture.transport.revoked.lock().unwrap().is_empty());
+            } else {
+                assert_eq!(result, Err(Failure::ReauthRequired));
+                assert!(fixture.engine.session().is_none());
+                assert!(fixture.vault.read().unwrap().is_none());
+                assert_eq!(
+                    *fixture.transport.revoked.lock().unwrap(),
+                    ["synthetic-refresh-0", "synthetic-refresh-1"]
+                );
+            }
+            assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+        }
+    }
 }
 
 #[test]

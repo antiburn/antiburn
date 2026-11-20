@@ -107,7 +107,16 @@ fn connected(directory: &Path, origin: &str) -> Engine {
 }
 
 #[test]
-fn cloud_account_bearer_reserves_only_the_exact_team_membership() {
+fn cloud_capture_only_account_bearer_reserves_only_the_exact_team_membership() {
+    assert_team_reservation("capture:write");
+}
+
+#[test]
+fn cloud_capture_and_session_account_bearer_reserves_only_the_exact_team_membership() {
+    assert_team_reservation("capture:write sessions:list sessions:read");
+}
+
+fn assert_team_reservation(scope: &'static str) {
     use super::super::upload::{HttpTransport, Source};
     use crate::cloud::auth::Vault;
     use antiburn_cloud_capture::TransportError;
@@ -129,7 +138,7 @@ fn cloud_account_bearer_reserves_only_the_exact_team_membership() {
                     "access_token":"account-bearer", "refresh_token":"account-refresh", "expires_in": 200,
                     "token_type":"Bearer", "grant_id":"account-grant", "user_id":"synthetic-user",
                     "grant_expires_at":"1970-01-01T02:46:40Z",
-                    "scope":"capture:write", "resource":service_origin, "iss":service_origin,
+                    "scope":scope, "resource":service_origin, "iss":service_origin,
                 }),
             ),
             (
@@ -137,7 +146,7 @@ fn cloud_account_bearer_reserves_only_the_exact_team_membership() {
                 serde_json::json!({
                     "user_id":"synthetic-user", "display_name":"Example",
                     "grant_id":"account-grant", "device_name":"Example",
-                    "scope":"capture:write", "resource":service_origin, "iss":service_origin,
+                    "scope":scope, "resource":service_origin, "iss":service_origin,
                     "grant_expires_at":"1970-01-01T02:46:40Z", "access_expires_at":"1970-01-01T00:05:00Z",
                 }),
             ),
