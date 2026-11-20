@@ -2,14 +2,16 @@
 
 use std::{fmt::Write, time::Duration};
 
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::{Client, RequestBuilder, StatusCode, Url, header::HeaderValue, redirect::Policy};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
     config::Config,
-    sessions::{GetResponse, SessionMatch},
+    sessions::{GetResponse, SessionMatch, safe_text},
 };
 
 const MAX_PAGE_BYTES: usize = 128 * 1024;
@@ -39,10 +41,8 @@ impl CloudClient {
         let workspace_id = config
             .workspace_id
             .unwrap_or(connection.personal_workspace_id);
-        if workspace_id.is_nil() || !connection.workspace_ids.contains(&workspace_id) {
-            return Err(
-                "the Cloud device connection does not have access to this workspace".into(),
-            );
+        if workspace_id.is_nil() {
+            return Err("the Cloud device connection did not return a workspace".into());
         }
         let token = connection.access_token;
         if token.is_empty()
@@ -122,7 +122,7 @@ impl CloudDocument {
         let _ = writeln!(text, "Messages on this page: {}", self.messages.len());
         for message in &self.messages {
             // Keep message strings JSON-escaped so they cannot control the terminal.
-            let _ = writeln!(text, "{}", message.get());
+            let _ = writeln!(text, "{}", safe_text(message.get()));
         }
         if let Some(cursor) = &self.next_cursor {
             let _ = writeln!(text, "Next page: --after {cursor}");
@@ -142,7 +142,7 @@ pub(crate) async fn get(
     }
     let mut request = client.sessions(Some(session_id));
     let continuation = after
-        .map(|after| Continuation::parse(after, client.workspace_id, session_id))
+        .map(|after| Continuation::parse(after, &client.origin, client.workspace_id, session_id))
         .transpose()?;
     if let Some(continuation) = &continuation {
         request = request.query(&[("after", continuation.token)]);
@@ -172,8 +172,11 @@ pub(crate) async fn get(
     }
     let next_cursor = page.next_cursor.map(|token| {
         format!(
-            "{}.{}.{}.{token}",
-            client.workspace_id, session_id, page.revision
+            "{}.{}.{}.{}.{token}",
+            origin_key(&client.origin),
+            client.workspace_id,
+            session_id,
+            page.revision
         )
     });
     Ok(GetResponse {
@@ -197,13 +200,16 @@ struct Continuation<'a> {
 }
 
 impl<'a> Continuation<'a> {
-    /// Keep a CLI continuation bound to its original session and publication.
-    fn parse(value: &'a str, workspace: Uuid, session: Uuid) -> Result<Self, String> {
+    /// Keep a continuation bound to its original service, session, and publication.
+    fn parse(value: &'a str, origin: &Url, workspace: Uuid, session: Uuid) -> Result<Self, String> {
         let invalid = "invalid document cursor";
-        if value.len() != 3 * 37 + 64 {
+        if value.len() != 44 + 3 * 37 + 64 {
             return Err(invalid.into());
         }
-        let mut parts = value.splitn(4, '.');
+        let mut parts = value.splitn(5, '.');
+        if parts.next() != Some(origin_key(origin).as_str()) {
+            return Err(invalid.into());
+        }
         let matched_workspace = parts.next().and_then(|part| Uuid::parse_str(part).ok());
         let matched_session = parts.next().and_then(|part| Uuid::parse_str(part).ok());
         let revision = parts
@@ -220,6 +226,10 @@ impl<'a> Continuation<'a> {
         }
         Ok(Self { revision, token })
     }
+}
+
+fn origin_key(origin: &Url) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(origin.origin().ascii_serialization()))
 }
 
 fn validate_origin(value: &str) -> Result<Url, String> {
