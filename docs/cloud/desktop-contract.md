@@ -134,7 +134,7 @@ Device authentication requests use the configured API origin:
 | `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
 | `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
 | `GET /v1/devices/session`        | Access bearer                                                                                              |
-| `GET /v1/devices/workspaces`     | Access bearer                                                                                              |
+| `GET /v1/captures/destinations`  | Access bearer                                                                                              |
 | `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                     |
 
 Desktop uses the short OS hostname as `device_name`. It omits the domain suffix
