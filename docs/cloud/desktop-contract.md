@@ -179,6 +179,15 @@ or CLI-only endpoint. A connection approved only for upload cannot serve
 CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
 where the service offers them.
 
+| Request | Device scope | Page fields the CLI uses |
+| --- | --- | --- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | `items`, `page.next_cursor` |
+| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
+
+Send the access token as `Authorization: Bearer <token>`. A cursor continues
+the same document revision; it does not grant access. The service checks
+permission again when the CLI reads the next page.
+
 ### Device credentials
 
 Opaque access tokens expire after at most 15 minutes. The app and CLI keep
