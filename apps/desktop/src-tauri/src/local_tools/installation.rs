@@ -15,7 +15,6 @@ use super::{DEBUG_IDENTIFIER, Reason};
 
 const OWNER: &str = "antiburn-debug-local-tools-v1";
 pub(super) const SKILL: &str = include_str!("../../../../cli/skills/antiburn/SKILL.md");
-const COMMAND: &str = "antiburn checks <session_id>";
 
 type Result<T> = std::result::Result<T, Reason>;
 
@@ -108,18 +107,14 @@ impl Installation {
     }
 
     fn skill(&self, runtime: &CliRuntime) -> Result<Vec<u8>> {
-        if SKILL.matches(COMMAND).count() != 1 || SKILL.matches("name: antiburn\n").count() != 1 {
+        if !SKILL.starts_with("---\nname: antiburn\n") {
             return Err(Reason::SetupUnavailable);
         }
-        let command = format!(
-            "{} --config {} checks <session_id>",
-            quote(&runtime.executable)?,
-            quote(&self.tools().join("config.json"))?,
-        );
-        Ok(SKILL
-            .replacen("name: antiburn\n", "name: antiburn-debug\n", 1)
-            .replacen(COMMAND, &command, 1)
-            .into_bytes())
+        render_skill(
+            &SKILL.replacen("name: antiburn\n", "name: antiburn-debug\n", 1),
+            &runtime.executable,
+            Some(&self.tools().join("config.json")),
+        )
     }
 
     fn receipt(&self) -> Result<Option<(Receipt, Vec<u8>)>> {
@@ -337,13 +332,50 @@ pub(super) fn publish(path: &Path, expected: Option<&[u8]>, proposed: &[u8]) -> 
     transaction::publish(path, expected, proposed).map_err(|_| Reason::SetupUnavailable)
 }
 
+/// Bind each command in a fenced `sh` block. Put one `antiburn` command per
+/// line. Keep executable paths out of inline Markdown and reject multiline
+/// paths so they cannot close the fence.
+pub(super) fn render_skill(
+    source: &str,
+    executable: &Path,
+    config: Option<&Path>,
+) -> Result<Vec<u8>> {
+    let mut command = quote(executable)?;
+    if let Some(config) = config {
+        command.push_str(" --config ");
+        command.push_str(&quote(config)?);
+    }
+    let mut rendered = String::with_capacity(source.len());
+    let mut shell = false;
+    let mut bound = false;
+    for line in source.split_inclusive('\n') {
+        match (shell, line.trim_end_matches('\n')) {
+            (false, "```sh") => shell = true,
+            (true, "```") => shell = false,
+            (true, "") => (),
+            (true, _) => {
+                let args = line
+                    .strip_prefix("antiburn ")
+                    .ok_or(Reason::SetupUnavailable)?;
+                rendered.push_str(&command);
+                rendered.push(' ');
+                rendered.push_str(args);
+                bound = true;
+                continue;
+            }
+            (false, _) => (),
+        }
+        rendered.push_str(line);
+    }
+    if shell || !bound {
+        return Err(Reason::SetupUnavailable);
+    }
+    Ok(rendered.into_bytes())
+}
+
 fn quote(path: &Path) -> Result<String> {
     let value = path.to_str().ok_or(Reason::SetupUnavailable)?;
-    if !path.is_absolute()
-        || value.len() > 8192
-        || value.chars().any(char::is_control)
-        || value.contains('`')
-    {
+    if !path.is_absolute() || value.len() > 8192 || value.chars().any(char::is_control) {
         return Err(Reason::SetupUnavailable);
     }
     Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))

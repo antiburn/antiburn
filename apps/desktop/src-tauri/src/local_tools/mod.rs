@@ -4,7 +4,7 @@
 
 mod installation;
 #[cfg(target_os = "macos")]
-mod release_skill;
+pub(crate) mod release_skill;
 mod state;
 
 use std::sync::Mutex;
@@ -107,13 +107,11 @@ fn disabled(app: &tauri::AppHandle) -> Option<Reason> {
     }
 }
 
-/// Register debug tool state and start release skill installation on macOS.
+/// Register debug tool state before CLI setup starts.
 pub(crate) fn start(app: &tauri::AppHandle) {
     app.manage(Controller {
         state: Mutex::new(state::State::new(Status::initial(disabled(app)))),
     });
-    #[cfg(target_os = "macos")]
-    release_skill::start(app);
 }
 
 struct Running<'a> {

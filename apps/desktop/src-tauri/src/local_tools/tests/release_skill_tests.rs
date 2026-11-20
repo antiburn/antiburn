@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, symlink};
 
@@ -30,7 +31,23 @@ impl Fixture {
     }
 
     fn install(&self) -> Result<(), Reason> {
-        reconcile(&self.data, &self.home, SKILL.as_bytes())
+        reconcile_bound(&self.data, &self.home, &self.runtime())
+    }
+
+    fn runtime(&self) -> CliRuntime {
+        CliRuntime {
+            executable: self
+                .data
+                .join("cli/bin")
+                .join(antiburn_cli_runtime::file_name()),
+            version: "0.1.0".into(),
+            sha256: "synthetic".into(),
+            delivery_protocols: vec!["delivery-v1".into()],
+        }
+    }
+
+    fn proposed(&self) -> Vec<u8> {
+        render_skill(SKILL, &self.runtime().executable, None).unwrap()
     }
 
     /// Stop after publication, before the release writes the active receipt.
@@ -71,18 +88,73 @@ fn only_release_distribution_launches_install_the_skill() {
 }
 
 #[test]
-fn clean_home_gets_canonical_bytes_without_a_cli_and_relaunch_keeps_the_files() {
+fn successful_startup_and_repair_reconcile_the_skill_under_the_runtime_lock() {
     let f = Fixture::new();
+    let payload = f.home.join("cli-payload");
+    ensure_directory(&payload).unwrap();
+    let cli = antiburn_cli_runtime::Installation {
+        root: f.data.join("cli"),
+        terminal: f.home.join(".local/bin/antiburn-cli"),
+        payload,
+        target: antiburn_cli_runtime::TARGET.into(),
+    };
     assert!(!f.home.join(".claude").exists());
-    assert!(!f.data.join("cli").exists());
-    f.install().unwrap();
-    assert_eq!(fs::read(f.skill()).unwrap(), SKILL.as_bytes());
-    assert!(!f.data.join("cli").exists());
+    assert!(cli.reconcile_for_binding(true).is_err());
+    assert!(!f.skill().exists());
+    assert!(!f.receipt().exists());
+
+    let bytes = b"synthetic CLI payload";
+    let name = antiburn_cli_runtime::file_name();
+    fs::write(cli.payload.join(name), bytes).unwrap();
+    let manifest = antiburn_cli_runtime::Manifest {
+        schema: 1,
+        target: cli.target.clone(),
+        executable: name.into(),
+        version: "0.1.0".into(),
+        sha256: Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+        delivery_protocols: vec!["delivery-v1".into()],
+    };
+    fs::write(
+        cli.payload.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let (lock, runtime) = cli.reconcile_for_binding(true).unwrap();
+    assert_eq!(runtime.executable, f.runtime().executable);
+    assert!(matches!(
+        cli.reconcile_for_binding(false)
+            .unwrap_err()
+            .downcast_ref::<fs::TryLockError>(),
+        Some(fs::TryLockError::WouldBlock)
+    ));
+    reconcile_bound(&f.data, &f.home, &runtime).unwrap();
+    drop(lock);
+    assert_eq!(fs::read(f.skill()).unwrap(), f.proposed());
+    assert!(!f.home.join(".local").exists());
     let inode = fs::metadata(f.skill()).unwrap().ino();
     let receipt_inode = fs::metadata(f.receipt()).unwrap().ino();
-    f.install().unwrap();
+    fs::remove_file(&runtime.executable).unwrap();
+    let (_lock, repaired) = cli.reconcile_for_binding(false).unwrap();
+    reconcile_bound(&f.data, &f.home, &repaired).unwrap();
+    assert!(repaired.executable.is_file());
     assert_eq!(fs::metadata(f.skill()).unwrap().ino(), inode);
     assert_eq!(fs::metadata(f.receipt()).unwrap().ino(), receipt_inode);
+}
+
+#[test]
+fn refuses_release_skill_binding_with_a_different_runtime_path() {
+    let f = Fixture::new();
+    let mut runtime = f.runtime();
+    runtime.executable = f.home.join("antiburn");
+    assert_eq!(
+        reconcile_bound(&f.data, &f.home, &runtime),
+        Err(Reason::SetupUnavailable)
+    );
+    assert!(!f.skill().exists());
+    assert!(!f.receipt().exists());
 }
 
 #[test]
@@ -96,7 +168,7 @@ fn upgrade_replaces_only_receipt_owned_bytes() {
     reconcile(&f.data, &f.home, b"previous canonical skill").unwrap();
     assert_eq!(fs::read(f.skill()).unwrap(), b"previous canonical skill");
     f.install().unwrap();
-    assert_eq!(fs::read(f.skill()).unwrap(), SKILL.as_bytes());
+    assert_eq!(fs::read(f.skill()).unwrap(), f.proposed());
     assert_eq!(fs::read(settings).unwrap(), b"{}");
 
     fs::write(f.skill(), b"user edit").unwrap();
@@ -120,18 +192,19 @@ fn interrupted_publication_accepts_the_recorded_pending_bytes() {
     save(&receipt_path, &receipt, &mut saved).unwrap();
     fs::write(f.skill(), b"interrupted canonical skill").unwrap();
     f.install().unwrap();
-    assert_eq!(fs::read(f.skill()).unwrap(), SKILL.as_bytes());
+    assert_eq!(fs::read(f.skill()).unwrap(), f.proposed());
 }
 
 #[test]
 fn first_publication_resumes_without_replacing_the_staged_file() {
     let f = Fixture::new();
-    f.publish_pending_first(SKILL.as_bytes(), || {}).unwrap();
+    let proposed = f.proposed();
+    f.publish_pending_first(&proposed, || {}).unwrap();
     let inode = fs::metadata(f.skill()).unwrap().ino();
     f.install().unwrap();
     assert_eq!(fs::metadata(f.skill()).unwrap().ino(), inode);
     let receipt: Receipt = serde_json::from_slice(&fs::read(f.receipt()).unwrap()).unwrap();
-    assert_eq!(receipt.skill.active.as_deref(), Some(SKILL.as_bytes()));
+    assert_eq!(receipt.skill.active, Some(proposed));
     assert!(receipt.skill.pending.is_none());
     assert!(receipt.first_publication.is_none());
 }
@@ -142,7 +215,7 @@ fn first_publication_can_resume_on_a_new_release() {
     f.publish_pending_first(b"previous canonical skill", || {})
         .unwrap();
     f.install().unwrap();
-    assert_eq!(fs::read(f.skill()).unwrap(), SKILL.as_bytes());
+    assert_eq!(fs::read(f.skill()).unwrap(), f.proposed());
 }
 
 #[test]
@@ -185,7 +258,7 @@ fn a_changed_pending_first_file_is_not_replaced() {
 fn existing_unmanaged_skill_is_not_adopted_even_when_bytes_match() {
     let f = Fixture::new();
     fs::create_dir_all(f.skill().parent().unwrap()).unwrap();
-    fs::write(f.skill(), SKILL.as_bytes()).unwrap();
+    fs::write(f.skill(), f.proposed()).unwrap();
     let inode = fs::metadata(f.skill()).unwrap().ino();
     assert_eq!(f.install(), Err(Reason::OwnershipConflict));
     assert_eq!(fs::metadata(f.skill()).unwrap().ino(), inode);

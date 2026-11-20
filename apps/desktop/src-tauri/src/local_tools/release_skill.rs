@@ -11,9 +11,10 @@ use tauri::Manager;
 use super::Reason;
 use super::installation::{
     FileReceipt, SKILL, check_owned, checked_directory, ensure_directory, present, publish,
-    read_optional, save,
+    read_optional, render_skill, save,
 };
 use crate::agent_integrations::transaction;
+use crate::cli_install::CliRuntime;
 
 const RELEASE_IDENTIFIER: &str = "ai.antiburn.desktop";
 const OWNER: &str = "antiburn-release-skill-v1";
@@ -102,32 +103,39 @@ fn automatic_installation(distribution: bool, debug: bool, identifier: &str) -> 
     distribution && !debug && identifier == RELEASE_IDENTIFIER
 }
 
-/// Run once per release launch, separate from CLI setup and debug tool status.
-pub(super) fn start(app: &tauri::AppHandle) {
-    if !automatic_installation(
+/// Only the macOS release distribution owns the default Claude Code skill.
+pub(crate) fn enabled(app: &tauri::AppHandle) -> bool {
+    automatic_installation(
         cfg!(feature = "distribution"),
         cfg!(debug_assertions),
         &app.config().identifier,
-    ) {
-        return;
+    )
+}
+
+/// Run on the CLI worker after staging. The caller holds the runtime lock.
+pub(crate) fn install(app: &tauri::AppHandle, runtime: &CliRuntime) {
+    let result = (|| {
+        let data = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| Reason::SetupUnavailable)?;
+        let home = app
+            .path()
+            .home_dir()
+            .map_err(|_| Reason::ProfileUnavailable)?;
+        reconcile_bound(&data, &home, runtime)
+    })();
+    if let Err(reason) = result {
+        tracing::warn!(event = "release_skill_installation_unavailable", ?reason);
     }
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let result = (|| {
-            let data = app
-                .path()
-                .app_data_dir()
-                .map_err(|_| Reason::SetupUnavailable)?;
-            let home = app
-                .path()
-                .home_dir()
-                .map_err(|_| Reason::ProfileUnavailable)?;
-            reconcile(&data, &home, SKILL.as_bytes())
-        })();
-        if let Err(reason) = result {
-            tracing::warn!(event = "release_skill_installation_unavailable", ?reason);
-        }
-    });
+}
+
+fn reconcile_bound(data: &Path, home: &Path, runtime: &CliRuntime) -> Result<(), Reason> {
+    if runtime.executable != data.join("cli/bin").join(antiburn_cli_runtime::file_name()) {
+        return Err(Reason::SetupUnavailable);
+    }
+    let proposed = render_skill(SKILL, &runtime.executable, None)?;
+    reconcile(data, home, &proposed)
 }
 
 /// Replace only the exact bytes in the receipt. A pending write can resume on

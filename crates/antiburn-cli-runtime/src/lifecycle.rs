@@ -431,14 +431,14 @@ fn sync_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn retry_startup(
-    mut operation: impl FnMut() -> Result<()>,
+fn retry_startup<T>(
+    mut operation: impl FnMut() -> Result<T>,
     timeout: std::time::Duration,
-) -> Result<()> {
+) -> Result<T> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match operation() {
-            Ok(()) => return Ok(()),
+            Ok(value) => return Ok(value),
             Err(error) => {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 let busy = matches!(
@@ -659,6 +659,25 @@ impl Installation {
 
     pub fn reconcile(&self) -> Result<()> {
         let _lock = self.lock()?;
+        self.reconcile_locked()
+    }
+
+    /// Stage and validate the runtime under one lock. Keep the returned lock
+    /// alive until any files that bind this runtime have been published.
+    pub fn reconcile_for_binding(&self, startup: bool) -> Result<(File, CliRuntime)> {
+        let stage = || {
+            let lock = self.lock()?;
+            self.reconcile_locked()?;
+            Ok((lock, self.runtime(&self.receipt()?)?))
+        };
+        if startup {
+            retry_startup(stage, std::time::Duration::from_secs(5))
+        } else {
+            stage()
+        }
+    }
+
+    fn reconcile_locked(&self) -> Result<()> {
         let mut r = self.receipt()?;
         let obsolete = r.previous.clone();
         let m: Manifest = serde_json::from_slice(
