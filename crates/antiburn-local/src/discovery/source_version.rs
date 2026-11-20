@@ -491,7 +491,8 @@ pub fn inline_source_fingerprint(content: &str) -> String {
     .fingerprint()
 }
 
-fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<String> {
+/// Returns the discovery fingerprint for a file-backed bundle.
+pub fn bundle_fingerprint(source: &SessionSource, format: SourceFormat) -> Option<String> {
     let SessionSource::File(path) = source else {
         return None;
     };

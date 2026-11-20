@@ -1064,39 +1064,42 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
             SourceFormat::ClineMessagesContractV1
         }
         (AgentKind::Cline, _) => SourceFormat::ClineSessionJson,
-        (AgentKind::Kiro, SessionSource::File(path))
-            if path.parent().is_some_and(|parent| {
-                parent.file_name().and_then(|name| name.to_str()) == Some("cli")
-            }) && path.extension().and_then(|extension| extension.to_str()) == Some("json")
-                && path
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .is_some_and(is_uuid)
-                && path.with_extension("jsonl").is_file() =>
-        {
-            SourceFormat::KiroCliV2Bundle
-        }
-        (AgentKind::Kiro, SessionSource::File(path))
-            if path.file_name().and_then(|name| name.to_str()) == Some("session.json")
-                && path.parent().is_some_and(|parent| {
-                    parent.join("messages.jsonl").is_file()
-                        && parent
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .and_then(|name| name.strip_prefix("sess_"))
-                            .is_some_and(is_uuid)
-                }) =>
-        {
-            SourceFormat::KiroCliV3Bundle
-        }
-        (AgentKind::Kiro, SessionSource::File(path))
-            if path.extension().and_then(|extension| extension.to_str()) == Some("chat") =>
-        {
-            SourceFormat::KiroChat
+        (AgentKind::Kiro, SessionSource::File(path)) => {
+            if let Some((format, messages)) = kiro_cli_bundle(path)
+                && messages.is_file()
+            {
+                format
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("chat") {
+                SourceFormat::KiroChat
+            } else {
+                SourceFormat::KiroSessionJson
+            }
         }
         (AgentKind::Kiro, _) => SourceFormat::KiroSessionJson,
         _ => SourceFormat::Uncharacterized,
     }
+}
+
+pub(crate) fn kiro_cli_bundle(
+    path: &std::path::Path,
+) -> Option<(SourceFormat, std::path::PathBuf)> {
+    let parent = path.parent()?;
+    if parent.file_name()?.to_str()? == "cli"
+        && path.extension().and_then(|extension| extension.to_str()) == Some("json")
+        && is_uuid(path.file_stem()?.to_str()?)
+    {
+        return Some((SourceFormat::KiroCliV2Bundle, path.with_extension("jsonl")));
+    }
+    if path.file_name()?.to_str()? == "session.json"
+        && parent
+            .file_name()?
+            .to_str()?
+            .strip_prefix("sess_")
+            .is_some_and(is_uuid)
+    {
+        return Some((SourceFormat::KiroCliV3Bundle, parent.join("messages.jsonl")));
+    }
+    None
 }
 
 fn cline_database_path(manifest_path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -1155,7 +1158,7 @@ fn inline_fingerprint(content: &str) -> String {
     antiburn_local::discovery::source_version::inline_source_fingerprint(content)
 }
 
-/// No-op `after_claim` hook for [`stream_vendor_with_hooks`]. Production
+/// No-op `after_claim` hook for [`stream_vendor_with_delivery`]. Production
 /// callers (`analyze_for_evidence`) have no reason to observe a source's
 /// claim as it streams; a test that does inject its own hook directly
 /// instead, through [`stream_vendor_with_claim_hook`].
@@ -1422,6 +1425,7 @@ fn delete_then_full_read(
     })
 }
 
+#[cfg(test)]
 fn stream_vendor_with_hooks(
     inputs: &[SessionInput],
     cancelled: &dyn Fn() -> bool,
@@ -1434,6 +1438,7 @@ fn stream_vendor_with_hooks(
         cancelled,
         after_claim,
         database_claim,
+        None,
         turn_row_store,
         false,
     )
@@ -1486,6 +1491,7 @@ fn stream_vendor_with_delivery(
     cancelled: &dyn Fn() -> bool,
     after_claim: &dyn Fn(usize, &std::path::Path),
     database_claim: Option<&str>,
+    indexed_parent_fingerprint: Option<&str>,
     turn_row_store: Option<Arc<dyn TurnRowStore>>,
     journal_delivery: bool,
 ) -> StreamOutcome {
@@ -1588,6 +1594,12 @@ fn stream_vendor_with_delivery(
                     }
                 };
                 let fingerprint = claim.fingerprint.clone();
+                if index == 0
+                    && indexed_parent_fingerprint.is_some_and(|expected| expected != fingerprint)
+                {
+                    log_source_changed("claimed_source_preflight", "fingerprint-mismatch");
+                    return StreamOutcome::SourceChanged;
+                }
                 after_claim(index, path);
 
                 let attempt = turn_row_store.as_ref().and_then(|store| {
@@ -1727,7 +1739,12 @@ fn stream_vendor_with_delivery(
             }
             RawSource::Jsonl(content) => {
                 if index == 0 {
-                    parent_fingerprint = Some(inline_fingerprint(content));
+                    let fingerprint = inline_fingerprint(content);
+                    if indexed_parent_fingerprint.is_some_and(|expected| expected != fingerprint) {
+                        log_source_changed("claimed_source_preflight", "fingerprint-mismatch");
+                        return StreamOutcome::SourceChanged;
+                    }
+                    parent_fingerprint = Some(fingerprint);
                 }
                 adapter.visit(input, &mut accumulator)
             }
@@ -2330,29 +2347,57 @@ pub async fn analyze_located_for_evidence(
     // The engine's analysis is synchronous and CPU-bound; keep it off the
     // runtime's worker threads. Every vendor now has a real (possibly
     // all-unset) `SourceCapabilities` profile, so every session streams
-    // through `stream_vendor_with_hooks` — there is no separate,
-    // uncharacterized-vendor fallback pass any more.
+    // through the same adapter entry point.
     let signal_for_pass = signal.clone();
+    let indexed_source = source.clone();
+    let indexed_parent_fingerprint = claimed
+        .fingerprint
+        .clone()
+        .filter(|_| !matches!(&source, SessionSource::ProviderDb { .. }));
     let task = signal.spawn_parser(move || {
         let cancelled = || signal_for_pass.observe();
-        let streamed = if signal_for_pass.journal_delivery {
-            stream_vendor_with_delivery(
-                &inputs,
-                &cancelled,
-                &no_after_claim,
-                database_claim.as_deref(),
-                turn_row_store,
-                true,
+        if cancelled() {
+            return ComputedAnalysis::Unavailable(UnreadableReason::Cancelled);
+        }
+        let indexed_bundle = indexed_parent_fingerprint
+            .as_deref()
+            .filter(|expected| expected.starts_with("bundle-v1:"))
+            .and_then(|expected| {
+                let version = antiburn_local::discovery::source_version::bundle_fingerprint(
+                    &indexed_source,
+                    admitted_format,
+                )?;
+                Some((expected, version))
+            });
+        if let Some((expected, ref version)) = indexed_bundle
+            && expected != version
+            && expected != fingerprint_of(&indexed_source)
+        {
+            log_source_changed("claimed_bundle_preflight", "fingerprint-mismatch");
+            return ComputedAnalysis::SourceChanged;
+        }
+        let streamed = stream_vendor_with_delivery(
+            &inputs,
+            &cancelled,
+            &no_after_claim,
+            database_claim.as_deref(),
+            indexed_parent_fingerprint.as_deref(),
+            turn_row_store,
+            signal_for_pass.journal_delivery,
+        );
+        let verified_bundle = indexed_bundle.filter(|(expected, version)| *expected == version);
+        if matches!(&streamed, StreamOutcome::Published { .. })
+            && let Some((_, ref version)) = verified_bundle
+            && antiburn_local::discovery::source_version::bundle_fingerprint(
+                &indexed_source,
+                admitted_format,
             )
-        } else {
-            stream_vendor_with_hooks(
-                &inputs,
-                &cancelled,
-                &no_after_claim,
-                database_claim.as_deref(),
-                turn_row_store,
-            )
-        };
+            .as_ref()
+                != Some(version)
+        {
+            log_source_changed("claimed_bundle_fingerprint", "fingerprint-mismatch");
+            return ComputedAnalysis::SourceChanged;
+        }
         match streamed {
             StreamOutcome::Published {
                 session,
@@ -2363,7 +2408,9 @@ pub async fn analyze_located_for_evidence(
                 subagents: session.subagents,
                 source_roster: session.source_roster,
                 started_at_epoch: session.started_at_epoch,
-                parent_fingerprint,
+                parent_fingerprint: verified_bundle
+                    .map(|(_, version)| version)
+                    .or(parent_fingerprint),
                 evidence: Box::new(session.evidence),
                 row_projections: session.row_projections.map(Box::new),
                 source_summaries: session.source_summaries,

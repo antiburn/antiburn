@@ -2244,7 +2244,9 @@ fn source_refreshes_merge_separately_from_one_shot_triggers() {
     controller.request_source_refresh(AgentKind::OpenCode);
     controller.request_source_refresh(AgentKind::Claude);
     assert_eq!(
-        controller.take_source_refreshes(),
+        controller
+            .source_refreshes()
+            .take_due(tokio::time::Instant::now()),
         BTreeSet::from([AgentKind::OpenCode, AgentKind::Claude])
     );
 
@@ -2255,10 +2257,50 @@ fn source_refreshes_merge_separately_from_one_shot_triggers() {
         Some(ScanTrigger::ManualRescan)
     ));
     assert_eq!(
-        controller.take_source_refreshes(),
+        controller
+            .source_refreshes()
+            .take_due(tokio::time::Instant::now()),
         BTreeSet::from([AgentKind::OpenCode]),
         "a pending full trigger cannot discard a source refresh"
     );
+}
+
+#[test]
+fn a_source_refresh_waits_for_its_vendor_deadline() {
+    let controller = ScanController::default();
+    let now = tokio::time::Instant::now();
+    controller.request_source_refresh(AgentKind::Claude);
+    assert_eq!(
+        controller.source_refreshes().take_due(now),
+        BTreeSet::from([AgentKind::Claude])
+    );
+    controller
+        .source_refreshes()
+        .next_allowed
+        .insert(AgentKind::Claude, now + TICK);
+    for _ in 0..10 {
+        controller.request_source_refresh(AgentKind::Claude);
+    }
+    controller.request_source_refresh(AgentKind::Codex);
+    assert_eq!(
+        controller.source_refreshes().take_due(now),
+        BTreeSet::from([AgentKind::Codex])
+    );
+    assert_eq!(
+        controller.source_refreshes().next_due(now),
+        Some(now + TICK)
+    );
+    assert!(
+        controller
+            .source_refreshes()
+            .take_due(now + TICK - Duration::from_secs(1))
+            .is_empty()
+    );
+    assert_eq!(
+        controller.source_refreshes().take_due(now + TICK),
+        BTreeSet::from([AgentKind::Claude])
+    );
+    assert_eq!(controller.source_refreshes().next_due(now + TICK), None);
 }
 
 #[test]
@@ -2954,17 +2996,18 @@ fn assert_scheduler_source_contract(source: &str) {
         .expect("covers");
     assert!(capture < run && run < gate && gate < settle && settle < report);
 
-    // Every scheduler pass goes through the covered helper; nothing else
-    // sends a cover.
-    assert_eq!(
-        production.matches("run_covered_pass(").count(),
-        5,
-        "one definition, four call sites"
-    );
-    assert!(
-        !production.contains("run_pass(&app, None, "),
-        "the scheduler runs no uncovered pass"
-    );
+    // Complete discovery passes use the covered helper. A retry pass checks
+    // selected sessions and cannot cover anonymous agent activity.
+    assert_eq!(production.matches("run_covered_pass(").count(), 4);
+    let retry_dispatch = production
+        .split_once("if !source_refreshes.is_empty() {")
+        .unwrap()
+        .1
+        .split_once("let (full_trigger, history_dispatch)")
+        .unwrap()
+        .0;
+    assert!(retry_dispatch.contains("if try_run_pass("));
+    assert!(!retry_dispatch.contains("run_covered_pass("));
     assert_eq!(
         production.matches("report_covered(").count(),
         2,
