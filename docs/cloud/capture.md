@@ -4,7 +4,7 @@ Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.co
 This contract describes development-only capture; public builds keep Cloud disabled.
 
 Desktop capture preserves provider-native source without using the local normalized session model.
-Claude streams retain exact file bytes. OpenCode streams retain typed
+Claude, Codex, and Pi streams retain exact file bytes. OpenCode streams retain typed
 session-owned SQLite cells from one read snapshot, not a database copy.
 Here native refers only to the provider's original session formats, bytes,
 schemas, and recorded identities, not the desktop capture operation.
@@ -44,9 +44,10 @@ upload transport; the desktop host owns that integration.
 ## Source ownership and capture
 
 Discovery accepts one explicitly authorized source: a Claude `projects/<project>`
-directory or an OpenCode database. It never finds a home directory. Tests read only
-public synthetic fixtures and files they create in temporary directories. The
-host owns current source access policy, selected sources, consent, and scheduling.
+directory, a Codex rollout file, a Pi session file, or an OpenCode database.
+It never finds a home directory. Tests read only public synthetic fixtures and
+files they create in temporary directories. The host owns current source access
+policy, selected sources, consent, and scheduling.
 
 The host assigns one stable `source_scope_id` per account and device-local source
 root, then calls `Candidate::in_source_scope` before capture. Replacing a directory
@@ -110,12 +111,13 @@ filename agent ID. Replayed records cannot supply the current source's CWD.
 OpenCode reads only bounded schema and the exact session's
 `session_v2.directory` cell, not messages or other payload tables.
 That cell supplies current recorded metadata, not a complete historical CWD list.
+Codex and Pi use only the recorded CWD from the bounded first owned header.
 
 `ProjectEvidence::project_paths()` returns sorted distinct proved paths.
 Multiple owned CWDs are valid; they do not conflict. Missing or invalid CWDs
-grant nothing. Malformed, oversized, unfinished, or ambiguous unowned records
-make `scan_complete()` false. Such a result can help local discovery, but cannot
-admit capture.
+grant nothing. For Claude, malformed, oversized, unfinished, or ambiguous
+unowned records make `scan_complete()` false. Such a result can help local
+discovery, but cannot admit capture.
 The encoded Claude directory name, provider storage path, project identifier,
 parent or fork links, tool CWD, and touched file paths never supply permission.
 The scan does not infer a repository root or perform Git reads.
@@ -123,8 +125,8 @@ The scan does not infer a repository root or perform Git reads.
 The desktop host owns metadata caching, source-change checks, and eviction.
 Claude's `source_digest()` reports the full streamed transcript SHA-256 as a
 local cache value, not permission, freshness proof, or a capture fingerprint.
-OpenCode returns no whole-source digest because this lookup does not read the
-whole database. The library owns no global cache or background metadata service.
+Codex, Pi, and OpenCode return no whole-source digest because their lookups do not
+hash the full source. The library owns no global cache or background metadata service.
 
 `ProjectSelection::new` accepts up to 100 explicitly approved project folders.
 `matches` includes the selected path and descendants by path component:
@@ -145,7 +147,8 @@ full-content consent. Empty selections permit nothing.
 
 Capture rechecks the frozen approved root policy after reservation. OpenCode
 checks the same snapshot used for payload export. Claude checks the full stream
-as it captures. CWD changes remain valid when any proved owned CWD still matches
+as it captures. Codex and Pi recheck the first header in the pinned file before
+spooling its bytes. CWD changes remain valid when any proved owned CWD still matches
 the approved trees. If none matches, or the full check is incomplete, capture
 cannot publish uploadable bytes. Preserve the source and inspect it locally;
 do not weaken folder permission or clip the transcript to retry.
@@ -203,6 +206,22 @@ bytes or metadata sections cannot replace that pending capture. Native bytes
 retain invalid JSON, original line endings, unknown fields, and an incomplete
 final record. Capture does not repair or clip them.
 
+### Codex rollout files
+
+[`reopen_codex`](codex.md) admits an explicitly authorized rollout path with an
+expected native session ID. The bounded first `session_meta` header must prove
+that ID. Later copied headers retain their bytes but do not supply authority.
+The library exports the exact rollout with separate capture metadata. It does
+not discover rollouts for the desktop host or enable Codex uploads in the app.
+
+### Pi session files
+
+[`reopen_pi`](pi.md) admits one explicitly authorized Pi JSONL file. The exact
+filename suffix and bounded first `session` header must match the expected
+native session ID. The library exports the whole file, including recorded
+branches and tool results, without assigning worker IDs or following parent
+references.
+
 ### OpenCode SQLite
 
 `discover_opencode` reads bounded schema and session identities, not session
@@ -234,12 +253,15 @@ Failures leave an interrupted entry, not a smaller successful capture.
 ## Independent stream layout
 
 Claude captures contain transcript, optional companion, and metadata streams in
-that order. OpenCode captures contain native rows and metadata only. These are
-ordered independent streams, not one concatenated upload body.
+that order. Codex and Pi captures contain transcript and metadata only. OpenCode
+captures contain native rows and metadata only. These are ordered independent
+streams, not one concatenated upload body.
 
 | Stream ID | Role | Schema | Bytes |
 | --- | --- | --- | --- |
 | `transcript` | `native_transcript` | `claude-jsonl` | Exact native JSONL |
+| `transcript` | `native_transcript` | `codex-jsonl` | Exact native Codex rollout JSONL |
+| `transcript` | `native_transcript` | `pi-jsonl` | Exact native Pi session JSONL |
 | `native-companion` | `native_companion` | `claude-agent-meta-json` | Exact owned companion, when present |
 | `native-rows` | `native_rows` | `antiburn-sqlite-native` | Typed OpenCode SQLite cells; numeric format version inside its header |
 | `capture-metadata` | `capture_metadata` | `antiburn-capture-metadata-v1` | Compact UTF-8 metadata JSON |
@@ -282,6 +304,10 @@ Claude uses agent `claude-code`, source format `ClaudeJsonl`, and native filenam
 session and child agent IDs. OpenCode uses agent `opencode`, source format
 `OpenCodeSqliteV2`, and its native session ID. OpenCode personas do not set
 `native_agent_id`.
+Codex uses agent `codex`, source format `CodexJsonl`, and its first owned header's
+native session ID. Codex leaves `native_agent_id` null.
+Pi uses agent `pi`, source format `PiJsonl`, and its first owned header's native
+session ID. Pi leaves `native_agent_id` null.
 It has no capture ID, account, destination, automatic timestamp, or queue state.
 These operation values must not change the source bytes for an unchanged
 native source and unchanged meaningful metadata.
@@ -483,8 +509,8 @@ write, file sync, atomic rename, and directory sync. Interrupted publication and
 terminal deletion have distinct recoverable names. Fully saved captures become
 `queued` and survive restart without reopening sources.
 
-Default bounds are 512 MiB per Claude transcript or expanded OpenCode native-row
-stream, 64 KiB per companion and generated metadata stream, 1 GiB expanded capture
+Default bounds are 512 MiB per transcript or expanded OpenCode native-row stream,
+64 KiB per companion and generated metadata stream, 1 GiB expanded capture
 size, 512 queue entries, and 2 GiB of spool bytes. A record cannot exceed 512 KiB.
 File streaming reads use 64 KiB buffers; SQLite uses bounded cell fragments.
 Before reading native content for full capture, the spool reserves conservative
@@ -635,6 +661,11 @@ earlier/current SQL inputs and real saved `ses_main` wire references. Tests
 rebuild the current source in separate temporary roots and compare its manifest
 and exact gzip parts with the checked-in output. The package manifest pins each
 input and reference file by byte length and SHA-256.
+
+The [Codex rollout fixtures](../../crates/antiburn-cloud-capture/tests/fixtures/codex)
+exercise exact capture and distinguish owned headers from copied headers.
+The [Pi fixture](../../crates/antiburn-cloud-capture/tests/fixtures/pi) exercises
+exact capture of branches and tool results without assigning separate workers.
 
 ```sh
 cargo fmt --manifest-path crates/antiburn-cloud-capture/Cargo.toml --check

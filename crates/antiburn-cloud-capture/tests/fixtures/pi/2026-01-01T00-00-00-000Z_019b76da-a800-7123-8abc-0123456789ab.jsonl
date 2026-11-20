@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"019b76da-a800-7123-8abc-0123456789ab","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/synthetic/work/project","parentSession":"/synthetic/pi/parent.jsonl"}
+{"type":"message","id":"00000001","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Read the sample."}]}}
+{"type":"message","id":"00000002","parentId":"00000001","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"assistant","provider":"synthetic","model":"synthetic-model","content":[{"type":"toolCall","id":"synthetic-call","name":"read","arguments":{"path":"/synthetic/missing.txt"}}]}}
+{"type":"message","id":"00000003","parentId":"00000002","timestamp":"2026-01-01T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"synthetic-call","toolName":"read","isError":false,"content":[{"type":"text","text":"Synthetic file content"}]}}
+{"type":"message","id":"00000004","parentId":"00000001","timestamp":"2026-01-01T00:00:04.000Z","message":{"role":"user","content":[{"type":"text","text":"Try another branch."}]}}

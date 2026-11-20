@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react"
 import { expect, it, vi } from "vitest"
 import type { CloudProjectGroup } from "../lib/cloud"
-import { CloudProjectFolders } from "./CloudOnboardingFolders"
+import { CloudProjectFolders, CloudProjectFolderSummary } from "./CloudOnboardingFolders"
 
 const group: CloudProjectGroup = {
   id: "studio",
@@ -48,11 +48,23 @@ it("keeps path and counts below the repository name with exact raw path descript
   expect(screen.queryByText("/Users/jordan/shared/studio-review")).not.toBeInTheDocument()
   expect(select).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole("switch"))
-  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false)
+  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false, undefined)
 })
 
 it("does not infer the current home from a provider path", () => {
   render(<CloudProjectFolders groups={[group]} choices={{}} onSelect={vi.fn()} />)
   expect(screen.getByText(group.path)).toBeVisible()
   expect(screen.queryByText("~/dev/Studio")).not.toBeInTheDocument()
+})
+
+it("can wrap the path above the counts without changing its accessible description", () => {
+  render(<CloudProjectFolderSummary group={group} stackPath />)
+  const path = screen.getByText(group.path)
+  expect(path).toHaveClass("basis-full", "wrap-anywhere")
+  expect(path).not.toHaveClass("truncate")
+  expect(path.parentElement).toHaveAccessibleDescription(
+    `${group.path} · 47 sessions · 2 worktrees`,
+  )
+  expect(screen.getByText("47 sessions")).toBeVisible()
+  expect(screen.getByText("2 worktrees")).toBeVisible()
 })

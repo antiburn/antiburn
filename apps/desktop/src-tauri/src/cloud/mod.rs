@@ -7,6 +7,7 @@
 mod auth;
 mod capture;
 mod engine;
+mod file_sources;
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod http_tests;
@@ -18,6 +19,7 @@ pub(crate) mod sync;
 mod tests;
 mod upload;
 mod work;
+pub(crate) mod workspace_grants;
 
 use crate::store::cloud_capture::SourceKind;
 use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, Workspace};
@@ -115,11 +117,13 @@ pub struct DestinationBinding {
 }
 
 impl DestinationBinding {
+    fn matches_grant(&self, session: &auth::Session) -> bool {
+        self.account_id == session.user.id && self.destination_id == session.workspace.id
+    }
+
     /// Reject a changed account, destination, or explicit team without fallback.
     fn matches(&self, session: &auth::Session) -> bool {
-        self.account_id == session.user.id
-            && self.destination_id == session.workspace.id
-            && session.workspace.kind == auth::WorkspaceKind::Personal
+        self.matches_grant(session) && session.workspace.kind == auth::WorkspaceKind::Personal
     }
 }
 
@@ -156,6 +160,7 @@ pub(crate) struct Controller {
     blocking: BlockingWork,
     setup_ready: AtomicBool,
     engine: Mutex<Engine>,
+    workspace_cleanup_failed: AtomicBool,
     capture: Mutex<capture::Host>,
     sync: sync::Scheduler,
     project_cache: Mutex<projects::Cache>,
@@ -235,12 +240,27 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     let sync_enabled = session
         .filter(|_| setup_error.is_none())
         .is_some_and(|session| {
-            match app.state::<crate::store::Store>().cloud_sync_policy(
-                &session.user.id,
-                &session.workspace.id,
-                &session.resource,
-            ) {
-                Ok(policy) => policy.is_some_and(|policy| !policy.paused),
+            let store = app.state::<crate::store::Store>();
+            let result = (|| {
+                if !app
+                    .state::<Controller>()
+                    .sync
+                    .device_upload_enabled(&store)?
+                {
+                    return Ok(false);
+                }
+                store
+                    .cloud_sync_policy_for_origins(
+                        &session.user.id,
+                        &session.workspace.id,
+                        &session.resource,
+                        &session.iss,
+                    )
+                    .map(|policy| policy.is_some_and(|policy| !policy.paused))
+                    .map_err(|_| "Could not read Cloud sync consent.".to_owned())
+            })();
+            match result {
+                Ok(enabled) => enabled,
                 Err(_) => {
                     setup_error = Some("Could not read Cloud sync consent.".into());
                     false
@@ -252,6 +272,21 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
     let current = current();
     let session = session.filter(|_| current && engine.session().is_some());
+    let team_cleanup_unconfirmed = app
+        .state::<Controller>()
+        .setup_ready
+        .load(Ordering::Acquire)
+        && engine.config.as_ref().is_some_and(|config| {
+            app.state::<crate::store::Store>()
+                .cloud_workspace_slots(&config.issuer, &config.resource)
+                .map_or(true, |slots| {
+                    slots.iter().any(|(account, workspace)| {
+                        engine
+                            .workspace_cleanup_unconfirmed(account, workspace)
+                            .unwrap_or(true)
+                    })
+                })
+        });
     let pending_sync = pending_sync.filter(|_| current && session.is_some());
     if !current || session.is_none() {
         draft = Draft::default();
@@ -279,7 +314,12 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
         local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
         local_reset_available: engine.local_reset_available,
-        remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
+        remote_revocation_unconfirmed: team_cleanup_unconfirmed
+            || app
+                .state::<Controller>()
+                .workspace_cleanup_failed
+                .load(Ordering::Acquire)
+            || engine.cleanup.prior_unconfirmed(),
         setup_error,
         pending_sync,
         draft,
@@ -353,6 +393,7 @@ pub fn initialize(
             Box::new(HttpTransport),
             state::StateStore::new(directory),
         )),
+        workspace_cleanup_failed: AtomicBool::new(false),
         attempt_generation: AtomicU64::new(0),
         account_generation: AtomicU64::new(0),
         recorded_status: Mutex::new(AuthStatus::Idle),
@@ -382,6 +423,35 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
             engine.status = error.into();
         }
         Ok(emit_snapshot(&app, snapshot(&app, &engine)))
+    })
+    .await
+}
+
+/// Read current workspace choices without creating a grant or changing consent.
+/// A missing service route fails closed.
+#[tauri::command]
+pub async fn cloud_workspaces(
+    app: tauri::AppHandle,
+    binding: DestinationBinding,
+) -> Result<Vec<Workspace>, String> {
+    let controller = app.state::<Controller>();
+    let generation = controller.account_generation.load(Ordering::Acquire);
+    let work = controller.blocking.clone();
+    work.run(Priority::Normal, move || {
+        let controller = app.state::<Controller>();
+        let current = || controller.account_generation.load(Ordering::Acquire) == generation;
+        let mut engine = controller
+            .engine
+            .lock()
+            .map_err(|_| "Cloud is unavailable.")?;
+        if !current() || engine.generation != generation {
+            return Err("Cloud account changed.".into());
+        }
+        let result = engine.eligible_workspaces(&binding, &current);
+        emit_snapshot(&app, snapshot(&app, &engine));
+        result
+            .map(|items| items.into_iter().map(|item| item.workspace).collect())
+            .map_err(|_| "Could not verify Cloud workspaces.".into())
     })
     .await
 }
@@ -579,6 +649,12 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         if let Err(error) = engine.sign_out() {
             engine.status = error.into();
         }
+        let store = app.state::<crate::store::Store>();
+        let workspace_cleanup_failed = ensure_cloud_setup(&controller.setup_ready, &store).is_err()
+            || workspace_grants::close(&store, &app.config().identifier, &engine).is_err();
+        controller
+            .workspace_cleanup_failed
+            .store(workspace_cleanup_failed, Ordering::Release);
         engine.generation = generation;
         Ok(publish(&app, &engine))
     })
@@ -659,7 +735,12 @@ pub async fn cloud_save_draft(
         }
         if capture::selected_roots(&previous.folders) != capture::selected_roots(&value.folders)
             && let Some(policy) = store
-                .cloud_sync_policy(&session.user.id, &session.workspace.id, &session.resource)
+                .cloud_sync_policy_for_origins(
+                    &session.user.id,
+                    &session.workspace.id,
+                    &session.resource,
+                    &session.iss,
+                )
                 .map_err(|_| "Could not read Cloud sync consent.")?
         {
             controller.sync.generation.fetch_add(1, Ordering::AcqRel);

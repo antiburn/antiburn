@@ -33,6 +33,10 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
         account_id: "account".into(),
         destination_id: "personal".into(),
         resource_origin: Some("https://api.example".into()),
+        issuer_origin: Some("https://api.example".into()),
+        team_grant_id: None,
+        membership_generation: None,
+        workspace_name: None,
         consent_version: ONGOING_CONSENT_VERSION.into(),
         revision: "revision".into(),
         roots: vec![RootScope {
@@ -49,6 +53,211 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
         paused: false,
     };
     (directory, policy, selected, outside)
+}
+
+fn retry_policy(
+    store: &Store,
+    root: &Path,
+    project: &Path,
+    destination: &str,
+    team: Option<(&str, &str)>,
+) -> Policy {
+    let root = root.to_str().unwrap();
+    store
+        .save_cloud_sync_policy_for_membership(
+            (
+                "account",
+                destination,
+                "https://api.example",
+                "https://api.example",
+                team,
+            ),
+            &[SourceSelection {
+                source_kind: SourceKind::ClaudeJsonl,
+                path: root.into(),
+            }],
+            &[ProjectSelection {
+                source_kind: SourceKind::ClaudeJsonl,
+                source_path: root.into(),
+                project_path: project.to_str().unwrap().into(),
+            }],
+            &BTreeMap::new(),
+            || true,
+        )
+        .unwrap()
+}
+
+fn interrupted_upload(store: &Store, spool: &mut Spool, policy: &Policy, id: &str) -> Job {
+    let project = &policy.projects[0].project_path;
+    write_session(
+        Path::new(&policy.roots[0].path),
+        id,
+        Path::new(project),
+        Path::new(project),
+    );
+    let selection = discover_policy(policy, &|| true)
+        .unwrap()
+        .into_iter()
+        .find(|selection| selection.candidate.native_session_id() == id)
+        .unwrap();
+    let candidate = antiburn_cloud_capture::ProjectSelection::new(vec![project.into()])
+        .unwrap()
+        .admit_with_limits(&selection.candidate, &metadata_limits())
+        .unwrap()
+        .unwrap();
+    let job = store
+        .enqueue_cloud_sync_with_paths(
+            policy,
+            &selection.scope,
+            project,
+            candidate.source_id(),
+            SourceObservation::ChangedOnly(id),
+            Some(std::slice::from_ref(project)),
+        )
+        .unwrap()
+        .unwrap();
+    spool
+        .capture(
+            job.identity.clone(),
+            &candidate,
+            MetadataSections::new(),
+            &mut ReserveOnly {
+                reservations: 0,
+                maximum: 0,
+            },
+        )
+        .unwrap();
+    store
+        .set_cloud_sync_job_state(&job, JobState::Interrupted)
+        .unwrap();
+    job
+}
+
+#[test]
+fn cloud_retry_preserves_the_policy_pause_from_changed_provider_roots() {
+    let (directory, original, project, _) = fixture();
+    let base = directory.path().canonicalize().unwrap();
+    let store = Store::open_in_memory(&base).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let policy = retry_policy(
+        &store,
+        Path::new(&original.roots[0].path),
+        &project,
+        "personal",
+        None,
+    );
+    let mut spool = Spool::open(&base.join("spool"), metadata_limits()).unwrap();
+    let job = interrupted_upload(&store, &mut spool, &policy, "personal-saved");
+    // The draft command saves this pause when provider roots change.
+    store.set_cloud_sync_paused(&policy, true).unwrap();
+    let load = || {
+        store
+            .cloud_sync_policy("account", "personal", "https://api.example")
+            .unwrap()
+            .unwrap()
+    };
+    let paused = load();
+    assert!(retry_saved_jobs(&store, &mut spool, &paused, &|| true).is_err());
+    assert!(paused.paused);
+    assert_eq!(load(), paused);
+    assert!(store.cloud_device_upload_enabled().unwrap());
+    assert_eq!(
+        store
+            .cloud_sync_job(&job.identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Interrupted
+    );
+}
+
+#[test]
+fn cloud_retry_rejects_a_stale_team_revision_and_only_changes_exact_saved_jobs() {
+    let (directory, original, personal_project, team_project) = fixture();
+    let base = directory.path().canonicalize().unwrap();
+    let root = Path::new(&original.roots[0].path);
+    let store = Store::open_in_memory(&base).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let mut spool = Spool::open(&base.join("spool"), metadata_limits()).unwrap();
+    let personal = retry_policy(&store, root, &personal_project, "personal", None);
+    let previous = retry_policy(
+        &store,
+        root,
+        &team_project,
+        "team",
+        Some(("old-membership", "Example")),
+    );
+    let personal_job = interrupted_upload(&store, &mut spool, &personal, "personal-saved");
+    let stale = interrupted_upload(&store, &mut spool, &previous, "old-team-saved");
+    let stale = store
+        .cloud_sync_job(&stale.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    let before_renewal = spool.entries().unwrap();
+    let team = store
+        .renew_cloud_team_sync_policy(
+            (
+                "account",
+                "team",
+                "https://api.example",
+                "https://api.example",
+                Some(("new-membership", "Example")),
+            ),
+            &previous.revision,
+            &[team_project.to_str().unwrap().to_owned()].into(),
+            None,
+            || true,
+        )
+        .unwrap();
+    assert_eq!(spool.entries().unwrap(), before_renewal);
+    assert_eq!(
+        store.cloud_sync_job(&stale.identity.capture_id).unwrap(),
+        Some(stale.clone())
+    );
+    let current = interrupted_upload(&store, &mut spool, &team, "current-team-saved");
+    let before = spool.entries().unwrap();
+    let mut session = crate::cloud::tests::session();
+    session.user.id = team.account_id.clone();
+    let binding = DestinationBinding {
+        account_id: team.account_id.clone(),
+        destination_id: team.destination_id.clone(),
+    };
+    let mut retry_from_window = |revision: &str| {
+        let policy = retry_policy_for_revision(&store, &session, &binding, revision)?;
+        retry_saved_jobs(&store, &mut spool, &policy, &|| true)
+    };
+    // Another window reapproved the same Team after this window saw the old policy.
+    assert_eq!(
+        retry_from_window(&previous.revision),
+        Err("Cloud folder choices changed. Reload before retrying saved work.".into())
+    );
+    assert_eq!(
+        store
+            .cloud_sync_job(&current.identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Interrupted
+    );
+    assert_eq!(
+        retry_from_window(&team.revision).unwrap(),
+        BTreeSet::from([current.identity.capture_id.clone()]),
+    );
+    for (job, state) in [
+        (current, JobState::Queued),
+        (stale, JobState::Interrupted),
+        (personal_job, JobState::Interrupted),
+    ] {
+        assert_eq!(
+            store
+                .cloud_sync_job(&job.identity.capture_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            state
+        );
+    }
+    assert_eq!(spool.entries().unwrap(), before);
 }
 
 #[test]
@@ -309,8 +518,9 @@ fn cloud_sync_opencode_reservation_uses_verified_service_limits() {
         "source_formats": ["ClaudeJsonl", "OpenCodeSqliteV2"],
     }))
     .unwrap()
-    .limits()
-    .unwrap();
+    .validate()
+    .unwrap()
+    .limits;
     let candidate = discover_opencode(&database, &limits)
         .unwrap()
         .into_iter()

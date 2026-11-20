@@ -34,7 +34,7 @@ export interface CloudWorkspace {
 /** Nested setup view, separate from the host's persisted onboarding step. */
 export type CloudScreen = "handoff" | "identity" | "folders" | "complete"
 /** Original provider source formats, not installed runtime versions. */
-export type CloudSourceKind = "claude_jsonl" | "opencode_sqlite_v2"
+export type CloudSourceKind = "claude_jsonl" | "opencode_sqlite_v2" | "codex_jsonl" | "pi_jsonl"
 /** Renderer display data from desktop project/CWD evidence, not a provider source.
  * Desktop code owns grouping, path identity, distinct-session counts, and worktree
  * membership. Include all current path members, including external worktrees and
@@ -91,7 +91,7 @@ export function cloudProjectSelectionKey(
 ): string {
   return JSON.stringify(selectedCloudProjectPaths(groups, choices))
 }
-/** One exact source approved in the picker: a project directory or database file. */
+/** One provider directory or database used for capture discovery. */
 export interface CloudSourceSelection {
   sourceKind: CloudSourceKind
   path: string
@@ -107,6 +107,14 @@ export interface CloudFolder {
 /** Normalize only an absent legacy kind; desktop code rejects unknown kinds. */
 export const cloudSourceKind = (source: CloudFolder): CloudSourceKind =>
   source.sourceKind ?? "claude_jsonl"
+/** Display the provider without changing its saved source format. */
+export const cloudSourceLabel = (source: CloudFolder): string =>
+  ({
+    claude_jsonl: "Claude",
+    opencode_sqlite_v2: "OpenCode V2",
+    codex_jsonl: "Codex",
+    pi_jsonl: "Pi",
+  })[cloudSourceKind(source)]
 /** Compare provider and path together without treating display counts as consent. */
 export const cloudSourceKey = (source: CloudFolder) =>
   JSON.stringify([cloudSourceKind(source), source.path])
@@ -222,10 +230,20 @@ interface CloudProjectChange extends CloudDestinationBinding {
   folderPaths: string[]
   expectedPolicyRevision: string
 }
+/** Save the exact reviewed paths and explicit new groups for one Team. */
+interface CloudTeamConfirmation extends CloudDestinationBinding {
+  expectedPolicyRevision: string
+  folderPaths: string[]
+  additions?: Record<string, CloudProjectSelection[]>
+}
 /** Desktop upload state. Transfer counters and queued work do not prove acceptance. */
 export interface CloudOngoingStatus {
+  /** Device admission is separate from saved folder approval and retry. */
+  deviceUploadEnabled?: boolean
   /** Counters and transfer progress are current only after a complete storage read. */
   storageKnown: boolean
+  /** Saved source changes still hold this policy, independent of device pause. */
+  sourceConfirmationRequired?: boolean
   status:
     | "consent_required"
     | "ready"
@@ -241,6 +259,20 @@ export interface CloudOngoingStatus {
   destinationId: string | null
   consentVersion: string | null
   policyRevision?: string | null
+  /** Saved Team policies and legacy cleanup state, even if uploads are unavailable. */
+  teamStatuses?: CloudOngoingStatus[]
+  workspaceName?: string | undefined
+  /** Native group IDs for turning off saved folders outside discovery. */
+  savedFolders?: { groupId: string; path: string }[] | undefined
+  /** The verified current Team membership does not match this saved folder approval. */
+  folderConfirmationRequired?: boolean
+  /** Desktop found saved work that the user can retry for this exact destination. */
+  retryAvailable?: boolean
+  /** Desktop is scanning the workspace's saved folders. */
+  backfillInProgress?: boolean
+  /** Local recovery and remote warning are independent of saved upload consent. */
+  localResetAvailable?: boolean
+  remoteRevocationUnconfirmed?: boolean
   paused: boolean
   selectedSources: CloudSourceSelection[]
   projects: CloudProjectSelection[]
@@ -276,9 +308,19 @@ export interface CloudOngoingPort {
   status(): Promise<CloudOngoingStatus | null>
   watch(listener: (value: CloudOngoingStatus) => void): Promise<() => void>
   enable(consent: CloudOngoingConsent): Promise<CloudOngoingStatus>
+  confirmTeamFolders?(confirmation: CloudTeamConfirmation): Promise<CloudOngoingStatus>
   setProject(change: CloudProjectChange): Promise<CloudOngoingStatus>
-  pause(binding: CloudDestinationBinding): Promise<CloudOngoingStatus>
-  retry(binding: CloudDestinationBinding): Promise<CloudOngoingStatus>
+  setEnabled(enabled: boolean): Promise<CloudOngoingStatus>
+  /** Retry only the named destination and the policy revision shown at confirmation. */
+  retry(
+    binding: CloudDestinationBinding,
+    expectedPolicyRevision: string,
+  ): Promise<CloudOngoingStatus>
+  /** Scan only folders saved for the named destination and policy revision. */
+  backfill?(
+    binding: CloudDestinationBinding,
+    expectedPolicyRevision: string,
+  ): Promise<CloudOngoingStatus>
 }
 /** One explicit confirmation for a saved request. V1 stays Claude-only. V2
  * includes proved session-owned database blobs, never external files or URLs.
@@ -311,6 +353,14 @@ export interface CloudSnapshot {
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft
 }
+/** Cleanup state for a legacy Team connection. Upload failure alone does not allow reset. */
+export interface CloudWorkspaceRecovery {
+  accountId: string
+  workspaceId: string
+  workspaceName?: string | undefined
+  localResetAvailable?: boolean | undefined
+  remoteRevocationUnconfirmed?: boolean | undefined
+}
 /** Legacy saved-request states. Ongoing uploads use CloudOngoingStatus. */
 export type SyncResult =
   | {
@@ -338,6 +388,12 @@ export type SyncResult =
 export interface CloudPort {
   /** Current desktop home for display only. Missing proof keeps raw paths visible. */
   displayHome?(): Promise<string | null>
+  /** List verified destinations for this account. Listing does not grant folder consent. */
+  workspaces?(binding: CloudDestinationBinding): Promise<CloudWorkspace[] | null>
+  /** Clear an old Team connection locally. This does not close its remote grant. */
+  resetWorkspace?(binding: CloudDestinationBinding, workspaceId: string): Promise<CloudStatus>
+  /** Observe cleanup for old Team connections only. */
+  watchWorkspace?(listener: (result: CloudWorkspaceRecovery) => void): Promise<() => void>
   /** Desktop grouped project path. Legacy saved-request fixtures may omit it. */
   ongoing?: CloudOngoingPort | undefined
   /** Refresh desktop authority. A state event can precede this reply. */
@@ -398,14 +454,14 @@ async function cloudBuildEnabled() {
  * cannot change during a process. Do not put another AppInfo IPC round trip
  * between Start and desktop ownership, because Done can close the renderer.
  */
-function cloudOngoingCommand(
+function cloudOngoingCommand<T = CloudOngoingStatus>(
   command: string,
   args: Record<string, unknown>,
-): Promise<CloudOngoingStatus> {
-  if (hasShell() && verifiedCloudBuild) return invoke<CloudOngoingStatus>(command, args)
+): Promise<T> {
+  if (hasShell() && verifiedCloudBuild) return invoke<T>(command, args)
   return cloudBuildEnabled().then((enabled) => {
     if (!enabled) throw new Error("Cloud is unavailable in this build.")
-    return invoke<CloudOngoingStatus>(command, args)
+    return invoke<T>(command, args)
   })
 }
 /** Keep account IPC unreachable in ordinary builds, including browser previews. */
@@ -428,6 +484,20 @@ export const desktopCloudPort: CloudPort = {
     const info = await appInfo()
     return info?.homeDirectory ?? null
   },
+  workspaces: async (binding) =>
+    (await cloudBuildEnabled())
+      ? invoke<CloudWorkspace[] | null>("cloud_workspaces", { binding })
+      : null,
+  resetWorkspace: async (binding, workspaceId) => {
+    if (!(await cloudBuildEnabled())) return "unavailable"
+    return invoke<CloudStatus>("cloud_reset_workspace", { binding, workspaceId })
+  },
+  watchWorkspace: async (listener) =>
+    (await cloudBuildEnabled())
+      ? listen<CloudWorkspaceRecovery>("cloud:workspace-changed", (event) =>
+          listener(event.payload),
+        )
+      : () => {},
   ongoing: {
     groups: async (binding, after) => {
       if (!(await cloudBuildEnabled()))
@@ -441,9 +511,14 @@ export const desktopCloudPort: CloudPort = {
         ? listen<CloudOngoingStatus>("cloud:sync-changed", (event) => listener(event.payload))
         : () => {},
     enable: (consent) => cloudOngoingCommand("cloud_enable_sync", { consent }),
+    confirmTeamFolders: (confirmation) =>
+      cloudOngoingCommand("cloud_reapprove_team_sync", { confirmation }),
     setProject: (change) => cloudOngoingCommand("cloud_set_sync_project", { change }),
-    pause: (binding) => cloudOngoingCommand("cloud_pause_sync", { binding }),
-    retry: (binding) => cloudOngoingCommand("cloud_retry_sync", { binding }),
+    setEnabled: (enabled) => cloudOngoingCommand("cloud_set_sync_enabled", { enabled }),
+    retry: (binding, expectedPolicyRevision) =>
+      cloudOngoingCommand("cloud_retry_sync", { binding, expectedPolicyRevision }),
+    backfill: (binding, expectedPolicyRevision) =>
+      cloudOngoingCommand("cloud_backfill_sync", { binding, expectedPolicyRevision }),
   },
   read: () => cloudCommand("cloud_status"),
   watch: async (listener) =>

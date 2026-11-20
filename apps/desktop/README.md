@@ -113,22 +113,18 @@ WKWebView without enabling same-origin access or network connections.
 
 Manual Cloud builds place the Cloud account controls in Settings → Sessions,
 above Repositories. Connecting remains available after the introduction.
-On supported Unix platforms, **Start syncing** enables background capture and
-uploads only after explicit ongoing full-content consent for the verified account,
-personal destination, service, and selected project paths. Sign-in, a checked
-project row, source access, or the legacy **Upload sessions** preference cannot
-substitute for that consent. These development builds do not authorize production
-use. Windows has no desktop capture fallback.
+On supported Unix platforms, **Start syncing** approves background uploads for
+the selected folders and their chosen workspace. The app needs browser approval
+for that workspace. Signing in or granting source access does not enable a folder.
+In Settings, turning a folder on is the upload decision. Windows has no desktop
+capture fallback.
 
 The project list uses bounded cached metadata from all discovered agents.
 Current local Git metadata can group a repository and its worktrees for display.
-Suggestions do not imply upload support: desktop uploads remain limited to
-Claude JSONL and supported OpenCode V2 SQLite sources. New choices default to
-selected in memory, without saving consent or enabling uploads. Saved opt-outs
-and explicit choices take precedence. **Start syncing** approves only the loaded
-selected groups and their exact current path members. New worktrees outside the
-approved folder trees need confirmation, even when Git groups them under the same
-project.
+Suggestions do not imply upload support. Desktop uploads only formats the service
+advertises for Claude Code, OpenCode V2, Codex, and Pi. Draft choices do not save
+consent or enable uploads. **Start syncing** approves only the loaded selected
+folders and their current paths. New worktrees outside those paths need approval.
 
 Sessions match when any proved source-owned project or working directory (CWD)
 falls inside an approved folder or its descendants. CWD changes are valid.
@@ -148,9 +144,10 @@ Settings provides explicit provider-source access when a supported source is mis
 
 **Start syncing** does not wait for capture or upload to finish. **Done** remains
 available, and closing onboarding does not pause the saved background policy.
-In Settings → Sessions, **Upload sessions** pauses or resumes confirmed sync;
-**Retry saved uploads** retries saved work under its original bindings. Pausing,
-signing out, or changing accounts does not delete or retarget saved capture bytes.
+In Settings → Sessions, **Upload sessions to Personal** pauses only Personal
+uploads. Turn off a team folder in its workspace controls to stop new work for
+that folder. **Retry saved uploads** retries work under its original bindings.
+Pausing, signing out, or changing accounts does not retarget saved capture bytes.
 Automatic spool release requires verified integrity acceptance, not a successful
 transfer or progress count. Interrupted captures need recovery rather than
 automatic recapture.
@@ -253,6 +250,17 @@ Custom release builds that enable debug assertions also get this debug behavior.
 Saved connections stay bound to their original issuer and resource. To sign out
 of a connection from another service, rebuild with its original origins first.
 Changing defaults does not move or rebind stored credentials.
+
+For example, start the debug app against an approved remote development API:
+
+```sh
+ANTIBURN_CLOUD_ISSUER=https://api.example.test \
+ANTIBURN_CLOUD_RESOURCE=https://api.example.test \
+pnpm --filter @antiburn/desktop dev
+```
+
+Use the API origin, not the dashboard URL. Stop and restart the launcher to
+change it.
 
 Cargo defaults and release commands do not enable Cloud. `tauri build`,
 `tauri dev --release`, and custom Cargo profiles do not receive the launcher's

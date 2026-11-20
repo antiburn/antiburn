@@ -1,10 +1,12 @@
 //! Explicit source discovery and provider-bound candidate identities.
 //!
 //! Callers authorize the source first and schedule blocking discovery on bounded
-//! workers. Discovery never searches homes or reads session payload.
+//! workers. Discovery never searches homes. Codex and Pi admission use only the
+//! bounded first record.
 
 use crate::contract::safe_id;
 use crate::directory::{Directory, EntryKind};
+use crate::header_file::HeaderFileSource;
 use crate::{Error, Limits, Relationship, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +16,10 @@ use std::sync::Arc;
 pub enum CaptureSourceKind {
     /// An exact Claude JSONL file with its optional owned child companion.
     ClaudeJsonl,
+    /// One exact Codex rollout with a proved first header.
+    CodexJsonl,
+    /// One exact Pi session file with a proved first header.
+    PiJsonl,
     /// Session-owned OpenCode V2 SQLite cells in the typed native stream.
     OpenCodeSqliteV2,
 }
@@ -22,6 +28,8 @@ pub enum CaptureSourceKind {
 /// Keep each provider's admission state without mixing file and database inputs.
 pub(crate) enum CandidateSource {
     Claude(ClaudeSource),
+    Codex(HeaderFileSource),
+    Pi(HeaderFileSource),
     #[cfg(unix)]
     OpenCode(crate::opencode::OpenCodeSource),
 }
@@ -41,7 +49,8 @@ pub(crate) struct ClaudeSource {
 /// A provider-bound source identity, not an open session body.
 ///
 /// Claude discovery reads directory metadata and retains admitted handles.
-/// OpenCode discovery reads bounded session IDs, not session payload. Capture
+/// Codex and Pi admit a bounded first header. OpenCode discovery reads bounded
+/// session IDs, not session payload. Capture
 /// uses the provider binding; callers must not read payload through a display
 /// path. Rediscover when the host needs a new source listing.
 #[derive(Clone, Debug)]
@@ -66,6 +75,8 @@ impl Candidate {
     pub fn source_kind(&self) -> CaptureSourceKind {
         match &self.source {
             CandidateSource::Claude(_) => CaptureSourceKind::ClaudeJsonl,
+            CandidateSource::Codex(_) => CaptureSourceKind::CodexJsonl,
+            CandidateSource::Pi(_) => CaptureSourceKind::PiJsonl,
             #[cfg(unix)]
             CandidateSource::OpenCode(_) => CaptureSourceKind::OpenCodeSqliteV2,
         }
@@ -77,6 +88,7 @@ impl Candidate {
     pub fn source_path(&self) -> &Path {
         match &self.source {
             CandidateSource::Claude(source) => &source.path,
+            CandidateSource::Codex(source) | CandidateSource::Pi(source) => &source.path,
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => source.source_path(),
         }
@@ -86,15 +98,19 @@ impl Candidate {
     pub fn native_session_id(&self) -> &str {
         match &self.source {
             CandidateSource::Claude(source) => &source.native_session_id,
+            CandidateSource::Codex(source) | CandidateSource::Pi(source) => {
+                &source.native_session_id
+            }
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => source.native_session_id(),
         }
     }
 
-    /// Return a Claude child filename ID; OpenCode personas are not source agents.
+    /// Return a Claude child filename ID. Other sources use session IDs only.
     pub fn native_agent_id(&self) -> Option<&str> {
         match &self.source {
             CandidateSource::Claude(source) => source.native_agent_id.as_deref(),
+            CandidateSource::Codex(_) | CandidateSource::Pi(_) => None,
             #[cfg(unix)]
             CandidateSource::OpenCode(_) => None,
         }
@@ -154,6 +170,7 @@ impl Candidate {
                     *parent_source_id = format!("{scope}/{parent_source_id}");
                 }
             }
+            CandidateSource::Codex(_) | CandidateSource::Pi(_) => {}
             #[cfg(unix)]
             CandidateSource::OpenCode(_) => {}
         }

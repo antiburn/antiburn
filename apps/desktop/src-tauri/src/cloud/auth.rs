@@ -3,13 +3,46 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{io::Read, time::Duration};
+use std::{ffi::OsStr, io::Read, time::Duration};
 use url::Url;
 
-/// Display metadata for browser consent, not a physical-device identity.
-pub const DEVICE_NAME: &str = "Antiburn desktop";
-/// The only first-party permission accepted by this desktop connection.
-pub const SCOPE: &str = "capture:write";
+const DEFAULT_DEVICE_NAME: &str = "Antiburn Desktop";
+
+/// Returns display metadata for the browser consent page, not a device ID.
+/// Run on a blocking worker. The lookup uses local OS settings, not DNS.
+pub(super) fn device_name() -> String {
+    hostname::get()
+        .ok()
+        .as_deref()
+        .and_then(short_hostname)
+        .unwrap_or(DEFAULT_DEVICE_NAME)
+        .to_owned()
+}
+
+/// Shares only the first hostname segment, and never a domain suffix or IP.
+fn short_hostname(hostname: &OsStr) -> Option<&str> {
+    let label = hostname.to_str()?.split('.').next()?;
+    let bytes = label.as_bytes();
+    (bytes.len() <= 63
+        && bytes.first()?.is_ascii_alphanumeric()
+        && bytes.last()?.is_ascii_alphanumeric()
+        && bytes.iter().any(u8::is_ascii_alphabetic)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+        && !label.eq_ignore_ascii_case("localhost"))
+    .then_some(label)
+}
+/// Scope for existing capture-only account grants.
+pub const CAPTURE_SCOPE: &str = "capture:write";
+/// Scope for account grants that can also search and read sessions.
+pub const CAPTURE_AND_SESSION_SCOPE: &str = "capture:write sessions:list sessions:read";
+
+/// Accept only the service's exact scope strings. Do not normalize or split them.
+fn supported_scope(scope: &str) -> bool {
+    matches!(scope, CAPTURE_SCOPE | CAPTURE_AND_SESSION_SCOPE)
+}
+
 /// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
 pub const MAX_ACCESS_SECONDS: u64 = 900;
 /// Maximum initial fixed grant lifetime in seconds.
@@ -25,6 +58,7 @@ pub struct Config {
     pub authorization: Url,
     pub token: Url,
     pub session: Url,
+    pub workspaces: Url,
     pub revocation: Url,
 }
 
@@ -69,10 +103,11 @@ impl Config {
         Some(Self {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
-            authorization: resource_url.join("desktop/authorize").ok()?,
-            token: resource_url.join("v1/desktop/token").ok()?,
-            revocation: resource_url.join("v1/desktop/logout").ok()?,
-            session: resource_url.join("v1/desktop/session").ok()?,
+            authorization: resource_url.join("devices/authorize/account").ok()?,
+            token: resource_url.join("v1/devices/token").ok()?,
+            revocation: resource_url.join("v1/devices/logout").ok()?,
+            session: resource_url.join("v1/devices/session").ok()?,
+            workspaces: resource_url.join("v1/captures/destinations").ok()?,
         })
     }
 }
@@ -113,7 +148,7 @@ pub struct User {
     pub display_name: String,
 }
 
-/// Destination kind used to reject team grants in the personal-only native path.
+/// The kind of a verified workspace or an available destination in its list.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
@@ -121,7 +156,7 @@ pub enum WorkspaceKind {
     Team,
 }
 
-/// Granted destination and display metadata, not a user-selectable upload fallback.
+/// Destination and display metadata. This is not a grant or upload fallback.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
@@ -130,8 +165,23 @@ pub struct Workspace {
     pub kind: WorkspaceKind,
 }
 
-/// Desktop grant authority, not captured coding-session metadata.
-/// Validation must precede use; access and fixed grant deadlines stay separate.
+impl Workspace {
+    /// Validate display data before it reaches grant selection or the renderer.
+    pub(super) fn valid(&self) -> bool {
+        bounded(&self.id, 256) && bounded(&self.name, 256)
+    }
+}
+
+/// One destination in the server's current eligible list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EligibleWorkspace {
+    pub workspace: Workspace,
+    /// Opaque membership fence for Team; Personal has no membership generation.
+    pub membership_generation: Option<String>,
+}
+
+/// Account session plus the local Personal anchor used by older desktop adapters.
+/// The anchor comes from the eligible list, not from the token or session wire.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Session {
@@ -156,17 +206,16 @@ impl Session {
         Ok(())
     }
 
-    /// Validate stable grant bindings even when the previous access token has expired.
+    /// Validate the saved account binding and its local Personal anchor.
     pub fn validate_grant(&self, config: &Config, now: i64) -> Result<(), Failure> {
         if !bounded(&self.user.id, 256)
             || !bounded(&self.user.display_name, 256)
             || !bounded(&self.grant_id, 256)
             || !bounded(&self.device_name, 100)
-            || !bounded(&self.workspace.id, 256)
-            || !bounded(&self.workspace.name, 256)
             || self.workspace.kind != WorkspaceKind::Personal
+            || !self.workspace.valid()
             || self.resource != config.resource
-            || self.scope != SCOPE
+            || !supported_scope(&self.scope)
             || self.iss != config.issuer
             || self.expires_at <= now
             || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
@@ -176,8 +225,7 @@ impl Session {
         Ok(())
     }
 
-    /// Pin ownership, scope, origin, and the fixed deadline across refresh rotation.
-    /// Renamed account/workspace display labels do not change authority.
+    /// Pin account grant authority and the local Personal anchor across rotation.
     pub fn same_grant(&self, other: &Self) -> bool {
         self.user.id == other.user.id
             && self.grant_id == other.grant_id
@@ -230,11 +278,17 @@ pub struct Tokens {
     pub token_type: String,
     pub grant_id: String,
     pub user_id: String,
-    pub workspace_id: String,
+    // Decode old responses only so their bounded refresh proof can be revoked.
+    #[serde(rename = "workspace_id", default, deserialize_with = "legacy_claim")]
+    pub(super) legacy_workspace_claim: bool,
     pub grant_expires_at: String,
     pub scope: String,
     pub resource: String,
     pub iss: String,
+}
+
+fn legacy_claim<'de, D: serde::Deserializer<'de>>(value: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(value).map(|_| true)
 }
 
 impl Tokens {
@@ -257,8 +311,8 @@ impl Tokens {
         let expires_at = deadline(&self.grant_expires_at)?;
         if !bounded(&self.grant_id, 256)
             || !bounded(&self.user_id, 256)
-            || !bounded(&self.workspace_id, 256)
-            || self.scope != SCOPE
+            || self.legacy_workspace_claim
+            || !supported_scope(&self.scope)
             || self.resource != config.resource
             || self.iss != config.issuer
             || expires_at <= now
@@ -270,56 +324,72 @@ impl Tokens {
     }
 
     /// Require the independently verified session to confirm every token grant binding.
-    pub fn matches_session(&self, session: &Session) -> bool {
+    pub fn matches_session(&self, session: &AccountSession) -> bool {
         self.grant_id == session.grant_id
-            && self.user_id == session.user.id
-            && self.workspace_id == session.workspace.id
-            && deadline(&self.grant_expires_at).ok() == Some(session.expires_at)
+            && self.user_id == session.user_id
+            && deadline(&self.grant_expires_at)
+                .is_ok_and(|expires_at| deadline(&session.grant_expires_at) == Ok(expires_at))
             && self.scope == session.scope
             && self.resource == session.resource
             && self.iss == session.iss
     }
 }
 
-/// Exact flat session wire shape; deadline conversion does not itself validate authority.
+/// Exact account session wire shape. It contains no destination claims.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SessionResponse {
-    user_id: String,
-    display_name: Option<String>,
-    workspace_id: String,
-    workspace_name: String,
-    grant_id: String,
-    device_name: String,
-    scope: String,
-    resource: String,
-    grant_expires_at: String,
-    access_expires_at: String,
-    iss: String,
+pub struct AccountSession {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub grant_id: String,
+    pub device_name: String,
+    pub scope: String,
+    pub resource: String,
+    pub grant_expires_at: String,
+    pub access_expires_at: String,
+    pub iss: String,
 }
 
-impl TryFrom<SessionResponse> for Session {
-    type Error = Failure;
-
-    fn try_from(value: SessionResponse) -> Result<Self, Self::Error> {
-        Ok(Self {
+impl AccountSession {
+    /// Attach the verified Personal adapter destination. The caller validates the result.
+    pub(super) fn with_personal(self, workspace: Workspace) -> Result<Session, Failure> {
+        Ok(Session {
             user: User {
-                id: value.user_id,
-                display_name: value.display_name.unwrap_or_else(|| "Cloud account".into()),
+                id: self.user_id,
+                display_name: self.display_name.unwrap_or_else(|| "Cloud account".into()),
             },
-            grant_id: value.grant_id,
-            device_name: value.device_name,
-            workspace: Workspace {
-                id: value.workspace_id,
-                name: value.workspace_name,
-                kind: WorkspaceKind::Personal,
-            },
-            resource: value.resource,
-            scope: value.scope,
-            iss: value.iss,
-            expires_at: deadline(&value.grant_expires_at)?,
-            access_expires_at: deadline(&value.access_expires_at)?,
+            grant_id: self.grant_id,
+            device_name: self.device_name,
+            workspace,
+            resource: self.resource,
+            scope: self.scope,
+            iss: self.iss,
+            expires_at: deadline(&self.grant_expires_at)?,
+            access_expires_at: deadline(&self.access_expires_at)?,
         })
+    }
+}
+
+#[cfg(test)]
+impl From<Session> for AccountSession {
+    fn from(session: Session) -> Self {
+        fn format(seconds: i64) -> String {
+            time::OffsetDateTime::from_unix_timestamp(seconds)
+                .unwrap()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
+        }
+        Self {
+            user_id: session.user.id,
+            display_name: Some(session.user.display_name),
+            grant_id: session.grant_id,
+            device_name: session.device_name,
+            scope: session.scope,
+            resource: session.resource,
+            grant_expires_at: format(session.expires_at),
+            access_expires_at: format(session.access_expires_at),
+            iss: session.iss,
+        }
     }
 }
 
@@ -345,6 +415,9 @@ pub struct Credential {
     pub refresh_token: String,
     #[serde(default)]
     pub cleanup_refresh_tokens: Vec<String>,
+    /// Old keyring records omit this bit. Their proofs remain logout-only.
+    #[serde(default)]
+    pub account_grant: bool,
     pub session: Option<Session>,
 }
 
@@ -381,6 +454,14 @@ impl KeyringVault {
         }
     }
 }
+
+/// Derive an isolated slot from exact authority IDs, never from display labels.
+pub(super) fn workspace_namespace(config: &Config, account: &str, workspace: &str) -> String {
+    let binding = serde_json::to_vec(&(&config.issuer, &config.resource, account, workspace))
+        .expect("string tuple serialization");
+    URL_SAFE_NO_PAD.encode(Sha256::digest(binding))
+}
+
 impl Vault for KeyringVault {
     fn read(&self) -> Result<Option<Credential>, Failure> {
         let entry = keyring::Entry::new(&self.service, &self.account)
@@ -437,7 +518,7 @@ pub enum TokenRequest<'a> {
 /// Send the desktop engine's first-party requests without retries or redirects.
 ///
 /// Implementors must bound responses and keep cookies, Origin, and raw errors
-/// out of this boundary. Only `session` sends access bearer proof. The controller
+/// out of this boundary. Only reads of session and workspace state send access bearer proof. The controller
 /// serializes credential operations; transport success does not grant access.
 /// Implementors can block only inside admitted Cloud blocking work.
 pub trait Transport: Send + Sync {
@@ -447,7 +528,9 @@ pub trait Transport: Send + Sync {
     /// An uncertain exchange must not retry the predecessor.
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure>;
     /// Read current server authority; the engine checks all returned bindings.
-    fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
+    fn session(&self, config: &Config, access: &str) -> Result<AccountSession, Failure>;
+    /// Return the current eligible list. A missing route or invalid list is an error.
+    fn workspaces(&self, config: &Config, access: &str) -> Result<Vec<EligibleWorkspace>, Failure>;
     /// Return success only for synchronous HTTP 204 confirming this proof's grant.
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
@@ -531,15 +614,28 @@ impl Transport for HttpTransport {
         }
         Ok(tokens)
     }
-    fn session(&self, config: &Config, access: &str) -> Result<Session, Failure> {
-        let response: SessionResponse = decode(
+    fn session(&self, config: &Config, access: &str) -> Result<AccountSession, Failure> {
+        let session: AccountSession = decode(
             client(&config.session)?
                 .get(config.session.clone())
                 .bearer_auth(access)
                 .send()
                 .map_err(|_| Failure::Offline)?,
         )?;
-        response.try_into()
+        deadline(&session.grant_expires_at)?;
+        deadline(&session.access_expires_at)?;
+        Ok(session)
+    }
+    fn workspaces(&self, config: &Config, access: &str) -> Result<Vec<EligibleWorkspace>, Failure> {
+        let response = client(&config.workspaces)?
+            .get(config.workspaces.clone())
+            .bearer_auth(access)
+            .send()
+            .map_err(|_| Failure::Offline)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(Failure::Unavailable);
+        }
+        decode::<WorkspaceResponse>(response)?.try_into()
     }
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure> {
         let response = client(&config.revocation)?
@@ -552,6 +648,68 @@ impl Transport for HttpTransport {
         } else {
             Err(Failure::Offline)
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceResponse {
+    workspaces: Vec<WorkspaceEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceEntry {
+    workspace_id: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: WorkspaceKind,
+    // This field is required, including when its value is null.
+    #[serde(deserialize_with = "Option::deserialize")]
+    membership_generation: Option<String>,
+}
+
+impl TryFrom<WorkspaceResponse> for Vec<EligibleWorkspace> {
+    type Error = Failure;
+
+    fn try_from(response: WorkspaceResponse) -> Result<Self, Failure> {
+        if response.workspaces.len() > 100 {
+            return Err(Failure::InvalidResponse);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        response
+            .workspaces
+            .into_iter()
+            .map(|entry| {
+                let workspace = Workspace {
+                    id: entry.workspace_id,
+                    name: entry.name,
+                    kind: entry.kind,
+                };
+                if !workspace.valid()
+                    || !workspace.id.bytes().enumerate().all(|(index, byte)| {
+                        if matches!(index, 8 | 13 | 18 | 23) {
+                            byte == b'-'
+                        } else {
+                            byte.is_ascii_hexdigit()
+                        }
+                    })
+                    || workspace.id.len() != 36
+                    || !seen.insert(workspace.id.to_ascii_lowercase())
+                    || !match (&workspace.kind, &entry.membership_generation) {
+                        (WorkspaceKind::Personal, None) => true,
+                        (WorkspaceKind::Team, Some(value)) => bounded(value, 256),
+                        _ => false,
+                    }
+                {
+                    return Err(Failure::InvalidResponse);
+                }
+                Ok(EligibleWorkspace {
+                    workspace,
+                    membership_generation: entry.membership_generation,
+                })
+            })
+            .collect()
     }
 }
 

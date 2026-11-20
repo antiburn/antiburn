@@ -939,6 +939,31 @@ mod tests {
         }
     }
 
+    const CLOUD_ACCOUNT_COMMANDS: &[&str] = &[
+        "cloud_backfill_sync",
+        "cloud_begin",
+        "cloud_cancel",
+        "cloud_cancel_sync",
+        "cloud_enable_sync",
+        "cloud_prepare_sync",
+        "cloud_project_groups",
+        "cloud_reapprove_team_sync",
+        "cloud_reconcile_sync",
+        "cloud_reset_local",
+        "cloud_reset_workspace",
+        "cloud_retry_sync",
+        "cloud_save_draft",
+        "cloud_set_sync_enabled",
+        "cloud_set_sync_project",
+        "cloud_sign_out",
+        "cloud_source_picker_directory",
+        "cloud_start_sync",
+        "cloud_status",
+        "cloud_sync_projects",
+        "cloud_sync_status",
+        "cloud_workspaces",
+    ];
+
     #[test]
     fn cloud_commands_require_the_explicit_feature() {
         macro_rules! names {
@@ -947,14 +972,19 @@ mod tests {
             };
         }
         let commands: &[&str] = with_app_commands!(names);
-        assert_eq!(commands.contains(&"cloud_begin"), cfg!(feature = "cloud"));
-        assert_eq!(
-            commands
-                .iter()
-                .filter(|name| name.starts_with("cloud_"))
-                .count(),
-            if cfg!(feature = "cloud") { 19 } else { 0 }
-        );
+        let mut registered = commands
+            .iter()
+            .copied()
+            .filter(|name| name.starts_with("cloud_"))
+            .collect::<Vec<_>>();
+        registered.sort_unstable();
+        let mut expected = Vec::new();
+        if cfg!(feature = "cloud") {
+            expected.extend_from_slice(CLOUD_ACCOUNT_COMMANDS);
+            expected.push("cloud_preview_window");
+            expected.sort_unstable();
+        }
+        assert_eq!(registered, expected);
     }
 
     #[test]
@@ -992,22 +1022,19 @@ mod tests {
             capability["windows"],
             serde_json::json!(["main", "settings", "onboarding"])
         );
-        for permission in [
-            "allow-cloud-status",
-            "allow-cloud-begin",
-            "allow-cloud-cancel",
-            "allow-cloud-sign-out",
-            "allow-cloud-prepare-sync",
-            "allow-cloud-start-sync",
-        ] {
-            assert!(
-                capability["permissions"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|value| value == permission)
-            );
-        }
+        let mut permissions = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        permissions.sort_unstable();
+        let mut expected = CLOUD_ACCOUNT_COMMANDS
+            .iter()
+            .map(|command| format!("allow-{}", command.replace('_', "-")))
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        assert_eq!(permissions, expected);
     }
 
     #[test]
