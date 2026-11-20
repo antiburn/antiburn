@@ -46,6 +46,8 @@ pub struct Config {
     pub log_file: Option<PathBuf>,
     pub pricing_snapshot_path: Option<PathBuf>,
     pub price_outlier: PriceOutlierConfig,
+    #[cfg(feature = "cloud")]
+    pub cloud: Option<CloudConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -62,6 +64,47 @@ struct ConfigOverrides {
     log_file: Option<PathBuf>,
     pricing_snapshot_path: Option<PathBuf>,
     price_outlier: Option<PriceOutlierOverrides>,
+    #[cfg(feature = "cloud")]
+    cloud: Option<CloudConfig>,
+}
+
+/// Select a workspace and request limits. The active device supplies the service and access.
+#[cfg(feature = "cloud")]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CloudConfig {
+    pub workspace_id: Option<uuid::Uuid>,
+    pub connect_timeout_secs: u64,
+    pub request_timeout_secs: u64,
+}
+
+#[cfg(feature = "cloud")]
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            workspace_id: None,
+            connect_timeout_secs: 5,
+            request_timeout_secs: 15,
+        }
+    }
+}
+
+#[cfg(feature = "cloud")]
+impl CloudConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.workspace_id.is_some_and(|id| id.is_nil()) {
+            return Err("cloud.workspace_id must not be nil".into());
+        }
+        for (field, value) in [
+            ("cloud.connect_timeout_secs", self.connect_timeout_secs),
+            ("cloud.request_timeout_secs", self.request_timeout_secs),
+        ] {
+            if !(1..=300).contains(&value) {
+                return Err(format!("{field} must be between 1 and 300"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -96,7 +139,12 @@ impl Config {
         };
 
         let overrides: ConfigOverrides = serde_json::from_str(&contents).map_err(|error| {
-            format!("invalid CLI config file {}: {error}", config_path.display())
+            format!(
+                "invalid CLI config file {} at line {}, column {}",
+                config_path.display(),
+                error.line(),
+                error.column()
+            )
         })?;
         Self::from_overrides(overrides)
     }
@@ -113,6 +161,8 @@ impl Config {
             state_file: None,
             log_file: None,
             pricing_snapshot_path: None,
+            #[cfg(feature = "cloud")]
+            cloud: None,
             price_outlier: PriceOutlierConfig {
                 max_sessions: DEFAULT_PRICE_OUTLIER_MAX_SESSIONS,
                 max_age_hours: DEFAULT_PRICE_OUTLIER_MAX_AGE_HOURS,
@@ -125,6 +175,13 @@ impl Config {
 
     fn from_overrides(overrides: ConfigOverrides) -> Result<Self, String> {
         let mut config = Self::defaults();
+        #[cfg(feature = "cloud")]
+        {
+            if let Some(cloud) = &overrides.cloud {
+                cloud.validate()?;
+            }
+            config.cloud = overrides.cloud;
+        }
         config.data_root = overrides.data_root;
         if let Some(app_identifier) = overrides.app_identifier {
             validate_path_component("app_identifier", &app_identifier)?;
