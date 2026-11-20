@@ -424,7 +424,7 @@ impl CodexDirectFetch {
             transport: Box::new(LiveCodexTransport),
             cli: Box::new(LiveCodexCli),
             wait: RefreshWait::LIVE,
-            cooldown: Cooldown::new(),
+            cooldown: Cooldown::named("openai", super::CODEX_SOURCE_ID),
             pi_refresh: PiRefresher::new(),
         }
     }
@@ -455,7 +455,7 @@ impl CodexDirectFetch {
             // source-level test that reaches the CLI seam is a test bug.
             cli: Box::new(NeverSpawns),
             wait: RefreshWait::FAST,
-            cooldown: Cooldown::new(),
+            cooldown: Cooldown::named("openai", super::CODEX_SOURCE_ID),
             // Tests must never reach a real node spawn; the ones that
             // exercise the lever install their own runner.
             pi_refresh: PiRefresher::unavailable(),
