@@ -130,7 +130,7 @@ fn config() -> Config {
     Config::parse("https://api.example", "https://api.example").unwrap()
 }
 
-/// Supply synthetic desktop-grant authority without reading credentials or user content.
+/// Supply a synthetic device grant without reading credentials or user content.
 pub(super) fn session() -> Session {
     Session {
         user: auth::User {
@@ -445,11 +445,11 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
     assert_eq!(config().resource, "https://api.example");
     assert_eq!(
         config().authorization.as_str(),
-        "https://api.example/desktop/authorize/account"
+        "https://api.example/devices/authorize/account"
     );
     assert_eq!(
         config().session.as_str(),
-        "https://api.example/v1/desktop/session"
+        "https://api.example/v1/devices/session"
     );
     for origin in [
         "http://api.example",

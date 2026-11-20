@@ -56,19 +56,19 @@ fn cloud_auth_build_origins_default_only_when_both_are_absent() {
         assert_eq!(config.resource, "http://localhost:3000");
         assert_eq!(
             config.authorization.as_str(),
-            "http://localhost:3000/desktop/authorize/account"
+            "http://localhost:3000/devices/authorize/account"
         );
         assert_eq!(
             config.token.as_str(),
-            "http://localhost:3000/v1/desktop/token"
+            "http://localhost:3000/v1/devices/token"
         );
         assert_eq!(
             config.session.as_str(),
-            "http://localhost:3000/v1/desktop/session"
+            "http://localhost:3000/v1/devices/session"
         );
         assert_eq!(
             config.revocation.as_str(),
-            "http://localhost:3000/v1/desktop/logout"
+            "http://localhost:3000/v1/devices/logout"
         );
     } else {
         assert!(default.is_none());
@@ -95,7 +95,7 @@ fn cloud_auth_build_origins_default_only_when_both_are_absent() {
     assert_eq!(explicit.resource, "https://resource.example");
     assert_eq!(
         explicit.token.as_str(),
-        "https://resource.example/v1/desktop/token"
+        "https://resource.example/v1/devices/token"
     );
 }
 
@@ -305,7 +305,7 @@ fn cloud_account_approval_requires_one_personal_anchor_and_rotation_cannot_chang
         .with_clock(|| 100);
         let (url, _listener, attempt) = engine.begin(100, 0).unwrap();
         let url = Url::parse(&url).unwrap();
-        assert_eq!(url.path(), "/desktop/authorize/account");
+        assert_eq!(url.path(), "/devices/authorize/account");
         assert_eq!(
             url.query_pairs()
                 .map(|(key, _)| key.into_owned())
@@ -408,12 +408,12 @@ fn cloud_auth_rejects_origin_aliases_and_localhost_lookalikes() {
 #[test]
 fn cloud_auth_transport_checks_every_url_before_sending_proof() {
     for target in [
-        "http://remote.example/v1/desktop/token",
-        "http://localhost.example/v1/desktop/token",
-        "http://127.0.0.2/v1/desktop/token",
-        "http://user:password@localhost/v1/desktop/token",
-        "https://user:password@api.example/v1/desktop/token",
-        "ftp://localhost/v1/desktop/token",
+        "http://remote.example/v1/devices/token",
+        "http://localhost.example/v1/devices/token",
+        "http://127.0.0.2/v1/devices/token",
+        "http://user:password@localhost/v1/devices/token",
+        "https://user:password@api.example/v1/devices/token",
+        "ftp://localhost/v1/devices/token",
     ] {
         let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
         config.token = Url::parse(target).unwrap();
@@ -452,9 +452,9 @@ fn cloud_auth_release_disables_defaults_and_loopback_http_transport() {
         assert!(Config::parse("https://api.example", origin).is_none());
         let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
         let url = Url::parse(origin).unwrap();
-        config.token = url.join("v1/desktop/token").unwrap();
-        config.session = url.join("v1/desktop/session").unwrap();
-        config.revocation = url.join("v1/desktop/logout").unwrap();
+        config.token = url.join("v1/devices/token").unwrap();
+        config.session = url.join("v1/devices/session").unwrap();
+        config.revocation = url.join("v1/devices/logout").unwrap();
         assert!(matches!(
             HttpTransport.exchange(
                 &config,
@@ -788,7 +788,7 @@ mod debug_http {
         tokens.validate(&config, 100).unwrap();
         let request = worker.join().unwrap();
         request.native_only();
-        assert_eq!(request.line, "POST /v1/desktop/token HTTP/1.1");
+        assert_eq!(request.line, "POST /v1/devices/token HTTP/1.1");
         assert!(request.header("authorization").is_none());
         assert_eq!(
             request.body,
@@ -818,7 +818,7 @@ mod debug_http {
         assert!(tokens.matches_session(&session));
         let request = worker.join().unwrap();
         request.native_only();
-        assert_eq!(request.line, "GET /v1/desktop/session HTTP/1.1");
+        assert_eq!(request.line, "GET /v1/devices/session HTTP/1.1");
         assert_eq!(
             request.header("authorization"),
             Some("Bearer synthetic-access")
@@ -829,7 +829,7 @@ mod debug_http {
         HttpTransport.revoke(&config, "synthetic-refresh").unwrap();
         let request = worker.join().unwrap();
         request.native_only();
-        assert_eq!(request.line, "POST /v1/desktop/logout HTTP/1.1");
+        assert_eq!(request.line, "POST /v1/devices/logout HTTP/1.1");
         assert!(request.header("authorization").is_none());
         assert_eq!(
             request.body,

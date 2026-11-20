@@ -193,7 +193,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"));
-        assert!(reply.contains("<h1>Desktop access denied</h1>"));
+        assert!(reply.contains("<h1>Device access denied</h1>"));
         assert!(!reply.contains("synthetic-state"));
         assert!(matches!(task.await.unwrap(), Some(Callback::Cancelled)));
     }

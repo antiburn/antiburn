@@ -24,7 +24,7 @@ pub(super) fn response(callback: Option<&Callback>) -> String {
         ),
         Some(Callback::Cancelled) => (
             "200 OK",
-            "Desktop access denied",
+            "Device access denied",
             "This sign-in request was not approved.",
             "Return to Antiburn if you want to try again.",
         ),
@@ -63,11 +63,7 @@ mod tests {
         let code = Callback::Code("synthetic-callback-code".into());
         for (input, status, heading) in [
             (Some(&code), "200 OK", "Browser step complete"),
-            (
-                Some(&Callback::Cancelled),
-                "200 OK",
-                "Desktop access denied",
-            ),
+            (Some(&Callback::Cancelled), "200 OK", "Device access denied"),
             (None, "400 Bad Request", "Could not finish sign-in"),
         ] {
             let reply = response(input);
