@@ -27,7 +27,7 @@ const UNAVAILABLE: &[u8] = b"{\"status\":\"unavailable\"}\n";
 const MAX_RESPONSE: usize = 32 * 1024;
 const MAX_CONNECTIONS: usize = 8;
 const IO_DEADLINE: Duration = Duration::from_secs(2);
-// Restore can exchange proof, verify the session, and then verify workspaces.
+// Restore can exchange proof and verify the session.
 const SESSION_DEADLINE: Duration = Duration::from_secs(50);
 
 /// Private wire fields. Never derive Debug or send this value to a renderer.
@@ -36,7 +36,6 @@ pub(super) struct DeviceSession {
     pub(super) origin: String,
     pub(super) access_token: String,
     pub(super) personal_workspace_id: String,
-    pub(super) workspace_ids: Vec<String>,
 }
 
 fn effective_uid() -> u32 {
@@ -60,10 +59,6 @@ pub(super) fn bind(directory: &Path) -> io::Result<(StdUnixListener, File)> {
     if metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
         return Err(denied());
     }
-    if metadata.mode() & 0o777 != 0o700 {
-        app_directory.set_permissions(Permissions::from_mode(0o700))?;
-    }
-
     let owner = OpenOptions::new()
         .read(true)
         .write(true)
@@ -187,7 +182,7 @@ async fn reply<Session>(
     .await;
 }
 
-/// Serialize directly into a capped buffer. Never truncate a workspace list.
+/// Serialize directly into a capped buffer. Never send a truncated claim.
 fn encode(session: &DeviceSession) -> Option<Vec<u8>> {
     struct BoundedResponse(Vec<u8>);
 

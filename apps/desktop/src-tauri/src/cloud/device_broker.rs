@@ -60,19 +60,18 @@ async fn load_session(app: tauri::AppHandle) -> Option<(u64, DeviceSession)> {
         if !current() || engine.session().is_none() {
             return Ok(None);
         }
-        Ok(result.ok().map(
-            |(origin, access_token, personal_workspace_id, workspace_ids)| {
+        Ok(result
+            .ok()
+            .map(|(origin, access_token, personal_workspace_id)| {
                 (
                     generation,
                     DeviceSession {
                         origin,
                         access_token,
                         personal_workspace_id,
-                        workspace_ids,
                     },
                 )
-            },
-        ))
+            }))
     })
     .await
     .ok()
