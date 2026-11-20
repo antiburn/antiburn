@@ -78,18 +78,21 @@ impl CloudClient {
 
     fn sessions(&self, session_id: Option<Uuid>) -> RequestBuilder {
         let mut url = self.origin.clone();
-        url.set_path(&format!(
-            "/v1/devices/workspaces/{}/sessions",
-            self.workspace_id
-        ));
+        url.set_path(&format!("/v1/workspaces/{}/sessions", self.workspace_id));
         if let Some(session_id) = session_id {
-            url.set_path(&format!("{}/{session_id}", url.path()));
+            url.set_path(&format!("{}/{session_id}/document", url.path()));
         }
         self.http
             .get(url)
             .header(reqwest::header::AUTHORIZATION, self.authorization.clone())
             .header(reqwest::header::ACCEPT, "application/json")
     }
+}
+
+#[derive(Deserialize)]
+struct Page {
+    #[serde(deserialize_with = "Deserialize::deserialize")]
+    next_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -100,8 +103,7 @@ struct DocumentPage {
     revision: Uuid,
     stale: bool,
     messages: Vec<Box<RawValue>>,
-    #[serde(deserialize_with = "Deserialize::deserialize")]
-    next_cursor: Option<String>,
+    page: Page,
 }
 
 /// One bounded Cloud document page. Message values are inert, untrusted JSON.
@@ -145,7 +147,7 @@ pub(crate) async fn get(
         .map(|after| Continuation::parse(after, &client.origin, client.workspace_id, session_id))
         .transpose()?;
     if let Some(continuation) = &continuation {
-        request = request.query(&[("after", continuation.token)]);
+        request = request.query(&[("page[after]", continuation.token)]);
     }
     let page: DocumentPage = read_json(request, MAX_PAGE_BYTES).await?;
     if page
@@ -160,7 +162,7 @@ pub(crate) async fn get(
         || page.messages.iter().any(|message| {
             message.get().len() > MAX_MESSAGE_BYTES || !message.get().starts_with('{')
         })
-        || page.next_cursor.as_ref().is_some_and(|after| {
+        || page.page.next_cursor.as_ref().is_some_and(|after| {
             !valid_server_cursor(after)
                 || continuation
                     .as_ref()
@@ -170,7 +172,7 @@ pub(crate) async fn get(
     {
         return Err("Cloud document response does not match the request".into());
     }
-    let next_cursor = page.next_cursor.map(|token| {
+    let next_cursor = page.page.next_cursor.map(|token| {
         format!(
             "{}.{}.{}.{}.{token}",
             origin_key(&client.origin),

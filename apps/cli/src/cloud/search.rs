@@ -13,7 +13,7 @@ use crate::{
     sessions::{SearchResponse, SearchSources, SessionMatch, SourceState},
 };
 
-use super::{CloudClient, read_json};
+use super::{CloudClient, Page, read_json};
 
 const MAX_SEARCH_BYTES: usize = 512 * 1024;
 const MAX_LIMIT: u16 = 50;
@@ -57,7 +57,7 @@ impl CloudSession {
 struct SearchPage {
     workspace_id: Option<Uuid>,
     items: Vec<CloudSession>,
-    truncated: Option<bool>,
+    page: Page,
 }
 
 fn latest_known_time(session: &SessionMatch) -> Option<i128> {
@@ -91,14 +91,12 @@ pub(crate) async fn search(
         client
             .sessions(None)
             .query(&[("q", query.as_str())])
-            .query(&[("limit", limit)]),
+            .query(&[("page[size]", limit)]),
         MAX_SEARCH_BYTES,
     )
     .await?;
     validate_page(&page, client.workspace_id, usize::from(limit))?;
-    let cloud_truncated = page
-        .truncated
-        .unwrap_or(page.items.len() == usize::from(limit));
+    let cloud_truncated = page.page.next_cursor.is_some();
     let mut sessions: Vec<_> = page
         .items
         .into_iter()

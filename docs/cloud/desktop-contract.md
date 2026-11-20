@@ -174,7 +174,8 @@ as the same OS user.
 
 The CLI starts with the Personal workspace. It can request another workspace
 by ID. The service checks current workspace and session permissions on every
-search and document read. A connection approved only for upload cannot serve
+search and document read. It uses the workspace session API, not a device-only
+or CLI-only endpoint. A connection approved only for upload cannot serve
 CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
 where the service offers them.
 
