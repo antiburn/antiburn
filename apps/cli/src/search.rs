@@ -43,8 +43,14 @@ pub(crate) async fn lookup(args: SearchArgs, config: Config) -> Result<SearchRes
         let path = find_database_path(&config)?;
         let connection = open_read_only(&path, config.busy_timeout)?;
         let limit = args.limit.unwrap_or(config.search_limit);
-        read_sessions(&connection, &args.query, limit)
-            .map_err(|error| format!("could not search Antiburn sessions: {error}"))
+        read_sessions(
+            &connection,
+            &args.query,
+            limit,
+            config.local_search_timeout,
+            config.local_search_sqlite_length_limit_bytes,
+        )
+        .map_err(|error| format!("could not search Antiburn sessions: {error}"))
     })
     .await
     .map_err(|error| format!("Antiburn session search task failed: {error}"))?
@@ -55,10 +61,12 @@ fn read_sessions(
     connection: &Connection,
     query: &str,
     limit: u16,
+    timeout: Duration,
+    sqlite_length_limit_bytes: i32,
 ) -> rusqlite::Result<SearchResponse> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + timeout;
     connection.progress_handler(1000, Some(move || Instant::now() >= deadline));
-    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, 64 * 1024);
+    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, sqlite_length_limit_bytes);
     let mut statement = connection.prepare(
         "WITH searchable AS (
             SELECT environment_key, agent, session_id, updated_at_epoch,

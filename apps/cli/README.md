@@ -101,7 +101,13 @@ Search reads Antiburn's local database using the same discovery and `--config`
 options as checks. It matches a literal substring in stored session IDs and
 titles, ignoring ASCII case. It does not read transcripts and skips titles
 marked as first-message excerpts. Titles and activity timestamps can be `null`.
-Search reports an error if the database query exceeds its time or size limit.
+Local search reports an error if the query exceeds a limit. Set these fields
+in `cli.json` to change the limits:
+
+| Field | Default | Allowed range | What it limits |
+| --- | ---: | ---: | --- |
+| `local_search_timeout_ms` | 2,000 | 1–30,000 | Query time in milliseconds, checked during SQLite work. Separate from `busy_timeout_ms`, which controls waits for database locks. |
+| `local_search_sqlite_length_limit_bytes` | 65,536 | 4,096–1,048,576 | Size in bytes of a SQLite string, blob, or row. |
 
 ```json
 {

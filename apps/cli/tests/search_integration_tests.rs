@@ -134,6 +134,35 @@ fn matches_literal_titles_but_not_first_message_excerpts() {
 }
 
 #[test]
+fn local_search_applies_the_configured_sqlite_length_limit() {
+    let fixture = Fixture::new();
+    fixture.create_database();
+    let title = "x".repeat(80 * 1024);
+    let connection = Connection::open(&fixture.database).unwrap();
+    connection
+        .execute(
+            "UPDATE session SET title = ?1 WHERE session_id = 'plain-id'",
+            [&title],
+        )
+        .unwrap();
+    drop(connection);
+
+    let output = fixture.command().arg("plain-id").output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("could not search Antiburn sessions"));
+
+    let mut config: Value = serde_json::from_slice(&fs::read(&fixture.config).unwrap()).unwrap();
+    config["local_search_sqlite_length_limit_bytes"] = json!(128 * 1024);
+    fs::write(&fixture.config, config.to_string()).unwrap();
+    let response = fixture.search(&["plain-id"]);
+    assert_eq!(
+        response["sessions"][0]["title"].as_str(),
+        Some(title.as_str())
+    );
+}
+
+#[test]
 fn fails_on_invalid_input_or_a_missing_database() {
     let fixture = Fixture::new();
     let long_query = "x".repeat(513);
