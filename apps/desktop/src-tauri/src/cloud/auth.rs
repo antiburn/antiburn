@@ -107,7 +107,7 @@ impl Config {
             token: resource_url.join("v1/devices/token").ok()?,
             revocation: resource_url.join("v1/devices/logout").ok()?,
             session: resource_url.join("v1/devices/session").ok()?,
-            workspaces: resource_url.join("v1/devices/workspaces").ok()?,
+            workspaces: resource_url.join("v1/captures/destinations").ok()?,
         })
     }
 }

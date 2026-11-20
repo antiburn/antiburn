@@ -150,9 +150,9 @@ fn assert_team_reservation(scope: &'static str) {
                     "grant_expires_at":"1970-01-01T02:46:40Z", "access_expires_at":"1970-01-01T00:05:00Z",
                 }),
             ),
-            ("/v1/devices/workspaces", workspaces.clone()),
-            ("/v1/devices/workspaces", workspaces.clone()),
-            ("/v1/devices/workspaces", workspaces),
+            ("/v1/captures/destinations", workspaces.clone()),
+            ("/v1/captures/destinations", workspaces.clone()),
+            ("/v1/captures/destinations", workspaces),
             (
                 "/v1/captures/reserve",
                 serde_json::json!({"reservation_id":"team-reservation"}),

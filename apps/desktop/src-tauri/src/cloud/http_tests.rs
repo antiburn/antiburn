@@ -38,7 +38,7 @@ fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>
     config.authorization = origin.join("devices/authorize/account").unwrap();
     config.token = origin.join("v1/devices/token").unwrap();
     config.session = origin.join("v1/devices/session").unwrap();
-    config.workspaces = origin.join("v1/devices/workspaces").unwrap();
+    config.workspaces = origin.join("v1/captures/destinations").unwrap();
     config.revocation = origin.join("v1/devices/logout").unwrap();
     let reply = reply.map(|(status, body)| (status, body.to_owned()));
     let worker = std::thread::spawn(move || {
@@ -109,7 +109,7 @@ fn cloud_http_workspace_list_uses_only_the_current_bearer() {
         Some("opaque-generation")
     );
     let request = worker.join().unwrap();
-    assert_eq!(request.line, "GET /v1/devices/workspaces HTTP/1.1");
+    assert_eq!(request.line, "GET /v1/captures/destinations HTTP/1.1");
     assert_eq!(
         request.header("authorization"),
         Some("Bearer synthetic-access")
