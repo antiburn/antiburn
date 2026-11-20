@@ -19,6 +19,10 @@ struct Access {
     session: Session,
 }
 
+#[cfg(unix)]
+#[path = "device_broker/grant.rs"]
+mod device_grant;
+
 #[cfg(all(test, debug_assertions))]
 #[path = "tests/execution_http_integration_tests.rs"]
 mod execution_http_tests;
