@@ -7,5 +7,6 @@
     "src/onboarding/demo/adapters/{core,event,window,dpi,webviewWindow,dialog,clipboard}.ts"
   ],
   "project": ["src/**/*.{ts,tsx,css}"],
-  "ignoreDependencies": ["@tauri-apps/cli"]
+  "ignoreDependencies": ["@tauri-apps/cli"],
+  "ignoreBinaries": ["rustc"]
 }
