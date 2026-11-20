@@ -104,7 +104,7 @@ pub struct SessionOutput {
 
 enum SessionResult {
     Search(SearchResponse),
-    Get(GetResponse),
+    Get(Box<GetResponse>),
 }
 
 impl SessionOutput {
@@ -235,7 +235,7 @@ pub(crate) async fn get(args: GetArgs, config: Config) -> Result<SessionOutput, 
     };
     Ok(SessionOutput {
         json,
-        result: SessionResult::Get(response),
+        result: SessionResult::Get(Box::new(response)),
     })
 }
 
