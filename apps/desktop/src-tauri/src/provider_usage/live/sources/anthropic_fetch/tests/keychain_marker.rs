@@ -28,6 +28,7 @@ impl LiveUsageSource for PublishedKeychain {
             Some(Path::new(PRESENCE_CREDENTIALS)),
             None,
             || PiStatus::Unknown,
+            &self.source.keychain_service,
         )
     }
     fn fetch(&self, max_age: Duration) -> SourceOutcome {
@@ -413,6 +414,7 @@ fn an_mcp_only_item_is_no_login_and_detection_skips_it() {
         Some(Path::new(PRESENCE_CREDENTIALS)),
         None,
         || PiStatus::Unknown,
+        &source.keychain_service,
     );
     assert_eq!(presence.detection, Detection::InstalledNotSignedIn);
 }
@@ -433,6 +435,7 @@ fn metadata_failure_preserves_confirmed_detection() {
             Some(Path::new(PRESENCE_CREDENTIALS)),
             None,
             || panic!("must not ask Pi"),
+            &source.keychain_service,
         )
     };
     assert_eq!(
