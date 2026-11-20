@@ -363,7 +363,7 @@ to upload an excluded source. Restore access or retry discovery in Settings.
 Setup failures do not hide account cleanup controls.
 
 Before enabling sync or making a capture, Desktop reads
-`GET /v1/devices/captures/capabilities`. It sends only formats in the response: `ClaudeJsonl`,
+`GET /v1/captures/capabilities`. It sends only formats in the response: `ClaudeJsonl`,
 `OpenCodeSqliteV2`, `CodexJsonl`, or `PiJsonl`. The source limit is at most 128 MiB
 per transcript or expanded OpenCode native-row stream. A lower advertised limit
 can apply. Missing support blocks new capture without truncating or dropping
@@ -466,7 +466,7 @@ Expired incomplete parts can require transfer again from the same local bytes.
 This never grants permission to read source again, change the capture, or
 overwrite a newer publication. Deletion and cancellation remain final.
 
-Capture API requests use `/v1/devices/captures` on the configured resource origin
+Capture API requests use `/v1/captures` on the configured resource origin
 and use credentials held by Desktop.
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.

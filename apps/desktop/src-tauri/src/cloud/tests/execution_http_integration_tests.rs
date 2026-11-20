@@ -154,7 +154,7 @@ fn assert_team_reservation(scope: &'static str) {
             ("/v1/devices/workspaces", workspaces.clone()),
             ("/v1/devices/workspaces", workspaces),
             (
-                "/v1/devices/captures/reserve",
+                "/v1/captures/reserve",
                 serde_json::json!({"reservation_id":"team-reservation"}),
             ),
         ];
@@ -282,7 +282,7 @@ fn cloud_execution_http_reserve_uses_exact_device_route_and_api_bearer() {
         "reservation"
     );
     let request = server.join().unwrap();
-    assert_eq!(request.line, "POST /v1/devices/captures/reserve HTTP/1.1");
+    assert_eq!(request.line, "POST /v1/captures/reserve HTTP/1.1");
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer synthetic-api-access")
@@ -400,7 +400,7 @@ fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
     assert_eq!(
         request.line,
         format!(
-            "GET /v1/devices/captures/capture-synthetic/status?plan_id=plan-one&manifest_sha256={} HTTP/1.1",
+            "GET /v1/captures/capture-synthetic/status?plan_id=plan-one&manifest_sha256={} HTTP/1.1",
             "a".repeat(64)
         )
     );
@@ -432,10 +432,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     assert!(!caps.supports(SourceKind::CodexJsonl));
     assert!(!caps.supports(SourceKind::PiJsonl));
     let request = worker.join().unwrap();
-    assert_eq!(
-        request.line,
-        "GET /v1/devices/captures/capabilities HTTP/1.1"
-    );
+    assert_eq!(request.line, "GET /v1/captures/capabilities HTTP/1.1");
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer synthetic-api-access")
@@ -659,11 +656,11 @@ fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression(
     assert!(
         requests[0]
             .line
-            .starts_with("GET /v1/devices/captures/capture-synthetic/status?")
+            .starts_with("GET /v1/captures/capture-synthetic/status?")
     );
     assert_eq!(
         requests[1].line,
-        "POST /v1/devices/captures/capture-synthetic/renew HTTP/1.1"
+        "POST /v1/captures/capture-synthetic/renew HTTP/1.1"
     );
 }
 
@@ -689,7 +686,7 @@ fn cloud_execution_http_missing_endpoint_and_redirect_do_not_claim_reservation()
         assert_eq!(transport.failure, Some(expected));
         assert_eq!(
             server.join().unwrap().line,
-            "POST /v1/devices/captures/reserve HTTP/1.1"
+            "POST /v1/captures/reserve HTTP/1.1"
         );
     }
 }
@@ -756,7 +753,7 @@ fn cloud_execution_http_saved_part_has_signed_checksum_length_and_no_api_bearer(
     let api = api_server.join().unwrap();
     assert_eq!(
         api.line,
-        "POST /v1/devices/captures/capture-synthetic/parts HTTP/1.1"
+        "POST /v1/captures/capture-synthetic/parts HTTP/1.1"
     );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&api.body).unwrap(),
@@ -807,7 +804,7 @@ fn capture_service() -> (String, JoinHandle<usize>) {
             let request = read_request(&mut stream);
             let object = request.line.starts_with("PUT /object?");
             let (_, path) = request.line.split_once(' ').unwrap();
-            assert!(object || path.starts_with("/v1/devices/captures/"));
+            assert!(object || path.starts_with("/v1/captures/"));
             assert_eq!(request.headers.contains_key("authorization"), !object);
             assert!(!request.headers.contains_key("cookie"));
             assert!(!request.headers.contains_key("origin"));
@@ -816,7 +813,7 @@ fn capture_service() -> (String, JoinHandle<usize>) {
             } else {
                 serde_json::from_slice(&request.body).unwrap()
             };
-            let (status, body) = if request.line == "POST /v1/devices/captures/reserve HTTP/1.1" {
+            let (status, body) = if request.line == "POST /v1/captures/reserve HTTP/1.1" {
                 assert_eq!(input["agent"], "claude-code");
                 (200, serde_json::json!({"reservation_id":"reservation"}))
             } else if request.line.contains("/manifest ") {
