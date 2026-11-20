@@ -81,11 +81,7 @@ jobs:
         id: release
         run: |
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            REQUESTED_TAG=$(node --input-type=module -e '
-              import { readFileSync } from "node:fs";
-              import { caskVersion } from "./scripts/update-homebrew-cask.mjs";
-              console.log("antiburn-v" + caskVersion(readFileSync("tap/Casks/antiburn.rb", "utf8")));
-            ')
+            REQUESTED_TAG=$(gh release view --repo antiburn/antiburn --json tagName --jq .tagName)
           fi
           printf 'tag=%s\n' "$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
 
