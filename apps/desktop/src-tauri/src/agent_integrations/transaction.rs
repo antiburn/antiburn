@@ -308,6 +308,69 @@ pub fn publish(path: &Path, expected: Option<&[u8]>, proposed: &[u8]) -> Result<
     publish_inner(path, expected, proposed, || {}, |_| {})
 }
 
+/// Prepare and sync a new sibling file before its caller records proof.
+/// The caller owns the stage after success. Keep it until publication or recovery.
+#[cfg(target_os = "macos")]
+pub(crate) fn stage_new<T>(
+    path: &Path,
+    proposed: &[u8],
+    prepare: impl FnOnce(&File) -> Result<T>,
+) -> Result<(PathBuf, T)> {
+    if proposed.len() as u64 > MAX_BYTES {
+        return Err("config_too_large");
+    }
+    let parent = path.parent().ok_or("unsafe_path")?;
+    checked_directory(parent)?;
+    let stage = parent.join(format!(".antiburn-{}.tmp", nonce()?));
+    let mut file = private_file(&stage)?;
+    let identity = file_identity(&file.metadata().map_err(|_| "config_unreadable")?);
+    let stage_is_owned =
+        || fs::symlink_metadata(&stage).is_ok_and(|metadata| file_identity(&metadata) == identity);
+    let result = (|| {
+        file.write_all(proposed).map_err(|_| "config_unwritable")?;
+        validate_stage(&stage)?;
+        let proof = prepare(&file)?;
+        file.sync_all().map_err(|_| "config_unwritable")?;
+        sync_parent(&stage)?;
+        Ok(proof)
+    })();
+    if result.is_err() && stage_is_owned() {
+        let _ = fs::remove_file(&stage);
+    }
+    result.map(|proof| (stage, proof))
+}
+
+/// Atomically move a validated sibling stage without replacing an existing path.
+/// Check the bytes and any recorded ownership proof just before the rename.
+#[cfg(target_os = "macos")]
+pub(crate) fn publish_staged_new(
+    stage: &Path,
+    path: &Path,
+    verify: impl FnOnce(&[u8]) -> bool,
+) -> Result<()> {
+    if stage.parent() != path.parent() {
+        return Err("unsafe_path");
+    }
+    if !verify(&validate_stage(stage)?) {
+        return Err("concurrent_config_change");
+    }
+    rename_files(
+        stage,
+        path,
+        libc::RENAME_EXCL,
+        "create_without_replace_failed",
+    )?;
+    sync_parent(path)
+}
+
+#[cfg(target_os = "macos")]
+fn validate_stage(stage: &Path) -> Result<Vec<u8>> {
+    antiburn_cli_runtime::validate_directory_ancestors(stage.parent().ok_or("unsafe_path")?)
+        .map_err(|_| "unsafe_path")?;
+    antiburn_cli_runtime::validate_owned_file(stage).map_err(|_| "unsafe_config_file")?;
+    read(stage)?.ok_or("config_unreadable")
+}
+
 fn publish_inner(
     path: &Path,
     expected: Option<&[u8]>,
@@ -419,6 +482,21 @@ fn publish_inner(
 
 #[cfg(target_os = "macos")]
 fn swap_files(left: &Path, right: &Path) -> Result<()> {
+    rename_files(
+        left,
+        right,
+        libc::RENAME_SWAP,
+        "atomic_exchange_unavailable",
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn rename_files(
+    left: &Path,
+    right: &Path,
+    flags: libc::c_uint,
+    failure: &'static str,
+) -> Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     let left = CString::new(left.as_os_str().as_bytes()).map_err(|_| "unsafe_path")?;
@@ -430,11 +508,11 @@ fn swap_files(left: &Path, right: &Path) -> Result<()> {
             left.as_ptr(),
             libc::AT_FDCWD,
             right.as_ptr(),
-            libc::RENAME_SWAP,
+            flags,
         )
     } != 0
     {
-        return Err("atomic_exchange_unavailable");
+        return Err(failure);
     }
     Ok(())
 }

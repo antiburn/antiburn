@@ -13,7 +13,11 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let root = tempfile::tempdir().unwrap();
-        let base = root.path().canonicalize().unwrap().join("owner's home");
+        let base = root
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("owner's ``` $HOME");
         fs::DirBuilder::new().mode(0o700).create(&base).unwrap();
         let data = base.join(DEBUG_IDENTIFIER);
         let profile = base.join("selected opencode");
@@ -198,8 +202,8 @@ fn bound_skill_command_preserves_exact_arguments_with_an_empty_path() {
     fs::set_permissions(executable, fs::Permissions::from_mode(0o700)).unwrap();
     let generated = fs::read_to_string(i.skill_directory().join("SKILL.md")).unwrap();
     let command = generated
-        .split('`')
-        .find(|fragment| fragment.contains("--config"))
+        .lines()
+        .find(|line| line.contains("--config"))
         .unwrap()
         .replace("<session_id>", "synthetic-session");
     let output = std::process::Command::new("/bin/sh")
@@ -271,20 +275,94 @@ fn generated_skill_uses_the_canonical_body_and_an_absolute_bound_command() {
     let i = &fixture.installation;
     i.reconcile(&fixture.runtime).unwrap();
     let generated = fs::read_to_string(i.skill_directory().join("SKILL.md")).unwrap();
-    let command = format!(
-        "{} --config {} checks <session_id>",
+    let launcher = format!(
+        "{} --config {} ",
         quote(&fixture.runtime.executable).unwrap(),
         quote(&i.tools().join("config.json")).unwrap()
     );
     assert!(generated.starts_with("---\nname: antiburn-debug\n"));
-    assert!(generated.contains(&command));
+    assert!(generated.contains(&format!("{launcher}checks '<session_id>'")));
     assert_eq!(
         generated
             .replacen("name: antiburn-debug\n", "name: antiburn\n", 1)
-            .replacen(&command, COMMAND, 1),
+            .replace(&launcher, "antiburn "),
         SKILL,
     );
     assert_eq!(i.skill_directory(), i.profile.join("skills/antiburn-debug"));
+}
+
+#[test]
+fn binds_multiple_shell_examples_without_editing_prose_or_markdown() {
+    let fixture = Fixture::new();
+    let executable = &fixture.runtime.executable;
+    fs::create_dir(executable.parent().unwrap()).unwrap();
+    fs::write(executable, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+    fs::set_permissions(executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let source = concat!(
+        "Do not edit `antiburn` in prose.\n",
+        "```sh\nantiburn checks 'session'\nantiburn capabilities --json\n```\n",
+        "```markdown\nantiburn footer\n```\n",
+        "```sh\nantiburn checks 'another session'\n```\n",
+    );
+    let config = fixture.installation.tools().join("config.json");
+    for config in [None, Some(config.as_path())] {
+        let rendered =
+            String::from_utf8(render_skill(source, executable, config).unwrap()).unwrap();
+        assert_eq!(
+            rendered
+                .lines()
+                .filter(|line| line.starts_with("```"))
+                .collect::<Vec<_>>(),
+            ["```sh", "```", "```markdown", "```", "```sh", "```"]
+        );
+        assert!(rendered.contains("`antiburn` in prose."));
+        assert!(rendered.contains("```markdown\nantiburn footer\n```"));
+        let commands = rendered.lines().filter(|line| line.starts_with("'/"));
+        let arguments = [
+            ["checks", "session"],
+            ["capabilities", "--json"],
+            ["checks", "another session"],
+        ];
+        assert_eq!(commands.clone().count(), arguments.len());
+        for (command, args) in commands.zip(arguments) {
+            let output = std::process::Command::new("/bin/sh")
+                .args(["-c", command])
+                .env_clear()
+                .env("PATH", "")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert!(output.stderr.is_empty());
+            let mut expected = Vec::new();
+            if let Some(config) = config {
+                expected.extend(["--config", config.to_str().unwrap()]);
+            }
+            expected.extend(args);
+            assert_eq!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .lines()
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+        }
+    }
+}
+
+#[test]
+fn rejects_unbound_shell_examples_and_multiline_paths() {
+    assert_eq!(
+        render_skill(
+            "```sh\ncommand antiburn checks id\n```\n",
+            Path::new("/cli"),
+            None
+        ),
+        Err(Reason::SetupUnavailable)
+    );
+    assert_eq!(
+        render_skill(SKILL, Path::new("/home\n```\n/cli"), None),
+        Err(Reason::SetupUnavailable)
+    );
 }
 
 #[test]
