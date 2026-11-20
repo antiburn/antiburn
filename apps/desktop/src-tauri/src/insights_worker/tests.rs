@@ -241,6 +241,7 @@ async fn live_journal_delivery_runs_while_evidence_and_verification_stay_ready()
                 &WorkProgress {
                     claimed: &|| {},
                     published: &|| {},
+                    source_changed: &|_| {},
                     authorities: Arc::new(tokio::sync::Mutex::new(None)),
                 },
                 &|| async {
@@ -277,14 +278,63 @@ fn failed_pass(outcome: PassOutcome) -> EvidencePass {
 }
 
 #[test]
-fn a_source_changed_pass_requests_a_fresh_scan_for_its_agent() {
-    let pass = failed_pass(PassOutcome::SourceChanged);
-    assert!(matches!(
-        source_refresh_agent_for_outcome(&pass.outcome, "opencode"),
+fn source_refresh_uses_local_discovery_only() {
+    assert_eq!(
+        local_source_refresh_agent(&SessionKey::new("native", "opencode", "session")),
         Some(AgentKind::OpenCode)
-    ));
-    assert!(source_refresh_agent_for_outcome(&PassOutcome::Published, "opencode").is_none());
-    assert!(source_refresh_agent_for_outcome(&pass.outcome, "unknown-agent").is_none());
+    );
+    assert!(local_source_refresh_agent(&SessionKey::new("native", "unknown", "session")).is_none());
+    assert!(
+        local_source_refresh_agent(&SessionKey::new("ssh:host", "claude-code", "session"))
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn source_refresh_follows_only_a_committed_retry() {
+    for superseded in [false, true] {
+        let store = store();
+        let session = record("refresh-after-retry");
+        let agents = crate::agents::evidence_cohort();
+        store
+            .upsert_sessions(std::slice::from_ref(&session), &agents)
+            .unwrap();
+        let runner = |record: &SessionRecord, _: PassSignal, _: i64| -> PassFuture {
+            if superseded {
+                let mut updated = record.clone();
+                updated.activity_cursor = "new".into();
+                store.upsert_sessions(&[updated], &agents).unwrap();
+            }
+            Box::pin(async { failed_pass(PassOutcome::SourceChanged) })
+        };
+        let refreshes = AtomicUsize::new(0);
+        let refresh = |key: &SessionKey| {
+            let row = store.evidence(key).unwrap().unwrap();
+            assert_eq!(
+                row.next_attempt_at_epoch,
+                Some(100 + crate::scan::TICK.as_secs() as i64)
+            );
+            refreshes.fetch_add(1, Ordering::SeqCst);
+        };
+        assert!(
+            process_next_with_progress(
+                &store,
+                &|| 100,
+                &runner,
+                &|_| {},
+                &|_, _| {},
+                &WorkProgress {
+                    claimed: &|| {},
+                    published: &|| {},
+                    source_changed: &refresh,
+                    authorities: Arc::new(tokio::sync::Mutex::new(None)),
+                },
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(refreshes.load(Ordering::SeqCst), usize::from(!superseded));
+    }
 }
 
 fn published_pass(record: &SessionRecord) -> EvidencePass {
@@ -1110,6 +1160,14 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
     first_release.notify_one();
     assert!(first_task.await.unwrap());
 
+    let key = SessionKey::new("native", "claude-code", "stale-pass");
+    let due = store
+        .evidence(&key)
+        .unwrap()
+        .unwrap()
+        .next_attempt_at_epoch
+        .unwrap();
+    clock.store(due, Ordering::SeqCst);
     let second_signal_slot = Arc::new(Mutex::new(None::<PassSignal>));
     let second_release = Arc::new(Notify::new());
     let second_store = Arc::clone(&store);
@@ -1138,7 +1196,6 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
         .unwrap()
     });
     let second_signal = captured_signal(&second_signal_slot).await;
-    let key = SessionKey::new("native", "claude-code", "stale-pass");
     let successor_lease = store
         .evidence(&key)
         .unwrap()
@@ -1147,7 +1204,7 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
 
     first_signal.cancel();
     assert!(first_signal.observe());
-    clock.store(220, Ordering::SeqCst);
+    clock.store(due + 60, Ordering::SeqCst);
     tokio::time::sleep(Duration::from_millis(25)).await;
     assert_eq!(
         store

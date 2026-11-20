@@ -228,6 +228,13 @@ pub type ActivityIdentities = HashMap<SessionActivityKey, (SessionKey, Incarnati
 /// Session identities and the writer revision returned by one upsert batch.
 pub type SessionUpsertResult = (Vec<(SessionKey, Incarnation)>, Revision);
 
+/// Evidence state that makes a session eligible for retry-triggered discovery.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EvidenceSourceRefresh {
+    Changed,
+    Missing,
+}
+
 /// Persisted policy inputs used by scans and repository refreshes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryPolicySnapshot {
@@ -1482,7 +1489,21 @@ impl Store {
         evidence_agents: &[&str],
     ) -> Result<SessionUpsertResult> {
         let mut connection = self.lock();
-        upsert_sessions_locked(&mut connection, records, evidence_agents)
+        upsert_sessions_locked(&mut connection, records, evidence_agents, false)
+    }
+
+    pub(crate) fn upsert_confirmed_session(
+        &self,
+        record: &SessionRecord,
+        evidence_agents: &[&str],
+    ) -> Result<SessionUpsertResult> {
+        let mut connection = self.lock();
+        upsert_sessions_locked(
+            &mut connection,
+            std::slice::from_ref(record),
+            evidence_agents,
+            true,
+        )
     }
 
     /// Sessions whose activity falls at or after `since_epoch`, newest first.
@@ -1902,6 +1923,70 @@ impl Store {
             .optional()?)
     }
 
+    /// Check if a retry request has work for the local discovery scheduler.
+    pub(crate) fn has_local_evidence_source_refresh_targets(&self, agent: &str) -> Result<bool> {
+        let connection = self.lock();
+        let mut statement = connection.prepare_cached(
+            "SELECT EXISTS (
+                SELECT 1 FROM session_evidence
+                WHERE agent = ?1 AND environment_key NOT GLOB 'ssh:?*'
+                  AND ((status IN ('pending', 'processing') AND last_error = ?2)
+                    OR (status = 'failed' AND last_error = ?3))
+             )",
+        )?;
+        Ok(statement.query_row(
+            params![
+                agent,
+                crate::insights_worker::EVIDENCE_ERROR_SOURCE_CHANGED,
+                crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING,
+            ],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Read retry eligibility for one discovered identity.
+    ///
+    /// The scanner checks this after discovery identifies the session. It
+    /// still must confirm the selected source before it writes.
+    pub(crate) fn evidence_source_refresh_reason(
+        &self,
+        key: &SessionKey,
+    ) -> Result<Option<EvidenceSourceRefresh>> {
+        use crate::insights_worker::{
+            EVIDENCE_ERROR_SOURCE_CHANGED, EVIDENCE_ERROR_SOURCE_MISSING,
+        };
+
+        if key.remote_host_id().is_some() {
+            return Ok(None);
+        }
+        let connection = self.lock();
+        let mut statement = connection.prepare_cached(
+            "SELECT last_error = ?4
+             FROM session_evidence
+             WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+               AND ((status IN ('pending', 'processing') AND last_error = ?4)
+                 OR (status = 'failed' AND last_error = ?5))",
+        )?;
+        Ok(statement
+            .query_row(
+                params![
+                    key.environment_key,
+                    key.agent,
+                    key.session_id,
+                    EVIDENCE_ERROR_SOURCE_CHANGED,
+                    EVIDENCE_ERROR_SOURCE_MISSING,
+                ],
+                |row| {
+                    Ok(if row.get::<_, bool>(0)? {
+                        EvidenceSourceRefresh::Changed
+                    } else {
+                        EvidenceSourceRefresh::Missing
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// Keys in `sessions` whose evidence last failed because its source was
     /// missing.
     ///
@@ -1909,8 +1994,7 @@ impl Store {
     /// would otherwise leave a session stuck once its source returns —
     /// nothing else would notice and re-queue its evidence. The scan pass
     /// persists these rows through `upsert_sessions` even when the row
-    /// itself is unchanged, so its own `source_returned` check runs and
-    /// clears the failure.
+    /// itself is unchanged, after it confirms that the source has returned.
     pub fn sessions_with_missing_source_for(
         &self,
         sessions: &[SessionKey],
@@ -2106,6 +2190,9 @@ impl Store {
                 SET status = 'pending', last_error = NULL,
                     next_attempt_at_epoch = NULL, retry_count = 0
               WHERE evidence.agent IN ({agent_placeholders})
+                AND NOT (evidence.status = 'failed' AND evidence.last_error IS :source_missing)
+                AND NOT (evidence.status = 'pending' AND evidence.last_error IS :source_changed
+                         AND evidence.next_attempt_at_epoch IS NOT NULL)
                 AND (
                     evidence.status <> 'pending'
                     OR evidence.last_error IS NOT NULL
@@ -2136,6 +2223,8 @@ impl Store {
         );
         let mut update_bindings = agent_bindings;
         update_bindings.extend(named_params![
+            ":source_missing": crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING,
+            ":source_changed": crate::insights_worker::EVIDENCE_ERROR_SOURCE_CHANGED,
             ":parser_revision": revisions.parser_revision,
             ":analyzer_revision": revisions.analyzer_revision,
             ":evidence_schema_revision": revisions.evidence_schema_revision,
@@ -2687,20 +2776,37 @@ impl Store {
         Ok(true)
     }
 
-    /// Requeues one session's evidence row for the durable worker.
-    ///
-    /// Wraps [`mark_evidence_pending_in`] in its own connection lock, for a
-    /// caller outside a transaction this module already holds open — the
-    /// drilldown command switch nudges the worker this way when it finds
-    /// the stored analysis fingerprint no longer matches the live
-    /// transcript's. Idempotent: requeuing a session already `pending` (or
-    /// already claimed) just clears its retry state again.
-    pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
-        let mut connection = self.lock();
-        let transaction = connection.transaction()?;
-        mark_evidence_pending_in(&transaction, key)?;
-        transaction.commit()?;
+    pub(crate) fn request_drilldown_evidence(&self, key: &SessionKey) -> Result<()> {
+        let connection = self.lock();
+        connection.execute(
+            "INSERT INTO session_evidence (environment_key, agent, session_id)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+                 status = 'pending', last_error = NULL, next_attempt_at_epoch = NULL, retry_count = 0
+             WHERE status NOT IN ('pending', 'processing')
+               AND last_error IS NOT ?4",
+            params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING,
+            ],
+        )?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn requeue_session_evidence(&self, key: &SessionKey) -> Result<()> {
+        mark_evidence_pending_in(&self.lock(), key)
+    }
+
+    pub(crate) fn requeue_evidence_after_source_update(&self, key: &SessionKey) -> Result<()> {
+        enroll_evidence_after_source_update_in(
+            &self.lock(),
+            key,
+            crate::retention::unix_now(),
+            false,
+        )
     }
 
     /// Counts one session's turn rows stamped with `claim_fence`.

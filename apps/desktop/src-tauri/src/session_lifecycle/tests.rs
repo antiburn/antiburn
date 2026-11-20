@@ -2125,7 +2125,7 @@ fn sync_report_callers_are_the_pinned_list() {
                 commit
                     .split_whitespace()
                     .collect::<String>()
-                    .contains("self.commit_with_incarnation(guard,record,changed).await"),
+                    .contains("self.commit_with_incarnation(guard,record,changed,None).await"),
                 "IncrementalAdmission::commit awaits the reporting implementation"
             );
             for method in ["commit_with_incarnation", "delete_rejected"] {

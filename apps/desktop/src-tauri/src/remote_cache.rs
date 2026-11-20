@@ -302,6 +302,7 @@ pub async fn sync_session(
             tokio::task::spawn_blocking(move || unpack(&bundle_copy, &target_copy, &expected))
                 .await??;
         fs::remove_file(&bundle)?;
+        let evidence_agents = crate::agents::evidence_cohort();
         if unchanged {
             let old = previous.as_ref().context("Missing existing snapshot")?;
             let (old_dir, old_manifest) = manifest_for(old)?;
@@ -317,6 +318,13 @@ pub async fn sync_session(
                 "Cached transcript is incomplete; remove and re-add the host to resync"
             );
             fs::remove_dir_all(&staging)?;
+            if !store.sessions_with_missing_source_for(std::slice::from_ref(&old.key))?.is_empty() {
+                crate::remote_sync::with_commit_guard(app, host_id, scan_generation, || {
+                    store.upsert_confirmed_session(old, &evidence_agents)?;
+                    Ok(())
+                })?;
+                crate::insights_worker::wake(app);
+            }
             return Ok(SyncResult::Unchanged);
         }
         ensure!(
@@ -357,7 +365,7 @@ pub async fn sync_session(
         };
         crate::remote_sync::with_commit_guard(app, host_id, scan_generation, || {
             fs::rename(&staging, &target)?;
-            if let Err(error) = store.upsert_sessions(&[record], &["claude-code", "codex"])
+            if let Err(error) = store.upsert_confirmed_session(&record, &evidence_agents)
             {
                 if let Err(cleanup) = fs::remove_dir_all(&target) {
                     return Err(error.context(format!(
@@ -442,7 +450,7 @@ pub fn restore_fork_companions(store: &Store) -> Result<usize> {
         });
         match repair {
             Ok(true) => {
-                store.requeue_session_evidence(&record.key)?;
+                store.requeue_evidence_after_source_update(&record.key)?;
                 repaired += 1;
             }
             Ok(false) => {}

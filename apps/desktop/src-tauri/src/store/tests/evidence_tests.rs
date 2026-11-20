@@ -778,7 +778,7 @@ fn a_returned_source_requeues_with_an_unchanged_fingerprint() {
     returned.source_fingerprint = Some(record.source_fingerprint);
 
     store
-        .upsert_sessions(&[returned], &crate::agents::evidence_cohort())
+        .upsert_confirmed_session(&returned, &crate::agents::evidence_cohort())
         .unwrap();
 
     let evidence = store.evidence(&claim.key).unwrap().unwrap();

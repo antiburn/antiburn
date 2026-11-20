@@ -85,6 +85,7 @@
 //! single handle the app aborts on exit, so nothing outlives
 //! the process.
 
+use antiburn_local::analysis::RawSource;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -380,7 +381,7 @@ pub struct ScanController {
     pending_burst: Mutex<Option<watch::WatchBurst>>,
     /// One refresh bit per agent whose evidence reader rejected a stale claim.
     /// This stays separate from the coalesced one-shot trigger.
-    pending_source_refreshes: Mutex<BTreeSet<AgentKind>>,
+    source_refreshes: Mutex<SourceRefreshQueue>,
     /// Set once the first current-window pass finishes. The automatic
     /// historical pass (`history::maybe_start_automatic_pass`) checks this
     /// before it asks for anything, so it never races a fresh install's
@@ -396,6 +397,32 @@ pub struct ScanController {
     history_auto_requested_for: Mutex<Option<i32>>,
     /// True while a historical pass runs its discovery or describe phase.
     history_pass_running: AtomicBool,
+}
+
+#[derive(Default)]
+struct SourceRefreshQueue {
+    pending: BTreeSet<AgentKind>,
+    next_allowed: BTreeMap<AgentKind, tokio::time::Instant>,
+}
+
+impl SourceRefreshQueue {
+    fn take_due(&mut self, now: tokio::time::Instant) -> BTreeSet<AgentKind> {
+        let due: BTreeSet<_> = self
+            .pending
+            .iter()
+            .copied()
+            .filter(|agent| self.next_allowed.get(agent).is_none_or(|due| *due <= now))
+            .collect();
+        self.pending.retain(|agent| !due.contains(agent));
+        due
+    }
+
+    fn next_due(&self, now: tokio::time::Instant) -> Option<tokio::time::Instant> {
+        self.pending
+            .iter()
+            .map(|agent| self.next_allowed.get(agent).copied().unwrap_or(now))
+            .min()
+    }
 }
 
 impl ScanController {
@@ -436,31 +463,15 @@ impl ScanController {
     }
 
     pub fn request_source_refresh(&self, agent: AgentKind) {
-        self.pending_source_refreshes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(agent);
-        self.kick.notify_one();
-    }
-
-    fn take_source_refreshes(&self) -> BTreeSet<AgentKind> {
-        std::mem::take(
-            &mut *self
-                .pending_source_refreshes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
-    }
-
-    fn requeue_source_refreshes(&self, agents: BTreeSet<AgentKind>) {
-        if agents.is_empty() {
-            return;
+        if self.source_refreshes().pending.insert(agent) {
+            self.kick.notify_one();
         }
-        self.pending_source_refreshes
+    }
+
+    fn source_refreshes(&self) -> std::sync::MutexGuard<'_, SourceRefreshQueue> {
+        self.source_refreshes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(agents);
-        self.kick.notify_one();
     }
 
     /// Take the pending trigger, if any, for the scheduler to run next.
@@ -743,10 +754,18 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             } else {
                 None
             };
+            let source_refresh_due = if scheduled_scanning_allowed(&app) {
+                controller
+                    .source_refreshes()
+                    .next_due(tokio::time::Instant::now())
+            } else {
+                None
+            };
             let woke = tokio::select! {
                 () = controller.kick.notified() => Wake::Kick,
                 () = tokio::time::sleep_until(next_tick) => Wake::Tick,
                 () = sleep_until_due(deferred_due) => Wake::Deferred,
+                () = sleep_until_due(source_refresh_due) => Wake::Deferred,
                 () = sleep_until_due(fingerprint_due) => Wake::FingerprintRetry,
                 result = watcher_health.changed(), if watcher_health_open => {
                     let status = result
@@ -833,19 +852,42 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 }
             }
 
-            // A trigger is pending unless this woke from the tick's own
-            // sleep arm with nothing requested. Either way a full pass
-            // supersedes every floor-gated or retrying scoped item: it
-            // re-describes everything they would have, so their floors are
-            // stamped as satisfied rather than left to run again soon.
-            let source_refreshes = controller.take_source_refreshes();
+            // A full pass can settle queued work that falls within its window.
+            // Watcher recovery can also reach indexed files outside that window.
+            let mut source_refreshes = controller
+                .source_refreshes()
+                .take_due(tokio::time::Instant::now());
+            if !source_refreshes.is_empty() {
+                let store = (*app.state::<Store>()).clone();
+                let requested = source_refreshes.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let mut eligible = BTreeSet::new();
+                    for agent in requested {
+                        if store.has_local_evidence_source_refresh_targets(agent.slug())? {
+                            eligible.insert(agent);
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(eligible)
+                })
+                .await
+                {
+                    Ok(Ok(eligible)) => source_refreshes = eligible,
+                    Ok(Err(error)) => {
+                        ::tracing::warn!(event = "scan_source_refresh_lookup_failed", %error)
+                    }
+                    Err(error) => {
+                        ::tracing::warn!(event = "scan_source_refresh_lookup_failed", %error)
+                    }
+                }
+            }
             if !source_refreshes.is_empty() {
                 let trigger = ScanTrigger::SourceRefresh {
                     agents: source_refreshes.iter().map(|agent| agent.slug()).collect(),
                 };
-                if run_covered_pass(
+                // A retry pass covers only the sessions that need recovery.
+                if try_run_pass(
                     &app,
-                    &mut ledger,
+                    None,
                     trigger,
                     source_refresh_scope(&source_refreshes),
                     None,
@@ -853,10 +895,18 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 .await
                 .is_none()
                 {
-                    controller.requeue_source_refreshes(source_refreshes);
+                    controller
+                        .source_refreshes()
+                        .pending
+                        .extend(source_refreshes);
                     tokio::time::sleep(Duration::from_millis(250)).await;
                     continue;
                 }
+                let next = tokio::time::Instant::now() + TICK;
+                controller
+                    .source_refreshes()
+                    .next_allowed
+                    .extend(source_refreshes.into_iter().map(|agent| (agent, next)));
             }
             let (full_trigger, history_dispatch) = controller.take_pending_trigger();
             if full_trigger.is_some() || overflowed || matches!(woke, Wake::Tick) {
@@ -865,7 +915,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 } else {
                     ScanTrigger::Tick
                 });
-                run_covered_pass(
+                let status = run_covered_pass(
                     &app,
                     &mut ledger,
                     trigger,
@@ -875,15 +925,31 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 .await;
                 let now = tokio::time::Instant::now();
                 last_full_pass = now;
-                floors.stamp(&pending_work, now);
-                floors.stamp(&retry_work, now);
-                pending_work = scoped::ScopedWork::default();
-                retry_work = scoped::ScopedWork::default();
-                deferred_due = None;
-                // A full pass just ran, so the next tick can wait a whole
-                // interval.
                 next_tick = now + tick_for_health(watcher_is_healthy);
-                continue;
+
+                if status.as_ref().is_some_and(pass_covers) {
+                    let sessions = pending_work
+                        .sessions
+                        .union(&retry_work.sessions)
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    let store = app.state::<Store>();
+                    let uncovered = match scoped::uncovered_historical_recoveries(
+                        &store,
+                        &sessions,
+                        unix_now(),
+                    )
+                    .await
+                    {
+                        Ok(uncovered) => uncovered,
+                        Err(error) => {
+                            ::tracing::warn!(event = "scan_historical_recovery_lookup_failed", %error);
+                            sessions
+                        }
+                    };
+                    floors.settle_full_pass(&mut pending_work, &uncovered, now);
+                    floors.settle_full_pass(&mut retry_work, &uncovered, now);
+                }
             }
 
             // T7: retry work a prior admission already stamped as run, but
@@ -1388,6 +1454,7 @@ async fn pass(
             repository_policy,
             include_non_repo_folders,
             refresh_repositories: trigger.refreshes_repositories(),
+            refresh_changed_sources: matches!(trigger, ScanTrigger::SourceRefresh { .. }),
         },
         &mut incremental,
     )
@@ -1418,14 +1485,15 @@ async fn pass(
     }
     incremental.finish()?;
 
-    // `records` already holds only the scoped agents' sessions when `scope`
-    // is [`PassScope::Agents`], since discovery itself was scoped.
-    for (agent, seen, cursor) in per_agent_totals(records) {
-        checked(
-            app,
-            "The scan bookkeeping",
-            store.record_agent_scan(&agent, cursor, seen),
-        )?;
+    // Keep the last discovery totals when a retry pass checks a subset.
+    if !matches!(trigger, ScanTrigger::SourceRefresh { .. }) {
+        for (agent, seen, cursor) in per_agent_totals(records) {
+            checked(
+                app,
+                "The scan bookkeeping",
+                store.record_agent_scan(&agent, cursor, seen),
+            )?;
+        }
     }
 
     // Everything discovered so far is already persisted, so a cancel here keeps
@@ -1747,6 +1815,86 @@ impl AdmissionIo {
     }
 }
 
+async fn source_is_available(source: &SessionSource, record: &SessionRecord) -> bool {
+    if let SessionSource::ProviderDb {
+        agent,
+        db_path,
+        session_id,
+        ..
+    } = source
+    {
+        return matches!(
+            crate::analysis::locate(*agent, session_id, record.wsl_distro.as_deref()).await,
+            Some(SessionSource::ProviderDb { db_path: current, session_id: current_id, .. })
+                if current == *db_path && current_id == *session_id
+        );
+    }
+    if matches!(source, SessionSource::Inline { .. }) {
+        return true;
+    }
+    let Some(agent) = agents::kind_from_slug(&record.key.agent) else {
+        return false;
+    };
+    let paths = match crate::analysis::raw_source(agent, source).await {
+        Some(RawSource::File(path)) => {
+            if agent == AgentKind::Kiro
+                && let Some((_, messages)) = crate::analysis::kiro_cli_bundle(&path)
+            {
+                vec![path, messages]
+            } else {
+                vec![path]
+            }
+        }
+
+        Some(RawSource::ClineBundle {
+            db_path,
+            manifest_path,
+            messages_path,
+        }) => {
+            let session_id = record.key.session_id.clone();
+            let admitted = tokio::task::spawn_blocking(move || -> rusqlite::Result<bool> {
+                let connection =
+                    antiburn_local::discovery::open_native_companion_database(&db_path)?;
+                connection.query_row(
+                    "SELECT EXISTS (
+                        SELECT 1 FROM sessions WHERE session_id = ?1 AND is_subagent = 0
+                    )",
+                    [session_id],
+                    |row| row.get(0),
+                )
+            })
+            .await;
+            if !matches!(admitted, Ok(Ok(true))) {
+                return false;
+            }
+            vec![manifest_path, messages_path]
+        }
+        Some(
+            RawSource::KiroCliV2Bundle {
+                metadata_path,
+                messages_path,
+            }
+            | RawSource::KiroCliV3Bundle {
+                metadata_path,
+                messages_path,
+            },
+        ) => {
+            vec![metadata_path, messages_path]
+        }
+        Some(RawSource::CopilotCliBundle { events_path, .. }) => vec![events_path],
+        _ => return false,
+    };
+    for path in paths {
+        if !tokio::fs::metadata(path)
+            .await
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return false;
+        }
+    }
+    true
+}
+
 struct IncrementalAdmission<'a> {
     io: AdmissionIo,
     store: &'a Store,
@@ -1792,7 +1940,7 @@ impl IncrementalAdmission<'_> {
         record: &SessionRecord,
         changed: bool,
     ) -> bool {
-        self.commit_with_incarnation(guard, record, changed)
+        self.commit_with_incarnation(guard, record, changed, None)
             .await
             .is_some()
     }
@@ -1802,6 +1950,7 @@ impl IncrementalAdmission<'_> {
         guard: &SessionWriteGuard,
         record: &SessionRecord,
         changed: bool,
+        source: Option<&SessionSource>,
     ) -> Option<crate::store::Incarnation> {
         self.outcomes
             .insert(record.key.clone(), AttemptOutcome::Failed);
@@ -1809,14 +1958,19 @@ impl IncrementalAdmission<'_> {
             return None;
         }
         let keys = [record.key.clone()];
-        let returned = match self.store.sessions_with_missing_source_for(&keys) {
-            Ok(returned) => returned,
+        let was_missing = match self.store.sessions_with_missing_source_for(&keys) {
+            Ok(missing) => missing.contains(&record.key),
             Err(error) => {
                 self.fail(error);
                 return None;
             }
         };
-        if !changed && !returned.contains(&record.key) {
+        let source_confirmed = was_missing
+            && match source {
+                Some(source) => source_is_available(source, record).await,
+                None => false,
+            };
+        if !changed && !source_confirmed {
             return match self.io.checked(self.store.accept_session_if_current(guard)) {
                 Ok(true) => {
                     self.outcomes.insert(
@@ -1839,10 +1993,18 @@ impl IncrementalAdmission<'_> {
                 return None;
             }
         };
-        let Some((incarnations, revision)) = (match self.io.checked(
+        let committed = if source_confirmed {
+            self.store.upsert_discovered_session_if_current(
+                guard,
+                record,
+                &self.evidence_agents,
+                true,
+            )
+        } else {
             self.store
-                .upsert_session_if_current(guard, record, &self.evidence_agents),
-        ) {
+                .upsert_session_if_current(guard, record, &self.evidence_agents)
+        };
+        let Some((incarnations, revision)) = (match self.io.checked(committed) {
             Ok(SessionCommitOutcome::Upserted(result)) => Some(result),
             Ok(SessionCommitOutcome::Deleted(_)) => None,
             Ok(SessionCommitOutcome::Rejected(_)) => None,
@@ -3027,8 +3189,9 @@ async fn describe_candidate_with_read(
         activity_at,
         queue_wait_ms = queued_at.elapsed().as_millis() as u64,
     );
-    let result = if let Some(reused) =
-        reuse_unchanged_record(&log, previous.as_ref(), indexed_title.as_ref()).await
+    let result = if read.is_none()
+        && let Some(reused) =
+            reuse_unchanged_record(&log, previous.as_ref(), indexed_title.as_ref()).await
     {
         let changed = previous.as_ref().is_some_and(|stored| stored != &reused);
         (DescribeOutcome::Session(Box::new(reused)), changed)

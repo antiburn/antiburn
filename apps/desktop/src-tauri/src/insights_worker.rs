@@ -473,24 +473,20 @@ pub fn notify_ramp(app: &tauri::AppHandle) {
 
 async fn run_worker(app: tauri::AppHandle) {
     let store_handle: Store = (*app.state::<Store>()).clone();
-    let scan_app = app.clone();
     let run_pass = move |record: &SessionRecord, signal: PassSignal, claim_fence: i64| {
-        let key = record.key.clone();
-        let scan_app = scan_app.clone();
-        let pass = run_record_pass(record, signal, claim_fence, store_handle.clone());
-        Box::pin(async move {
-            let pass = pass.await;
-            if let Some(agent) = source_refresh_agent_for_outcome(&pass.outcome, &key.agent) {
-                ::tracing::debug!(
-                    event = "insights_source_changed_scan_requested",
-                    agent = %key.agent,
-                );
-                scan_app
-                    .state::<ScanController>()
-                    .request_source_refresh(agent);
-            }
-            pass
-        }) as PassFuture
+        run_record_pass(record, signal, claim_fence, store_handle.clone())
+    };
+    let scan_app = app.clone();
+    let source_changed = move |key: &SessionKey| {
+        if let Some(agent) = local_source_refresh_agent(key) {
+            ::tracing::debug!(
+                event = "insights_source_changed_scan_requested",
+                agent = %key.agent,
+            );
+            scan_app
+                .state::<ScanController>()
+                .request_source_refresh(agent);
+        }
     };
     let announce_app = app.clone();
     // The worker reports a typed fact only. The projection worker
@@ -562,6 +558,7 @@ async fn run_worker(app: tauri::AppHandle) {
         &signals,
         &WorkerLoopReports {
             ingested: &report_ingested,
+            source_changed: &source_changed,
             publication_drained: &publication_drained,
             generation: &generation,
         },
@@ -569,11 +566,11 @@ async fn run_worker(app: tauri::AppHandle) {
     .await;
 }
 
-fn source_refresh_agent_for_outcome(outcome: &PassOutcome, agent_slug: &str) -> Option<AgentKind> {
-    if !matches!(outcome, PassOutcome::SourceChanged) {
+fn local_source_refresh_agent(key: &SessionKey) -> Option<AgentKind> {
+    if key.remote_host_id().is_some() {
         return None;
     }
-    crate::agents::kind_from_slug(agent_slug)
+    crate::agents::kind_from_slug(&key.agent)
 }
 
 async fn run_live_worker(app: tauri::AppHandle) {
@@ -960,6 +957,7 @@ pub(crate) async fn process_next(
         &WorkProgress {
             claimed: on_claimed,
             published: &|| {},
+            source_changed: &|_| {},
             authorities: Arc::new(tokio::sync::Mutex::new(None)),
         },
     )
@@ -969,6 +967,7 @@ pub(crate) async fn process_next(
 struct WorkProgress<'a> {
     claimed: &'a (dyn Fn() + Send + Sync),
     published: &'a (dyn Fn() + Send + Sync),
+    source_changed: &'a (dyn Fn(&SessionKey) + Send + Sync),
     authorities: Arc<tokio::sync::Mutex<Option<crate::remediation::PublicationAuthorityCache>>>,
 }
 
@@ -1051,6 +1050,7 @@ async fn process_next_with_progress(
     };
     pass.analysis.analyzed_generation = claim.source_generation;
     let published = pass.outcome == PassOutcome::Published;
+    let source_changed = pass.outcome == PassOutcome::SourceChanged;
     let outcome = async {
         let config_attribution = if published {
             let evidence = pass
@@ -1106,6 +1106,9 @@ async fn process_next_with_progress(
         (progress.published)();
         announce(&claim.key);
     }
+    if source_changed && outcome.applied {
+        (progress.source_changed)(&claim.key);
+    }
     if let Some((agent, ingested)) = outcome.ingested {
         report_ingested(agent, ingested);
     }
@@ -1130,6 +1133,7 @@ pub(crate) async fn process_next_work(
         &WorkProgress {
             claimed: on_claimed,
             published: &|| {},
+            source_changed: &|_| {},
             authorities: Arc::new(tokio::sync::Mutex::new(None)),
         },
         &|| journal::process_next(store, clock, announce, on_claimed),
@@ -1256,6 +1260,7 @@ pub(crate) async fn worker_loop(
         signals,
         &WorkerLoopReports {
             ingested: report_ingested,
+            source_changed: &|_| {},
             publication_drained: &|_| {},
             generation: &|| 0,
         },
@@ -1265,6 +1270,7 @@ pub(crate) async fn worker_loop(
 
 struct WorkerLoopReports<'a> {
     ingested: &'a (dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
+    source_changed: &'a (dyn Fn(&SessionKey) + Send + Sync),
     publication_drained: &'a (dyn Fn(u64) + Send + Sync),
     generation: &'a (dyn Fn() -> u64 + Send + Sync),
 }
@@ -1304,6 +1310,7 @@ async fn worker_loop_with_reports(
         let progress = WorkProgress {
             claimed: &on_claimed,
             published: &on_published,
+            source_changed: reports.source_changed,
             authorities: authorities.clone(),
         };
         match process_next_work_with_journal(
