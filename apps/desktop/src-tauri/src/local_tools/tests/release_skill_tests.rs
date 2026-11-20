@@ -32,6 +32,30 @@ impl Fixture {
     fn install(&self) -> Result<(), Reason> {
         reconcile(&self.data, &self.home, SKILL.as_bytes())
     }
+
+    /// Stop after publication, before the release writes the active receipt.
+    fn publish_pending_first(&self, proposed: &[u8], race: impl FnOnce()) -> Result<(), Reason> {
+        ensure_directory(self.receipt().parent().unwrap()).unwrap();
+        fs::create_dir_all(self.skill().parent().unwrap()).unwrap();
+        publish_first(&self.skill(), proposed, |proof| {
+            save(
+                &self.receipt(),
+                &Receipt {
+                    owner: OWNER.into(),
+                    profile: self.home.join(".claude"),
+                    skill: FileReceipt {
+                        active: None,
+                        pending: Some(proposed.to_vec()),
+                    },
+                    first_publication: Some(proof),
+                },
+                &mut None,
+            )
+            .unwrap();
+            race();
+            Ok(())
+        })
+    }
 }
 
 #[test]
@@ -100,6 +124,64 @@ fn interrupted_publication_accepts_the_recorded_pending_bytes() {
 }
 
 #[test]
+fn first_publication_resumes_without_replacing_the_staged_file() {
+    let f = Fixture::new();
+    f.publish_pending_first(SKILL.as_bytes(), || {}).unwrap();
+    let inode = fs::metadata(f.skill()).unwrap().ino();
+    f.install().unwrap();
+    assert_eq!(fs::metadata(f.skill()).unwrap().ino(), inode);
+    let receipt: Receipt = serde_json::from_slice(&fs::read(f.receipt()).unwrap()).unwrap();
+    assert_eq!(receipt.skill.active.as_deref(), Some(SKILL.as_bytes()));
+    assert!(receipt.skill.pending.is_none());
+    assert!(receipt.first_publication.is_none());
+}
+
+#[test]
+fn first_publication_can_resume_on_a_new_release() {
+    let f = Fixture::new();
+    f.publish_pending_first(b"previous canonical skill", || {})
+        .unwrap();
+    f.install().unwrap();
+    assert_eq!(fs::read(f.skill()).unwrap(), SKILL.as_bytes());
+}
+
+#[test]
+fn a_concurrent_matching_creation_does_not_gain_ownership() {
+    let f = Fixture::new();
+    let failure = f.publish_pending_first(SKILL.as_bytes(), || {
+        fs::write(f.skill(), SKILL).unwrap();
+    });
+    assert_eq!(failure, Err(Reason::SetupUnavailable));
+    let inode = fs::metadata(f.skill()).unwrap().ino();
+    let receipt = fs::read(f.receipt()).unwrap();
+    assert_eq!(f.install(), Err(Reason::OwnershipConflict));
+    assert_eq!(fs::metadata(f.skill()).unwrap().ino(), inode);
+    assert_eq!(fs::read(f.receipt()).unwrap(), receipt);
+}
+
+#[test]
+fn a_matching_replacement_does_not_gain_ownership() {
+    let f = Fixture::new();
+    f.publish_pending_first(SKILL.as_bytes(), || {}).unwrap();
+    let replacement = f.skill().with_extension("replacement");
+    fs::copy(f.skill(), &replacement).unwrap();
+    fs::rename(replacement, f.skill()).unwrap();
+    let receipt = fs::read(f.receipt()).unwrap();
+    assert_eq!(f.install(), Err(Reason::OwnershipConflict));
+    assert_eq!(fs::read(f.skill()).unwrap(), SKILL.as_bytes());
+    assert_eq!(fs::read(f.receipt()).unwrap(), receipt);
+}
+
+#[test]
+fn a_changed_pending_first_file_is_not_replaced() {
+    let f = Fixture::new();
+    f.publish_pending_first(SKILL.as_bytes(), || {}).unwrap();
+    fs::write(f.skill(), b"user edit").unwrap();
+    assert_eq!(f.install(), Err(Reason::OwnershipConflict));
+    assert_eq!(fs::read(f.skill()).unwrap(), b"user edit");
+}
+
+#[test]
 fn existing_unmanaged_skill_is_not_adopted_even_when_bytes_match() {
     let f = Fixture::new();
     fs::create_dir_all(f.skill().parent().unwrap()).unwrap();
@@ -124,6 +206,7 @@ fn pending_first_install_does_not_claim_a_matching_file() {
                 active: None,
                 pending: Some(SKILL.as_bytes().to_vec()),
             },
+            first_publication: None,
         },
         &mut None,
     )
