@@ -52,3 +52,7 @@ impl Engine {
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/device_broker_grant_tests.rs"]
+mod tests;
