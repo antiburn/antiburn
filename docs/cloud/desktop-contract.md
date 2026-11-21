@@ -9,6 +9,9 @@ OAuth or OpenID Connect service. Builds without the `cloud` feature include no C
 capabilities, callback scheme, account controls, or Cloud onboarding step. Local
 sessions and Checks do not need Cloud.
 
+See [Cloud onboarding in Desktop](onboarding.md) for the sign-in, invitation,
+and folder setup flow.
+
 ## Local analysis and Cloud capture
 
 [`antiburn-local`](../../crates/antiburn-local) owns local session discovery,
