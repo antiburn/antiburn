@@ -14,6 +14,7 @@ function fixture(initial?: CloudSnapshot) {
     status: "signed_out",
   }
   let publish: (value: CloudSnapshot) => void = () => {}
+  const read = vi.fn(async () => value)
   const signOut = vi.fn(async () => value)
   const begin = vi.fn(async (): Promise<CloudSnapshot> => ({ ...value, status: "waiting" }))
   const cancel = vi.fn(async (): Promise<CloudSnapshot> => ({ ...value, status: "cancelled" }))
@@ -29,7 +30,7 @@ function fixture(initial?: CloudSnapshot) {
     {
       ...desktopCloudPort,
       ongoing: undefined,
-      read: async () => value,
+      read,
       watch: async (listener) => {
         publish = listener
         return () => {}
@@ -49,6 +50,7 @@ function fixture(initial?: CloudSnapshot) {
   )
   return {
     session,
+    read,
     signOut,
     begin,
     cancel,
@@ -141,6 +143,34 @@ it("allows sign-out when a saved sign-in cannot be checked", async () => {
   expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
   expect(await screen.findByText("Signed out on this device")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
+})
+
+it("announces the sign-in check and its result when retrying", async () => {
+  const { session, read } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "sign_in_check_failed",
+  })
+  render(<Account session={session} />)
+  const retry = await screen.findByRole("button", { name: "Try again" })
+  let finishCheck!: (snapshot: CloudSnapshot) => void
+  read.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishCheck = resolve
+      }),
+  )
+  const status = screen.getByRole("status")
+  fireEvent.click(retry)
+  expect(status).toHaveTextContent("Checking sign-in…")
+  expect(screen.queryByRole("alert")).toBeNull()
+  expect(retry).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeDisabled()
+  await act(async () =>
+    finishCheck({ ...emptyCloudSnapshot, authEnabled: true, status: "signed_out" }),
+  )
+  expect(status).toHaveTextContent("Signed out on this device")
   expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
 })
 

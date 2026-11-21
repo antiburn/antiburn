@@ -78,7 +78,16 @@ export function CloudOnboarding({
   const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
   const checkFailed = value.cloud.status === "sign_in_check_failed"
   const signOutFailed = value.cloud.status === "sign_out_failed"
-  const retryCloud = checkFailed || (!value.cloud.authEnabled && !!value.error)
+  const retryingSignIn = value.authAction === "check_sign_in"
+  const retryCloud =
+    retryingSignIn || checkFailed || (!value.cloud.authEnabled && !!value.error)
+  const signInMessage =
+    value.loaded &&
+    !value.authAction &&
+    (value.cloud.authEnabled || value.cloud.status === "browser_failed")
+      ? cloudStatusMessage(value.cloud.status)
+      : ""
+  const signInError = checkFailed || signOutFailed ? signInMessage : ""
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -214,7 +223,9 @@ export function CloudOnboarding({
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
                 }
                 disabled={disabled || !value.loaded}
-                onClick={() => void (retryCloud ? session.load() : session.begin())}
+                onClick={() =>
+                  void (retryCloud ? session.load("check_sign_in") : session.begin())
+                }
               >
                 {value.authAction === "sign_in"
                   ? "Starting sign-in…"
@@ -235,16 +246,12 @@ export function CloudOnboarding({
                 {value.authAction === "sign_out" ? "Signing out…" : "Sign out"}
               </button>
             )}
-            <p
-              className="cloud-status type-footnote"
-              role={checkFailed || signOutFailed ? "alert" : "status"}
-            >
-              {value.loaded &&
-              !value.authAction &&
-              (value.cloud.authEnabled || value.cloud.status === "browser_failed")
-                ? cloudStatusMessage(value.cloud.status)
-                : ""}
-            </p>
+            <div className="cloud-status type-footnote">
+              <p role="status">
+                {retryingSignIn ? "Checking sign-in…" : signInError ? "" : signInMessage}
+              </p>
+              {signInError && <p role="alert">{signInError}</p>}
+            </div>
           </div>
         </section>
       ) : value.screen === "identity" ? (

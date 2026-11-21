@@ -51,6 +51,7 @@ export function CloudAccount({
   }
   const waiting = ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.status === "returned"
+  const retryingSignIn = value.authAction === "check_sign_in"
   const readFailed = value.loaded && !!value.error && !value.cloud.authEnabled
   const checkFailed = value.cloud.status === "sign_in_check_failed"
   const signOutFailed = value.cloud.status === "sign_out_failed"
@@ -71,19 +72,21 @@ export function CloudAccount({
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
           <p className="type-body text-label" role="status">
-            {!value.loaded
-              ? "Checking Cloud…"
-              : value.authAction === "sign_out"
-                ? "Signing out…"
-                : readFailed || checkFailed || signOutFailed
-                  ? "Cloud account"
-                  : value.cloud.identity
-                    ? `Signed in as ${value.cloud.identity.login}`
-                    : value.cloud.status === "signed_out"
-                      ? "Signed out on this device"
-                      : value.cloud.authEnabled
-                        ? "Not signed in"
-                        : "Antiburn Cloud is coming soon"}
+            {retryingSignIn
+              ? "Checking sign-in…"
+              : !value.loaded
+                ? "Checking Cloud…"
+                : value.authAction === "sign_out"
+                  ? "Signing out…"
+                  : readFailed || checkFailed || signOutFailed
+                    ? "Cloud account"
+                    : value.cloud.identity
+                      ? `Signed in as ${value.cloud.identity.login}`
+                      : value.cloud.status === "signed_out"
+                        ? "Signed out on this device"
+                        : value.cloud.authEnabled
+                          ? "Not signed in"
+                          : "Antiburn Cloud is coming soon"}
           </p>
           {value.cloud.identity && value.cloud.destination?.kind === "personal" && (
             <p className="type-footnote text-label-secondary">{value.cloud.destination.name}</p>
@@ -97,24 +100,28 @@ export function CloudAccount({
             </p>
           )}
         </div>
-        {(readFailed || checkFailed) && (
+        {(readFailed || checkFailed || retryingSignIn) && (
           <button
             className="ui-push-button"
             disabled={value.busy}
-            onClick={() => void session.load()}
+            onClick={() => void session.load("check_sign_in")}
           >
             Try again
           </button>
         )}
-        {value.loaded && !readFailed && !value.cloud.authEnabled && !value.cloud.identity && (
-          <button
-            className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-control type-callout text-label-secondary hover:text-label disabled:opacity-50"
-            disabled={value.busy}
-            onClick={() => void session.begin()}
-          >
-            Learn more <ArrowUpRight size={13} aria-hidden="true" />
-          </button>
-        )}
+        {value.loaded &&
+          !readFailed &&
+          !retryingSignIn &&
+          !value.cloud.authEnabled &&
+          !value.cloud.identity && (
+            <button
+              className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-control type-callout text-label-secondary hover:text-label disabled:opacity-50"
+              disabled={value.busy}
+              onClick={() => void session.begin()}
+            >
+              Learn more <ArrowUpRight size={13} aria-hidden="true" />
+            </button>
+          )}
         {value.cloud.authEnabled &&
           !value.cloud.identity &&
           !readFailed &&

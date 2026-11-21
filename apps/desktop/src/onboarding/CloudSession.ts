@@ -61,7 +61,7 @@ export interface CloudViewSnapshot {
   /** A failed status read or subscription cannot establish current tool readiness. */
   localToolsError: boolean
   busy: boolean
-  authAction?: "sign_in" | "sign_out" | null
+  authAction?: "check_sign_in" | "sign_in" | "sign_out" | null
   error: string | null
   loaded: boolean
   /** Retry the saved request's listing even after a transient warning clears. */
@@ -516,9 +516,13 @@ export class CloudSession {
   /** Attach events before independent account/tool reads. Restore saved IDs
    * without starting a request; neither status path blocks the other.
    */
-  load = async () => {
+  load = async (authAction: "check_sign_in" | null = null) => {
     const generation = this.generation
-    this.publish({ busy: true, authAction: null, error: null })
+    this.publish({
+      busy: true,
+      authAction,
+      error: null,
+    })
     void this.loadLocalTools()
     try {
       if (!this.stop) {
@@ -586,6 +590,7 @@ export class CloudSession {
         this.publish({
           screen: "complete",
           busy: false,
+          authAction: null,
           sync: value.pendingSync.result,
         })
         const reconcileRevision = this.revision
@@ -597,12 +602,13 @@ export class CloudSession {
         }
         this.publish({ sync, screen: "complete" })
       }
-      this.publish({ busy: false })
+      this.publish({ busy: false, authAction: null })
       if (this.port.ongoing && this.snapshot.cloud.identity) await this.loadProjects()
     } catch (error) {
       if (this.active && generation === this.generation)
         this.publish({
           busy: false,
+          authAction: null,
           loaded: true,
           error: isCloudBusy(error)
             ? CLOUD_BUSY_MESSAGE

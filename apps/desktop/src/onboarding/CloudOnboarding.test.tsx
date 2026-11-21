@@ -120,8 +120,9 @@ it("offers sign-in or local setup after local sign-out", async () => {
   expect(done).toHaveBeenCalledOnce()
 })
 
-it("offers sign-out when it cannot check an existing sign-in", async () => {
+it("announces a retry and keeps sign-out available when the check fails again", async () => {
   const { port } = fixture({ ...signIn, status: "sign_in_check_failed" })
+  const initialRead = port.read
   port.signOut = vi.fn(async () => ({
     ...emptyCloudSnapshot,
     authEnabled: true,
@@ -133,7 +134,21 @@ it("offers sign-out when it cannot check an existing sign-in", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Couldn’t check sign-in. Try again.",
   )
-  expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
+  let finishCheck!: (snapshot: CloudSnapshot) => void
+  port.read = () =>
+    new Promise((resolve) => {
+      finishCheck = resolve
+    })
+  const retry = screen.getByRole("button", { name: "Try again" })
+  const status = screen.getByRole("status")
+  fireEvent.click(retry)
+  expect(status).toHaveTextContent("Checking sign-in…")
+  expect(screen.queryByRole("alert")).toBeNull()
+  expect(retry).toBeDisabled()
+  await act(async () => finishCheck(await initialRead()))
+  expect(status).toBeEmptyDOMElement()
+  expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t check sign-in. Try again.")
+  expect(retry).toBeEnabled()
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
   expect(await screen.findByText("Couldn’t sign out. Try again.")).toBeVisible()
   expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
