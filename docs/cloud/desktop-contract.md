@@ -262,8 +262,10 @@ or a named Team. A removed destination is not replaced with Personal.
 Loading a page or editing a choice does not enable uploads. **Start syncing**
 approves only visible groups and their exact current path members. It submits
 one policy per affected destination and keeps previously approved paths and
-sources intact. Onboarding does not move an approved folder to a different
-destination. **Finish without syncing** discards unsubmitted choices.
+sources intact. Folder setup checks all saved policies for this account and
+service, including unavailable destinations. If it cannot verify the saved
+policies, it blocks new routes. Onboarding does not move an approved folder to
+a different destination. **Finish without syncing** discards unsubmitted choices.
 
 If some destinations cannot confirm the save, setup lists the confirmed and
 unconfirmed results. Retry checks the unconfirmed policies before sending
@@ -340,8 +342,9 @@ waiting for capture, transfer, or integrity acceptance. After a save attempt,
 stops renderer observation, not the saved policy or desktop scheduler. Local
 tools setup stays independent of Cloud sync.
 
-Settings → Sessions shows the account, selected destination, upload switch,
-folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
+Settings → Sessions shows the account, saved destinations, and folder choices.
+Each saved destination reports its own upload state and has its own pause and
+resume controls. The normal view omits transfer counters.
 Upload status events identify the account and destination. A read for a named
 destination returns only that destination's status and does not change its policy.
 Folder-read and saved-upload failures use brief messages, with recovery actions
@@ -354,8 +357,8 @@ current folder policy retain their bytes but do not count as current upload fail
 counters and progress are unknown or last-known values, not current results. The desktop
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
 values must match the current account, destination, and service.
-**Upload sessions** pauses or resumes the confirmed policy. For saved-upload errors,
-**Retry** retries permitted saved work without expanding the selection.
+**Pause uploads** and **Resume uploads** affect only the named destination.
+For saved-upload errors, retry does not expand the confirmed selection.
 `recoveryRequiredCount` identifies missing or incomplete local captures that
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings

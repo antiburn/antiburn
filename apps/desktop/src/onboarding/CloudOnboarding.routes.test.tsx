@@ -49,10 +49,14 @@ function fixture(patch: Partial<CloudSnapshot> = {}) {
       selectedSources: consent.selectedSources,
     })
     policies.set(consent.destinationId, status)
-    fixture.emit({ syncEnabled: true, savedDestinationId: consent.destinationId })
+    fixture.emit({
+      syncEnabled: true,
+      savedDestinationId: consent.destinationId,
+      savedDestinationIds: [...policies.keys()].sort(),
+    })
     return status
   }
-  fixture.emit({ destinations: [personal, team], ...patch })
+  fixture.emit({ destinations: [personal, team], savedDestinationIds: [], ...patch })
   fixture.ongoing.status.mockImplementation(async (binding) =>
     current(binding?.destinationId ?? personal.id),
   )
@@ -156,7 +160,7 @@ it("fences the remaining request when Team membership changes during Start", asy
 })
 
 it("preserves previously confirmed paths and locks them against implicit retargeting", async () => {
-  const { port, ongoing, policies } = fixture()
+  const { port, ongoing, policies } = fixture({ savedDestinationIds: [personal.id] })
   const prior = ongoingStatus({
     destinationId: personal.id,
     consentVersion: "desktop-project-sync-v1",
@@ -218,4 +222,83 @@ it("discards unsaved Settings choices on Finish and reopens with new folders off
   expect(
     await screen.findByRole("combobox", { name: /Destination for Website/ }),
   ).toHaveDisplayValue("Don’t sync")
+})
+
+it("locks folders from a saved Team that is unavailable and not the last saved destination", async () => {
+  const { port, ongoing, policies } = fixture({
+    destinations: [personal],
+    savedDestinationId: personal.id,
+    savedDestinationIds: [personal.id, team.id],
+  })
+  policies.set(personal.id, ongoingStatus({ consentVersion: "desktop-project-sync-v1" }))
+  policies.set(
+    team.id,
+    ongoingStatus({
+      destinationId: team.id,
+      consentVersion: "desktop-project-sync-v1",
+      requiresDestinationReview: true,
+      status: "fenced",
+      projects: studio.projects,
+    }),
+  )
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  const studioRoute = await screen.findByRole("combobox", { name: /Destination for Studio/ })
+  expect(studioRoute).toBeDisabled()
+  expect(studioRoute).toHaveDisplayValue("Unavailable destination")
+  expect(ongoing.status).toHaveBeenCalledWith({ accountId, destinationId: team.id })
+  fireEvent.change(studioRoute, { target: { value: personal.id } })
+  expect(start()).toBeDisabled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("shows both running Settings routes and pauses only the named Team", async () => {
+  const { port, ongoing, policies } = fixture({ savedDestinationIds: [personal.id, team.id] })
+  policies.set(
+    personal.id,
+    ongoingStatus({ status: "ready", consentVersion: "desktop-project-sync-v1" }),
+  )
+  const teamPolicy = ongoingStatus({
+    destinationId: team.id,
+    status: "syncing",
+    consentVersion: "desktop-project-sync-v1",
+  })
+  policies.set(team.id, teamPolicy)
+  ongoing.pause.mockResolvedValue({ ...teamPolicy, paused: true, status: "paused" })
+  const session = new CloudSession(port, false, true)
+  function Account() {
+    const value = useSyncExternalStore(session.subscribe, session.getSnapshot)
+    return <CloudAccount session={session} value={value} />
+  }
+  render(<Account />)
+  expect(await screen.findByText("Sessions syncing")).toBeVisible()
+  expect(screen.getByText("Background sync enabled")).toBeVisible()
+  fireEvent.click(screen.getByRole("button", { name: "Pause uploads for Example Team" }))
+  expect(
+    await screen.findByRole("button", { name: "Resume uploads for Example Team" }),
+  ).toBeEnabled()
+  expect(screen.getByRole("button", { name: "Pause uploads for Personal" })).toBeEnabled()
+  expect(ongoing.pause).toHaveBeenCalledExactlyOnceWith({ accountId, destinationId: team.id })
+})
+
+it("can continue from identity when capture is supported and invitations are disabled", async () => {
+  const { port, ongoing } = fixture({
+    draft: { screen: "identity", folders: [] },
+    invitationEnabled: false,
+  })
+  render(
+    <CloudOnboarding
+      port={port}
+      analytics={false}
+      holdIdentity
+      onBack={vi.fn()}
+      onComplete={vi.fn()}
+    />,
+  )
+  const next = await screen.findByRole("button", { name: "Continue Cloud setup" })
+  expect(next).toBeVisible()
+  fireEvent.click(next)
+  expect(await screen.findByRole("heading", { name: "Choose folders to sync" })).toBeVisible()
+  expect(ongoing.enable).not.toHaveBeenCalled()
 })

@@ -13,7 +13,7 @@ async function openCloud(page: Page, state: string, theme = "light", scale = 100
   )
   await expect(page.locator(".cloud-footer")).toHaveCSS(
     "display",
-    ["identity", "identity_error"].includes(state) ? "none" : "flex",
+    state === "identity_error" ? "none" : "flex",
   )
 }
 
@@ -155,6 +155,7 @@ for (const theme of ["light", "dark"] as const) {
   test(`verified identity and local folder choice in ${theme}`, async ({ page }) => {
     await openCloud(page, "identity", theme)
     await expect(page.getByRole("heading", { name: "You’re signed in" })).toBeVisible()
+    await expect(page.getByRole("button", { name: "Continue Cloud setup" })).toBeInViewport()
     await capture(page, `${theme}-identity`)
     await openCloud(page, "folders", theme)
     await expect(page.getByRole("switch")).toHaveCount(2)

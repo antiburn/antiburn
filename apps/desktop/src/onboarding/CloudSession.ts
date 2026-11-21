@@ -28,11 +28,18 @@ import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalyti
 import { personalCloudDestination } from "../lib/cloudDestination"
 import type { LocalToolsStatus } from "../lib/ipcPayloads"
 import {
+  folderDiscoveryBinding,
+  folderGroupHasPolicy,
   folderRouteConsent,
+  folderRouteControlBinding,
+  folderRouteResults,
   folderRoutesOverlap,
   folderRoutingAuthority,
   lockedFolderRoutes,
   matchesFolderConsent,
+  readSavedFolderPolicies,
+  sameSavedFolderInventory,
+  savedFolderPolicyStatuses,
   type FolderAssignment,
   type FolderRoutes,
 } from "./cloudFolderRouting"
@@ -93,6 +100,8 @@ export interface CloudViewSnapshot {
   } | null
   /** Desktop-owned ongoing policy and transfer counters, separate from local agents. */
   ongoing?: CloudOngoingStatus | null
+  /** Exact saved route states. Null means the full saved inventory was not verified. */
+  routedPolicies?: readonly CloudOngoingStatus[] | null
   /** Unsaved choices stay local. An unconfirmed result is not an upload status. */
   routedFolders?: {
     choices: FolderRoutes
@@ -191,11 +200,13 @@ export class CloudSession {
   private confirmedProjectChoices: CloudProjectChoices = {}
   private routeChoices: FolderRoutes = {}
   private routePolicies = new Map<string, CloudOngoingStatus>()
+  private verifiedRouteIds: readonly string[] | null = null
   private routedScreen: CloudScreen | null = null
   private routeBatch: {
     revision: number
     authority: string
     completeOnSave: boolean
+    knownDestinationIds: ReadonlySet<string>
     entries: { consent: CloudOngoingConsent; name: string; saved: boolean }[]
   } | null = null
   private needsChoiceReview = false
@@ -295,6 +306,13 @@ export class CloudSession {
     const routed = !!this.port.ongoing && value.destinations !== undefined
     const routeChanged =
       routed && folderRoutingAuthority(value) !== folderRoutingAuthority(this.snapshot.cloud)
+    const inventoryChanged =
+      routed &&
+      !this.routeBatch &&
+      !sameSavedFolderInventory(
+        value.savedDestinationIds,
+        this.snapshot.cloud.savedDestinationIds,
+      )
     const accountChanged = value.identity?.id !== this.snapshot.cloud.identity?.id
     const activeDestinationChanged =
       value.destination?.id !== this.snapshot.cloud.destination?.id ||
@@ -324,6 +342,7 @@ export class CloudSession {
       this.projectSyncStarted = false
       this.routeChoices = {}
       this.routePolicies.clear()
+      this.verifiedRouteIds = null
       this.routedScreen = null
       this.routeBatch = null
     } else if (value.setupError) {
@@ -357,6 +376,13 @@ export class CloudSession {
     }
     this.publish({
       cloud: value,
+      ...(routed &&
+      (accountChanged ||
+        inventoryChanged ||
+        value.status !== "signed_in" ||
+        !value.savedDestinationIds)
+        ? { routedPolicies: null }
+        : {}),
       ...(routed && activeDestinationChanged ? { ongoing: null } : {}),
       ...(routed && routeChanged
         ? {
@@ -377,6 +403,9 @@ export class CloudSession {
               ? { projects: { ...this.snapshot.projects, loading: false } }
               : {}),
           }
+        : {}),
+      ...(inventoryChanged && !routeChanged && this.snapshot.routedFolders
+        ? { routedFolders: { ...this.snapshot.routedFolders, ready: false } }
         : {}),
       ...(accountChanged ||
       destinationChanged ||
@@ -519,12 +548,22 @@ export class CloudSession {
             const routesChanged =
               value.destinations !== undefined &&
               folderRoutingAuthority(value) !== folderRoutingAuthority(this.snapshot.cloud)
+            const inventoryChanged = !sameSavedFolderInventory(
+              value.savedDestinationIds,
+              this.snapshot.cloud.savedDestinationIds,
+            )
             this.receive(value)
             if (
               this.port.ongoing &&
-              this.discoveryBinding() &&
+              (this.discoveryBinding() ||
+                (value.destinations !== undefined &&
+                  value.identity &&
+                  value.status === "signed_in")) &&
               !this.snapshot.busy &&
-              (!this.snapshot.projects || setupRecovered || routesChanged)
+              (!this.snapshot.projects ||
+                setupRecovered ||
+                routesChanged ||
+                (inventoryChanged && !this.routeBatch))
             )
               void this.loadProjects()
           }
@@ -595,6 +634,43 @@ export class CloudSession {
   private receiveOngoing(status: CloudOngoingStatus) {
     const { identity, destination, status: authStatus } = this.snapshot.cloud
     const personal = personalCloudDestination(destination ?? null)
+    if (this.snapshot.cloud.destinations !== undefined) {
+      const id = status.destinationId
+      if (!identity || authStatus !== "signed_in" || status.accountId !== identity.id || !id)
+        return
+      if (this.snapshot.cloud.savedDestinationIds?.includes(id)) {
+        const previous = this.routePolicies.get(id)
+        const policyKnown = status.storageKnown && !!status.policyRevision
+        this.routePolicies.set(id, status)
+        if (!policyKnown) this.verifiedRouteIds = null
+        const route = this.snapshot.routedFolders
+        const folders =
+          route && !policyKnown
+            ? {
+                ...route,
+                ready: false,
+                message:
+                  "Could not verify all saved upload routes. Refresh before choosing folders.",
+              }
+            : route && !this.routeBatch && status.policyRevision !== previous?.policyRevision
+              ? {
+                  ...route,
+                  locked: lockedFolderRoutes(
+                    this.snapshot.projects?.groups ?? [],
+                    this.routePolicies,
+                  ),
+                }
+              : undefined
+        this.publish({
+          ...(this.snapshot.routedPolicies !== null
+            ? { routedPolicies: this.savedRouteStatuses() }
+            : {}),
+          ...(personal?.id === id ? { ongoing: status } : {}),
+          ...(folders ? { routedFolders: folders } : {}),
+        })
+      }
+      return
+    }
     if (
       !identity ||
       !personal ||
@@ -604,12 +680,6 @@ export class CloudSession {
     )
       return
     this.ongoingRevision++
-    // Routed submissions use exact policy reads. A Personal progress event
-    // must not change the folder draft or fence the next destination.
-    if (this.snapshot.cloud.destinations !== undefined) {
-      this.publish({ ongoing: status })
-      return
-    }
     if (cloudUploadStatusUnknown(status)) {
       this.invalidateContentConfirmation()
       this.publish({ ongoing: status })
@@ -649,13 +719,12 @@ export class CloudSession {
   }
   /** Discovery uses one explicit authorized route, not a consent default. */
   private discoveryBinding(): CloudDestinationBinding | null {
-    const { destinations, identity, status, setupError } = this.snapshot.cloud
-    if (destinations === undefined) return this.projectBinding()
-    const first = destinations?.map((entry) => entry.id).sort()[0]
-    return identity && first && status === "signed_in" && !setupError
-      ? { accountId: identity.id, destinationId: first }
-      : null
+    return this.snapshot.cloud.destinations === undefined
+      ? this.projectBinding()
+      : folderDiscoveryBinding(this.snapshot.cloud)
   }
+  private savedRouteStatuses = () =>
+    savedFolderPolicyStatuses(this.snapshot.cloud.savedDestinationIds, this.routePolicies)
   /** Require desktop project members and returned source roots together. This is
    * metadata support, not content consent; other-agent suggestions stay visible.
    */
@@ -715,7 +784,17 @@ export class CloudSession {
   loadProjects = async (more = false) => {
     const port = this.port.ongoing
     const binding = this.discoveryBinding()
-    if (!port || !binding || this.snapshot.projects?.loading || (more && !this.projectCursor))
+    const { cloud } = this.snapshot
+    const routeAccount =
+      cloud.destinations !== undefined && cloud.status === "signed_in"
+        ? cloud.identity?.id
+        : undefined
+    if (
+      !port ||
+      (!binding && !routeAccount) ||
+      this.snapshot.projects?.loading ||
+      (more && (!binding || !this.projectCursor))
+    )
       return
     const generation = ++this.projectGeneration
     const current = () =>
@@ -738,24 +817,18 @@ export class CloudSession {
     })
     try {
       if (!more) {
-        const { destinations, savedDestinationId } = this.snapshot.cloud
-        if (destinations) {
-          const ids = new Set(destinations.map((destination) => destination.id))
-          if (savedDestinationId) ids.add(savedDestinationId)
-          const policies = new Map<string, CloudOngoingStatus>()
-          for (const destinationId of ids) {
-            const status = await port.status({ accountId: binding.accountId, destinationId })
-            if (!current()) return
-            if (
-              !status ||
-              status.accountId !== binding.accountId ||
-              status.destinationId !== destinationId ||
-              cloudUploadStatusUnknown(status)
-            )
-              throw new Error("Cloud policy is unavailable.")
-            policies.set(destinationId, status)
+        if (routeAccount) {
+          this.verifiedRouteIds = null
+          const ids = this.snapshot.cloud.savedDestinationIds
+          if (!ids) throw new Error("Saved Cloud destinations are unavailable.")
+          const policies = await readSavedFolderPolicies(port, routeAccount, ids, current)
+          if (!policies || !current()) return
+          if (!sameSavedFolderInventory(ids, this.snapshot.cloud.savedDestinationIds)) {
+            throw new Error("Saved Cloud destinations changed.")
           }
-          for (const [id, policy] of policies) this.routePolicies.set(id, policy)
+          this.routePolicies = policies
+          this.verifiedRouteIds = ids
+          this.publish({ routedPolicies: this.savedRouteStatuses() })
           const personal = personalCloudDestination(this.snapshot.cloud.destination ?? null)
           const currentPersonal = personal && policies.get(personal.id)
           if (currentPersonal) this.receiveOngoing(currentPersonal)
@@ -766,9 +839,21 @@ export class CloudSession {
           if (status && revision === this.ongoingRevision) this.receiveOngoing(status)
         }
       }
+      if (!binding) {
+        this.publish({ projects: { ...this.snapshot.projects!, loading: false } })
+        return
+      }
       const cursor = more ? this.projectCursor : null
       const page = await port.groups(binding, cursor)
       if (!current()) return
+      if (
+        routeAccount &&
+        !sameSavedFolderInventory(
+          this.verifiedRouteIds,
+          this.snapshot.cloud.savedDestinationIds,
+        )
+      )
+        throw new Error("Saved Cloud destinations changed.")
       if (page.nextCursor && JSON.stringify(page.nextCursor) === JSON.stringify(cursor))
         throw new Error("Project discovery repeated a page.")
       const groups = mergeCloudProjectGroups(more ? this.desktopProjects : [], page.groups)
@@ -835,6 +920,7 @@ export class CloudSession {
               ? CLOUD_BUSY_MESSAGE
               : "Could not load project folders. Try again in Cloud Settings.",
           },
+          ...(routeAccount && !this.verifiedRouteIds ? { routedPolicies: null } : {}),
         })
     }
   }
@@ -894,6 +980,8 @@ export class CloudSession {
       folderRoutingAuthority(context.cloud) !== folderRoutingAuthority(cloud) ||
       !cloud.identity ||
       !cloud.destinations ||
+      !this.verifiedRouteIds ||
+      !sameSavedFolderInventory(this.verifiedRouteIds, cloud.savedDestinationIds) ||
       !cloud.captureEnabled ||
       cloud.status !== "signed_in" ||
       this.snapshot.error ||
@@ -934,9 +1022,13 @@ export class CloudSession {
       const selections = this.desktopProjects
         .filter((group) => folderIds.includes(group.id))
         .flatMap((group) => this.supportedProjectSelections(group))
-      const consent =
-        policy &&
-        folderRouteConsent(cloud.identity.id, destination, policy, folderIds, selections)
+      const consent = folderRouteConsent(
+        cloud.identity.id,
+        destination,
+        policy,
+        folderIds,
+        selections,
+      )
       if (!consent) {
         this.publish({
           routedFolders: {
@@ -963,6 +1055,10 @@ export class CloudSession {
       revision: this.consentRevision,
       authority: folderRoutingAuthority(cloud),
       completeOnSave,
+      knownDestinationIds: new Set([
+        ...this.verifiedRouteIds,
+        ...entries.map(({ consent }) => consent.destinationId),
+      ]),
       entries,
     }
     await this.retryFolderRoutes()
@@ -979,8 +1075,12 @@ export class CloudSession {
       this.active &&
       generation === this.generation &&
       this.routeBatch === batch &&
+      this.verifiedRouteIds !== null &&
       this.consentRevision === batch.revision &&
-      folderRoutingAuthority(this.snapshot.cloud) === batch.authority
+      folderRoutingAuthority(this.snapshot.cloud) === batch.authority &&
+      this.snapshot.cloud.savedDestinationIds?.every((id) =>
+        batch.knownDestinationIds.has(id),
+      ) === true
     if (!current()) return
     this.syncInFlight = true
     this.publish({ busy: true, routedFolders: { ...view, message: null } })
@@ -1034,19 +1134,19 @@ export class CloudSession {
           if (complete && batch.completeOnSave) this.routedScreen = "complete"
           this.publish({
             busy: false,
+            routedPolicies: this.savedRouteStatuses(),
             ...(complete && batch.completeOnSave ? { screen: "complete" } : {}),
             routedFolders: {
               ...view,
               locked,
-              results: batch.entries.map(({ consent, name, saved }) => ({
-                id: consent.destinationId,
-                name,
-                saved,
-              })),
+              results: folderRouteResults(batch.entries),
               retry: !complete,
             },
           })
-          if (complete) this.routeBatch = null
+          if (complete) {
+            this.routeBatch = null
+            if (!batch.completeOnSave) void this.loadProjects()
+          }
         } else {
           const changedView = this.snapshot.routedFolders
           const changed =
@@ -1057,17 +1157,13 @@ export class CloudSession {
               ? {
                   routedFolders: {
                     ...changedView,
-                    results: batch.entries.map(({ consent, name, saved }) => ({
-                      id: consent.destinationId,
-                      name,
-                      saved,
-                    })),
+                    results: folderRouteResults(batch.entries),
                   },
                 }
               : {}),
           })
-          if (this.discoveryBinding() && !this.snapshot.routedFolders?.ready)
-            void this.loadProjects()
+          this.routeBatch = null
+          if (this.snapshot.cloud.identity) void this.loadProjects()
         }
       }
     }
@@ -1094,23 +1190,12 @@ export class CloudSession {
         routedFolders: { ...view, choices: {}, results: [], retry: false, message: null },
       })
   }
-  /** Keep saved local grants visible when discovery loses a folder. Show grants
-   * above or inside a group by directory boundary, never by a partial name.
-   */
-  projectHasSavedPermission = (id: string) => {
-    const group = this.desktopProjects.find((item) => item.id === id)
-    return (
-      group?.environment === "native" &&
-      !!this.snapshot.ongoing?.projects.some((project) =>
-        [group.path, ...group.folderPaths].some(
-          (path) =>
-            path === project.projectPath ||
-            path.startsWith(`${project.projectPath.replace(/\/+$/, "")}/`) ||
-            project.projectPath.startsWith(`${path.replace(/\/+$/, "")}/`),
-        ),
-      )
+  /** Show saved local grants above or inside a discovered folder. */
+  projectHasSavedPermission = (id: string) =>
+    folderGroupHasPolicy(
+      this.desktopProjects.find((item) => item.id === id),
+      this.snapshot.ongoing,
     )
-  }
   /** Save one Settings switch. The caller confirms additions before invoking this. */
   setSavedProject = async (context: CloudViewSnapshot, id: string, selected: boolean) => {
     if (selected && this.snapshot.cloud.destinations !== undefined) return
@@ -1171,9 +1256,13 @@ export class CloudSession {
     }
   }
   /** Pause or retry the saved policy without expanding its sources or project paths. */
-  controlSync = async (paused: boolean) => {
+  controlSync = async (paused: boolean, destinationId?: string) => {
     const port = this.port.ongoing
-    const binding = this.projectBinding(true)
+    const { cloud, routedPolicies } = this.snapshot
+    const binding =
+      cloud.destinations === undefined
+        ? this.projectBinding(true)
+        : folderRouteControlBinding(cloud, routedPolicies, destinationId, paused)
     if (!port || !binding || this.snapshot.busy) return
     const generation = this.generation
     const revision = this.ongoingRevision

@@ -149,6 +149,8 @@ pub struct Snapshot {
     destinations: Option<Vec<auth::EligibleDestination>>,
     /// Preserve explicit selection when it is no longer eligible.
     saved_destination_id: Option<String>,
+    /// All saved upload routes for this account and resource, or null if unreadable.
+    saved_destination_ids: Option<Vec<String>>,
     revocation_pending: bool,
     local_cleanup_pending: bool,
     local_reset_available: bool,
@@ -227,23 +229,30 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         None
     };
     let mut saved_destination_id = None;
+    let mut saved_destination_ids = None;
     let mut destination_error = None;
     if let Some(session) = &mut view {
         let store = app.state::<crate::store::Store>();
         let saved =
             ensure_cloud_setup(&app.state::<Controller>().setup_ready, &store).and_then(|()| {
-                store
-                    .cloud_sync_destination(&session.user.id, &session.resource)
-                    .map_err(|_| "Could not read the saved Cloud destination.".into())
+                (|| -> anyhow::Result<_> {
+                    Ok((
+                        store.cloud_sync_destination(&session.user.id, &session.resource)?,
+                        store.cloud_sync_destination_ids(&session.user.id, &session.resource)?,
+                    ))
+                })()
+                .map_err(|_| "Could not read the saved Cloud destination.".into())
             });
         match saved {
-            Ok(Some(id)) => {
-                session.workspace = engine
-                    .destination(&session.user.id, &id)
-                    .map(|entry| entry.workspace.clone());
-                saved_destination_id = Some(id);
+            Ok((id, ids)) => {
+                if let Some(id) = id {
+                    session.workspace = engine
+                        .destination(&session.user.id, &id)
+                        .map(|entry| entry.workspace.clone());
+                    saved_destination_id = Some(id);
+                }
+                saved_destination_ids = Some(ids);
             }
-            Ok(None) => {}
             Err(error) => {
                 session.workspace = None;
                 destination_error = Some(error);
@@ -339,6 +348,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         destination: session.and_then(|session| session.workspace.clone()),
         destinations: session.and_then(|_| engine.destinations().map(<[_]>::to_vec)),
         saved_destination_id: saved_destination_id.filter(|_| session.is_some()),
+        saved_destination_ids: saved_destination_ids.filter(|_| session.is_some()),
         revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
         local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
         local_reset_available: engine.local_reset_available,

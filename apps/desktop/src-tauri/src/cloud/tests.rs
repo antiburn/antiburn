@@ -1245,6 +1245,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         destination: session().workspace,
         destinations: None,
         saved_destination_id: None,
+        saved_destination_ids: None,
         revocation_pending: false,
         local_cleanup_pending: false,
         local_reset_available: false,

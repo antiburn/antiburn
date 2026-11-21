@@ -316,6 +316,8 @@ export interface CloudSnapshot {
   /** Null means unavailable. An empty list is a successful list with no destinations. */
   destinations?: CloudEligibleDestination[] | null
   savedDestinationId?: string | null
+  /** Complete saved policy inventory for this account and service; null means unreadable. */
+  savedDestinationIds?: string[] | null
   revocationPending?: boolean
   localCleanupPending?: boolean
   localResetAvailable?: boolean

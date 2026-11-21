@@ -387,6 +387,44 @@ impl Store {
         ).optional()?)
     }
 
+    /// Read a complete, bounded inventory for setup. Do not filter by membership.
+    /// Include unreadable records so the caller cannot treat them as missing grants.
+    pub(crate) fn cloud_sync_destination_ids(
+        &self,
+        account: &str,
+        resource: &str,
+    ) -> Result<Vec<String>> {
+        const MAX_DESTINATIONS: usize = 128;
+        ensure!(
+            valid_resource_origin(resource),
+            "Cloud service origin is invalid"
+        );
+        let connection = self.lock();
+        let mut query = connection.prepare(
+            "SELECT destination_id FROM cloud_sync_policy WHERE account_id=?1
+             AND CASE WHEN NOT json_valid(record_json) THEN 1 ELSE
+                 json_extract(record_json, '$.resourceOrigin')=?2 AND
+                 json_extract(record_json, '$.consentVersion')=?3 END
+             ORDER BY destination_id LIMIT ?4",
+        )?;
+        let ids = query
+            .query_map(
+                params![
+                    account,
+                    resource,
+                    ONGOING_CONSENT_VERSION,
+                    MAX_DESTINATIONS + 1
+                ],
+                |row| row.get(0),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        ensure!(
+            ids.len() <= MAX_DESTINATIONS,
+            "Too many saved Cloud destinations"
+        );
+        Ok(ids)
+    }
+
     /// Return one saved route in stable order. Call with no cursor to start a new
     /// sweep. Unavailable destinations stay in the sweep and never replace another route.
     pub(crate) fn next_cloud_sync_destination(

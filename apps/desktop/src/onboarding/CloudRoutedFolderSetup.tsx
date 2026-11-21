@@ -51,7 +51,10 @@ export function CloudRoutedFolderSetup({
       results={routedFolders?.results ?? []}
       onLoadMore={projects?.hasMore ? () => void session.loadMoreProjects() : undefined}
       onReview={
-        routedFolders?.retry || projects?.error || cloud.destinations === null
+        routedFolders?.retry ||
+        projects?.error ||
+        cloud.destinations === null ||
+        (routedFolders?.ready === false && !!routedFolders.message && !projects?.loading)
           ? () =>
               void (cloud.destinations === null ? session.load() : session.reviewFolderRoutes())
           : undefined

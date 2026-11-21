@@ -69,6 +69,10 @@ export function CloudOnboarding({
   const grouped = !!(port ?? desktopCloudPort).ongoing
   const routed = grouped && value.cloud.destinations !== undefined
   const routedFolderScreen = routed && value.screen === "folders"
+  const canContinueSetup =
+    value.screen === "identity" &&
+    (value.cloud.invitationEnabled || (value.cloud.captureEnabled && !value.error)) &&
+    !value.cloud.setupError
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
@@ -520,7 +524,7 @@ export function CloudOnboarding({
         </>
       )}
       <footer
-        className={`onboarding-footer cloud-footer${routedFolderScreen ? " hidden!" : value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
+        className={`onboarding-footer cloud-footer${routedFolderScreen ? " hidden!" : canContinueSetup || (value.screen === "identity" && value.cloud.invitationEnabled) ? " flex!" : ""}`}
         hidden={routedFolderScreen}
       >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
@@ -630,17 +634,15 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
-            {value.screen === "identity" &&
-              value.cloud.invitationEnabled &&
-              !value.cloud.setupError && (
-                <button
-                  className="onboarding-primary"
-                  disabled={disabled}
-                  onClick={() => void session.go("folders")}
-                >
-                  Continue Cloud setup
-                </button>
-              )}
+            {canContinueSetup && (
+              <button
+                className="onboarding-primary"
+                disabled={disabled}
+                onClick={() => void session.go("folders")}
+              >
+                Continue Cloud setup
+              </button>
+            )}
             {value.screen === "folders" && (
               <>
                 <button

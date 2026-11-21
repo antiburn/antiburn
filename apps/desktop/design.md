@@ -2148,8 +2148,9 @@ The folder list scrolls in the space below a short full-session scope subtitle
 and the selected group count. The footer keeps Back, Finish without syncing,
 and Start syncing in reach. After a save attempt, Finish setup keeps any
 previously confirmed rules.
-Normal Settings shows account/sign-out, the upload switch, folder choices, and
-one short upload state. The Cloud card uses spacing instead of internal dividers.
+Normal Settings shows account/sign-out, folder choices, and a short status with
+pause or resume for each saved upload destination. The Cloud card uses spacing
+instead of internal dividers.
 Folder switches reflect saved permission, so new unapproved groups stay off.
 Turning a folder off saves immediately. Turning it on opens a full-session
 confirmation dialog in Settings only. There is no separate Update button.

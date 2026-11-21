@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react"
 import {
   type CloudSession,
   cloudGithubSignInLabel,
+  cloudOngoingStatusMessage,
   cloudStatusMessage,
   cloudUploadStatusUnknown,
   type CloudViewSnapshot,
@@ -194,6 +195,9 @@ export function CloudAccount({
         </div>
       )}
       {children}
+      {session.projectSyncSupported && value.cloud.destinations !== undefined && (
+        <CloudUploadRoutes session={session} value={value} />
+      )}
       {session.projectSyncSupported && value.cloud.destinations !== undefined ? (
         value.cloud.identity &&
         value.cloud.status === "signed_in" &&
@@ -310,6 +314,73 @@ export function CloudAccount({
   )
 }
 
+/** Show persisted state and controls for each exact saved destination. */
+function CloudUploadRoutes({
+  session,
+  value,
+}: {
+  session: CloudSession
+  value: CloudViewSnapshot
+}) {
+  const { cloud, routedPolicies } = value
+  const message =
+    cloud.status !== "signed_in"
+      ? "Sign in to check saved uploads."
+      : !routedPolicies
+        ? value.projects?.loading || value.busy
+          ? "Checking saved uploads…"
+          : "Could not check saved upload routes."
+        : routedPolicies.length === 0
+          ? "No upload routes configured."
+          : undefined
+  return (
+    <SettingsRow searchId="cloudUpload" description={message}>
+      {routedPolicies?.map((policy, index) => {
+        const destinationId = policy.destinationId
+        if (!destinationId) return null
+        const destination = cloud.destinations?.find((entry) => entry.id === destinationId)
+        const name = destination?.name ?? `Saved destination ${index + 1}`
+        const unavailable = cloud.destinations !== null && !destination
+        const state = unavailable
+          ? "Destination unavailable"
+          : !policy.storageKnown || !policy.policyRevision
+            ? "Saved upload status is unavailable"
+            : policy.requiresDestinationReview
+              ? "Destination needs review"
+              : cloudOngoingStatusMessage(policy)
+        const action = policy.paused ? "Resume uploads" : "Pause uploads"
+        return (
+          <div
+            key={destinationId}
+            className="mt-3 flex flex-wrap items-center justify-between gap-2"
+          >
+            <div className="min-w-0">
+              <p className="type-callout text-label">{name}</p>
+              <p className="type-footnote text-label-secondary" role="status">
+                {state}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="ui-push-button"
+              aria-label={`${action} for ${name}`}
+              disabled={
+                value.busy ||
+                !policy.storageKnown ||
+                !policy.policyRevision ||
+                (policy.paused && (!destination || !!policy.requiresDestinationReview))
+              }
+              onClick={() => void session.controlSync(!policy.paused, destinationId)}
+            >
+              {action}
+            </button>
+          </div>
+        )
+      })}
+    </SettingsRow>
+  )
+}
+
 /** Keep initial choices local until Start. Saved switches revoke immediately or
  * require confirmation before adding content permission.
  */
@@ -386,7 +457,7 @@ function CloudProjectsAccount({
         : null
       : () => void session.loadProjects()
     : hasConsent && policy?.status !== "reauth_required" && retryableUploads
-      ? () => void session.controlSync(false)
+      ? () => void session.controlSync(false, routed ? value.cloud.destination?.id : undefined)
       : null
   const empty =
     projects?.loaded &&

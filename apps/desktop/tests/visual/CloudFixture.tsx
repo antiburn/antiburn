@@ -76,6 +76,7 @@ export function cloudFixture(name: string): CloudPort {
       : null,
     ...(routed
       ? {
+          savedDestinationIds: [],
           destinations: [
             {
               id: "synthetic-personal",
