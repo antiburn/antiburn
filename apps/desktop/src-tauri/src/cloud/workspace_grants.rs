@@ -49,31 +49,41 @@ pub(super) fn recovery(anchor: &Engine, identifier: &str, key: &Slot) -> Recover
     open_slot(identifier, anchor, key).map_or(Recovery::UNKNOWN, |slot| Recovery::read(&slot))
 }
 
-/// Explicit sign-out revokes old registered slots for this service. Leave
-/// uncertain slots indexed so a later sign-out can retry their cleanup.
+/// Close old registered slots for this service without waiting for Cloud.
+/// Keep uncertain slots indexed so Settings can report them.
 pub(super) fn close(store: &Store, identifier: &str, anchor: &Engine) -> Result<(), String> {
     let Some(config) = &anchor.config else {
         return Ok(());
     };
-    let mut unconfirmed = false;
+    let mut local_cleanup_failed = false;
     for key in store
         .cloud_workspace_slots(&config.issuer, &config.resource)
         .map_err(|_| "Could not read saved workspace connections.")?
     {
         let mut slot = open_slot(identifier, anchor, &key)?;
-        if slot.sign_out().is_err()
-            || slot.cleanup.blocks_connection()
-            || slot.cleanup.prior_unconfirmed()
-        {
-            unconfirmed = true;
+        match slot.sign_out() {
+            Ok(Some(proof)) => {
+                slot.try_remote_logout(proof);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                local_cleanup_failed = true;
+                continue;
+            }
+        }
+        if slot.cleanup.blocks_connection() {
+            local_cleanup_failed = true;
+            continue;
+        }
+        if slot.cleanup.prior_unconfirmed() {
             continue;
         }
         store
             .remove_cloud_workspace_slot(&config.issuer, &config.resource, &key.0, &key.1)
             .map_err(|_| "Could not close the saved workspace connection.")?;
     }
-    if unconfirmed {
-        Err("Cloud could not confirm all workspace sign-outs.".into())
+    if local_cleanup_failed {
+        Err("Desktop could not close all saved workspace connections.".into())
     } else {
         Ok(())
     }

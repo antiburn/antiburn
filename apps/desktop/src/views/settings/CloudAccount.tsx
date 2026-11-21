@@ -192,7 +192,9 @@ export function CloudAccount({
         {value.loaded &&
           value.cloud.authEnabled &&
           !readFailed &&
-          !needsSignOut &&
+          !value.cloud.identity &&
+          !value.cloud.localCleanupPending &&
+          value.cloud.status !== "credential_failed" &&
           !checkingSignIn && (
             <button
               className="ui-push-button shrink-0 aria-disabled:opacity-50"
