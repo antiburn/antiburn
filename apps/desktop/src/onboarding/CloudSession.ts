@@ -108,7 +108,7 @@ const messages = {
     "Antiburn could not open your saved sign-in. Unlock your device's password storage, or sign out and sign in again.",
   unavailable: "Cloud is not available in this build. You can continue locally.",
   reauth_required:
-    "Sign out, then sign in again. If Cloud cannot confirm sign-out, open Cloud settings to finish.",
+    "Desktop can’t use your saved sign-in. Sign out of the previous connection to sign in again.",
   revocation_unconfirmed:
     "Signed out on this device. Cloud has not confirmed that the connection is closed. Open Cloud settings to finish.",
 } as const

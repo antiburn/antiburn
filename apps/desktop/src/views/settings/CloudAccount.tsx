@@ -8,6 +8,7 @@ import {
   cloudUploadStatusUnknown,
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
+import { cloudSignInRecovery } from "../../onboarding/cloudSignInRecovery"
 import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
 import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import { CloudRoutedFolderSetup } from "../../onboarding/CloudRoutedFolderSetup"
@@ -55,13 +56,15 @@ export function CloudAccount({
   const waiting = ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed = value.loaded && !!value.error && !value.cloud.identity && !waiting
+  const recovery = cloudSignInRecovery(value.cloud)
   const accountMessage = value.error
     ? value.error === CLOUD_BUSY_MESSAGE
       ? "Cloud is busy."
       : value.error
-    : !["idle", "signed_in", "signed_out"].includes(value.cloud.status)
-      ? cloudStatusMessage(value.cloud.status)
-      : null
+    : (recovery?.message ??
+      (!["idle", "signed_in", "signed_out"].includes(value.cloud.status)
+        ? cloudStatusMessage(value.cloud.status)
+        : null))
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
@@ -69,11 +72,12 @@ export function CloudAccount({
           <p className="type-body text-label">
             {readFailed
               ? "Cloud account"
-              : value.cloud.identity
-                ? `Signed in as ${value.cloud.identity.login}`
-                : value.cloud.authEnabled
-                  ? "Not signed in"
-                  : "Antiburn Cloud is coming soon"}
+              : (recovery?.title ??
+                (value.cloud.identity
+                  ? `Signed in as ${value.cloud.identity.login}`
+                  : value.cloud.authEnabled
+                    ? "Not signed in"
+                    : "Antiburn Cloud is coming soon"))}
           </p>
           {value.cloud.identity && value.cloud.destination?.kind === "personal" && (
             <p className="type-footnote text-label-secondary">{value.cloud.destination.name}</p>
@@ -109,36 +113,23 @@ export function CloudAccount({
           !value.cloud.identity &&
           !readFailed &&
           !checkingSignIn &&
-          !value.cloud.revocationPending &&
-          !value.cloud.localCleanupPending && (
+          !recovery && (
             <button
               className="ui-push-button gap-1"
-              disabled={
-                !value.loaded ||
-                value.busy ||
-                ["reauth_required", "credential_failed"].includes(value.cloud.status)
-              }
+              disabled={!value.loaded || value.busy}
               onClick={() => void (waiting ? session.cancel() : session.begin())}
             >
               {waiting ? "Cancel sign-in" : cloudGithubSignInLabel}
               {!waiting && <ArrowUpRight size={13} aria-hidden />}
             </button>
           )}
-        {(value.cloud.identity ||
-          value.cloud.revocationPending ||
-          value.cloud.localCleanupPending ||
-          value.cloud.status === "reauth_required" ||
-          value.cloud.status === "credential_failed") && (
+        {(value.cloud.identity || recovery) && (
           <button
             className="ui-push-button"
             disabled={value.busy}
             onClick={() => void session.signOut()}
           >
-            {value.cloud.localCleanupPending
-              ? "Finish signing out"
-              : value.cloud.revocationPending
-                ? "Retry sign-out"
-                : "Sign out"}
+            {recovery?.action ?? "Sign out"}
           </button>
         )}
       </div>
@@ -324,7 +315,9 @@ function CloudUploadRoutes({
   const { cloud, routedPolicies } = value
   const message =
     cloud.status !== "signed_in"
-      ? "Sign in to check saved uploads."
+      ? cloudSignInRecovery(cloud)
+        ? "Saved uploads are unavailable until you sign in again."
+        : "Sign in to check saved uploads."
       : !routedPolicies
         ? value.projects?.loading || value.busy
           ? "Checking saved uploads…"

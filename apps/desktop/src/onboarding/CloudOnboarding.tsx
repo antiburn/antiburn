@@ -20,6 +20,7 @@ import {
   cloudStatusMessage,
   cloudUploadStatusUnknown,
 } from "./CloudSession"
+import { cloudSignInRecovery } from "./cloudSignInRecovery"
 import { CloudProjectFolders } from "./CloudOnboardingFolders"
 import { CloudInvitations } from "./CloudInvitations"
 import { CloudRoutedFolderSetup } from "./CloudRoutedFolderSetup"
@@ -76,11 +77,7 @@ export function CloudOnboarding({
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
-  const signInBlocked =
-    value.cloud.authEnabled &&
-    (value.cloud.revocationPending ||
-      value.cloud.localCleanupPending ||
-      ["reauth_required", "credential_failed"].includes(value.cloud.status))
+  const signInRecovery = value.cloud.authEnabled ? cloudSignInRecovery(value.cloud) : null
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -204,7 +201,7 @@ export function CloudOnboarding({
               >
                 Cancel sign-in
               </button>
-            ) : !browserReturned && !signInBlocked ? (
+            ) : !browserReturned && !signInRecovery ? (
               <button
                 className={
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
@@ -225,11 +222,11 @@ export function CloudOnboarding({
             <p className="cloud-status type-footnote" role="status">
               {value.loaded
                 ? value.cloud.authEnabled || value.cloud.status === "browser_failed"
-                  ? cloudStatusMessage(value.cloud.status)
+                  ? (signInRecovery?.message ?? cloudStatusMessage(value.cloud.status))
                   : ""
                 : "Checking Cloud availability…"}
             </p>
-            {signInBlocked && (
+            {signInRecovery && (
               <p className="type-footnote text-onboarding-muted">
                 Continue locally, then open Settings → Sessions to manage this connection.
               </p>

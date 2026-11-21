@@ -83,6 +83,53 @@ function Account({ session }: { session: CloudSession }) {
   return <CloudAccount session={session} value={value} />
 }
 
+it.each([
+  {
+    state: { status: "reauth_required" },
+    title: "Sign-in needs attention",
+    message:
+      "Desktop can’t use your saved sign-in. Sign out of the previous connection to sign in again.",
+    action: "Sign out of previous connection",
+  },
+  {
+    state: { status: "reauth_required", revocationPending: true },
+    title: "Sign-out incomplete",
+    message: "Cloud hasn’t confirmed that your previous connection is closed.",
+    action: "Retry sign-out",
+  },
+  {
+    state: { status: "reauth_required", localCleanupPending: true },
+    title: "Sign-out incomplete",
+    message: "Desktop still needs to clear your saved sign-in.",
+    action: "Finish signing out",
+  },
+] satisfies {
+  state: Partial<CloudSnapshot>
+  title: string
+  message: string
+  action: string
+}[])(
+  "explains recovery and offers $action without a conflicting sign-in prompt",
+  async ({ state, title, message, action }) => {
+    const { session, signOut, begin } = fixture({
+      ...emptyCloudSnapshot,
+      authEnabled: true,
+      ...state,
+    })
+    render(<Account session={session} />)
+    const recover = await screen.findByRole("button", { name: action })
+    expect(screen.getByText(title)).toBeVisible()
+    expect(screen.getByText(message)).toBeVisible()
+    expect(screen.queryByText("Not signed in")).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Sign in with GitHub" }),
+    ).not.toBeInTheDocument()
+    fireEvent.click(recover)
+    await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
+    expect(begin).not.toHaveBeenCalled()
+  },
+)
+
 it("requires an explicit reset and keeps the remote warning while reconnecting", async () => {
   const { session, resetLocal, begin, cancel, emit } = fixture()
   render(<Account session={session} />)
