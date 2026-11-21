@@ -22,7 +22,7 @@ fn policy(store: &Store) -> Policy {
     store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             ORIGIN,
             &roots,
             &projects,
@@ -42,6 +42,58 @@ fn job(store: &Store, policy: &Policy) -> Job {
         )
         .unwrap()
         .unwrap()
+}
+
+#[test]
+fn cloud_explicit_destination_switch_keeps_the_original_policy_and_job() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let personal = policy(&store);
+    let saved = job(&store, &personal);
+    let (roots, projects) = selections();
+    let team = store
+        .save_cloud_sync_policy(
+            "account",
+            ("team", Some("generation-one")),
+            ORIGIN,
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert!(!saved.allowed(&team));
+    assert_eq!(
+        store
+            .cloud_sync_destination("other-account", ORIGIN)
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .cloud_sync_destination("account", "https://other.example")
+            .unwrap(),
+        None
+    );
+    drop(store);
+    let store = Store::open(directory.path()).unwrap();
+    assert_eq!(
+        store
+            .cloud_sync_destination("account", ORIGIN)
+            .unwrap()
+            .as_deref(),
+        Some("team")
+    );
+    assert_eq!(
+        store
+            .cloud_sync_policy("account", "personal", ORIGIN)
+            .unwrap(),
+        Some(personal)
+    );
+    assert_eq!(
+        store.cloud_sync_job(&saved.identity.capture_id).unwrap(),
+        Some(saved)
+    );
 }
 
 fn accepted(job: &Job) -> QueueEntry {
@@ -137,7 +189,7 @@ fn cloud_ongoing_consent_is_separate_from_preferences_and_scoped_to_workspace() 
     let another = store
         .save_cloud_sync_policy(
             "account",
-            "personal-two",
+            ("personal-two", None),
             ORIGIN,
             &roots,
             &projects,
@@ -409,7 +461,7 @@ fn cloud_service_origin_requires_fresh_consent_and_separates_jobs_and_fingerprin
     let second = store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             other,
             &roots,
             &projects,
@@ -434,7 +486,7 @@ fn cloud_service_origin_requires_fresh_consent_and_separates_jobs_and_fingerprin
     let second_again = store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             other,
             &roots,
             &projects,
@@ -445,7 +497,7 @@ fn cloud_service_origin_requires_fresh_consent_and_separates_jobs_and_fingerprin
     let first_again = store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             ORIGIN,
             &roots,
             &projects,
@@ -516,7 +568,7 @@ fn cloud_verified_acceptance_stays_with_its_original_service_after_consent_chang
     store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             "https://other.example",
             &roots,
             &projects,
@@ -597,7 +649,14 @@ fn cloud_project_choices_preserve_confirmed_false_and_unrelated_entries_after_re
         (project_group_id("/Example/unrelated"), false),
     ]);
     let saved = store
-        .save_cloud_sync_policy("account", "personal", ORIGIN, &roots, &projects, &choices)
+        .save_cloud_sync_policy(
+            "account",
+            ("personal", None),
+            ORIGIN,
+            &roots,
+            &projects,
+            &choices,
+        )
         .unwrap();
     let paused = store.set_cloud_sync_paused(&saved, true).unwrap();
     assert_eq!(paused.project_choices, choices);
@@ -663,7 +722,14 @@ fn cloud_project_choices_do_not_grant_or_replace_upload_permissions() {
         (project_group_id("/Example/excluded"), true),
     ]);
     let policy = store
-        .save_cloud_sync_policy("account", "personal", ORIGIN, &roots, &projects, &choices)
+        .save_cloud_sync_policy(
+            "account",
+            ("personal", None),
+            ORIGIN,
+            &roots,
+            &projects,
+            &choices,
+        )
         .unwrap();
     let scope = &policy.roots[0].source_scope_id;
     assert!(!policy.allows(scope, "/Example/excluded"));
@@ -701,7 +767,14 @@ fn cloud_project_choices_and_permissions_roll_back_together_on_failed_save() {
     let (roots, projects) = selections();
     let choices = BTreeMap::from([(project_group_id("/Example/excluded"), false)]);
     let original = store
-        .save_cloud_sync_policy("account", "personal", ORIGIN, &roots, &projects, &choices)
+        .save_cloud_sync_policy(
+            "account",
+            ("personal", None),
+            ORIGIN,
+            &roots,
+            &projects,
+            &choices,
+        )
         .unwrap();
     store
         .lock()
@@ -724,7 +797,7 @@ fn cloud_project_choices_and_permissions_roll_back_together_on_failed_save() {
         store
             .save_cloud_sync_policy(
                 "account",
-                "personal",
+                ("personal", None),
                 ORIGIN,
                 &replacement_roots,
                 &replacement_projects,
@@ -758,7 +831,14 @@ fn cloud_project_choices_use_the_existing_policy_record_size_bound() {
     let oversized = BTreeMap::from([("x".repeat(524_289), false)]);
     assert!(
         store
-            .save_cloud_sync_policy("account", "personal", ORIGIN, &roots, &projects, &oversized)
+            .save_cloud_sync_policy(
+                "account",
+                ("personal", None),
+                ORIGIN,
+                &roots,
+                &projects,
+                &oversized
+            )
             .is_err()
     );
     assert_eq!(

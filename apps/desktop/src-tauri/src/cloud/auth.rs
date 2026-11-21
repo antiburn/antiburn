@@ -135,8 +135,10 @@ pub struct Workspace {
 }
 
 /// One eligible upload destination. The generation changes when a user rejoins a team.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct EligibleDestination {
+    #[serde(flatten)]
     pub workspace: Workspace,
     pub membership_generation: Option<String>,
 }

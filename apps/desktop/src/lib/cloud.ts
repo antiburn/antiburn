@@ -25,11 +25,16 @@ export type CloudStatus =
   | "unavailable"
   | "reauth_required"
   | "revocation_unconfirmed"
-/** Verified destination display data. Only a granted personal workspace is usable. */
+/** Verified destination display data. Listing an entry does not grant upload consent. */
 export interface CloudWorkspace {
   id: string
   name: string
   kind: "personal" | "team"
+}
+/** Capture eligibility from the current device grant, not workspace read access. */
+interface CloudEligibleDestination extends CloudWorkspace {
+  /** Exact Team membership at review time. Personal sends null. */
+  membershipGeneration: string | null
 }
 /** Nested setup view, separate from the host's persisted onboarding step. */
 export type CloudScreen = "handoff" | "identity" | "folders" | "complete"
@@ -206,6 +211,8 @@ export function cloudProjectChoices(
 /** Separate consent for existing and future sessions under exact source/path bindings. */
 export interface CloudOngoingConsent extends CloudDestinationBinding {
   version: "desktop-project-sync-v1"
+  membershipGeneration?: string | null
+  expectedPolicyRevision?: string
   selectedSources: CloudSourceSelection[]
   projects: CloudProjectSelection[]
   /** Confirmed display choices, including exclusions. These do not grant path access. */
@@ -241,6 +248,7 @@ export interface CloudOngoingStatus {
   destinationId: string | null
   consentVersion: string | null
   policyRevision?: string | null
+  requiresDestinationReview?: boolean
   paused: boolean
   selectedSources: CloudSourceSelection[]
   projects: CloudProjectSelection[]
@@ -273,7 +281,7 @@ export interface CloudOngoingPort {
     binding: CloudDestinationBinding,
     after: CloudProjectCursor | null,
   ): Promise<CloudProjectDiscovery>
-  status(): Promise<CloudOngoingStatus | null>
+  status(binding?: CloudDestinationBinding): Promise<CloudOngoingStatus | null>
   watch(listener: (value: CloudOngoingStatus) => void): Promise<() => void>
   enable(consent: CloudOngoingConsent): Promise<CloudOngoingStatus>
   setProject(change: CloudProjectChange): Promise<CloudOngoingStatus>
@@ -303,6 +311,9 @@ export interface CloudSnapshot {
   expiresAt?: number | null
   grantExpiresAt?: number | null
   destination?: CloudWorkspace | null
+  /** Null means unavailable. An empty list is a successful list with no destinations. */
+  destinations?: CloudEligibleDestination[] | null
+  savedDestinationId?: string | null
   revocationPending?: boolean
   localCleanupPending?: boolean
   localResetAvailable?: boolean
@@ -434,8 +445,12 @@ export const desktopCloudPort: CloudPort = {
         return { groups: [], sourceRoots: [], nextCursor: null, partial: false }
       return invoke<CloudProjectDiscovery>("cloud_project_groups", { binding, after })
     },
-    status: async () =>
-      (await cloudBuildEnabled()) ? invoke<CloudOngoingStatus>("cloud_sync_status") : null,
+    status: async (binding) =>
+      (await cloudBuildEnabled())
+        ? binding
+          ? invoke<CloudOngoingStatus>("cloud_sync_status", { binding })
+          : invoke<CloudOngoingStatus>("cloud_sync_status")
+        : null,
     watch: async (listener) =>
       (await cloudBuildEnabled())
         ? listen<CloudOngoingStatus>("cloud:sync-changed", (event) => listener(event.payload))

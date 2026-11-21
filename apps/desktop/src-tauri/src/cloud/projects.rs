@@ -616,12 +616,15 @@ fn discover_projects(
     known: (Vec<SourceSelection>, bool),
     current: &dyn Fn() -> bool,
 ) -> Result<Discovery, String> {
-    let session = engine.session().ok_or("Cloud account changed.")?;
-    if !current() || !binding.matches(session) {
-        return Err("Cloud account changed.".into());
+    if !current()
+        || engine
+            .destination(&binding.account_id, &binding.destination_id)
+            .is_none()
+    {
+        return Err("The selected Cloud destination is unavailable.".into());
     }
     let saved = store
-        .cloud_draft(&session.user.id, &session.destination()?.id)
+        .cloud_draft(&binding.account_id, &binding.destination_id)
         .map_err(|_| "Could not read saved provider sources.")?
         .map(|raw| serde_json::from_str::<Draft>(&raw))
         .transpose()
@@ -804,12 +807,9 @@ pub(crate) async fn cloud_project_groups(
         }
         super::emit_snapshot(&app, super::snapshot(&app, &engine));
         refreshed.map_err(|_| "Connect to Cloud before choosing projects.")?;
-        if !engine
-            .session()
-            .is_some_and(|session| binding.matches(session))
-        {
-            return Err("Cloud account changed.".into());
-        }
+        engine
+            .refresh_destinations(&current)
+            .map_err(|_| "Cloud upload destinations are unavailable.")?;
         let store = app.state::<Store>();
         ensure_cloud_setup(&controller.setup_ready, &store)?;
         let mut cache = controller

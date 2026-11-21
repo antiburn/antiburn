@@ -1197,6 +1197,8 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         expires_at: None,
         grant_expires_at: Some(10_000),
         destination: session().workspace,
+        destinations: None,
+        saved_destination_id: None,
         revocation_pending: false,
         local_cleanup_pending: false,
         local_reset_available: false,
@@ -1328,7 +1330,7 @@ fn cloud_device_connection_survives_destination_lookup_failure() {
         .transport
         .fail_destinations
         .store(false, Ordering::Release);
-    fixture.engine.refresh(102, || true).unwrap();
+    fixture.engine.refresh_destinations(&|| true).unwrap();
     assert_eq!(
         fixture
             .engine

@@ -30,6 +30,7 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
         fs::create_dir(path).unwrap();
     }
     let policy = Policy {
+        membership_generation: None,
         account_id: "account".into(),
         destination_id: "personal".into(),
         resource_origin: Some("https://api.example".into()),
@@ -357,7 +358,7 @@ fn cloud_sync_restart_restores_preparing_as_interrupted_without_recapture() {
     let policy = store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             "https://api.example",
             &[SourceSelection {
                 source_kind: SourceKind::ClaudeJsonl,

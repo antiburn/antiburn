@@ -2,6 +2,8 @@
 //! with auth and cleanup. Renderers supply explicit consent and read safe status;
 //! they do not drive capture turns or own retries.
 
+mod fence;
+
 use super::{
     Controller, DestinationBinding, Folder, auth, capture, engine::Engine, ensure_cloud_setup, now,
     upload, work::Priority,
@@ -41,6 +43,12 @@ pub(crate) struct Consent {
     version: String,
     account_id: String,
     destination_id: String,
+    /// Exact Team membership seen at confirmation. Personal sends no generation.
+    #[serde(default)]
+    membership_generation: Option<String>,
+    /// Required when replacing a Team policy from an earlier membership.
+    #[serde(default)]
+    expected_policy_revision: Option<String>,
     selected_sources: Vec<SourceSelection>,
     projects: Vec<ProjectSelection>,
     /// Full confirmed UI group snapshot. Only roots and projects grant admission.
@@ -113,6 +121,7 @@ pub(crate) struct Status {
     destination_id: Option<String>,
     consent_version: Option<String>,
     policy_revision: Option<String>,
+    requires_destination_review: bool,
     paused: bool,
     selected_sources: Vec<SourceSelection>,
     projects: Vec<ProjectSelection>,
@@ -143,10 +152,26 @@ struct Selection {
     observation: String,
 }
 
+/// Keep the selected route even when its destination becomes unavailable.
+fn selected_destination(store: &Store, session: &auth::Session) -> Result<Option<String>, String> {
+    let saved = store
+        .cloud_sync_destination(&session.user.id, &session.resource)
+        .map_err(|_| "Could not read the saved Cloud destination.")?;
+    Ok(saved.or_else(|| {
+        session
+            .workspace
+            .as_ref()
+            .filter(|workspace| workspace.kind == auth::WorkspaceKind::Personal)
+            .map(|workspace| workspace.id.clone())
+    }))
+}
+
 /// Memory-only scheduling hints. Durable policy, jobs, and spool entries remain
 /// authoritative after restart. Each bounded discovery page stays until drained.
 #[derive(Default)]
 struct Runner {
+    destination_id: Option<String>,
+    restore_only: bool,
     candidates: VecDeque<Selection>,
     next_reconcile: Option<Instant>,
     next_reservation: Option<Instant>,
@@ -179,7 +204,73 @@ struct DiscoveryCursor {
 pub(super) struct Scheduler {
     wake: Arc<Notify>,
     pub generation: AtomicU64,
-    runner: Mutex<Runner>,
+    runners: Mutex<RouteRunners>,
+    fences: fence::RouteFences,
+}
+
+impl Scheduler {
+    fn content_current(&self, generation: u64, route: Option<&fence::RouteFence>) -> bool {
+        self.generation.load(Ordering::Acquire) == generation
+            && route.is_none_or(fence::RouteFence::current)
+    }
+}
+
+/// Keep discovery cursors, retry waits, and failures separate for each upload route.
+/// One turn serves one saved route so an unavailable Team cannot starve Personal.
+#[derive(Default)]
+struct RouteRunners {
+    idle: Runner,
+    owner: Option<(String, String)>,
+    cursor: Option<String>,
+    routes: BTreeMap<String, Runner>,
+}
+
+impl RouteRunners {
+    fn set_owner(&mut self, session: &auth::Session) {
+        if self.owner.as_ref().is_none_or(|(account, origin)| {
+            account != &session.user.id || origin != &session.resource
+        }) {
+            self.owner = Some((session.user.id.clone(), session.resource.clone()));
+            self.cursor = None;
+            self.routes.clear();
+            self.idle = Runner::default();
+        }
+    }
+
+    fn route(&mut self, session: Option<&auth::Session>, id: Option<&str>) -> &mut Runner {
+        let (Some(session), Some(id)) = (session, id) else {
+            return &mut self.idle;
+        };
+        self.set_owner(session);
+        self.routes.entry(id.to_owned()).or_insert_with(|| Runner {
+            destination_id: Some(id.to_owned()),
+            ..Runner::default()
+        })
+    }
+
+    fn next(
+        &mut self,
+        store: &Store,
+        session: Option<&auth::Session>,
+    ) -> Result<&mut Runner, String> {
+        self.idle.restore_only = true;
+        let Some(session) = session else {
+            return Ok(&mut self.idle);
+        };
+        self.set_owner(session);
+        self.idle.restore_only = true;
+        let next = |after| {
+            store
+                .next_cloud_sync_destination(&session.user.id, &session.resource, after)
+                .map_err(|_| "Could not read saved Cloud upload routes.".to_owned())
+        };
+        let mut destination = next(self.cursor.as_deref())?;
+        if destination.is_none() && self.cursor.is_some() {
+            destination = next(None)?;
+        }
+        self.cursor = destination.clone();
+        Ok(self.route(Some(session), destination.as_deref()))
+    }
 }
 
 /// Start once from Cloud initialization, regardless of renderer lifetime.
@@ -201,9 +292,9 @@ pub(super) fn start(app: tauri::AppHandle) {
                         .engine
                         .lock()
                         .map_err(|_| "Cloud is unavailable.")?;
-                    let mut runner = controller
+                    let mut runners = controller
                         .sync
-                        .runner
+                        .runners
                         .lock()
                         .map_err(|_| "Cloud sync is unavailable.")?;
                     let store = worker_app.state::<Store>();
@@ -211,11 +302,6 @@ pub(super) fn start(app: tauri::AppHandle) {
                     let account_generation = controller.account_generation.load(Ordering::Acquire);
                     let content_generation = controller.sync.generation.load(Ordering::Acquire);
                     let engine_generation = engine.generation;
-                    let current = || {
-                        controller.account_generation.load(Ordering::Acquire) == account_generation
-                            && controller.sync.generation.load(Ordering::Acquire)
-                                == content_generation
-                    };
                     let account_current = || {
                         engine_generation == account_generation
                             && controller.account_generation.load(Ordering::Acquire)
@@ -229,7 +315,32 @@ pub(super) fn start(app: tauri::AppHandle) {
                         .project_cache
                         .lock()
                         .map_err(|_| "Project discovery is unavailable.")?;
-                    let failed = setup_failed
+                    let route = if setup_failed || !account_current() {
+                        Err("Cloud sync is unavailable.".into())
+                    } else {
+                        runners.next(&store, engine.session())
+                    };
+                    let (runner, route_failed) = match route {
+                        Ok(runner) => (runner, false),
+                        Err(_) => (&mut runners.idle, true),
+                    };
+                    let route_fence = engine
+                        .session()
+                        .zip(runner.destination_id.as_deref())
+                        .map(|(session, destination)| {
+                            controller
+                                .sync
+                                .fences
+                                .snapshot(&session.user.id, destination)
+                        })
+                        .transpose()?;
+                    let current = || {
+                        account_current()
+                            && controller
+                                .sync
+                                .content_current(content_generation, route_fence.as_ref())
+                    };
+                    let failed = route_failed
                         || runner
                             .turn(
                                 &store,
@@ -269,6 +380,17 @@ fn emit_status(app: &tauri::AppHandle, status: Status) -> Status {
 }
 
 impl Runner {
+    fn destination(
+        &self,
+        store: &Store,
+        session: &auth::Session,
+    ) -> Result<Option<String>, String> {
+        match &self.destination_id {
+            Some(id) => Ok(Some(id.clone())),
+            None => selected_destination(store, session),
+        }
+    }
+
     /// Fill only an empty queue. Partial sweeps continue on the next available
     /// turn; completed sweeps use the normal refresh interval.
     fn refresh_candidates(
@@ -341,7 +463,13 @@ impl Runner {
                 ..Status::default()
             })
         } else {
-            status(store, host, engine, self.state)
+            status_for_destination(
+                store,
+                host,
+                engine,
+                self.state,
+                self.destination_id.as_deref(),
+            )
         };
         let mut result = match read {
             Ok(value) => {
@@ -356,11 +484,9 @@ impl Runner {
                         && self.last_status_origin.as_deref() == engine.resource_origin()
                         && engine.session().is_some_and(|session| {
                             previous.account_id.as_deref() == Some(&session.user.id)
-                                && previous.destination_id.as_deref()
-                                    == session
-                                        .workspace
-                                        .as_ref()
-                                        .map(|workspace| workspace.id.as_str())
+                                && self
+                                    .destination(store, session)
+                                    .is_ok_and(|id| previous.destination_id == id)
                         })
                 });
                 let mut value = previous.cloned().unwrap_or_default();
@@ -368,10 +494,7 @@ impl Runner {
                     && let Some(session) = engine.session()
                 {
                     value.account_id = Some(session.user.id.clone());
-                    value.destination_id = session
-                        .workspace
-                        .as_ref()
-                        .map(|workspace| workspace.id.clone());
+                    value.destination_id = self.destination(store, session).ok().flatten();
                 }
                 value.status = State::StorageUnavailable;
                 value.storage_known = false;
@@ -393,7 +516,7 @@ impl Runner {
     }
 
     /// Reconcile receipts locally even after logout. Network and source work need
-    /// current personal authority and the separate ongoing content policy.
+    /// authority for this exact destination and its separate ongoing policy.
     fn turn(
         &mut self,
         store: &Store,
@@ -448,6 +571,10 @@ impl Runner {
             self.next_reconcile = None;
             return Ok(());
         };
+        if self.restore_only {
+            self.state = State::Ready;
+            return Ok(());
+        }
         let sign_in_changed = self.retry_grant_id.as_deref() != Some(&session.grant_id);
         if sign_in_changed {
             self.retry_grant_id = Some(session.grant_id.clone());
@@ -459,12 +586,11 @@ impl Runner {
                 conflict_rechecks_cleared = true
             );
         }
-        let policy = session
-            .workspace
-            .as_ref()
-            .map(|workspace| {
-                store.cloud_sync_policy(&session.user.id, &workspace.id, &session.resource)
-            })
+        let account = session.user.id.clone();
+        let destination = self.destination(store, session)?;
+        let policy = destination
+            .as_deref()
+            .map(|destination| store.cloud_sync_policy(&account, destination, &session.resource))
             .transpose()
             .map_err(|_| "Could not read Cloud sync consent.")?
             .flatten();
@@ -484,6 +610,40 @@ impl Runner {
             self.next_reservation = None;
             return Ok(());
         }
+        // The server also checks this generation for every operation on the capture.
+        if (policy.membership_generation.is_some()
+            || engine
+                .destination(&account, &policy.destination_id)
+                .is_none())
+            && let Err(error) = engine.refresh_destinations(account_current)
+        {
+            self.state = match error {
+                auth::Failure::Offline | auth::Failure::OfflineBeforeSend => State::Offline,
+                _ => State::UploadUnavailable,
+            };
+            return Ok(());
+        }
+        if current()
+            && let Some(generation) = engine
+                .destination(&account, &policy.destination_id)
+                .and_then(|entry| entry.membership_generation.as_deref())
+            && let Some(origin) = policy.resource_origin.as_deref()
+        {
+            store
+                .retire_cloud_sync_membership(&account, &policy.destination_id, origin, generation)
+                .map_err(|_| "Could not retire captures from the previous Team membership.")?;
+        }
+        if !current()
+            || engine
+                .destination(&account, &policy.destination_id)
+                .is_none_or(|entry| entry.membership_generation != policy.membership_generation)
+        {
+            self.state = State::Fenced;
+            self.candidates.clear();
+            self.discovery_cursor = None;
+            self.next_reconcile = None;
+            return Ok(());
+        }
         let mut jobs = store
             .cloud_sync_jobs(
                 &policy.account_id,
@@ -494,6 +654,7 @@ impl Runner {
                     .ok_or("Confirm Cloud sync for this service.")?,
             )
             .map_err(|_| "Could not read saved capture jobs.")?;
+        jobs.retain(|job| job.membership_generation == policy.membership_generation);
         restore_jobs(store, &mut jobs, &entries)?;
         for job in &mut jobs {
             if !current() {
@@ -579,7 +740,8 @@ impl Runner {
                 );
             }
             let mut transport =
-                upload::HttpTransport::new(engine, account_current, current, origin, None);
+                upload::HttpTransport::new(engine, account_current, current, origin, None)
+                    .with_membership(job.membership_generation.as_deref());
             let started = Instant::now();
             let mut result = host.spool()?.resume_step(&entry.identity, &mut transport);
             if let Ok(step) = &result
@@ -798,7 +960,10 @@ impl Runner {
             let limits = match upload::capabilities(
                 engine,
                 &policy.account_id,
-                &policy.destination_id,
+                (
+                    &policy.destination_id,
+                    policy.membership_generation.as_deref(),
+                ),
                 account_current,
                 current,
             ) {
@@ -820,6 +985,7 @@ impl Runner {
                             State::Offline
                         }
                         upload::Failure::Unauthorized => State::ReauthRequired,
+                        upload::Failure::DestinationDenied => State::Fenced,
                         _ => State::UploadUnavailable,
                     };
                     self.candidates.push_front(selection);
@@ -983,7 +1149,8 @@ impl Runner {
                     .as_deref()
                     .ok_or("Confirm Cloud sync for this service.")?,
                 Some(source),
-            );
+            )
+            .with_membership(job.membership_generation.as_deref());
             let result = if retry_reservation {
                 host.spool()?.retry_reservation(
                     job.identity.clone(),
@@ -1288,6 +1455,7 @@ fn transport_state<T>(
         Some(upload::Failure::Backpressure) => State::Syncing,
         Some(upload::Failure::Offline) => State::Offline,
         Some(upload::Failure::Unauthorized) => State::ReauthRequired,
+        Some(upload::Failure::DestinationDenied) => State::Fenced,
         Some(upload::Failure::Unavailable) => State::UploadUnavailable,
         Some(upload::Failure::Conflict) => State::Fenced,
         Some(upload::Failure::Rejected) => State::Interrupted,
@@ -1583,11 +1751,23 @@ pub(super) fn source_observation(candidate: &Candidate) -> Result<String, String
     }
 }
 
+#[cfg(test)]
 fn status(
     store: &Store,
     host: &mut capture::Host,
     engine: &Engine,
     state: State,
+) -> Result<Status, String> {
+    status_for_destination(store, host, engine, state, None)
+}
+
+/// Read saved consent for the named route without activating it or publishing it.
+fn status_for_destination(
+    store: &Store,
+    host: &mut capture::Host,
+    engine: &Engine,
+    state: State,
+    destination: Option<&str>,
 ) -> Result<Status, String> {
     let Some(session) = engine.session() else {
         return Ok(Status {
@@ -1595,29 +1775,40 @@ fn status(
             ..Status::default()
         });
     };
+    let destination_id = match destination {
+        Some(id) => Some(id.to_owned()),
+        None => selected_destination(store, session)?,
+    };
     let mut status = Status {
         status: state,
         account_id: Some(session.user.id.clone()),
-        destination_id: session
-            .workspace
-            .as_ref()
-            .map(|workspace| workspace.id.clone()),
+        destination_id,
         ..Status::default()
     };
-    let Some(workspace) = session.workspace.as_ref() else {
+    let Some(destination) = status.destination_id.as_deref() else {
         status.status = State::ConsentRequired;
         return Ok(status);
     };
     let policy = store
-        .cloud_sync_policy(&session.user.id, &workspace.id, &session.resource)
+        .cloud_sync_policy(&session.user.id, destination, &session.resource)
         .map_err(|_| "Could not read Cloud sync consent.")?;
     let Some(policy) = policy else {
         status.status = State::ConsentRequired;
         return Ok(status);
     };
+    status.requires_destination_review = engine.destinations().is_some()
+        && engine
+            .destination(&session.user.id, destination)
+            .is_none_or(|entry| entry.membership_generation != policy.membership_generation);
     status.paused = policy.paused;
     if policy.paused {
         status.status = State::Paused;
+    } else if engine
+        .destination(&session.user.id, destination)
+        .is_none_or(|entry| entry.membership_generation != policy.membership_generation)
+        && !matches!(status.status, State::Offline | State::UploadUnavailable)
+    {
+        status.status = State::Fenced;
     }
     status.selected_sources = policy
         .roots
@@ -1628,7 +1819,7 @@ fn status(
         })
         .collect();
     let jobs = store
-        .cloud_sync_jobs(&session.user.id, &workspace.id, &session.resource)
+        .cloud_sync_jobs(&session.user.id, destination, &session.resource)
         .map_err(|_| "Could not read capture progress.")?;
     let entries = host
         .spool()?
@@ -1662,7 +1853,10 @@ fn status(
             | JobState::Queued => status.queued_count += 1,
             JobState::Interrupted | JobState::Recovering => status.interrupted_count += 1,
             JobState::Fenced => status.fenced_count += 1,
-            JobState::Accepted | JobState::Suppressed | JobState::Abandoned => {}
+            JobState::Accepted
+            | JobState::Suppressed
+            | JobState::Abandoned
+            | JobState::MembershipRetired => {}
         }
     }
     status.consent_version = Some(policy.consent_version.clone());
@@ -1670,13 +1864,13 @@ fn status(
     status.projects = policy.projects.clone();
     status.project_choices = policy.project_choices.clone();
     (status.accepted_count, status.suppressed_count) = store
-        .cloud_sync_outcome_counts(&session.user.id, &workspace.id, &session.resource)
+        .cloud_sync_outcome_counts(&session.user.id, destination, &session.resource)
         .map_err(|_| "Could not read accepted source state.")?;
     status.progress.negotiated = true;
     let mut has_progress = false;
     for entry in entries {
         if entry.identity.account_id == session.user.id
-            && entry.identity.destination_id == workspace.id
+            && entry.identity.destination_id == destination
             && jobs
                 .iter()
                 .any(|job| job.identity == entry.identity && job.allowed(&policy))
@@ -1704,7 +1898,10 @@ fn status(
 
 /// Restore ongoing consent and counters, without requesting an upload turn.
 #[tauri::command]
-pub(crate) async fn cloud_sync_status(app: tauri::AppHandle) -> Result<Status, String> {
+pub(crate) async fn cloud_sync_status(
+    app: tauri::AppHandle,
+    binding: Option<DestinationBinding>,
+) -> Result<Status, String> {
     let work = app.state::<Controller>().blocking.clone();
     work.run(Priority::Normal, move || {
         let controller = app.state::<Controller>();
@@ -1723,6 +1920,9 @@ pub(crate) async fn cloud_sync_status(app: tauri::AppHandle) -> Result<Status, S
         if let Err(error) = engine.refresh(now(), current) {
             engine.status = error.into();
         }
+        if binding.is_some() && engine.session().is_some() {
+            let _ = engine.refresh_destinations(&current);
+        }
         super::emit_snapshot(&app, super::snapshot(&app, &engine));
         let store = app.state::<Store>();
         let setup_failed = ensure_cloud_setup(&controller.setup_ready, &store).is_err();
@@ -1730,11 +1930,48 @@ pub(crate) async fn cloud_sync_status(app: tauri::AppHandle) -> Result<Status, S
             .capture
             .lock()
             .map_err(|_| "Session capture is unavailable.")?;
-        let mut runner = controller
+        let mut runners = controller
             .sync
-            .runner
+            .runners
             .lock()
             .map_err(|_| "Cloud sync is unavailable.")?;
+        if let Some(binding) = binding.as_ref() {
+            if setup_failed || !current() {
+                return Err("Could not read saved Cloud sync consent.".into());
+            }
+            let session = engine.session().ok_or("Cloud account changed.")?;
+            if session.user.id != binding.account_id {
+                return Err("Cloud account changed.".into());
+            }
+            runners.set_owner(session);
+            let state = runners
+                .routes
+                .get(&binding.destination_id)
+                .map_or(State::Ready, |runner| runner.state);
+            let status = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                state,
+                Some(&binding.destination_id),
+            )?;
+            if status.policy_revision.is_none()
+                && engine
+                    .destination(&binding.account_id, &binding.destination_id)
+                    .is_none()
+            {
+                return Err("The selected Cloud destination is unavailable.".into());
+            }
+            return if current() {
+                Ok(status)
+            } else {
+                Err("Cloud account changed.".into())
+            };
+        }
+        let session = engine.session();
+        let selected =
+            session.and_then(|session| selected_destination(&store, session).ok().flatten());
+        let runner = runners.route(session, selected.as_deref());
         let result = runner.report_status(
             &store,
             &mut host,
@@ -1802,12 +2039,9 @@ pub(crate) async fn cloud_sync_projects(
         if let Err(error) = refreshed { engine.status = error.into(); }
         super::emit_snapshot(&app, super::snapshot(&app, &engine));
         refreshed.map_err(|_| "Connect to Cloud before choosing projects.")?;
-        if !engine
-            .session()
-            .is_some_and(|session| binding.matches(session))
-        {
-            return Err("Cloud account changed.".into());
-        }
+        engine.refresh_destinations(&current).map_err(|_| "Cloud upload destinations are unavailable.")?;
+        engine.destination(&binding.account_id, &binding.destination_id)
+            .ok_or("The selected Cloud destination is unavailable.")?;
         let roots = selected_sources(&folders)?;
         let mut projects = std::collections::BTreeMap::new();
         let mut discovered = 0usize;
@@ -1864,20 +2098,30 @@ pub(crate) async fn cloud_enable_sync(
     }
     let work = app.state::<Controller>().blocking.clone();
     let wake = app.state::<Controller>().sync.wake.clone();
+    let generation = app
+        .state::<Controller>()
+        .account_generation
+        .load(Ordering::Acquire);
     let content_generation = app
         .state::<Controller>()
         .sync
         .generation
         .load(Ordering::Acquire);
+    let route_fence = app
+        .state::<Controller>()
+        .sync
+        .fences
+        .snapshot(&consent.account_id, &consent.destination_id)?;
     let result = work
         .run(Priority::Normal, move || {
             let controller = app.state::<Controller>();
-            let generation = controller.account_generation.load(Ordering::Acquire);
             let account_current =
                 || controller.account_generation.load(Ordering::Acquire) == generation;
             let current = || {
                 account_current()
-                    && controller.sync.generation.load(Ordering::Acquire) == content_generation
+                    && controller
+                        .sync
+                        .content_current(content_generation, Some(&route_fence))
             };
             let mut engine = controller
                 .engine
@@ -1892,14 +2136,12 @@ pub(crate) async fn cloud_enable_sync(
             }
             super::emit_snapshot(&app, super::snapshot(&app, &engine));
             refreshed.map_err(|_| "Connect to Cloud before confirming sync.")?;
-            let session = engine
-                .session()
-                .ok_or("Connect to Cloud before confirming sync.")?;
-            let binding = DestinationBinding {
-                account_id: consent.account_id.clone(),
-                destination_id: consent.destination_id.clone(),
-            };
-            if !binding.matches(session)
+            engine
+                .refresh_destinations(&account_current)
+                .map_err(|_| "Cloud upload destinations are unavailable. Confirm sync again.")?;
+            if engine
+                .destination(&consent.account_id, &consent.destination_id)
+                .is_none_or(|entry| entry.membership_generation != consent.membership_generation)
                 || consent.version != ONGOING_CONSENT_VERSION
                 || !consent.full_content
                 || !consent.ongoing
@@ -1943,10 +2185,34 @@ pub(crate) async fn cloud_enable_sync(
             }
             let store = app.state::<Store>();
             ensure_cloud_setup(&controller.setup_ready, &store)?;
+            let resource = engine
+                .resource_origin()
+                .ok_or("Cloud service is unavailable.")?;
+            let prior = store
+                .cloud_sync_policy(&consent.account_id, &consent.destination_id, resource)
+                .map_err(|_| "Could not read Cloud sync consent.")?;
+            if consent
+                .expected_policy_revision
+                .as_deref()
+                .is_some_and(|revision| {
+                    prior
+                        .as_ref()
+                        .is_none_or(|policy| policy.revision != revision)
+                })
+                || prior.as_ref().is_some_and(|policy| {
+                    policy.membership_generation != consent.membership_generation
+                        && consent.expected_policy_revision.as_deref() != Some(&policy.revision)
+                })
+            {
+                return Err("Cloud folder choices changed. Reload and confirm again.".into());
+            }
             let capabilities = upload::capabilities(
                 &mut engine,
                 &consent.account_id,
-                &consent.destination_id,
+                (
+                    &consent.destination_id,
+                    consent.membership_generation.as_deref(),
+                ),
                 &account_current,
                 &current,
             );
@@ -1968,10 +2234,16 @@ pub(crate) async fn cloud_enable_sync(
                     Ordering::Acquire,
                 )
                 .map_err(|_| "Cloud upload controls changed. Confirm again.")?;
+            if !account_current() || !route_fence.current() {
+                return Err("Cloud upload controls changed. Confirm again.".into());
+            }
             store
                 .save_cloud_sync_policy(
                     &consent.account_id,
-                    &consent.destination_id,
+                    (
+                        &consent.destination_id,
+                        consent.membership_generation.as_deref(),
+                    ),
                     engine
                         .resource_origin()
                         .ok_or("Cloud service is unavailable.")?,
@@ -1980,20 +2252,29 @@ pub(crate) async fn cloud_enable_sync(
                     &consent.project_choices,
                 )
                 .map_err(|_| "Could not save Cloud sync consent.")?;
-            let mut runner = controller
+            let mut runners = controller
                 .sync
-                .runner
+                .runners
                 .lock()
                 .map_err(|_| "Cloud sync is unavailable.")?;
+            let runner = runners.route(engine.session(), Some(&consent.destination_id));
             runner.next_reconcile = None;
             runner.state = State::Ready;
             let mut host = controller
                 .capture
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?;
-            let result = status(&store, &mut host, &engine, State::Ready)?;
+            let result = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                State::Ready,
+                Some(&consent.destination_id),
+            )?;
             if !account_current()
-                || controller.sync.generation.load(Ordering::Acquire) != content_generation + 1
+                || !controller
+                    .sync
+                    .content_current(content_generation + 1, Some(&route_fence))
             {
                 return Err("Cloud account changed. Saved work is kept.".into());
             }
@@ -2033,6 +2314,15 @@ pub(crate) async fn cloud_set_sync_project(
     let account_generation = controller.account_generation.load(Ordering::Acquire);
     let work = controller.blocking.clone();
     let wake = controller.sync.wake.clone();
+    let route_fence = change
+        .selected
+        .then(|| {
+            controller
+                .sync
+                .fences
+                .snapshot(&change.account_id, &change.destination_id)
+        })
+        .transpose()?;
     let content_generation = if change.selected {
         controller.sync.generation.load(Ordering::Acquire)
     } else {
@@ -2050,7 +2340,9 @@ pub(crate) async fn cloud_set_sync_project(
                 || controller.account_generation.load(Ordering::Acquire) == account_generation;
             let current = || {
                 account_current()
-                    && controller.sync.generation.load(Ordering::Acquire) == content_generation
+                    && controller
+                        .sync
+                        .content_current(content_generation, route_fence.as_ref())
             };
             let mut engine = controller
                 .engine
@@ -2066,6 +2358,9 @@ pub(crate) async fn cloud_set_sync_project(
                 }
                 super::emit_snapshot(&app, super::snapshot(&app, &engine));
                 refreshed.map_err(|_| "Connect to Cloud before confirming sync.")?;
+                engine
+                    .refresh_destinations(&account_current)
+                    .map_err(|_| "Cloud upload destinations are unavailable.")?;
             }
             let binding = DestinationBinding {
                 account_id: change.account_id,
@@ -2074,7 +2369,7 @@ pub(crate) async fn cloud_set_sync_project(
             let session = engine
                 .session()
                 .ok_or("Cloud account changed. Reload projects.")?;
-            if !binding.matches(session) || !current() {
+            if binding.account_id != session.user.id || !current() {
                 return Err("Cloud account or upload controls changed. Reload projects.".into());
             }
             let store = app.state::<Store>();
@@ -2089,6 +2384,13 @@ pub(crate) async fn cloud_set_sync_project(
                 .ok_or("Confirm Cloud sync first.")?;
             if policy.revision != change.expected_policy_revision {
                 return Err("Cloud project choices changed. Reload projects and try again.".into());
+            }
+            if change.selected
+                && engine
+                    .destination(&binding.account_id, &binding.destination_id)
+                    .is_none_or(|entry| entry.membership_generation != policy.membership_generation)
+            {
+                return Err("Confirm folder uploads for the current Cloud membership.".into());
             }
             let mut host = controller
                 .capture
@@ -2117,7 +2419,10 @@ pub(crate) async fn cloud_set_sync_project(
                 let capabilities = upload::capabilities(
                     &mut engine,
                     &binding.account_id,
-                    &binding.destination_id,
+                    (
+                        &binding.destination_id,
+                        policy.membership_generation.as_deref(),
+                    ),
                     &account_current,
                     &current,
                 );
@@ -2148,10 +2453,10 @@ pub(crate) async fn cloud_set_sync_project(
             };
             let can_commit = || {
                 account_current()
-                    && controller.sync.generation.load(Ordering::Acquire) == fence
+                    && controller.sync.content_current(fence, route_fence.as_ref())
                     && engine
                         .session()
-                        .is_some_and(|session| binding.matches(session))
+                        .is_some_and(|session| session.user.id == binding.account_id)
             };
             let saved = store
                 .set_cloud_sync_project(
@@ -2164,37 +2469,44 @@ pub(crate) async fn cloud_set_sync_project(
                 .map_err(
                     |_| "Could not save the Cloud project change. Reload projects and try again.",
                 )?;
-            let mut runner = controller
+            let mut runners = controller
                 .sync
-                .runner
+                .runners
                 .lock()
                 .map_err(|_| "Cloud sync is unavailable.")?;
+            let runner = runners.route(engine.session(), Some(&binding.destination_id));
             if change.selected && !saved.paused {
                 runner.next_reconcile = None;
                 runner.retry_deadlines.clear();
                 runner.finalization_submissions.clear();
                 runner.state = State::Ready;
             }
-            let result =
-                status(&store, &mut host, &engine, runner.state).unwrap_or_else(|_| Status {
-                    status: State::StorageUnavailable,
-                    account_id: Some(saved.account_id),
-                    destination_id: Some(saved.destination_id),
-                    consent_version: Some(saved.consent_version),
-                    policy_revision: Some(saved.revision),
-                    paused: saved.paused,
-                    selected_sources: saved
-                        .roots
-                        .into_iter()
-                        .map(|root| SourceSelection {
-                            source_kind: root.source_kind,
-                            path: root.path,
-                        })
-                        .collect(),
-                    projects: saved.projects,
-                    project_choices: saved.project_choices,
-                    ..Status::default()
-                });
+            let result = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                runner.state,
+                Some(&binding.destination_id),
+            )
+            .unwrap_or_else(|_| Status {
+                status: State::StorageUnavailable,
+                account_id: Some(saved.account_id),
+                destination_id: Some(saved.destination_id),
+                consent_version: Some(saved.consent_version),
+                policy_revision: Some(saved.revision),
+                paused: saved.paused,
+                selected_sources: saved
+                    .roots
+                    .into_iter()
+                    .map(|root| SourceSelection {
+                        source_kind: root.source_kind,
+                        path: root.path,
+                    })
+                    .collect(),
+                projects: saved.projects,
+                project_choices: saved.project_choices,
+                ..Status::default()
+            });
             if !can_commit() {
                 return Err("Cloud account or upload controls changed. Saved work is kept.".into());
             }
@@ -2211,10 +2523,6 @@ pub(crate) async fn cloud_pause_sync(
     app: tauri::AppHandle,
     binding: DestinationBinding,
 ) -> Result<Status, String> {
-    app.state::<Controller>()
-        .sync
-        .generation
-        .fetch_add(1, Ordering::AcqRel);
     control(app, binding, true, Priority::Cleanup).await
 }
 
@@ -2234,30 +2542,37 @@ async fn control(
     paused: bool,
     priority: Priority,
 ) -> Result<Status, String> {
-    let work = app.state::<Controller>().blocking.clone();
-    let wake = app.state::<Controller>().sync.wake.clone();
-    let content_generation = app
-        .state::<Controller>()
+    let controller = app.state::<Controller>();
+    let work = controller.blocking.clone();
+    let wake = controller.sync.wake.clone();
+    let route_fence = controller
         .sync
-        .generation
-        .load(Ordering::Acquire);
+        .fences
+        .snapshot(&binding.account_id, &binding.destination_id)?;
+    let pending_pause = paused.then(|| route_fence.pause());
+    let generation = controller.account_generation.load(Ordering::Acquire);
+    let content_generation = controller.sync.generation.load(Ordering::Acquire);
     let result = work
         .run(priority, move || {
+            let _pending_pause = pending_pause;
             let controller = app.state::<Controller>();
-            let generation = controller.account_generation.load(Ordering::Acquire);
             let current = || {
                 controller.account_generation.load(Ordering::Acquire) == generation
-                    && controller.sync.generation.load(Ordering::Acquire) == content_generation
+                    && controller
+                        .sync
+                        .content_current(content_generation, (!paused).then_some(&route_fence))
             };
-            let engine = controller
+            let mut engine = controller
                 .engine
                 .lock()
                 .map_err(|_| "Cloud is unavailable.")?;
-            let session = engine.session();
+            let signed_in = engine.session().is_some();
             if !current()
                 || engine.generation != generation
-                || session.is_some_and(|session| !binding.matches(session))
-                || (!paused && session.is_none())
+                || engine
+                    .session()
+                    .is_some_and(|session| session.user.id != binding.account_id)
+                || (!paused && !signed_in)
             {
                 return Err("Cloud account changed. Saved work is kept.".into());
             }
@@ -2273,6 +2588,20 @@ async fn control(
                 )
                 .map_err(|_| "Could not read Cloud sync consent.")?
                 .ok_or("Confirm Cloud sync first.")?;
+            if !paused {
+                engine
+                    .refresh_destinations(&current)
+                    .map_err(|_| "Cloud upload destinations are unavailable.")?;
+                if engine
+                    .destination(&binding.account_id, &binding.destination_id)
+                    .is_none_or(|entry| entry.membership_generation != policy.membership_generation)
+                {
+                    return Err("Confirm folder uploads for the current Cloud membership.".into());
+                }
+            }
+            if !current() {
+                return Err("Cloud upload controls changed. Saved work is kept.".into());
+            }
             store
                 .set_cloud_sync_paused(&policy, paused)
                 .map_err(|_| "Could not save Cloud sync controls.")?;
@@ -2288,11 +2617,12 @@ async fn control(
                     &current,
                 )?;
             }
-            let mut runner = controller
+            let mut runners = controller
                 .sync
-                .runner
+                .runners
                 .lock()
                 .map_err(|_| "Cloud sync is unavailable.")?;
+            let runner = runners.route(engine.session(), Some(&binding.destination_id));
             runner.next_reconcile = None;
             runner.retry_deadlines.clear();
             runner.finalization_submissions.clear();
@@ -2301,8 +2631,14 @@ async fn control(
                 .capture
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?;
-            let mut result = status(&store, &mut host, &engine, runner.state)?;
-            if paused && session.is_none() {
+            let mut result = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                runner.state,
+                Some(&binding.destination_id),
+            )?;
+            if paused && !signed_in {
                 result.status = State::Paused;
                 result.paused = true;
             }

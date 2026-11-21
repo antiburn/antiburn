@@ -100,6 +100,10 @@ fn connected(directory: &Path, origin: &str) -> Engine {
         token: "synthetic-api-access".into(),
         expires_at: 900,
         epoch: record.epoch,
+        destinations: Some(vec![auth::EligibleDestination {
+            workspace: session.workspace.clone().unwrap(),
+            membership_generation: None,
+        }]),
         session,
     });
     engine.status = AuthStatus::SignedIn;
@@ -152,6 +156,56 @@ fn cloud_execution_http_reserve_uses_exact_desktop_wire_and_api_bearer() {
             "membership_generation": null,
         })
     );
+}
+
+#[test]
+fn cloud_execution_http_team_reserve_sends_only_the_exact_membership_generation() {
+    use super::super::upload::{HttpTransport, Source};
+    let (origin, worker) = server(200, r#"{"reservation_id":"reservation"}"#.into(), "");
+    let directory = tempfile::tempdir().unwrap();
+    let mut engine = connected(directory.path(), &origin);
+    let mut identity = identity();
+    identity.destination_id = "synthetic-team".into();
+    engine
+        .access
+        .as_mut()
+        .unwrap()
+        .destinations
+        .as_mut()
+        .unwrap()
+        .push(auth::EligibleDestination {
+            workspace: auth::Workspace {
+                id: identity.destination_id.clone(),
+                name: "Example Team".into(),
+                kind: auth::WorkspaceKind::Team,
+            },
+            membership_generation: Some("membership-current".into()),
+        });
+    let mut transport = HttpTransport::new(
+        &mut engine,
+        &|| true,
+        &|| true,
+        &origin,
+        Some(Source {
+            agent: "claude-code",
+            source_format: "ClaudeJsonl",
+            native_session_id: "session".into(),
+        }),
+    );
+    for generation in [None, Some("membership-stale")] {
+        transport = transport.with_membership(generation);
+        assert_eq!(
+            transport.reserve(&identity, 100),
+            Err(antiburn_cloud_capture::TransportError::Unauthorized)
+        );
+    }
+    transport = transport.with_membership(Some("membership-current"));
+    assert_eq!(transport.reserve(&identity, 100).unwrap(), "reservation");
+    let request = worker.join().unwrap();
+    assert_eq!(request.line, "POST /v1/captures/reserve HTTP/1.1");
+    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["membership_generation"], "membership-current");
+    assert_eq!(body["identity"]["destination_id"], identity.destination_id);
 }
 
 #[test]
@@ -218,7 +272,7 @@ fn cloud_execution_http_retry_after_accepts_dates_and_bounds_untrusted_waits() {
         let response = engine
             .capture_request(
                 &identity(),
-                &origin,
+                (&origin, None),
                 Route::Capabilities,
                 &(),
                 &|| true,
@@ -242,7 +296,7 @@ fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
     engine
         .capture_request(
             &identity(),
-            &origin,
+            (&origin, None),
             Route::Status,
             &serde_json::json!({
                 "plan_id": "plan-one", "manifest_sha256": "a".repeat(64),
@@ -276,7 +330,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     let limits = upload::capabilities(
         &mut engine,
         "synthetic-user",
-        "synthetic-personal",
+        ("synthetic-personal", None),
         &|| true,
         &|| true,
     )
@@ -318,7 +372,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
         upload::capabilities(
             &mut engine,
             "synthetic-user",
-            "synthetic-personal",
+            ("synthetic-personal", None),
             &|| true,
             &|| { true }
         )
@@ -335,7 +389,7 @@ fn cloud_execution_http_rechecks_account_and_generation_before_sending_bearer() 
     assert!(matches!(
         engine.capture_request(
             &identity(),
-            "http://127.0.0.1:1",
+            ("http://127.0.0.1:1", None),
             Route::Reserve,
             &(),
             &|| true,
@@ -348,7 +402,7 @@ fn cloud_execution_http_rechecks_account_and_generation_before_sending_bearer() 
     assert!(matches!(
         engine.capture_request(
             &changed,
-            "http://127.0.0.1:1",
+            ("http://127.0.0.1:1", None),
             Route::Reserve,
             &(),
             &|| true,
@@ -369,7 +423,7 @@ fn cloud_execution_http_changed_origin_rejects_saved_work_before_auth_or_upload(
     assert!(matches!(
         engine.capture_request(
             &identity(),
-            original,
+            (original, None),
             Route::Reserve,
             &(),
             &|| true,
@@ -764,7 +818,7 @@ fn cloud_execution_http_spool_resume_and_accepted_transaction_survive_restart() 
     let policy = store
         .save_cloud_sync_policy(
             "synthetic-user",
-            "synthetic-personal",
+            ("synthetic-personal", None),
             &origin,
             &[SourceSelection {
                 source_kind: SourceKind::ClaudeJsonl,

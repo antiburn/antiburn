@@ -5,8 +5,8 @@
 use super::{
     AuthStatus,
     auth::{
-        self, Attempt, Callback, Config, Credential, Failure, Session, TokenRequest, Transport,
-        Vault,
+        self, Attempt, Callback, Config, Credential, EligibleDestination, Failure, Session,
+        TokenRequest, Transport, Vault,
     },
     loopback::Listener,
     state::{Cleanup, Guard, Phase, Record, StateStore},
@@ -17,6 +17,7 @@ struct Access {
     expires_at: i64,
     epoch: String,
     session: Session,
+    destinations: Option<Vec<EligibleDestination>>,
 }
 
 #[cfg(all(test, debug_assertions))]
@@ -90,19 +91,56 @@ impl Engine {
         self.config.as_ref().map(|config| config.resource.as_str())
     }
 
+    /// Return view data only while the matching device grant is live.
+    pub(super) fn destinations(&self) -> Option<&[EligibleDestination]> {
+        self.session()?;
+        self.access.as_ref()?.destinations.as_deref()
+    }
+
+    /// Match one exact destination for this account. No Personal fallback.
+    pub(super) fn destination(
+        &self,
+        account: &str,
+        destination: &str,
+    ) -> Option<&EligibleDestination> {
+        (self.session()?.user.id == account).then_some(())?;
+        self.destinations()?
+            .iter()
+            .find(|entry| entry.workspace.id == destination)
+    }
+
+    /// Update the setup view from the saved route or from Personal before any route is saved.
+    pub(super) fn select_destination_view(&mut self, destination: Option<&str>) {
+        let Some(access) = &mut self.access else {
+            return;
+        };
+        access.session.workspace = access.destinations.as_ref().and_then(|entries| {
+            entries
+                .iter()
+                .find(|entry| {
+                    destination.map_or(
+                        entry.workspace.kind == auth::WorkspaceKind::Personal,
+                        |id| entry.workspace.id == id,
+                    )
+                })
+                .map(|entry| entry.workspace.clone())
+        });
+    }
+
     /// Send one bounded capture API request without returning access proof.
     /// Reject a changed service before credentials are used. Auth rotation uses
     /// only the account fence; content pause blocks dispatch without revocation.
     pub(super) fn capture_request(
         &mut self,
         identity: &antiburn_cloud_capture::CaptureIdentity,
-        resource_origin: &str,
+        destination_scope: (&str, Option<&str>),
         route: super::upload::Route,
         body: &impl serde::Serialize,
         account_current: &dyn Fn() -> bool,
         current: &dyn Fn() -> bool,
     ) -> Result<super::upload::ApiResponse, antiburn_cloud_capture::TransportError> {
         use antiburn_cloud_capture::TransportError;
+        let (resource_origin, membership_generation) = destination_scope;
         if !account_current() || !current() || self.resource_origin() != Some(resource_origin) {
             return Err(TransportError::Unauthorized);
         }
@@ -118,11 +156,9 @@ impl Engine {
         let access = self.access.as_ref().ok_or(TransportError::Unauthorized)?;
         if !current()
             || access.session.user.id != identity.account_id
-            || access
-                .session
-                .workspace
-                .as_ref()
-                .is_none_or(|workspace| workspace.id != identity.destination_id)
+            || self
+                .destination(&identity.account_id, &identity.destination_id)
+                .is_none_or(|entry| entry.membership_generation.as_deref() != membership_generation)
             || access.expires_at <= (self.clock)()
             || access.session.validate(config, (self.clock)()).is_err()
         {
@@ -403,31 +439,38 @@ impl Engine {
             expires_at,
             epoch: record.epoch,
             session,
+            destinations: None,
         });
         self.status = AuthStatus::SignedIn;
-        self.refresh_personal_destination(&current);
+        let _ = self.refresh_destinations(&current);
+        self.select_destination_view(None);
         Ok(())
     }
 
     /// Update upload eligibility separately from account authentication.
-    fn refresh_personal_destination(&mut self, current: &dyn Fn() -> bool) {
-        let (Some(config), Some(access)) = (&self.config, &mut self.access) else {
-            return;
-        };
+    pub(super) fn refresh_destinations(
+        &mut self,
+        current: &dyn Fn() -> bool,
+    ) -> Result<(), Failure> {
         if !current() {
-            return;
+            return Err(Failure::Cancelled);
         }
-        access.session.workspace = self
-            .transport
-            .destinations(config, &access.token)
-            .ok()
-            .filter(|_| current())
-            .and_then(|entries| {
-                entries
-                    .into_iter()
-                    .find(|entry| entry.workspace.kind == auth::WorkspaceKind::Personal)
-            })
-            .map(|entry| entry.workspace);
+        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+        let access = self.access.as_mut().ok_or(Failure::ReauthRequired)?;
+        let selected = access
+            .session
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.id.clone());
+        let result = self.transport.destinations(config, &access.token);
+        access.destinations = None;
+        access.session.workspace = None;
+        if !current() || access.expires_at <= (self.clock)() {
+            return Err(Failure::Cancelled);
+        }
+        access.destinations = Some(result?);
+        self.select_destination_view(selected.as_deref());
+        Ok(())
     }
 
     /// Retain original and returned proofs before state writes can fail.
@@ -555,12 +598,6 @@ impl Engine {
                 && !access.token.is_empty()
         }) {
             self.status = AuthStatus::SignedIn;
-            if self
-                .session()
-                .is_some_and(|session| session.workspace.is_none())
-            {
-                self.refresh_personal_destination(&current);
-            }
             return Ok(());
         }
         self.access = None;
