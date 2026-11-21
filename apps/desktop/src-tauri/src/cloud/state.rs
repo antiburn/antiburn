@@ -24,9 +24,9 @@ pub enum Phase {
 
 /// Keep remote uncertainty separate from local credential deletion.
 ///
-/// `Revoke` retains proof until every stored proof has confirmed revocation.
+/// `Revoke` retains proof Cloud may still accept for logout.
 /// Persist `DeleteCredential` before deleting proof so restart can finish safely.
-/// `RemoteUnconfirmed` permits reconnect after explicit reset, but a later
+/// `RemoteUnconfirmed` permits reconnect without usable logout proof, but a later
 /// connection's cleanup must not clear that earlier warning.
 #[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]

@@ -17,10 +17,10 @@ import {
   CloudSession,
   cloudGithubSignInLabel,
   cloudOngoingStatusMessage,
+  cloudSignOutWarning,
   cloudStatusMessage,
   cloudUploadStatusUnknown,
 } from "./CloudSession"
-import { cloudSignInRecovery } from "./cloudSignInRecovery"
 import { CloudProjectFolders } from "./CloudOnboardingFolders"
 import { CloudInvitations } from "./CloudInvitations"
 import { CloudRoutedFolderSetup } from "./CloudRoutedFolderSetup"
@@ -77,7 +77,8 @@ export function CloudOnboarding({
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
-  const signInRecovery = value.cloud.authEnabled ? cloudSignInRecovery(value.cloud) : null
+  const retryCloud =
+    value.cloud.status === "offline" || (!value.cloud.authEnabled && !!value.error)
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -184,14 +185,20 @@ export function CloudOnboarding({
           <div className="cloud-connection">
             <img className="cloud-app-icon" src={appIcon} alt="" />
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
-              {value.cloud.authEnabled
-                ? "Sign in to Antiburn Cloud"
-                : "Antiburn Cloud is coming soon"}
+              {!value.loaded
+                ? "Checking Cloud…"
+                : value.cloud.authEnabled
+                  ? "Sign in to Antiburn Cloud"
+                  : retryCloud
+                    ? "Antiburn Cloud"
+                    : "Antiburn Cloud is coming soon"}
             </h1>
             <p className="type-onboarding-body text-onboarding-muted">
-              {value.cloud.authEnabled
-                ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
-                : "Learn about bringing your session insights together across devices."}
+              {!value.loaded || (!value.cloud.authEnabled && retryCloud)
+                ? null
+                : value.cloud.authEnabled
+                  ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
+                  : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
               <button
@@ -201,35 +208,34 @@ export function CloudOnboarding({
               >
                 Cancel sign-in
               </button>
-            ) : !browserReturned && !signInRecovery ? (
+            ) : value.loaded && !browserReturned ? (
               <button
                 className={
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
                 }
                 disabled={disabled || !value.loaded}
-                onClick={() =>
-                  void (!value.cloud.authEnabled ||
-                  value.cloud.status === "idle" ||
-                  value.cloud.status === "signed_out"
-                    ? session.begin()
-                    : session.retry())
-                }
+                onClick={() => void (retryCloud ? session.load() : session.begin())}
               >
-                {value.cloud.authEnabled ? cloudGithubSignInLabel : "Learn more"}
-                <ArrowUpRight size={16} aria-hidden />
+                {value.authAction === "sign_in"
+                  ? "Starting sign-in…"
+                  : retryCloud
+                    ? "Try again"
+                    : value.cloud.authEnabled
+                      ? cloudGithubSignInLabel
+                      : "Learn more"}
+                {!retryCloud && <ArrowUpRight size={16} aria-hidden />}
               </button>
             ) : null}
             <p className="cloud-status type-footnote" role="status">
-              {value.loaded
-                ? value.cloud.authEnabled || value.cloud.status === "browser_failed"
-                  ? (signInRecovery?.message ?? cloudStatusMessage(value.cloud.status))
-                  : ""
-                : "Checking Cloud availability…"}
+              {value.loaded &&
+              !value.authAction &&
+              (value.cloud.authEnabled || value.cloud.status === "browser_failed")
+                ? cloudStatusMessage(value.cloud.status)
+                : ""}
             </p>
-            {signInRecovery && (
-              <p className="type-footnote text-onboarding-muted">
-                Continue locally, then open Settings → Sessions to manage this connection.
-              </p>
+            {(value.cloud.remoteRevocationUnconfirmed ||
+              value.cloud.status === "revocation_unconfirmed") && (
+              <p className="type-footnote text-onboarding-muted">{cloudSignOutWarning}</p>
             )}
           </div>
         </section>

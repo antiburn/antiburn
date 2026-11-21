@@ -396,10 +396,6 @@ export function cloudFixture(name: string): CloudPort {
       value = { ...emptyCloudSnapshot, authEnabled: value.authEnabled, status: "signed_out" }
       return value
     },
-    resetLocal: async () => {
-      value = { ...emptyCloudSnapshot, status: "signed_out", remoteRevocationUnconfirmed: true }
-      return value
-    },
     pick: async () => ["/Example/New folder"],
     localTools: {
       read: async () => localTools,

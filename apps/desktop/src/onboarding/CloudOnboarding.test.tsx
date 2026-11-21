@@ -103,19 +103,19 @@ it("does not show verified sign-in or reopen browser approval after the browser 
   expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
   act(() => emit({ status: "offline" }))
   expect(screen.getByText(/Check your connection and try again/)).toBeVisible()
-  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
+  expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
 })
 
-it("directs blocked sign-in to Settings without keeping users in Cloud setup", async () => {
+it("offers sign-in or local setup after an earlier sign-out Cloud did not confirm", async () => {
   const { port } = fixture({
     ...signIn,
-    status: "revocation_unconfirmed",
-    revocationPending: true,
+    status: "signed_out",
+    remoteRevocationUnconfirmed: true,
   })
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
-  expect(await screen.findByText(/open Settings → Sessions/)).toBeVisible()
-  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(await screen.findByText(/Cloud didn’t confirm sign-out/)).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
   fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
   expect(done).toHaveBeenCalledOnce()
 })
@@ -300,8 +300,8 @@ it("cancels only the pending browser attempt before local completion", async () 
   port.cancel = vi.fn(async () => ({
     ...emptyCloudSnapshot,
     authEnabled: true,
-    status: "revocation_unconfirmed" as const,
-    revocationPending: true,
+    status: "cancelled" as const,
+    remoteRevocationUnconfirmed: true,
   }))
   port.cancelSync = vi.fn()
   const done = vi.fn()

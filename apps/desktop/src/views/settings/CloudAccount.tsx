@@ -4,11 +4,11 @@ import {
   type CloudSession,
   cloudGithubSignInLabel,
   cloudOngoingStatusMessage,
+  cloudSignOutWarning,
   cloudStatusMessage,
   cloudUploadStatusUnknown,
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
-import { cloudSignInRecovery } from "../../onboarding/cloudSignInRecovery"
 import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
 import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import { CloudRoutedFolderSetup } from "../../onboarding/CloudRoutedFolderSetup"
@@ -33,9 +33,7 @@ const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
   storage_unavailable: "Could not read saved uploads.",
 }
 
-/** Render one observed account. Setup errors block source actions, not revocation.
- * Local reset needs a separate confirmation and cannot claim remote deletion.
- */
+/** Show account access separately from folder setup and upload errors. */
 export function CloudAccount({
   session,
   value,
@@ -46,7 +44,6 @@ export function CloudAccount({
   /** The caller owns the upload switch and its saved-policy gate. */
   children?: ReactNode
 }) {
-  const [confirmReset, setConfirmReset] = useState(false)
   const [folderSetupAccount, setFolderSetupAccount] = useState<string | null>(null)
   const managesPersonalPolicy = !!savedPersonalFolderPolicy(value.cloud, value.routedPolicies)
   const openFolderSetup = () => {
@@ -55,43 +52,46 @@ export function CloudAccount({
   }
   const waiting = ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.status === "returned"
-  const readFailed = value.loaded && !!value.error && !value.cloud.identity && !waiting
-  const recovery = cloudSignInRecovery(value.cloud)
+  const readFailed = value.loaded && !!value.error && !value.cloud.authEnabled
+  const offline = value.cloud.status === "offline"
+  const accountFailed = !!value.error || offline || value.cloud.status === "credential_failed"
   const accountMessage = value.error
     ? value.error === CLOUD_BUSY_MESSAGE
       ? "Cloud is busy."
       : value.error
-    : (recovery?.message ??
-      (!["idle", "signed_in", "signed_out"].includes(value.cloud.status)
-        ? cloudStatusMessage(value.cloud.status)
-        : null))
+    : !["idle", "signed_in", "signed_out"].includes(value.cloud.status) && !value.authAction
+      ? cloudStatusMessage(value.cloud.status)
+      : null
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
-          <p className="type-body text-label">
-            {readFailed
-              ? "Cloud account"
-              : (recovery?.title ??
-                (value.cloud.identity
-                  ? `Signed in as ${value.cloud.identity.login}`
-                  : value.cloud.authEnabled
-                    ? "Not signed in"
-                    : "Antiburn Cloud is coming soon"))}
+          <p className="type-body text-label" role="status">
+            {!value.loaded
+              ? "Checking Cloud…"
+              : value.authAction === "sign_out"
+                ? "Signing out…"
+                : readFailed
+                  ? "Cloud account"
+                  : value.cloud.identity
+                    ? `Signed in as ${value.cloud.identity.login}`
+                    : value.cloud.authEnabled
+                      ? "Not signed in"
+                      : "Antiburn Cloud is coming soon"}
           </p>
           {value.cloud.identity && value.cloud.destination?.kind === "personal" && (
             <p className="type-footnote text-label-secondary">{value.cloud.destination.name}</p>
           )}
           {accountMessage && (
             <p
-              className={`type-footnote ${value.error ? "text-system-red-text" : "text-label-secondary"}`}
-              role={value.error ? "alert" : "status"}
+              className={`type-footnote ${accountFailed ? "text-system-red-text" : "text-label-secondary"}`}
+              role={accountFailed ? "alert" : "status"}
             >
               {accountMessage}
             </p>
           )}
         </div>
-        {readFailed && (
+        {(readFailed || offline) && (
           <button
             className="ui-push-button"
             disabled={value.busy}
@@ -100,10 +100,10 @@ export function CloudAccount({
             Try again
           </button>
         )}
-        {!readFailed && !value.cloud.authEnabled && !value.cloud.identity && (
+        {value.loaded && !readFailed && !value.cloud.authEnabled && !value.cloud.identity && (
           <button
             className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-control type-callout text-label-secondary hover:text-label disabled:opacity-50"
-            disabled={!value.loaded || value.busy}
+            disabled={value.busy}
             onClick={() => void session.begin()}
           >
             Learn more <ArrowUpRight size={13} aria-hidden="true" />
@@ -113,71 +113,35 @@ export function CloudAccount({
           !value.cloud.identity &&
           !readFailed &&
           !checkingSignIn &&
-          !recovery && (
+          !offline && (
             <button
               className="ui-push-button gap-1"
               disabled={!value.loaded || value.busy}
               onClick={() => void (waiting ? session.cancel() : session.begin())}
             >
-              {waiting ? "Cancel sign-in" : cloudGithubSignInLabel}
+              {value.authAction === "sign_in"
+                ? "Starting sign-in…"
+                : waiting
+                  ? "Cancel sign-in"
+                  : cloudGithubSignInLabel}
               {!waiting && <ArrowUpRight size={13} aria-hidden />}
             </button>
           )}
-        {(value.cloud.identity || recovery) && (
+        {value.cloud.identity && (
           <button
             className="ui-push-button"
             disabled={value.busy}
             onClick={() => void session.signOut()}
           >
-            {recovery?.action ?? "Sign out"}
+            Sign out
           </button>
         )}
       </div>
-      {value.cloud.remoteRevocationUnconfirmed && (
+      {(value.cloud.remoteRevocationUnconfirmed ||
+        value.cloud.status === "revocation_unconfirmed") && (
         <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
-          Cloud has not confirmed an earlier sign-out. Open Cloud settings in your browser to
-          close that old connection.
+          {cloudSignOutWarning}
         </p>
-      )}
-      {value.cloud.localResetAvailable && (
-        <div className="flex flex-col gap-3 px-4 py-3 type-callout text-label">
-          {confirmReset ? (
-            <>
-              <p>
-                Reset sign-in on this device? You can sign in again, but the old connection may
-                still have access to Cloud. The warning will stay until you close that
-                connection in Cloud settings.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  className="ui-push-button"
-                  disabled={value.busy}
-                  onClick={() => {
-                    setConfirmReset(false)
-                    void session.resetLocal()
-                  }}
-                >
-                  Reset sign-in
-                </button>
-                <button
-                  className="ui-push-button"
-                  disabled={value.busy}
-                  onClick={() => setConfirmReset(false)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </>
-          ) : (
-            <button
-              className="ui-push-button"
-              disabled={value.busy}
-              onClick={() => setConfirmReset(true)}
-            >
-              Reset sign-in on this device
-            </button>
-          )}
-        </div>
       )}
       {value.cloud.invitationEnabled && value.cloud.identity && (
         <div className="px-4 py-3">
@@ -315,9 +279,7 @@ function CloudUploadRoutes({
   const { cloud, routedPolicies } = value
   const message =
     cloud.status !== "signed_in"
-      ? cloudSignInRecovery(cloud)
-        ? "Saved uploads are unavailable until you sign in again."
-        : "Sign in to check saved uploads."
+      ? "Sign in to check saved uploads."
       : !routedPolicies
         ? value.projects?.loading || value.busy
           ? "Checking saved uploads…"

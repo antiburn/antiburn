@@ -151,9 +151,6 @@ pub struct Snapshot {
     saved_destination_id: Option<String>,
     /// All saved upload routes for this account and resource, or null if unreadable.
     saved_destination_ids: Option<Vec<String>>,
-    revocation_pending: bool,
-    local_cleanup_pending: bool,
-    local_reset_available: bool,
     remote_revocation_unconfirmed: bool,
     setup_error: Option<String>,
     pending_sync: Option<capture::PendingSync>,
@@ -349,9 +346,6 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         destinations: session.and_then(|_| engine.destinations().map(<[_]>::to_vec)),
         saved_destination_id: saved_destination_id.filter(|_| session.is_some()),
         saved_destination_ids: saved_destination_ids.filter(|_| session.is_some()),
-        revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
-        local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
-        local_reset_available: engine.local_reset_available,
         remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
         setup_error,
         pending_sync,
@@ -497,7 +491,7 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         }
         let account_generation = controller.account_generation.load(Ordering::Acquire);
         if engine.generation != account_generation {
-            return Err("Cloud account cleanup is still in progress.".to_owned());
+            return Err("Cloud is busy. Try again.".to_owned());
         }
         if engine.config.is_none() {
             engine.status = if app
@@ -518,6 +512,24 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 return Ok(publish(&app, &engine));
             }
         };
+        // A fresh browser sign-in cannot resume work admitted for an older grant.
+        if controller
+            .account_generation
+            .compare_exchange(
+                account_generation,
+                account_generation + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            engine
+                .abort_browser_launch(&attempt)
+                .map_err(|_| "Could not cancel Cloud sign-in.")?;
+            return Ok(snapshot(&app, &engine));
+        }
+        let account_generation = account_generation + 1;
+        engine.generation = account_generation;
         if !launch_account_browser(
             &mut engine,
             &attempt,
@@ -634,8 +646,8 @@ pub fn invalidate_pending(app: &tauri::AppHandle) {
     }
 }
 
-/// Cancel a browser attempt with cleanup priority, retaining uncertain approval
-/// for explicit recovery. Established auth and saved source requests survive.
+/// Cancel a browser attempt with cleanup priority. Established auth and saved
+/// source requests survive.
 #[tauri::command]
 pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     let generation = app
@@ -685,38 +697,6 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
             return Ok(snapshot(&app, &engine));
         }
         if let Err(error) = engine.sign_out() {
-            engine.status = error.into();
-        }
-        engine.generation = generation;
-        Ok(publish(&app, &engine))
-    })
-    .await
-}
-
-/// Apply an explicitly confirmed reset only when no secure refresh proof remains.
-/// Invalidate late work immediately and preserve the remote-revocation warning.
-#[tauri::command]
-pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    invalidate_pending(&app);
-    let generation = app
-        .state::<Controller>()
-        .account_generation
-        .fetch_add(1, Ordering::AcqRel)
-        + 1;
-    let work = app.state::<Controller>().blocking.clone();
-    work.run(Priority::Cleanup, move || {
-        let controller = app.state::<Controller>();
-        let mut engine = controller
-            .engine
-            .lock()
-            .map_err(|_| "Cloud is unavailable.")?;
-        if !engine.allows_account_cleanup(
-            generation,
-            controller.account_generation.load(Ordering::Acquire),
-        ) {
-            return Ok(snapshot(&app, &engine));
-        }
-        if let Err(error) = engine.reset_local() {
             engine.status = error.into();
         }
         engine.generation = generation;

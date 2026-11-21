@@ -103,9 +103,8 @@ An OS missing-launcher error before browser handoff clears only that attempt and
 permits retry. Other opener errors do not prove that handoff failed.
 Browser approval can create a connection before the callback arrives. Canceling,
 replacing, or losing that callback therefore preserves unconfirmed revocation.
-Without a refresh credential, Settings requires an explicit local reset before
-reconnecting and keeps the warning. An explicit browser denial does not need this
-reset.
+The user can sign in again without a reset. An explicit browser denial does not
+add a warning.
 
 The browser must name the account, permitted actions, and device before the user
 approves the connection. The approved scope covers this first-party Desktop
@@ -142,7 +141,7 @@ one-year deadline. Refresh does not extend that deadline.
 A single Cloud blocking-work permit admits synchronous keyring, SQLite, source,
 state-file, and short HTTP operations before they enter Tokio's blocking pool.
 Ordinary requests fail clearly as busy without starting work. Cleanup waits
-asynchronously for the permit. Sign-out, reset, and browser cancellation invalidate
+asynchronously for the permit. Sign-out and browser cancellation invalidate
 their account or browser generation before waiting. A busy connection attempt
 does not invalidate the pending browser attempt. An admitted connection attempt
 cannot replace a newer cancellation while it waits for a blocking worker.
@@ -171,11 +170,11 @@ retry eligibility for the current account generation. Successful rotation needs
 the same grant ID, account, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.
-Rejected refresh responses save the original and returned proofs for logout
-before updating local state. These cleanup credentials cannot restore an
-authenticated session. Cleanup requires confirmation for both proofs. A failed
-secure-storage write keeps an unconfirmed warning and attempts to revoke the
-returned proof.
+When Desktop rejects a refresh response with tokens, it saves the original and
+returned proofs for logout before updating local state. These proofs cannot
+restore a session. Automatic cleanup retains them unless Cloud confirms
+revocation of both proofs. If secure storage fails, Desktop keeps a warning
+and tries to revoke the returned proof.
 Decoded responses retain bounded logout proof even when token bounds or authority
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
@@ -183,25 +182,24 @@ of a newer connection cannot prove that an older connection was revoked.
 Settings keeps the connection action available after onboarding. Desktop sign-out
 first flushes a new signed-out generation. Browser cancellation changes only the
 pending browser-attempt generation; it does not cancel an established connection
-or its refresh. Sign-out revokes only this client's current
-grant, not every connection on the account. A failed remote response stays visible
-as unconfirmed revocation. The client durably records confirmed remote revocation
-before deleting its keyring credential. A restart can therefore finish local
-deletion without requiring that deleted credential or repeating remote logout.
-A deletion failure remains visible, and the closed marker blocks login
-restoration. Cleanup-only keyring records cannot restore an authenticated session.
-Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
+or its refresh. Sign-out asks Cloud to revoke only the old grant, not every
+connection on the account. Only a synchronous HTTP 204 confirms remote logout.
+HTTP 401, HTTP 202, and network failures do not. Desktop still signs out locally
+and keeps a warning when Cloud does not confirm. A restart can finish keyring
+deletion without repeating remote logout. If deletion fails, the closed marker
+blocks access. Only a verified new sign-in can replace the old credential.
+If Desktop cannot write the marker, it tries to delete the old credential.
+If both fail, the current process still blocks access and reports a failure.
+Cleanup-only keyring records cannot restore an authenticated session.
 Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
 when authority changes.
 
-When remote revocation is unknown and no refresh credential remains, Settings
-offers an explicit local reset. The confirmation states that this does not revoke
-the old connection. Reset permits a new connection but preserves an
-unconfirmed-revocation warning, including after reconnect and restart. The user
-can revoke the old connection in browser Settings. Reset does not remove retry
-bytes or accept late browser callbacks.
+A device authorization denial from Cloud closes saved access and asks the user
+to sign in again. A connection failure that proves the refresh never reached
+Cloud does not end the saved sign-in. The user can revoke an old connection in
+browser Settings. That action is separate from signing in again on Desktop.
 
 Callback URLs, codes, tokens, PKCE material, and raw provider errors do not enter
 renderer events, logs, or analytics. Identity and folder paths do not enter

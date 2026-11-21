@@ -11,20 +11,10 @@ function fixture(initial?: CloudSnapshot) {
   let value: CloudSnapshot = initial ?? {
     ...emptyCloudSnapshot,
     authEnabled: true,
-    status: "revocation_unconfirmed",
-    revocationPending: true,
-    localResetAvailable: true,
+    status: "signed_out",
+    remoteRevocationUnconfirmed: true,
   }
   let publish: (value: CloudSnapshot) => void = () => {}
-  const resetLocal = vi.fn(async () => {
-    value = {
-      ...emptyCloudSnapshot,
-      authEnabled: true,
-      status: "signed_out",
-      remoteRevocationUnconfirmed: true,
-    }
-    return value
-  })
   const signOut = vi.fn(async () => value)
   const begin = vi.fn(async (): Promise<CloudSnapshot> => ({ ...value, status: "waiting" }))
   const cancel = vi.fn(async (): Promise<CloudSnapshot> => ({ ...value, status: "cancelled" }))
@@ -46,7 +36,6 @@ function fixture(initial?: CloudSnapshot) {
         return () => {}
       },
       localTools: localToolsFixture().port,
-      resetLocal,
       signOut,
       begin,
       cancel,
@@ -61,7 +50,6 @@ function fixture(initial?: CloudSnapshot) {
   )
   return {
     session,
-    resetLocal,
     signOut,
     begin,
     cancel,
@@ -83,61 +71,35 @@ function Account({ session }: { session: CloudSession }) {
   return <CloudAccount session={session} value={value} />
 }
 
-it.each([
-  {
-    state: { status: "reauth_required" },
-    title: "Sign-in needs attention",
-    message:
-      "Desktop can’t use your saved sign-in. Sign out of the previous connection to sign in again.",
-    action: "Sign out of previous connection",
-  },
-  {
-    state: { status: "reauth_required", revocationPending: true },
-    title: "Sign-out incomplete",
-    message: "Cloud hasn’t confirmed that your previous connection is closed.",
-    action: "Retry sign-out",
-  },
-  {
-    state: { status: "reauth_required", localCleanupPending: true },
-    title: "Sign-out incomplete",
-    message: "Desktop still needs to clear your saved sign-in.",
-    action: "Finish signing out",
-  },
-] satisfies {
-  state: Partial<CloudSnapshot>
-  title: string
-  message: string
-  action: string
-}[])(
-  "explains recovery and offers $action without a conflicting sign-in prompt",
-  async ({ state, title, message, action }) => {
-    const { session, signOut, begin } = fixture({
-      ...emptyCloudSnapshot,
-      authEnabled: true,
-      ...state,
-    })
-    render(<Account session={session} />)
-    const recover = await screen.findByRole("button", { name: action })
-    expect(screen.getByText(title)).toBeVisible()
-    expect(screen.getByText(message)).toBeVisible()
-    expect(screen.queryByText("Not signed in")).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole("button", { name: "Sign in with GitHub" }),
-    ).not.toBeInTheDocument()
-    fireEvent.click(recover)
-    await waitFor(() => expect(signOut).toHaveBeenCalledOnce())
-    expect(begin).not.toHaveBeenCalled()
-  },
-)
-
-it("requires an explicit reset and keeps the remote warning while reconnecting", async () => {
-  const { session, resetLocal, begin, cancel, emit } = fixture()
+it("shows a closed account and offers the regular sign-in action", async () => {
+  const { session, begin } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "reauth_required",
+  })
+  let openBrowser!: (snapshot: CloudSnapshot) => void
+  begin.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        openBrowser = resolve
+      }),
+  )
   render(<Account session={session} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in on this device" }))
-  expect(resetLocal).not.toHaveBeenCalled()
-  expect(screen.getByText(/the old connection may still have access to Cloud/)).toBeVisible()
-  fireEvent.click(screen.getByRole("button", { name: "Reset sign-in" }))
-  await waitFor(() => expect(resetLocal).toHaveBeenCalledOnce())
+  const signIn = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  expect(screen.getByText("Not signed in")).toBeVisible()
+  expect(screen.getByText("Your sign-in ended. Sign in again to use Cloud.")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull()
+  fireEvent.click(signIn)
+  expect(screen.getByRole("button", { name: "Starting sign-in…" })).toBeDisabled()
+  await act(async () =>
+    openBrowser({ ...emptyCloudSnapshot, authEnabled: true, status: "waiting" }),
+  )
+  expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeEnabled()
+})
+
+it("keeps the remote warning without blocking sign-in", async () => {
+  const { session, begin, cancel, emit } = fixture()
+  render(<Account session={session} />)
   const github = await screen.findByRole("button", { name: "Sign in with GitHub" })
   expect(github).toBeEnabled()
   fireEvent.click(github)
@@ -147,7 +109,7 @@ it("requires an explicit reset and keeps the remote warning while reconnecting",
   fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }))
   expect(await screen.findByText("Sign-in cancelled.")).toBeVisible()
   expect(cancel).toHaveBeenCalledOnce()
-  expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
+  expect(screen.getByText(/Cloud didn’t confirm sign-out/)).toBeVisible()
   act(() =>
     emit({
       ...emptyCloudSnapshot,
@@ -159,17 +121,32 @@ it("requires an explicit reset and keeps the remote warning while reconnecting",
     }),
   )
   expect(screen.getByText("Signed in as Example")).toBeVisible()
-  expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
+  expect(screen.getByText(/Cloud didn’t confirm sign-out/)).toBeVisible()
 })
 
-it("canceling the reset confirmation does not call a native cleanup action", async () => {
-  const { session, resetLocal, signOut } = fixture()
+it("shows sign-out progress and then the normal sign-in button", async () => {
+  const { session, signOut } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "signed_in",
+    identity: { id: "synthetic-account", login: "Example" },
+  })
+  let finishSignOut!: (snapshot: CloudSnapshot) => void
+  signOut.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finishSignOut = resolve
+      }),
+  )
   render(<Account session={session} />)
-  fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in on this device" }))
-  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-  expect(resetLocal).not.toHaveBeenCalled()
-  expect(signOut).not.toHaveBeenCalled()
-  expect(screen.getByRole("button", { name: "Reset sign-in on this device" })).toBeVisible()
+  expect(screen.getByText("Checking Cloud…")).toBeVisible()
+  fireEvent.click(await screen.findByRole("button", { name: "Sign out" }))
+  expect(screen.getByText("Signing out…")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeDisabled()
+  await act(async () =>
+    finishSignOut({ ...emptyCloudSnapshot, authEnabled: true, status: "signed_out" }),
+  )
+  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
 })
 
 it("requires source selection and sends account-bound folder changes from Settings", async () => {

@@ -153,6 +153,7 @@ pub(super) fn session() -> Session {
 struct FakeTransport {
     calls: AtomicU64,
     fail_exchange: AtomicBool,
+    deny_refresh: AtomicBool,
     fail_before_send: AtomicBool,
     fail_revoke: AtomicBool,
     fail_session: AtomicBool,
@@ -195,6 +196,11 @@ impl Transport for Arc<FakeTransport> {
         );
         if self.fail_exchange.load(Ordering::Acquire) {
             return Err(Failure::Offline);
+        }
+        if self.deny_refresh.load(Ordering::Acquire)
+            && matches!(request, TokenRequest::RefreshToken { .. })
+        {
+            return Err(Failure::ReauthRequired);
         }
         Ok(Tokens {
             access_token: format!("synthetic-access-{count}"),
@@ -592,23 +598,17 @@ fn cloud_restart_does_not_restore_an_ephemeral_listener() {
     drop(listener);
     fixture.restart();
     fixture.engine.refresh(101, || true).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
+    assert!(fixture.engine.status == AuthStatus::Cancelled);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert!(fixture.engine.session().is_none());
 }
 
 #[test]
-fn cloud_abandoned_browser_approval_needs_explicit_reset_without_losing_its_warning() {
+fn cloud_abandoned_browser_approval_allows_sign_in_without_losing_its_warning() {
     let mut fixture = Fixture::new();
     let (_, _listener, _) = fixture.engine.begin(100, 0).unwrap();
     fixture.engine.cancel(1).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
-    assert!(matches!(
-        fixture.engine.begin(101, 1),
-        Err(Failure::Unavailable)
-    ));
-    fixture.engine.reset_local().unwrap();
+    assert!(fixture.engine.status == AuthStatus::Cancelled);
     fixture.engine.begin(102, 2).unwrap();
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
 }
@@ -619,26 +619,17 @@ fn cloud_expired_or_replaced_browser_attempt_does_not_claim_remote_revocation() 
         let mut fixture = Fixture::new();
         let (_, _listener, _) = fixture.engine.begin(100, 0).unwrap();
         if replaced {
-            assert!(matches!(
-                fixture.engine.begin(101, 1),
-                Err(Failure::ReauthRequired)
-            ));
+            fixture.engine.begin(101, 1).unwrap();
         } else {
             fixture.engine.refresh(700, || true).unwrap();
         }
-        assert!(
-            fixture.engine.cleanup
-                == state::Cleanup::Revoke {
-                    prior_unconfirmed: false
-                }
-        );
-        assert!(fixture.engine.local_reset_available);
+        assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
         assert!(fixture.engine.session().is_none());
     }
 }
 
 #[test]
-fn cloud_browser_denial_does_not_need_reset_but_native_pending_logout_does() {
+fn cloud_browser_denial_and_pending_logout_allow_sign_in() {
     let mut fixture = Fixture::new();
     let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
     fixture
@@ -648,8 +639,9 @@ fn cloud_browser_denial_does_not_need_reset_but_native_pending_logout_does() {
     assert!(fixture.engine.cleanup == state::Cleanup::None);
     fixture.engine.begin(102, 1).unwrap();
     fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    fixture.engine.begin(103, 2).unwrap();
 }
 
 #[test]
@@ -996,17 +988,15 @@ fn cloud_rejected_refresh_keeps_both_grant_proofs_and_requires_original_revocati
     assert!(cleanup.session.is_none());
     fixture.restart();
     fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.cleanup.blocks_connection());
-    assert!(fixture.vault.read().unwrap().is_some());
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    assert!(fixture.vault.read().unwrap().is_none());
     *fixture.transport.fail_revoke_for.lock().unwrap() = None;
     fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.cleanup == state::Cleanup::None);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert!(fixture.vault.read().unwrap().is_none());
     assert_eq!(
         *fixture.transport.revoked.lock().unwrap(),
         [
-            "synthetic-refresh-0",
-            "synthetic-refresh-1",
             "synthetic-refresh-0",
             "synthetic-refresh-1",
             "synthetic-refresh-0",
@@ -1091,7 +1081,7 @@ fn cloud_stale_browser_cancel_does_not_abandon_a_newer_attempt() {
     fixture.engine.refresh(101, || true).unwrap();
     assert!(fixture.engine.status == AuthStatus::Waiting);
     fixture.engine.cancel(3).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.status == AuthStatus::Cancelled);
 }
 
 #[test]
@@ -1111,10 +1101,15 @@ fn cloud_reordered_account_cleanup_cannot_restore_an_older_generation() {
 fn cloud_keyring_read_and_write_failures_are_fail_closed() {
     let mut fixture = Fixture::new();
     fixture.vault.fail_write.store(true, Ordering::Release);
-    assert!(matches!(
-        fixture.engine.begin(100, 0),
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    assert_eq!(
+        fixture
+            .engine
+            .callback(&attempt, auth::Callback::Code("new".into()), 101, || true),
         Err(Failure::CredentialFailed)
-    ));
+    );
+    assert!(fixture.engine.session().is_none());
+    assert!(fixture.vault.read().unwrap().is_none());
     fixture.vault.fail_write.store(false, Ordering::Release);
     fixture.sign_in();
     fixture.vault.fail_read.store(true, Ordering::Release);
@@ -1130,24 +1125,100 @@ fn cloud_keyring_read_and_write_failures_are_fail_closed() {
 }
 
 #[test]
+fn cloud_service_denial_closes_the_saved_sign_in_without_replaying_refresh() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    fixture
+        .transport
+        .deny_refresh
+        .store(true, Ordering::Release);
+    fixture.transport.fail_revoke.store(true, Ordering::Release);
+    assert_eq!(
+        fixture.engine.refresh(200, || true),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.session().is_none());
+    assert!(fixture.vault.read().unwrap().is_none());
+    fixture.restart();
+    fixture.engine.refresh(201, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    fixture.sign_in();
+    assert_eq!(
+        *fixture.transport.seen.lock().unwrap(),
+        ["code", "synthetic-refresh-0", "code"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cloud_sign_out_fails_closed_when_the_signed_out_marker_cannot_be_written() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for delete_fails in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.sign_in();
+        fixture
+            .vault
+            .fail_write
+            .store(delete_fails, Ordering::Release);
+        let directory = fixture.directory.path().to_owned();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = fixture.engine.sign_out();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            result,
+            if delete_fails {
+                Err(Failure::CredentialFailed)
+            } else {
+                Ok(())
+            }
+        );
+        let result = fixture.engine.refresh(200, || true);
+        assert_eq!(
+            result,
+            if delete_fails {
+                Err(Failure::CredentialFailed)
+            } else {
+                Ok(())
+            }
+        );
+        assert!(fixture.engine.session().is_none());
+        assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+        assert_eq!(fixture.vault.read().unwrap().is_some(), delete_fails);
+        if !delete_fails {
+            fixture.restart();
+            assert_eq!(
+                fixture.engine.refresh(201, || true),
+                Err(Failure::ReauthRequired)
+            );
+            assert!(fixture.engine.session().is_none());
+        }
+    }
+}
+
+#[test]
 fn cloud_logout_marker_blocks_restart_when_remote_revocation_is_unconfirmed() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
     fixture.transport.fail_revoke.store(true, Ordering::Release);
     fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    assert!(fixture.vault.read().unwrap().is_none());
     assert!(fixture.engine.session().is_none());
     fixture.restart();
     fixture.engine.refresh(102, || true).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert!(fixture.engine.session().is_none());
     fixture
         .transport
         .fail_revoke
         .store(false, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.status == AuthStatus::SignedOut);
-    assert!(fixture.vault.read().unwrap().is_none());
+    fixture.sign_in();
+    assert!(fixture.engine.session().is_some());
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
 }
 
 #[test]
@@ -1155,12 +1226,23 @@ fn cloud_logout_keyring_delete_failure_cannot_restore_an_account() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
     fixture.vault.fail_write.store(true, Ordering::Release);
-    assert_eq!(fixture.engine.sign_out(), Err(Failure::CredentialFailed));
-    fixture.vault.fail_write.store(false, Ordering::Release);
-    fixture.restart();
-    fixture.engine.refresh(200, || true).unwrap();
+    fixture.engine.sign_out().unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.vault.read().unwrap().is_some());
+    let (_, _listener, attempt) = fixture.engine.begin(200, 1).unwrap();
     assert!(fixture.engine.session().is_none());
+    assert_eq!(
+        fixture.vault.read().unwrap().unwrap().refresh_token,
+        "synthetic-refresh-0"
+    );
+    fixture.vault.fail_write.store(false, Ordering::Release);
+    fixture
+        .engine
+        .callback(&attempt, auth::Callback::Code("new".into()), 201, || true)
+        .unwrap();
+    fixture.restart();
+    fixture.engine.refresh(202, || true).unwrap();
+    assert!(fixture.engine.session().is_some());
     assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
     fixture.engine.sign_out().unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
@@ -1246,9 +1328,6 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         destinations: None,
         saved_destination_id: None,
         saved_destination_ids: None,
-        revocation_pending: false,
-        local_cleanup_pending: false,
-        local_reset_available: false,
         remote_revocation_unconfirmed: false,
         setup_error: None,
         pending_sync: None,
@@ -1585,7 +1664,7 @@ fn cloud_restart_finishes_deletion_after_confirmed_revocation_and_a_process_exit
 }
 
 #[test]
-fn cloud_corrupt_state_with_no_credential_needs_explicit_reset_and_keeps_its_warning() {
+fn cloud_corrupt_state_with_no_credential_allows_sign_in_and_keeps_its_warning() {
     let mut fixture = Fixture::new();
     let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
     std::fs::write(
@@ -1596,14 +1675,8 @@ fn cloud_corrupt_state_with_no_credential_needs_explicit_reset_and_keeps_its_war
     let retry = fixture.directory.path().join("synthetic-retry.bin");
     std::fs::write(&retry, b"unchanged synthetic compressed retry bytes").unwrap();
     fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
     assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 0);
-    assert!(matches!(
-        fixture.engine.begin(101, 1),
-        Err(Failure::Unavailable)
-    ));
-    fixture.engine.reset_local().unwrap();
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert_eq!(
         fixture
@@ -1628,21 +1701,10 @@ fn cloud_corrupt_state_with_no_credential_needs_explicit_reset_and_keeps_its_war
 }
 
 #[test]
-fn cloud_local_reset_does_not_discard_a_recoverable_refresh_credential() {
-    let mut fixture = Fixture::new();
-    fixture.sign_in();
-    fixture.transport.fail_revoke.store(true, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
-    assert_eq!(fixture.engine.reset_local(), Err(Failure::Unavailable));
-    assert!(fixture.vault.read().unwrap().is_some());
-}
-
-#[test]
 fn cloud_corrupt_state_cannot_clear_an_earlier_connection_warning() {
     let mut fixture = Fixture::new();
     fixture.engine.begin(100, 0).unwrap();
     fixture.engine.cancel(1).unwrap();
-    fixture.engine.reset_local().unwrap();
     fixture.sign_in();
     std::fs::write(
         fixture.directory.path().join("cloud-auth-state-v2"),

@@ -61,6 +61,7 @@ export interface CloudViewSnapshot {
   /** A failed status read or subscription cannot establish current tool readiness. */
   localToolsError: boolean
   busy: boolean
+  authAction?: "sign_in" | "sign_out" | null
   error: string | null
   loaded: boolean
   /** Retry the saved request's listing even after a transient warning clears. */
@@ -104,16 +105,15 @@ const messages = {
   offline: "Cloud could not connect. Check your connection and try again.",
   rejected: "Cloud could not verify this connection. Sign in again to continue.",
   invalid_response: "Cloud returned an unexpected response. Try again later.",
-  credential_failed:
-    "Antiburn could not open your saved sign-in. Unlock your device's password storage, or sign out and sign in again.",
+  credential_failed: "Could not complete the account action. Try again.",
   unavailable: "Cloud is not available in this build. You can continue locally.",
-  reauth_required:
-    "Desktop can’t use your saved sign-in. Sign out of the previous connection to sign in again.",
-  revocation_unconfirmed:
-    "Signed out on this device. Cloud has not confirmed that the connection is closed. Open Cloud settings to finish.",
+  reauth_required: "Your sign-in ended. Sign in again to use Cloud.",
+  revocation_unconfirmed: "You’re signed out on this device.",
 } as const
 /** Keep the browser sign-in action named the same in setup and Settings. */
 export const cloudGithubSignInLabel = "Sign in with GitHub"
+/** Do not claim remote sign-out when only Desktop access ended. */
+export const cloudSignOutWarning = "Cloud didn’t confirm sign-out of an earlier connection."
 /** Map closed desktop states to safe copy without exposing provider errors. */
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 /** Distinguish fresh setup from an unreadable saved-upload state. */
@@ -519,7 +519,7 @@ export class CloudSession {
    */
   load = async () => {
     const generation = this.generation
-    this.publish({ busy: true, error: null })
+    this.publish({ busy: true, authAction: null, error: null })
     void this.loadLocalTools()
     try {
       if (!this.stop) {
@@ -1284,20 +1284,25 @@ export class CloudSession {
     if (this.snapshot.busy) return false
     if (this.analytics && action) noteCloudAction(this.snapshot.screen, action)
     const generation = this.generation
-    this.publish({ busy: true, error: null })
+    this.publish({
+      busy: true,
+      authAction: action === "sign_in" || action === "sign_out" ? action : null,
+      error: null,
+    })
     const revision = this.revision
     try {
       const value = await task()
       if (!this.active || generation !== this.generation) return false
       const fresh = revision === this.revision
       if (fresh) this.receive(value)
-      this.publish({ busy: false })
+      this.publish({ busy: false, authAction: null })
       const consistent = fresh || JSON.stringify(this.snapshot.cloud) === JSON.stringify(value)
       return consistent && value.status !== "credential_failed"
     } catch (error) {
       if (this.active && generation === this.generation)
         this.publish({
           busy: false,
+          authAction: null,
           error: isCloudBusy(error)
             ? CLOUD_BUSY_MESSAGE
             : "Cloud could not complete that action. Try again.",
@@ -1308,15 +1313,6 @@ export class CloudSession {
   /** Start explicit browser approval; authentication alone never starts capture. */
   begin = () =>
     this.run(this.snapshot.cloud.authEnabled ? "sign_in" : "learn_more", this.port.begin)
-  /** Cancel the previous browser attempt before opening another; keep desktop cleanup gates. */
-  retry = () =>
-    !this.snapshot.cloud.authEnabled
-      ? this.begin()
-      : this.run("retry", async () => {
-          const cancelled = await this.port.cancel()
-          if (cancelled.status === "credential_failed") return cancelled
-          return this.port.begin()
-        })
   /** Record explicit browser cancellation without cancelling saved source requests. */
   cancel = () => this.run("cancel", this.port.cancel)
   /** Cancel while navigating away without adding a second action event. */
@@ -1326,8 +1322,6 @@ export class CloudSession {
     this.invalidateContentConfirmation()
     return this.run("sign_out", this.port.signOut)
   }
-  /** Run only after the UI's separate reset confirmation; keep the remote warning. */
-  resetLocal = () => this.run(null, this.port.resetLocal)
   /** Fence in-flight work when its account, sources, or selected folders change. */
   private invalidateContentConfirmation() {
     this.consentRevision++

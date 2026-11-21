@@ -554,19 +554,38 @@ fn exchange_failure(error: reqwest::Error) -> Failure {
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct DeviceAuthError {
+    code: String,
+}
+
+impl DeviceAuthError {
+    /// Match the device protocol denial, not a generic HTTP or destination error.
+    pub(super) fn needs_sign_in(&self) -> bool {
+        self.code == "reauthorization_required"
+    }
+}
+
 impl Transport for HttpTransport {
     fn supports_invitations(&self, config: &Config) -> bool {
         super::invitations::supported(config)
     }
 
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
-        let tokens: Tokens = decode(
-            client(&config.token)?
-                .post(config.token.clone())
-                .json(request)
-                .send()
-                .map_err(exchange_failure)?,
-        )?;
+        let response = client(&config.token)?
+            .post(config.token.clone())
+            .json(request)
+            .send()
+            .map_err(exchange_failure)?;
+        if matches!(request, TokenRequest::RefreshToken { .. })
+            && response.status() == reqwest::StatusCode::UNAUTHORIZED
+        {
+            return Err(match decode_json::<DeviceAuthError>(response) {
+                Ok(error) if error.needs_sign_in() => Failure::ReauthRequired,
+                _ => Failure::Rejected,
+            });
+        }
+        let tokens: Tokens = decode(response)?;
         // Keep usable logout proof until the engine decides whether to accept it.
         if !bounded(&tokens.refresh_token, 16_384) {
             return Err(Failure::InvalidResponse);

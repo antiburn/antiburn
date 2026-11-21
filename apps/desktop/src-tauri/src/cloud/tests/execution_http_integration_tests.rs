@@ -413,6 +413,37 @@ fn cloud_execution_http_rechecks_account_and_generation_before_sending_bearer() 
 }
 
 #[test]
+fn cloud_execution_http_only_device_denial_closes_saved_access() {
+    use super::super::upload::Route;
+
+    for (status, code, closes) in [
+        (401, "reauthorization_required", true),
+        (401, "other", false),
+        (403, "forbidden", false),
+        (503, "service_unavailable", false),
+    ] {
+        let (origin, worker) = server(status, serde_json::json!({ "code": code }).to_string(), "");
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = connected(directory.path(), &origin);
+        let _ = engine.capture_request(
+            &identity(),
+            (&origin, None),
+            Route::Reserve,
+            &(),
+            &|| true,
+            &|| true,
+        );
+        worker.join().unwrap();
+        let record = engine.state.lock().unwrap().read().unwrap();
+        assert!((record.phase == Phase::SignedOut) == closes);
+        if closes {
+            assert!(engine.session().is_none());
+            assert!(record.cleanup.prior_unconfirmed());
+        }
+    }
+}
+
+#[test]
 fn cloud_execution_http_changed_origin_rejects_saved_work_before_auth_or_upload() {
     use super::super::upload::{HttpTransport, Route, Source};
     let directory = tempfile::tempdir().unwrap();

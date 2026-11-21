@@ -318,9 +318,6 @@ export interface CloudSnapshot {
   savedDestinationId?: string | null
   /** Complete saved policy inventory for this account and service; null means unreadable. */
   savedDestinationIds?: string[] | null
-  revocationPending?: boolean
-  localCleanupPending?: boolean
-  localResetAvailable?: boolean
   remoteRevocationUnconfirmed?: boolean
   setupError?: string | null
   pendingSync?: { requestId: string; result: SyncResult } | null
@@ -369,10 +366,8 @@ export interface CloudPort {
     binding: CloudDestinationBinding,
     foldersEdited?: boolean,
   ): Promise<CloudSnapshot>
-  /** Close local access first, then revoke this grant and finish secure cleanup. */
+  /** Close local access and ask Cloud to revoke this device's old connection. */
   signOut(): Promise<CloudSnapshot>
-  /** Permit reconnect only without saved proof; retain the remote-revocation warning. */
-  resetLocal(): Promise<CloudSnapshot>
   /** Ask for exact sources of one provider. Default hints never authorize reads. */
   pick(sourceKind?: CloudSourceKind): Promise<string[]>
   /** Observe CLI and skill setup independently of Cloud and vendor integrations.
@@ -474,7 +469,6 @@ export const desktopCloudPort: CloudPort = {
   save: (value, binding, foldersEdited = true) =>
     cloudCommand("cloud_save_draft", { value, binding, foldersEdited }),
   signOut: () => cloudCommand("cloud_sign_out"),
-  resetLocal: () => cloudCommand("cloud_reset_local"),
   pick: async (sourceKind = "claude_jsonl") => {
     if (!(await cloudBuildEnabled())) return []
     const database = sourceKind === "opencode_sqlite_v2"

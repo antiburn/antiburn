@@ -351,7 +351,7 @@ mod debug_http {
             if cleanup_refresh_tokens.is_empty() {
                 assert_eq!(engine.refresh(100, || true), Err(Failure::ReauthRequired));
             }
-            assert_eq!(engine.sign_out(), Err(Failure::CredentialFailed));
+            engine.sign_out().unwrap();
             assert!(engine.session().is_none());
             let retained = engine.vault.read().unwrap().unwrap();
             assert_eq!(retained.issuer, old.issuer);
@@ -378,6 +378,53 @@ mod debug_http {
         fn native_only(&self) {
             assert!(self.header("cookie").is_none());
             assert!(self.header("origin").is_none());
+        }
+    }
+
+    #[test]
+    fn cloud_known_refresh_denial_is_not_a_generic_http_failure() {
+        for (status, code, expected) in [
+            (401, "reauthorization_required", Failure::ReauthRequired),
+            (401, "other", Failure::Rejected),
+            (403, "forbidden", Failure::Rejected),
+            (503, "service_unavailable", Failure::Offline),
+        ] {
+            let (config, worker) = server(
+                status,
+                |_| serde_json::json!({ "code": code }).to_string(),
+                None,
+            );
+            assert_eq!(
+                HttpTransport
+                    .exchange(
+                        &config,
+                        &TokenRequest::RefreshToken {
+                            refresh_token: "synthetic-refresh"
+                        }
+                    )
+                    .err(),
+                Some(expected)
+            );
+            assert_eq!(
+                worker.join().unwrap().line,
+                "POST /v1/devices/token HTTP/1.1"
+            );
+        }
+    }
+
+    #[test]
+    fn cloud_logout_only_confirms_on_204() {
+        for status in [204, 202, 401, 503] {
+            let (config, worker) = server(status, |_| "{}".to_owned(), None);
+            assert_eq!(
+                HttpTransport.revoke(&config, "synthetic-refresh").is_ok(),
+                status == 204
+            );
+            let request = worker.join().unwrap();
+            request.native_only();
+            assert!(request.header("authorization").is_none());
+            assert_eq!(request.line, "POST /v1/devices/logout HTTP/1.1");
+            assert_eq!(request.body["refresh_token"], "synthetic-refresh");
         }
     }
 
