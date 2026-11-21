@@ -4,6 +4,25 @@ Cloud is optional. Standard builds do not include Cloud controls. In a
 Cloud-enabled build, you can finish onboarding locally without signing in,
 joining a workspace, or enabling sync.
 
+```mermaid
+flowchart TD
+    Start["Open Desktop onboarding"] --> Choice{"Use Cloud?"}
+    Choice -->|No| Local["Continue locally. No account needed."]
+    Choice -->|Yes| SignIn["Sign in and approve this device in the browser"]
+    SignIn --> Invites{"Pending invitations available?"}
+    Invites -->|Yes| Review["Review invitations in Desktop"]
+    Review -->|Verify then join| Join["Verify in the browser. Join and see the result in Desktop."]
+    Review -->|Skip| Folders
+    Join --> Folders
+    Invites -->|No| Folders["Choose folders and a destination for each"]
+    Folders -->|Confirm uploads| Sync["Sync to the approved destinations"]
+    Folders -->|Skip| Local
+```
+
+A folder has one destination. You can sync different folders to Personal and
+eligible teams at the same time. In Settings, pause one destination without
+pausing the others. Joining a team does not change any saved folder route.
+
 ## Workspace invitations
 
 Sign in to Cloud in your system browser, then return to Desktop. Desktop shows
