@@ -54,10 +54,19 @@ pub(super) fn supported(config: &Config) -> bool {
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Action {
     List,
-    Start { invitation_id: Option<String> },
-    Status { id: String },
-    Finish { id: String },
-    Cancel { id: String },
+    Start {
+        invitation_id: Option<String>,
+        workspace_name: Option<String>,
+    },
+    Status {
+        id: String,
+    },
+    Finish {
+        id: String,
+    },
+    Cancel {
+        id: String,
+    },
 }
 
 /// List entries are display data. A workspace slug does not authorize joining.
@@ -117,6 +126,7 @@ pub(crate) enum Reply {
         join: bool,
         state: State,
         workspace_id: Option<String>,
+        workspace_name: Option<String>,
     },
     Uncertain {
         id: String,
@@ -131,6 +141,7 @@ pub(super) struct Pending {
     id: String,
     generation: u64,
     join: bool,
+    workspace_name: Option<String>,
     deadline: Instant,
     state: State,
     uncertain: bool,
@@ -153,6 +164,7 @@ impl Pending {
             join: self.join,
             state: self.state,
             workspace_id,
+            workspace_name: self.workspace_name.clone(),
         }
     }
 
@@ -227,7 +239,10 @@ fn run_action(
             let listing = list(config, bearer)?;
             Ok(Reply::List { listing })
         }
-        Action::Start { invitation_id } => {
+        Action::Start {
+            invitation_id,
+            workspace_name,
+        } => {
             if let Some(attempt) = pending
                 && (!attempt.expired() || attempt.uncertain)
             {
@@ -248,6 +263,10 @@ fn run_action(
                 id: created.id,
                 generation,
                 join: invitation_id.is_some(),
+                // This label comes from the rendered list. It names the choice
+                // but cannot change the invitation ID sent to the service.
+                workspace_name: workspace_name
+                    .filter(|name| invitation_id.is_some() && valid_label(name, 256)),
                 deadline,
                 state: State::Waiting,
                 uncertain: false,

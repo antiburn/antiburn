@@ -17,7 +17,10 @@ const checked: InvitationReply = {
   },
 }
 
-const attempt = (state: InvitationState, join = true): InvitationReply => ({
+const attempt = (
+  state: InvitationState,
+  join = true,
+): Extract<InvitationReply, { kind: "attempt" }> => ({
   kind: "attempt",
   id: "attempt-1",
   join,
@@ -51,17 +54,19 @@ describe("Cloud workspace invitations", () => {
       .fn<CloudInvitationPort>()
       .mockResolvedValueOnce(checked)
       .mockResolvedValueOnce(attempt("waiting"))
-      .mockResolvedValueOnce(attempt("ready"))
+      .mockResolvedValueOnce({ ...attempt("ready"), workspace_name: "Example Team" })
       .mockResolvedValueOnce(attempt("joined"))
     const { onJoined } = await open(port)
     await click("Verify invitation to Example Team")
     expect(port).toHaveBeenLastCalledWith("account-1", {
       action: "start",
       invitation_id: "invite-1",
+      workspace_name: "Example Team",
     })
     expect(screen.queryByRole("button", { name: "Join workspace" })).toBeNull()
     await act(() => vi.advanceTimersByTimeAsync(2_000))
     expect(port).toHaveBeenLastCalledWith("account-1", { action: "status", id: "attempt-1" })
+    expect(screen.getByRole("status")).toHaveTextContent("Join Example Team")
     expect(onJoined).not.toHaveBeenCalled()
     await click("Join workspace")
     expect(port).toHaveBeenLastCalledWith("account-1", { action: "finish", id: "attempt-1" })
