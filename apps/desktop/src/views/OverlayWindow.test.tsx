@@ -1635,6 +1635,7 @@ describe("OverlayWindow", () => {
 
     expect(defaultMenu).toBe(false)
     const hide = screen.getByRole("button", { name: "Hide HUD" })
+    expect(hide.parentElement).toHaveClass("min-h-6")
     fireEvent.mouseDown(hide)
     fireEvent.click(hide)
 

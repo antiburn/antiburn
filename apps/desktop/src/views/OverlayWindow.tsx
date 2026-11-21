@@ -33,7 +33,9 @@ export function OverlayWindow() {
   const onIsland = state.island.island !== "off"
   const contentWidth = onIsland ? islandContentWidth(state) : FLOATING_CONTENT_PX
   const content = (
-    <div className="relative">
+    // While Hide shows, the content keeps at least 24px of height, so the
+    // button stays a usable target when the HUD shows one bar or none.
+    <div className={state.hideOffered ? "relative min-h-6" : "relative"}>
       <div className={state.hideOffered ? "invisible" : undefined}>
         <HudContent
           state={state}
