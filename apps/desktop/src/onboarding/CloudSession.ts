@@ -1002,15 +1002,8 @@ export class CloudSession {
   /** Start explicit browser approval; authentication alone never starts capture. */
   begin = () =>
     this.run(this.snapshot.cloud.authEnabled ? "sign_in" : "learn_more", this.port.begin)
-  /** Cancel the previous browser attempt before opening another; keep desktop cleanup gates. */
   retry = () =>
-    !this.snapshot.cloud.authEnabled
-      ? this.begin()
-      : this.run("retry", async () => {
-          const cancelled = await this.port.cancel()
-          if (cancelled.status === "credential_failed") return cancelled
-          return this.port.begin()
-        })
+    !this.snapshot.cloud.authEnabled ? this.begin() : this.run("retry", this.port.begin)
   /** Record explicit browser cancellation without cancelling saved source requests. */
   cancel = () => this.run("cancel", this.port.cancel)
   /** Cancel while navigating away without adding a second action event. */

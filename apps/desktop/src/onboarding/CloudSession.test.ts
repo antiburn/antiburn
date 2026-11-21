@@ -400,6 +400,20 @@ it("reopens a failed marketing link without cancelling an auth attempt", async (
   expect(session.getSnapshot().cloud.status).toBe("idle")
   stop()
 })
+it("retries sign-in without overwriting the desktop reauthentication state", async () => {
+  const { port } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "reauth_required",
+  })
+  const session = new CloudSession(port)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+  await session.retry()
+  expect(port.begin).toHaveBeenCalledOnce()
+  expect(port.cancel).not.toHaveBeenCalled()
+  stop()
+})
 it("ignores legacy marketing expiry instead of scheduling auth status reads", async () => {
   vi.useFakeTimers()
   vi.setSystemTime(0)
