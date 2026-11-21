@@ -8,6 +8,7 @@ import {
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
 import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
+import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { ConnectionDialog } from "./ConnectionDialog"
@@ -176,6 +177,11 @@ export function CloudAccount({
               Reset sign-in on this device
             </button>
           )}
+        </div>
+      )}
+      {value.cloud.invitationEnabled && value.cloud.identity && (
+        <div className="px-4 py-3">
+          <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
         </div>
       )}
       {children}

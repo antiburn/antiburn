@@ -460,6 +460,12 @@ pub enum TokenRequest<'a> {
 /// serializes credential operations; transport success does not grant access.
 /// Implementors can block only inside admitted Cloud blocking work.
 pub trait Transport: Send + Sync {
+    /// Read public support without device proof. A failed probe must leave
+    /// normal account sign-in available.
+    fn supports_invitations(&self, _config: &Config) -> bool {
+        false
+    }
+
     /// Return decoded tokens with a bounded refresh proof, even when other fields
     /// are invalid. The engine validates authority and saves rejected proof for
     /// logout. Return `OfflineBeforeSend` only when no HTTP proof was sent.
@@ -519,6 +525,13 @@ fn decode<T: serde::de::DeserializeOwned>(
     if status != reqwest::StatusCode::OK {
         return Err(Failure::Offline);
     }
+    decode_json(response)
+}
+
+/// Decode a successful response after the caller checks its HTTP status.
+pub(super) fn decode_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+) -> Result<T, Failure> {
     let mut bytes = Vec::new();
     response
         .take(65_537)
@@ -542,6 +555,10 @@ fn exchange_failure(error: reqwest::Error) -> Failure {
 }
 
 impl Transport for HttpTransport {
+    fn supports_invitations(&self, config: &Config) -> bool {
+        super::invitations::supported(config)
+    }
+
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         let tokens: Tokens = decode(
             client(&config.token)?

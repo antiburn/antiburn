@@ -34,6 +34,7 @@ pub struct Engine {
     pub state: StateStore,
     pub attempt: Option<Attempt>,
     access: Option<Access>,
+    invitation_support: Option<bool>,
     clock: Box<dyn Fn() -> i64 + Send>,
     pub status: AuthStatus,
     pub cleanup: Cleanup,
@@ -56,6 +57,7 @@ impl Engine {
             state,
             attempt: None,
             access: None,
+            invitation_support: None,
             clock: Box::new(super::now),
             status: AuthStatus::Idle,
             cleanup: Cleanup::None,
@@ -125,6 +127,47 @@ impl Engine {
                 })
                 .map(|entry| entry.workspace.clone())
         });
+    }
+
+    /// Probe once when a saved session restores without a browser sign-in.
+    pub(super) fn check_invitation_support(&mut self) {
+        if self.invitation_support.is_none() && self.session().is_some() {
+            self.invitation_support = Some(
+                self.config
+                    .as_ref()
+                    .is_some_and(|config| self.transport.supports_invitations(config)),
+            );
+        }
+    }
+
+    /// Only a live account and a positive development capability enable invitations.
+    pub(super) fn invitations_enabled(&self) -> bool {
+        self.invitation_support == Some(true) && self.session().is_some()
+    }
+
+    /// Run an invitation request with current account authority. Keep bearer
+    /// proof in Rust and reject stale renderer actions before dispatch.
+    pub(super) fn with_invitation_access<T>(
+        &mut self,
+        account_id: &str,
+        current: impl Fn() -> bool,
+        request: impl FnOnce(&Config, &str) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        if !current() || self.invitation_support != Some(true) {
+            return Err(Failure::Unavailable);
+        }
+        self.refresh((self.clock)(), &current)?;
+        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+        let access = self.access.as_ref().ok_or(Failure::ReauthRequired)?;
+        if !current() || access.session.user.id != account_id {
+            return Err(Failure::Cancelled);
+        }
+        access.session.validate(config, (self.clock)())?;
+        let result = request(config, &access.token);
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        result
     }
 
     /// Send one bounded capture API request without returning access proof.
@@ -237,6 +280,12 @@ impl Engine {
             ("code_challenge_method", "S256"),
             ("device_name", auth::DEVICE_NAME),
         ]);
+        let supports_invitations = self.transport.supports_invitations(&config);
+        self.invitation_support = Some(supports_invitations);
+        if supports_invitations {
+            url.query_pairs_mut()
+                .append_pair("native_invitations", "true");
+        }
         self.access = None;
         self.attempt = Some(attempt.clone());
         self.status = AuthStatus::Opening;

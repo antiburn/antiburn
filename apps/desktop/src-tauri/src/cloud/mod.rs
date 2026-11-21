@@ -10,6 +10,7 @@ mod engine;
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod http_tests;
+pub(crate) mod invitations;
 mod loopback;
 pub(crate) mod projects;
 mod state;
@@ -136,6 +137,7 @@ fn existing_folder_choices() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     auth_enabled: bool,
+    invitation_enabled: bool,
     capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
@@ -167,6 +169,7 @@ pub(crate) struct Controller {
     project_cache: Mutex<projects::Cache>,
     attempt_generation: AtomicU64,
     account_generation: AtomicU64,
+    invitations: Mutex<Option<invitations::Pending>>,
     recorded_status: Mutex<AuthStatus>,
 }
 
@@ -311,6 +314,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
     Snapshot {
         auth_enabled: engine.config.is_some(),
+        invitation_enabled: session.is_some() && engine.invitations_enabled(),
         capture_enabled: cfg!(unix)
             && session.is_some()
             && engine
@@ -414,6 +418,7 @@ pub fn initialize(
         )),
         attempt_generation: AtomicU64::new(0),
         account_generation: AtomicU64::new(0),
+        invitations: Mutex::new(None),
         recorded_status: Mutex::new(AuthStatus::Idle),
     });
     sync::start(app.clone());
@@ -445,6 +450,7 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 controller.account_generation.load(Ordering::Acquire) == generation
             });
         }
+        engine.check_invitation_support();
         Ok(emit_snapshot(&app, snapshot(&app, &engine)))
     })
     .await

@@ -1189,6 +1189,7 @@ fn cloud_lock_serializes_separate_processes() {
 #[test]
 fn cloud_snapshot_does_not_include_native_secrets() {
     let value = Snapshot {
+        invitation_enabled: false,
         auth_enabled: true,
         capture_enabled: true,
         sync_enabled: false,

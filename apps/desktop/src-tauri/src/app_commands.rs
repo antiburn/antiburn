@@ -8,6 +8,8 @@ macro_rules! with_app_commands {
             #[cfg(feature = "cloud")]
             cloud::cloud_begin => "cloud_begin",
             #[cfg(feature = "cloud")]
+            cloud::invitations::cloud_invitations => "cloud_invitations",
+            #[cfg(feature = "cloud")]
             cloud::cloud_cancel => "cloud_cancel",
             #[cfg(feature = "cloud")]
             cloud::cloud_sign_out => "cloud_sign_out",
