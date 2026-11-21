@@ -110,7 +110,7 @@ impl Fixture {
         let mut engine = Engine::new(
             Config::parse(ORIGIN, ORIGIN),
             vault,
-            Box::new(Authority),
+            Arc::new(Authority),
             StateStore::new(&base),
         )
         .with_clock(|| 100);

@@ -354,7 +354,7 @@ fn cloud_http_returns_decoded_logout_proof_before_authority_validation() {
         let mut engine = Engine::new(
             Some(config),
             Box::new(vault.clone()),
-            Box::new(HttpTransport),
+            Arc::new(HttpTransport),
             StateStore::new(directory.path()),
         );
         let (_, _listener, attempt) = engine.begin(100, 0).unwrap();

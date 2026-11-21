@@ -11,6 +11,8 @@ use super::{
     loopback::Listener,
     state::{Cleanup, Guard, Phase, Record, StateStore},
 };
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 struct Access {
     token: String,
@@ -30,7 +32,8 @@ mod execution_http_tests;
 pub struct Engine {
     pub config: Option<Config>,
     pub vault: Box<dyn Vault>,
-    pub transport: Box<dyn Transport>,
+    pub transport: Arc<dyn Transport>,
+    remote_logout: Arc<Semaphore>,
     pub state: StateStore,
     pub attempt: Option<Attempt>,
     access: Option<Access>,
@@ -47,13 +50,14 @@ impl Engine {
     pub fn new(
         config: Option<Config>,
         vault: Box<dyn Vault>,
-        transport: Box<dyn Transport>,
+        transport: Arc<dyn Transport>,
         state: StateStore,
     ) -> Self {
         Self {
             config,
             vault,
             transport,
+            remote_logout: Arc::new(Semaphore::new(1)),
             state,
             attempt: None,
             access: None,
@@ -434,6 +438,9 @@ impl Engine {
         let session = tokens
             .validate(&config, started_at)
             .and_then(|()| {
+                if !current() {
+                    return Err(Failure::Cancelled);
+                }
                 if started_at.saturating_add(tokens.expires_in as i64) <= (self.clock)() {
                     return Err(Failure::InvalidResponse);
                 }
@@ -575,37 +582,34 @@ impl Engine {
             account_grant: false,
             session: None,
         };
-        if self.vault.write(Some(&cleanup)).is_err() {
+        let stored = self.vault.write(Some(&cleanup));
+        if stored.is_err() {
             record.cleanup = Cleanup::Revoke {
                 prior_unconfirmed: true,
             };
-            let marked = guard.write(&record);
-            self.cleanup = record.cleanup;
-            let _ = self.transport.revoke(config, &tokens.refresh_token);
-            marked?;
-            return Err(Failure::CredentialFailed);
         }
         self.cleanup = record.cleanup;
-        guard.write(&record)?;
-        if !self.revoke_saved(config, &cleanup) {
-            return Ok(());
-        }
-        record.cleanup = Cleanup::DeleteCredential {
-            prior_unconfirmed: record.cleanup.prior_unconfirmed(),
-        };
-        guard.write(&record)?;
-        self.finish_local_deletion(guard, record)
+        let marked = guard.write(&record);
+        let _ =
+            self.spawn_remote_logout(auth::RemoteLogout::from_credential(config.clone(), cleanup));
+        marked?;
+        stored
     }
 
-    /// Ask Cloud to revoke each captured proof. Failure never confirms revocation.
-    fn revoke_saved(&self, config: &Config, credential: &Credential) -> bool {
-        let mut confirmed = true;
-        for proof in
-            std::iter::once(&credential.refresh_token).chain(&credential.cleanup_refresh_tokens)
-        {
-            confirmed &= self.transport.revoke(config, proof).is_ok();
-        }
-        confirmed
+    /// Share one remote logout slot across stale proof cleanup and explicit sign-out.
+    /// The worker never reads or writes the saved proofs.
+    pub(super) fn spawn_remote_logout(
+        &self,
+        request: auth::RemoteLogout,
+    ) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        let slot = self.remote_logout.clone().try_acquire_owned().ok()?;
+        let transport = self.transport.clone();
+        Some(tauri::async_runtime::spawn_blocking(move || {
+            let _slot = slot;
+            if !request.send(transport.as_ref()) {
+                tracing::debug!(event = "cloud_remote_logout_unconfirmed");
+            }
+        }))
     }
 
     /// Do not send or remove another service origin's saved proof.

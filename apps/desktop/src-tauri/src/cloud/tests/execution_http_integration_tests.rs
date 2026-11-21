@@ -90,11 +90,7 @@ fn server_after(
 
 #[tokio::test]
 async fn cloud_detached_logout_does_not_hold_account_work_open() {
-    use super::super::{
-        spawn_remote_logout,
-        work::{BlockingWork, Priority},
-    };
-    use tokio::sync::Semaphore;
+    use super::super::work::{BlockingWork, Priority};
 
     let (seen, request_seen) = tokio::sync::oneshot::channel();
     let (respond, allow_response) = std::sync::mpsc::channel();
@@ -129,7 +125,7 @@ async fn cloud_detached_logout_does_not_hold_account_work_open() {
         })
         .await
         .unwrap();
-    let logout = spawn_remote_logout(Arc::new(Semaphore::new(1)), request).unwrap();
+    let logout = engine.spawn_remote_logout(request).unwrap();
     request_seen.await.unwrap();
     tokio::time::timeout(
         Duration::from_secs(2),
@@ -161,7 +157,7 @@ fn connected(directory: &Path, origin: &str) -> Engine {
     let mut engine = Engine::new(
         Some(config),
         Box::new(Arc::new(super::super::tests::MemoryVault::default())),
-        Box::new(auth::HttpTransport),
+        Arc::new(auth::HttpTransport),
         StateStore::new(directory),
     )
     .with_clock(|| 100);

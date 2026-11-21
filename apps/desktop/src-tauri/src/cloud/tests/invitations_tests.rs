@@ -87,7 +87,7 @@ fn capability_version_one_alone_opts_in_at_account_sign_in() {
         let mut engine = Engine::new(
             Some(config),
             Box::new(Arc::new(MemoryVault::default())),
-            Box::new(auth::HttpTransport),
+            Arc::new(auth::HttpTransport),
             StateStore::new(directory.path()),
         );
         let (url, _, _) = engine.begin(1_000, 1).unwrap();

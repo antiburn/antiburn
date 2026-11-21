@@ -167,6 +167,7 @@ struct FakeTransport {
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_revoke: Option<Arc<dyn Fn() + Send + Sync>>,
     on_invitation_probe: Option<Arc<dyn Fn() + Send + Sync>>,
     returned_session: Mutex<Option<Session>>,
     revocations: AtomicU64,
@@ -247,6 +248,9 @@ impl Transport for Arc<FakeTransport> {
     fn revoke(&self, _: &Config, refresh: &str) -> Result<(), Failure> {
         self.revocations.fetch_add(1, Ordering::AcqRel);
         self.revoked.lock().unwrap().push(refresh.to_owned());
+        if let Some(action) = &self.on_revoke {
+            action();
+        }
         if self.fail_revoke.load(Ordering::Acquire)
             || self.fail_revoke_for.lock().unwrap().as_deref() == Some(refresh)
         {
@@ -269,7 +273,7 @@ fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTranspor
     Engine::new(
         Some(config()),
         Box::new(vault),
-        Box::new(transport),
+        Arc::new(transport),
         state::StateStore::new(directory),
     )
     .with_clock(|| 100)
@@ -502,7 +506,7 @@ fn cloud_browser_does_not_open_after_invalidation_during_invitation_probe() {
         } else {
             attempt_generation.clone()
         };
-        fixture.engine.transport = Box::new(Arc::new(FakeTransport {
+        fixture.engine.transport = Arc::new(Arc::new(FakeTransport {
             on_invitation_probe: Some(Arc::new(move || {
                 invalidated.fetch_add(1, Ordering::AcqRel);
             })),
@@ -574,10 +578,10 @@ fn cloud_browser_prelaunch_abort_allows_retry_and_preserves_prior_warnings() {
 }
 
 #[test]
-fn cloud_cancel_during_session_request_never_saves_credentials() {
+fn cloud_cancel_during_session_request_saves_only_logout_proof() {
     let mut fixture = Fixture::new();
     let generation = Arc::new(AtomicU64::new(0));
-    fixture.engine.transport = Box::new(Arc::new(FakeTransport {
+    fixture.engine.transport = Arc::new(Arc::new(FakeTransport {
         generation: Some(generation.clone()),
         ..FakeTransport::default()
     }));
@@ -592,9 +596,97 @@ fn cloud_cancel_during_session_request_never_saves_credentials() {
         Err(Failure::Cancelled)
     );
     assert!(fixture.engine.session().is_none());
-    assert!(fixture.vault.read().unwrap().is_none());
+    let proof = fixture.vault.read().unwrap().unwrap();
+    assert!(proof.session.is_none());
+    assert!(!proof.account_grant);
     fixture.restart();
     assert!(fixture.engine.refresh(102, || true).is_ok());
+    assert!(fixture.engine.session().is_none());
+}
+
+#[tokio::test]
+async fn cloud_stale_refresh_and_callback_do_not_hold_local_sign_out_open() {
+    use std::time::Duration;
+
+    for refreshing in [false, true] {
+        let work = BlockingWork::default();
+        let (started, revoke_started) = tokio::sync::oneshot::channel();
+        let (release, finish_revoke) = std::sync::mpsc::channel();
+        let generation = Arc::new(AtomicU64::new(0));
+        let gate = Mutex::new(Some((started, finish_revoke)));
+        let transport = Arc::new(FakeTransport {
+            calls: AtomicU64::new(u64::from(refreshing)),
+            generation: Some(generation.clone()),
+            on_revoke: Some(Arc::new(move || {
+                if let Some((started, finish)) = gate.lock().unwrap().take() {
+                    started.send(()).unwrap();
+                    finish.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+            })),
+            ..FakeTransport::default()
+        });
+        let refresh_transport = transport.clone();
+        let account = Arc::new(Mutex::new(None));
+        let running = account.clone();
+        let refresh_work = work.clone();
+        let refresh = tokio::spawn(async move {
+            refresh_work
+                .run(Priority::Normal, move || {
+                    let mut fixture = Fixture::new();
+                    let attempt = if refreshing {
+                        fixture.sign_in();
+                        None
+                    } else {
+                        Some(fixture.engine.begin(100, 0).unwrap().2)
+                    };
+                    fixture.engine.transport = Arc::new(refresh_transport);
+                    let current = || generation.load(Ordering::Acquire) == 0;
+                    let result = if let Some(attempt) = attempt {
+                        fixture.engine.callback(
+                            &attempt,
+                            auth::Callback::Code("synthetic".into()),
+                            101,
+                            current,
+                        )
+                    } else {
+                        fixture.engine.refresh(200, current)
+                    };
+                    assert_eq!(result, Err(Failure::Cancelled));
+                    assert!(fixture.engine.session().is_none());
+                    assert!(!fixture.vault.read().unwrap().unwrap().account_grant);
+                    *running.lock().unwrap() = Some(fixture);
+                    Ok(())
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), revoke_started)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            refresh.await.unwrap().unwrap();
+            work.run(Priority::Cleanup, move || {
+                let mut fixture = account.lock().unwrap().take().unwrap();
+                let request = fixture.engine.sign_out().unwrap().unwrap();
+                assert!(fixture.engine.spawn_remote_logout(request).is_none());
+                assert!(fixture.engine.status == AuthStatus::SignedOut);
+                assert!(fixture.vault.read().unwrap().is_none());
+                fixture.restart();
+                fixture.engine.refresh(201, || true).unwrap();
+                assert!(fixture.engine.session().is_none());
+                Ok(())
+            })
+            .await
+            .unwrap();
+        })
+        .await
+        .expect("the remote reply must not hold the account work slot");
+        release.send(()).unwrap();
+        assert_eq!(
+            transport.calls.load(Ordering::Acquire),
+            1 + u64::from(refreshing)
+        );
+    }
 }
 
 #[test]
@@ -699,7 +791,7 @@ fn cloud_expired_exchange_session_or_vault_work_never_installs_access() {
                 fail_revoke: AtomicBool::new(true),
                 ..FakeTransport::default()
             });
-            fixture.engine.transport = Box::new(fixture.transport.clone());
+            fixture.engine.transport = Arc::new(fixture.transport.clone());
             fixture.vault = Arc::new(MemoryVault {
                 value: Mutex::new(fixture.vault.read().unwrap()),
                 on_credential_write: (stage == "vault").then(|| expire.clone()),
@@ -769,7 +861,7 @@ fn cloud_vault_work_cannot_outlast_session_or_fixed_grant_deadlines() {
             fail_revoke: AtomicBool::new(true),
             ..FakeTransport::default()
         });
-        fixture.engine.transport = Box::new(fixture.transport.clone());
+        fixture.engine.transport = Arc::new(fixture.transport.clone());
         fixture.vault = Arc::new(MemoryVault {
             on_credential_write: Some(Arc::new(move || {
                 clock.store(expires_at, Ordering::Release);
@@ -815,7 +907,7 @@ fn cloud_cached_session_hides_expired_token_session_and_grant_authority() {
             returned_session: Mutex::new(Some(authority)),
             ..FakeTransport::default()
         });
-        fixture.engine.transport = Box::new(fixture.transport.clone());
+        fixture.engine.transport = Arc::new(fixture.transport.clone());
         let (_, _listener, attempt) = fixture.engine.begin(started_at - 1, 0).unwrap();
         fixture
             .engine
@@ -918,7 +1010,7 @@ fn cloud_unsent_refresh_does_not_reopen_a_cancelled_generation() {
             })),
             ..FakeTransport::default()
         });
-        fixture.engine.transport = Box::new(transport.clone());
+        fixture.engine.transport = Arc::new(transport.clone());
         let checks = AtomicU64::new(0);
         assert_eq!(
             fixture.engine.refresh(200, || {
@@ -999,18 +1091,17 @@ fn cloud_rejected_refresh_keeps_both_grant_proofs_and_requires_original_revocati
     let request = fixture.engine.sign_out().unwrap().unwrap();
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert!(fixture.vault.read().unwrap().is_none());
-    assert!(!request.send(&fixture.transport));
+    let logout_transport = Arc::new(FakeTransport {
+        fail_revoke_for: Mutex::new(Some("synthetic-refresh-0".into())),
+        ..FakeTransport::default()
+    });
+    assert!(!request.send(&logout_transport));
     assert!(fixture.engine.sign_out().unwrap().is_none());
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert!(fixture.vault.read().unwrap().is_none());
     assert_eq!(
-        *fixture.transport.revoked.lock().unwrap(),
-        [
-            "synthetic-refresh-0",
-            "synthetic-refresh-1",
-            "synthetic-refresh-0",
-            "synthetic-refresh-1",
-        ]
+        *logout_transport.revoked.lock().unwrap(),
+        ["synthetic-refresh-0", "synthetic-refresh-1"]
     );
     assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
 }
@@ -1059,7 +1150,7 @@ fn cloud_state_write_failure_still_retains_both_cleanup_proofs() {
         })),
         ..FakeTransport::default()
     });
-    fixture.engine.transport = Box::new(transport);
+    fixture.engine.transport = Arc::new(transport);
     let result = fixture.engine.refresh(200, || true);
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(result, Err(Failure::CredentialFailed));
@@ -1453,7 +1544,7 @@ fn cloud_browser_cancellation_during_established_refresh_does_not_revoke_the_acc
         })),
         ..FakeTransport::default()
     });
-    fixture.engine.transport = Box::new(transport.clone());
+    fixture.engine.transport = Arc::new(transport.clone());
     fixture
         .engine
         .refresh(200, || account_generation.load(Ordering::Acquire) == 0)
@@ -1626,7 +1717,7 @@ fn process_engine(directory: &Path, count: u64) -> (Engine, Arc<FakeTransport>) 
         Engine::new(
             Some(config()),
             Box::new(SyntheticFileVault(directory.join("synthetic-vault.json"))),
-            Box::new(transport.clone()),
+            Arc::new(transport.clone()),
             state::StateStore::new(directory),
         )
         .with_clock(|| 100),

@@ -601,7 +601,7 @@ impl Fixture {
         let mut engine = Engine::new(
             Config::parse(&service.origin, &service.origin),
             Box::new(vault),
-            Box::new(authority.clone()),
+            Arc::new(authority.clone()),
             StateStore::new(&base),
         );
         let (_, _listener, attempt) = engine.begin(now(), 0).unwrap();

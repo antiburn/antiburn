@@ -345,7 +345,7 @@ mod debug_http {
             let mut engine = Engine::new(
                 Config::from_origins(None, None),
                 Box::new(SavedVault(credential)),
-                Box::new(NoRequests),
+                std::sync::Arc::new(NoRequests),
                 state,
             );
             if cleanup_refresh_tokens.is_empty() {

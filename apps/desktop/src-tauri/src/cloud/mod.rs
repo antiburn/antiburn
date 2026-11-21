@@ -21,7 +21,7 @@ mod upload;
 mod work;
 
 use crate::store::cloud_capture::SourceKind;
-use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, RemoteLogout, Workspace};
+use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, Workspace};
 use engine::Engine;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -33,7 +33,6 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
-use tokio::sync::Semaphore;
 use work::{BlockingWork, Priority};
 
 /// Closed renderer-safe authentication outcomes, not permission to capture content.
@@ -164,7 +163,6 @@ pub struct Snapshot {
 /// invalidate queued work before it can acquire a mutex or publish old authority.
 pub(crate) struct Controller {
     blocking: BlockingWork,
-    remote_logout: Arc<Semaphore>,
     setup_ready: AtomicBool,
     engine: Mutex<Engine>,
     capture: Mutex<capture::Host>,
@@ -410,7 +408,6 @@ pub fn initialize(
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
     app.manage(Controller {
         blocking: BlockingWork::default(),
-        remote_logout: Arc::new(Semaphore::new(1)),
         setup_ready: AtomicBool::new(false),
         capture: Mutex::new(capture::Host::new(directory)),
         sync: sync::Scheduler::default(),
@@ -421,7 +418,7 @@ pub fn initialize(
                 app.config().identifier.clone(),
                 directory,
             )),
-            Box::new(HttpTransport),
+            Arc::new(HttpTransport),
             state::StateStore::new(directory),
         )),
         attempt_generation: AtomicU64::new(0),
@@ -673,21 +670,6 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     .await
 }
 
-/// Start one best-effort remote logout without the account or capture work slot.
-/// No local state or credentials can be accessed after the request starts.
-fn spawn_remote_logout(
-    slots: Arc<Semaphore>,
-    request: RemoteLogout,
-) -> Option<tauri::async_runtime::JoinHandle<()>> {
-    let slot = slots.try_acquire_owned().ok()?;
-    Some(tauri::async_runtime::spawn_blocking(move || {
-        let _slot = slot;
-        if !request.send(&HttpTransport) {
-            tracing::debug!(event = "cloud_remote_logout_unconfirmed");
-        }
-    }))
-}
-
 /// Fence account/browser work before waiting for local cleanup. Publish the
 /// local result before a separate remote request. Source bytes stay intact.
 #[tauri::command]
@@ -700,7 +682,6 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         + 1;
     let controller = app.state::<Controller>();
     let work = controller.blocking.clone();
-    let slots = controller.remote_logout.clone();
     work.run(Priority::Cleanup, move || {
         let controller = app.state::<Controller>();
         let mut engine = controller
@@ -722,9 +703,8 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         };
         engine.generation = generation;
         let result = publish(&app, &engine);
-        drop(engine);
         if let Some(request) = request {
-            let _ = spawn_remote_logout(slots, request);
+            let _ = engine.spawn_remote_logout(request);
         }
         Ok(result)
     })

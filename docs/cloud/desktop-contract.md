@@ -170,11 +170,12 @@ retry eligibility for the current account generation. Successful rotation needs
 the same grant ID, account, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.
-When Desktop rejects a refresh response with tokens, it saves the original and
-returned proofs for logout before updating local state. These proofs cannot
-restore a session. Automatic cleanup retains them unless Cloud confirms
-revocation of both proofs. If secure storage fails, Desktop keeps a warning
-and tries to revoke the returned proof.
+When Desktop rejects or receives stale tokens, it saves the original and
+returned proofs for logout. These proofs cannot restore a session. A separate
+worker tries to revoke them without blocking account work. The worker does not
+change local state, so the proofs stay closed until local sign-out or a new
+sign-in. If secure storage fails, Desktop keeps the outcome unconfirmed and
+still tries to revoke the proofs.
 Decoded responses retain bounded logout proof even when token bounds or authority
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
