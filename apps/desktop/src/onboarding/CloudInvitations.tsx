@@ -71,13 +71,24 @@ class InvitationView {
       reply = await this.port(this.accountId, request)
     } catch {
       if (revision !== this.revision) return
-      this.publish({
-        busy: false,
-        error: "Could not check Cloud invitations. Try again or continue without joining.",
-      })
-      const current = this.view.reply
-      if (isWaiting(current)) this.schedule(current.id)
-      return
+      const attempt = this.view.reply
+      if (
+        (request.action === "finish" || request.action === "cancel") &&
+        attempt?.kind === "attempt"
+      ) {
+        try {
+          reply = await this.port(this.accountId, { action: "status", id: request.id })
+        } catch {
+          reply = { kind: "uncertain", id: request.id, join: attempt.join }
+        }
+      } else {
+        this.publish({
+          busy: false,
+          error: "Could not check Cloud invitations. Try again or continue without joining.",
+        })
+        if (isWaiting(attempt)) this.schedule(attempt.id)
+        return
+      }
     }
     if (revision !== this.revision) return
     this.publish({ reply, busy: false, error: null })
@@ -141,9 +152,14 @@ function AccountInvitations({
     controller.getSnapshot,
   )
   const send = (request: Parameters<CloudInvitationPort>[1]) => void controller.send(request)
-  const refresh = () => send({ action: "list" })
   const ready = reply?.kind === "attempt" && reply.state === "ready"
   const waiting = isWaiting(reply)
+  const refresh = () =>
+    send(
+      reply?.kind === "attempt" && !ready && !waiting
+        ? { action: "dismiss", id: reply.id }
+        : { action: "list" },
+    )
   const workspaceName = reply?.kind === "attempt" ? reply.workspace_name : null
   const listing = reply?.kind === "list" ? reply.listing : null
   const message = error
@@ -159,7 +175,9 @@ function AccountInvitations({
       : reply?.kind === "uncertain"
         ? "Cloud has not confirmed the result. Check the same attempt before trying again."
         : reply?.kind === "expired"
-          ? "Verification timed out. You can try again."
+          ? reply.uncertain
+            ? "Verification timed out before Cloud confirmed the result. Check your workspaces and invitations before trying again."
+            : "Verification timed out. You can try again."
           : listing?.state === "check_required"
             ? "Verify your account in your browser to check for invitations."
             : listing?.state === "unavailable"
