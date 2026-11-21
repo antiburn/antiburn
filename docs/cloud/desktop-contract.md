@@ -267,8 +267,8 @@ After initial consent, Settings switches show saved project permission rather
 than draft defaults. Turning a group off removes its approved bindings immediately.
 Turning it on requires the Settings confirmation dialog for its full sessions and
 current worktrees. The command checks the exact policy revision and group membership,
-then changes only that group. Other groups, unseen pages, and the global pause remain
-unchanged. The last group can be turned off without deleting saved captures.
+then changes only that group. Other groups, unseen pages, and the destination's
+pause state remain unchanged. The last group can be turned off without deleting saved captures.
 There is no Update button. Onboarding keeps its draft-and-Start flow without a dialog.
 
 Confirmation saves the complete `projectChoices` map, including exclusions,
@@ -358,10 +358,10 @@ values must match the current account, destination, and service.
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings
 shows a local-recovery message without a Retry button that cannot fix them.
-Pause stops admission of further sensitive work and saves the paused
-state. It does not delete spools, undo requests already sent, or delete remote
-content. Sign-out and account changes also stop unauthorized work without
-retargeting or deleting saved captures.
+Pause stops further sensitive work for the selected destination and saves its
+paused state. It does not interrupt another destination's upload, delete spools,
+undo requests already sent, or delete remote content. Sign-out and source changes
+still stop affected work across destinations without retargeting saved captures.
 Signing in again to the same account and destination resumes eligible saved uploads
 automatically. A new sign-in clears conflict cooldowns but preserves capacity
 and offline backoff. It does not replace the capture, change its destination,

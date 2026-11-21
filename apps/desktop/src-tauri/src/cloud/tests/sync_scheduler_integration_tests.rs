@@ -1018,6 +1018,72 @@ fn cloud_scheduler_team_denial_does_not_block_or_retarget_personal() {
     );
 }
 
+#[test]
+fn cloud_scheduler_team_pause_fences_team_but_keeps_an_inflight_personal_reservation() {
+    use std::cell::RefCell;
+
+    let mut fixture = Fixture::new(READY, 0);
+    approve_separate_team_folder(&fixture);
+    let scheduler = Scheduler::default();
+    let global = scheduler.generation.load(Ordering::Acquire);
+    let personal = scheduler.fences.snapshot("account", "personal").unwrap();
+    let team = scheduler.fences.snapshot("account", "team").unwrap();
+    let pending_pause = RefCell::new(None);
+    let reserves = fixture.service.reserves.clone();
+    let mut runners = RouteRunners::default();
+    let personal_runner = runners
+        .next(&fixture.store, fixture.engine.session())
+        .unwrap();
+    assert_eq!(personal_runner.destination_id.as_deref(), Some("personal"));
+    personal_runner
+        .turn(
+            &fixture.store,
+            &mut fixture.host,
+            &mut fixture.engine,
+            &|| {
+                // The server has received the Personal reservation, but the
+                // desktop has not yet accepted its response.
+                if reserves.load(Ordering::Acquire) > 0 && pending_pause.borrow().is_none() {
+                    *pending_pause.borrow_mut() = Some(team.pause());
+                }
+                scheduler.content_current(global, Some(&personal))
+            },
+            &|| true,
+            &mut fixture.cache,
+        )
+        .unwrap();
+    let pause = pending_pause
+        .into_inner()
+        .expect("Team pause during Personal reservation");
+    let entries = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].identity.destination_id, "personal");
+    assert_eq!(entries[0].state, CaptureState::Queued);
+    assert!(scheduler.content_current(global, Some(&personal)));
+    assert!(!scheduler.content_current(global, Some(&team)));
+    let waiting_team = scheduler.fences.snapshot("account", "team").unwrap();
+    let team_runner = runners
+        .next(&fixture.store, fixture.engine.session())
+        .unwrap();
+    assert_eq!(team_runner.destination_id.as_deref(), Some("team"));
+    team_runner
+        .turn(
+            &fixture.store,
+            &mut fixture.host,
+            &mut fixture.engine,
+            &|| scheduler.content_current(global, Some(&waiting_team)),
+            &|| true,
+            &mut fixture.cache,
+        )
+        .unwrap();
+    assert_eq!(reserves.load(Ordering::Acquire), 1);
+    drop(pause);
+    assert!(!scheduler.content_current(global, Some(&team)));
+    scheduler.generation.fetch_add(1, Ordering::AcqRel);
+    assert!(!scheduler.content_current(global, Some(&personal)));
+    assert!(!scheduler.content_current(global, Some(&waiting_team)));
+}
+
 fn write_source(root: &Path, project: &Path, id: &str, message: &str) {
     fs::write(
         root.join(format!("{id}.jsonl")),

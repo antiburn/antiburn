@@ -2,6 +2,8 @@
 //! with auth and cleanup. Renderers supply explicit consent and read safe status;
 //! they do not drive capture turns or own retries.
 
+mod fence;
+
 use super::{
     Controller, DestinationBinding, Folder, auth, capture, engine::Engine, ensure_cloud_setup, now,
     upload, work::Priority,
@@ -203,6 +205,14 @@ pub(super) struct Scheduler {
     wake: Arc<Notify>,
     pub generation: AtomicU64,
     runners: Mutex<RouteRunners>,
+    fences: fence::RouteFences,
+}
+
+impl Scheduler {
+    fn content_current(&self, generation: u64, route: Option<&fence::RouteFence>) -> bool {
+        self.generation.load(Ordering::Acquire) == generation
+            && route.is_none_or(fence::RouteFence::current)
+    }
 }
 
 /// Keep discovery cursors, retry waits, and failures separate for each upload route.
@@ -292,11 +302,6 @@ pub(super) fn start(app: tauri::AppHandle) {
                     let account_generation = controller.account_generation.load(Ordering::Acquire);
                     let content_generation = controller.sync.generation.load(Ordering::Acquire);
                     let engine_generation = engine.generation;
-                    let current = || {
-                        controller.account_generation.load(Ordering::Acquire) == account_generation
-                            && controller.sync.generation.load(Ordering::Acquire)
-                                == content_generation
-                    };
                     let account_current = || {
                         engine_generation == account_generation
                             && controller.account_generation.load(Ordering::Acquire)
@@ -318,6 +323,22 @@ pub(super) fn start(app: tauri::AppHandle) {
                     let (runner, route_failed) = match route {
                         Ok(runner) => (runner, false),
                         Err(_) => (&mut runners.idle, true),
+                    };
+                    let route_fence = engine
+                        .session()
+                        .zip(runner.destination_id.as_deref())
+                        .map(|(session, destination)| {
+                            controller
+                                .sync
+                                .fences
+                                .snapshot(&session.user.id, destination)
+                        })
+                        .transpose()?;
+                    let current = || {
+                        account_current()
+                            && controller
+                                .sync
+                                .content_current(content_generation, route_fence.as_ref())
                     };
                     let failed = route_failed
                         || runner
@@ -2086,6 +2107,11 @@ pub(crate) async fn cloud_enable_sync(
         .sync
         .generation
         .load(Ordering::Acquire);
+    let route_fence = app
+        .state::<Controller>()
+        .sync
+        .fences
+        .snapshot(&consent.account_id, &consent.destination_id)?;
     let result = work
         .run(Priority::Normal, move || {
             let controller = app.state::<Controller>();
@@ -2093,7 +2119,9 @@ pub(crate) async fn cloud_enable_sync(
                 || controller.account_generation.load(Ordering::Acquire) == generation;
             let current = || {
                 account_current()
-                    && controller.sync.generation.load(Ordering::Acquire) == content_generation
+                    && controller
+                        .sync
+                        .content_current(content_generation, Some(&route_fence))
             };
             let mut engine = controller
                 .engine
@@ -2206,6 +2234,9 @@ pub(crate) async fn cloud_enable_sync(
                     Ordering::Acquire,
                 )
                 .map_err(|_| "Cloud upload controls changed. Confirm again.")?;
+            if !account_current() || !route_fence.current() {
+                return Err("Cloud upload controls changed. Confirm again.".into());
+            }
             store
                 .save_cloud_sync_policy(
                     &consent.account_id,
@@ -2241,7 +2272,9 @@ pub(crate) async fn cloud_enable_sync(
                 Some(&consent.destination_id),
             )?;
             if !account_current()
-                || controller.sync.generation.load(Ordering::Acquire) != content_generation + 1
+                || !controller
+                    .sync
+                    .content_current(content_generation + 1, Some(&route_fence))
             {
                 return Err("Cloud account changed. Saved work is kept.".into());
             }
@@ -2281,6 +2314,15 @@ pub(crate) async fn cloud_set_sync_project(
     let account_generation = controller.account_generation.load(Ordering::Acquire);
     let work = controller.blocking.clone();
     let wake = controller.sync.wake.clone();
+    let route_fence = change
+        .selected
+        .then(|| {
+            controller
+                .sync
+                .fences
+                .snapshot(&change.account_id, &change.destination_id)
+        })
+        .transpose()?;
     let content_generation = if change.selected {
         controller.sync.generation.load(Ordering::Acquire)
     } else {
@@ -2298,7 +2340,9 @@ pub(crate) async fn cloud_set_sync_project(
                 || controller.account_generation.load(Ordering::Acquire) == account_generation;
             let current = || {
                 account_current()
-                    && controller.sync.generation.load(Ordering::Acquire) == content_generation
+                    && controller
+                        .sync
+                        .content_current(content_generation, route_fence.as_ref())
             };
             let mut engine = controller
                 .engine
@@ -2409,7 +2453,7 @@ pub(crate) async fn cloud_set_sync_project(
             };
             let can_commit = || {
                 account_current()
-                    && controller.sync.generation.load(Ordering::Acquire) == fence
+                    && controller.sync.content_current(fence, route_fence.as_ref())
                     && engine
                         .session()
                         .is_some_and(|session| session.user.id == binding.account_id)
@@ -2479,10 +2523,6 @@ pub(crate) async fn cloud_pause_sync(
     app: tauri::AppHandle,
     binding: DestinationBinding,
 ) -> Result<Status, String> {
-    app.state::<Controller>()
-        .sync
-        .generation
-        .fetch_add(1, Ordering::AcqRel);
     control(app, binding, true, Priority::Cleanup).await
 }
 
@@ -2502,20 +2542,25 @@ async fn control(
     paused: bool,
     priority: Priority,
 ) -> Result<Status, String> {
-    let work = app.state::<Controller>().blocking.clone();
-    let wake = app.state::<Controller>().sync.wake.clone();
-    let content_generation = app
-        .state::<Controller>()
+    let controller = app.state::<Controller>();
+    let work = controller.blocking.clone();
+    let wake = controller.sync.wake.clone();
+    let route_fence = controller
         .sync
-        .generation
-        .load(Ordering::Acquire);
+        .fences
+        .snapshot(&binding.account_id, &binding.destination_id)?;
+    let pending_pause = paused.then(|| route_fence.pause());
+    let generation = controller.account_generation.load(Ordering::Acquire);
+    let content_generation = controller.sync.generation.load(Ordering::Acquire);
     let result = work
         .run(priority, move || {
+            let _pending_pause = pending_pause;
             let controller = app.state::<Controller>();
-            let generation = controller.account_generation.load(Ordering::Acquire);
             let current = || {
                 controller.account_generation.load(Ordering::Acquire) == generation
-                    && controller.sync.generation.load(Ordering::Acquire) == content_generation
+                    && controller
+                        .sync
+                        .content_current(content_generation, (!paused).then_some(&route_fence))
             };
             let mut engine = controller
                 .engine
@@ -2553,6 +2598,9 @@ async fn control(
                 {
                     return Err("Confirm folder uploads for the current Cloud membership.".into());
                 }
+            }
+            if !current() {
+                return Err("Cloud upload controls changed. Saved work is kept.".into());
             }
             store
                 .set_cloud_sync_paused(&policy, paused)
