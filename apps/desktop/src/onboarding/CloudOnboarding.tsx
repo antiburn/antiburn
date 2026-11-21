@@ -27,6 +27,7 @@ import {
   cloudUploadStatusUnknown,
 } from "./CloudSession"
 import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
+import { CloudInvitations } from "./CloudInvitations"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -318,6 +319,9 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
+            {visible && value.cloud.invitationEnabled && value.cloud.identity && (
+              <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+            )}
             {value.cloud.setupError && (
               <>
                 <p className="type-callout text-onboarding-muted" role="status">
@@ -597,7 +601,9 @@ export function CloudOnboarding({
           </section>
         </>
       )}
-      <footer className="onboarding-footer cloud-footer">
+      <footer
+        className={`onboarding-footer cloud-footer${value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
+      >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
             <div className="cloud-outcomes" role="group" aria-label="Setup status">
@@ -707,6 +713,17 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
+            {value.screen === "identity" &&
+              value.cloud.invitationEnabled &&
+              !value.cloud.setupError && (
+                <button
+                  className="onboarding-primary"
+                  disabled={disabled}
+                  onClick={() => void session.go("folders")}
+                >
+                  Continue Cloud setup
+                </button>
+              )}
             {value.screen === "folders" && (
               <>
                 <button

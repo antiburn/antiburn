@@ -15,6 +15,7 @@ import {
   CloudFolderSyncControl,
   CloudProjectFolderSummary,
 } from "../../onboarding/CloudOnboardingFolders"
+import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { personalCloudDestination } from "../../lib/cloudDestination"
@@ -277,6 +278,11 @@ export function CloudAccount({
             reset={session.resetWorkspace}
           />
         ))}
+      {value.cloud.invitationEnabled && value.cloud.identity && (
+        <div className="px-4 py-3">
+          <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+        </div>
+      )}
       {children && <div className="border-t border-separator">{children}</div>}
       {session.projectSyncSupported ? (
         <CloudProjectsAccount session={session} value={value} folderRowId={folderRowId} />

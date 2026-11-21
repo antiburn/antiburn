@@ -13,6 +13,7 @@ mod file_sources;
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod http_tests;
+pub(crate) mod invitations;
 mod loopback;
 pub(crate) mod projects;
 mod state;
@@ -140,6 +141,7 @@ fn existing_folder_choices() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     auth_enabled: bool,
+    invitation_enabled: bool,
     capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
@@ -168,6 +170,7 @@ pub(crate) struct Controller {
     project_cache: Mutex<projects::Cache>,
     attempt_generation: AtomicU64,
     account_generation: AtomicU64,
+    invitations: Mutex<Option<invitations::Pending>>,
     recorded_status: Mutex<AuthStatus>,
 }
 
@@ -296,6 +299,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
     Snapshot {
         auth_enabled: engine.config.is_some(),
+        invitation_enabled: session.is_some() && engine.invitations_enabled(),
         capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
         sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
@@ -398,6 +402,7 @@ pub fn initialize(
         workspace_cleanup_failed: AtomicBool::new(false),
         attempt_generation: AtomicU64::new(0),
         account_generation: AtomicU64::new(0),
+        invitations: Mutex::new(None),
         recorded_status: Mutex::new(AuthStatus::Idle),
     });
     #[cfg(unix)]
@@ -426,6 +431,7 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
         }) {
             engine.status = error.into();
         }
+        engine.check_invitation_support();
         Ok(emit_snapshot(&app, snapshot(&app, &engine)))
     })
     .await

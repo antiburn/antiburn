@@ -940,6 +940,7 @@ mod tests {
     }
 
     const CLOUD_ACCOUNT_COMMANDS: &[&str] = &[
+        "cloud_invitations",
         "cloud_backfill_sync",
         "cloud_begin",
         "cloud_cancel",
