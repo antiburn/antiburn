@@ -32,7 +32,7 @@ export interface CloudWorkspace {
   kind: "personal" | "team"
 }
 /** Capture eligibility from the current device grant, not workspace read access. */
-export interface CloudEligibleDestination extends CloudWorkspace {
+interface CloudEligibleDestination extends CloudWorkspace {
   /** Exact Team membership at review time. Personal sends null. */
   membershipGeneration: string | null
 }
