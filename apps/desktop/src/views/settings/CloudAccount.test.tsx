@@ -12,7 +12,6 @@ function fixture(initial?: CloudSnapshot) {
     ...emptyCloudSnapshot,
     authEnabled: true,
     status: "signed_out",
-    remoteRevocationUnconfirmed: true,
   }
   let publish: (value: CloudSnapshot) => void = () => {}
   const signOut = vi.fn(async () => value)
@@ -97,10 +96,11 @@ it("shows a closed account and offers the regular sign-in action", async () => {
   expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeEnabled()
 })
 
-it("keeps the remote warning without blocking sign-in", async () => {
+it("keeps browser cancellation separate from sign-out", async () => {
   const { session, begin, cancel, emit } = fixture()
   render(<Account session={session} />)
   const github = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  expect(screen.getByText("Signed out on this device")).toBeVisible()
   expect(github).toBeEnabled()
   fireEvent.click(github)
   expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
@@ -109,7 +109,7 @@ it("keeps the remote warning without blocking sign-in", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }))
   expect(await screen.findByText("Sign-in cancelled.")).toBeVisible()
   expect(cancel).toHaveBeenCalledOnce()
-  expect(screen.getByText(/Cloud didn’t confirm sign-out/)).toBeVisible()
+  expect(screen.queryByText(/confirm sign-out/)).toBeNull()
   act(() =>
     emit({
       ...emptyCloudSnapshot,
@@ -117,11 +117,51 @@ it("keeps the remote warning without blocking sign-in", async () => {
       status: "signed_in",
       identity: { id: "synthetic-account", login: "Example" },
       destination: { id: "personal", name: "Personal", kind: "personal" },
-      remoteRevocationUnconfirmed: true,
     }),
   )
   expect(screen.getByText("Signed in as Example")).toBeVisible()
-  expect(screen.getByText(/Cloud didn’t confirm sign-out/)).toBeVisible()
+  expect(screen.queryByText(/confirm sign-out/)).toBeNull()
+})
+
+it("allows sign-out when a saved sign-in cannot be checked", async () => {
+  const { session, signOut } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "sign_in_check_failed",
+  })
+  signOut.mockResolvedValueOnce({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "signed_out",
+  })
+  render(<Account session={session} />)
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Couldn’t check sign-in. Try again.",
+  )
+  expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
+  expect(await screen.findByText("Signed out on this device")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
+})
+
+it("does not claim sign-out or show sign-in when local sign-out fails", async () => {
+  const { session, signOut } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "sign_in_check_failed",
+  })
+  signOut.mockResolvedValueOnce({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "sign_out_failed",
+  })
+  render(<Account session={session} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Sign out" }))
+  expect(await screen.findByText("Couldn’t sign out. Try again.")).toBeVisible()
+  expect(screen.queryByText("Signed out on this device")).toBeNull()
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
 })
 
 it("shows sign-out progress and then the normal sign-in button", async () => {

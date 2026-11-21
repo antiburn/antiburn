@@ -19,12 +19,13 @@ export type CloudStatus =
   | "expired"
   | "browser_failed"
   | "offline"
+  | "sign_in_check_failed"
+  | "sign_out_failed"
   | "rejected"
   | "invalid_response"
   | "credential_failed"
   | "unavailable"
   | "reauth_required"
-  | "revocation_unconfirmed"
 /** Verified destination display data. Listing an entry does not grant upload consent. */
 export interface CloudWorkspace {
   id: string
@@ -318,7 +319,6 @@ export interface CloudSnapshot {
   savedDestinationId?: string | null
   /** Complete saved policy inventory for this account and service; null means unreadable. */
   savedDestinationIds?: string[] | null
-  remoteRevocationUnconfirmed?: boolean
   setupError?: string | null
   pendingSync?: { requestId: string; result: SyncResult } | null
   draft: CloudDraft

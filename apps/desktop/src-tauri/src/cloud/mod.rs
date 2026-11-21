@@ -21,18 +21,19 @@ mod upload;
 mod work;
 
 use crate::store::cloud_capture::SourceKind;
-use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, Workspace};
+use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, RemoteLogout, Workspace};
 use engine::Engine;
 use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+use tokio::sync::Semaphore;
 use work::{BlockingWork, Priority};
 
 /// Closed renderer-safe authentication outcomes, not permission to capture content.
@@ -50,21 +51,24 @@ pub enum AuthStatus {
     Expired,
     BrowserFailed,
     Offline,
+    SignInCheckFailed,
+    SignOutFailed,
     Rejected,
     InvalidResponse,
     CredentialFailed,
     Unavailable,
     ReauthRequired,
-    RevocationUnconfirmed,
 }
 
 impl From<Failure> for AuthStatus {
     fn from(value: Failure) -> Self {
         match value {
-            Failure::Offline | Failure::OfflineBeforeSend => Self::Offline,
+            Failure::Offline => Self::Offline,
+            Failure::OfflineBeforeSend => Self::SignInCheckFailed,
             Failure::Rejected => Self::Rejected,
             Failure::InvalidResponse => Self::InvalidResponse,
             Failure::CredentialFailed => Self::CredentialFailed,
+            Failure::SignOutFailed => Self::SignOutFailed,
             Failure::Cancelled => Self::Cancelled,
             Failure::Unavailable => Self::Unavailable,
             Failure::ReauthRequired => Self::ReauthRequired,
@@ -151,7 +155,6 @@ pub struct Snapshot {
     saved_destination_id: Option<String>,
     /// All saved upload routes for this account and resource, or null if unreadable.
     saved_destination_ids: Option<Vec<String>>,
-    remote_revocation_unconfirmed: bool,
     setup_error: Option<String>,
     pending_sync: Option<capture::PendingSync>,
     draft: Draft,
@@ -161,6 +164,7 @@ pub struct Snapshot {
 /// invalidate queued work before it can acquire a mutex or publish old authority.
 pub(crate) struct Controller {
     blocking: BlockingWork,
+    remote_logout: Arc<Semaphore>,
     setup_ready: AtomicBool,
     engine: Mutex<Engine>,
     capture: Mutex<capture::Host>,
@@ -346,7 +350,6 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         destinations: session.and_then(|_| engine.destinations().map(<[_]>::to_vec)),
         saved_destination_id: saved_destination_id.filter(|_| session.is_some()),
         saved_destination_ids: saved_destination_ids.filter(|_| session.is_some()),
-        remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
         setup_error,
         pending_sync,
         draft,
@@ -380,13 +383,13 @@ fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             AuthStatus::Cancelled => Some(Event::Cancelled),
             AuthStatus::Expired => Some(Event::Expired),
             AuthStatus::BrowserFailed => Some(Event::BrowserFailed),
-            AuthStatus::Offline => Some(Event::Offline),
+            AuthStatus::Offline | AuthStatus::SignInCheckFailed => Some(Event::Offline),
             AuthStatus::CredentialFailed => Some(Event::CredentialFailed),
             AuthStatus::Unavailable => Some(Event::Unavailable),
             AuthStatus::Rejected
             | AuthStatus::InvalidResponse
             | AuthStatus::ReauthRequired
-            | AuthStatus::RevocationUnconfirmed => Some(Event::Failed),
+            | AuthStatus::SignOutFailed => Some(Event::Failed),
         };
         if let Some(event) = event {
             crate::analytics::record_cloud_status(app, event);
@@ -407,6 +410,7 @@ pub fn initialize(
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
     app.manage(Controller {
         blocking: BlockingWork::default(),
+        remote_logout: Arc::new(Semaphore::new(1)),
         setup_ready: AtomicBool::new(false),
         capture: Mutex::new(capture::Host::new(directory)),
         sync: sync::Scheduler::default(),
@@ -581,11 +585,7 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                         if let Err(error) = engine.cancel(generation) {
                             engine.status = error.into();
                         } else {
-                            engine.status = if engine.cleanup.blocks_connection() {
-                                AuthStatus::RevocationUnconfirmed
-                            } else {
-                                AuthStatus::Expired
-                            };
+                            engine.status = AuthStatus::Expired;
                         }
                     }
                     if current() {
@@ -673,8 +673,23 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     .await
 }
 
-/// Fence account/browser work before waiting for cleanup admission. Desktop state
-/// closes access before revocation and secure deletion; source bytes stay intact.
+/// Start one best-effort remote logout without the account or capture work slot.
+/// No local state or credentials can be accessed after the request starts.
+fn spawn_remote_logout(
+    slots: Arc<Semaphore>,
+    request: RemoteLogout,
+) -> Option<tauri::async_runtime::JoinHandle<()>> {
+    let slot = slots.try_acquire_owned().ok()?;
+    Some(tauri::async_runtime::spawn_blocking(move || {
+        let _slot = slot;
+        if !request.send(&HttpTransport) {
+            tracing::debug!(event = "cloud_remote_logout_unconfirmed");
+        }
+    }))
+}
+
+/// Fence account/browser work before waiting for local cleanup. Publish the
+/// local result before a separate remote request. Source bytes stay intact.
 #[tauri::command]
 pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
@@ -683,7 +698,9 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         .account_generation
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    let work = app.state::<Controller>().blocking.clone();
+    let controller = app.state::<Controller>();
+    let work = controller.blocking.clone();
+    let slots = controller.remote_logout.clone();
     work.run(Priority::Cleanup, move || {
         let controller = app.state::<Controller>();
         let mut engine = controller
@@ -696,11 +713,20 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         ) {
             return Ok(snapshot(&app, &engine));
         }
-        if let Err(error) = engine.sign_out() {
-            engine.status = error.into();
-        }
+        let request = match engine.sign_out() {
+            Ok(request) => request,
+            Err(error) => {
+                engine.status = error.into();
+                None
+            }
+        };
         engine.generation = generation;
-        Ok(publish(&app, &engine))
+        let result = publish(&app, &engine);
+        drop(engine);
+        if let Some(request) = request {
+            let _ = spawn_remote_logout(slots, request);
+        }
+        Ok(result)
     })
     .await
 }

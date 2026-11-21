@@ -100,6 +100,7 @@ pub(super) struct MemoryVault {
     fail_read: AtomicBool,
     fail_write: AtomicBool,
     on_credential_write: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_delete: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Vault for Arc<MemoryVault> {
@@ -114,6 +115,11 @@ impl Vault for Arc<MemoryVault> {
             return Err(Failure::CredentialFailed);
         }
         *self.value.lock().unwrap() = value.cloned();
+        if value.is_none()
+            && let Some(action) = &self.on_delete
+        {
+            action();
+        }
         if value.is_some_and(|credential| credential.session.is_some())
             && let Some(action) = &self.on_credential_write
         {
@@ -869,7 +875,10 @@ fn cloud_refresh_retries_an_unsent_proof_after_reconnect_or_restart() {
             .transport
             .fail_before_send
             .store(true, Ordering::Release);
-        assert_eq!(fixture.engine.refresh(200, || true), Err(Failure::Offline));
+        assert_eq!(
+            fixture.engine.refresh(200, || true),
+            Err(Failure::OfflineBeforeSend)
+        );
         assert!(fixture.engine.session().is_none());
         assert!(!fixture.engine.cleanup.blocks_connection());
         assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
@@ -987,11 +996,11 @@ fn cloud_rejected_refresh_keeps_both_grant_proofs_and_requires_original_revocati
     assert_eq!(cleanup.cleanup_refresh_tokens, ["synthetic-refresh-1"]);
     assert!(cleanup.session.is_none());
     fixture.restart();
-    fixture.engine.sign_out().unwrap();
+    let request = fixture.engine.sign_out().unwrap().unwrap();
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert!(fixture.vault.read().unwrap().is_none());
-    *fixture.transport.fail_revoke_for.lock().unwrap() = None;
-    fixture.engine.sign_out().unwrap();
+    assert!(!request.send(&fixture.transport));
+    assert!(fixture.engine.sign_out().unwrap().is_none());
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert!(fixture.vault.read().unwrap().is_none());
     assert_eq!(
@@ -1061,7 +1070,14 @@ fn cloud_state_write_failure_still_retains_both_cleanup_proofs() {
     fixture.restart();
     fixture.engine.refresh(201, || true).unwrap();
     assert!(fixture.engine.session().is_none());
-    fixture.engine.sign_out().unwrap();
+    assert!(
+        fixture
+            .engine
+            .sign_out()
+            .unwrap()
+            .unwrap()
+            .send(&fixture.transport)
+    );
     assert_eq!(
         *fixture.transport.revoked.lock().unwrap(),
         ["synthetic-refresh-0", "synthetic-refresh-1",]
@@ -1164,21 +1180,14 @@ fn cloud_sign_out_fails_closed_when_the_signed_out_marker_cannot_be_written() {
             .store(delete_fails, Ordering::Release);
         let directory = fixture.directory.path().to_owned();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
-        let result = fixture.engine.sign_out();
+        let result = fixture.engine.sign_out().err();
         std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(
-            result,
-            if delete_fails {
-                Err(Failure::CredentialFailed)
-            } else {
-                Ok(())
-            }
-        );
+        assert_eq!(result, delete_fails.then_some(Failure::SignOutFailed));
         let result = fixture.engine.refresh(200, || true);
         assert_eq!(
             result,
             if delete_fails {
-                Err(Failure::CredentialFailed)
+                Err(Failure::SignOutFailed)
             } else {
                 Ok(())
             }
@@ -1221,12 +1230,46 @@ fn cloud_logout_marker_blocks_restart_when_remote_revocation_is_unconfirmed() {
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
 }
 
+#[cfg(unix)]
+#[test]
+fn cloud_new_pending_epoch_clears_the_failed_sign_out_fence() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = Fixture::new();
+    let directory = fixture.directory.path().to_owned();
+    let writable = directory.clone();
+    fixture.vault = Arc::new(MemoryVault {
+        on_delete: Some(Arc::new(move || {
+            std::fs::set_permissions(&writable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        })),
+        ..MemoryVault::default()
+    });
+    fixture.engine = engine(&directory, fixture.vault.clone(), fixture.transport.clone());
+    fixture.sign_in();
+    fixture.vault.fail_write.store(true, Ordering::Release);
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).unwrap();
+    assert_eq!(
+        fixture.engine.sign_out().err(),
+        Some(Failure::SignOutFailed)
+    );
+    fixture.vault.fail_write.store(false, Ordering::Release);
+    let (_, _listener, attempt) = fixture.engine.begin(200, 1).unwrap();
+    fixture.engine.refresh(201, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::Waiting);
+    fixture
+        .engine
+        .callback(&attempt, auth::Callback::Code("new".into()), 202, || true)
+        .unwrap();
+    fixture.engine.refresh(203, || true).unwrap();
+    assert!(fixture.engine.session().is_some());
+}
+
 #[test]
 fn cloud_logout_keyring_delete_failure_cannot_restore_an_account() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
     fixture.vault.fail_write.store(true, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
+    let old_logout = fixture.engine.sign_out().unwrap().unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
     assert!(fixture.vault.read().unwrap().is_some());
     let (_, _listener, attempt) = fixture.engine.begin(200, 1).unwrap();
@@ -1243,7 +1286,16 @@ fn cloud_logout_keyring_delete_failure_cannot_restore_an_account() {
     fixture.restart();
     fixture.engine.refresh(202, || true).unwrap();
     assert!(fixture.engine.session().is_some());
-    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
+    assert!(old_logout.send(&fixture.transport));
+    assert_eq!(
+        *fixture.transport.revoked.lock().unwrap(),
+        ["synthetic-refresh-0"]
+    );
+    assert!(fixture.engine.session().is_some());
+    assert_eq!(
+        fixture.vault.read().unwrap().unwrap().refresh_token,
+        "synthetic-refresh-2"
+    );
     fixture.engine.sign_out().unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
 }
@@ -1252,7 +1304,10 @@ fn cloud_logout_keyring_delete_failure_cannot_restore_an_account() {
 fn cloud_lifetime_owner_rejects_a_second_writer_until_restart() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
-    assert_eq!(fixture.reopen().sign_out(), Err(Failure::Unavailable));
+    assert_eq!(
+        fixture.reopen().sign_out().err(),
+        Some(Failure::SignOutFailed)
+    );
     assert!(fixture.engine.session().is_some());
     fixture.restart();
     fixture.engine.sign_out().unwrap();
@@ -1328,7 +1383,6 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         destinations: None,
         saved_destination_id: None,
         saved_destination_ids: None,
-        remote_revocation_unconfirmed: false,
         setup_error: None,
         pending_sync: None,
         draft: Draft::default(),
@@ -1631,7 +1685,7 @@ fn cloud_process_cleanup_child() {
 }
 
 #[test]
-fn cloud_restart_finishes_deletion_after_confirmed_revocation_and_a_process_exit() {
+fn cloud_restart_finishes_deletion_without_repeating_logout() {
     let directory = tempfile::tempdir().unwrap();
     let (mut engine, _) = process_engine(directory.path(), 0);
     let (_, _listener, attempt) = engine.begin(100, 0).unwrap();
@@ -1658,7 +1712,7 @@ fn cloud_restart_finishes_deletion_after_confirmed_revocation_and_a_process_exit
     let (mut engine, transport) = process_engine(directory.path(), 2);
     engine.refresh(200, || true).unwrap();
     assert!(engine.status == AuthStatus::SignedOut);
-    assert!(engine.cleanup == state::Cleanup::None);
+    assert!(engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert_eq!(transport.revocations.load(Ordering::Acquire), 0);
     engine.begin(201, 1).unwrap();
 }

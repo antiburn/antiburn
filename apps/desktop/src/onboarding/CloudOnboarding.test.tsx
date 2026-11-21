@@ -103,21 +103,42 @@ it("does not show verified sign-in or reopen browser approval after the browser 
   expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
   act(() => emit({ status: "offline" }))
   expect(screen.getByText(/Check your connection and try again/)).toBeVisible()
-  expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
+  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
 })
 
-it("offers sign-in or local setup after an earlier sign-out Cloud did not confirm", async () => {
+it("offers sign-in or local setup after local sign-out", async () => {
   const { port } = fixture({
     ...signIn,
     status: "signed_out",
-    remoteRevocationUnconfirmed: true,
   })
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
-  expect(await screen.findByText(/Cloud didn’t confirm sign-out/)).toBeVisible()
+  expect(await screen.findByText("You’re signed out on this device.")).toBeVisible()
+  expect(screen.queryByText(/confirm sign-out/)).toBeNull()
   expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
   fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
   expect(done).toHaveBeenCalledOnce()
+})
+
+it("offers sign-out when it cannot check an existing sign-in", async () => {
+  const { port } = fixture({ ...signIn, status: "sign_in_check_failed" })
+  port.signOut = vi.fn(async () => ({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "sign_out_failed" as const,
+  }))
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Couldn’t check sign-in. Try again.",
+  )
+  expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
+  expect(await screen.findByText("Couldn’t sign out. Try again.")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(screen.queryByText("You’re signed out on this device.")).toBeNull()
 })
 
 it("saves desktop capture requests with truthful completion copy", async () => {
@@ -301,7 +322,6 @@ it("cancels only the pending browser attempt before local completion", async () 
     ...emptyCloudSnapshot,
     authEnabled: true,
     status: "cancelled" as const,
-    remoteRevocationUnconfirmed: true,
   }))
   port.cancelSync = vi.fn()
   const done = vi.fn()

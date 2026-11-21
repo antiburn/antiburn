@@ -103,17 +103,16 @@ const messages = {
   expired: "This browser link expired. Try again to open a new link.",
   browser_failed: "Your browser could not open. Try again or continue locally.",
   offline: "Cloud could not connect. Check your connection and try again.",
+  sign_in_check_failed: "Couldn’t check sign-in. Try again.",
+  sign_out_failed: "Couldn’t sign out. Try again.",
   rejected: "Cloud could not verify this connection. Sign in again to continue.",
   invalid_response: "Cloud returned an unexpected response. Try again later.",
   credential_failed: "Could not complete the account action. Try again.",
   unavailable: "Cloud is not available in this build. You can continue locally.",
   reauth_required: "Your sign-in ended. Sign in again to use Cloud.",
-  revocation_unconfirmed: "You’re signed out on this device.",
 } as const
 /** Keep the browser sign-in action named the same in setup and Settings. */
 export const cloudGithubSignInLabel = "Sign in with GitHub"
-/** Do not claim remote sign-out when only Desktop access ended. */
-export const cloudSignOutWarning = "Cloud didn’t confirm sign-out of an earlier connection."
 /** Map closed desktop states to safe copy without exposing provider errors. */
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 /** Distinguish fresh setup from an unreadable saved-upload state. */
@@ -1297,7 +1296,7 @@ export class CloudSession {
       if (fresh) this.receive(value)
       this.publish({ busy: false, authAction: null })
       const consistent = fresh || JSON.stringify(this.snapshot.cloud) === JSON.stringify(value)
-      return consistent && value.status !== "credential_failed"
+      return consistent && !["credential_failed", "sign_out_failed"].includes(value.status)
     } catch (error) {
       if (this.active && generation === this.generation)
         this.publish({
@@ -1305,7 +1304,9 @@ export class CloudSession {
           authAction: null,
           error: isCloudBusy(error)
             ? CLOUD_BUSY_MESSAGE
-            : "Cloud could not complete that action. Try again.",
+            : action === "sign_out"
+              ? messages.sign_out_failed
+              : "Cloud could not complete that action. Try again.",
         })
       return false
     }

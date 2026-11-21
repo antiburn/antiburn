@@ -184,10 +184,14 @@ first flushes a new signed-out generation. Browser cancellation changes only the
 pending browser-attempt generation; it does not cancel an established connection
 or its refresh. Sign-out asks Cloud to revoke only the old grant, not every
 connection on the account. Only a synchronous HTTP 204 confirms remote logout.
-HTTP 401, HTTP 202, and network failures do not. Desktop still signs out locally
-and keeps a warning when Cloud does not confirm. A restart can finish keyring
-deletion without repeating remote logout. If deletion fails, the closed marker
-blocks access. Only a verified new sign-in can replace the old credential.
+HTTP 401, HTTP 202, and network failures do not. Desktop publishes local sign-out
+before it starts remote logout. One separate worker sends only the old proof to
+its configured service origin. It makes one attempt per captured proof and does
+not read or write the keyring or saved state. A failed or skipped request does not
+block sign-in. The local marker does not claim remote revocation. A restart can
+finish keyring deletion without repeating remote logout. If deletion fails, the
+closed marker blocks access. Only a verified new sign-in can replace the old
+credential.
 If Desktop cannot write the marker, it tries to delete the old credential.
 If both fail, the current process still blocks access and reports a failure.
 Cleanup-only keyring records cannot restore an authenticated session.

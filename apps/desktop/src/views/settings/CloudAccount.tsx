@@ -4,7 +4,6 @@ import {
   type CloudSession,
   cloudGithubSignInLabel,
   cloudOngoingStatusMessage,
-  cloudSignOutWarning,
   cloudStatusMessage,
   cloudUploadStatusUnknown,
   type CloudViewSnapshot,
@@ -53,8 +52,13 @@ export function CloudAccount({
   const waiting = ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed = value.loaded && !!value.error && !value.cloud.authEnabled
-  const offline = value.cloud.status === "offline"
-  const accountFailed = !!value.error || offline || value.cloud.status === "credential_failed"
+  const checkFailed = value.cloud.status === "sign_in_check_failed"
+  const signOutFailed = value.cloud.status === "sign_out_failed"
+  const accountFailed =
+    !!value.error ||
+    checkFailed ||
+    signOutFailed ||
+    ["offline", "credential_failed"].includes(value.cloud.status)
   const accountMessage = value.error
     ? value.error === CLOUD_BUSY_MESSAGE
       ? "Cloud is busy."
@@ -71,13 +75,15 @@ export function CloudAccount({
               ? "Checking Cloud…"
               : value.authAction === "sign_out"
                 ? "Signing out…"
-                : readFailed
+                : readFailed || checkFailed || signOutFailed
                   ? "Cloud account"
                   : value.cloud.identity
                     ? `Signed in as ${value.cloud.identity.login}`
-                    : value.cloud.authEnabled
-                      ? "Not signed in"
-                      : "Antiburn Cloud is coming soon"}
+                    : value.cloud.status === "signed_out"
+                      ? "Signed out on this device"
+                      : value.cloud.authEnabled
+                        ? "Not signed in"
+                        : "Antiburn Cloud is coming soon"}
           </p>
           {value.cloud.identity && value.cloud.destination?.kind === "personal" && (
             <p className="type-footnote text-label-secondary">{value.cloud.destination.name}</p>
@@ -91,7 +97,7 @@ export function CloudAccount({
             </p>
           )}
         </div>
-        {(readFailed || offline) && (
+        {(readFailed || checkFailed) && (
           <button
             className="ui-push-button"
             disabled={value.busy}
@@ -113,7 +119,8 @@ export function CloudAccount({
           !value.cloud.identity &&
           !readFailed &&
           !checkingSignIn &&
-          !offline && (
+          !checkFailed &&
+          !signOutFailed && (
             <button
               className="ui-push-button gap-1"
               disabled={!value.loaded || value.busy}
@@ -127,7 +134,7 @@ export function CloudAccount({
               {!waiting && <ArrowUpRight size={13} aria-hidden />}
             </button>
           )}
-        {value.cloud.identity && (
+        {(value.cloud.identity || checkFailed || signOutFailed) && (
           <button
             className="ui-push-button"
             disabled={value.busy}
@@ -137,12 +144,6 @@ export function CloudAccount({
           </button>
         )}
       </div>
-      {(value.cloud.remoteRevocationUnconfirmed ||
-        value.cloud.status === "revocation_unconfirmed") && (
-        <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
-          {cloudSignOutWarning}
-        </p>
-      )}
       {value.cloud.invitationEnabled && value.cloud.identity && (
         <div className="px-4 py-3">
           <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />

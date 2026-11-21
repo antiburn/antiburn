@@ -104,6 +104,7 @@ pub enum Failure {
     Rejected,
     InvalidResponse,
     CredentialFailed,
+    SignOutFailed,
     Cancelled,
     Unavailable,
     ReauthRequired,
@@ -483,8 +484,34 @@ pub trait Transport: Send + Sync {
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
 
-/// Short blocking HTTP transport, used only inside the bounded Cloud worker.
-/// The engine's synchronous proof/write ordering stays intact; this is not async HTTP.
+/// A detached logout can only submit the old proofs to their original service.
+pub(super) struct RemoteLogout {
+    config: Config,
+    proofs: Vec<String>,
+}
+
+impl RemoteLogout {
+    /// Capture only the old logout proofs. Do not carry account state or vault access.
+    pub(super) fn from_credential(config: Config, credential: Credential) -> Self {
+        Self {
+            config,
+            proofs: std::iter::once(credential.refresh_token)
+                .chain(credential.cleanup_refresh_tokens)
+                .collect(),
+        }
+    }
+
+    /// Send each captured proof once; only HTTP 204 confirms a revocation.
+    pub(super) fn send(self, transport: &dyn Transport) -> bool {
+        let mut confirmed = true;
+        for proof in self.proofs {
+            confirmed &= transport.revoke(&self.config, &proof).is_ok();
+        }
+        confirmed
+    }
+}
+
+/// Short blocking HTTP transport for the admitted Cloud work and detached logout.
 pub struct HttpTransport;
 /// Check each request URL before attaching proof. Debug loopback HTTP bypasses
 /// proxies so plaintext credentials stay on the local connection.
