@@ -151,7 +151,7 @@ impl Engine {
         &mut self,
         account_id: &str,
         current: impl Fn() -> bool,
-        request: impl FnOnce(&Config, &str) -> Result<T, Failure>,
+        request: impl FnOnce(&Config, &str, &dyn Fn() -> bool) -> Result<T, Failure>,
     ) -> Result<T, Failure> {
         if !current() || self.invitation_support != Some(true) {
             return Err(Failure::Unavailable);
@@ -163,7 +163,8 @@ impl Engine {
             return Err(Failure::Cancelled);
         }
         access.session.validate(config, (self.clock)())?;
-        let result = request(config, &access.token);
+        let can_send = || current() && access.expires_at > (self.clock)();
+        let result = request(config, &access.token, &can_send);
         if !current() {
             return Err(Failure::Cancelled);
         }

@@ -508,14 +508,17 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 return Ok(publish(&app, &engine));
             }
         };
-        if let Err(error) = app.opener().open_url(url, None::<&str>) {
-            if browser_launch_did_not_start(&error) {
-                engine.abort_browser_launch(&attempt)
-            } else {
-                engine.cancel(generation)
-            }
-            .map_err(|_| "Could not cancel Cloud sign-in.")?;
-            engine.status = AuthStatus::BrowserFailed;
+        if !launch_account_browser(
+            &mut engine,
+            &attempt,
+            || {
+                controller.attempt_generation.load(Ordering::Acquire) == generation
+                    && controller.account_generation.load(Ordering::Acquire) == account_generation
+            },
+            || app.opener().open_url(url, None::<&str>),
+        )
+        .map_err(|_| "Could not cancel Cloud sign-in.")?
+        {
             return Ok(publish(&app, &engine));
         }
         engine.status = AuthStatus::Waiting;
@@ -576,6 +579,31 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(result)
     })
     .await
+}
+
+/// A capability probe can finish after cancel or sign-out starts. If the
+/// opener has not run, close this pending attempt without a revocation warning.
+fn launch_account_browser(
+    engine: &mut Engine,
+    attempt: &auth::Attempt,
+    current: impl FnOnce() -> bool,
+    open: impl FnOnce() -> Result<(), tauri_plugin_opener::Error>,
+) -> Result<bool, Failure> {
+    if !current() {
+        engine.abort_browser_launch(attempt)?;
+        engine.status = AuthStatus::Cancelled;
+        return Ok(false);
+    }
+    if let Err(error) = open() {
+        if browser_launch_did_not_start(&error) {
+            engine.abort_browser_launch(attempt)?;
+        } else {
+            engine.cancel(attempt.generation)?;
+        }
+        engine.status = AuthStatus::BrowserFailed;
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// A native missing-launcher error proves no handoff. Launcher exit failures and

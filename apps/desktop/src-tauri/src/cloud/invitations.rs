@@ -67,6 +67,9 @@ pub(crate) enum Action {
     Cancel {
         id: String,
     },
+    Dismiss {
+        id: String,
+    },
 }
 
 /// List entries are display data. A workspace slug does not authorize joining.
@@ -107,6 +110,12 @@ pub(crate) enum State {
     Closed,
 }
 
+impl State {
+    fn is_terminal(self) -> bool {
+        !matches!(self, Self::Waiting | Self::Ready)
+    }
+}
+
 #[derive(Deserialize)]
 struct Status {
     state: State,
@@ -132,11 +141,13 @@ pub(crate) enum Reply {
         id: String,
         join: bool,
     },
-    Expired,
+    Expired {
+        uncertain: bool,
+    },
 }
 
-/// Memory-only attempt owned by one account generation. Keep a potentially
-/// committed finish attached to the same attempt after a lost reply.
+/// Keep an attempt and its result in memory for one account generation.
+/// A renderer can reopen after its previous request already completed.
 pub(super) struct Pending {
     id: String,
     generation: u64,
@@ -144,6 +155,7 @@ pub(super) struct Pending {
     workspace_name: Option<String>,
     deadline: Instant,
     state: State,
+    workspace_id: Option<String>,
     uncertain: bool,
 }
 
@@ -152,7 +164,7 @@ impl Pending {
         Instant::now() >= self.deadline
     }
 
-    fn reply(&self, workspace_id: Option<String>) -> Reply {
+    fn reply(&self) -> Reply {
         if self.uncertain {
             return Reply::Uncertain {
                 id: self.id.clone(),
@@ -163,7 +175,7 @@ impl Pending {
             id: self.id.clone(),
             join: self.join,
             state: self.state,
-            workspace_id,
+            workspace_id: self.workspace_id.clone(),
             workspace_name: self.workspace_name.clone(),
         }
     }
@@ -198,18 +210,14 @@ pub(crate) async fn cloud_invitations(
             .invitations
             .lock()
             .map_err(|_| "Could not open Cloud invitations.")?;
-        if pending
-            .as_ref()
-            .is_some_and(|attempt| attempt.generation != generation)
-        {
-            *pending = None;
-        }
         engine
-            .with_invitation_access(&account_id, current, |config, bearer| {
-                run_action(&mut pending, generation, request, config, bearer, |url| {
-                    if !current() {
-                        return Err(Failure::Cancelled);
-                    }
+            .with_invitation_access(&account_id, current, |config, bearer, can_send| {
+                let device = DeviceRequest {
+                    config,
+                    bearer,
+                    can_send,
+                };
+                run_action(&mut pending, generation, request, &device, |url| {
                     app.opener()
                         .open_url(url.as_str(), None::<&str>)
                         .map_err(|_| Failure::Unavailable)
@@ -224,19 +232,40 @@ fn run_action(
     pending: &mut Option<Pending>,
     generation: u64,
     request: Action,
-    config: &Config,
-    bearer: &str,
+    device: &DeviceRequest<'_>,
     open: impl FnOnce(Url) -> Result<(), Failure>,
 ) -> Result<Reply, Failure> {
+    if pending
+        .as_ref()
+        .is_some_and(|attempt| attempt.generation != generation)
+    {
+        *pending = None;
+    }
     match request {
         Action::List => {
             if let Some(attempt) = pending {
-                if !attempt.expired() || attempt.uncertain {
-                    return Ok(attempt.reply(None));
+                if attempt.state.is_terminal() || !attempt.expired() {
+                    return Ok(attempt.reply());
                 }
+                let uncertain = attempt.uncertain;
                 *pending = None;
+                if uncertain {
+                    return Ok(Reply::Expired { uncertain });
+                }
             }
-            let listing = list(config, bearer)?;
+            Ok(Reply::List {
+                listing: list(device)?,
+            })
+        }
+        Action::Dismiss { id } => {
+            if !pending
+                .as_ref()
+                .is_some_and(|attempt| attempt.id == id && attempt.state.is_terminal())
+            {
+                return Err(Failure::Cancelled);
+            }
+            let listing = list(device)?;
+            *pending = None;
             Ok(Reply::List { listing })
         }
         Action::Start {
@@ -244,9 +273,10 @@ fn run_action(
             workspace_name,
         } => {
             if let Some(attempt) = pending
-                && (!attempt.expired() || attempt.uncertain)
+                && !attempt.state.is_terminal()
+                && !attempt.expired()
             {
-                return Ok(attempt.reply(None));
+                return Ok(attempt.reply());
             }
             if invitation_id
                 .as_ref()
@@ -256,9 +286,14 @@ fn run_action(
             }
             let deadline = Instant::now() + VERIFY_WINDOW;
             let body = serde_json::json!({ "invitation_id": invitation_id });
-            let created: Created = send(config, bearer, Method::POST, ATTEMPTS_PATH, Some(body))?;
+            let created: Created =
+                device.send(Method::POST, ATTEMPTS_PATH, Some(body), Some(deadline))?;
             attempt_path(&created.id)?;
-            open(browser_url(config, &created.browser_url)?)?;
+            let url = browser_url(device.config, &created.browser_url)?;
+            if !(device.can_send)() || Instant::now() >= deadline {
+                return Err(Failure::Cancelled);
+            }
+            open(url)?;
             let attempt = Pending {
                 id: created.id,
                 generation,
@@ -269,14 +304,15 @@ fn run_action(
                     .filter(|name| invitation_id.is_some() && valid_label(name, 256)),
                 deadline,
                 state: State::Waiting,
+                workspace_id: None,
                 uncertain: false,
             };
-            let reply = attempt.reply(None);
+            let reply = attempt.reply();
             *pending = Some(attempt);
             Ok(reply)
         }
         Action::Status { ref id } | Action::Finish { ref id } | Action::Cancel { ref id } => {
-            update(pending, &request, id, config, bearer)
+            update(pending, &request, id, device)
         }
     }
 }
@@ -285,49 +321,62 @@ fn update(
     pending: &mut Option<Pending>,
     request: &Action,
     id: &str,
-    config: &Config,
-    bearer: &str,
+    device: &DeviceRequest<'_>,
 ) -> Result<Reply, Failure> {
     let attempt = pending
         .as_mut()
         .filter(|attempt| attempt.id == id)
         .ok_or(Failure::Cancelled)?;
-    if attempt.expired() && !attempt.uncertain && !matches!(request, Action::Cancel { .. }) {
+    if attempt.state.is_terminal() {
+        return match request {
+            Action::Status { .. } => Ok(attempt.reply()),
+            _ => Err(Failure::Cancelled),
+        };
+    }
+    if attempt.expired() {
+        let uncertain = attempt.uncertain;
         *pending = None;
-        return Ok(Reply::Expired);
+        return Ok(Reply::Expired { uncertain });
     }
     let path = attempt_path(&attempt.id)?;
-    let observe = || send(config, bearer, Method::GET, &path, None);
+    let deadline = Some(attempt.deadline);
+    let observe = || device.send(Method::GET, &path, None, deadline);
     let mutation = match request {
         Action::Finish { .. } if attempt.can_finish() => Some("finish"),
         Action::Cancel { .. } if !attempt.uncertain => Some("cancel"),
         Action::Status { .. } => None,
         _ => return Err(Failure::Cancelled),
     };
-    let status: Status = if let Some(action) = mutation {
+    let observed = if let Some(action) = mutation {
         attempt.uncertain = true;
-        match send(config, bearer, Method::POST, &path, Some(action.into())).or_else(|_| observe())
-        {
-            Ok(status) => status,
-            Err(_) => return Ok(attempt.reply(None)),
-        }
+        device
+            .send(Method::POST, &path, Some(action.into()), deadline)
+            .or_else(|_| observe())
     } else {
-        observe()?
+        observe()
+    };
+    let status: Status = match observed {
+        Ok(status) => status,
+        Err(_) if attempt.expired() => {
+            let uncertain = attempt.uncertain;
+            *pending = None;
+            return Ok(Reply::Expired { uncertain });
+        }
+        Err(_) if mutation.is_some() => return Ok(attempt.reply()),
+        Err(error) => return Err(error),
     };
     attempt.state = status.state;
     attempt.uncertain = false;
-    let reply = attempt.reply(status.workspace_id);
-    if !matches!(status.state, State::Waiting | State::Ready) {
+    attempt.workspace_id = status.workspace_id;
+    if !attempt.state.is_terminal() && attempt.expired() {
         *pending = None;
-    } else if attempt.expired() {
-        *pending = None;
-        return Ok(Reply::Expired);
+        return Ok(Reply::Expired { uncertain: false });
     }
-    Ok(reply)
+    Ok(attempt.reply())
 }
 
-fn list(config: &Config, bearer: &str) -> Result<Listing, Failure> {
-    let listing = match send(config, bearer, Method::GET, LIST_PATH, None) {
+fn list(device: &DeviceRequest<'_>) -> Result<Listing, Failure> {
+    let listing = match device.send(Method::GET, LIST_PATH, None, None) {
         Err(Failure::Unavailable) => return Ok(Listing::Unavailable),
         result => result?,
     };
@@ -387,26 +436,47 @@ fn browser_url(config: &Config, raw: &str) -> Result<Url, Failure> {
     Ok(url)
 }
 
-/// Use the same timeout, origin rules, and no-redirect policy as account proof.
-fn send<T: DeserializeOwned>(
-    config: &Config,
-    bearer: &str,
-    method: Method,
-    path: &str,
-    body: Option<serde_json::Value>,
-) -> Result<T, Failure> {
-    let url = endpoint(config, path)?;
-    let request = auth::client(&url)?.request(method, url).bearer_auth(bearer);
-    let request = match body {
-        Some(body) => request.json(&body),
-        None => request,
-    };
-    let response = request.send().map_err(|_| Failure::Offline)?;
-    match response.status() {
-        status if status.is_success() => auth::decode_json(response),
-        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => Err(Failure::Unavailable),
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(Failure::Rejected),
-        _ => Err(Failure::Offline),
+/// Bind request dispatch to fresh account authority, including fallback reads.
+struct DeviceRequest<'a> {
+    config: &'a Config,
+    bearer: &'a str,
+    can_send: &'a dyn Fn() -> bool,
+}
+
+impl DeviceRequest<'_> {
+    /// Use the existing origin and redirect rules. A timed attempt must not
+    /// send after its deadline or wait longer than its remaining time.
+    fn send<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        deadline: Option<Instant>,
+    ) -> Result<T, Failure> {
+        let url = endpoint(self.config, path)?;
+        let mut request = auth::client(&url)?
+            .request(method, url)
+            .bearer_auth(self.bearer);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Failure::Cancelled);
+            }
+            request = request.timeout(remaining.min(Duration::from_secs(15)));
+        }
+        if !(self.can_send)() {
+            return Err(Failure::Cancelled);
+        }
+        let response = request.send().map_err(|_| Failure::Offline)?;
+        match response.status() {
+            status if status.is_success() => auth::decode_json(response),
+            StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => Err(Failure::Unavailable),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(Failure::Rejected),
+            _ => Err(Failure::Offline),
+        }
     }
 }
 

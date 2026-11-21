@@ -93,6 +93,47 @@ describe("Cloud workspace invitations", () => {
     expect(onJoined).toHaveBeenCalledOnce()
   })
 
+  it("reads the same attempt if the Desktop finish reply is lost", async () => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(attempt("ready"))
+      .mockRejectedValueOnce(new Error("reply lost"))
+      .mockResolvedValueOnce(attempt("joined"))
+    const { onJoined } = await open(port)
+    await click("Join workspace")
+    expect(port.mock.calls.map(([, request]) => request)).toEqual([
+      { action: "list" },
+      { action: "finish", id: "attempt-1" },
+      { action: "status", id: "attempt-1" },
+    ])
+    expect(screen.getByRole("status")).toHaveTextContent("You joined the workspace.")
+    expect(onJoined).toHaveBeenCalledOnce()
+  })
+
+  it("shows a completed join on reopen until the result is dismissed", async () => {
+    let finish: (reply: InvitationReply) => void = () => {}
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(attempt("ready"))
+      .mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+      .mockResolvedValueOnce(attempt("joined"))
+      .mockResolvedValueOnce(checked)
+    const first = await open(port)
+    await click("Join workspace")
+    first.unmount()
+    await act(async () => finish(attempt("joined")))
+    expect(first.onJoined).not.toHaveBeenCalled()
+
+    const reopened = await open(port)
+    expect(screen.getByRole("status")).toHaveTextContent("You joined the workspace.")
+    expect(reopened.onJoined).toHaveBeenCalledOnce()
+    await click("Refresh invitations")
+    expect(port).toHaveBeenLastCalledWith("account-1", { action: "dismiss", id: "attempt-1" })
+    expect(
+      screen.getByRole("button", { name: "Verify invitation to Example Team" }),
+    ).toBeVisible()
+  })
+
   it("checks the list without a target and distinguishes a verified empty list", async () => {
     const port = vi
       .fn<CloudInvitationPort>()
@@ -106,6 +147,7 @@ describe("Cloud workspace invitations", () => {
     await act(() => vi.advanceTimersByTimeAsync(2_000))
     expect(screen.queryByRole("button", { name: "Join workspace" })).toBeNull()
     await click("Review invitations")
+    expect(port).toHaveBeenLastCalledWith("account-1", { action: "dismiss", id: "attempt-1" })
     expect(screen.getByRole("status")).toHaveTextContent("No pending workspace invitations.")
   })
 

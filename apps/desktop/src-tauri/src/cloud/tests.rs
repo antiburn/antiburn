@@ -160,6 +160,7 @@ struct FakeTransport {
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_invitation_probe: Option<Arc<dyn Fn() + Send + Sync>>,
     returned_session: Mutex<Option<Session>>,
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
@@ -170,6 +171,13 @@ struct FakeTransport {
 }
 
 impl Transport for Arc<FakeTransport> {
+    fn supports_invitations(&self, _: &Config) -> bool {
+        if let Some(action) = &self.on_invitation_probe {
+            action();
+        }
+        false
+    }
+
     fn exchange(&self, _: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         if let Some(action) = &self.on_exchange {
             action();
@@ -468,6 +476,43 @@ fn cloud_browser_prelaunch_abort_requires_a_native_missing_launcher_error() {
         Error::other("launcher exited after handoff"),
     ] {
         assert!(!browser_launch_did_not_start(&OpenerError::Io(error)));
+    }
+}
+
+#[test]
+fn cloud_browser_does_not_open_after_invalidation_during_invitation_probe() {
+    for account_changed in [false, true] {
+        let mut fixture = Fixture::new();
+        let attempt_generation = Arc::new(AtomicU64::new(1));
+        let account_generation = Arc::new(AtomicU64::new(0));
+        let invalidated = if account_changed {
+            account_generation.clone()
+        } else {
+            attempt_generation.clone()
+        };
+        fixture.engine.transport = Box::new(Arc::new(FakeTransport {
+            on_invitation_probe: Some(Arc::new(move || {
+                invalidated.fetch_add(1, Ordering::AcqRel);
+            })),
+            ..FakeTransport::default()
+        }));
+        let (_, listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+        assert!(
+            !launch_account_browser(
+                &mut fixture.engine,
+                &attempt,
+                || attempt_generation.load(Ordering::Acquire) == 1
+                    && account_generation.load(Ordering::Acquire) == 0,
+                || panic!("invalidated sign-in must not open the browser"),
+            )
+            .unwrap()
+        );
+        drop(listener);
+        assert!(fixture.engine.status == AuthStatus::Cancelled);
+        assert!(fixture.engine.attempt.is_none());
+        assert!(!fixture.engine.cleanup.blocks_connection());
+        fixture.restart();
+        assert!(fixture.engine.begin(101, 3).is_ok());
     }
 }
 

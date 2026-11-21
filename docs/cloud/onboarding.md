@@ -22,6 +22,8 @@ You can cancel verification or leave Cloud setup without joining. Verification
 times out after five minutes. If Desktop cannot confirm a join, use **Check
 result** to check the same attempt. A restart does not restore the attempt.
 Check whether the workspace appears in Cloud before you try again.
+If you leave and reopen the invitation view, Desktop shows the last completed
+result for the current account until you dismiss it.
 
 Joining adds membership only. It does not issue another device grant, change
 your selected sync destination, or give consent to upload sessions.
@@ -52,4 +54,5 @@ it does not finish the join. Desktop polls while the attempt is `waiting`, withi
 its verification deadline. The other states are `ready`, `checked`,
 `unavailable`, `wrong_account`, `canceled`, `joined`, `no_seat`, and `closed`.
 After a lost finish response, Desktop reads the same attempt before it offers
-another action. It never starts a second attempt or retries the join automatically.
+another action, as long as the attempt has time left. It never starts a second
+attempt or retries the join automatically.
