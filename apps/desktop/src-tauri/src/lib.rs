@@ -38,7 +38,7 @@
 //! server, or backend, ever. Everything runs on this machine, as the reader.
 //! The provider limit figures on the Usage
 //! surface are read from a file an agent already wrote, and one switch, on
-//! by default once first-run setup is complete, runs that agent so it
+//! by default, runs that agent so it
 //! refreshes the file — the agent goes online on its own account, exactly as
 //! it would if the reader ran it, and this crate still only reads the file it
 //! leaves behind. The shell downloads a public pricing catalog from models.dev.
@@ -63,7 +63,6 @@ mod consent;
 mod diagnostics_export;
 mod disk_monitor;
 mod dto;
-mod first_run_gate;
 mod fork_lineage;
 mod global_click;
 mod hud;
@@ -78,14 +77,20 @@ mod jev;
 pub mod published_evidence_reader;
 pub use jev::client::evaluate_custom as evaluate_custom_system_one;
 pub use jev::config as jev_config;
+#[cfg(feature = "cloud")]
+mod cloud;
+#[cfg(all(debug_assertions, feature = "cloud"))]
+mod cloud_dev;
 pub mod jev_cloudflare;
 pub mod jev_ollama;
 mod launch_intent;
+mod local_tools;
 mod main_window;
 #[cfg(feature = "memory-probe")]
 mod memory_probe;
 mod notifications;
 mod nudges;
+mod onboarding_window;
 mod opencode_live;
 mod popover;
 mod popover_peek;
@@ -188,8 +193,8 @@ impl Schedulers {
 /// them.
 pub fn run() {
     macro_rules! command_handlers {
-        ($( $handler:path => $name:literal, )*) => {
-            tauri::generate_handler![$($handler),*]
+        ($( $(#[$meta:meta])* $handler:path => $name:literal, )*) => {
+            tauri::generate_handler![$($(#[$meta])* $handler),*]
         };
     }
 
@@ -263,6 +268,11 @@ pub fn run() {
         app.manage(remediation::RemediationController::new(data_dir.clone()));
         let main_window_state = main_window::MainWindowState::load(&app.state::<store::Store>());
         app.manage(main_window_state);
+        let onboarding =
+            onboarding_window::OnboardingWindowState::load(&app.state::<store::Store>());
+        app.manage(onboarding);
+        #[cfg(feature = "cloud")]
+        cloud::initialize(app.handle(), &data_dir)?;
         app.manage(runtime_pricing::PricingState::load(&data_dir));
         app.manage(insights_worker::WorkerHandle::default());
         app.manage(jev::worker::WorkerHandle::default());
@@ -327,20 +337,8 @@ pub fn run() {
                 "dark" => Some(tauri::Theme::Dark),
                 _ => None,
             });
-            if settings.onboarding_completed {
-                startup_registration::reconcile(app.handle(), settings.launch_at_login);
-            }
+            startup_registration::reconcile(app.handle(), settings.launch_at_login);
         }
-        // In memory only: a relaunch during a first run starts the gate,
-        // and the frontend, over from the live-limits step. A failed read
-        // opens the gate, so it cannot stop the scan and the checks on an
-        // existing install.
-        let onboarding_completed = app
-            .state::<store::Store>()
-            .settings()
-            .map(|settings| settings.onboarding_completed)
-            .unwrap_or(true);
-        app.manage(first_run_gate::FirstRunGate::new(onboarding_completed));
         app.manage(scan::ScanController::default());
         app.manage(session_lifecycle::SessionEvents::default());
         app.manage(Schedulers::default());
@@ -354,12 +352,9 @@ pub fn run() {
         app.manage(settings::PendingPane::default());
         app.manage(settings::SettingsWindowState::default());
         app.manage(WindowRebuildState::default());
-        app.manage(nudges::AnchorOverride::default());
         app.manage(antiburn_nudge::NotificationGate::default());
 
         tray::create(app.handle())?;
-        #[cfg(all(debug_assertions, target_os = "macos"))]
-        tray::install_debug_app_menu(app.handle())?;
         tray::install_usage_meter(app.handle());
         if let Ok(settings) = app.state::<store::Store>().settings() {
             app_presence::apply_at_launch(app.handle(), &settings);
@@ -375,13 +370,7 @@ pub fn run() {
         // takes it again. The watcher idles while the HUD is closed.
         hud::spawn_display_watcher(app.handle());
         #[cfg(target_os = "macos")]
-        if app
-            .state::<store::Store>()
-            .settings()
-            .is_ok_and(|settings| settings.onboarding_completed)
-        {
-            hud::restore_at_launch(app.handle());
-        }
+        hud::restore_if_enabled(app.handle());
 
         // Registered before the update scheduler starts, so the first
         // automatic check can see whether there is anything to check with.
@@ -399,9 +388,7 @@ pub fn run() {
         // The notification window's manager and the chime player. The
         // webview itself is created only when policy delivers a nudge.
         nudges::init(app.handle())?;
-        // On macOS, ask for the Focus-status authorization when a
-        // completed setup already permits notifications. First runs wait:
-        // apply_settings_transition asks again when onboarding finishes.
+        // Request Focus authorization only when the saved preferences permit it.
         notifications::maybe_initialize_authorization(app.handle());
         // The live-usage registry: the sources that can prove a
         // provider's own limit figures, and the milestone ledger they
@@ -412,11 +399,14 @@ pub fn run() {
             usage_alerts::LiveUsage::from_store(&store)
         };
         app.manage(live_usage);
+        local_tools::start(app.handle());
         cli_install::start(app.handle());
         agent_integrations::desktop::start(app.handle(), |app, validation| {
             let runtime = match validation {
                 agent_integrations::desktop::CliValidation::Fresh => cli_install::resolve_cli(app),
-                agent_integrations::desktop::CliValidation::Cached => cli_install::inspect_cli(app),
+                agent_integrations::desktop::CliValidation::Cached => {
+                    cli_install::inspect_cli(app).map_err(|error| error.to_string())
+                }
             };
             runtime.map(|runtime| agent_integrations::lifecycle::CliConnection {
                 executable: runtime.executable,
@@ -457,14 +447,9 @@ pub fn run() {
         // second process. The callback can now use every managed state.
         let repeated = app.state::<RepeatedLaunch>();
         repeated.setup_ready.store(true, Ordering::Release);
+        popover::prewarm(app.handle());
         let repeated_launch = repeated.pending.swap(false, Ordering::AcqRel);
-        // The menu-bar icon stays hidden during the first run, so a
-        // background launch then also opens the main window. Otherwise the
-        // app has no visible way in.
-        if launch_intent == launch_intent::LaunchIntent::Explicit
-            || repeated_launch
-            || !onboarding_completed
-        {
+        if launch_intent == launch_intent::LaunchIntent::Explicit || repeated_launch {
             let trigger =
                 if launch_intent == launch_intent::LaunchIntent::Explicit || !repeated_launch {
                     main_window::OpenTrigger::ColdLaunch
@@ -551,12 +536,19 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
-/// Open the ordinary main window. The first-run Overview is part of it.
+/// Open onboarding until the reader completes it.
 pub(crate) fn open_launch_surface(
     app: &tauri::AppHandle,
     trigger: main_window::OpenTrigger,
 ) -> tauri::Result<()> {
-    main_window::open(app, trigger)
+    if app
+        .state::<onboarding_window::OnboardingWindowState>()
+        .completed()
+    {
+        main_window::open(app, trigger)
+    } else {
+        onboarding_window::open(app)
+    }
 }
 
 /// Stop every background task. Safe to call when none ever started.
@@ -613,6 +605,7 @@ fn close_policy(label: &str, quit_when_main_closes: bool) -> ClosePolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManagedWindow {
     Main,
+    Onboarding,
     Popover,
     Settings,
 }
@@ -621,6 +614,7 @@ impl ManagedWindow {
     fn rebuild_after_destroy(self, app: &tauri::AppHandle) {
         match self {
             Self::Main => main_window::rebuild_after_destroy(app),
+            Self::Onboarding => onboarding_window::rebuild_after_destroy(app),
             Self::Popover => popover::rebuild_after_destroy(app),
             Self::Settings => settings::rebuild_after_destroy(app),
         }
@@ -630,6 +624,7 @@ impl ManagedWindow {
 fn rebuild_after_destroy_for_label(label: &str) -> Option<ManagedWindow> {
     match label {
         main_window::LABEL => Some(ManagedWindow::Main),
+        onboarding_window::LABEL => Some(ManagedWindow::Onboarding),
         popover::LABEL => Some(ManagedWindow::Popover),
         settings::LABEL => Some(ManagedWindow::Settings),
         _ => None,
@@ -662,6 +657,21 @@ fn on_window_event(window: &tauri::Window, event: &WindowEvent) {
         && let Some(main_window) = window.app_handle().get_webview_window(main_window::LABEL)
     {
         main_window::emit_visibility_changed(&main_window);
+    }
+    if window.label() == onboarding_window::LABEL
+        && let Some(onboarding) = window
+            .app_handle()
+            .get_webview_window(onboarding_window::LABEL)
+    {
+        match event {
+            WindowEvent::Focused(_) | WindowEvent::Resized(_) => {
+                onboarding_window::emit_visibility_changed(&onboarding);
+            }
+            WindowEvent::CloseRequested { .. } => {
+                onboarding_window::on_close_requested(&onboarding)
+            }
+            _ => {}
+        }
     }
     if let Some(manager) = window
         .app_handle()
@@ -809,8 +819,7 @@ mod tests {
         );
     }
 
-    /// Settings → Agents, Sessions, and Checks render the same step settings
-    /// as the main window's first run. The settings window gets the app's
+    /// Settings → Agents, Sessions, and Checks use the app's
     /// default set, so every command those panes call must be in it, or in
     /// a capability that names the settings window.
     #[test]
@@ -931,6 +940,77 @@ mod tests {
     }
 
     #[test]
+    fn cloud_commands_require_the_explicit_feature() {
+        macro_rules! names {
+            ($( $(#[$meta:meta])* $handler:path => $name:literal, )*) => {
+                &[$($(#[$meta])* $name,)*]
+            };
+        }
+        let commands: &[&str] = with_app_commands!(names);
+        assert_eq!(commands.contains(&"cloud_begin"), cfg!(feature = "cloud"));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|name| name.starts_with("cloud_"))
+                .count(),
+            if cfg!(feature = "cloud") { 19 } else { 0 }
+        );
+    }
+
+    #[test]
+    fn ordinary_bundle_configs_grant_no_cloud_capability_or_custom_scheme() {
+        for source in [
+            include_str!("../tauri.conf.json"),
+            include_str!("../tauri.debug.conf.json"),
+            include_str!("../tauri.memory-probe.conf.json"),
+            include_str!("../tauri.release.conf.json"),
+            include_str!("../tauri.sidecar.conf.json"),
+        ] {
+            let config: serde_json::Value = serde_json::from_str(source).unwrap();
+            assert!(config["plugins"]["deep-link"].is_null());
+            if let Some(capabilities) = config["app"]["security"]["capabilities"].as_array() {
+                assert!(capabilities.iter().all(|capability| {
+                    !capability
+                        .as_str()
+                        .is_some_and(|name| name.starts_with("cloud-"))
+                }));
+            }
+        }
+        let permissions = include_str!("../capabilities/onboarding.json");
+        assert!(!permissions.contains("allow-cloud-"));
+        let cargo = include_str!("../Cargo.toml");
+        assert!(cargo.contains("default = []"));
+        assert!(cargo.contains("distribution = []"));
+    }
+
+    #[test]
+    #[cfg(feature = "cloud")]
+    fn cloud_account_capability_reaches_existing_onboarding_and_settings() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../cloud-capabilities/account.json")).unwrap();
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["main", "settings", "onboarding"])
+        );
+        for permission in [
+            "allow-cloud-status",
+            "allow-cloud-begin",
+            "allow-cloud-cancel",
+            "allow-cloud-sign-out",
+            "allow-cloud-prepare-sync",
+            "allow-cloud-start-sync",
+        ] {
+            assert!(
+                capability["permissions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == permission)
+            );
+        }
+    }
+
+    #[test]
     fn checks_settings_capability_also_covers_the_main_window() {
         let capability = include_str!("../capabilities/checks-settings.json");
         assert!(capability.contains("\"main\""), "missing main window");
@@ -998,7 +1078,7 @@ mod tests {
 
         use crate::analysis::{EvidencePass, PassOutcome, PassSignal, SessionAnalysis};
         use crate::insights_worker::{
-            PassFuture, WorkerHandle, WorkerLoopSignals, always_open_gate, worker_loop,
+            PassFuture, WorkerHandle, WorkerLoopSignals, continue_before_claim, worker_loop,
         };
         use crate::store::{EvidenceStatus, SessionKey, SessionRecord, Store};
 
@@ -1085,7 +1165,7 @@ mod tests {
                 &WorkerLoopSignals {
                     report_changed: &|| {},
                     backlog: &|_| {},
-                    gate: &always_open_gate,
+                    before_claim: &continue_before_claim,
                 },
                 &|_, _| {},
             )
@@ -1145,6 +1225,10 @@ mod tests {
             ClosePolicy::Allow
         );
         assert_eq!(
+            close_policy(super::onboarding_window::LABEL, true),
+            ClosePolicy::Allow
+        );
+        assert_eq!(
             close_policy(antiburn_nudge::NUDGE_LABEL, false),
             ClosePolicy::HideNudge
         );
@@ -1154,6 +1238,10 @@ mod tests {
     fn only_managed_windows_select_their_deferred_rebuild_handler() {
         let cases = [
             (super::main_window::LABEL, super::ManagedWindow::Main),
+            (
+                super::onboarding_window::LABEL,
+                super::ManagedWindow::Onboarding,
+            ),
             (super::popover::LABEL, super::ManagedWindow::Popover),
             (super::settings::LABEL, super::ManagedWindow::Settings),
         ];

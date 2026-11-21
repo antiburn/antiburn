@@ -265,12 +265,14 @@ fn open_database(
     path: &Path,
     cancelled: Arc<AtomicBool>,
 ) -> Result<Option<(Connection, OpenCodeSqliteSchema)>, &'static str> {
-    let connection = match Connection::open_with_flags(
+    let connection = match crate::discovery::source_fs::open_database(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
         Ok(connection) => connection,
-        Err(_) if path.try_exists().is_ok_and(|exists| !exists) => return Ok(None),
+        Err(_) if crate::discovery::source_fs::try_exists(path).is_ok_and(|exists| !exists) => {
+            return Ok(None);
+        }
         Err(_) => return Err("source_selection_open"),
     };
     connection

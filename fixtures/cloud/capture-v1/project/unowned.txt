@@ -1,0 +1,1 @@
+Synthetic project data. Discovery must not capture this file.

@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "identity": {
+    "capture_id": "fixture-opencode-main",
+    "account_id": "synthetic-account",
+    "destination_id": "synthetic-destination",
+    "source_id": "synthetic-root/opencode/b3BlbmNvZGUuZGI/c2VzX21haW4"
+  },
+  "compression": "gzip-mtime0-os255-level6",
+  "chunk_expanded_bytes": 8388608,
+  "metadata_fingerprint": "65a968020f3b4388748dfe96823725be565c7e888fde76d9b276c03ec8d688ec",
+  "source_fingerprint": "21d2f52774c7a44fb65aa2338ecf1f8a39eb99a7e2e24ec35d7e146f577f7af0",
+  "streams": [
+    {
+      "stream_id": "native-rows",
+      "role": "native_rows",
+      "schema": "antiburn-sqlite-native",
+      "expanded_bytes": 20874,
+      "expanded_sha256": "a9048958dc674c2902034201edf077eb4d4b0f8c398f5e8f7a63c2f130f999f8",
+      "chunks": [
+        {
+          "index": 0,
+          "expanded_bytes": 20874,
+          "expanded_sha256": "a9048958dc674c2902034201edf077eb4d4b0f8c398f5e8f7a63c2f130f999f8",
+          "compressed_bytes": 3485,
+          "compressed_sha256": "ec0fcd8a1621c6fe4daa09139ccc80063f3b7af8b01679ea2a051d950e553048"
+        }
+      ]
+    },
+    {
+      "stream_id": "capture-metadata",
+      "role": "capture_metadata",
+      "schema": "antiburn-capture-metadata-v1",
+      "expanded_bytes": 317,
+      "expanded_sha256": "35a4c7cb28039dfb78b7d31ef42e16199c3d381b0b43b97360fe115ebe2f8507",
+      "chunks": [
+        {
+          "index": 0,
+          "expanded_bytes": 317,
+          "expanded_sha256": "35a4c7cb28039dfb78b7d31ef42e16199c3d381b0b43b97360fe115ebe2f8507",
+          "compressed_bytes": 198,
+          "compressed_sha256": "1f3a301cc743dd82014114bed35c06030703accca13601545dc757dc769a4240"
+        }
+      ]
+    }
+  ]
+}

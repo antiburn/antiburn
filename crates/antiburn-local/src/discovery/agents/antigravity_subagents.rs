@@ -125,6 +125,7 @@ fn label_from_spec(spec: Option<&Value>) -> String {
 /// Persist the spawn-edge sidecar at an explicit path. Written via temp-file +
 /// rename so a concurrent reader never sees a partial file.
 pub async fn save_spawn_edges(path: &Path, edges: &SpawnEdges) -> anyhow::Result<()> {
+    crate::discovery::source_fs::admit(path)?;
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("missing parent for {}", path.display()))?;
@@ -172,7 +173,7 @@ pub async fn save_spawn_edges(path: &Path, edges: &SpawnEdges) -> anyhow::Result
 }
 
 async fn load_spawn_edges(path: &Path) -> SpawnEdges {
-    match tokio::fs::read_to_string(path).await {
+    match crate::discovery::source_fs::asynchronous::read_to_string(path).await {
         Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
         Err(_) => SpawnEdges::new(),
     }
@@ -210,7 +211,10 @@ pub async fn list_subagents_in(
             continue;
         }
         let path = cascade_cache_path(cache_dir, child_id);
-        if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        if crate::discovery::source_fs::asynchronous::try_exists(&path)
+            .await
+            .unwrap_or(false)
+        {
             out.push(path);
         }
     }
@@ -232,7 +236,7 @@ pub async fn locate_subagent_in(
         return None;
     }
     let path = cascade_cache_path(cache_dir, subagent_id);
-    tokio::fs::try_exists(&path)
+    crate::discovery::source_fs::asynchronous::try_exists(&path)
         .await
         .unwrap_or(false)
         .then_some(path)

@@ -202,7 +202,7 @@ struct RecoveryLedger {
 #[derive(Debug, Default)]
 struct NavigationTargetState {
     pending: Option<NavigationTargetRequest>,
-    applied: Option<(u64, u64)>,
+    acknowledged: Option<(u64, u64)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +265,9 @@ pub fn install_visibility_observers(app: &AppHandle) {
             }
             if let Some(window) = app.get_webview_window(LABEL) {
                 emit_visibility_changed(&window);
+            }
+            if let Some(window) = app.get_webview_window(crate::onboarding_window::LABEL) {
+                crate::onboarding_window::emit_visibility_changed(&window);
             }
         });
         // SAFETY: AppKit posts these notifications on the main thread.
@@ -509,7 +512,7 @@ impl MainWindowState {
         };
         let mut state = lock(&self.navigation_target);
         state.pending = Some(request.clone());
-        state.applied = None;
+        state.acknowledged = None;
         request
     }
 
@@ -521,7 +524,7 @@ impl MainWindowState {
             .is_some_and(|request| request.revision == revision)
         {
             state.pending = None;
-            state.applied = None;
+            state.acknowledged = None;
         }
     }
 
@@ -554,10 +557,9 @@ impl MainWindowState {
         if pending.revision != revision {
             return TargetAck::StaleRevision;
         }
-        state.applied = Some((generation, revision));
+        state.acknowledged = Some((generation, revision));
         if ready_generation == Some(generation) && presented {
             state.pending = None;
-            state.applied = None;
             TargetAck::RetiredNow
         } else {
             TargetAck::RecordedRetained
@@ -569,21 +571,20 @@ impl MainWindowState {
         let Some(revision) = state.pending.as_ref().map(|request| request.revision) else {
             return false;
         };
-        if state.applied != Some((revealed_generation, revision)) {
+        if state.acknowledged != Some((revealed_generation, revision)) {
             return false;
         }
         state.pending = None;
-        state.applied = None;
         true
     }
 
     fn invalidate_target_application(&self, doomed_generation: u64) {
         let mut state = lock(&self.navigation_target);
         if state
-            .applied
+            .acknowledged
             .is_some_and(|(generation, _)| generation == doomed_generation)
         {
-            state.applied = None;
+            state.acknowledged = None;
         }
     }
 
@@ -640,6 +641,15 @@ impl MainWindowState {
             reported: false,
         });
         (kind, now.saturating_duration_since(requested_at))
+    }
+
+    fn has_revealed_target(&self, revision: u64) -> bool {
+        let Some(generation) = self.readiness().ready_generation() else {
+            return false;
+        };
+        *lock(&self.renderer_status) == Some((generation, RendererStatus::Healthy))
+            && lock(&self.content_origin).is_some_and(|origin| origin.generation == generation)
+            && lock(&self.navigation_target).acknowledged == Some((generation, revision))
     }
 
     /// Marks this generation's first settled content after a reveal.
@@ -1195,7 +1205,27 @@ pub async fn open_main_window_section(
     remote_host_id: Option<String>,
 ) -> Result<(), String> {
     let destination = section_navigation_destination(window.label(), section, remote_host_id)?;
-    on_main_value(&app, move |app| route_section_target(app, destination)).await?
+    let source = if destination.remote_host_id.is_some() {
+        "settings_remote_host"
+    } else {
+        "popover_section"
+    };
+    on_main_value(&app, move |app| {
+        route_section_target(app, destination, source).map(|_| ())
+    })
+    .await?
+}
+
+pub(crate) fn open_sessions_after_onboarding(app: &AppHandle) -> Result<u64, String> {
+    route_section_target(
+        app,
+        NavigationDestination {
+            section: MainWindowSection::Activity,
+            target: None,
+            remote_host_id: None,
+        },
+        "onboarding",
+    )
 }
 
 fn section_navigation_destination(
@@ -1219,39 +1249,22 @@ fn section_navigation_destination(
     })
 }
 
-/// Show and focus the retained main window, and route it straight to `section`.
-///
-/// For a native caller, not a webview under IPC — the debug-only tray reset
-/// is its only caller today, hence the `cfg`. It skips the caller-label check
-/// [`section_navigation_destination`] applies, because that check exists only
-/// to stop an untrusted webview from asking for a window it must not open.
-#[cfg(debug_assertions)]
-pub(crate) fn open_at_section(app: &AppHandle, section: MainWindowSection) -> Result<(), String> {
-    route_section_target(
-        app,
-        NavigationDestination {
-            section,
-            target: None,
-            remote_host_id: None,
-        },
-    )
-}
-
-fn route_section_target(app: &AppHandle, destination: NavigationDestination) -> Result<(), String> {
+fn route_section_target(
+    app: &AppHandle,
+    destination: NavigationDestination,
+    source: &'static str,
+) -> Result<u64, String> {
     let state = app.state::<MainWindowState>();
-    let source = if destination.remote_host_id.is_some() {
-        "settings_remote_host"
-    } else {
-        "popover_section"
-    };
     let request = state.request_navigation_target(destination);
+    let revision = request.revision;
     ::tracing::info!(event = "main_window_open_source", source);
     if let Err(error) = open(app, OpenTrigger::Interaction) {
-        state.clear_navigation_target(request.revision);
+        state.clear_navigation_target(revision);
         return Err(error.to_string());
     }
     app.emit_to(LABEL, NAVIGATION_TARGET_EVENT, request)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(revision)
 }
 
 /// Peek at the latest destination after the main renderer installs its listener.
@@ -1295,6 +1308,9 @@ pub fn acknowledge_main_window_navigation_target(
             .as_ref()
             .is_some_and(is_visible);
         let outcome = state.record_target_applied(generation, revision, active, ready, presented);
+        if matches!(outcome, TargetAck::RetiredNow | TargetAck::RecordedRetained) {
+            crate::onboarding_window::notify_main_presentation_changed(app);
+        }
         ::tracing::info!(
             event = "main_window_target_ack",
             window = LABEL,
@@ -1404,6 +1420,7 @@ pub fn report_main_window_render_status(
             );
             return;
         }
+        crate::onboarding_window::notify_main_presentation_changed(app);
         ::tracing::info!(
             event = "main_window_render_status",
             window = LABEL,
@@ -1491,7 +1508,11 @@ fn build(app: &AppHandle, generation: u64) -> tauri::Result<()> {
         ),
         placement.as_ref(),
         interface_scale.factor(),
-        |window, payload| {
+        move |window, payload| {
+            #[cfg(feature = "memory-probe")]
+            if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                crate::memory_probe::report_web_content(&window, generation);
+            }
             window_lifecycle::trace_page_load::<MainWindowState>(window, payload, LABEL);
         },
     )?;
@@ -1899,27 +1920,6 @@ pub fn close(window: &WebviewWindow) {
     emit_visibility_changed(window);
 }
 
-/// Debug tool: forget the saved placement, return the main window to its
-/// default size and position, and hide it, as for a new install.
-#[cfg(debug_assertions)]
-pub(crate) fn reset_placement(app: &AppHandle) {
-    debug_assert_main_thread();
-    let state = app.state::<MainWindowState>();
-    state.placement_generation.fetch_add(1, Ordering::AcqRel);
-    *lock(&state.placement) = None;
-    app.state::<Store>().remove_internal_value(PLACEMENT_KEY);
-    let Some(window) = app.get_webview_window(LABEL) else {
-        return;
-    };
-    match antiburn_main_window::reset_placement(&window) {
-        Ok(placement) => *lock(&state.placement) = Some(placement),
-        Err(error) => {
-            ::tracing::warn!(event = "main_window_placement_reset_failed", error = %error);
-        }
-    }
-    close(&window);
-}
-
 /// Read whether the main window can present work without treating blur as hidden.
 pub fn is_visible(window: &WebviewWindow) -> bool {
     #[cfg(target_os = "macos")]
@@ -1941,8 +1941,18 @@ const fn visible_from_window_state(
     visible && !minimized && !application_hidden
 }
 
+/// Check that the healthy, visible renderer acknowledges the navigation target.
+pub(crate) fn has_presented_target(app: &AppHandle, revision: u64) -> bool {
+    app.state::<MainWindowState>().has_revealed_target(revision)
+        && app
+            .get_webview_window(LABEL)
+            .as_ref()
+            .is_some_and(is_visible)
+}
+
 /// Emit the current presentation visibility to the retained renderer.
 pub fn emit_visibility_changed(window: &WebviewWindow) {
+    crate::onboarding_window::notify_main_presentation_changed(window.app_handle());
     if let Err(error) = window.emit(VISIBILITY_CHANGED_EVENT, is_visible(window)) {
         ::tracing::debug!(event = "main_window_visibility_emit_failed", error = %error);
     }
@@ -1968,6 +1978,7 @@ pub(crate) fn restore_after_activation(app: &AppHandle) {
         .get_webview_window(LABEL)
         .is_some_and(|window| window.is_minimized().unwrap_or(false));
     let another_window_owns_activation = window_is_visible(app, crate::settings::LABEL)
+        || window_is_visible(app, crate::onboarding_window::LABEL)
         || [
             crate::popover::LABEL,
             crate::popover_peek::LABEL,
@@ -2289,6 +2300,78 @@ mod tests {
         );
         assert_eq!(queue.next(), (Some("latest".to_owned()), None));
         assert_eq!(queue.next(), (None, Some(PlacementTerminalAction::Restart)));
+    }
+
+    #[test]
+    fn onboarding_handoff_requires_a_healthy_revealed_renderer() {
+        let state = state();
+        let now = Instant::now();
+        let first = ready_generation(&state, now, true);
+        let sessions =
+            state.request_navigation_target(section_destination(MainWindowSection::Activity));
+        assert_eq!(
+            state.record_target_applied(first, sessions.revision, Some(first), Some(first), false),
+            TargetAck::RecordedRetained,
+        );
+        state.accept_renderer_status(first, RendererStatus::Healthy);
+        assert!(!state.has_revealed_target(sessions.revision));
+        state.finish_reveal(now, Some(first));
+        assert!(state.retire_target_on_reveal(first));
+        assert!(state.has_revealed_target(sessions.revision));
+
+        state.readiness().reset();
+        let replacement = ready_generation(&state, now, true);
+        assert_ne!(first, replacement);
+        state.finish_reveal(now, Some(replacement));
+        state.accept_renderer_status(replacement, RendererStatus::Healthy);
+        assert!(!state.has_revealed_target(sessions.revision));
+
+        let retry =
+            state.request_navigation_target(section_destination(MainWindowSection::Activity));
+        state.record_target_applied(
+            replacement,
+            retry.revision,
+            Some(replacement),
+            Some(replacement),
+            true,
+        );
+        state.accept_renderer_status(replacement, RendererStatus::Fallback);
+        assert!(!state.has_revealed_target(retry.revision));
+        state.accept_renderer_status(replacement, RendererStatus::Healthy);
+        assert!(state.has_revealed_target(retry.revision));
+    }
+
+    #[test]
+    fn onboarding_handoff_waits_for_sessions_on_an_already_visible_main_window() {
+        let state = state();
+        let now = Instant::now();
+        let generation = ready_generation(&state, now, true);
+        state.accept_renderer_status(generation, RendererStatus::Healthy);
+        state.finish_reveal(now, Some(generation));
+
+        let checks =
+            state.request_navigation_target(section_destination(MainWindowSection::BurnChecks));
+        let acknowledge = |revision| {
+            state.record_target_applied(
+                generation,
+                revision,
+                Some(generation),
+                Some(generation),
+                true,
+            )
+        };
+        assert_eq!(acknowledge(checks.revision), TargetAck::RetiredNow);
+
+        let sessions =
+            state.request_navigation_target(section_destination(MainWindowSection::Activity));
+        assert!(!state.has_revealed_target(sessions.revision));
+        assert_eq!(acknowledge(checks.revision), TargetAck::StaleRevision);
+        assert!(!state.has_revealed_target(sessions.revision));
+
+        assert_eq!(acknowledge(sessions.revision), TargetAck::RetiredNow);
+        assert!(state.has_revealed_target(sessions.revision));
+        state.request_navigation_target(section_destination(MainWindowSection::BurnChecks));
+        assert!(!state.has_revealed_target(sessions.revision));
     }
 
     #[test]

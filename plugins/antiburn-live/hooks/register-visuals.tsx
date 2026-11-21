@@ -1749,20 +1749,23 @@ export function renderTerminalMarkView(
       paddingLeft={1}
       flexDirection="row"
       flexShrink={0}
-      height={2}
+      height={cells ? 2 : 1}
       alignItems="center"
       justifyContent="center"
     >
-      <ui.Box flexDirection="column" width={10} height={2} flexShrink={0}>
-        {'Raster' in ui && cells ? (
+      <ui.Box
+        flexDirection="column"
+        width={10}
+        height={cells ? 2 : 1}
+        flexShrink={0}
+      >
+        {'Raster' in ui && cells && (
           <ui.Raster
             key="usage-terminal-flame"
             columns={10}
             rows={1}
             cells={cells.slice(0, 160)}
           />
-        ) : (
-          <ui.Text> </ui.Text>
         )}
         <ui.Box width={10} height={1} flexShrink={0} overflow="hidden">
           <ui.Button

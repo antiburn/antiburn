@@ -324,27 +324,29 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 work intensity and local data volume, but not the work itself.
               </p>
             </Disclosure>
-            {/* Both identifiers stay in one place with the timestamp effect.
-                A 30-day id plus a time shows when analytics events occur. */}
+            {/* Keep the identifier lifetimes and timestamp limits together. */}
             <Disclosure label="The two identifiers">
               <p>
                 Both are random. Neither is derived from anything about you or your machine.
               </p>
               <p className="mt-2">
-                The <strong className="font-medium text-label">installation id</strong> is
-                replaced every 30 days, limiting how long that id groups events. Since every
-                event also carries a time, they do show roughly when analytics events were
-                captured within those 30 days &mdash; never what you were working on. Switching
-                analytics off deletes the id and anything still queued, so switching back on
-                starts a new id.
+                The <strong className="font-medium text-label">installation id</strong> is kept
+                across restarts and upgrades without scheduled replacement. Since every event
+                also carries a time, they do show roughly when analytics events were captured
+                and can group this installation&rsquo;s activity over months or years &mdash;
+                never what you were working on. Switching analytics off deletes the id and
+                anything still queued, so switching back on starts a new id. Removing local
+                analytics state also removes the id.
               </p>
               <p className="mt-2">
                 The <strong className="font-medium text-label">analytics-session id</strong> is
                 required by the receiving server. Its generator exists only in memory, but each
                 event waiting to be sent keeps a copy on disk. Newly captured events get a new
-                id after 30 minutes without an analytics event, when antiburn restarts, or when
-                the installation id rotates. Background events can keep the id active, and one
-                app run can have more than one, so it does not measure a visit or time spent.
+                id after 30 minutes without a user-oriented analytics event, when antiburn
+                restarts, or when a new installation id is created. Background events do not
+                extend that timeout. A background-only session has no inactivity timeout; its id
+                changes with the first user-oriented event or another reset. One app run can
+                have more than one id, so it does not measure a visit or time spent.
               </p>
             </Disclosure>
             <Disclosure label="How the starting default works">

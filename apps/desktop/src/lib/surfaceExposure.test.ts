@@ -193,6 +193,69 @@ describe("liveUsageObservations", () => {
     ])
   })
 
+  it("reports a stale reading kept through a recoverable expiry as a recovering login", () => {
+    for (const detail of ["credentialExpired", "refreshPending"] as const) {
+      const summary = liveUsage({
+        providers: [provider()],
+        errors: [
+          {
+            source: "claude",
+            provider: "anthropic",
+            displayName: "Claude",
+            category: "authentication",
+            detail,
+          },
+        ],
+      })
+
+      expect(liveUsageObservations(summary)).toEqual([
+        { provider: "anthropic", state: "stale" },
+        { provider: "anthropic", state: "login_recovering" },
+      ])
+    }
+  })
+
+  it("reports a recoverable expiry with no reading as a recovering login", () => {
+    const summary = liveUsage({
+      providers: [],
+      errors: [
+        {
+          source: "claude",
+          provider: "anthropic",
+          displayName: "Claude",
+          category: "authentication",
+          detail: "credentialExpired",
+        },
+      ],
+    })
+
+    expect(liveUsageObservations(summary)).toEqual([
+      { provider: "anthropic", state: "login_recovering" },
+    ])
+  })
+
+  it.each([
+    ["signInRequired", "sign_in_required"],
+    ["cliMissing", "sign_in_required"],
+    ["notSignedIn", "not_signed_in"],
+    [undefined, "authentication"],
+  ] as const)("reports the %s sign-in state as %s", (detail, state) => {
+    const summary = liveUsage({
+      providers: [],
+      errors: [
+        {
+          source: "claude",
+          provider: "anthropic",
+          displayName: "Claude",
+          category: "authentication",
+          ...(detail ? { detail } : {}),
+        },
+      ],
+    })
+
+    expect(liveUsageObservations(summary)).toEqual([{ provider: "anthropic", state }])
+  })
+
   it("reports Claude Desktop alone as missing credentials, not a failed sign-in", () => {
     const summary = liveUsage({
       providers: [],

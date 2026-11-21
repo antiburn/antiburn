@@ -68,7 +68,6 @@ const SETTINGS = {
   theme: "system" as const,
   activityWindowDays: 7,
   sessionDataRetentionDays: -1,
-  onboardingCompleted: true,
   launchAtLogin: false,
   autoUpdate: true,
   discoveryPaused: false,
@@ -1051,7 +1050,7 @@ describe("PopoverView", () => {
     // The first-run welcome card lives in the main window's Overview, and the
     // shell hides the menu-bar icon until the first run finishes. A popover
     // that could still draw it would be a second, unreachable copy.
-    mockCommands({ get_settings: { ...SETTINGS, onboardingCompleted: false } })
+    mockCommands({ get_settings: { ...SETTINGS } })
     render(<PopoverView />)
 
     await screen.findByText("Wire the tray popover")

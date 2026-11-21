@@ -342,7 +342,7 @@ export function HudDetailView() {
             ) : (
               <div className="space-y-2">
                 {state.bars.map((bar) => (
-                  <div key={bar.key}>
+                  <div key={bar.key} className={bar.stale ? "opacity-60" : undefined}>
                     <div className="flex items-baseline justify-between gap-2 type-caption">
                       <span className="led-caption text-label truncate">{bar.label}</span>
                       <span className="stats-number text-[13px] text-label shrink-0">
@@ -356,7 +356,7 @@ export function HudDetailView() {
                       expectedFraction={bar.expectedFraction}
                     />
                     <p className="led-caption type-footnote text-label mt-0.5">
-                      {resetsIn(resetDate(bar.resetsAt), state.now)}
+                      {bar.statusNote ?? resetsIn(resetDate(bar.resetsAt), state.now)}
                     </p>
                   </div>
                 ))}

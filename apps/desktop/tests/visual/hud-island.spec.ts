@@ -314,6 +314,7 @@ test("header alignment follows interrupted phase and scale updates", async ({ pa
       height: Math.ceil((state.height + state.bodyMaxHeight) / state.scale),
     })
     await expect(page.locator(`[data-island=${phase}]`)).toBeVisible()
+    if (phase === "collapsed") await expect(page.getByTestId("island-body")).toHaveCount(0)
     const header = await page.getByTestId("island-header").boundingBox()
     const gap = await page.locator('[data-testid="island-header"] > div').nth(1).boundingBox()
     expect(header!.height * state.scale).toBeCloseTo(32, 0)

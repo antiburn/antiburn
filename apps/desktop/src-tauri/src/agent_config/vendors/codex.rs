@@ -469,7 +469,14 @@ pub(in crate::agent_config) fn project_is_trusted(
         return Ok(false);
     }
     let document = parse_document(&read_checked(global, home)?.bytes)?;
-    reject_active_profile(&document)?;
+    document_trusts_project(&document, workspace)
+}
+
+pub(in crate::agent_config) fn document_trusts_project(
+    document: &DocumentMut,
+    workspace: &Path,
+) -> Result<bool, ConfigUnavailableReason> {
+    reject_active_profile(document)?;
     let Some(projects) = document
         .get("projects")
         .and_then(toml_edit::Item::as_table_like)

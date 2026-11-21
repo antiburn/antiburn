@@ -108,7 +108,25 @@ pub const MIGRATIONS: &[&str] = &[
     V90,
     V91,
     V92,
+    V93,
+    V94,
 ];
+
+// Start collection by default. Keep explicit master and provider opt-outs.
+const V94: &str = r#"
+UPDATE setting SET value = 'true' WHERE key = 'internal:liveUsageStarted';
+"#;
+
+// Preserve legacy preference fallbacks before removing the retired setup flag.
+const V93: &str = r#"
+INSERT OR IGNORE INTO setting (key, value)
+SELECT 'internal:liveUsageStarted', CASE WHEN value = 'true' THEN 'true' ELSE 'false' END
+FROM setting WHERE key = 'onboardingCompleted';
+INSERT OR IGNORE INTO setting (key, value)
+SELECT 'analyticsEnabled', 'false'
+FROM setting WHERE key = 'onboardingCompleted' AND value = 'true';
+DELETE FROM setting WHERE key = 'onboardingCompleted';
+"#;
 
 const V92: &str = r#"
 CREATE INDEX native_evidence_publication_correction ON native_tool_result_publication
@@ -2395,5 +2413,66 @@ mod decision_migration_tests {
                 .unwrap(),
             0
         );
+    }
+}
+
+#[cfg(test)]
+mod retire_setup_tests {
+    use super::*;
+    #[test]
+    fn legacy_preferences_survive_setup_flag_removal() {
+        for completed in [None, Some("false"), Some("true")] {
+            for explicit in [None, Some("false"), Some("true")] {
+                let connection = rusqlite::Connection::open_in_memory().unwrap();
+                connection
+                    .execute_batch(
+                        "CREATE TABLE setting (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+                    )
+                    .unwrap();
+                if let Some(value) = completed {
+                    connection
+                        .execute(
+                            "INSERT INTO setting VALUES ('onboardingCompleted', ?1)",
+                            [value],
+                        )
+                        .unwrap();
+                }
+                if let Some(value) = explicit {
+                    for key in [
+                        "analyticsEnabled",
+                        "internal:liveUsageStarted",
+                        "launchAtLogin",
+                    ] {
+                        connection
+                            .execute("INSERT INTO setting VALUES (?1, ?2)", [key, value])
+                            .unwrap();
+                    }
+                }
+                connection.execute_batch(V93).unwrap();
+                let value = |key: &str| -> Option<String> {
+                    use rusqlite::OptionalExtension;
+                    connection
+                        .query_row("SELECT value FROM setting WHERE key = ?1", [key], |row| {
+                            row.get(0)
+                        })
+                        .optional()
+                        .unwrap()
+                };
+                assert_eq!(value("onboardingCompleted"), None);
+                assert_eq!(
+                    value("analyticsEnabled").as_deref(),
+                    explicit.or(if completed == Some("true") {
+                        Some("false")
+                    } else {
+                        None
+                    })
+                );
+                assert_eq!(
+                    value("internal:liveUsageStarted").as_deref(),
+                    explicit.or(completed)
+                );
+                assert_eq!(value("launchAtLogin").as_deref(), explicit);
+            }
+        }
     }
 }

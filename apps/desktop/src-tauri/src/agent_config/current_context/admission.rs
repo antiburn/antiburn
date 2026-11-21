@@ -32,17 +32,13 @@ impl<'a> PathAdmission<'a> {
         if !windows_path_is_supported(path) {
             return Err("path_outside_allowed_root");
         }
-        #[cfg(target_os = "macos")]
-        let blocked = protected::protected_dir_names().iter().any(|name| {
-            !self.granted_dirs.contains(*name)
-                && may_alias_protected_prefix(path, &self.home.join(name))
-        });
-        #[cfg(not(target_os = "macos"))]
-        let blocked = protected::cwd_resolution_blocked_in(self.home, path, self.granted_dirs);
-        if blocked {
-            return Err("protected_path_not_granted");
+        match protected::project_access_decision_in(Some(self.home), path, self.granted_dirs) {
+            protected::ProjectAccessDecision::Allowed => Ok(()),
+            protected::ProjectAccessDecision::DeferredProtected(_) => {
+                Err("protected_path_not_granted")
+            }
+            protected::ProjectAccessDecision::DeferredUncertain => Err("path_outside_allowed_root"),
         }
-        Ok(())
     }
 
     pub fn canonical_directory(self, path: &Path) -> Result<PathBuf, &'static str> {
@@ -155,26 +151,6 @@ fn windows_root_alias(path: &Path, root: &Path) -> Option<PathBuf> {
         alias.push(component);
     }
     Some(alias)
-}
-
-#[cfg(target_os = "macos")]
-fn may_alias_protected_prefix(path: &Path, prefix: &Path) -> bool {
-    // Do not probe the volume for its case or Unicode rules. Match ASCII case
-    // on all macOS volumes and treat non-ASCII components as possible aliases.
-    let mut actual = path.components();
-    prefix.components().all(|expected| {
-        let Some(actual) = actual.next() else {
-            return false;
-        };
-        match (actual, expected) {
-            (Component::Normal(actual), Component::Normal(expected)) => {
-                let actual = actual.as_encoded_bytes();
-                let expected = expected.as_encoded_bytes();
-                !actual.is_ascii() || !expected.is_ascii() || actual.eq_ignore_ascii_case(expected)
-            }
-            _ => actual == expected,
-        }
-    })
 }
 
 #[cfg(all(test, windows))]

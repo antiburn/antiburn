@@ -14,6 +14,10 @@ Keep maintained product and contributor documentation in the repository,
 including design-system rules, coverage documents, runbooks, and reusable
 agent skills.
 
+Keep `docs/` current rather than recording delivery status. Use stable guide
+filenames without suffixes such as `-v1`; document format versions inside the
+contract. Do not link delivery plans or local run evidence from maintained docs.
+
 ## Solution design
 
 - Start with the user outcome.
@@ -23,6 +27,26 @@ agent skills.
 - Consider a separate source when the current source cannot support the feature.
 - Use hypotheses for investigation. Label them as hypotheses and do not present them as facts.
 - Prefer the smallest complete solution. Do not add full support when scoped support solves the user problem.
+- Do not use `_inner` as a helper-function suffix. Keep a helper only when it
+  makes the code clearer, and name it for the work it does. Inline unnecessary
+  wrappers. Preserve established external API names.
+
+## Cloud boundaries
+
+Read the public contracts in `docs/cloud/` before changing Cloud features.
+Keep Cloud behind the explicit, non-default Rust feature `cloud`. Ordinary
+release builds and release workflows must not enable it. The desktop development
+launcher selects it for local testing. Use `#[cfg(debug_assertions)]` for local
+debug configuration; do not add a separate build-profile flag.
+
+Keep source, documentation, commits, and PR text limited to public client
+behavior, public API contracts, and synthetic fixtures. Do not include private
+server design, infrastructure, plans, links, or copied private fixtures.
+
+Use desktop or local capture and sync names. Use native only for the provider's
+original session format, source bytes, or source identity. Do not call desktop
+controllers, capture jobs, IPC adapters, or upload status native. Preserve exact
+provider fields and existing serialized format identifiers.
 
 ## React
 
@@ -33,6 +57,9 @@ Only add `useEffect` when no simpler design works. Explain why and get explicit
 maintainer agreement first.
 
 ## Rust
+
+Use Tokio async I/O. Run blocking filesystem, SQLite, or library work with bounded
+`spawn_blocking` tasks or workers, never on UI or async runtime threads.
 
 Do not suppress dead-code or deprecated-code lints. Remove dead code and replace
 deprecated APIs instead.
@@ -84,6 +111,17 @@ Write code comments in ASD-STE100 Simplified Technical English. Use active
 voice and present tense. Add a comment only for important information the code
 cannot show. Keep identifiers and API names unchanged.
 
+Add doc comments to public functions, types, traits, and modules, and to important
+internal functions. Explain purpose and caller rules rather than repeating
+signatures. Keep these contracts beside their definitions.
+Cover frontend component inputs, state and cache ownership, backend interfaces,
+and side effects when callers or maintainers depend on those rules.
+For each trait, explain why it exists, which code uses it, and what implementors
+must provide. State relevant error, ordering, concurrency, and data-safety rules.
+Explain non-obvious state transitions, retry inputs, and side-effect ownership.
+Update these contracts when behavior changes. Do not add abstractions just to
+document them or comments that repeat syntax.
+
 ## Session and check coverage
 
 Keep `docs/session-coverage.md` and `docs/check-coverage.md` current.
@@ -126,14 +164,14 @@ rules:
 After any coverage edit, run:
 
 ```bash
-cargo test --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test check_coverage_contract
 ```
 
 When source claims or formats change, also run the relevant characterization
 test and:
 
 ```bash
-cargo test --manifest-path crates/antiburn-local/Cargo.toml --test source_contracts
+cargo nextest run --manifest-path crates/antiburn-local/Cargo.toml --test source_contracts
 ```
 
 ## Product analytics
@@ -145,6 +183,14 @@ the measurement definitions and event review contract in
 [docs/analytics-measurement.md](docs/analytics-measurement.md).
 
 ## Tests and commits
+
+Keep test files focused:
+
+- Small Rust test blocks can stay inline when the full source file remains short and readable. Put public-API-only tests in the external `tests/` target. For private access, move larger blocks to feature-local `tests/<file>_tests.rs` and include them with `#[cfg(test)]` and `#[path = "tests/<file>_tests.rs"] mod tests;`. Every test file under `src/` needs a module declaration.
+- Tests that open test database connections are integration tests, including temporary SQLite stores. Name them `tests/<file>_integration_tests.rs`. Use an external test target or a path-mounted module; do not expose production internals just for test placement.
+- Keep TypeScript/React tests in colocated `*.test.ts`/`*.test.tsx` files, or a nearby `__tests__/` folder for larger feature suites. Keep fixtures and render helpers near their tests.
+- Use `*.integration.test.ts(x)` for real service boundaries and the existing browser suite for E2E checks. Mocked component tests do not prove database or native-service behavior.
+- Follow [testing](docs/testing.md). Apply the layout to new or substantially changed tests without unrelated mass moves.
 
 Run the relevant formatter, linter, type checks, and tests for every change. Use
 the commands in `CONTRIBUTING.md` and `apps/desktop/README.md`.

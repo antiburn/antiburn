@@ -207,9 +207,17 @@ export const CROSS_WORKSPACE_INPUTS = {
   "docs/analytics.md": ["shell"],
   "docs/burn-check/tests/expression-parity.json": ["checks"],
   "docs/check-coverage.md": ["engine", "shell"],
+  "docs/cloud/capture-metadata.md": ["cloud-capture"],
+  "docs/cloud/capture-metadata.schema.json": ["cloud-capture"],
   "docs/privacy-policy.md": ["shell"],
   "docs/session-coverage.md": ["engine"],
   "docs/support.md": ["engine", "shell"],
+  "fixtures/cloud/capture-v1/project/main.jsonl": ["cloud-capture"],
+  "fixtures/cloud/capture-v1/reference/main.capture-metadata.chunk-00000.gz":
+    ["cloud-capture"],
+  "fixtures/cloud/capture-v1/sections.json": ["cloud-capture"],
+  "fixtures/cloud/opencode/current.sql": ["cloud-capture", "shell"],
+  "fixtures/cloud/opencode/earlier.sql": ["cloud-capture", "shell"],
   "plugins/antiburn-live/hooks/catalog.ts": ["engine"],
 };
 
@@ -402,6 +410,12 @@ export function routeChanges(files) {
     ) {
       direct.add("engine");
       route.ci_scripts = true;
+    } else if (
+      file.startsWith("fixtures/cloud/capture-v1/") ||
+      file.startsWith("fixtures/cloud/opencode/")
+    ) {
+      // Capture tests also read package files that are not embedded in Rust.
+      direct.add("cloud-capture");
     } else if (file.startsWith("scripts/")) {
       route.ci_scripts = true;
     } else {

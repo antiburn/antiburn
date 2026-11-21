@@ -12,10 +12,16 @@ pub async fn open_overlay_window(
     app: tauri::AppHandle,
     origin: crate::analytics::event::Origin,
 ) -> CommandResult<()> {
+    if origin == crate::analytics::event::Origin::Automatic {
+        #[cfg(target_os = "macos")]
+        crate::main_window::on_main_value(&app, crate::hud::restore_if_enabled).await?;
+        return Ok(());
+    }
+
     let request = antiburn_hud::request_visibility(true);
     let store = app.state::<Store>().inner().clone();
     let (entries, dock) = run_blocking(move || {
-        // Every open means the reader wants the HUD back at the next launch.
+        // A manual open saves the preference for the next launch.
         if antiburn_hud::visibility_request_is_current(request) {
             crate::hud::save_enabled(&store, true);
         }

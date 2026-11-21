@@ -19,7 +19,7 @@ export function UnavailableNote({
 }) {
   return (
     <p className={cn("type-footnote text-label-secondary", className)}>
-      {liveErrorNote(entry.category, entry.provider, entry.detail)}
+      {liveErrorNote(entry.category, entry.provider, entry.detail, entry.carrierLabel)}
       {liveErrorHasDocs(entry.detail) && (
         <>
           {" "}

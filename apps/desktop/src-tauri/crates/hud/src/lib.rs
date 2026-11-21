@@ -14,6 +14,8 @@
 #[cfg(target_os = "macos")]
 use std::sync::LazyLock;
 
+#[cfg(any(target_os = "macos", test))]
+mod dismissal;
 mod dock;
 mod island;
 pub use dock::{
@@ -808,6 +810,9 @@ pub fn resize(
         let _guard = resize_apply_guard();
         if geometry_revision.is_some_and(|revision| revision != island::revision()) {
             return Ok(());
+        }
+        if geometry_revision.is_some() {
+            island::acknowledge_close();
         }
         let from = RESIZE_STATE.height();
         let generation = RESIZE_STATE.begin_resize(target);

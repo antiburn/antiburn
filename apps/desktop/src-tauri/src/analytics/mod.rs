@@ -3,18 +3,18 @@
 //! This is the one place antiburn sends anything of its own beyond the update
 //! check. The properties below define its privacy boundary.
 //!
-//! - **Official builds start enabled.** App launch and fixed first-run-step
+//! - **Official builds start enabled.** App launch and fixed onboarding
 //!   events can be sent before setup finishes. Settings and
 //!   `ANTIBURN_ANALYTICS_ENABLED=false` provide independent opt-outs.
 //! - **A build with no endpoint sends nothing.** See [`config`]; every build
 //!   from a clean checkout of this repository is in that state.
 //! - **The payload cannot carry the reader's work.** See [`event`], where the
 //!   closed struct is the enforcement rather than a review convention.
-//! - **The identifier cannot build a longitudinal profile.** It is random and
-//!   rotates on [`IDENTITY_LIFETIME_DAYS`]; opting out destroys it, so opting
-//!   back in is a new identity that cannot be joined to the old one. The
-//!   `sessionId` generator state is weaker still — held in memory and gone
-//!   when the process exits. Queued payloads include that value until delivery.
+//! - **The installation identifier persists.** It is random and has no
+//!   scheduled expiry. Events can group one installation's activity over time.
+//!   Opt-out removes the local identifier. Re-enable creates a fresh identifier.
+//!   The `sessionId` generator stays in memory and resets on process exit.
+//!   Queued payloads keep their captured identifiers until delivery or removal.
 //!
 //! What this module cannot enforce is what happens after delivery. Retention
 //! and IP handling belong to whoever operates the endpoint, are stated in the
@@ -148,6 +148,9 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         } => {
             let _ = (campaign, action, origin);
         }
+        event::Interaction::UsageLimitsUsed { action } => {
+            let _ = action;
+        }
         event::Interaction::AppSearchOpened {} => {}
         event::Interaction::AppSearchResultOpened { category } => {
             let _ = category;
@@ -155,6 +158,13 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
         event::Interaction::SessionFiltersChanged { action, agent } => {
             let _ = (action, agent);
         }
+        event::Interaction::OnboardingScreenViewed { screen } => {
+            let _ = screen;
+        }
+        event::Interaction::OnboardingActionTaken { screen, action } => {
+            let _ = (screen, action);
+        }
+        event::Interaction::OnboardingCloudUnavailable {} => {}
         event::Interaction::FirstRunStepReached {
             step,
             sessions,
@@ -170,6 +180,41 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
             let _ = (label, detail);
         }
     }
+}
+
+#[cfg(feature = "cloud")]
+pub(crate) fn record_cloud_status(app: &tauri::AppHandle, status: event::OnboardingCloudStatus) {
+    #[cfg(feature = "analytics")]
+    record(
+        app,
+        event::EventName::OnboardingCloudOutcome,
+        event::Facts {
+            detail: Some(status.as_str()),
+            ..event::Facts::default()
+        },
+    );
+    #[cfg(not(feature = "analytics"))]
+    let _ = (app, status);
+}
+
+pub(crate) fn record_onboarding_completed(app: &tauri::AppHandle) {
+    record(
+        app,
+        event::EventName::OnboardingCompleted,
+        event::Facts::default(),
+    );
+}
+
+pub(crate) fn record_onboarding_dismissed(
+    app: &tauri::AppHandle,
+    state: crate::store::OnboardingState,
+) {
+    #[cfg(feature = "analytics")]
+    if let Some(facts) = event::onboarding_dismissed_facts(state) {
+        record(app, event::EventName::OnboardingActionTaken, facts);
+    }
+    #[cfg(not(feature = "analytics"))]
+    let _ = (app, state);
 }
 
 pub fn record_model_check_lifecycle(app: &tauri::AppHandle, lifecycle: event::ModelCheckLifecycle) {
@@ -383,9 +428,6 @@ mod enabled {
     use super::{config, delivery, event, resources};
     use crate::store::{AppSettings, Store};
 
-    /// How long an installation identifier lives before it is replaced.
-    pub const IDENTITY_LIFETIME_DAYS: i64 = 30;
-
     /// How long a run identifier survives without a user-oriented event.
     ///
     /// Background telemetry does not refresh this timeout.
@@ -431,10 +473,10 @@ mod enabled {
         config::operator()
     }
 
-    /// Persist the withdrawal event with the preference change.
+    /// Persist withdrawal or complete cleanup with the preference change.
     ///
     /// The transaction makes the user's decision and the event durable as one
-    /// unit. A crash after commit cannot restore consent or lose the signal.
+    /// unit. Re-enable must fail if the transaction cannot clear withdrawn data.
     pub fn prepare_opt_out_in_transaction(
         app: &tauri::AppHandle,
         transaction: &rusqlite::Transaction<'_>,
@@ -455,6 +497,12 @@ mod enabled {
         saved: &AppSettings,
         app_version: &str,
     ) -> anyhow::Result<()> {
+        if !previous.analytics_enabled && saved.analytics_enabled {
+            return Store::clear_analytics_in(transaction);
+        }
+        if previous.analytics_enabled && !saved.analytics_enabled {
+            Store::mark_analytics_withdrawal_in(transaction)?;
+        }
         if !previous.analytics_enabled
             || saved.analytics_enabled
             || !available()
@@ -529,9 +577,12 @@ mod enabled {
     /// permission, the same rule every notifier in this app follows. The
     pub fn allowed(app: &tauri::AppHandle) -> bool {
         capture_allowed(available(), environment_disabled(), || {
-            app.try_state::<Store>()
-                .and_then(|store| store.settings().ok())
-                .map(|settings| settings.analytics_enabled)
+            app.try_state::<Store>().and_then(|store| {
+                Some(
+                    store.settings().ok()?.analytics_enabled
+                        && !store.analytics_opt_out_pending().ok()?,
+                )
+            })
         })
     }
 
@@ -717,6 +768,42 @@ mod enabled {
             event::claude_limit_reset_facts(diagnostic),
         ) {
             *last = Some(diagnostic);
+        }
+    }
+
+    /// Record each changed Claude login or refresh outcome, when analytics
+    /// allows it.
+    ///
+    /// An outcome equal to the last one queued during this run is dropped,
+    /// so a login that stays in one state reports once. A value outside the
+    /// closed vocabularies is dropped.
+    pub fn record_claude_login_observations(
+        app: &tauri::AppHandle,
+        observations: &[crate::provider_usage::live::LoginObservation],
+    ) {
+        if observations.is_empty() {
+            return;
+        }
+        let _lifecycle = lock_settings_transition();
+        let _capture = CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !allowed(app) {
+            return;
+        }
+        let mut last = LAST_CLAUDE_LOGIN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for &observation in observations {
+            if *last == Some(observation) {
+                continue;
+            }
+            let Some(facts) = event::claude_login_facts(observation) else {
+                continue;
+            };
+            if record_event_locked(app, EventName::ClaudeLoginObserved, facts) {
+                *last = Some(observation);
+            }
         }
     }
 
@@ -1152,6 +1239,9 @@ mod enabled {
     ///
     /// The renderer names a shape, not an event. See [`Interaction`] for why.
     pub fn record_interaction(app: &tauri::AppHandle, interaction: Interaction) {
+        if interaction.is_retired() {
+            return;
+        }
         if let Some((provider, state)) = deliberate_live_usage_observation(interaction) {
             record_live_usage_state(app, provider, state);
             return;
@@ -1300,6 +1390,11 @@ mod enabled {
     /// The last Claude limit-reset observation queued during this run.
     static LAST_CLAUDE_LIMIT_RESET: std::sync::Mutex<
         Option<crate::provider_usage::live::anthropic::LimitResetDiagnostic>,
+    > = std::sync::Mutex::new(None);
+
+    /// The last Claude login outcome queued during this run.
+    static LAST_CLAUDE_LOGIN: std::sync::Mutex<
+        Option<crate::provider_usage::live::LoginObservation>,
     > = std::sync::Mutex::new(None);
 
     /// The last band reported for each `(provider, window role)` pair queued
@@ -1710,6 +1805,9 @@ mod enabled {
         *LAST_CLAUDE_LIMIT_RESET
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *LAST_CLAUDE_LOGIN
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         LAST_USAGE_OBSERVED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1724,12 +1822,13 @@ mod enabled {
         cancel_hud_exposure();
     }
 
-    /// The identifier to stamp on an event, minting or rotating it as needed.
+    /// Reuse the stored installation identifier or create one if none exists.
+    ///
+    /// Preserve existing identifiers across upgrades, regardless of their mint
+    /// timestamps. Return no identifier when the store cannot read or save it.
+    /// Call this under `IDENTITY_SESSION_LOCK` to serialize first capture.
     fn current_install_id(store: &Store) -> Option<String> {
-        let existing = store.analytics_identity().ok()?;
-        if let Some((id, minted_at)) = existing
-            && !older_than_lifetime(&minted_at)
-        {
+        if let Some((id, _minted_at)) = store.analytics_identity().ok()? {
             return Some(id);
         }
         let fresh = random_identifier();
@@ -1739,7 +1838,7 @@ mod enabled {
         Some(fresh)
     }
 
-    /// Serialize the two identifiers so rotation cannot produce a mixed pair.
+    /// Serialize identity creation so concurrent captures use one identifier pair.
     fn current_identity_pair(store: &Store, user_oriented: bool) -> Option<(String, String)> {
         let _guard = IDENTITY_SESSION_LOCK
             .lock()
@@ -1748,20 +1847,6 @@ mod enabled {
             current_install_id(store)?,
             current_session_id(user_oriented),
         ))
-    }
-
-    /// Whether a mint stamp is old enough that the identifier should roll over.
-    ///
-    /// An unparsable stamp rotates rather than persisting: erring towards a new
-    /// identifier loses a little continuity, and erring the other way would keep
-    /// one alive indefinitely on a clock this code could not read.
-    fn older_than_lifetime(minted_at: &str) -> bool {
-        let Ok(minted) =
-            time::OffsetDateTime::parse(minted_at, &time::format_description::well_known::Rfc3339)
-        else {
-            return true;
-        };
-        (time::OffsetDateTime::now_utc() - minted).whole_days() >= IDENTITY_LIFETIME_DAYS
     }
 
     /// The current run identifier and the last user-oriented event time.
@@ -1869,7 +1954,7 @@ mod enabled {
         }
         if saved.analytics_enabled {
             if !previous.analytics_enabled {
-                finish_reenabled_opt_out(app);
+                finish_reenabled_opt_out();
             }
             return;
         }
@@ -1909,13 +1994,11 @@ mod enabled {
         ACTIVE_OPT_OUT_GENERATION.store(0, Ordering::Release);
     }
 
-    fn finish_reenabled_opt_out(app: &tauri::AppHandle) {
+    fn finish_reenabled_opt_out() {
         cancel_opt_out();
-        if let Some(store) = app.try_state::<Store>() {
-            clear_local_state(&store);
-        } else {
-            reset_suppression();
-        }
+        // The settings transaction clears stored state before consent is enabled.
+        reset_session();
+        reset_suppression();
     }
 
     fn finish_opt_out(app: &tauri::AppHandle, generation: u64) {
@@ -1936,23 +2019,38 @@ mod enabled {
                 .ok()
                 .is_some_and(|settings| !settings.analytics_enabled)
         {
-            clear_local_state(&store);
-            cancel_opt_out();
+            match clear_local_state(&store) {
+                Ok(()) => cancel_opt_out(),
+                Err(error) => ::tracing::warn!(event = "analytics_cleanup_failed", error = %error),
+            }
         }
     }
 
     /// Remove all analytics state after either opt-out mechanism is used.
-    fn clear_local_state(store: &Store) {
+    fn clear_local_state(store: &Store) -> anyhow::Result<()> {
         // Final cleanup withdraws anything that was not delivered. The run
         // identifier lives in memory, so it also needs a separate reset.
-        {
+        let result = {
             let _capture = CAPTURE_LOCK
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let _ = store.clear_analytics();
+            let result = store.clear_analytics();
             reset_session();
-        }
+            result
+        };
         reset_suppression();
+        result
+    }
+
+    /// Retry incomplete withdrawal before startup can capture or deliver events.
+    fn clear_pending_withdrawal(store: &Store, environment_disabled: bool) -> anyhow::Result<()> {
+        if environment_disabled
+            || !store.settings()?.analytics_enabled
+            || store.analytics_opt_out_pending()?
+        {
+            clear_local_state(store)?;
+        }
+        Ok(())
     }
 
     /// Install the TLS crypto provider this crate's client needs.
@@ -1971,18 +2069,13 @@ mod enabled {
 
     /// Start the background flusher. A no-op in any build that cannot transmit.
     pub fn install(app: &tauri::AppHandle) {
-        if environment_disabled() {
-            if let Some(store) = app.try_state::<Store>() {
-                clear_local_state(&store);
-            }
-            return;
-        }
-        // A crash after the atomic opt-out transaction leaves its signal on
-        // disk. The next launch completes withdrawal without retrying it.
         if let Some(store) = app.try_state::<Store>()
-            && store.analytics_opt_out_pending().unwrap_or(false)
+            && let Err(error) = clear_pending_withdrawal(&store, environment_disabled())
         {
-            clear_local_state(&store);
+            ::tracing::warn!(event = "analytics_cleanup_failed", error = %error);
+        }
+        if environment_disabled() {
+            return;
         }
         if !available() {
             return;
@@ -2227,6 +2320,9 @@ mod enabled {
         use super::*;
 
         static SUPPRESSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        #[path = "identity_integration_tests.rs"]
+        mod identity;
 
         fn unrecognized_summary(
             sessions: u64,
@@ -2984,7 +3080,7 @@ mod enabled {
                 .queue_analytics_event(EventName::BurnCheckDirectoryOpened.as_str(), "{}")
                 .unwrap();
 
-            clear_local_state(&store);
+            clear_local_state(&store).unwrap();
 
             assert!(store.pending_analytics_events(10).unwrap().is_empty());
             assert!(store.analytics_identity().unwrap().is_none());
@@ -3080,51 +3176,10 @@ mod enabled {
             reset_session();
             let start = std::time::Instant::now();
             let background = current_session_id_at(false, start);
-            let user = current_session_id_at(true, start + Duration::from_secs(5 * 60));
+            let later = start + Duration::from_secs(2 * 60 * 60);
+            assert_eq!(background, current_session_id_at(false, later));
+            let user = current_session_id_at(true, later);
             assert_ne!(background, user);
-            reset_session();
-        }
-
-        #[test]
-        fn installation_rotation_cannot_reuse_or_mix_the_previous_session() {
-            let _lock = SUPPRESSION_TEST_LOCK.lock().unwrap();
-            let directory = tempfile::tempdir().unwrap();
-            let store = std::sync::Arc::new(Store::open_in_memory(directory.path()).unwrap());
-            let old_install = "11111111-1111-4111-8111-111111111111";
-            store
-                .set_analytics_identity_at(old_install, "2000-01-01T00:00:00Z")
-                .unwrap();
-            let old_payload = r#"{"anonymousId":"old","sessionId":"old-run"}"#;
-            store
-                .queue_analytics_event("antiburn.app_launched", old_payload)
-                .unwrap();
-            reset_session();
-            let old_session = current_session_id(true);
-
-            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
-            let workers: Vec<_> = (0..2)
-                .map(|_| {
-                    let store = store.clone();
-                    let barrier = barrier.clone();
-                    std::thread::spawn(move || {
-                        barrier.wait();
-                        current_identity_pair(&store, true).unwrap()
-                    })
-                })
-                .collect();
-            barrier.wait();
-            let pairs: Vec<_> = workers
-                .into_iter()
-                .map(|worker| worker.join().unwrap())
-                .collect();
-
-            assert_eq!(pairs[0], pairs[1]);
-            assert_ne!(pairs[0].0, old_install);
-            assert_ne!(pairs[0].1, old_session);
-            assert_eq!(
-                store.pending_analytics_events(10).unwrap()[0].1,
-                old_payload
-            );
             reset_session();
         }
 
@@ -3454,13 +3509,6 @@ mod enabled {
             reset_suppression();
         }
 
-        #[test]
-        fn an_unreadable_mint_stamp_rotates_rather_than_persisting() {
-            assert!(older_than_lifetime("not a timestamp"));
-            assert!(older_than_lifetime("2000-01-01T00:00:00Z"));
-            assert!(!older_than_lifetime(&crate::store::now_rfc3339()));
-        }
-
         fn collector(
             expected_requests: usize,
             response_delay: Duration,
@@ -3615,7 +3663,7 @@ mod enabled {
             assert_eq!(store.analytics_event_count().unwrap(), 0);
             assert!(store.analytics_identity().unwrap().is_some());
 
-            clear_local_state(&store);
+            clear_local_state(&store).unwrap();
             assert!(store.analytics_identity().unwrap().is_none());
             assert_eq!(store.analytics_event_count().unwrap(), 0);
         }
@@ -3662,7 +3710,7 @@ mod enabled {
                     ));
                     assert!(matches!(outcome, FlushOutcome::Failed { .. }));
                     let _ = worker.join();
-                    clear_local_state(&store);
+                    clear_local_state(&store).unwrap();
                     assert!(store.analytics_identity().unwrap().is_none());
                     assert_eq!(store.analytics_event_count().unwrap(), 0);
                     continue;
@@ -3678,7 +3726,7 @@ mod enabled {
                     timeout,
                 ));
                 assert!(matches!(outcome, FlushOutcome::Failed { .. }));
-                clear_local_state(&store);
+                clear_local_state(&store).unwrap();
                 assert!(store.analytics_identity().unwrap().is_none());
                 assert_eq!(store.analytics_event_count().unwrap(), 0);
             }
@@ -3735,7 +3783,7 @@ mod enabled {
             ));
             assert_eq!(outcome, FlushOutcome::Suspended);
             assert_eq!(store.analytics_event_count().unwrap(), 1);
-            clear_local_state(&store);
+            clear_local_state(&store).unwrap();
             assert_eq!(store.analytics_event_count().unwrap(), 0);
             assert!(store.analytics_identity().unwrap().is_none());
         }

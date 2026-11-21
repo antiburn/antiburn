@@ -1,6 +1,6 @@
 # Claude Code installation
 
-Claude Code is the first rollout, with a 0.2.6 repository candidate. The catalog
+Claude Code is the first rollout, with a 0.2.7 repository candidate. The catalog
 on `main` determines the version available through the permanent marketplace;
 check its immutable artifact SHA rather than assuming the checkout is promoted.
 This guide covers Terminal and the Code tab in Claude Desktop. Use the
@@ -19,10 +19,10 @@ Codex, Cursor, OpenCode and Pi are unpublished adapters. Their contributor proce
 
 ## Load from a source checkout
 
-Use the [plugin guide](../../plugins/README.md) for the 0.2.6 candidate.
-The 0.2.6 candidate includes responsive Desktop meters and anchored hover details,
-while preserving composition with other mods and quota behavior. Verify hosted
-updates from 0.2.4 and the public 0.2.5 artifact, plus fresh installation,
+Use the [plugin guide](../../plugins/README.md) for the 0.2.7 candidate.
+The 0.2.7 candidate adds the Desktop usage fade and compact mod spacing,
+while preserving responsive meters, anchored hover details and quota behavior. Verify hosted
+updates from 0.2.4 and the public 0.2.5 and 0.2.6 artifacts, plus fresh installation,
 reinstall and installed-file equality before promotion.
 One-session loading uses:
 

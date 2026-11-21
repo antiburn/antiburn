@@ -64,8 +64,33 @@ fn invalid_calls_arity_and_unsupported_syntax_remain_rejected() {
         "1 + 2",
         "0xff",
         "1e400",
+        "-1e400",
     ] {
         assert!(parse_expression(source).is_err(), "{source}");
+    }
+}
+
+#[test]
+fn numeric_literals_keep_finite_f64_and_integer_values() {
+    for (source, expected) in [
+        ("1.25", Number::from_f64(1.25).unwrap()),
+        ("2e2", Number::from_f64(200.0).unwrap()),
+        ("1.00000000000000001", Number::from_f64(1.0).unwrap()),
+        ("-0", Number::from_f64(-0.0).unwrap()),
+        ("-0.0", Number::from_f64(-0.0).unwrap()),
+        ("9007199254740993", Number::from(9_007_199_254_740_993_u64)),
+        ("18446744073709551615", Number::from(u64::MAX)),
+        ("-9223372036854775808", Number::from(i64::MIN)),
+        (
+            "18446744073709551616",
+            Number::from_f64(18_446_744_073_709_551_616.0).unwrap(),
+        ),
+    ] {
+        assert_eq!(
+            parse_expression(source).unwrap(),
+            Expression::Literal(ExpressionLiteral::Number(expected)),
+            "{source}"
+        );
     }
 }
 

@@ -1,0 +1,56 @@
+.sidebar-pin-usage-label {
+  max-inline-size: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition:
+    max-inline-size var(--duration-medium) ease-out,
+    opacity var(--duration-fast) ease-out;
+}
+
+.sidebar-pin-usage:is(:hover, :focus-visible) .sidebar-pin-usage-label {
+  max-inline-size: 10rem;
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sidebar-pin-usage {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-fast) ease-out;
+  }
+
+  .main-window-sidebar:hover .sidebar-pin-usage,
+  .sidebar-pin-usage:focus {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.sidebar-pin-usage:focus,
+.sidebar-pin-usage:focus-visible > span,
+.sidebar-pin-usage:focus-visible .sidebar-pin-usage-label {
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-pin-usage,
+  .sidebar-pin-usage-label {
+    transition: none;
+  }
+}
+
+.sidebar-pin-usage > span {
+  opacity: 0.4;
+  transition: opacity var(--duration-fast) ease-out;
+}
+
+.sidebar-pin-usage:is(:hover, :focus-visible) > span {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-pin-usage > span {
+    transition: none;
+  }
+}

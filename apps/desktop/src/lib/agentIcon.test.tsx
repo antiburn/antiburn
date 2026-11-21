@@ -1,20 +1,26 @@
 import { cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { BRAND_COLORED, BRAND_MARKS, renderAgentIcon } from "./agentIcon"
+import { renderAgentIcon } from "./agentIcon"
+import { VENDOR_ARTWORK } from "./vendorArtwork"
 import {
   AGENT_SLUGS,
   agentDisplayName,
   agentIconName,
   GENERIC_AGENT_ICON,
+  type AgentIconAppearance,
   type AgentSurface,
 } from "./presentation/agents"
 
 afterEach(cleanup)
 
-/** Render one icon and hand back its wrapper. */
-function renderIcon(slug: string, size = 18, surface?: AgentSurface): HTMLElement {
-  render(<div data-testid="host">{renderAgentIcon(slug, size, surface)}</div>)
+function renderIcon(
+  slug: string,
+  size = 18,
+  surface?: AgentSurface,
+  appearance?: AgentIconAppearance,
+) {
+  render(<div data-testid="host">{renderAgentIcon(slug, size, surface, appearance)}</div>)
   const wrapper = screen.getByTestId("host").firstElementChild
   if (!(wrapper instanceof HTMLElement)) throw new Error(`no icon rendered for ${slug}`)
   return wrapper
@@ -25,37 +31,41 @@ describe("renderAgentIcon", () => {
     const wrapper = renderIcon(slug)
     expect(wrapper).toHaveAttribute("role", "img")
     expect(wrapper).toHaveAttribute("aria-label", agentDisplayName(slug))
-    // The seam every call site relies on to swap artwork later.
+    expect(wrapper).toHaveAttribute("title", agentDisplayName(slug))
     expect(wrapper).toHaveAttribute("data-agent-icon", agentIconName(slug))
   })
 
-  it("draws a mark at the requested size for agents that have one", () => {
-    const svg = renderIcon("claude-code", 20).querySelector("svg")
-    expect(svg).not.toBeNull()
-    expect(svg).toHaveAttribute("width", "20")
-    expect(svg).toHaveAttribute("height", "20")
-    expect(svg?.querySelector("path")?.getAttribute("d")).toBe(markOf("claude").path)
-  })
+  it.each(AGENT_SLUGS.filter((slug) => VENDOR_ARTWORK[agentIconName(slug)]))(
+    "provides both themed vendor assets for %s without a letter tile",
+    (slug) => {
+      const wrapper = renderIcon(slug, 20)
+      const artwork = VENDOR_ARTWORK[agentIconName(slug)]!
+      for (const theme of ["light", "dark"] as const) {
+        const img = wrapper.querySelector(`.agent-icon-${theme}`)
+        expect(img).toHaveAttribute("src", artwork[theme])
+        expect(img).toHaveAttribute("width", "20")
+        expect(img).toHaveAttribute("height", "20")
+        expect(img).toHaveAttribute("aria-hidden", "true")
+        expect(img).toHaveAttribute("alt", "")
+      }
+      expect(wrapper.textContent).toBe("")
+    },
+  )
 
-  it("falls back to a letter tile for a known agent with no mark", () => {
-    const wrapper = renderIcon("kiro")
-    expect(wrapper.querySelector("svg")).toBeNull()
-    expect(wrapper).toHaveTextContent("K")
-  })
-
-  it("draws Antigravity with its monochrome product silhouette", () => {
-    const svg = renderIcon("antigravity", 20).querySelector("svg")
-    expect(svg).not.toBeNull()
-    expect(svg).toHaveAttribute("fill", "currentColor")
-    expect(svg?.querySelector("path")?.getAttribute("d")).toBe(markOf("antigravity").path)
-  })
-
-  it("keeps vendor identity while presenting a neutral mark", () => {
-    render(<div data-testid="host">{renderAgentIcon("claude-code", 12, "cli", "neutral")}</div>)
-    const wrapper = screen.getByTestId("host").firstElementChild
-    expect(wrapper).toHaveAttribute("aria-label", "Claude Code")
+  it.each([...AGENT_SLUGS])("keeps %s neutral without changing its identity", (slug) => {
+    const name = agentIconName(slug)
+    const wrapper = renderIcon(slug, 40, "cli", "neutral")
+    expect(wrapper).toHaveAttribute("aria-label", agentDisplayName(slug))
     expect(wrapper).toHaveClass("text-label-tertiary")
-    expect(wrapper?.querySelector("svg")?.style.color).toBe("")
+    expect(wrapper.querySelector("img")).toBeNull()
+    const artwork = VENDOR_ARTWORK[name]!
+    const mask = wrapper.firstElementChild as HTMLElement
+    expect(mask).toHaveClass("bg-current")
+    expect(mask.style.width).toBe("40px")
+    expect(mask.style.maskImage).toContain(artwork.mask)
+    expect(mask.style.maskMode).toBe(artwork.maskMode)
+    expect(wrapper.querySelector("svg")).toBeNull()
+    expect(wrapper.textContent).toBe("")
   })
 
   it.each(["cli", "ide_desktop", "unknown"] as const)(
@@ -63,87 +73,33 @@ describe("renderAgentIcon", () => {
     (surface) => {
       const wrapper = renderIcon("not-a-real-agent", 18, surface)
       expect(wrapper).toHaveAttribute("data-agent-icon", GENERIC_AGENT_ICON)
-      // Lucide glyphs are stroked SVGs, not filled paths.
       expect(wrapper.querySelector("svg")).not.toBeNull()
     },
   )
-})
 
-/** The mark registered for an icon slot, or a failure naming the missing one. */
-function markOf(name: string) {
-  const mark = BRAND_MARKS[name]
-  if (!mark) throw new Error(`no brand mark registered for ${name}`)
-  return mark
-}
-
-/** A six-digit hex as the `rgb()` string jsdom reports for it. */
-function rgbOf(hex: string): string {
-  const n = Number.parseInt(hex, 16)
-  return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`
-}
-
-describe("brand colour", () => {
-  it("renders brand-coloured marks in the mark’s own recorded hex", () => {
-    const svg = renderIcon("claude-code").querySelector("svg")
-    // jsdom normalizes an inline colour to its rgb() form.
-    expect(svg?.style.color).toBe(rgbOf(markOf("claude").hex!))
+  it("gives Oh My Pi its own mark rather than Pi's", () => {
+    expect(VENDOR_ARTWORK.omp!.dark).not.toBe(VENDOR_ARTWORK.pi!.dark)
+    expect(renderIcon("omp").querySelector("img")).toHaveAttribute(
+      "src",
+      VENDOR_ARTWORK.omp!.light,
+    )
   })
 
-  it("leaves every other mark to inherit the theme ink", () => {
-    for (const [name] of Object.entries(BRAND_MARKS)) {
-      if (BRAND_COLORED.has(name)) continue
-      const slug = AGENT_SLUGS.find((s) => agentIconName(s) === name)
-      expect(slug, `no slug resolves to ${name}`).toBeDefined()
-      const svg = renderIcon(slug!).querySelector("svg")
-      expect(svg?.style.color, `${name} should inherit ink`).toBe("")
-      cleanup()
-    }
-  })
-
-  it("gives every brand-coloured mark a hex to render", () => {
-    // Guards the invariant the module comment states: the colour always comes
-    // from the mark's recorded value, so a member without one is a bug.
-    for (const name of BRAND_COLORED) {
-      expect(markOf(name).hex, `${name} is brand-coloured but has no hex`).toMatch(
-        /^[0-9A-Fa-f]{6}$/,
-      )
-    }
+  it("does not use Google's AMP framework artwork for the Amp agent", async () => {
+    const source = decodeURIComponent(VENDOR_ARTWORK.amp!.mask.split(",").slice(1).join(","))
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(source))
+    const checksum = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("")
+    expect(checksum).toBe("569a48840bb0d4166ea95784b718c8d2496d4ebf8de1e1a93e544aef08b86b4e")
   })
 })
 
-describe("BRAND_MARKS", () => {
-  it("has no key the registry never asks for", () => {
+describe("brand registries", () => {
+  it("contains no unused icon slot", () => {
     const slots = new Set(AGENT_SLUGS.map(agentIconName))
-    for (const name of Object.keys(BRAND_MARKS)) {
-      expect(slots.has(name), `${name} is a dead key`).toBe(true)
+    for (const name of Object.keys(VENDOR_ARTWORK)) {
+      expect(slots.has(name), name).toBe(true)
     }
-  })
-
-  it("has no entry for Amp", () => {
-    // `simple-icons`' AMP is Google's web framework, a name collision that
-    // would put the wrong vendor's mark on an Amp row. This test keeps that
-    // choice explicit.
-    expect(BRAND_MARKS[agentIconName("amp-code")]).toBeUndefined()
-  })
-
-  it("records provenance for every mark", () => {
-    const licenseExceptions: Record<string, string> = {
-      antigravity: "LicenseRef-Trademark",
-      omp: "MIT",
-    }
-    for (const [name, mark] of Object.entries(BRAND_MARKS)) {
-      expect(mark.provenance.package, `${name} has no package`).toBeTruthy()
-      const expectedLicense = licenseExceptions[name] ?? "CC0-1.0"
-      expect(mark.provenance.license, `${name} has no licence`).toBe(expectedLicense)
-      expect(mark.provenance.source, `${name} has no source`).toMatch(/^https:\/\//)
-      expect(mark.viewBox, `${name} has no viewBox`).toMatch(/^\d+ \d+ \d+ \d+$/)
-    }
-  })
-
-  it("gives Oh My Pi its own mark, not Pi's", () => {
-    // Oh My Pi is a separate product with its own brand.
-    expect(BRAND_MARKS.omp).not.toBe(BRAND_MARKS.pi)
-    expect(BRAND_MARKS.omp?.path).not.toBe(BRAND_MARKS.pi?.path)
-    expect(renderIcon("omp").querySelector("path")).toHaveAttribute("d", markOf("omp").path)
   })
 })

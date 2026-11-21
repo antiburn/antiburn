@@ -131,6 +131,16 @@ describe("HudDetailView", () => {
     vi.restoreAllMocks()
   })
 
+  it("dims retained readings and shows their age in the detail window", async () => {
+    const state = detailState()
+    state.bars[0] = { ...state.bars[0]!, stale: true, statusNote: "Last updated 9 hr ago." }
+    getHudDetailState.mockResolvedValue(state)
+    render(<HudDetailView />)
+    const age = await screen.findByText("Last updated 9 hr ago.")
+    expect(age.parentElement).toHaveClass("opacity-60")
+    expect(screen.getByText("81%")).toBeInTheDocument()
+  })
+
   it("carries the linear-use notch through to the card", async () => {
     render(<HudDetailView />)
     await waitFor(() => expect(push.emit).not.toBeNull())

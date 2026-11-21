@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+
+use antiburn_local::paths::protected;
+
 use super::*;
 
 pub(super) fn opencode_subject(cause: &FindingCause) -> Option<OpenCodeConfigSubject> {
@@ -77,7 +81,13 @@ pub(super) fn trusted_workspace_in(
     connection: &rusqlite::Connection,
     candidate: &Path,
 ) -> Result<Option<PathBuf>> {
-    let candidate = candidate.canonicalize()?;
+    let Some(home) = antiburn_local::paths::home_dir() else {
+        return Ok(None);
+    };
+    let granted = crate::store::read_granted_dirs_in(connection)?;
+    let Some(candidate) = admitted_canonical_path(&home, candidate, &granted) else {
+        return Ok(None);
+    };
     let mut statement = connection.prepare(
         "SELECT repo_root FROM repository
           WHERE enabled = 1 AND status = 'accessible' AND repo_root IS NOT NULL",
@@ -85,7 +95,7 @@ pub(super) fn trusted_workspace_in(
     let root = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .filter_map(|root| root.ok())
-        .filter_map(|root| PathBuf::from(root).canonicalize().ok())
+        .filter_map(|root| admitted_canonical_path(&home, Path::new(&root), &granted))
         .filter(|root| candidate.starts_with(root))
         .max_by_key(|root| root.components().count());
     Ok(root)
@@ -138,26 +148,51 @@ pub(crate) async fn publication_config_attribution_async(
         let Some(home) = antiburn_local::paths::home_dir() else {
             return Ok(None);
         };
-        let location = publication_authority_location(&store, &key, status, &evidence_json, &home)?;
-        Ok(Some((store, key, evidence_json, home, location)))
+        let policy = store.repository_policy_snapshot()?;
+        let location = publication_authority_location(
+            &store,
+            &key,
+            status,
+            &evidence_json,
+            &home,
+            &policy.granted_dirs,
+        )?;
+        Ok(Some((
+            store,
+            key,
+            evidence_json,
+            home,
+            location,
+            policy.generation,
+        )))
     })
     .await?;
-    let Some((store, key, evidence_json, home, location)) = prepared else {
+    let Some((store, key, evidence_json, home, location, generation)) = prepared else {
         return Ok(PublicationConfigAttribution::default());
     };
     let authority = match location {
-        Some(cwd) => cache.get_async(&cwd).await.cloned(),
+        Some(cwd) => cache
+            .get_async(&store, generation, &home, &cwd)
+            .await
+            .cloned(),
         None => None,
     };
     publication_config_io(move || {
-        publication_config_attribution_with_authority(
+        if !store.repository_policy_is_current(generation)? {
+            return Ok(PublicationConfigAttribution::default());
+        }
+        let result = publication_config_attribution_with_authority(
             &store,
             &key,
             status,
             &evidence_json,
             &home,
             authority.as_ref(),
-        )
+        )?;
+        if !store.repository_policy_is_current(generation)? {
+            return Ok(PublicationConfigAttribution::default());
+        }
+        Ok(result)
     })
     .await
 }
@@ -176,6 +211,7 @@ fn publication_authority_location(
     status: crate::store::PublishedEvidence,
     evidence_json: &str,
     home: &Path,
+    granted: &HashSet<String>,
 ) -> Result<Option<PathBuf>> {
     if key.agent != "opencode"
         || key.environment_key != "native"
@@ -208,9 +244,15 @@ fn publication_authority_location(
     let Some(root) = trusted_workspace(store, &cwd).ok().flatten() else {
         return Ok(None);
     };
-    if !workspace_precedence_supported(AgentKind::OpenCode, Some(&cwd), Some(&root))
-        || config_context(AgentKind::OpenCode, home, Some(&cwd), Some(&root)).is_none()
-        || runtime_override_present(AgentKind::OpenCode)
+    let Some(context) = config_context(AgentKind::OpenCode, home, Some(&cwd), Some(&root), granted)
+    else {
+        return Ok(None);
+    };
+    if !workspace_precedence_supported(
+        AgentKind::OpenCode,
+        context.workspace_cwd.as_deref(),
+        context.trusted_workspace_root.as_deref(),
+    ) || runtime_override_present(AgentKind::OpenCode)
         || managed_configuration_present(AgentKind::OpenCode, home)
     {
         return Ok(None);
@@ -236,6 +278,31 @@ pub(crate) fn publication_config_attribution_with_authority(
     evidence_json: &str,
     home: &Path,
     authority: Option<&crate::agent_config::opencode_config_authority::CurrentConfigAuthority>,
+) -> Result<PublicationConfigAttribution> {
+    let policy = store.repository_policy_snapshot()?;
+    let result = publication_config_attribution_with_grants(
+        store,
+        key,
+        status,
+        evidence_json,
+        home,
+        authority,
+        &policy.granted_dirs,
+    )?;
+    if !store.repository_policy_is_current(policy.generation)? {
+        return Ok(PublicationConfigAttribution::default());
+    }
+    Ok(result)
+}
+
+fn publication_config_attribution_with_grants(
+    store: &Store,
+    key: &crate::store::SessionKey,
+    status: crate::store::PublishedEvidence,
+    evidence_json: &str,
+    home: &Path,
+    authority: Option<&crate::agent_config::opencode_config_authority::CurrentConfigAuthority>,
+    granted: &HashSet<String>,
 ) -> Result<PublicationConfigAttribution> {
     if status != crate::store::PublishedEvidence::Ready {
         return Ok(PublicationConfigAttribution::default());
@@ -266,15 +333,22 @@ pub(crate) fn publication_config_attribution_with_authority(
     let workspace_candidate = session.cwd.as_deref().map(Path::new);
     let workspace =
         workspace_candidate.and_then(|path| trusted_workspace(store, path).ok().flatten());
-    if (workspace_candidate.is_some() && workspace.is_none())
-        || !workspace_precedence_supported(agent, workspace_candidate, workspace.as_deref())
-    {
-        return Ok(PublicationConfigAttribution::default());
-    }
-    let Some(mut context) = config_context(agent, home, workspace_candidate, workspace.as_deref())
-    else {
+    let Some(mut context) = config_context(
+        agent,
+        home,
+        workspace_candidate,
+        workspace.as_deref(),
+        granted,
+    ) else {
         return Ok(PublicationConfigAttribution::default());
     };
+    if !workspace_precedence_supported(
+        agent,
+        context.workspace_cwd.as_deref(),
+        context.trusted_workspace_root.as_deref(),
+    ) {
+        return Ok(PublicationConfigAttribution::default());
+    }
     context.runtime_override_present = runtime_override_present(agent);
     context.source_format = Some(source);
     context.managed_configuration_present =
@@ -522,17 +596,36 @@ pub(crate) fn config_context(
     home: &Path,
     workspace_cwd: Option<&Path>,
     trusted_workspace_root: Option<&Path>,
+    granted: &HashSet<String>,
 ) -> Option<ConfigContext> {
-    match (workspace_cwd, trusted_workspace_root) {
-        (None, None) => Some(ConfigContext::native(agent, home, None)),
+    let mut context = match (workspace_cwd, trusted_workspace_root) {
+        (None, None) => ConfigContext::native(agent, home, None),
         (Some(cwd), Some(root)) => {
-            let cwd = cwd.canonicalize().ok()?;
-            let root = root.canonicalize().ok()?;
-            cwd.starts_with(&root)
-                .then(|| ConfigContext::native_workspace(agent, home, cwd, root))
+            let cwd = admitted_canonical_path(home, cwd, granted)?;
+            let root = admitted_canonical_path(home, root, granted)?;
+            if !cwd.starts_with(&root) {
+                return None;
+            }
+            ConfigContext::native_workspace(agent, home, cwd, root)
         }
-        _ => None,
+        _ => return None,
+    };
+    context.granted_dirs = granted.clone();
+    Some(context)
+}
+
+pub(super) fn admitted_canonical_path(
+    home: &Path,
+    path: &Path,
+    granted: &HashSet<String>,
+) -> Option<PathBuf> {
+    if !protected::project_path_access_in(Some(home), path, granted).is_allowed() {
+        return None;
     }
+    let canonical = path.canonicalize().ok()?;
+    protected::project_access_decision_in(Some(home), &canonical, granted)
+        .is_allowed()
+        .then_some(canonical)
 }
 
 pub(super) fn workspace_relative_cwd(context: &ConfigContext) -> Option<String> {
@@ -545,13 +638,18 @@ pub(super) fn workspace_relative_cwd(context: &ConfigContext) -> Option<String> 
         .map(|path| path.replace('\\', "/"))
 }
 
-pub(super) fn recovery_workspace_cwd(root: &Path, relative: Option<&str>) -> Result<PathBuf> {
-    let cwd = root.join(relative.unwrap_or_default()).canonicalize()?;
-    anyhow::ensure!(
-        cwd.starts_with(root),
-        "stored workspace cwd escapes its root"
-    );
-    Ok(cwd)
+pub(super) fn recovery_workspace_cwd(
+    home: &Path,
+    root: &Path,
+    relative: Option<&str>,
+    granted: &HashSet<String>,
+) -> Option<PathBuf> {
+    let path = root.join(relative.unwrap_or_default());
+    if !path.starts_with(root) {
+        return None;
+    }
+    let cwd = admitted_canonical_path(home, &path, granted)?;
+    cwd.starts_with(root).then_some(cwd)
 }
 
 #[cfg(not(windows))]
@@ -577,12 +675,18 @@ pub(super) fn apply_prepared_change(
     ))
 }
 
-pub(super) fn refreshed_config_context(context: &ConfigContext) -> ConfigContext {
+pub(super) fn refreshed_config_context(
+    store: &Store,
+    context: &ConfigContext,
+) -> Result<ConfigContext, ControllerError> {
     let mut current = context.clone();
+    current.granted_dirs = store
+        .granted_dirs()
+        .map_err(|_| ControllerError::Internal)?;
     current.runtime_override_present = runtime_override_present(current.agent);
     current.managed_configuration_present =
         managed_configuration_present(current.agent, &current.home_root);
-    current
+    Ok(current)
 }
 
 pub(super) const fn current_editor_platform() -> &'static str {
@@ -705,7 +809,8 @@ mod publication_precondition_tests {
                 &key,
                 crate::store::PublishedEvidence::Ready,
                 &json,
-                temporary.path()
+                temporary.path(),
+                &HashSet::new(),
             )
             .unwrap()
             .is_none()
@@ -719,7 +824,8 @@ mod publication_precondition_tests {
                 &key,
                 crate::store::PublishedEvidence::Ready,
                 &serde_json::to_string(&evidence).unwrap(),
-                temporary.path()
+                temporary.path(),
+                &HashSet::new(),
             )
             .unwrap()
             .is_none()
@@ -731,7 +837,8 @@ mod publication_precondition_tests {
                 &key,
                 crate::store::PublishedEvidence::Ready,
                 "not JSON",
-                temporary.path()
+                temporary.path(),
+                &HashSet::new(),
             )
             .unwrap()
             .is_none()

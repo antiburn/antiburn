@@ -39,3 +39,6 @@ lto = true
 opt-level = "s"
 strip = true
 panic = "abort"
+
+[patch.crates-io]
+libsqlite3-sys = { path = "../../crates/antiburn-local/vendor/libsqlite3-sys" }

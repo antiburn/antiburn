@@ -309,7 +309,7 @@ fn nested_projects_roots_blocking(tree: &Path) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut stack = vec![(tree.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        let Ok(entries) = crate::discovery::source_fs::read_dir(&dir) else {
             continue;
         };
         for entry in entries.flatten() {
@@ -322,7 +322,7 @@ fn nested_projects_roots_blocking(tree: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if entry.file_name() == ".claude" {
                 let projects = path.join("projects");
-                if projects.is_dir() {
+                if crate::discovery::source_fs::is_dir(&projects) {
                     roots.push(projects);
                 }
                 continue;
@@ -339,13 +339,13 @@ fn nested_projects_roots_blocking(tree: &Path) -> Vec<PathBuf> {
 /// The direct child directories of one `.claude/projects` root. Runs in a
 /// blocking context.
 fn project_dirs_blocking(projects_root: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(projects_root) else {
+    let Ok(entries) = crate::discovery::source_fs::read_dir(projects_root) else {
         return Vec::new();
     };
     entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
+        .filter(|path| crate::discovery::source_fs::is_dir(path))
         .collect()
 }
 
@@ -381,7 +381,7 @@ async fn all_log_dirs_in(home: &Path) -> Vec<PathBuf> {
 /// a whole tree walk into one `spawn_blocking` task, so these do plain
 /// `std::fs` work instead of spawning a blocking micro-task per fs op.
 fn file_mtime_epoch_blocking(path: &Path) -> Option<i64> {
-    let metadata = std::fs::metadata(path).ok()?;
+    let metadata = crate::discovery::source_fs::metadata(path).ok()?;
     if !metadata.is_file() {
         return None;
     }
@@ -399,7 +399,7 @@ fn file_mtime_epoch_blocking(path: &Path) -> Option<i64> {
 /// recent sub-agent activity" without opening every file inside.
 fn subagents_dir_mtime_epoch_blocking(parent_transcript: &Path) -> Option<i64> {
     let dir = super::claude_subagents::subagents_dir(parent_transcript)?;
-    let metadata = std::fs::metadata(&dir).ok()?;
+    let metadata = crate::discovery::source_fs::metadata(&dir).ok()?;
     if !metadata.is_dir() {
         return None;
     }
@@ -519,7 +519,7 @@ async fn recent_subagent_parent_logs(
     tokio::task::spawn_blocking(move || {
         let mut logs = Vec::new();
         for project_dir in &project_dirs {
-            let Ok(entries) = std::fs::read_dir(project_dir) else {
+            let Ok(entries) = crate::discovery::source_fs::read_dir(project_dir) else {
                 continue;
             };
             for entry in entries.flatten() {
@@ -534,7 +534,9 @@ async fn recent_subagent_parent_logs(
                     continue;
                 };
                 let parent = project_dir.join(format!("{session_id}.jsonl"));
-                if is_audit_log(&parent) || !parent.try_exists().unwrap_or(false) {
+                if is_audit_log(&parent)
+                    || !crate::discovery::source_fs::try_exists(&parent).unwrap_or(false)
+                {
                     continue;
                 }
                 if already_discovered.contains(&parent.to_string_lossy().to_string()) {
@@ -680,7 +682,8 @@ async fn interactive_fork_job_logs(
     cutoff: i64,
 ) -> Vec<SessionLog> {
     let jobs_root = home.join(".claude").join("jobs");
-    let Ok(mut entries) = tokio::fs::read_dir(&jobs_root).await else {
+    let Ok(mut entries) = crate::discovery::source_fs::asynchronous::read_dir(&jobs_root).await
+    else {
         return Vec::new();
     };
     let mut logs = Vec::new();
@@ -691,7 +694,9 @@ async fn interactive_fork_job_logs(
         };
         job_count += 1;
         let state_path = entry.path().join("state.json");
-        let Ok(state_content) = tokio::fs::read_to_string(&state_path).await else {
+        let Ok(state_content) =
+            crate::discovery::source_fs::asynchronous::read_to_string(&state_path).await
+        else {
             continue;
         };
         let Ok(state) = serde_json::from_str::<ClaudeForkJobState>(&state_content) else {
@@ -726,7 +731,9 @@ async fn interactive_fork_job_logs(
             continue;
         }
         let transcript = match transcript_path.as_deref() {
-            Some(path) => tokio::fs::read_to_string(path).await.unwrap_or_default(),
+            Some(path) => crate::discovery::source_fs::asynchronous::read_to_string(path)
+                .await
+                .unwrap_or_default(),
             None => String::new(),
         };
         let title = state
@@ -779,7 +786,9 @@ async fn desktop_manifest_session_log(
     manifest_path: PathBuf,
     manifest_mtime_epoch: i64,
 ) -> Option<SessionLog> {
-    let content = tokio::fs::read_to_string(&manifest_path).await.ok()?;
+    let content = crate::discovery::source_fs::asynchronous::read_to_string(&manifest_path)
+        .await
+        .ok()?;
     let mut manifest = serde_json::from_str::<serde_json::Value>(&content).ok()?;
     let cli_session_id = manifest
         .get("cliSessionId")
@@ -849,7 +858,7 @@ async fn resolve_cli_transcript_path(
     tokio::task::spawn_blocking(move || {
         candidates
             .into_iter()
-            .find(|candidate| candidate.try_exists().unwrap_or(false))
+            .find(|candidate| crate::discovery::source_fs::try_exists(candidate).unwrap_or(false))
     })
     .await
     .ok()

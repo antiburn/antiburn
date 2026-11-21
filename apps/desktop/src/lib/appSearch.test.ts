@@ -192,7 +192,7 @@ describe("static app search", () => {
     (platform) => {
       for (const result of APP_SEARCH_CATALOG) {
         for (const query of [result.label, ...result.aliases]) {
-          const matches = searchApp(query, platform).map(({ id }) => id)
+          const matches = searchApp(query, platform, true, [], true).map(({ id }) => id)
           if (!result.platform || result.platform === platform) {
             expect(matches, query).toContain(result.id)
           } else {
@@ -209,7 +209,7 @@ describe("static app search", () => {
   )
   it("retains settings controls and agent filter targets", () => {
     for (const [control, entry] of Object.entries(SETTINGS_SEARCH_TARGETS)) {
-      expect(searchApp(entry.label, "macos")).toContainEqual(
+      expect(searchApp(entry.label, "macos", true, [], true)).toContainEqual(
         expect.objectContaining({
           target: { kind: "setting", control },
         }),
@@ -290,4 +290,15 @@ it("routes connection management aliases to Agents settings", () => {
       ),
     ).toBe(true)
   }
+})
+
+it("excludes Cloud search controls unless the native feature is enabled", () => {
+  expect(searchApp("Antiburn Cloud")).toEqual([])
+  expect(searchApp("Antiburn Cloud", "macos", true, [], true)).toContainEqual(
+    expect.objectContaining({ id: "settings:sessions:cloudUpload" }),
+  )
+  expect(searchApp("Cloud sources")).toEqual([])
+  expect(searchApp("Cloud sources", "macos", true, [], true)).toContainEqual(
+    expect.objectContaining({ id: "settings:sessions:cloudFolders" }),
+  )
 })

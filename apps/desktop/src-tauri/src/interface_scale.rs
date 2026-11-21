@@ -106,6 +106,9 @@ pub fn reconcile_existing(app: &tauri::AppHandle, scale: InterfaceScale) -> Resu
     if let Err(error) = crate::settings::reconcile_interface_scale(app, scale) {
         errors.push(format!("{}: {error}", crate::settings::LABEL));
     }
+    if let Err(error) = crate::onboarding_window::reconcile_interface_scale(app, scale) {
+        errors.push(format!("{}: {error}", crate::onboarding_window::LABEL));
+    }
     if let Some(manager) = app.try_state::<crate::popover_peek::PopoverPeekManager>()
         && let Err(error) = manager.set_interface_scale(app, scale.factor())
     {

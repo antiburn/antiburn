@@ -97,9 +97,12 @@ export function validateNativeDependencies(output, target) {
       (m) => m[1].toLowerCase(),
     );
     const system =
-      /^(?:kernel32|ntdll|userenv|ws2_32|bcrypt|bcryptprimitives|advapi32|crypt32|secur32|shell32|ole32|oleaut32|user32|gdi32|msvcrt|normaliz|iphlpapi|ncrypt|rpcrt4|version|winmm|psapi|dbghelp|ucrtbase)\.dll$|^api-ms-win-[a-z0-9-]+\.dll$/;
-    if (dependencies.some((name) => !system.test(name)))
-      throw new Error("CLI has a non-system Windows dependency");
+      /^(?:kernel32|ntdll|userenv|ws2_32|bcrypt|bcryptprimitives|advapi32|crypt32|secur32|shell32|combase|ole32|oleaut32|user32|gdi32|msvcrt|normaliz|iphlpapi|ncrypt|rpcrt4|version|winmm|psapi|dbghelp|ucrtbase)\.dll$|^api-ms-win-[a-z0-9-]+\.dll$/;
+    const rejected = dependencies.filter((name) => !system.test(name));
+    if (rejected.length)
+      throw new Error(
+        `CLI has non-system Windows dependencies: ${rejected.join(", ")}`,
+      );
   } else if (target.includes("apple")) {
     dependencies = output
       .split("\n")

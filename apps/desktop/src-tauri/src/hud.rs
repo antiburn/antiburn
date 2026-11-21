@@ -15,13 +15,14 @@ use tauri::AppHandle;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
 
+#[cfg(any(target_os = "macos", test))]
+use crate::store::OnboardingState;
 use crate::store::Store;
 
 /// The internal scalar holding every remembered HUD position.
 const PLACEMENTS_KEY: &str = "internal:hudPlacements";
 
-/// The internal scalar that says the reader wants the HUD on screen. The shell
-/// reads it at launch, so the HUD returns before any webview mounts.
+/// The internal scalar that stores the reader's HUD preference.
 const ENABLED_KEY: &str = "internal:hudEnabled";
 
 /// The internal scalar that says whether the HUD was docked, and where.
@@ -97,10 +98,13 @@ pub fn load_placements(store: &Store) -> Vec<Placement> {
     parse_placements(store.internal_value(PLACEMENTS_KEY).as_deref())
 }
 
-/// Whether the reader last left the HUD on. Absent means off.
-#[cfg(target_os = "macos")]
-pub fn load_enabled(store: &Store) -> bool {
-    store.internal_value(ENABLED_KEY).as_deref() == Some("true")
+#[cfg(any(target_os = "macos", test))]
+fn should_restore(store: &Store) -> bool {
+    store.onboarding_state().ok() == Some(OnboardingState::Completed)
+        && matches!(
+            store.internal_value(ENABLED_KEY).as_deref(),
+            None | Some("true")
+        )
 }
 
 /// Remember whether the HUD should return at the next launch.
@@ -140,13 +144,15 @@ pub(crate) fn save_settled_drop(
     );
 }
 
-/// Bring the HUD back at launch when the reader left it on. The popover used
-/// to do this, but the popover is lazy, so the HUD waited for the first click
-/// on the menu bar.
+/// Show the HUD after onboarding unless the reader turned it off.
 #[cfg(target_os = "macos")]
-pub fn restore_at_launch(app: &AppHandle) {
+pub fn restore_if_enabled(app: &AppHandle) {
     let store = app.state::<Store>();
-    if !load_enabled(&store) {
+    if !should_restore(&store)
+        || app
+            .get_webview_window(antiburn_hud::OVERLAY_LABEL)
+            .is_some_and(|window| window.is_visible().unwrap_or(false))
+    {
         return;
     }
     let entries = load_placements(&store);
@@ -161,7 +167,7 @@ pub fn restore_at_launch(app: &AppHandle) {
             antiburn_hud::open(&app, &entries, interface_scale.factor(), dock, request)
         {
             crate::analytics::cancel_hud_exposure();
-            ::tracing::warn!(event = "hud_launch_restore_failed", error = %error);
+            ::tracing::warn!(event = "hud_restore_failed", error = %error);
         }
     });
 }
@@ -279,6 +285,32 @@ pub fn reconcile_interface_scale(_app: &AppHandle, _factor: f64) -> tauri::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onboarding_hud_restore_defaults_on_after_completion_and_respects_opt_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(dir.path()).unwrap();
+        assert!(!should_restore(&store));
+        store.set_onboarding_state(OnboardingState::Hud).unwrap();
+        save_enabled(&store, true);
+        assert!(!should_restore(&store));
+
+        save_enabled(&store, false);
+        store
+            .set_onboarding_state(OnboardingState::Completed)
+            .unwrap();
+        assert!(!should_restore(&store));
+        assert_eq!(store.internal_value(ENABLED_KEY).as_deref(), Some("false"));
+
+        save_enabled(&store, true);
+        assert!(should_restore(&store));
+        store
+            .lock()
+            .execute("DELETE FROM setting WHERE key = ?1", [ENABLED_KEY])
+            .unwrap();
+        assert!(should_restore(&store));
+        assert_eq!(store.internal_value(ENABLED_KEY), None);
+    }
 
     #[test]
     fn tear_off_saves_require_a_current_active_drag() {

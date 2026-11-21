@@ -167,6 +167,7 @@ async fn publish_fixture_with_prompts(
         AgentKind::OpenCode,
         &key.session_id,
         ClaimedSource {
+            path: None,
             fingerprint: Some(fingerprint),
             generation: claim.source_generation,
         },

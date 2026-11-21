@@ -15,7 +15,6 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::dto::{LiveUsageFreshness, LiveUsageSummary};
-use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::provider_usage;
 use crate::provider_usage::codex_rollout_history::{self, RolloutImportBatch};
 use crate::provider_usage::live::working_week::WorkingClock;
@@ -57,14 +56,7 @@ const ROLLOUT_CONTINUATION_DELAY: Duration = Duration::from_millis(250);
 /// seconds rather than a handful of `TICK`s.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
-    let gate = app.state::<FirstRunGate>().inner().clone();
     tauri::async_runtime::spawn(async move {
-        // During the first run, the Codex history import starts when the
-        // reader opens the Sessions step, not after the startup delay. Its
-        // readings are then ready when the checks step publishes the turns.
-        let mut first_run_kick = gate.stage() != FirstRunStage::Done;
-        let sessions_step = gate.wait_until(FirstRunStage::Sessions, || false);
-        tokio::pin!(sessions_step);
         let mut interval =
             tokio::time::interval_at(tokio::time::Instant::now() + STARTUP_DELAY, TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -73,13 +65,6 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
         let mut imported = 0usize;
         loop {
             let batch = tokio::select! {
-                reached = &mut sessions_step, if first_run_kick => {
-                    first_run_kick = false;
-                    if reached {
-                        rollout_due = Some(tokio::time::Instant::now());
-                    }
-                    continue;
-                }
                 _ = interval.tick() => {
                     rollout_due = None;
                     let app = app.clone();
@@ -215,6 +200,11 @@ impl LiveUsage {
         for provider in &mut snapshot.providers {
             provider.freshness = LiveUsageFreshness::Stale;
         }
+        let now = time::OffsetDateTime::now_utc();
+        if !snapshot.providers.is_empty() {
+            snapshot.generated_at = crate::store::iso_from_epoch(Some(now.unix_timestamp()));
+        }
+        provider_usage::live::clear_expired_window_figures(&mut snapshot, now);
         live.replace_snapshot(snapshot, None);
         *live
             .utc_offset_minutes
@@ -329,14 +319,17 @@ fn run_pass(app: &AppHandle, _blocking: blocking::Thread) -> RolloutImportBatch 
 /// Mirrors `LIMIT_ESTIMATES_CHANGED_EVENT` in `src/lib/ipc.ts`.
 pub(crate) const LIMIT_ESTIMATES_CHANGED_EVENT: &str = "limit-estimates:changed";
 
-/// Run one factor learning pass, if the first run lets learning price turns.
+/// Learn only after discovery and evidence processing settle.
 ///
 /// Returns `true` when the pass ran and at least one lane has a factor.
 pub(crate) fn learn_limit_factors(app: &AppHandle, store: &Store) -> bool {
-    if app
-        .try_state::<FirstRunGate>()
-        .is_some_and(|gate| !gate.limit_learning_ready())
-    {
+    let (Some(scan), Some(worker)) = (
+        app.try_state::<crate::scan::ScanController>(),
+        app.try_state::<crate::insights_worker::WorkerHandle>(),
+    ) else {
+        return false;
+    };
+    if !evidence_ready_for_learning(&scan, &worker, store) {
         return false;
     }
     let now = crate::scan::unix_now();
@@ -344,6 +337,19 @@ pub(crate) fn learn_limit_factors(app: &AppHandle, store: &Store) -> bool {
     crate::analytics::record_limit_factor_observed(app, &learned);
     crate::analytics::record_quota_window_closed(app, store, &touched, now);
     !learned.is_empty()
+}
+
+fn evidence_ready_for_learning(
+    scan: &crate::scan::ScanController,
+    worker: &crate::insights_worker::WorkerHandle,
+    store: &Store,
+) -> bool {
+    scan.first_current_pass_done()
+        && crate::scan::history::discovery_complete(store, scan)
+        && !worker.backlog_active()
+        && store
+            .pending_evidence_count(&crate::agents::evidence_cohort())
+            .is_ok_and(|pending| pending == 0)
 }
 
 /// Learn factors now, and tell the webviews to read the estimates again.
@@ -358,17 +364,25 @@ fn learn_and_notify(app: &AppHandle) {
     }
 }
 
-/// Learn factors once the first run publishes its turns.
-///
-/// The insights worker passes the publication's first-run generation when its
-/// backlog drains. Stale generations and batches before Checks cannot start learning.
-pub(crate) fn learn_after_first_publish(app: &AppHandle, generation: u64) {
-    if !app.state::<FirstRunGate>().mark_turns_published(generation) {
+/// Retry learning after a scan or publication batch settles.
+/// Ignore callbacks from an index that was cleared.
+pub(crate) fn learn_after_data_settles(app: &AppHandle, generation: u64) {
+    if app
+        .state::<crate::insights_worker::WorkerHandle>()
+        .index_generation()
+        != generation
+    {
         return;
     }
     let app = app.clone();
     drop(tauri::async_runtime::spawn_blocking(move || {
-        learn_and_notify(&app);
+        if app
+            .state::<crate::insights_worker::WorkerHandle>()
+            .index_generation()
+            == generation
+        {
+            learn_and_notify(&app);
+        }
     }));
 }
 
@@ -379,13 +393,6 @@ fn run_rollout_import(app: &AppHandle, _blocking: blocking::Thread) -> RolloutIm
 }
 
 fn run_rollout_import_inner(app: &AppHandle) -> RolloutImportBatch {
-    // The first run reads no session files before the Sessions step.
-    if app
-        .try_state::<FirstRunGate>()
-        .is_some_and(|gate| gate.stage() < FirstRunStage::Sessions)
-    {
-        return RolloutImportBatch::default();
-    }
     let Some(store) = app.try_state::<Store>() else {
         return RolloutImportBatch::default();
     };
@@ -435,6 +442,46 @@ pub(crate) fn republish_after_settings_change(app: &AppHandle) {
     }));
 }
 
+/// Keep the previous reading of a provider whose check failed for a reason
+/// that passes by itself.
+///
+/// A source keeps its last good reading in memory through a failure. After a
+/// restart that memory is empty, so the first failed pass has no reading, and
+/// the reading restored from the store would be replaced by nothing. This
+/// function keeps the previous reading, marked stale, next to the error. It
+/// does not keep a reading when the reader must sign in again or turned the
+/// meter off: those states have a sign-in error or no error at all.
+fn carry_forward_readings(summary: &mut LiveUsageSummary, previous: &LiveUsageSummary) {
+    let carried: Vec<_> = summary
+        .errors
+        .iter()
+        .filter(|error| provider_usage::live::failure_is_recoverable(error))
+        .filter(|error| {
+            !summary
+                .providers
+                .iter()
+                .any(|provider| provider.provider == error.provider)
+        })
+        .filter_map(|error| {
+            previous
+                .providers
+                .iter()
+                .find(|provider| provider.provider == error.provider)
+        })
+        .map(|provider| crate::dto::LiveProviderUsage {
+            freshness: LiveUsageFreshness::Stale,
+            ..provider.clone()
+        })
+        .collect();
+    summary.providers.extend(carried);
+    if let Ok(at) = time::OffsetDateTime::parse(
+        &summary.generated_at,
+        &time::format_description::well_known::Rfc3339,
+    ) {
+        provider_usage::live::clear_expired_window_figures(summary, at);
+    }
+}
+
 /// Collect, publish, and evaluate one live-usage reading.
 ///
 /// Every app-level refresh uses this path. This keeps milestone evaluation at
@@ -471,6 +518,11 @@ pub(crate) fn refresh_publish_and_evaluate(
     let detection = provider_usage::live::detect_all(&live.sources, online);
     live.store_detection(detection.clone());
     let collected = provider_usage::live::sources::collect(&live.sources, online, &hidden, max_age);
+    // Take the outcomes on every pass, so that none waits for consent.
+    #[cfg(feature = "analytics")]
+    for source in &live.sources {
+        crate::analytics::record_claude_login_observations(app, &source.take_login_observations());
+    }
     // An unreadable preference counts every day, which is the behaviour before
     // this setting existed.
     let week = settings
@@ -488,7 +540,7 @@ pub(crate) fn refresh_publish_and_evaluate(
     // provider (see `sources::collect`), and a provider that failed this
     // pass has no entry here at all.
     crate::analytics::record_usage_observed(app, &collected.snapshots);
-    let summary = provider_usage::live::summarize_collected(
+    let mut summary = provider_usage::live::summarize_collected(
         collected,
         provider_usage::live::roster(&live.sources, &hidden, &detection),
         store.as_deref(),
@@ -496,6 +548,7 @@ pub(crate) fn refresh_publish_and_evaluate(
         now,
         live.utc_offset_minutes(),
     );
+    carry_forward_readings(&mut summary, &live.snapshot());
     live.replace_snapshot(summary.clone(), store.as_deref());
     crate::tray::sync_usage(
         app,
@@ -710,6 +763,34 @@ fn milestone_snapshot(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn learning_waits_for_discovery_and_worker_drain_and_resets_with_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::open(dir.path()).unwrap();
+        let scan = crate::scan::ScanController::default();
+        let worker = crate::insights_worker::WorkerHandle::default();
+        assert!(!super::evidence_ready_for_learning(&scan, &worker, &store));
+        scan.mark_current_pass_done();
+        assert!(!super::evidence_ready_for_learning(&scan, &worker, &store));
+        let retention_days = store.settings_snapshot().session_data_retention_days;
+        crate::scan::history::mark_done(&store, retention_days);
+        assert!(super::evidence_ready_for_learning(&scan, &worker, &store));
+        let busy = crate::insights_worker::WorkerHandle::with_active_backlog_for_test(&store);
+        assert!(!super::evidence_ready_for_learning(&scan, &busy, &store));
+        let generation = worker.index_generation();
+        worker.invalidate_index();
+        scan.invalidate_current_pass();
+        assert_ne!(generation, worker.index_generation());
+        assert!(!super::evidence_ready_for_learning(&scan, &worker, &store));
+
+        crate::scan::history::reset_done(&store);
+        let mut settings = store.settings().unwrap();
+        settings.session_data_retention_days = crate::store::model::CURRENT_WINDOW_DAYS as i32;
+        store.save_settings(&settings).unwrap();
+        scan.mark_current_pass_done();
+        assert!(super::evidence_ready_for_learning(&scan, &worker, &store));
+    }
+
     use super::*;
     use crate::dto::{
         LiveProviderUsage, LiveUsageFreshness, LiveUsageSourceError, LiveUsageSummary,
@@ -803,6 +884,125 @@ mod tests {
         assert!(live.detection_snapshot().is_empty());
     }
 
+    fn claude_reading(observed_at: &str) -> LiveProviderUsage {
+        LiveProviderUsage {
+            provider: "anthropic".into(),
+            account_key: None,
+            display_name: "Claude".into(),
+            support: LiveUsageSupport::Live,
+            freshness: LiveUsageFreshness::Fresh,
+            source_label: "fixture".into(),
+            observed_at: observed_at.into(),
+            windows: vec![],
+            extra_usage: None,
+            reset_credits: None,
+            plan: None,
+            account_uuid: None,
+            account_email: None,
+        }
+    }
+
+    fn claude_error(
+        category: &str,
+        detail: Option<provider_usage::live::SourceErrorDetail>,
+    ) -> LiveUsageSourceError {
+        LiveUsageSourceError {
+            source: "claude-usage-fetch".into(),
+            provider: "anthropic".into(),
+            display_name: "Claude".into(),
+            category: category.into(),
+            plan: None,
+            detail,
+        }
+    }
+
+    fn failed_pass(error: LiveUsageSourceError) -> LiveUsageSummary {
+        LiveUsageSummary {
+            meters: Vec::new(),
+            providers: Vec::new(),
+            errors: vec![error],
+            generated_at: "2026-08-20T01:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn a_transient_failure_after_a_restart_keeps_the_previous_reading_stale() {
+        use provider_usage::live::SourceErrorDetail;
+        let previous = LiveUsageSummary {
+            meters: Vec::new(),
+            providers: vec![claude_reading("2026-08-20T00:00:00Z")],
+            errors: Vec::new(),
+            generated_at: "2026-08-20T00:00:00Z".into(),
+        };
+        for error in [
+            claude_error("rateLimited", None),
+            claude_error("unavailable", None),
+            claude_error("authentication", Some(SourceErrorDetail::RefreshPending)),
+            claude_error("authentication", Some(SourceErrorDetail::CredentialExpired)),
+        ] {
+            let mut summary = failed_pass(error);
+            carry_forward_readings(&mut summary, &previous);
+            assert_eq!(summary.providers.len(), 1);
+            assert_eq!(summary.providers[0].observed_at, "2026-08-20T00:00:00Z");
+            assert_eq!(summary.providers[0].freshness, LiveUsageFreshness::Stale);
+            assert_eq!(summary.errors.len(), 1, "the error stays visible");
+        }
+    }
+
+    #[test]
+    fn carried_readings_clear_figures_from_reset_periods() {
+        let mut reading = claude_reading("2026-08-20T00:00:00Z");
+        reading.windows.push(crate::dto::LiveUsageWindow {
+            id: "five-hour".into(),
+            role: "primaryShort".into(),
+            kind: "rolling".into(),
+            scope_model: None,
+            used_percent: Some(85.0),
+            starts_at: None,
+            resets_at: Some("2026-08-20T00:30:00Z".into()),
+            elapsed_fraction: Some(0.9),
+            has_nonzero_usage_in_current_period: true,
+            forecast: Default::default(),
+        });
+        let previous = LiveUsageSummary {
+            providers: vec![reading],
+            ..Default::default()
+        };
+        let mut summary = failed_pass(claude_error("rateLimited", None));
+        carry_forward_readings(&mut summary, &previous);
+        assert_eq!(summary.providers[0].windows[0].used_percent, None);
+        assert_eq!(summary.providers[0].windows[0].elapsed_fraction, None);
+        assert_eq!(previous.providers[0].windows[0].used_percent, Some(85.0));
+    }
+
+    #[test]
+    fn a_sign_in_failure_or_a_fresh_reading_is_not_replaced_by_the_previous_one() {
+        use provider_usage::live::SourceErrorDetail;
+        let previous = LiveUsageSummary {
+            meters: Vec::new(),
+            providers: vec![claude_reading("2026-08-20T00:00:00Z")],
+            errors: Vec::new(),
+            generated_at: "2026-08-20T00:00:00Z".into(),
+        };
+        for error in [
+            claude_error("authentication", None),
+            claude_error("authentication", Some(SourceErrorDetail::SignInRequired)),
+        ] {
+            let mut summary = failed_pass(error);
+            carry_forward_readings(&mut summary, &previous);
+            assert!(summary.providers.is_empty());
+        }
+
+        // A pass that already has a reading keeps its own.
+        let mut summary = failed_pass(claude_error("rateLimited", None));
+        summary
+            .providers
+            .push(claude_reading("2026-08-20T00:59:00Z"));
+        carry_forward_readings(&mut summary, &previous);
+        assert_eq!(summary.providers.len(), 1);
+        assert_eq!(summary.providers[0].observed_at, "2026-08-20T00:59:00Z");
+    }
+
     #[test]
     fn the_latest_live_usage_snapshot_survives_a_restart() {
         let store = Store::open_in_memory(std::path::Path::new("/tmp/antiburn-live-usage-cache"))
@@ -837,9 +1037,19 @@ mod tests {
 
         LiveUsage::new().replace_snapshot(stored.clone(), Some(&store));
 
+        let before = crate::scan::unix_now();
+        let restored = LiveUsage::from_store(&store).snapshot();
+        let restored_at = time::OffsetDateTime::parse(
+            &restored.generated_at,
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
+        .unix_timestamp();
+        assert!((before..=crate::scan::unix_now()).contains(&restored_at));
         let mut expected = stored;
+        expected.generated_at = restored.generated_at.clone();
         expected.providers[0].freshness = LiveUsageFreshness::Stale;
-        assert_eq!(LiveUsage::from_store(&store).snapshot(), expected);
+        assert_eq!(restored, expected);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor};
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::Value;
 
 use super::generic_jsonl::GenericJsonlSessionReader;
@@ -203,10 +203,13 @@ impl CopilotSessionReader {
             sink,
             false,
         )?;
-        let connection = Connection::open_with_flags(
-            db_path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
+        let Ok(connection) = crate::discovery::open_native_companion_database(db_path) else {
+            sink.record(NormalizedRecord::Unusable(PartialReason::ReadFailed));
+            let mut summary = state.finish();
+            summary.coverage_gaps.push(PartialReason::ReadFailed);
+            sink.finish(summary.clone());
+            return Ok(summary);
+        };
         let transaction = connection.unchecked_transaction()?;
         let session_rows: u64 = transaction.query_row(
             "SELECT COUNT(*) FROM sessions WHERE session_id = ?1",
@@ -755,6 +758,27 @@ mod tests {
             sink.coverage(),
             crate::analysis::interface::RecordCoverage::Partial
         );
+    }
+
+    #[test]
+    fn unavailable_companion_keeps_transcript_model_without_database_usage() {
+        let directory = TempDir::new().unwrap();
+        let events_path = directory.path().join("events.jsonl");
+        std::fs::write(&events_path, LIFECYCLE).unwrap();
+        let mut input = input(LIFECYCLE);
+        input.source = RawSource::CopilotCliBundle {
+            events_path,
+            db_path: directory.path().join("missing.db"),
+        };
+        let mut sink = SessionCollector::new("copilot", input.session_id.clone());
+        CopilotSessionReader.visit(&input, &mut sink).unwrap();
+        assert_eq!(
+            sink.coverage(),
+            crate::analysis::interface::RecordCoverage::Partial
+        );
+        let session = sink.into_session().unwrap();
+        assert_eq!(session.model.as_deref(), Some("gpt-5"));
+        assert!(session.events.is_empty());
     }
 
     #[test]

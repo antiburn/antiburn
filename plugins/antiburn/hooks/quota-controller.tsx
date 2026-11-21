@@ -1,11 +1,16 @@
+import { usageStatusStripSvg, usageStripSvg } from "./usage-strip-graphics"
 import { atom, read, update } from "claude-code"
 import {
   parseUsageCommand,
   renderUsageHelp,
 } from "../lib/product.mjs"
-import type { EngineInterface, On, Register, RenderInput, SessionAuthorization } from "claude-code"
+import type { EngineInterface, On, Register, RenderInput,
+  RenderNode,
+  SessionAuthorization,
+} from "claude-code"
 import type { UsageState } from "../types"
 import { APP_URL } from "./brand"
+import { UsageEntrance } from "./usage-entrance"
 import { retryAfterTime, type AccountUsageResult } from "./account-usage"
 import {
   filledDotCount,
@@ -31,8 +36,13 @@ import {
   usageStatusSvg,
   secondaryTextSvg,
 } from "./usage-graphics"
-import { renderUsageMeterBand } from "./usage-meter-band"
-import { desktopPercentage, PRESENTATION, usageLayout } from "./usage-presentation"
+import {
+  abovePromptGap,
+  desktopPercentage,
+  hasAbovePromptContent,
+  PRESENTATION,
+  usageLayout,
+} from "./usage-presentation"
 
 import {
   ARGUMENT_HINT,
@@ -53,6 +63,8 @@ const usage = atom(
   } as UsageState,
 )
 const usageOrder = new UsageOrder()
+const stripEntrance = new UsageEntrance()
+let desktopSceneCache: { key: string; source: string } | undefined
 const hoverSites = new Map<string, { shape: string; binding: string }>()
 const hoverMount = Math.random().toString(36).slice(2)
 let hoverRevision = 0
@@ -62,6 +74,7 @@ const visibleSites = new Set<string>()
 let manualUsageRead: Promise<void> | undefined
 let needsUsageReconciliation = false
 let desktopAttached = false
+let desktopStartupPending = false
 const newAccountState = () => ({
   snapshot: null as UsageSnapshot | null,
   lastResult: null as AccountUsageResult | null,
@@ -78,7 +91,8 @@ let accountRequest:
     }
   | undefined
 
-export async function fetchAccountUsage($: EngineInterface): Promise<AccountUsageResult> {
+export async function fetchAccountUsage($: EngineInterface,
+): Promise<AccountUsageResult> {
   let authorization: SessionAuthorization
   try {
     authorization = await $.session.authorize()
@@ -93,7 +107,8 @@ export async function fetchAccountUsage($: EngineInterface): Promise<AccountUsag
         "anthropic-beta": "oauth-2025-04-20",
         accept: "application/json",
       },
-    })
+    },
+    )
     if (!response.ok)
       return {
         status: "error",
@@ -103,7 +118,8 @@ export async function fetchAccountUsage($: EngineInterface): Promise<AccountUsag
     if (!payload || typeof payload !== "object" || Array.isArray(payload))
       return { status: "error" }
     const readings: RateLimitReading[] = []
-    for (const kind of ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"]) {
+    for (const kind of ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet",
+    ]) {
       const value: unknown = (payload as Record<string, unknown>)[kind]
       if (!value || typeof value !== "object" || Array.isArray(value)) continue
       const window = value as Record<string, unknown>
@@ -138,7 +154,9 @@ async function commitUsage(
 ): Promise<void> {
   if (!usageOrder.isCurrent(ticket)) return
   await update($, usage, (current) =>
-    usageOrder.isCurrent(ticket) ? { ...current, snapshot, accountRetryAt: null } : current,
+    usageOrder.isCurrent(ticket)
+      ? { ...current, snapshot, accountRetryAt: null }
+      : current,
   )
 }
 
@@ -154,7 +172,10 @@ async function applyAccountResult(
       usageOrder.isCurrent(ticket)
         ? {
             ...current,
-            snapshot: usageFailure(current.snapshot, current.snapshot.capturedAt),
+            snapshot: usageFailure(
+              current.snapshot,
+              current.snapshot.capturedAt,
+            ),
             accountRetryAt: accountState.nextAttempt,
           }
         : current,
@@ -165,7 +186,9 @@ async function applyAccountResult(
         ? {
             ...current,
             accountRetryAt: null,
-            snapshot: current.snapshot.windows.some((window) => window.percent !== null)
+            snapshot: current.snapshot.windows.some(
+              (window) => window.percent !== null,
+            )
               ? usageFailure(current.snapshot, current.snapshot.capturedAt)
               : { status: "empty" as const, windows: [], capturedAt: 0 },
           }
@@ -181,13 +204,21 @@ async function readAccountUsage(
 ): Promise<void> {
   const state = accountState
   const epoch = state.epoch
-  while (accountRequest && (accountRequest.state !== state || accountRequest.epoch !== epoch)) {
+  while (
+    accountRequest &&
+    (accountRequest.state !== state || accountRequest.epoch !== epoch)
+  ) {
     try {
       await accountRequest.promise
     } catch {
       // Continue this event after the previous request releases its slot.
     }
-    if (state !== accountState || epoch !== state.epoch || !usageOrder.isCurrent(ticket)) return
+    if (
+      state !== accountState ||
+      epoch !== state.epoch ||
+      !usageOrder.isCurrent(ticket)
+    )
+      return
   }
   if (!accountRequest && now < state.nextAttempt) {
     await applyAccountResult($, state.lastResult, ticket)
@@ -223,17 +254,34 @@ async function readAccountUsage(
       .catch(() => {})
   }
   const result = await accountRequest.promise
-  if (state !== accountState || epoch !== state.epoch || !usageOrder.isCurrent(ticket)) return
+  if (
+    state !== accountState ||
+    epoch !== state.epoch ||
+    !usageOrder.isCurrent(ticket)
+  )
+    return
   await applyAccountResult($, result, ticket)
 }
 
-async function readUsage($: EngineInterface): Promise<void> {
+async function readUsage($: EngineInterface, discoverDesktop = false): Promise<void> {
   const ticket = usageOrder.beginRead()
   try {
     await update($, usage, (current) =>
-      usageOrder.isCurrent(ticket) ? { ...current, pendingRead: ticket } : current,
+      usageOrder.isCurrent(ticket)
+        ? { ...current, pendingRead: ticket }
+        : current,
     )
     if (!usageOrder.isCurrent(ticket)) return
+    if (discoverDesktop && !desktopAttached) {
+      try {
+        const surfaces = await $.session.surfaces()
+        if (!usageOrder.isCurrent(ticket)) return
+        desktopAttached ||= surfaces.includes("desktop")
+      } catch {
+        // Read native usage when the host cannot list surfaces.
+      }
+      if (!usageOrder.isCurrent(ticket)) return
+    }
     let native: UsageSnapshot | undefined
     let failed = false
     const now = await $.clock.now()
@@ -261,7 +309,10 @@ async function readUsage($: EngineInterface): Promise<void> {
       usageOrder.isCurrent(ticket)
         ? {
             ...current,
-            snapshot: usageFailure(current.snapshot, current.snapshot.capturedAt),
+            snapshot: usageFailure(
+              current.snapshot,
+              current.snapshot.capturedAt,
+            ),
           }
         : current,
     )
@@ -272,6 +323,10 @@ async function readUsage($: EngineInterface): Promise<void> {
         ? { ...current, pendingRead: null }
         : current,
     )
+    if (desktopStartupPending && desktopAttached && usageOrder.isCurrent(ticket)) {
+      desktopStartupPending = false
+      $.ui.invalidate("ui.render")
+    }
   }
 }
 
@@ -287,9 +342,11 @@ async function refreshUsage($: EngineInterface): Promise<void> {
 }
 
 function accountRetryText(retryAt: number | null, now: number): string | null {
-  if (retryAt === null || !Number.isFinite(retryAt) || retryAt <= now) return null
+  if (retryAt === null || !Number.isFinite(retryAt) || retryAt <= now)
+    return null
   const date = new Date(Math.ceil(retryAt / 1000) * 1000)
-  if (!Number.isFinite(date.getTime())) return "Account check is temporarily unavailable"
+  if (!Number.isFinite(date.getTime()))
+    return "Account check is temporarily unavailable"
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
       hour: "numeric",
@@ -315,7 +372,10 @@ function accountRetryText(retryAt: number | null, now: number): string | null {
         .map((kind) => fields.find((field) => field.type === kind)?.value ?? "")
         .join("-")
     }
-    const day = dateKey(date.getTime()) === dateKey(now) ? "" : `${dateKey(date.getTime())} `
+    const day =
+      dateKey(date.getTime()) === dateKey(now)
+        ? ""
+        : `${dateKey(date.getTime())} `
     const seconds = part("second") ? `:${part("second")}` : ""
     return `Account retry at ${day}${part("hour")}:${part("minute")}${seconds}${part("dayPeriod").toLowerCase()} ${part("timeZoneName")}`
   } catch {
@@ -325,7 +385,8 @@ function accountRetryText(retryAt: number | null, now: number): string | null {
         ? ""
         : `${timestamp.slice(0, 10)} `
     const hour = date.getUTCHours()
-    const seconds = date.getUTCSeconds() === 0 ? "" : `:${timestamp.slice(17, 19)}`
+    const seconds =
+      date.getUTCSeconds() === 0 ? "" : `:${timestamp.slice(17, 19)}`
     return `Account retry at ${day}${hour % 12 || 12}:${timestamp.slice(14, 16)}${seconds}${hour < 12 ? "am" : "pm"} UTC`
   }
 }
@@ -370,9 +431,12 @@ async function openTerminalWebsite($: EngineInterface): Promise<void> {
   try {
     const windows = (await $.env.get("OS")) === "Windows_NT"
     if (windows) {
-      const result = await $.process.run(["cmd.exe", "/c", "start", "", "https://antiburn.com"], {
-        timeoutMs: 5000,
-      })
+      const result = await $.process.run(
+        ["cmd.exe", "/c", "start", "", "https://antiburn.com"],
+        {
+          timeoutMs: 5000,
+        },
+      )
       if (result.exitCode === 0) return
     } else {
       try {
@@ -394,22 +458,49 @@ async function openTerminalWebsite($: EngineInterface): Promise<void> {
   await $.ui.status(`Open ${APP_URL} in your browser`)
 }
 
-async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
+async function renderUsage(
+  $: EngineInterface,
+  e: RenderInput<"AbovePrompt">,
+): Promise<RenderNode> {
+  const generation = stripEntrance.generation
+  let renderedAt = Number.NaN
+  const drawing = await renderUsageContent($, e, (now) => {
+    renderedAt = now
+  })
+  if (e.surface !== "desktop") return drawing
+  if (generation !== stripEntrance.generation) return renderUsage($, e)
+  return stripEntrance.render(drawing, "desktop", renderedAt)
+}
+
+async function renderUsageContent(
+  $: EngineInterface,
+  e: RenderInput<"AbovePrompt">,
+  recordTime: (now: number) => void,
+) {
   const generation = uiGeneration
   if (visibleSites.size >= 8 && !visibleSites.has(e.requestId))
     visibleSites.delete(visibleSites.values().next().value!)
   visibleSites.add(e.requestId)
   const activate = (action: () => Promise<unknown>) => {
-    if (uiEnabled && generation === uiGeneration && visibleSites.has(e.requestId)) return action()
+    if (
+      uiEnabled &&
+      generation === uiGeneration &&
+      visibleSites.has(e.requestId)
+    )
+      return action()
   }
   const ui = $.ui.resolve(e)
   const { Box, Text, Button, Link } = ui
   const state = await read($, usage)
   const now = await $.clock.now()
+  recordTime(now)
   const snapshot = state.snapshot
   const windows = PRIMARY_WINDOWS.map((kind) => primaryWindow(snapshot, kind))
   const columns = Math.max(1, Math.min(4096, e.props.bodyColumns))
   const isDesktop = e.surface === "desktop" && "Svg" in ui
+  const hasReading = windows.some((window) => window.percent !== null)
+  const sharedScene = isDesktop && columns >= 24
+  if (sharedScene && desktopStartupPending && !hasReading) return <Box />
   const mark = isDesktop ? (
     <Box
       key="usage-mark-slot"
@@ -418,13 +509,16 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
       width={PRESENTATION.markSlotSize / 8}
       flexShrink={0}
     >
-      <ui.Svg
-        key="usage-mark-size"
-        source={BRAND_MARK_SVG}
-        alt="antiburn"
-        width={PRESENTATION.markSize}
-        height={PRESENTATION.markSize}
-      />
+      {!sharedScene && (
+        <ui.Svg
+          key="usage-mark-size"
+          source={BRAND_MARK_SVG}
+          alt="antiburn"
+          width={PRESENTATION.markSize}
+          height={PRESENTATION.markSize}
+        />
+      )}
+      {sharedScene && <Box height={PRESENTATION.markSize / 16} />}
       <Box
         key="usage-brand-link"
         position="absolute"
@@ -446,12 +540,11 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
       paddingLeft={1}
       flexDirection="row"
       flexShrink={0}
-      height={2}
+      height={1}
       alignItems="center"
       justifyContent="center"
     >
-      <Box flexDirection="column" width={10} height={2} flexShrink={0}>
-        <Text> </Text>
+      <Box flexDirection="column" width={10} height={1} flexShrink={0}>
         <Box width={10} height={1} flexShrink={0} overflow="hidden">
           <Button
             key="usage-brand-open"
@@ -467,15 +560,82 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
       </Box>
     </Box>
   )
-  const hasReading = windows.some((window) => window.percent !== null)
   if (!hasReading && snapshot.status !== "ready") {
     terminalHoverBinding(e.requestId, "empty")
-    const pending = state.pendingRead != null && usageOrder.isCurrent(state.pendingRead)
+    const pending =
+      state.pendingRead != null && usageOrder.isCurrent(state.pendingRead)
     const status = pending ? "Checking usage..." : "Usage unavailable"
     const canRefresh = !pending && columns >= 24
     const retryAt = state.accountRetryAt
     const retryHint = accountRetryText(retryAt, now)
     const graphic = usageStatusSvg(status, undefined, !pending && columns < 60)
+    if (isDesktop && columns >= 24) {
+      const retryCopy = retryHint
+        ? `${retryHint} · ${RETRY_EXPLANATION}`
+        : undefined
+      const secondary = retryCopy
+        ? secondaryTextSvg(
+            [retryCopy],
+            columns * 8,
+            Math.max(2, Math.floor(e.props.maxRows - 2)),
+          )
+        : undefined
+      const source = usageStatusStripSvg(
+        BRAND_MARK_SVG,
+        graphic,
+        columns,
+        secondary,
+        canRefresh,
+      )
+      const height = graphic.height + (secondary?.height ?? 0)
+      return (
+        <Box
+          key="usage-band"
+          width="100%"
+          height={height / 16}
+          position="relative"
+        >
+          <ui.Svg
+            key="usage-status-scene"
+            isInteractive
+            source={source}
+            alt={`${graphic.description}${retryCopy ? `. ${retryCopy}` : ""}`}
+            width={RESPONSIVE_FRAME_WIDTH}
+            height={height}
+          />
+          <Box
+            position="absolute"
+            left={0}
+            top={0}
+            height={graphic.height / 16}
+            flexDirection="row"
+            alignItems="center"
+          >
+            <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />
+            {mark}
+          </Box>
+          {canRefresh && (
+            <Box
+              position="absolute"
+              right={0}
+              top={0}
+              height={graphic.height / 16}
+              justifyContent="center"
+            >
+              <Button
+                key="usage-refresh"
+                plain
+                dimColor
+                label="↻"
+                onPress={() => activate(() => refreshUsage($))}
+              >
+                <Text dimColor>↻</Text>
+              </Button>
+            </Box>
+          )}
+        </Box>
+      )
+    }
     const band = (
       <Box
         key="usage-band"
@@ -484,7 +644,9 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
         gap={isDesktop ? 0 : 1}
         height={isDesktop && columns >= 24 ? graphic.height / 16 : undefined}
       >
-        {isDesktop && <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />}
+        {isDesktop && (
+          <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />
+        )}
         {mark}
         {isDesktop && <Box width={PRESENTATION.brandGap / 8} flexShrink={0} />}
         {isDesktop ? (
@@ -506,9 +668,16 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
             height={graphic.height}
           />
         ) : (
-          <Box width={Math.max(1, columns - (canRefresh ? 14 : 12))} flexShrink={1}>
+          <Box
+            width={Math.max(1, columns - (canRefresh ? 14 : 12))}
+            flexShrink={1}
+          >
             {pending && e.surface === "terminal" && "Client" in ui ? (
-              <ui.Client key="usage-checking" module="./checking-status.ts" props={null} />
+              <ui.Client
+                key="usage-checking"
+                module="./checking-status.ts"
+                props={null}
+              />
             ) : (
               <Text key="usage-status" wrap="truncate-end">
                 {status}
@@ -559,28 +728,60 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
 
   if (isDesktop && columns >= 24) {
     terminalHoverBinding(e.requestId, "desktop")
-    return renderUsageMeterBand({
-      ui,
-      layout: usageLayout(columns * 8, "inline"),
-      windows,
-      mark,
-      renderMeter: (window) => (
+    const layout = usageLayout(columns * 8, "inline")
+    const descriptions = windows.map((window) =>
+      meterDescription(window, now, true),
+    )
+    // A redraw retains the snapshot's scene. A new reading updates its clock.
+    const key = JSON.stringify([stripEntrance.generation, columns, snapshot])
+    if (desktopSceneCache?.key !== key) {
+      desktopSceneCache = {
+        key,
+        source: usageStripSvg(
+          BRAND_MARK_SVG,
+          windows.map((window) => responsiveMeterSvg(window, now)),
+          layout,
+          columns,
+        ),
+      }
+    }
+    return (
+      <Box
+        key="usage-band"
+        width="100%"
+        position="relative"
+        alignItems="center"
+      >
         <ui.Svg
-          key={`meter-graphic-${window.kind}`}
-          source={responsiveMeterSvg(window, now)}
-          alt={`${meterDescription(window, now, true)}${snapshot.status === "error" ? ". Usage unavailable · Last known" : ""}`}
+          key="usage-scene"
+          source={desktopSceneCache.source}
+          alt={`antiburn. ${descriptions.join(". ")}${snapshot.status === "error" ? ". Usage unavailable · Last known" : ""}`}
           width={RESPONSIVE_FRAME_WIDTH}
-          height={18}
+          height={layout.height}
           isInteractive
         />
-      ),
-    })
+        <Box
+          position="absolute"
+          left={0}
+          top={0}
+          bottom={0}
+          flexDirection="row"
+          alignItems="center"
+        >
+          <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />
+          {mark}
+        </Box>
+      </Box>
+    )
   }
   const content = Math.max(1, columns - (isDesktop ? 3 : 12))
   const inlineColumns = Math.max(1, Math.floor((content - 3) / 2))
   const isInline =
     columns >= 80 &&
-    windows.every((window) => window.label.length + percentage(window).length + 2 <= inlineColumns)
+    windows.every(
+      (window) =>
+        window.label.length + percentage(window).length + 2 <= inlineColumns,
+    )
   const meterColumns = isInline ? inlineColumns : content
   const geometry = (window: UsageWindow) => {
     const trackColumns = Math.max(
@@ -592,7 +793,10 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
     const markerCell =
       value === null || count < 2
         ? null
-        : Math.max(1, Math.min(count * 2 - 3, Math.round(value * (count - 1)) * 2 - 1))
+        : Math.max(
+            1,
+            Math.min(count * 2 - 3, Math.round(value * (count - 1)) * 2 - 1),
+          )
     return { count, value, markerCell }
   }
   const hoverBinding =
@@ -622,7 +826,8 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
     const isRevealed = revealed === window.kind
     const isPaceRevealed = revealed === `pace-${window.kind}`
     const { count, value, markerCell } = geometry(window)
-    const isPaceReached = window.percent !== null && value !== null && window.percent / 100 >= value
+    const isPaceReached =
+      window.percent !== null && value !== null && window.percent / 100 >= value
     const cells = count * 2 - 1
     const copy = isRevealed
       ? resetText(window, now)
@@ -631,23 +836,34 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
           ? "Pace unavailable"
           : paceLabel(value)
         : null
-    const copyOnRight = markerCell !== null && cells - markerCell - 1 >= markerCell
+    const copyOnRight =
+      markerCell !== null && cells - markerCell - 1 >= markerCell
     const copyOnLeft = isRevealed || (isPaceRevealed && !copyOnRight)
     const segment = (start: number, end: number, showCopy: boolean) => {
       const copyLength =
-        showCopy && copy !== null ? Math.min(copy.length, Math.max(0, end - start)) : 0
+        showCopy && copy !== null
+          ? Math.min(copy.length, Math.max(0, end - start))
+          : 0
       const copyStart = copyOnLeft ? end - copyLength : start
-      const dotCells = Array.from({ length: Math.max(0, end - start) }, (_, index) => {
-        const cell = start + index
-        if (copyLength > 0 && cell >= copyStart && cell < copyStart + copyLength) return null
-        if (cell % 2 !== 0) return <Text key={`space-${cell}`}> </Text>
-        const filled = cell / 2 < filledDotCount(window.percent, count)
-        return (
-          <Text key={`dot-${cell}`} color={filled ? BRAND : "subtle"}>
-            {"●"}
-          </Text>
-        )
-      })
+      const dotCells = Array.from(
+        { length: Math.max(0, end - start) },
+        (_, index) => {
+          const cell = start + index
+          if (
+            copyLength > 0 &&
+            cell >= copyStart &&
+            cell < copyStart + copyLength
+          )
+            return null
+          if (cell % 2 !== 0) return <Text key={`space-${cell}`}> </Text>
+          const filled = cell / 2 < filledDotCount(window.percent, count)
+          return (
+            <Text key={`dot-${cell}`} color={filled ? BRAND : "subtle"}>
+              {"●"}
+            </Text>
+          )
+        },
+      )
       if (copyLength === 0) return dotCells
       dotCells.splice(
         copyStart - start,
@@ -659,7 +875,12 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
       return dotCells
     }
 
-    const target = (detail: "reset" | "pace", text: string, color?: string, dimColor?: boolean) =>
+    const target = (
+      detail: "reset" | "pace",
+      text: string,
+      color?: string,
+      dimColor?: boolean,
+    ) =>
       e.surface === "terminal" && "Client" in ui ? (
         <ui.Client
           key={`usage-hover-${detail}-${window.kind}`}
@@ -688,7 +909,9 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
           <Button
             key={`usage-pace-${window.kind}`}
             plain
-            onPress={() => activate(() => revealUsage($, `pace-${window.kind}`))}
+            onPress={() =>
+              activate(() => revealUsage($, `pace-${window.kind}`))
+            }
           >
             <Text
               key="pace-marker"
@@ -727,9 +950,13 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
               <Button
                 key={`usage-pace-${window.kind}`}
                 plain
-                onPress={() => activate(() => revealUsage($, `pace-${window.kind}`))}
+                onPress={() =>
+                  activate(() => revealUsage($, `pace-${window.kind}`))
+                }
               >
-                <Text color={isPaceReached ? BRAND : "subtle"}>{markerGlyph}</Text>
+                <Text color={isPaceReached ? BRAND : "subtle"}>
+                  {markerGlyph}
+                </Text>
               </Button>
             </Box>
             <Box
@@ -746,29 +973,43 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
               </Text>
             </Box>
             {markerHover && (
-              <Box position="absolute" left={markerCell} top={0} width={1} height={1}>
+              <Box
+                position="absolute"
+                left={markerCell}
+                top={0}
+                width={1}
+                height={1}
+              >
                 {target(
                   "pace",
-                  copy !== null && markerCell < copy.length ? copy[markerCell]! : markerGlyph,
+                  copy !== null && markerCell < copy.length
+                    ? copy[markerCell]!
+                    : markerGlyph,
                   copy !== null && markerCell < copy.length
                     ? undefined
                     : isPaceReached
                       ? BRAND
                       : "subtle",
-                  copy !== null && markerCell < copy.length ? true : !isPaceReached,
+                  copy !== null && markerCell < copy.length
+                    ? true
+                    : !isPaceReached,
                 )}
               </Box>
             )}
           </Box>
         ) : (
           <Box flexDirection="row" width={cells} height={1} flexShrink={0}>
-            {markerCell === null && <Text>{segment(0, cells, copy !== null)}</Text>}
+            {markerCell === null && (
+              <Text>{segment(0, cells, copy !== null)}</Text>
+            )}
             {markerCell !== null && (
               <Box
                 key={`usage-pace-left-${window.kind}`}
                 width={markerCell}
                 flexShrink={0}
-                justifyContent={isPaceRevealed && copyOnLeft ? "flex-end" : undefined}
+                justifyContent={
+                  isPaceRevealed && copyOnLeft ? "flex-end" : undefined
+                }
                 height={1}
                 flexDirection="row"
                 overflow="hidden"
@@ -789,7 +1030,11 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
                 overflow="hidden"
               >
                 <Text wrap="truncate-end">
-                  {segment(markerCell + 1, cells, copy !== null && isPaceRevealed && copyOnRight)}
+                  {segment(
+                    markerCell + 1,
+                    cells,
+                    copy !== null && isPaceRevealed && copyOnRight,
+                  )}
                 </Text>
               </Box>
             )}
@@ -821,7 +1066,13 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
               <Text>{window.label}</Text>
             </Button>
             {e.surface === "terminal" && (
-              <Box position="absolute" left={0} top={0} width={window.label.length} height={1}>
+              <Box
+                position="absolute"
+                left={0}
+                top={0}
+                width={window.label.length}
+                height={1}
+              >
                 {target("reset", window.label)}
               </Box>
             )}
@@ -829,14 +1080,20 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
           <Box flexGrow={1} flexShrink={1} minWidth={0}>
             {dots}
           </Box>
-          <Text>{isDesktop ? desktopPercentage(window) : percentage(window)}</Text>
+          <Text>
+            {isDesktop ? desktopPercentage(window) : percentage(window)}
+          </Text>
         </Box>
       </Box>
     )
   }
 
   const meters = (
-    <Box key="usage-meters" flexDirection={isInline ? "row" : "column"} gap={isInline ? 3 : 0}>
+    <Box
+      key="usage-meters"
+      flexDirection={isInline ? "row" : "column"}
+      gap={isInline ? 3 : 0}
+    >
       {windows.map(meter)}
     </Box>
   )
@@ -848,9 +1105,13 @@ async function renderUsage($: EngineInterface, e: RenderInput<"AbovePrompt">) {
           alignItems={isDesktop ? "center" : "flex-end"}
           gap={isDesktop ? 0 : 1}
         >
-          {isDesktop && <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />}
+          {isDesktop && (
+            <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />
+          )}
           {mark}
-          {isDesktop && <Box width={PRESENTATION.brandGap / 8} flexShrink={0} />}
+          {isDesktop && (
+            <Box width={PRESENTATION.brandGap / 8} flexShrink={0} />
+          )}
           <Text key="usage-status">Usage unavailable · Last known</Text>
         </Box>
         <Box marginLeft={3}>{meters}</Box>
@@ -905,18 +1166,24 @@ export async function requestUsage($: EngineInterface): Promise<void> {
   await readUsage($)
 }
 
-export async function startQuota($: EngineInterface): Promise<void> {
-  desktopAttached = false
+export async function startQuota($: EngineInterface, deferDesktopStartup = false, desktopAtStart = false): Promise<void> {
+  stripEntrance.start()
+  desktopStartupPending = deferDesktopStartup
+  desktopAttached = desktopAtStart
   needsUsageReconciliation = false
   try {
     await resetUsage($)
-    if (uiEnabled) await readUsage($)
+    if (uiEnabled) await readUsage($, true)
   } catch {
     // Keep the host session usable when quota setup fails.
   }
 }
 
-export async function endQuota($: EngineInterface, reason: string): Promise<void> {
+export async function endQuota(
+  $: EngineInterface,
+  reason: string,
+): Promise<void> {
+  stripEntrance.start()
   try {
     await resetUsage($)
   } catch {
@@ -940,7 +1207,7 @@ export function registerCommands(on: On, usageUiEnabled: boolean) {
   on("session.start", async ($, e, next) => {
     registered = false
     const current = ++generation
-    await startQuota($)
+    await startQuota($, e.surface !== "terminal", e.surface === "desktop")
     const result = await next(e)
     if (current !== generation) return result
     try {
@@ -984,6 +1251,12 @@ export function registerCommands(on: On, usageUiEnabled: boolean) {
   })
 
   on("command.run", async ($, e, next) => {
+    if (e.command === "reload-plugins") {
+      stripEntrance.reset()
+      const result = await next(e)
+      $.ui.invalidate("ui.render")
+      return result
+    }
     if (e.command === "clear" || e.command === "resume") {
       const result = await next(e)
       await reconcileQuota($)
@@ -1027,19 +1300,31 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
   })
 
   on("session.attach", async ($, e, next) => {
+    if (e.surface === "desktop") {
+      const generation = stripEntrance.generation
+      stripEntrance.attach(e.clientId)
+      if (!desktopAttached || generation !== stripEntrance.generation) {
+        if (!desktopStartupPending && generation === stripEntrance.generation)
+          stripEntrance.reset()
+        desktopStartupPending = true
+      }
+    }
     const state = accountState
     const result = await next(e)
     if (e.surface === "desktop" && state === accountState) {
       desktopAttached = true
+      $.ui.invalidate("ui.render")
       if (uiEnabled) await readUsage($)
     }
     return result
   })
 
   on("session.detach", async ($, e, next) => {
+    if (e.surface === "desktop") stripEntrance.detach(e.clientId)
     uiGeneration++
     visibleSites.clear()
     usageOrder.reset()
+    desktopStartupPending = false
     manualUsageRead = undefined
     const hadAccountReading = accountState.snapshot !== null
     accountState = newAccountState()
@@ -1082,7 +1367,8 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
           usageOrder.isCurrent(ticket)
             ? {
                 ...current,
-                snapshot: usageFailure(current.snapshot, current.snapshot.capturedAt),
+                snapshot: usageFailure(current.snapshot, current.snapshot.capturedAt,
+                ),
               }
             : current,
         )
@@ -1095,7 +1381,8 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
 
   on("ui.message", async ($, e, next) => {
     if (!uiEnabled) return next(e)
-    const match = /^usage-hover-(reset|pace)-(five_hour|seven_day)$/.exec(e.element)
+    const match = /^usage-hover-(reset|pace)-(five_hour|seven_day)$/.exec(e.element,
+    )
     if (
       e.surface !== "terminal" ||
       e.component !== "AbovePrompt" ||
@@ -1121,7 +1408,8 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
       await update($, usage, (current) => {
         const hovered = data.hovered
           ? { target, requestId: e.requestId, binding: data.binding as string }
-          : current.hovered?.target === target && current.hovered.requestId === e.requestId
+          : current.hovered?.target === target &&
+              current.hovered.requestId === e.requestId
             ? null
             : current.hovered
         if (!data.activate) return { ...current, hovered }
@@ -1144,7 +1432,9 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
     hoverSites.delete(e.id)
     try {
       await update($, usage, (current) =>
-        current.hovered?.requestId === e.id ? { ...current, hovered: null } : current,
+        current.hovered?.requestId === e.id
+          ? { ...current, hovered: null }
+          : current,
       )
     } catch {
       // Close the host UI even if hover cleanup fails.
@@ -1165,15 +1455,10 @@ export function registerQuota(on: On, options: { usageUiEnabled: boolean }) {
         <Box
           key="usage-spacing"
           flexDirection="column"
-          marginTop={
-            e.props.maxRows >= 8 && e.props.bodyColumns >= 24
-              ? e.surface === "desktop"
-                ? 0.25
-                : 1
-              : 0
-          }
+          marginTop={e.surface === "desktop" ? 0 : abovePromptGap(e)}
+          gap={abovePromptGap(e)}
         >
-          {downstream}
+          {hasAbovePromptContent(downstream) && downstream}
           {await renderUsage($, e)}
         </Box>
       )

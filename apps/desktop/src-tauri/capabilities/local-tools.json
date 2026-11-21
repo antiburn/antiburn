@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-tools",
+  "description": "Read debug CLI and skill setup status without changing vendor integrations.",
+  "windows": ["onboarding", "settings", "main"],
+  "permissions": ["allow-get-local-tools-status"]
+}

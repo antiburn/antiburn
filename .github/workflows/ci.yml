@@ -143,7 +143,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Test the CI control plane
-        run: node --test scripts/build-cli-sidecar.test.mjs scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/dependabot-notice-workflows.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs scripts/update-homebrew-cask.test.mjs scripts/windows-signing-workflow.test.mjs scripts/prepare-app-version.test.mjs scripts/manual-release-workflow.test.mjs scripts/ci-rust.test.mjs scripts/check-agent-hooks.test.mjs scripts/opencode-wsl-acceptance.test.mjs
+        run: node --test scripts/build-cli-sidecar.test.mjs scripts/build-tool-catalog.test.mjs scripts/check-design-drift.test.mjs scripts/dependabot-notice-workflows.test.mjs scripts/mem-report.test.mjs scripts/window-open-report.test.mjs scripts/verify-linux-appimage.test.mjs scripts/third-party-notices.test.mjs scripts/verify-app-engine-release.test.mjs scripts/wait-for-main-ci.test.mjs scripts/update-homebrew-cask.test.mjs scripts/windows-signing-workflow.test.mjs scripts/prepare-app-version.test.mjs scripts/manual-release-workflow.test.mjs scripts/ci-rust.test.mjs scripts/check-agent-hooks.test.mjs scripts/opencode-wsl-acceptance.test.mjs scripts/claude-probe.test.mjs
 
   burn-check-validator:
     name: Burn Check validator
@@ -283,12 +283,32 @@ jobs:
             crates/antiburn-checks-store
             crates/antiburn-cli-runtime
             apps/cli
+            crates/antiburn-cloud-capture
           shared-key: ci-engine-${{ matrix.name }}
           cache-bin: false
           # Pull requests run only the x64 and macOS platforms, so only those
           # platforms save a cache. The ARM platforms build cold on main and
           # nightly. This keeps the repository in its 10 GB cache limit.
           save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !endsWith(matrix.name, '-arm64') }}
+
+      - name: Test SQLite WAL initialization backport
+        shell: bash
+        working-directory: crates/antiburn-local/vendor/libsqlite3-sys
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            clang -O0 wal-regression.c -o "$RUNNER_TEMP/wal-regression.exe"
+            "$RUNNER_TEMP/wal-regression.exe"
+          else
+            cc -O0 wal-regression.c -o "$RUNNER_TEMP/wal-regression" -lpthread -ldl -lm
+            "$RUNNER_TEMP/wal-regression"
+          fi
+
+      - name: Test external SQLx consumer
+        shell: bash
+        working-directory: crates/antiburn-local
+        run: |
+          cargo tree --manifest-path tests/sqlite-compat/Cargo.toml --locked -i libsqlite3-sys --prefix none | grep 'libsqlite3-sys v0.30.1 .*vendor'
+          cargo run --manifest-path tests/sqlite-compat/Cargo.toml --locked
 
       - name: Install nextest
         uses: taiki-e/install-action@b20dedce73af6905cdc30d6611090c9b67557c8d # v2

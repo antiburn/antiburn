@@ -1215,7 +1215,7 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|_| {},
-                gate: &always_open_gate,
+                before_claim: &continue_before_claim,
             },
             &|_, _| {},
         )
@@ -1227,69 +1227,6 @@ async fn the_worker_loop_runs_one_pass_at_a_time() {
         .expect("both passes complete");
     task.abort();
     assert_eq!(maximum.load(Ordering::SeqCst), 1);
-}
-
-/// The worker must not claim anything while the first-run gate sits below
-/// `Check`, and must claim it as soon as the gate opens.
-#[tokio::test]
-async fn worker_loop_claims_nothing_before_the_first_run_gate_reaches_check() {
-    let store = Arc::new(store());
-    store
-        .upsert_sessions(&[record("gated")], &crate::agents::evidence_cohort())
-        .unwrap();
-    let handle = Arc::new(WorkerHandle::default());
-    let gate = FirstRunGate::new(false);
-    let claimed = Arc::new(AtomicUsize::new(0));
-
-    let task_store = Arc::clone(&store);
-    let task_handle = Arc::clone(&handle);
-    let task_claimed = Arc::clone(&claimed);
-    let task_gate = gate.clone();
-    let task = tokio::spawn(async move {
-        let runner = move |record: &SessionRecord, _: PassSignal, _: i64| {
-            task_claimed.fetch_add(1, Ordering::SeqCst);
-            let pass = published_pass(record);
-            Box::pin(async move { pass }) as PassFuture
-        };
-        let wait_for_check = move || -> GateFuture {
-            let gate = task_gate.clone();
-            Box::pin(async move {
-                gate.wait_until(FirstRunStage::Checks, || false).await;
-            })
-        };
-        worker_loop(
-            &task_store,
-            &task_handle,
-            &|| 100,
-            &runner,
-            &|_| {},
-            &WorkerLoopSignals {
-                report_changed: &|| {},
-                backlog: &|_| {},
-                gate: &wait_for_check,
-            },
-            &|_, _| {},
-        )
-        .await;
-    });
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(
-        claimed.load(Ordering::SeqCst),
-        0,
-        "the gate is still below Check"
-    );
-
-    gate.advance(FirstRunStage::Checks);
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while claimed.load(Ordering::SeqCst) == 0 {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the worker claims the session once the gate opens");
-
-    task.abort();
 }
 
 #[test]
@@ -1375,7 +1312,7 @@ async fn a_worker_loop_pass_reports_one_busy_stretch_and_resets() {
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|_| {},
-                gate: &always_open_gate,
+                before_claim: &continue_before_claim,
             },
             &|_, _| {},
         )
@@ -1449,7 +1386,7 @@ async fn the_worker_loop_announces_backlog_start_and_drain_once() {
             &WorkerLoopSignals {
                 report_changed: &|| {},
                 backlog: &|active| task_announced.lock().unwrap().push(active),
-                gate: &always_open_gate,
+                before_claim: &continue_before_claim,
             },
             &|_, _| {},
         )
@@ -1516,7 +1453,7 @@ async fn the_worker_loop_marks_the_backlog_busy_before_the_first_pass_runs() {
                         .unwrap()
                         .push(format!("backlog:{active}"));
                 },
-                gate: &always_open_gate,
+                before_claim: &continue_before_claim,
             },
             &|_, _| {},
         )
@@ -1892,6 +1829,7 @@ async fn file_source_identity_survives_real_publication_and_revision_reconciliat
                 AgentKind::Claude,
                 &session_id,
                 analysis::ClaimedSource {
+                    path: None,
                     fingerprint,
                     generation: source_generation,
                 },
@@ -2410,4 +2348,19 @@ fn a_publish_with_no_incidents_still_succeeds_and_ingests_nothing() {
     let outcome = apply_outcome(&store, &claim, &pass, 100).unwrap();
     assert!(outcome.applied);
     assert!(outcome.ingested.is_none());
+}
+
+#[tokio::test]
+async fn worker_pins_file_claims_to_the_scanned_source() {
+    for kind in ["file", "provider_db", "inline"] {
+        let mut source = record("duplicate-rollout");
+        source.source_kind = kind.into();
+        let expected = (kind == "file").then(|| std::path::PathBuf::from(&source.source_label));
+        let analyzer = |_, _, _, claimed: analysis::ClaimedSource, _, _, _| {
+            assert_eq!(claimed.path, expected);
+            assert_eq!(claimed.fingerprint, source.source_fingerprint);
+            Box::pin(async { failed_pass(PassOutcome::Unsupported) }) as PassFuture
+        };
+        run_record_pass_with(&source, PassSignal::new(), 1, store(), &analyzer).await;
+    }
 }

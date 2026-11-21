@@ -43,21 +43,66 @@ pub(crate) fn canonical_root(path: &Path) -> Result<PathBuf, ConfigUnavailableRe
 }
 
 pub(crate) fn path_entry_exists(path: &Path) -> Result<bool, ConfigUnavailableReason> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            Err(ConfigUnavailableReason::PermissionDenied)
-        }
-        Err(_) => Err(ConfigUnavailableReason::UnsafePath),
+    path_entry_exists_with_admission(path, || Ok(()))
+}
+
+pub(super) fn path_entry_exists_with_admission(
+    path: &Path,
+    check: impl Fn() -> Result<(), ConfigUnavailableReason>,
+) -> Result<bool, ConfigUnavailableReason> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        return Err(ConfigUnavailableReason::UnsafePath);
     }
+    let ancestors = path
+        .ancestors()
+        .filter(|path| path.is_absolute())
+        .collect::<Vec<_>>();
+    for ancestor in ancestors.into_iter().rev() {
+        check()?;
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                #[cfg(target_os = "macos")]
+                if matches!(ancestor.to_str(), Some("/etc" | "/tmp" | "/var"))
+                    && fs::read_link(ancestor).is_ok_and(|target| {
+                        let suffix = Path::new("private")
+                            .join(ancestor.strip_prefix("/").expect("system path"));
+                        target == suffix || target == Path::new("/").join(suffix)
+                    })
+                {
+                    continue;
+                }
+                return Err(ConfigUnavailableReason::SymlinkTarget);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(ConfigUnavailableReason::PermissionDenied);
+            }
+            Err(_) => return Err(ConfigUnavailableReason::UnsafePath),
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) fn read_checked(
     path: &Path,
     trusted_root: &Path,
 ) -> Result<CheckedFile, ConfigUnavailableReason> {
-    let metadata = checked_metadata(path, trusted_root)?;
+    read_checked_with_admission(path, trusted_root, || Ok(()))
+}
+
+pub(super) fn read_checked_with_admission(
+    path: &Path,
+    trusted_root: &Path,
+    check: impl Fn() -> Result<(), ConfigUnavailableReason>,
+) -> Result<CheckedFile, ConfigUnavailableReason> {
+    check()?;
+    let metadata = checked_metadata_with_admission(path, trusted_root, &check)?;
+    check()?;
     let file = fs::File::open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::PermissionDenied {
             ConfigUnavailableReason::PermissionDenied
@@ -66,6 +111,7 @@ pub(crate) fn read_checked(
         }
     })?;
     let bytes = read_bounded(file)?;
+    check()?;
     let after = fs::symlink_metadata(path).map_err(|_| ConfigUnavailableReason::UnsafePath)?;
     if after.file_type().is_symlink() || file_identity(&after) != file_identity(&metadata) {
         return Err(ConfigUnavailableReason::ChangedIdentity);
@@ -112,30 +158,34 @@ pub(crate) fn check_regular_file(metadata: &fs::Metadata) -> Result<(), ConfigUn
     Ok(())
 }
 
-pub(super) fn checked_metadata(
+pub(super) fn checked_metadata_with_admission(
     path: &Path,
     trusted_root: &Path,
+    check: &impl Fn() -> Result<(), ConfigUnavailableReason>,
 ) -> Result<fs::Metadata, ConfigUnavailableReason> {
-    reject_symlink_ancestors(path, trusted_root)?;
+    reject_symlink_ancestors(path, trusted_root, check)?;
+    check()?;
     let metadata = fs::symlink_metadata(path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => ConfigUnavailableReason::MissingConfig,
         std::io::ErrorKind::PermissionDenied => ConfigUnavailableReason::PermissionDenied,
         _ => ConfigUnavailableReason::UnsafePath,
     })?;
     check_regular_file(&metadata)?;
+    check()?;
     let canonical = path
         .canonicalize()
         .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
     if !canonical.starts_with(trusted_root) {
         return Err(ConfigUnavailableReason::UnsafePath);
     }
-    check_owner(&metadata, path, trusted_root)?;
+    check_owner(&metadata, path, trusted_root, check)?;
     Ok(metadata)
 }
 
 fn reject_symlink_ancestors(
     path: &Path,
     trusted_root: &Path,
+    check: &impl Fn() -> Result<(), ConfigUnavailableReason>,
 ) -> Result<(), ConfigUnavailableReason> {
     let relative = path
         .strip_prefix(trusted_root)
@@ -144,6 +194,7 @@ fn reject_symlink_ancestors(
     let components = relative.components().collect::<Vec<_>>();
     for component in components.iter().take(components.len().saturating_sub(1)) {
         current.push(component);
+        check()?;
         let metadata = fs::symlink_metadata(&current).map_err(|error| match error.kind() {
             std::io::ErrorKind::PermissionDenied => ConfigUnavailableReason::PermissionDenied,
             _ => ConfigUnavailableReason::UnsafePath,
@@ -163,9 +214,12 @@ fn check_owner(
     metadata: &fs::Metadata,
     path: &Path,
     root: &Path,
+    check: &impl Fn() -> Result<(), ConfigUnavailableReason>,
 ) -> Result<(), ConfigUnavailableReason> {
     use std::os::unix::fs::MetadataExt;
+    check()?;
     let root = fs::metadata(root).map_err(|_| ConfigUnavailableReason::UnsafePath)?;
+    check()?;
     let parent = fs::metadata(path.parent().ok_or(ConfigUnavailableReason::UnsafePath)?)
         .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
     if metadata.uid() != root.uid() || metadata.gid() != parent.gid() {
@@ -185,7 +239,12 @@ pub(crate) fn file_ownership(metadata: &fs::Metadata) -> FileOwnership {
 }
 
 #[cfg(not(unix))]
-fn check_owner(_: &fs::Metadata, _: &Path, _: &Path) -> Result<(), ConfigUnavailableReason> {
+fn check_owner(
+    _: &fs::Metadata,
+    _: &Path,
+    _: &Path,
+    _: &impl Fn() -> Result<(), ConfigUnavailableReason>,
+) -> Result<(), ConfigUnavailableReason> {
     Ok(())
 }
 

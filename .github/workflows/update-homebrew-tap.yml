@@ -81,11 +81,7 @@ jobs:
         id: release
         run: |
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            REQUESTED_TAG=$(node --input-type=module -e '
-              import { readFileSync } from "node:fs";
-              import { caskVersion } from "./scripts/update-homebrew-cask.mjs";
-              console.log("antiburn-v" + caskVersion(readFileSync("tap/Casks/antiburn.rb", "utf8")));
-            ')
+            REQUESTED_TAG=$(gh release view --repo antiburn/antiburn --json tagName --jq .tagName)
           fi
           printf 'tag=%s\n' "$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
 
@@ -95,6 +91,7 @@ jobs:
         run: |
           node --test scripts/update-homebrew-cask.test.mjs
           brew tap --custom-remote antiburn/tap "$GITHUB_WORKSPACE/tap"
+          brew trust --cask antiburn/tap/antiburn
           CASK_PATH="$(brew --repository antiburn/tap)/Casks/antiburn.rb"
           node scripts/update-homebrew-cask.mjs "$RELEASE_TAG" "$CASK_PATH"
           brew style --cask antiburn/tap/antiburn

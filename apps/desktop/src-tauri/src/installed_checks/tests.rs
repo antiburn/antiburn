@@ -1573,7 +1573,14 @@ fn oversized_overrides_do_not_fall_back_and_unreadable_folders_preserve_other_pr
     );
     let state = InstalledChecks::default();
     state.credentials_restored.store(true, Ordering::Release);
-    publish_inventory(&state, &fixture.store, &host.definitions, |_| {}).unwrap();
+    publish_inventory(
+        &state,
+        &fixture.store,
+        &host.definitions,
+        host.inventory_generation,
+        |_| {},
+    )
+    .unwrap();
     update_delivery_readiness(&state, &host, true);
     assert!(state.delivery_ready.load(Ordering::Acquire));
     let bindings = runtime_definition_bindings(&fixture.store);
@@ -1818,7 +1825,7 @@ fn watcher_plan_and_event_filter_cover_only_the_installation_chain_and_yaml_chil
     let checks = directory.path().join(".antiburn/checks");
     let directories = vec![checks.clone()];
     assert_eq!(
-        watch::watch_paths(&directories),
+        watch::watch_paths(&directories, |_| true, Path::is_dir),
         BTreeSet::from([directory.path().to_path_buf()])
     );
     assert!(!checks.parent().unwrap().exists());
@@ -1870,7 +1877,7 @@ async fn native_watcher_reconciles_created_replaced_and_recreated_global_and_rep
     let changed = Arc::new(Notify::new());
     let signal = Arc::clone(&changed);
     let mut watcher = watch::DirectoryWatcher::new(move || signal.notify_one()).unwrap();
-    watcher.refresh(&host.watch_directories);
+    watcher.refresh(&host.watch_directories, |_| true);
     assert!(!global.parent().unwrap().exists());
     assert!(!fixture.project.join(".antiburn").exists());
     for directory in [global, fixture.project.join(".antiburn/checks")] {
@@ -1940,13 +1947,13 @@ async fn watch_reconcile(
     tokio::time::timeout(Duration::from_secs(10), changed.notified())
         .await
         .expect("native watch change");
-    watcher.refresh(&host.watch_directories);
+    watcher.refresh(&host.watch_directories, |_| true);
     host.reconcile(&Admission::Ready).unwrap();
     while tokio::time::timeout(Duration::from_millis(200), changed.notified())
         .await
         .is_ok()
     {
-        watcher.refresh(&host.watch_directories);
+        watcher.refresh(&host.watch_directories, |_| true);
         host.reconcile(&Admission::Ready).unwrap();
     }
 }
@@ -3037,4 +3044,55 @@ fn protected_repository_without_grant_is_not_read_or_watched() {
         diagnostic.details[0].value,
         root.join(".antiburn/checks").to_string_lossy()
     );
+}
+
+#[test]
+fn watcher_checks_actual_ancestors_before_probing_and_never_probes_denied_targets() {
+    use std::cell::RefCell;
+
+    let root = std::env::temp_dir().join("synthetic-watch-root");
+    let allowed = root.join("allowed/.antiburn/checks");
+    let denied = root.join("denied/.antiburn/checks");
+    let blocked_ancestor = root.join("allowed");
+    let probed = RefCell::new(Vec::new());
+    let planned = watch::watch_paths(
+        &[allowed.clone(), denied.clone()],
+        |path| path != denied && path != blocked_ancestor,
+        |path| {
+            probed.borrow_mut().push(path.to_path_buf());
+            false
+        },
+    );
+    assert!(planned.is_empty());
+    assert_eq!(
+        *probed.borrow(),
+        [allowed.clone(), allowed.parent().unwrap().to_owned()]
+    );
+}
+
+#[test]
+fn a_queued_inventory_cannot_publish_after_folder_access_changes() {
+    let fixture = Fixture::new();
+    let state = InstalledChecks::default();
+    let mut host = fixture.host();
+    host.reconcile(&Admission::Ready).unwrap();
+    let generation = host.inventory_generation.unwrap();
+    fixture.store.grant_dir("Documents").unwrap();
+    assert!(
+        !fixture
+            .store
+            .repository_policy_is_current(generation)
+            .unwrap()
+    );
+    assert!(
+        publish_inventory(
+            &state,
+            &fixture.store,
+            &host.definitions,
+            Some(generation),
+            |_| { panic!("stale inventory was published") }
+        )
+        .is_err()
+    );
+    assert!(state.metadata.read().unwrap().is_empty());
 }

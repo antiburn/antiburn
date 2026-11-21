@@ -1,3 +1,5 @@
+import { emptyCloudSnapshot } from "../../../src/lib/cloud"
+import { AGENT_SLUGS, agentDisplayName } from "../../../src/lib/presentation/agents"
 import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
@@ -14,6 +16,7 @@ import {
 
 declare global {
   interface Window {
+    __ANTIBURN_ONBOARDING_CALLS__?: string[]
     __ANTIBURN_VISUAL_SETTINGS_CALLS__?: Array<{
       command: string
       args: Record<string, unknown> | undefined
@@ -52,6 +55,8 @@ const usageWindow = {
 }
 
 const settings = {
+  sidebarUsagePins: null,
+  sidebarUsageAppearance: "dials",
   interfaceScalePercent: 100,
   theme: "system",
   activityWindowDays: 7,
@@ -253,7 +258,36 @@ const entries = [
   },
 ]
 
+function vendorFixture() {
+  return new URLSearchParams(window.location.search).get("vendors")
+}
+
+function vendorCounts() {
+  return AGENT_SLUGS.map((agent, index) => ({
+    agent,
+    sessions: vendorFixture() === "mixed" && index > 2 ? 0 : 1,
+    done: true,
+  }))
+}
+
 function fixtureEntries(state: FixtureState) {
+  if (vendorFixture())
+    return vendorCounts()
+      .filter((row) => row.sessions > 0)
+      .map((row, index) => ({
+        ...entries[0]!,
+        agent: row.agent,
+        sessionId: `vendor-fixture-${row.agent}`,
+        title: `${agentDisplayName(row.agent)} icon audit session`,
+        repo: "vendor-icon-audit",
+        timestamp: new Date(Date.parse(now) - index * 60_000).toISOString(),
+        isActive: false,
+        hasForkParent: false,
+        forkChildCount: 0,
+        cost: null,
+        models: [],
+        modelRuns: [],
+      }))
   if (hasRemoteFixture()) {
     return [
       ...entries,
@@ -326,6 +360,8 @@ const nudge = {
   ],
 }
 
+let sidebarPreferences: Record<string, unknown> = {}
+
 function dataFor(command: string, args: Record<string, unknown> | undefined): unknown {
   if (command.includes("remote_")) return remoteFixtureCommand(command, args)
   const state = fixtureState()
@@ -355,20 +391,59 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
   if (fault === "peek-data" && command === "get_popover_peek_data")
     return Promise.reject(new Error("Fixture preview data failure"))
   switch (command) {
+    case "get_agent_integrations":
+      return []
+    case "agent_session_locations":
+      return []
     case "get_settings":
       return {
         ...settings,
         onboardingCompleted:
           new URLSearchParams(window.location.search).get("onboarding") === "complete",
-        liveUsageStarted:
-          new URLSearchParams(window.location.search).get("onboarding") === "complete",
+        liveUsageStarted: true,
+        liveUsageEnabled: new URLSearchParams(window.location.search).get("usage") !== "off",
         interfaceScalePercent:
           Number(new URLSearchParams(window.location.search).get("scale")) || 100,
+        ...sidebarPreferences,
       }
+    case "hud_island_available":
+      return new URLSearchParams(window.location.search).get("hud") !== "floating"
+    case "cloud_status":
+      return emptyCloudSnapshot
+    case "cloud_begin":
+      return emptyCloudSnapshot
+    case "cloud_cancel":
+      return { ...emptyCloudSnapshot, status: "cancelled" }
+    case "get_promotion_readiness": {
+      const params = new URLSearchParams(window.location.search)
+      const manual = params.get("onboarding") === "complete"
+      const age = params.get("promoAge")
+      const delayElapsed = age === null || Number(age) >= 24 * 60 * 60 * 1000
+      return {
+        manual,
+        automatic: manual && params.get("promoSession") !== "current" && delayElapsed,
+      }
+    }
+    case "get_onboarding_state":
+      return (
+        sessionStorage.getItem("onboarding-review-state") ??
+        new URLSearchParams(window.location.search).get("step") ??
+        "welcome"
+      )
+    case "set_onboarding_state":
+      sessionStorage.setItem("onboarding-review-state", String(args?.state))
+      return args?.state
+    case "get_onboarding_window_visible":
+      return true
     case "get_main_window_visible":
       return true
     case "list_burn_check_snoozes":
       return []
+    case "start_live_usage":
+      return { ...settings, liveUsageEnabled: true, liveUsageStarted: true }
+    case "patch_sidebar_usage":
+      sidebarPreferences = { ...sidebarPreferences, ...(args?.patch as object) }
+      return dataFor("get_settings", undefined)
     case "set_settings":
       return args?.settings ?? settings
     case "set_interface_scale": {
@@ -402,6 +477,33 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return empty ? { ...allowanceUsage, accounts: [] } : allowanceUsage
     case "get_live_usage":
     case "refresh_live_usage":
+      if (new URLSearchParams(window.location.search).has("bars")) {
+        const params = new URLSearchParams(window.location.search)
+        const requested = Number(params.get("bars"))
+        const count = [1, 3, 6, 12].includes(requested) ? requested : 1
+        const vendors = [
+          { provider: "openai", displayName: "Codex", sourceLabel: "Codex account" },
+          { provider: "anthropic", displayName: "Claude", sourceLabel: "Claude Code" },
+          { provider: "google", displayName: "Gemini", sourceLabel: "Gemini CLI" },
+        ]
+        const windows = liveUsage.providers[0]!.windows
+        const providers = Array.from({ length: count }, (_, index) => {
+          const vendor = vendors[index % vendors.length]!
+          const window = windows[index % windows.length]!
+          const accountKey = `fixture-${vendor.provider}-${Math.floor(index / vendors.length)}`
+          return {
+            ...liveUsage.providers[0]!,
+            ...vendor,
+            accountKey,
+            windows: [{ ...window, id: `${window.id}-${accountKey}` }],
+          }
+        })
+        return {
+          ...liveUsage,
+          providers,
+          meters: vendors.map((vendor) => ({ ...vendor, shown: true })),
+        }
+      }
       if (state === "long" && new URLSearchParams(window.location.search).has("island")) {
         return {
           ...liveUsage,
@@ -423,32 +525,50 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return { failing: false, message: null }
     case "count_agent_memories":
       return empty ? 0 : 12
-    case "get_scan_status":
+    case "get_scan_status": {
+      const counts = vendorFixture() ? vendorCounts() : null
+      const retainedSessions = empty
+        ? 0
+        : counts
+          ? counts.reduce((total, row) => total + row.sessions, 0)
+          : 128
       return {
         running: false,
-        completedAgents: 2,
-        totalAgents: 2,
-        sessions: 128,
+        completedAgents: counts?.length ?? 2,
+        totalAgents: counts?.length ?? 2,
+        sessions: counts ? retainedSessions : 128,
         finishedAt: now,
         cancelled: false,
         error: null,
         agents: empty
           ? []
-          : [
-              { agent: "codex", lastCompletedAt: now, sessionsSeen: 87 },
-              { agent: "claude-code", lastCompletedAt: now, sessionsSeen: 41 },
-            ],
+          : counts
+            ? counts
+                .filter((row) => row.sessions > 0)
+                .map((row) => ({
+                  agent: row.agent,
+                  lastCompletedAt: now,
+                  sessionsSeen: row.sessions,
+                }))
+            : [
+                { agent: "codex", lastCompletedAt: now, sessionsSeen: 87 },
+                { agent: "claude-code", lastCompletedAt: now, sessionsSeen: 41 },
+              ],
         listChanged: false,
         reDescribed: 2,
         phase: "saving",
-        foundByAgent: [
-          { agent: "claude-code", sessions: empty ? 0 : 41, done: true },
-          { agent: "codex", sessions: empty ? 0 : 87, done: true },
-          { agent: "cursor", sessions: 0, done: true },
-        ],
-        read: { completed: empty ? 0 : 128, total: empty ? 0 : 128 },
-        gate: { kept: empty ? 0 : 128, outsideRepository: 0, excluded: 0, unreadable: 0 },
+        foundByAgent:
+          counts && !empty
+            ? counts
+            : [
+                { agent: "claude-code", sessions: empty ? 0 : 41, done: true },
+                { agent: "codex", sessions: empty ? 0 : 87, done: true },
+                { agent: "cursor", sessions: 0, done: true },
+              ],
+        read: { completed: retainedSessions, total: retainedSessions },
+        gate: { kept: retainedSessions, outsideRepository: 0, excluded: 0, unreadable: 0 },
       }
+    }
     case "get_folder_permissions":
       return { deferred: [], granted: [], supported: false }
     case "default_scan_roots":
@@ -561,6 +681,10 @@ export function isTauri(): boolean {
 }
 
 export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (new URLSearchParams(window.location.search).get("surface") === "onboarding") {
+    window.__ANTIBURN_ONBOARDING_CALLS__ ??= []
+    window.__ANTIBURN_ONBOARDING_CALLS__.push(command)
+  }
   if (
     command.includes("system_one") ||
     command === "list_ollama_models" ||
@@ -575,13 +699,20 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
     window.__ANTIBURN_VISUAL_SETTINGS_CALLS__ ??= []
     window.__ANTIBURN_VISUAL_SETTINGS_CALLS__.push({ command, args })
   }
-  if (command === "tear_off_overlay" || command === "hud_drag_ended") {
+  if (
+    command === "tear_off_overlay" ||
+    command === "hud_drag_ended" ||
+    command === "expand_hud_island"
+  ) {
     window.__ANTIBURN_VISUAL_HUD_DRAGS__ ??= []
     window.__ANTIBURN_VISUAL_HUD_DRAGS__.push(command)
   }
   if (command === "resize_overlay_window") {
     window.__ANTIBURN_VISUAL_HUD_RESIZES__ ??= []
-    window.__ANTIBURN_VISUAL_HUD_RESIZES__.push(args ?? {})
+    window.__ANTIBURN_VISUAL_HUD_RESIZES__.push({
+      ...(args ?? {}),
+      bodyPresent: document.querySelector('[data-testid="island-body"]') !== null,
+    })
   }
   return dataFor(command, args) as T
 }

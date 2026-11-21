@@ -258,12 +258,58 @@ body[data-transparent-window] #root {
 .hud-island {
   --island-fillet: 6px;
   border-radius: 0 0 14px 14px;
-  transition: border-radius var(--duration-fast) ease-out;
+  transition: border-radius var(--duration-hud-island) ease-out;
 }
 
 .hud-island-open {
   --island-fillet: 19px;
-  border-radius: 0 0 24px 24px;
+  --island-radius: 24px;
+  border-radius: 0 0 var(--island-radius) var(--island-radius);
+}
+
+.hud-island-body-transition {
+  clip-path: inset(0 0 0 0 round 0 0 var(--island-radius) var(--island-radius));
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.hud-island-body-closed {
+  clip-path: inset(0 0 100% 0 round 0 0 var(--island-radius) var(--island-radius));
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.hud-island-body-preview {
+  clip-path: none;
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  transition: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hud-island-body-transition {
+    transition:
+      clip-path var(--duration-hud-island) var(--ease-out-quart),
+      opacity var(--duration-hud-island) var(--ease-out-quart),
+      transform var(--duration-hud-island) var(--ease-out-quart);
+  }
+
+  .hud-island-body-closed {
+    transition-duration:
+      var(--duration-hud-island-close), var(--duration-quick), var(--duration-hud-island-close);
+    transition-delay: 0s, calc(var(--duration-hud-island-close) - var(--duration-quick)), 0s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-island-body-transition {
+    clip-path: none !important;
+    transform: none !important;
+    transition-property: opacity !important;
+    transition-duration: var(--duration-reduced-motion) !important;
+    transition-delay: 0s !important;
+  }
 }
 
 /* Camera height and curves stay fixed; wings and indicators follow interface size. */

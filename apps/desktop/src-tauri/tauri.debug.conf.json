@@ -4,8 +4,10 @@
   "app": {
     "security": {
       "capabilities": [
+        "local-tools",
         "default",
         "main-window",
+        "onboarding",
         "popover-peek",
         "popover-peek-anchor",
         "checks-remediation",

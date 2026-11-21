@@ -1,3 +1,4 @@
+import { usageStatusStripSvg, usageStripSvg } from "./usage-strip-graphics";
 import type {
   EngineInterface,
   RenderElement,
@@ -7,12 +8,10 @@ import type {
 import type { UsageWindow } from "./usage";
 import {
   meterDescription,
-  meterLayer,
   RESPONSIVE_FRAME_WIDTH,
   secondaryTextSvg,
 } from "./usage-graphics";
-import { PRESENTATION, type usageLayout } from "./usage-presentation";
-import { renderUsageMeterBand } from "./usage-meter-band";
+import { abovePromptGap, PRESENTATION, type usageLayout } from "./usage-presentation";
 
 type UsageUi = ReturnType<EngineInterface["ui"]["resolve"]>;
 type AbovePromptEvent = RenderInput<"AbovePrompt">;
@@ -31,7 +30,8 @@ type EmptyBandInput = {
     width: number;
     height: number;
   };
-  renderMark: () => RenderNode | null;
+  statusMarkSource: string;
+  renderMark: (source: string) => RenderNode | null;
   renderTerminalMark: () => RenderNode;
   onRefresh: () => void;
 };
@@ -45,11 +45,78 @@ export function renderEmptyUsageBand({
   retryHint,
   canRefresh,
   statusGraphic,
+  statusMarkSource,
   renderMark,
   renderTerminalMark,
   onRefresh,
 }: EmptyBandInput): RenderElement {
   const { Box, Button, Text } = ui;
+  const columns = event.props.bodyColumns;
+  if (isDesktop && "Svg" in ui && columns >= 24) {
+    const secondary = retryHint
+      ? secondaryTextSvg(
+          [retryHint],
+          columns * 8,
+          Math.max(2, Math.floor(event.props.maxRows - 2)),
+        )
+      : undefined;
+    const source = usageStatusStripSvg(
+      statusMarkSource,
+      statusGraphic,
+      columns,
+      secondary,
+      canRefresh,
+    );
+    const transparentMark = statusMarkSource
+      .replace(">", '><g opacity="0">')
+      .replace(/<\/svg>\s*$/, "</g></svg>");
+    const height = statusGraphic.height + (secondary?.height ?? 0);
+    return (
+      <Box
+        key="usage-band"
+        width="100%"
+        height={height / 16}
+        position="relative"
+      >
+        <ui.Svg
+          key="usage-status-scene"
+          isInteractive
+          source={source}
+          alt={`${statusGraphic.description}${retryHint ? `. ${retryHint}` : ""}`}
+          width={RESPONSIVE_FRAME_WIDTH}
+          height={height}
+        />
+        <Box
+          position="absolute"
+          left={0}
+          top={0}
+          height={statusGraphic.height / 16}
+          flexDirection="row"
+          alignItems="center"
+        >
+          <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />
+          {renderMark(transparentMark)}
+        </Box>
+        {canRefresh && (
+          <Box
+            position="absolute"
+            right={0}
+            top={0}
+            height={statusGraphic.height / 16}
+            justifyContent="center"
+          >
+            <Button
+              key="usage-state-refresh"
+              plain
+              dimColor
+              label={"Svg" in ui ? "↻" : "[↻]"}
+              onPress={onRefresh}
+            />
+          </Box>
+        )}
+      </Box>
+    );
+  }
   const band = (
     <Box
       key="usage-band"
@@ -64,7 +131,7 @@ export function renderEmptyUsageBand({
       }
     >
       {isDesktop && <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />}
-      {isDesktop ? renderMark() : renderTerminalMark()}
+      {isDesktop ? renderMark(statusMarkSource) : renderTerminalMark()}
       {isDesktop && <Box width={PRESENTATION.brandGap / 8} flexShrink={0} />}
       {isDesktop && "Svg" in ui ? (
         <ui.Svg
@@ -171,40 +238,41 @@ export function renderDesktopUsageBand({
   renderMark,
 }: DesktopBandInput): RenderElement {
   const { Box } = ui;
-  return renderUsageMeterBand({
-    ui,
+  const source = usageStripSvg(
+    usageMark,
+    responsiveSources,
     layout,
-    windows,
-    mark: renderMark(usageMark, markAlt),
-    renderMeter: (window, index) => (
-      <Box position="relative" width="100%" minWidth={0} alignItems="center">
+    Math.max(1, Math.round(layout.width / 8)),
+  );
+  const descriptions = windows.map((window) =>
+    meterDescription(window, now, true),
+  );
+  const transparentMark = usageMark
+    .replace(">", '><g opacity="0">')
+    .replace(/<\/svg>\s*$/, "</g></svg>");
+  return (
+      <Box key="usage-band" width="100%" position="relative" alignItems="center">
         <ui.Svg
-          key={`meter-base-${window.kind}`}
-          source={meterLayer(responsiveSources[index]!, "base")}
-          alt={`${meterDescription(window, now, true)}${status === "error" ? ". Usage unavailable · Last known" : ""}`}
-          width={RESPONSIVE_FRAME_WIDTH}
-          height={layout.meterHeight}
-        />
-        <Box
-          position="absolute"
-          top={0}
-          bottom={0}
-          left={0}
-          right={0}
-          alignItems="center"
-        >
-          <ui.Svg
-            key={`meter-interaction-${window.kind}`}
-            source={meterLayer(responsiveSources[index]!, "interaction")}
-            alt={`${window.label} reset and pace controls`}
-            width={RESPONSIVE_FRAME_WIDTH}
-            height={layout.meterHeight}
-            isInteractive
-          />
-        </Box>
+          key="usage-scene"
+        source={source}
+        alt={`antiburn. ${descriptions.join(". ")}${status === "error" ? ". Usage unavailable · Last known" : ""}`}
+        width={RESPONSIVE_FRAME_WIDTH}
+        height={layout.height}
+        isInteractive
+      />
+      <Box
+        position="absolute"
+        left={0}
+        top={0}
+        bottom={0}
+        flexDirection="row"
+        alignItems="center"
+      >
+        <Box width={PRESENTATION.brandInset / 8} flexShrink={0} />
+        {renderMark(transparentMark, markAlt)}
       </Box>
-    ),
-  });
+    </Box>
+  );
 }
 
 type CompactBandInput = {
@@ -291,37 +359,16 @@ export function renderUsageComposition({
   usage,
 }: UsageCompositionInput): RenderElement {
   const { Box, Text } = ui;
-  const separatorWidth = Math.max(1, event.props.bodyColumns * 8 - 16);
   return (
     <Box
       key="usage-spacing"
       flexDirection="column"
-      marginTop={
-        event.props.maxRows >= 8 && event.props.bodyColumns >= 24
-          ? event.surface === "desktop"
-            ? 0.25
-            : 1
-          : 0
+      marginTop={event.surface === "desktop" ? 0 : abovePromptGap(event)}
+      gap={
+        event.surface === "desktop" ? abovePromptGap(event, !!checkStrip) : 1
       }
-      gap={checkStrip && event.surface === "desktop" ? 0.5 : 1}
     >
       {checkStrip}
-      {checkStrip && (
-        <Box key="checks-usage-separator" marginX={1}>
-          {event.surface === "desktop" && "Svg" in ui ? (
-            <ui.Svg
-              source={`<svg xmlns="http://www.w3.org/2000/svg" width="${separatorWidth}" height="16" viewBox="0 0 ${separatorWidth} 16"><style>path{stroke:#000;stroke-opacity:.06}@media(prefers-color-scheme:dark){path{stroke:#fff;stroke-opacity:.08}}</style><path d="M0 8H${separatorWidth}" stroke-width="1"/></svg>`}
-              width={separatorWidth}
-              height={16}
-              alt="Checks and usage separator"
-            />
-          ) : (
-            <Text dimColor>
-              {"─".repeat(Math.max(1, event.props.bodyColumns - 4))}
-            </Text>
-          )}
-        </Box>
-      )}
       {syntheticLabel && <Text dimColor>{syntheticLabel}</Text>}
       {usage}
     </Box>

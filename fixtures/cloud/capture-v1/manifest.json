@@ -1,0 +1,102 @@
+{
+  "capture_version": 1,
+  "files": [
+    {
+      "bytes": 390,
+      "path": "project/main.jsonl",
+      "sha256": "d435bab180bea7840ae99a76912980d7c1a172265e18fc4256016089b0e04f44"
+    },
+    {
+      "bytes": 256,
+      "path": "project/fork.jsonl",
+      "sha256": "ea53cbccf29d9d0c504d6a5393510bd005104cd6cc490ff429f20bfb1d75d928"
+    },
+    {
+      "bytes": 181,
+      "path": "project/unknown.jsonl",
+      "sha256": "0e1c332ccb6e8937ff232ff2807a6458ff16e8ba5668458f8ebd0bb003c34928"
+    },
+    {
+      "bytes": 233,
+      "path": "project/main/subagents/agent-worker.jsonl",
+      "sha256": "ee96988b0d64d95429706cafa253ee3c7b98b7b907bcbfef787de3b0ceb3ec3c"
+    },
+    {
+      "bytes": 86,
+      "path": "project/main/subagents/agent-worker.meta.json",
+      "sha256": "ad8c1cc19927fbe1d8c81140fa4d5cc24cc25016ce96e07f3e24dcce47f3d52b"
+    },
+    {
+      "bytes": 472,
+      "path": "project/main/subagents/agent-fork.jsonl",
+      "sha256": "f1246c949e4aa1e56c87825f718925c282cc245ed5fd1807e792f6816b3cf5ed"
+    },
+    {
+      "bytes": 119,
+      "path": "project/main/subagents/agent-fork.meta.json",
+      "sha256": "580535d10f5d6bb8f028f0b1a27c5aa805951b111e49438f2ba1d72a1a3f5bba"
+    },
+    {
+      "bytes": 416,
+      "path": "project/main/subagents/agent-inherited-only.jsonl",
+      "sha256": "e16b1ca1ac9ba82ca070229721d63c981c72ab6c873165ecbb92998b80009ac3"
+    },
+    {
+      "bytes": 58,
+      "path": "project/main/subagents/agent-inherited-only.meta.json",
+      "sha256": "81fb9462f5557dbadfb7ca566ae3a9e189c7fad8b88307d7f673676d36b2e745"
+    },
+    {
+      "bytes": 214,
+      "path": "project/main/subagents/agent-replay-only.jsonl",
+      "sha256": "58d6a6b8d0f39881120405e44763e0d692969d6fc5e3fe7a1135beef7e83a037"
+    },
+    {
+      "bytes": 58,
+      "path": "project/main/subagents/agent-replay-only.meta.json",
+      "sha256": "81fb9462f5557dbadfb7ca566ae3a9e189c7fad8b88307d7f673676d36b2e745"
+    },
+    {
+      "bytes": 443,
+      "path": "project/main/subagents/agent-conflicting-fork.jsonl",
+      "sha256": "b297bb87c02e9e68d0315e403aab6fedcc219b37a8419357fec4f1e5caa5e01d"
+    },
+    {
+      "bytes": 58,
+      "path": "project/main/subagents/agent-conflicting-fork.meta.json",
+      "sha256": "81fb9462f5557dbadfb7ca566ae3a9e189c7fad8b88307d7f673676d36b2e745"
+    },
+    {
+      "bytes": 93,
+      "path": "project/audit.jsonl",
+      "sha256": "5c75d4fd3c7ee8fae9a05b52254928ad010ceaf40f19ff68d0e464381b56172f"
+    },
+    {
+      "bytes": 62,
+      "path": "project/unowned.txt",
+      "sha256": "da2479885e97b701d96148e598a752714e1a21fc300b0ca2fc1adacb84165ac2"
+    },
+    {
+      "bytes": 1623,
+      "path": "reference/main.capture.json",
+      "sha256": "2a611eb90f1d22e60a8e4d301372a7e962545c50c8fa345c478c65bae9c21e91"
+    },
+    {
+      "bytes": 1450,
+      "path": "sections.json",
+      "sha256": "73a43b039e3113bd4280dec198b14cbb62376e301458d2d75eff304a0027ab95"
+    },
+    {
+      "bytes": 214,
+      "path": "reference/main.transcript.chunk-00000.gz",
+      "sha256": "c2b4a944e71deb0ed32c2279c00d2d445886e32a6cfe1bfedcc2d4a6e7a6289f"
+    },
+    {
+      "bytes": 641,
+      "path": "reference/main.capture-metadata.chunk-00000.gz",
+      "sha256": "36007150c0598295cc11363239c0fbf81e4ca6faf312ceb196aedb51819fdc49"
+    }
+  ],
+  "fixture_version": "claude-native-capture-fixtures-v1",
+  "synthetic": true
+}

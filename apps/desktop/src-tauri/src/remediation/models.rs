@@ -307,7 +307,7 @@ pub enum VerificationReason {
     PhysicalTargetChanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 #[serde(
     tag = "status",
     rename_all = "camelCase",
@@ -332,6 +332,100 @@ pub enum SavingsStatus {
         measured_through_ms: i64,
         recurrence_ms: Option<i64>,
     },
+}
+
+/// Decode saved JSON fields directly so decimal numbers remain numeric with
+/// `serde_json` arbitrary precision enabled. Each variant keeps its field rules.
+impl<'de> Deserialize<'de> for SavingsStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct StatusTag {
+            status: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PendingFields {
+            #[serde(default)]
+            method_revision: Option<u32>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct UnknownFields {
+            reason: SavingsUnknownReason,
+            method_revision: u32,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct KnownFields {
+            method: SavingsMethod,
+            method_revision: u32,
+            pricing_revision: String,
+            api_equivalent_cost_avoided_usd: f64,
+            measured_through_ms: i64,
+            recurrence_ms: Option<i64>,
+        }
+
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let sequence = raw.get().trim_start().starts_with('[');
+        let (status, fields_json) = if sequence {
+            let fields: Vec<&serde_json::value::RawValue> =
+                serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+            let (tag, fields) = fields
+                .split_first()
+                .ok_or_else(|| serde::de::Error::custom("missing savings status"))?;
+            (
+                serde_json::from_str::<String>(tag.get()).map_err(serde::de::Error::custom)?,
+                serde_json::to_string(fields).map_err(serde::de::Error::custom)?,
+            )
+        } else {
+            let tag: StatusTag =
+                serde_json::from_str(raw.get()).map_err(serde::de::Error::custom)?;
+            (tag.status, raw.get().to_owned())
+        };
+        match status.as_str() {
+            "pending" => {
+                let fields: PendingFields =
+                    serde_json::from_str(&fields_json).map_err(serde::de::Error::custom)?;
+                Ok(Self::Pending {
+                    method_revision: fields.method_revision,
+                })
+            }
+            "unavailable" if sequence && fields_json != "[]" => Err(serde::de::Error::custom(
+                "unavailable savings cannot include sequence fields",
+            )),
+            "unavailable" => Ok(Self::Unavailable),
+            "unknown" => {
+                let fields: UnknownFields =
+                    serde_json::from_str(&fields_json).map_err(serde::de::Error::custom)?;
+                Ok(Self::Unknown {
+                    reason: fields.reason,
+                    method_revision: fields.method_revision,
+                })
+            }
+            "known" => {
+                let fields: KnownFields =
+                    serde_json::from_str(&fields_json).map_err(serde::de::Error::custom)?;
+                Ok(Self::Known {
+                    method: fields.method,
+                    method_revision: fields.method_revision,
+                    pricing_revision: fields.pricing_revision,
+                    api_equivalent_cost_avoided_usd: fields.api_equivalent_cost_avoided_usd,
+                    measured_through_ms: fields.measured_through_ms,
+                    recurrence_ms: fields.recurrence_ms,
+                })
+            }
+            status => Err(serde::de::Error::unknown_variant(
+                status,
+                &["pending", "unavailable", "unknown", "known"],
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -563,48 +657,7 @@ impl<'de> Deserialize<'de> for AggregateSavings {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn legacy_aggregate_savings_default_to_pending() {
-        let savings: AggregateSavings = serde_json::from_value(serde_json::json!({
-            "version": 1,
-            "apiEquivalentCostAvoidedUsd": 0.25,
-        }))
-        .unwrap();
-
-        assert_eq!(
-            savings.status,
-            SavingsStatus::Pending {
-                method_revision: None
-            }
-        );
-        assert_eq!(savings.api_equivalent_cost_avoided_usd, Some(0.25));
-    }
-
-    #[test]
-    fn explicit_aggregate_savings_status_is_preserved() {
-        let savings: AggregateSavings = serde_json::from_value(serde_json::json!({
-            "version": 1,
-            "status": {"status": "unavailable"},
-        }))
-        .unwrap();
-
-        assert_eq!(savings.status, SavingsStatus::Unavailable);
-    }
-
-    #[test]
-    fn unavailable_aggregate_savings_cannot_have_an_avoided_cost() {
-        let result = serde_json::from_value::<AggregateSavings>(serde_json::json!({
-            "version": 1,
-            "status": {"status": "unavailable"},
-            "apiEquivalentCostAvoidedUsd": 0.25,
-        }));
-
-        assert!(result.is_err());
-    }
-}
+mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerError {

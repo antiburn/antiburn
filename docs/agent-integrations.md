@@ -32,6 +32,10 @@ without a terminal shortcut. If the internal executable becomes unavailable,
 callbacks fail quietly. Settings offers status refresh and repair, but no integration
 removal control.
 
+The separate [debug CLI and skill setup](cli-installation.md#debug-cli-and-skill)
+can install a profile-bound CLI and `antiburn-debug` skill without registering
+these vendor callbacks. Its status does not enable or certify a native route.
+
 ## Routes and runtime boundaries
 
 | Agent       | Proposed user route                                               | Runtime                      | Current native gate |

@@ -31,6 +31,11 @@ pub(super) enum ModelWatchEvidence {
     ConfigAttribution,
 }
 
+fn managed_file_present(path: &Path) -> bool {
+    !antiburn_local::discovery::source_path_access(path).is_allowed()
+        || path.try_exists().unwrap_or(true)
+}
+
 pub(super) trait VendorRemediationPolicy: Sync {
     fn agent(&self) -> AgentKind;
 

@@ -2,6 +2,10 @@ use super::{
     ConfigContext, ConfigEntry, ConfigUnavailableReason, Dependency, OpenCodeConfigSubject,
     OperationSelector, hash,
 };
+use crate::agent_config::{
+    filesystem::{path_entry_exists_with_admission, read_checked_with_admission},
+    inventory::{InventoryAdmission, ensure_inventory_current},
+};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -12,8 +16,10 @@ pub(super) const MAX_DEPENDENCIES: usize = 4096;
 const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Default)]
-pub(super) struct Snapshot {
+pub(super) struct Snapshot<'a> {
     pub(super) dependencies: Vec<Dependency>,
+    context: Option<ConfigContext>,
+    pub(super) admission: Option<InventoryAdmission<'a>>,
     contents: BTreeMap<PathBuf, Vec<u8>>,
     directories: BTreeMap<PathBuf, Vec<PathBuf>>,
     documents: BTreeMap<PathBuf, Value>,
@@ -24,7 +30,11 @@ pub(super) struct Snapshot {
     pub(super) directory_reads: usize,
 }
 
-impl Snapshot {
+impl Snapshot<'_> {
+    fn check_current(&self) -> Result<(), ConfigUnavailableReason> {
+        ensure_inventory_current(self.admission)
+    }
+
     fn reserve_bytes(&mut self, bytes: usize) -> Result<(), ConfigUnavailableReason> {
         let retained = self.bytes.saturating_add(bytes);
         if retained > MAX_INPUT_BYTES {
@@ -58,6 +68,20 @@ impl Snapshot {
     }
 }
 
+pub(super) fn check_admission(
+    admission: Option<InventoryAdmission<'_>>,
+    path: &Path,
+) -> Result<(), ConfigUnavailableReason> {
+    ensure_inventory_current(admission)?;
+    let allowed = admission.is_none_or(|(check, _)| check.allows(path));
+    ensure_inventory_current(admission)?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(ConfigUnavailableReason::UnsafePath)
+    }
+}
+
 fn dependency_retained_bytes(path: &Path) -> usize {
     path.as_os_str()
         .len()
@@ -74,6 +98,11 @@ fn map_key_retained_bytes<T>(path: &Path) -> usize {
 }
 
 pub(super) fn track(path: &Path, snapshot: &mut Snapshot) -> Result<(), ConfigUnavailableReason> {
+    check_admission(snapshot.admission, path)?;
+    if let Some(context) = &snapshot.context {
+        context.check_path(path)?;
+    }
+    snapshot.check_current()?;
     if snapshot.dependencies.iter().any(|old| old.path == path) {
         return Ok(());
     }
@@ -81,13 +110,14 @@ pub(super) fn track(path: &Path, snapshot: &mut Snapshot) -> Result<(), ConfigUn
         return Err(ConfigUnavailableReason::FileTooLarge);
     }
     let mut bytes = 0;
-    let digest = if super::path_entry_exists(path)? {
+    let digest = if path_entry_exists_with_admission(path, || snapshot.check_current())? {
+        snapshot.check_current()?;
         if std::fs::symlink_metadata(path)
             .map_err(|_| ConfigUnavailableReason::UnsafePath)?
             .is_dir()
         {
-            let entries = directory_entries(path)?;
-            let digest = super::directory_digest(&entries)?;
+            let entries = directory_entries_with_admission(path, snapshot.admission)?;
+            let digest = super::directory_digest(&entries, snapshot.admission)?;
             snapshot.retain_directory(path, entries)?;
             #[cfg(test)]
             {
@@ -95,9 +125,10 @@ pub(super) fn track(path: &Path, snapshot: &mut Snapshot) -> Result<(), ConfigUn
             }
             Some(digest)
         } else {
-            let file = super::read_checked(
+            let file = read_checked_with_admission(
                 path,
                 path.parent().ok_or(ConfigUnavailableReason::UnsafePath)?,
+                || check_admission(snapshot.admission, path),
             )?;
             bytes = file.bytes.len();
             snapshot.reserve_bytes(
@@ -153,10 +184,11 @@ pub(super) fn document(
     Ok(document)
 }
 
-pub(super) fn dependencies(
+pub(super) fn dependencies<'a>(
     context: &ConfigContext,
     entries: &[ConfigEntry],
-) -> Result<Snapshot, ConfigUnavailableReason> {
+    admission: Option<InventoryAdmission<'a>>,
+) -> Result<Snapshot<'a>, ConfigUnavailableReason> {
     let cwd = context
         .workspace_cwd
         .as_deref()
@@ -187,13 +219,20 @@ pub(super) fn dependencies(
         .filter(|entry| entry.info.is_some())
         .filter_map(|entry| entry.path.as_ref())
         .collect();
-    let mut snapshot = Snapshot::default();
+    let mut snapshot = Snapshot {
+        context: Some(context.clone()),
+        admission,
+        ..Snapshot::default()
+    };
     for path in candidates {
         track(&path, &mut snapshot)?;
         if path
             .file_name()
             .is_some_and(|name| name == "opencode.json" || name == "opencode.jsonc")
-            && super::path_entry_exists(&path)?
+            && snapshot
+                .dependencies
+                .last()
+                .is_some_and(|entry| entry.digest.is_some())
             && !documents.contains(&path)
         {
             return Err(ConfigUnavailableReason::InvalidPrecedence);
@@ -202,17 +241,31 @@ pub(super) fn dependencies(
     Ok(snapshot)
 }
 
+#[cfg(any(not(windows), test))]
 pub(super) fn directory_entries(path: &Path) -> Result<Vec<PathBuf>, ConfigUnavailableReason> {
+    directory_entries_with_admission(path, None)
+}
+
+fn directory_entries_with_admission(
+    path: &Path,
+    admission: Option<InventoryAdmission<'_>>,
+) -> Result<Vec<PathBuf>, ConfigUnavailableReason> {
+    check_admission(admission, path)?;
     let metadata =
         std::fs::symlink_metadata(path).map_err(|_| ConfigUnavailableReason::UnsafePath)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(ConfigUnavailableReason::SymlinkTarget);
     }
     let mut paths = Vec::new();
-    for (index, entry) in std::fs::read_dir(path)
+    check_admission(admission, path)?;
+    let mut entries = std::fs::read_dir(path)
         .map_err(|_| ConfigUnavailableReason::PermissionDenied)?
-        .enumerate()
-    {
+        .enumerate();
+    loop {
+        ensure_inventory_current(admission)?;
+        let Some((index, entry)) = entries.next() else {
+            break;
+        };
         if index >= 256 {
             return Err(ConfigUnavailableReason::FileTooLarge);
         }
@@ -221,6 +274,7 @@ pub(super) fn directory_entries(path: &Path) -> Result<Vec<PathBuf>, ConfigUnava
         if path.to_str().is_none() {
             return Err(ConfigUnavailableReason::UnsafePath);
         }
+        check_admission(admission, &path)?;
         let kind = entry
             .file_type()
             .map_err(|_| ConfigUnavailableReason::UnsafePath)?;
@@ -285,6 +339,7 @@ pub(super) fn files(
     }
     let mut files = Vec::new();
     for path in entries {
+        check_admission(snapshot.admission, &path)?;
         if std::fs::symlink_metadata(&path)
             .map_err(|_| ConfigUnavailableReason::UnsafePath)?
             .is_dir()

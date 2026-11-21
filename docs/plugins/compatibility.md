@@ -1,7 +1,7 @@
-> Status: the 0.2.6 Claude repository candidate retains the runtime tested at
-> `143d4b05681938cb362e828ecc27d2e082638176`; its version and bundled documents
-> are new. The earlier Terminal smoke and browser checks do not establish full
-> native Desktop or hosted-delivery acceptance. See [validation](validation.md).
+> Status: the 0.2.7 Claude repository candidate combines Desktop usage entrance
+> and compact mod spacing. Combined automated tests pass; earlier native captures
+> cover the changes separately. Combined native Desktop/Terminal and hosted-delivery
+> acceptance remain required before promotion. See [validation](validation.md).
 > Other-agent adapters remain unpublished; the tables below are historical.
 
 # Plugin adapter compatibility

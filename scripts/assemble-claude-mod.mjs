@@ -34,6 +34,8 @@ const SHARED_FILES = [
   'hooks/brand.ts',
   'hooks/usage.ts',
   'hooks/usage-presentation.ts',
+  'hooks/usage-entrance.ts',
+  'hooks/usage-strip-graphics.ts',
   'hooks/usage-meter-graphics.ts',
   'hooks/usage-meter-band.tsx',
   'hooks/usage-font.ts',
@@ -50,11 +52,14 @@ function containedFile(root, path) {
   const parts = path.split('/')
   let current = root
   for (const part of parts) {
-    if (!part || part === '.' || part === '..') throw new Error(`Unsafe path: ${path}`)
+    if (!part || part === '.' || part === '..')
+      throw new Error(`Unsafe path: ${path}`)
     current = join(current, part)
-    if (lstatSync(current).isSymbolicLink()) throw new Error(`Symbolic link: ${path}`)
+    if (lstatSync(current).isSymbolicLink())
+      throw new Error(`Symbolic link: ${path}`)
   }
-  if (!lstatSync(current).isFile()) throw new Error(`Not a regular file: ${path}`)
+  if (!lstatSync(current).isFile())
+    throw new Error(`Not a regular file: ${path}`)
   return readFileSync(current)
 }
 
@@ -62,14 +67,25 @@ export function releaseFiles(root = ROOT) {
   const files = new Map()
   for (const path of RELEASE_FILES)
     files.set(path, containedFile(root, `${SOURCE}/release/${path}`))
-  for (const path of SHARED_FILES) files.set(path, containedFile(root, `${SOURCE}/${path}`))
+  for (const path of SHARED_FILES)
+    files.set(path, containedFile(root, `${SOURCE}/${path}`))
   files.set('LICENSE', containedFile(root, 'LICENSE'))
   const manifest = JSON.parse(files.get('.claude-plugin/plugin.json'))
-  if (manifest.name !== 'antiburn') throw new Error('Unexpected public plugin identity')
-  files.set('hooks/register.ts', containedFile(root, 'integrations/antiburn/claude/register.ts'))
-  const commands = containedFile(root, 'integrations/antiburn/claude/commands.ts')
+  if (manifest.name !== 'antiburn')
+    throw new Error('Unexpected public plugin identity')
+  files.set(
+    'hooks/register.ts',
+    containedFile(root, 'integrations/antiburn/claude/register.ts'),
+  )
+  const commands = containedFile(
+    root,
+    'integrations/antiburn/claude/commands.ts',
+  )
     .toString()
-    .replaceAll('../../../packages/antiburn-plugin-core/product.mjs', '../lib/product.mjs')
+    .replaceAll(
+      '../../../packages/antiburn-plugin-core/product.mjs',
+      '../lib/product.mjs',
+    )
     .replaceAll(
       '../../../plugins/antiburn-live/release/hooks/quota-controller',
       './quota-controller',
@@ -81,18 +97,30 @@ export function releaseFiles(root = ROOT) {
       files
         .get('hooks/quota-controller.tsx')
         .toString()
-        .replaceAll('../../../../packages/antiburn-plugin-core/product.mjs', '../lib/product.mjs')
-        .replaceAll('../../../../integrations/antiburn/claude/commands', './commands'),
+        .replaceAll(
+          '../../../../packages/antiburn-plugin-core/product.mjs',
+          '../lib/product.mjs',
+        )
+        .replaceAll(
+          '../../../../integrations/antiburn/claude/commands',
+          './commands',
+        ),
     ),
   )
-  const register = containedFile(root, 'integrations/antiburn/claude/register.ts')
+  const register = containedFile(
+    root,
+    'integrations/antiburn/claude/register.ts',
+  )
     .toString()
     .replaceAll(
       '../../../plugins/antiburn-live/release/hooks/quota-controller',
       './quota-controller',
     )
   files.set('hooks/register.ts', Buffer.from(register))
-  files.set('lib/product.mjs', containedFile(root, 'packages/antiburn-plugin-core/product.mjs'))
+  files.set(
+    'lib/product.mjs',
+    containedFile(root, 'packages/antiburn-plugin-core/product.mjs'),
+  )
   files.set('hooks/hooks.json', json({ modules: ['./quota-controller.tsx'] }))
   assertImports(files)
   return files
@@ -108,11 +136,17 @@ export function assertImports(files, allowedImports = []) {
       /\b(?:import(?:\s+type)?\s+(?:[\w*\s{},]+?\s+from\s+)?|export\s+(?:type\s+)?(?:\*|\{[^}]*\})\s+from\s+|import\s*\(\s*)(['"])([^'"]+)\1/g,
     )) {
       const target = match[2]
-      if (target === 'claude-code' || target.startsWith('claude-code/')) continue
+      if (target === 'claude-code' || target.startsWith('claude-code/'))
+        continue
       if (allowedImports.includes(target)) continue
-      if (!target.startsWith('.')) throw new Error(`Unapproved import in ${path}: ${target}`)
-      const normalized = relative('/artifact', resolve('/artifact', dirname(path), target))
-      if (normalized.startsWith('..')) throw new Error(`Escaped import in ${path}: ${target}`)
+      if (!target.startsWith('.'))
+        throw new Error(`Unapproved import in ${path}: ${target}`)
+      const normalized = relative(
+        '/artifact',
+        resolve('/artifact', dirname(path), target),
+      )
+      if (normalized.startsWith('..'))
+        throw new Error(`Escaped import in ${path}: ${target}`)
       const extensionless = normalized.replace(/\.(?:c|m)?js$/, '')
       if (
         ![
@@ -155,22 +189,27 @@ function listFiles(root, prefix = '') {
 }
 
 export function checkTree(destination, expected) {
-  if (lstatSync(destination).isSymbolicLink()) throw new Error(`Symbolic link: ${destination}`)
+  if (lstatSync(destination).isSymbolicLink())
+    throw new Error(`Symbolic link: ${destination}`)
   const actual = listFiles(destination)
   const missing = [...expected.keys()].filter((path) => !actual.includes(path))
   const extra = actual.filter((path) => !expected.has(path))
   const changed = actual.filter(
     (path) =>
-      expected.has(path) && !readFileSync(join(destination, path)).equals(expected.get(path)),
+      expected.has(path) &&
+      !readFileSync(join(destination, path)).equals(expected.get(path)),
   )
   if (missing.length || extra.length || changed.length) {
-    throw new Error(`Artifact drift: ${JSON.stringify({ missing, extra, changed })}`)
+    throw new Error(
+      `Artifact drift: ${JSON.stringify({ missing, extra, changed })}`,
+    )
   }
 }
 
 function containedDestination(root, destination) {
   const path = relative(root, destination)
-  if (!path || path.startsWith('..')) throw new Error(`Unsafe destination: ${destination}`)
+  if (!path || path.startsWith('..'))
+    throw new Error(`Unsafe destination: ${destination}`)
   let current = root
   for (const part of path.split('/')) {
     current = join(current, part)
@@ -200,11 +239,15 @@ function matchesTrackedTree(root, destination, current) {
   const relativeDestination = relative(root, destination).split(sep).join('/')
   let records
   try {
-    records = execFileSync('git', ['ls-files', '--stage', '-z', '--', relativeDestination], {
-      cwd: root,
-      maxBuffer: 16 * 1024 * 1024,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
+    records = execFileSync(
+      'git',
+      ['ls-files', '--stage', '-z', '--', relativeDestination],
+      {
+        cwd: root,
+        maxBuffer: 16 * 1024 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    )
   } catch {
     return false
   }
@@ -215,7 +258,8 @@ function matchesTrackedTree(root, destination, current) {
     if (tab < 0) return false
     const [mode, object, stage] = record.slice(0, tab).split(' ')
     const path = record.slice(tab + 1)
-    if (stage !== '0' || mode === '120000' || !path.startsWith(prefix)) return false
+    if (stage !== '0' || mode === '120000' || !path.startsWith(prefix))
+      return false
     tracked.set(path.slice(prefix.length), object)
   }
   const actualPaths = Object.keys(current).sort()
@@ -243,10 +287,15 @@ function writeTree(root, destination, files) {
   const expected = Object.fromEntries(
     [...files]
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([path, bytes]) => [path, createHash('sha256').update(bytes).digest('hex')]),
+      .map(([path, bytes]) => [
+        path,
+        createHash('sha256').update(bytes).digest('hex'),
+      ]),
   )
   const owner = ownershipPath(root, destination)
-  const currentExists = Boolean(lstatSync(destination, { throwIfNoEntry: false }))
+  const currentExists = Boolean(
+    lstatSync(destination, { throwIfNoEntry: false }),
+  )
   if (currentExists) {
     const current = treeHashes(destination)
     if (JSON.stringify(current) === JSON.stringify(expected)) return
@@ -263,18 +312,24 @@ function writeTree(root, destination, files) {
         recorded.files === undefined ||
         JSON.stringify(current) !== JSON.stringify(recorded.files))
     )
-      throw new Error(`Refusing to replace modified or unowned output: ${destination}`)
+      throw new Error(
+        `Refusing to replace modified or unowned output: ${destination}`,
+      )
   }
 
   const parent = dirname(destination)
   mkdirSync(parent, { recursive: true })
-  const stage = mkdtempSync(join(parent, `.${destination.split('/').at(-1)}.stage-`))
+  const stage = mkdtempSync(
+    join(parent, `.${destination.split('/').at(-1)}.stage-`),
+  )
   const backup = `${stage}-previous`
   const ownerDirectory = dirname(owner)
   mkdirSync(ownerDirectory, { recursive: true })
   const ownerStage = `${owner}.${process.pid}.tmp`
   try {
-    for (const [path, bytes] of [...files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    for (const [path, bytes] of [...files].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    )) {
       const target = join(stage, path)
       mkdirSync(dirname(target), { recursive: true })
       writeFileSync(target, bytes)
@@ -283,7 +338,11 @@ function writeTree(root, destination, files) {
       throw new Error(`Staged output mismatch: ${destination}`)
     writeFileSync(
       ownerStage,
-      JSON.stringify({ owner: 'antiburn-claude-assembler-v1', files: expected }, null, 2) + '\n',
+      JSON.stringify(
+        { owner: 'antiburn-claude-assembler-v1', files: expected },
+        null,
+        2,
+      ) + '\n',
     )
     if (currentExists) renameSync(destination, backup)
     try {
@@ -322,8 +381,14 @@ function devFiles(root, tests = false) {
     const bytes = containedFile(sourceRoot, path)
     const text = bytes.toString()
     const rewrittenText = rewriteDevSource(text)
-      .replaceAll('../../../packages/antiburn-plugin-core/product.mjs', '../lib/product.mjs')
-      .replaceAll('../../../packages/antiburn-plugin-core/core.mjs', '../lib/core.mjs')
+      .replaceAll(
+        '../../../packages/antiburn-plugin-core/product.mjs',
+        '../lib/product.mjs',
+      )
+      .replaceAll(
+        '../../../packages/antiburn-plugin-core/core.mjs',
+        '../lib/core.mjs',
+      )
       .replaceAll(
         '../../../packages/antiburn-plugin-core/session-checks-validation.mjs',
         '../lib/session-checks-validation.mjs',
@@ -342,14 +407,20 @@ function devFiles(root, tests = false) {
         : bytes,
     )
   }
-  files.set('lib/product.mjs', containedFile(root, 'packages/antiburn-plugin-core/product.mjs'))
+  files.set(
+    'lib/product.mjs',
+    containedFile(root, 'packages/antiburn-plugin-core/product.mjs'),
+  )
   for (const path of [
     'core.mjs',
     'discovery.mjs',
     'probe.mjs',
     'session-checks-validation.mjs',
   ])
-    files.set(`lib/${path}`, containedFile(root, `packages/antiburn-plugin-core/${path}`))
+    files.set(
+      `lib/${path}`,
+      containedFile(root, `packages/antiburn-plugin-core/${path}`),
+    )
   const manifest = JSON.parse(files.get('.claude-plugin/plugin.json'))
   manifest.name = 'antiburn-dev'
   manifest.displayName = 'antiburn (Dev)'
@@ -372,7 +443,8 @@ function devFiles(root, tests = false) {
   files.set('.claude-plugin/plugin.json', json(manifest))
   files.set('LICENSE', containedFile(root, 'LICENSE'))
   if (tests)
-    for (const [path, bytes] of releaseFiles(root)) files.set(`release-reference/${path}`, bytes)
+    for (const [path, bytes] of releaseFiles(root))
+      files.set(`release-reference/${path}`, bytes)
   const combinedFiles = new Map(
     [...files].map(([path, bytes]) => [`plugins/antiburn-dev/${path}`, bytes]),
   )
@@ -388,7 +460,9 @@ export function assertValidation(report, type = 'plugin') {
     if ((entry.errors ?? []).length)
       throw new Error(`Validation errors: ${JSON.stringify(entry.errors)}`)
     if ((entry.warnings ?? []).length)
-      throw new Error(`Unexpected validation warning: ${JSON.stringify(entry.warnings)}`)
+      throw new Error(
+        `Unexpected validation warning: ${JSON.stringify(entry.warnings)}`,
+      )
   }
 }
 
@@ -397,22 +471,27 @@ export function assertCapabilities(report) {
   const inventories = (report.contents ?? [])
     .flatMap((entry) => entry.notes ?? [])
     .filter((note) => note.includes(' calls:'))
-  if (inventories.length === 0) throw new Error('Host validation did not report a call inventory')
+  if (inventories.length === 0)
+    throw new Error('Host validation did not report a call inventory')
   const allowed = new Set([
     '$.clock.now',
     '$.command.register',
     '$.ui.log',
     '$.session.usage',
+    '$.session.surfaces',
     '$.state.get',
     '$.state.set',
     '$.ui.resolve',
+    '$.ui.invalidate',
     '$.antiburn.describe',
   ])
   const accountOnly = new Set(['$.session.authorize', '$.http.fetch'])
   const websiteOnly = new Set(['$.env.get', '$.process.run', '$.ui.status'])
   const calls = inventories.flatMap((note) =>
     [
-      ...note.matchAll(/(\$\.[A-Za-z_]+\.[A-Za-z_]+)(.*?)(?=,\s*\$\.[A-Za-z_]+\.[A-Za-z_]+|$)/g),
+      ...note.matchAll(
+        /(\$\.[A-Za-z_]+\.[A-Za-z_]+)(.*?)(?=,\s*\$\.[A-Za-z_]+\.[A-Za-z_]+|$)/g,
+      ),
     ].map((match) => ({ name: match[1], attribution: match[2].trim() })),
   )
   if (!calls.some(({ name }) => name === '$.session.usage'))
@@ -448,9 +527,15 @@ export function assemble(root = ROOT, mode = 'release') {
         },
       ],
     }
-    containedDestination(root, join(destination, '.claude-plugin/marketplace.json'))
+    containedDestination(
+      root,
+      join(destination, '.claude-plugin/marketplace.json'),
+    )
     mkdirSync(join(destination, '.claude-plugin'), { recursive: true })
-    writeFileSync(join(destination, '.claude-plugin/marketplace.json'), json(marketplace))
+    writeFileSync(
+      join(destination, '.claude-plugin/marketplace.json'),
+      json(marketplace),
+    )
     return destination
   }
   const files = releaseFiles(root)
@@ -460,8 +545,19 @@ export function assemble(root = ROOT, mode = 'release') {
     checkTree(destination, files)
     for (const [source, target] of [
       [`${SOURCE}/release/hooks/register.test.ts`, 'hooks/register.test.ts'],
-      [`${SOURCE}/release/hooks/usage-graphics.test.ts`, 'hooks/usage-graphics.test.ts'],
+      [
+        `${SOURCE}/release/hooks/usage-graphics.test.ts`,
+        'hooks/usage-graphics.test.ts',
+      ],
       [`${SOURCE}/hooks/usage.test.ts`, 'hooks/usage.test.ts'],
+      [
+        `${SOURCE}/hooks/usage-entrance.test.ts`,
+        'hooks/usage-entrance.test.ts',
+      ],
+      [
+        `${SOURCE}/hooks/usage-strip-graphics.test.ts`,
+        'hooks/usage-strip-graphics.test.ts',
+      ],
     ])
       files.set(target, containedFile(root, source))
     const tests = join(root, LOCAL, 'test')
@@ -471,7 +567,10 @@ export function assemble(root = ROOT, mode = 'release') {
   return destination
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   try {
     const [flag, path, ...rest] = process.argv.slice(2)
     if (
@@ -480,11 +579,17 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       rest.length === 0
     ) {
       const report = JSON.parse(readFileSync(path, 'utf8'))
-      assertValidation(report, flag === '--validate-marketplace-log' ? 'marketplace' : 'plugin')
+      assertValidation(
+        report,
+        flag === '--validate-marketplace-log' ? 'marketplace' : 'plugin',
+      )
       if (flag === '--validate-log') assertCapabilities(report)
       console.log('Strict validation and release capability policy passed')
     } else {
-      if (path || (flag && !['--check', '--dev', '--dev-test', '--test'].includes(flag)))
+      if (
+        path ||
+        (flag && !['--check', '--dev', '--dev-test', '--test'].includes(flag))
+      )
         throw new Error(
           'Usage: assemble-claude-mod.mjs [--check | --dev | --dev-test | --test | --validate-log report.json | --validate-marketplace-log report.json]',
         )

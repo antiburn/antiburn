@@ -61,7 +61,7 @@ async fn scan_at(store: &Store, home: &std::path::Path, logs: Vec<SessionLog>, e
     };
     let policy = OwnerPolicy {
         home: home.to_path_buf(),
-        ignored: HashSet::new(),
+        repository_policy: store.repository_policy_snapshot().unwrap(),
         cutoff: None,
         include_non_repo_folders: true,
         progress: false,

@@ -49,6 +49,37 @@ const SOURCE_FORMATS: [SourceFormat; 35] = [
 ];
 
 #[test]
+fn opencode_capture_admission_rejects_excluded_nested_repositories() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let store = Store::open_in_memory(home).unwrap();
+    let ancestor = home.join("workspace");
+    let excluded = ancestor.join("project");
+    let sibling = ancestor.join("project-other");
+    store
+        .replace_repositories(&[crate::store::RepositoryRecord {
+            key: "excluded".into(),
+            repo_name: "project".into(),
+            full_name: "owner/project".into(),
+            status: "accessible".into(),
+            repo_root: Some(excluded.to_string_lossy().into_owned()),
+            suspected_path: None,
+            worktree_count: 1,
+            session_count: 0,
+            wsl_distro: None,
+            enabled: false,
+        }])
+        .unwrap();
+    let policy = store.repository_policy_snapshot().unwrap();
+    let admission =
+        super::opencode_current::config_read_admission(&store, policy, Some(home.to_owned()));
+
+    assert!(admission.allows(&ancestor));
+    assert!(!admission.allows(&excluded.join("src")));
+    assert!(admission.allows(&sibling));
+}
+
+#[test]
 fn aggregate_wins_rejects_malformed_snooze_state() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
@@ -965,15 +996,24 @@ fn nested_workspace_context_round_trips_for_recovery() {
     let cwd = root.join("packages/app");
     std::fs::create_dir(&home).unwrap();
     std::fs::create_dir_all(&cwd).unwrap();
-    let context = config_context(AgentKind::OpenCode, &home, Some(&cwd), Some(&root)).unwrap();
+    let context = config_context(
+        AgentKind::OpenCode,
+        &home,
+        Some(&cwd),
+        Some(&root),
+        &Default::default(),
+    )
+    .unwrap();
     assert_eq!(
         workspace_relative_cwd(&context).as_deref(),
         Some("packages/app")
     );
     assert_eq!(
         recovery_workspace_cwd(
+            &home,
             context.trusted_workspace_root.as_deref().unwrap(),
             workspace_relative_cwd(&context).as_deref(),
+            &context.granted_dirs,
         )
         .unwrap(),
         context.workspace_cwd.unwrap()
@@ -989,7 +1029,16 @@ fn workspace_context_rejects_an_untrusted_cwd() {
     for path in [&home, &root, &outside] {
         std::fs::create_dir(path).unwrap();
     }
-    assert!(config_context(AgentKind::OpenCode, &home, Some(&outside), Some(&root),).is_none());
+    assert!(
+        config_context(
+            AgentKind::OpenCode,
+            &home,
+            Some(&outside),
+            Some(&root),
+            &Default::default()
+        )
+        .is_none()
+    );
 }
 
 #[test]

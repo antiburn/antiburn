@@ -727,7 +727,7 @@ fn current_inventory_selects_v2_controls_without_inventing_schema_cost() {
         "---\nname: Review display\ndescription: Review changes\n---\nProcedure.\n",
     )
     .unwrap();
-    let inventory = current_inventory(&fixture.context, &fixture.authority()).unwrap();
+    let inventory = current_inventory(&fixture.context, &fixture.authority(), None).unwrap();
     let find = |name: &str| {
         inventory
             .resources
@@ -750,7 +750,104 @@ fn current_inventory_selects_v2_controls_without_inventing_schema_cost() {
     );
     assert!(!inventory.issues.is_empty());
     fixture.entries.push(json!({"type":"document","info":{"policies":[{"action":"tool.use","resource":"*","effect":"deny"}]}}));
-    assert!(current_inventory(&fixture.context, &fixture.authority()).is_err());
+    assert!(current_inventory(&fixture.context, &fixture.authority(), None).is_err());
+}
+
+#[test]
+fn inventory_stops_reading_opencode_inputs_after_policy_revocation() {
+    use super::super::opencode_config_authority::ConfigReadAdmission;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let mut fixture = Fixture::new();
+    let first = fixture.global.join("opencode.json");
+    let later = fixture.cwd.join("opencode.json");
+    let config = json!({"skills":["~/.config/opencode/skills"]});
+    fixture.document(first.clone(), config.clone(), config);
+    fixture.document(later.clone(), json!({}), json!({}));
+    let skill_directory = fixture.global.join("skills");
+    let skill = skill_directory.join("review/SKILL.md");
+    fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    fs::write(
+        &skill,
+        "---\ndescription: Review changes\n---\nProcedure.\n",
+    )
+    .unwrap();
+    let authority = fixture.authority();
+    let expected = current_inventory(&fixture.context, &authority, None).unwrap();
+    assert!(
+        expected
+            .resources
+            .iter()
+            .any(|resource| resource.canonical_name == "review")
+    );
+
+    for stop in [None, Some(later), Some(skill_directory), Some(skill)] {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let current = Arc::new(AtomicBool::new(true));
+        let admission = ConfigReadAdmission::new({
+            let observed = observed.clone();
+            let current = current.clone();
+            let stop = stop.clone();
+            move |path| {
+                observed.lock().unwrap().push(path.to_owned());
+                if stop.as_deref() == Some(path) {
+                    current.store(false, Ordering::Relaxed);
+                }
+                true
+            }
+        });
+        let inventory = super::super::ResourceInventory::discover_with_admission(
+            &fixture.context,
+            [],
+            Some(&authority),
+            Some((&admission, &|| current.load(Ordering::Relaxed))),
+        );
+        if let Some(stop) = stop {
+            assert_eq!(inventory, Err(ConfigUnavailableReason::UnsafePath));
+            let observed = observed.lock().unwrap();
+            assert!(
+                observed.iter().filter(|path| *path == &first).count() > 1,
+                "first config reaches its read checks before {stop:?}"
+            );
+            assert_eq!(observed.last(), Some(&stop));
+        } else {
+            assert_eq!(inventory, Ok(expected.clone()));
+        }
+    }
+}
+
+#[test]
+fn directory_digest_rechecks_policy_before_each_entry() {
+    use super::super::opencode_config_authority::ConfigReadAdmission;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let fixture = Fixture::new();
+    let first = fixture.global.join("first.md");
+    let second = fixture.global.join("second.md");
+    let current = Arc::new(AtomicBool::new(true));
+    let admission = ConfigReadAdmission::new({
+        let current = current.clone();
+        let second = second.clone();
+        move |path| {
+            if path == second {
+                current.store(false, Ordering::Relaxed);
+            }
+            true
+        }
+    });
+    assert_eq!(
+        directory_digest(
+            &[first, second],
+            Some((&admission, &|| current.load(Ordering::Relaxed))),
+        ),
+        Err(ConfigUnavailableReason::UnsafePath)
+    );
 }
 
 #[test]
@@ -869,7 +966,7 @@ fn inventory_uses_consumer_authority_independent_of_transcript_generation() {
     let raw = json!({"mcp":{"servers":{"docs":{"type":"local","command":["docs"]}}}});
     fixture.document(fixture.global.join("opencode.json"), raw.clone(), raw);
     let authority = fixture.authority();
-    let expected = current_inventory(&fixture.context, &authority).unwrap();
+    let expected = current_inventory(&fixture.context, &authority, None).unwrap();
     for source in [
         None,
         Some(SourceFormat::OpenCodeJsonl),
@@ -893,13 +990,13 @@ fn inventory_uses_consumer_authority_independent_of_transcript_generation() {
     }
     fixture.context.native_environment = false;
     assert_eq!(
-        current_inventory(&fixture.context, &authority),
+        current_inventory(&fixture.context, &authority, None),
         Err(ConfigUnavailableReason::UnsupportedEnvironment)
     );
     fixture.context.native_environment = true;
     fixture.context.trusted_workspace_root = Some(fixture.home.clone());
     assert_eq!(
-        current_inventory(&fixture.context, &authority),
+        current_inventory(&fixture.context, &authority, None),
         Err(ConfigUnavailableReason::UnsafePath)
     );
     assert!(matches!(

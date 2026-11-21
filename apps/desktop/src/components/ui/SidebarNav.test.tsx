@@ -77,6 +77,30 @@ describe("SidebarNav", () => {
     }
   })
 
+  it("uses the first enabled child when its parent is disabled and the selection is absent", () => {
+    const items = [{ ...NESTED_ITEMS[0]!, disabled: true }]
+    render(<SidebarNav items={items} value="other" onChange={vi.fn()} ariaLabel="Sections" />)
+
+    expect(tab("Sessions")).toHaveAttribute("tabindex", "-1")
+    expect(tab("Notable")).toHaveAttribute("tabindex", "0")
+    expect(tab("Material")).toHaveAttribute("tabindex", "-1")
+  })
+
+  it("moves from the focused row after external selection and focuses the selected target", () => {
+    const onChange = vi.fn()
+    const { rerender } = render(
+      <SidebarNav items={ITEMS} value="first" onChange={onChange} ariaLabel="Sections" />,
+    )
+    tab("First").focus()
+    rerender(
+      <SidebarNav items={ITEMS} value="second" onChange={onChange} ariaLabel="Sections" />,
+    )
+
+    fireEvent.keyDown(tab("First"), { key: "ArrowDown" })
+    expect(tab("Second")).toHaveFocus()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
   it("moves selection and focus with ArrowDown / ArrowUp", () => {
     render(<Harness />)
 

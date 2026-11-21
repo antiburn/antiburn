@@ -973,6 +973,32 @@ fn visible_by_default() -> bool {
     true
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarUsagePin {
+    pub account: String,
+    pub provider: String,
+    pub name: String,
+    pub window: String,
+    pub scope: Option<String>,
+    pub label: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SidebarUsageAppearance {
+    #[default]
+    Dials,
+    Bars,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SidebarUsagePatch {
+    pub sidebar_usage_pins: Option<Vec<SidebarUsagePin>>,
+    pub sidebar_usage_appearance: Option<SidebarUsageAppearance>,
+}
+
 /// Every user preference the app persists, as one value.
 ///
 /// Stored key-by-key so adding a preference is additive; read and written as a
@@ -980,6 +1006,10 @@ fn visible_by_default() -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
+    #[serde(default)]
+    pub sidebar_usage_pins: Option<Vec<SidebarUsagePin>>,
+    #[serde(default)]
+    pub sidebar_usage_appearance: SidebarUsageAppearance,
     pub theme: ThemePreference,
     /// The application interface size as one supported percentage preset.
     #[serde(default = "default_interface_scale_percent")]
@@ -988,8 +1018,6 @@ pub struct AppSettings {
     pub activity_window_days: u32,
     /// Days to keep local session data. `-1` keeps it until explicit deletion.
     pub session_data_retention_days: i32,
-    /// False until the first-run flow finishes.
-    pub onboarding_completed: bool,
     /// Whether the packaged app should register itself to start after sign-in.
     pub launch_at_login: bool,
     /// Whether the menu-bar or system-tray icon is visible.
@@ -1010,6 +1038,9 @@ pub struct AppSettings {
     /// Git repository. Off keeps the repository-only scan gate.
     #[serde(default)]
     pub include_non_repo_folders: bool,
+    /// Stores Cloud intent without enabling network uploads.
+    #[serde(default)]
+    pub cloud_upload_enabled: bool,
     /// The master switch for desktop notifications. Off means nothing is
     /// delivered, whatever the per-kind preferences below say.
     pub notifications_enabled: bool,
@@ -1051,14 +1082,8 @@ pub struct AppSettings {
     /// [`AppSettings::live_usage_active`] for the second, unconditional gate
     /// that also has to hold before any of this runs.
     pub live_usage_enabled: bool,
-    /// Whether the reader has started live usage from the Overview.
-    ///
-    /// False for a new install until a deliberate click in the Overview's
-    /// usage area runs `start_live_usage`. That click, not setup finishing,
-    /// is what may trigger the macOS Keychain prompt the credential read
-    /// needs. An install that finished setup before this flag existed is
-    /// treated as already started; see `read_settings`.
-    #[serde(default)]
+    /// Legacy activation compatibility flag. True by default and after migration 94.
+    #[serde(default = "visible_by_default")]
     pub live_usage_started: bool,
     /// The providers whose meter the reader turned off. See [`HiddenMeters`].
     ///
@@ -1111,13 +1136,13 @@ impl Default for AppSettings {
             interface_scale_percent: default_interface_scale_percent(),
             activity_window_days: DEFAULT_ACTIVITY_DAYS,
             session_data_retention_days: RETAIN_SESSION_DATA_FOREVER,
-            onboarding_completed: false,
             launch_at_login: true,
             tray_icon_visible: true,
             dock_icon_visible: true,
             auto_update: true,
             discovery_paused: false,
-            include_non_repo_folders: false,
+            include_non_repo_folders: true,
+            cloud_upload_enabled: false,
             // On by default, and the per-kind switches with them: each kind
             // is about something the reader would want to act on, and none
             // repeats. A notification surface that has to be found before it
@@ -1142,8 +1167,10 @@ impl Default for AppSettings {
             // not sit behind a first-run choice. The switch is the opt-out
             // for a reader who wants no background traffic at all.
             live_usage_enabled: true,
-            // False: a new install has not clicked "Show live limits" yet.
-            live_usage_started: false,
+            // Collect usage on startup unless the user turns the master switch off.
+            live_usage_started: true,
+            sidebar_usage_pins: None,
+            sidebar_usage_appearance: SidebarUsageAppearance::default(),
             // Empty: every provider antiburn can meter is metered. A reader
             // who wants fewer meters says so one provider at a time.
             live_usage_hidden_providers: HiddenMeters::default(),
@@ -1171,32 +1198,19 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// Whether the menu-bar icon shows now. The icon stays hidden until the
-    /// first run finishes, because the popover has no data before then and
-    /// the main window is the only place where the first run continues.
     pub fn tray_shown(&self) -> bool {
-        self.tray_icon_visible && self.onboarding_completed
+        self.tray_icon_visible
     }
 
-    /// Whether the Dock icon shows now. During the first run the menu-bar
-    /// icon is hidden, so the Dock icon always shows and the reader can
-    /// still get back to the app.
     pub fn dock_shown(&self) -> bool {
-        self.dock_icon_visible || !self.onboarding_completed
+        self.dock_icon_visible
     }
 
     /// Whether live usage collection may actually run right now.
     ///
-    /// Two gates, both required, and both checked fresh on every pass rather
-    /// than latched: [`Self::live_usage_enabled`] (on by default; the
-    /// reader's opt-out) and [`Self::live_usage_started`] (off by default;
-    /// the reader's deliberate opt-in). The second gate exists so the
-    /// credential read this feature depends on — and, on macOS, the Keychain
-    /// prompt that read can trigger — never happens before the reader asks
-    /// for live limits. Every call site that might collect or fetch a live
-    /// usage source must go through this rather than reading
-    /// `live_usage_enabled` alone. App refreshes use
-    /// `usage_alerts::refresh_publish_and_evaluate`.
+    /// The master switch preserves the user's opt-out. The legacy activation
+    /// flag defaults to true and migration 94 enables it for existing installs.
+    /// Credential access can trigger a macOS Keychain prompt.
     pub fn live_usage_active(&self) -> bool {
         self.live_usage_enabled && self.live_usage_started
     }

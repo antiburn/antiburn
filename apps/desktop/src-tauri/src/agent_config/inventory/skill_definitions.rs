@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::ConfigUnavailableReason;
-use crate::agent_config::filesystem::{CheckedFile, read_checked};
+use crate::agent_config::filesystem::{CheckedFile, read_checked_with_admission};
 
 const MAX_SKILL_FILE_BYTES: usize = 256 * 1024;
 const MAX_SKILL_DESCRIPTION_BYTES: usize = 16 * 1024;
@@ -18,10 +18,13 @@ pub struct SkillFrontmatter {
 pub(super) fn read_definition(
     path: &Path,
     root: &Path,
+    check: impl Fn() -> Result<(), ConfigUnavailableReason>,
 ) -> Result<CheckedFile, ConfigUnavailableReason> {
+    check()?;
     let before =
         std::fs::symlink_metadata(path).map_err(|_| ConfigUnavailableReason::UnsafePath)?;
-    let file = read_checked(path, root)?;
+    let file = read_checked_with_admission(path, root, &check)?;
+    check()?;
     let after =
         std::fs::symlink_metadata(path).map_err(|_| ConfigUnavailableReason::ChangedIdentity)?;
     if !same_file(&before, &after) || after.file_type().is_symlink() {

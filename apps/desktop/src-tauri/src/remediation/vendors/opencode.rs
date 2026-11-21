@@ -98,7 +98,7 @@ impl VendorRemediationPolicy for OpenCodePolicy {
         #[cfg(not(windows))]
         return [root.join("opencode.json"), root.join("opencode.jsonc")]
             .iter()
-            .any(|path| path.try_exists().unwrap_or(true));
+            .any(|path| super::managed_file_present(path));
     }
 
     fn runtime_override_present(&self) -> bool {
@@ -129,9 +129,7 @@ impl VendorRemediationPolicy for OpenCodePolicy {
 fn trusted_workspace(candidate: Option<&Path>, root: Option<&Path>) -> bool {
     match (candidate, root) {
         (None, None) => true,
-        (Some(candidate), Some(root)) => candidate
-            .canonicalize()
-            .is_ok_and(|candidate| candidate.starts_with(root)),
+        (Some(candidate), Some(root)) => candidate.starts_with(root),
         _ => false,
     }
 }

@@ -142,7 +142,9 @@ impl RemediationController {
                     .then(|| opencode_current::resource_location(store, resource))
                     .flatten()
                     .filter(|cwd| trusted_workspace(store, cwd).ok().flatten().is_some());
-                    let authority = location.as_deref().and_then(|cwd| authorities.get(cwd));
+                    let authority = location
+                        .as_deref()
+                        .and_then(|cwd| authorities.get(store, cwd));
                     self.resolve_resource_target_at_location(
                         store,
                         resource,
@@ -178,7 +180,7 @@ impl RemediationController {
                                 && opencode_subject(finding.finding.cause()).is_some()
                                 && trusted_workspace(store, cwd).ok().flatten().is_some()
                         })
-                        .and_then(|cwd| authorities.get(cwd));
+                        .and_then(|cwd| authorities.get(store, cwd));
                     self.resolve_opencode_target(store, finding, home.as_deref(), authority)?
                 } else {
                     self.resolve_target(store, finding, agent, home.as_deref())?

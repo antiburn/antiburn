@@ -239,11 +239,12 @@ impl PiRefresher {
                     Recovery::AlreadyValid
                 } else {
                     match pi_auth::read_entry(auth_path, provider_key) {
-                        Some(entry) => Recovery::Fresh(entry),
-                        // The store changed into a shape without this
-                        // entry — a concurrent sign-out, say. Nothing to
-                        // retry with.
-                        None => Recovery::Unavailable,
+                        Some(entry) if entry.is_live(time::OffsetDateTime::now_utc()) => {
+                            Recovery::Fresh(entry)
+                        }
+                        // A changed store does not prove a usable login.
+                        // Retry only when it holds a complete, live entry.
+                        _ => Recovery::Unavailable,
                     }
                 }
             }
@@ -613,6 +614,31 @@ mod tests {
                 assert_eq!(entry.access_token, "rotated-access");
             }
             _ => panic!("expected Fresh"),
+        }
+    }
+
+    #[test]
+    fn a_clean_run_cannot_make_an_unusable_changed_entry_fresh() {
+        for body in [
+            r#"{"anthropic":{"type":"oauth"}}"#,
+            r#"{"anthropic":{"type":"oauth","access":"","refresh":"r","expires":9223372036854775807}}"#,
+            r#"{"anthropic":{"type":"oauth","access":"  ","refresh":"r","expires":9223372036854775807}}"#,
+            r#"{"anthropic":{"type":"oauth","access":"a","refresh":"","expires":9223372036854775807}}"#,
+            r#"{"anthropic":{"type":"oauth","access":"a","refresh":"r","expires":0}}"#,
+            r#"{"anthropic":{"type":"oauth","access":"a","refresh":"r","expires":1}}"#,
+            r#"{"anthropic":{"type":"oauth","access":"a""#,
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = fixture_store(&dir);
+            let refresher = PiRefresher::with_runner(Box::new(FakeRunner {
+                calls: Arc::new(AtomicUsize::new(0)),
+                rewrite: Some((path.clone(), body)),
+                outcome: RunOutcome::Completed,
+            }));
+            assert!(matches!(
+                refresher.recover(&path, pi_auth::ANTHROPIC_KEY),
+                Recovery::Unavailable
+            ));
         }
     }
 

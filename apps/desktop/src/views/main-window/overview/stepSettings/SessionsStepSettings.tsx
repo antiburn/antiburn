@@ -1,3 +1,5 @@
+import { CloudSession, cloudUploadStatusUnknown } from "../../../../onboarding/CloudSession"
+import { CloudAccount } from "../../../settings/CloudAccount"
 import { confirm } from "@tauri-apps/plugin-dialog"
 import { useCallback, useState, useSyncExternalStore } from "react"
 
@@ -12,7 +14,7 @@ import { openFolderAccessSettings, type AppInfo } from "../../../../lib/ipc"
 import { byteLabel } from "../../../../lib/presentation/scanStatusCopy"
 import type { LocalRepositoryItem } from "../../../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../../../lib/useFolderPermissionFlow"
-import { SettingsRow } from "../../../settings/SettingsSearchRows"
+import { SettingsRow, SettingsToggleRow } from "../../../settings/SettingsSearchRows"
 import { useAppSettings, type AppSettingsController } from "../../../settings/useAppSettings"
 import { RemoteHostsSection } from "./RemoteHostsSection"
 import {
@@ -150,6 +152,15 @@ function RetentionSection({
 
 export function SessionsStepSettings() {
   const { settings, update, loaded } = useAppSettings()
+  const [cloudSession] = useState(() => new CloudSession(undefined, false, true))
+  const cloud = useSyncExternalStore(
+    cloudSession.subscribe,
+    cloudSession.getSnapshot,
+    cloudSession.getSnapshot,
+  )
+  const cloudUnavailable = !cloud.cloud.authEnabled || !cloud.cloud.captureEnabled
+  const cloudConsent = cloud.ongoing?.consentVersion === "desktop-project-sync-v1"
+  const cloudStorageUnknown = cloudUploadStatusUnknown(cloud.ongoing)
   const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [session] = useState(() => new SourcesSession())
   const { repositories, scanRoots, permissions, scanning, remote } = useSyncExternalStore(
@@ -184,8 +195,53 @@ export function SessionsStepSettings() {
 
   const sections = (
     <>
-      <MonitoringSection settings={settings} update={update} />
-      <RecentDaysSection settings={settings} update={update} />
+      {info?.cloudEnabled && (
+        <SectionGroup title="Antiburn Cloud">
+          <Card divided={false}>
+            <CloudAccount session={cloudSession} value={cloud}>
+              <SettingsToggleRow
+                searchId="cloudUpload"
+                checked={
+                  (!cloudUnavailable || cloudStorageUnknown) &&
+                  cloudConsent &&
+                  !cloud.ongoing?.paused
+                }
+                disabled={
+                  !loaded ||
+                  !cloud.loaded ||
+                  cloud.busy ||
+                  cloudStorageUnknown ||
+                  cloudUnavailable ||
+                  !cloudConsent
+                }
+                dimmed={cloudUnavailable}
+                disabledTooltip={
+                  !cloud.loaded
+                    ? "Checking Cloud availability…"
+                    : cloudStorageUnknown
+                      ? "Check disk space and file permissions, then retry saved uploads."
+                      : cloudUnavailable
+                        ? "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available."
+                        : !cloudConsent
+                          ? "Choose projects and confirm full-content sync below."
+                          : undefined
+                }
+                onChange={(next) => {
+                  if (
+                    loaded &&
+                    cloud.loaded &&
+                    !cloudUnavailable &&
+                    !cloudStorageUnknown &&
+                    cloudConsent
+                  ) {
+                    void cloudSession.controlSync(!next)
+                  }
+                }}
+              />
+            </CloudAccount>
+          </Card>
+        </SectionGroup>
+      )}
 
       <RepositoriesSection
         repositories={repositories}
@@ -200,6 +256,9 @@ export function SessionsStepSettings() {
         onAddFolder={() => void handleLocate()}
         onRemoveFolder={(path) => void handleRemoveRoot(path)}
       />
+
+      <MonitoringSection settings={settings} update={update} />
+      <RecentDaysSection settings={settings} update={update} />
 
       <RemoteHostsSection
         remote={remote}

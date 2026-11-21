@@ -227,11 +227,11 @@ fn lower_path(path: &Path) -> String {
 }
 
 fn discover_devin_sessions(path: &Path, now: i64, since_secs: i64) -> Vec<SessionLog> {
-    if !path.is_file() {
+    if !crate::discovery::source_fs::is_file(path) {
         return Vec::new();
     }
     let path = path.to_owned();
-    let Ok(connection) = Connection::open_with_flags(
+    let Ok(connection) = crate::discovery::source_fs::open_database(
         path.clone(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) else {
@@ -277,7 +277,7 @@ fn discover_devin_sessions(path: &Path, now: i64, since_secs: i64) -> Vec<Sessio
 }
 
 fn devin_session_exists(path: &Path, session_id: &str) -> bool {
-    let Ok(connection) = Connection::open_with_flags(
+    let Ok(connection) = crate::discovery::source_fs::open_database(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) else {
@@ -350,7 +350,7 @@ fn valid_devin_schema(connection: &Connection) -> bool {
 }
 
 fn devin_session_fingerprint(path: &Path, session_id: &str) -> Option<(u64, u64)> {
-    let connection = Connection::open_with_flags(
+    let connection = crate::discovery::source_fs::open_database(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )

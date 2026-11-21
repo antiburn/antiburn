@@ -11,3 +11,6 @@ src-tauri/gen/
 
 # CI writes the restricted-entitlement profile before signed macOS builds.
 src-tauri/antiburn.provisionprofile
+
+/public/onboarding-demo/
+/dist-onboarding-demo/

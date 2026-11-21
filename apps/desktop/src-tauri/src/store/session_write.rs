@@ -23,6 +23,12 @@ impl SessionWriteGuard {
     pub fn attempt_id(&self) -> u64 {
         self.attempt
     }
+
+    pub(crate) fn stored_incarnation(&self) -> Option<Incarnation> {
+        self.stored_binding
+            .as_ref()
+            .map(|binding| binding.incarnation)
+    }
 }
 
 impl Drop for SessionWriteGuard {
@@ -222,6 +228,9 @@ impl Store {
         }
         let tx = connection.transaction()?;
         let removed = delete_session_in(&tx, &guard.key)?;
+        if removed.is_some() && guard.key.environment_key == "native" {
+            reconcile_project_deferrals(&tx)?;
+        }
         tx.commit()?;
         self.bump_session_key_fence(&guard.key);
         guard.completed.store(true, Ordering::Release);

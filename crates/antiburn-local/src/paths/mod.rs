@@ -21,6 +21,7 @@
 use std::path::PathBuf;
 
 pub mod ignored_paths;
+mod project_access;
 pub mod protected;
 pub mod scan_roots;
 pub mod state_files;

@@ -1,4 +1,5 @@
-import { Bot, Brain, Flame, Gauge, House, MessagesSquare, Settings } from "lucide-react"
+import { SidebarUsage } from "../components/providerUsage/SidebarUsageLimits"
+import { Bot, Brain, Flame, Gauge, MessagesSquare, Settings } from "lucide-react"
 import { useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 
@@ -9,14 +10,18 @@ import { PromotionLauncher } from "../components/promotions/PromotionLauncher"
 import { PromotionHost } from "../components/promotions/PromotionHost"
 
 import { SidebarNav, type SidebarNavItem } from "../components/ui/SidebarNav"
-import type { CheckId } from "../lib/insightsIpc"
 import { noteInteraction, openSettingsWindow } from "../lib/ipc"
 import { memoryCountStore } from "../lib/memoryCountStore"
-import { MAIN_VIEWS, isMainViewId, type MainViewId } from "../lib/navigation/mainViews"
+import {
+  SIDEBAR_MAIN_VIEWS,
+  MAIN_VIEWS,
+  isMainViewId,
+  type MainViewId,
+} from "../lib/navigation/mainViews"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
 import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
 import { MainActivityView } from "./main-window/MainActivityView"
-import { MainActivitySession, subjectForEntry } from "./main-window/MainActivitySession"
+import { MainActivitySession } from "./main-window/MainActivitySession"
 import { BurnChecksView } from "./main-window/BurnChecksView"
 import { BurnChecksController } from "./main-window/burn-checks/BurnChecksController"
 import { AppSearch } from "./main-window/AppSearch"
@@ -24,7 +29,6 @@ import { resolveSettingsSearchTarget, type AppSearchResult } from "../lib/appSea
 import { MainWindowLayout } from "./main-window/MainWindowLayout"
 import { MainWindowNavigationSession } from "./main-window/MainWindowNavigationSession"
 import { MainOverviewSession } from "./main-window/MainOverviewSession"
-import { OverviewView } from "./main-window/OverviewView"
 import { AgentsView } from "./main-window/AgentsView"
 import { useOverviewProgress } from "./main-window/overview/useOverviewProgress"
 import { sidebarProgress } from "./main-window/overview/sidebarProgress"
@@ -48,9 +52,6 @@ function neverSubscribe(): () => void {
 /** A section supplies its panes without changing the main window's native lifecycle. */
 export function MainWindowView({ sections }: { sections?: readonly MainWindowSection[] }) {
   const overview = useOverviewProgress()
-  const onboardingComplete =
-    overview.mode === "steady" || (overview.mode === "firstRun" && overview.flow === "done")
-  const onboardingBlocked = !sections && !onboardingComplete
   const [promotionSession] = useState(
     () => new PromotionSession(promotionCatalog, promotionEnvironment),
   )
@@ -58,7 +59,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const [searchOpen, setSearchOpen] = useState(false)
   const [settingsError, setSettingsError] = useState(false)
   async function openSettings(...target: Parameters<typeof openSettingsWindow>): Promise<void> {
-    if (onboardingBlocked) return
     setSettingsError(false)
     try {
       await openSettingsWindow(...target)
@@ -89,7 +89,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   const [quotaSession] = useState(() => new QuotaSession())
   const [memoriesSession] = useState(() => new MemoriesSession())
   const memoryCount = useSyncExternalStore(
-    sections || !onboardingComplete ? neverSubscribe : memoryCountStore.subscribe,
+    sections ? neverSubscribe : memoryCountStore.subscribe,
     memoryCountStore.getSnapshot,
     memoryCountStore.getSnapshot,
   )
@@ -112,35 +112,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     overviewSession.getSnapshot,
     overviewSession.getSnapshot,
   )
-  // While the first run takes over the Overview, every other main section is
-  // inert and the workspace stays on Overview. A `sections` override (tests,
-  // and a future embedding) keeps its own panes and is never gated.
-  const takeoverActive = !sections && overview.mode === "firstRun" && overview.flow !== "done"
-  // The fixes step's Enhance: Burn Checks, at the first check that needs a fix.
-  const openChecks = (check: CheckId | undefined) =>
-    navigationSession.navigate(
-      check ? { section: "burnChecks", check } : { section: "burnChecks" },
-    )
-  const viewBindings: Record<MainViewId, ViewBinding> = {
-    overview: {
-      icon: House,
-      render: ({ active }) => (
-        <OverviewView
-          active={active}
-          session={overviewSession}
-          onOpenSessions={() => selectSection("activity")}
-          onOpenChecks={openChecks}
-          onSelectSession={(entry) => {
-            if (!entry.sessionId) return
-            navigationSession.navigate({
-              section: "activity",
-              filters: { agents: [], result: "all", spend: "all" },
-              subject: subjectForEntry(entry),
-            })
-          }}
-        />
-      ),
-    },
+  const viewBindings: Record<Exclude<MainViewId, "overview">, ViewBinding> = {
     agents: {
       icon: Bot,
       render: ({ active }) => (
@@ -219,21 +191,19 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
     },
     memories: {
       icon: Brain,
-      ...(!onboardingComplete || memoryCount == null
-        ? {}
-        : { status: memoryCount.toLocaleString() }),
+      ...(memoryCount == null ? {} : { status: memoryCount.toLocaleString() }),
       render: ({ active }) => <MemoriesView active={active} session={memoriesSession} />,
     },
   }
-  const availableSections: readonly MainWindowSection[] =
+  const regularSections: readonly MainWindowSection[] =
     sections ??
     MAIN_VIEWS.map(({ id, label }) => ({
       id,
       label,
-      disabled: takeoverActive,
       ...viewBindings[id],
       ...sidebarProgress(id, overview, usage.allowance),
     }))
+  const availableSections = regularSections
   const [customSelectedId, setCustomSelectedId] = useState(() => availableSections[0]?.id ?? "")
   const [customVisited, setCustomVisited] = useState(
     () => new Set(availableSections.slice(0, 1).map((section) => section.id)),
@@ -252,9 +222,8 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
       return
     }
   }
-  const selected = takeoverActive
-    ? (availableSections.find((section) => section.id === "overview") ?? availableSections[0])
-    : (availableSections.find((section) => section.id === selectedId) ?? availableSections[0])
+  const selected =
+    availableSections.find((section) => section.id === selectedId) ?? availableSections[0]
   async function chooseSearchResult(result: AppSearchResult): Promise<void> {
     const target = result.target
     if (target.kind === "setting") {
@@ -290,43 +259,48 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         <AppSearch onChoose={chooseSearchResult} onClose={() => setSearchOpen(false)} />
       )}
       <MainWindowLayout
-        canBack={!takeoverActive && navigation.canBack}
-        canForward={!takeoverActive && navigation.canForward}
+        canBack={navigation.canBack}
+        canForward={navigation.canForward}
         onBack={navigationSession.back}
         onForward={navigationSession.forward}
-        {...(takeoverActive
-          ? {}
-          : {
-              onSearch: () => {
-                if (!searchOpen) {
-                  setSearchOpen(true)
-                  noteInteraction({ kind: "appSearchOpened" })
-                }
-              },
-            })}
+        onSearch={() => {
+          if (!searchOpen) {
+            setSearchOpen(true)
+            noteInteraction({ kind: "appSearchOpened" })
+          }
+        }}
         searchOpen={searchOpen}
         overlay={
           <PromotionHost
             session={promotionSession}
-            blocked={searchOpen || onboardingBlocked}
+            blocked={searchOpen}
             returnFocusTo={promotionLauncherRef}
           />
         }
         sidebar={(closeNavigation) => (
           <SidebarNav
-            items={availableSections}
+            items={
+              sections
+                ? availableSections
+                : SIDEBAR_MAIN_VIEWS.flatMap((id) =>
+                    availableSections.filter((section) => section.id === id),
+                  )
+            }
             value={selected?.id ?? ""}
             onChange={selectSection}
             onActivate={closeNavigation}
             ariaLabel="Main sections"
             className="main-window-sidebar min-h-0 flex-1"
             beforeFooter={
-              !sections && !onboardingBlocked ? (
-                <PromotionLauncher
-                  session={promotionSession}
-                  onOpen={closeNavigation}
-                  buttonRef={promotionLauncherRef}
-                />
+              !sections ? (
+                <>
+                  <SidebarUsage live={usage.liveUsage} settled={usage.liveUsageSettled} />
+                  <PromotionLauncher
+                    session={promotionSession}
+                    onOpen={closeNavigation}
+                    buttonRef={promotionLauncherRef}
+                  />
+                </>
               ) : null
             }
             footer={
@@ -339,7 +313,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
 
                 <button
                   type="button"
-                  disabled={onboardingBlocked}
                   onClick={() => {
                     closeNavigation()
                     void openSettings()

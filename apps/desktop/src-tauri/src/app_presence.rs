@@ -214,9 +214,8 @@ fn apply_dock(_app: &AppHandle, _visible: bool) {}
 mod tests {
     use super::*;
 
-    fn after_first_run() -> AppSettings {
+    fn default_settings() -> AppSettings {
         AppSettings {
-            onboarding_completed: true,
             ..AppSettings::default()
         }
     }
@@ -238,74 +237,13 @@ mod tests {
         let settings = AppSettings {
             tray_icon_visible: false,
             dock_icon_visible: true,
-            ..after_first_run()
+            ..default_settings()
         };
         assert_eq!(
             PresenceTransition::at_launch(&settings),
             PresenceTransition {
                 tray: Some(false),
                 dock: Some(true),
-            }
-        );
-    }
-
-    #[test]
-    fn a_first_run_launch_hides_the_tray_and_shows_the_dock() {
-        let settings = AppSettings {
-            tray_icon_visible: true,
-            dock_icon_visible: false,
-            onboarding_completed: false,
-            ..AppSettings::default()
-        };
-        assert_eq!(
-            PresenceTransition::at_launch(&settings),
-            PresenceTransition {
-                tray: Some(false),
-                dock: Some(true),
-            }
-        );
-    }
-
-    #[test]
-    fn finishing_the_first_run_applies_the_stored_presence() {
-        let first_run = AppSettings {
-            dock_icon_visible: false,
-            onboarding_completed: false,
-            ..AppSettings::default()
-        };
-        let finished = AppSettings {
-            onboarding_completed: true,
-            ..first_run.clone()
-        };
-        assert_eq!(
-            PresenceTransition::between(&first_run, &finished),
-            PresenceTransition {
-                tray: Some(true),
-                dock: Some(false),
-            }
-        );
-        // The debug reset goes back to a first run and hides the tray again.
-        assert_eq!(
-            PresenceTransition::between(&finished, &first_run),
-            PresenceTransition {
-                tray: Some(false),
-                dock: Some(true),
-            }
-        );
-    }
-
-    #[test]
-    fn a_tray_switch_during_the_first_run_changes_nothing_native() {
-        let first_run = AppSettings::default();
-        let saved = AppSettings {
-            tray_icon_visible: false,
-            ..first_run.clone()
-        };
-        assert_eq!(
-            PresenceTransition::between(&first_run, &saved),
-            PresenceTransition {
-                tray: None,
-                dock: None,
             }
         );
     }
@@ -333,7 +271,7 @@ mod tests {
 
     #[test]
     fn presence_transition_carries_only_changed_values() {
-        let previous = after_first_run();
+        let previous = default_settings();
         let saved = AppSettings {
             tray_icon_visible: false,
             ..previous.clone()
@@ -350,7 +288,7 @@ mod tests {
 
     #[test]
     fn dock_transition_carries_the_saved_visibility() {
-        let previous = after_first_run();
+        let previous = default_settings();
         let saved = AppSettings {
             dock_icon_visible: false,
             ..previous.clone()
@@ -370,16 +308,11 @@ mod tests {
     fn dock_retry_uses_the_latest_stored_state_and_fails_visible() {
         let hidden = AppSettings {
             dock_icon_visible: false,
-            ..after_first_run()
+            ..default_settings()
         };
-        let first_run = AppSettings {
-            onboarding_completed: false,
-            ..hidden.clone()
-        };
-        let visible = after_first_run();
+        let visible = default_settings();
 
         assert!(!dock_retry_visibility(Some(&hidden)));
-        assert!(dock_retry_visibility(Some(&first_run)));
         assert!(dock_retry_visibility(Some(&visible)));
         assert!(dock_retry_visibility(None));
     }

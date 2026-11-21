@@ -15,11 +15,6 @@ afterEach(() => vi.clearAllMocks())
 
 function progress(overrides: Partial<OverviewProgress> = {}): OverviewProgress {
   return {
-    mode: "steady",
-    flow: "done",
-    stepShown: true,
-    actionPending: false,
-    actionError: null,
     agents: { done: true, rows: [] },
     sessions: {
       done: true,

@@ -104,6 +104,13 @@ beforeEach(() => {
 })
 
 describe("MainWindowNavigationSession", () => {
+  it("starts in Sessions without adding history when reselected", () => {
+    const { session } = setup()
+    expect(session.getSnapshot().selected).toBe("activity")
+    session.select("activity")
+    expect(session.getSnapshot().canBack).toBe(false)
+  })
+
   it("reveals deliberate session destinations, but not ordinary row selection", () => {
     const { activity, session } = setup()
     session.select("activity")
@@ -154,16 +161,14 @@ describe("MainWindowNavigationSession", () => {
     ])
   })
 
-  it("replaces automatic selection without creating history or changing another section", () => {
+  it("replaces automatic selection without changing another section", () => {
     const { activity, session } = setup()
+    session.select("burnChecks")
     session.select("activity")
     activity.select(subject("automatic"), "automatic")
-
     session.back()
-    expect(session.getSnapshot().selected).toBe("overview")
-    expect(session.getSnapshot().canBack).toBe(false)
+    expect(session.getSnapshot().selected).toBe("burnChecks")
     expect(session.getSnapshot().canForward).toBe(true)
-
     activity.select(subject("background"), "automatic")
     session.forward()
     expect(session.getSnapshot().destination.subject).toEqual(subject("automatic"))
@@ -233,7 +238,7 @@ describe("MainWindowNavigationSession", () => {
 
     expect(activity.getSnapshot().filters.agents).toEqual(["claude", "codex"])
     session.back()
-    expect(session.getSnapshot().selected).toBe("overview")
+    expect(session.getSnapshot().selected).toBe("activity")
     expect(session.getSnapshot().canBack).toBe(false)
   })
 
@@ -245,7 +250,7 @@ describe("MainWindowNavigationSession", () => {
     expect(session.getSnapshot().destinationRevision).toBe(firstRevision + 1)
 
     session.back()
-    expect(session.getSnapshot().selected).toBe("overview")
+    expect(session.getSnapshot().selected).toBe("activity")
     session.navigate({ section: "burnChecks", check: "oldModelUsage" })
     expect(session.getSnapshot().canForward).toBe(false)
     session.back()
@@ -323,7 +328,7 @@ describe("MainWindowNavigationSession", () => {
     )
     session.back()
     expect(session.getSnapshot()).toEqual(
-      expect.objectContaining({ selected: "overview", canBack: false }),
+      expect.objectContaining({ selected: "activity", canBack: false }),
     )
   })
 
@@ -339,7 +344,7 @@ describe("MainWindowNavigationSession", () => {
     stale.resolve([subject("deleted")])
 
     await vi.waitFor(() => expect(mocks.existing).toHaveBeenCalledTimes(2))
-    await vi.waitFor(() => expect(session.getSnapshot().selected).toBe("overview"))
+    await vi.waitFor(() => expect(session.getSnapshot().selected).toBe("activity"))
     expect(session.getSnapshot().canBack).toBe(false)
   })
 
@@ -356,8 +361,8 @@ describe("MainWindowNavigationSession", () => {
     expect(activity.getSnapshot().subject).toEqual(subject("deleted-a"))
     pending.resolve([])
 
-    await vi.waitFor(() => expect(session.getSnapshot().selected).toBe("overview"))
-    expect(activity.getSnapshot().subject).toBeNull()
+    await vi.waitFor(() => expect(session.getSnapshot().selected).toBe("activity"))
+    await vi.waitFor(() => expect(activity.getSnapshot().subject).toBeNull())
   })
 
   it("applies one correlated external destination and acknowledges it", async () => {
@@ -378,7 +383,7 @@ describe("MainWindowNavigationSession", () => {
     expect(activity.getSnapshot().subject).toEqual(subject("external"))
     expect(mocks.acknowledge).toHaveBeenCalledWith(7, 1)
     session.back()
-    expect(session.getSnapshot().selected).toBe("overview")
+    expect(session.getSnapshot().selected).toBe("activity")
     expect(session.getSnapshot().canBack).toBe(false)
     stop()
   })
@@ -401,7 +406,7 @@ describe("MainWindowNavigationSession", () => {
       },
       subject: null,
     })
-    expect(activity.getSnapshot().subject).toBeNull()
+    await vi.waitFor(() => expect(activity.getSnapshot().subject).toBeNull())
     stop()
   })
 
@@ -449,6 +454,22 @@ describe("MainWindowNavigationSession", () => {
     stop()
   })
 
+  it("keeps Sessions filters when a legacy Overview request opens Sessions", async () => {
+    const { activity, session } = setup()
+    const filters: SessionFilters = { agents: ["codex"], result: "failing", spend: "notable" }
+    activity.filter(filters)
+    session.select("burnChecks")
+    const stop = session.subscribe(() => undefined)
+    await vi.waitFor(() => expect(mocks.handler).not.toBeNull())
+
+    mocks.handler!({ revision: 1, destination: { section: "overview", target: null } })
+
+    expect(session.getSnapshot().destination).toMatchObject({ section: "activity", filters })
+    expect(activity.getSnapshot().filters).toEqual(filters)
+    expect(mocks.acknowledge).toHaveBeenCalledWith(7, 1)
+    stop()
+  })
+
   it("retries acknowledgement without replaying a duplicate target", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined)
     mocks.acknowledge.mockRejectedValueOnce(new Error("unavailable"))
@@ -477,10 +498,10 @@ describe("MainWindowNavigationSession", () => {
     const unsubscribe = session.subscribe(changed)
     await vi.waitFor(() => expect(mocks.peek).toHaveBeenCalledOnce())
     mocks.handler!({ revision: 2, destination: { section: "overview", target: null } })
-    expect(session.getSnapshot()).toMatchObject({ selected: "overview", requests: 1 })
+    expect(session.getSnapshot()).toMatchObject({ selected: "activity", requests: 1 })
     expect(changed).toHaveBeenCalledTimes(1)
     mocks.handler!({ revision: 1, destination: { section: "burnChecks", target: null } })
-    expect(session.getSnapshot()).toMatchObject({ selected: "overview", requests: 1 })
+    expect(session.getSnapshot()).toMatchObject({ selected: "activity", requests: 1 })
     expect(changed).toHaveBeenCalledTimes(1)
     unsubscribe()
   })

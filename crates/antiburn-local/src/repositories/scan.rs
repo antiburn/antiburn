@@ -14,11 +14,11 @@ use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use crate::paths::protected::protected_dir_name;
+use crate::paths::protected::{self, ProjectAccessDecision, protected_dir_name};
 use crate::paths::scan_roots;
 use crate::platform::git;
 
-use super::access::{path_exists_without_prompting, verify_dir_access};
+use super::access::verify_dir_access;
 use super::consent::ConsentGrants;
 use super::identity::{normalize_for_prefix, normalize_remote_url, repo_root_identity};
 use super::model::{DeferredProtectedPath, LocatedRepo};
@@ -84,7 +84,7 @@ pub async fn scan_roots_for_repos(
     // Protected directory names already granted, plus — when the caller asked
     // for it — any granted outside the application for the protected common
     // directories.
-    let mut granted_names = consent.granted_dirs();
+    let mut external_grants = HashSet::new();
     if probe_protected {
         let protected_names: HashSet<String> = plat
             .common_code_dirs()
@@ -97,11 +97,9 @@ pub async fn scan_roots_for_repos(
             })
             .collect();
         if !protected_names.is_empty() {
-            granted_names.extend(consent.discover_external_grants(&protected_names).await);
+            external_grants.extend(consent.discover_external_grants(&protected_names).await);
         }
     }
-    let mut accessible_dirs: HashSet<PathBuf> =
-        granted_names.iter().map(|name| home.join(name)).collect();
 
     let mut by_root: HashMap<String, LocatedRepo> = HashMap::new();
     let mut deferred: Vec<DeferredProtectedPath> = Vec::new();
@@ -119,21 +117,23 @@ pub async fn scan_roots_for_repos(
     roots.dedup();
 
     for root in &roots {
-        // Defer consent-protected roots that are not granted; never enumerate
-        // them (that is what raises the dialog). Only defer roots that actually
-        // exist — a missing common directory must not be reported as needing
-        // permission. `stat()` is allowed on protected paths, so existence is
-        // checkable without prompting.
-        if plat.is_access_protected(root) && !accessible_dirs.iter().any(|d| root.starts_with(d)) {
-            if path_exists_without_prompting(root).await
-                && let Some(protected) = protected_dir_name(root)
-            {
-                deferred.push(DeferredProtectedPath {
-                    cwd: root.to_string_lossy().to_string(),
-                    protected_dir: protected,
-                });
+        if !consent.is_current() {
+            break;
+        }
+        let mut granted_names = consent.granted_dirs();
+        granted_names.extend(external_grants.iter().cloned());
+        match protected::project_path_access(root, &granted_names) {
+            ProjectAccessDecision::Allowed => {}
+            ProjectAccessDecision::DeferredProtected(protected_dir) => {
+                if extra_roots.contains(root) {
+                    deferred.push(DeferredProtectedPath {
+                        cwd: root.to_string_lossy().into_owned(),
+                        protected_dir,
+                    });
+                }
+                continue;
             }
-            continue;
+            ProjectAccessDecision::DeferredUncertain => continue,
         }
 
         // A protected root believed to be granted: confirm the grant is still
@@ -158,7 +158,7 @@ pub async fn scan_roots_for_repos(
                         // Drop it from this run's snapshot too, so a second root
                         // under the same dead grant defers now rather than next
                         // run.
-                        accessible_dirs.remove(&home.join(&stale));
+                        external_grants.remove(&stale);
                         ::tracing::debug!(
                             event = "repo_discovery_scan_root_grant_evicted",
                             root = root.to_string_lossy().as_ref(),
@@ -192,27 +192,73 @@ pub(super) async fn scan_dir_for_repos(
     consent: &dyn ConsentGrants,
     by_root: &mut HashMap<String, LocatedRepo>,
 ) {
+    if !consent.is_current()
+        || !protected::project_path_access(dir, &consent.granted_dirs()).is_allowed()
+    {
+        return;
+    }
+    let access = |path: &Path| {
+        consent.is_current()
+            && protected::git_project_access(path, &consent.granted_dirs()).is_allowed()
+            && consent.is_current()
+    };
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(_) => return,
     };
 
-    while let Ok(Some(entry)) = entries.next_entry().await {
+    loop {
+        if !consent.is_current() {
+            return;
+        }
+        let Ok(Some(entry)) = entries.next_entry().await else {
+            break;
+        };
         let path = entry.path();
+        if !consent.is_current()
+            || !protected::git_project_access(&path, &consent.granted_dirs()).is_allowed()
+        {
+            continue;
+        }
         if !entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
 
+        if !access(&path) {
+            continue;
+        }
         // Is this directory itself a repository?
-        if tokio::fs::metadata(path.join(".git")).await.is_ok() {
-            if let Ok(Some(url)) = git::preferred_remote_url_at(&path).await {
+        if tokio::fs::symlink_metadata(path.join(".git")).await.is_ok() {
+            if let Ok(Some(url)) = git::preferred_remote_url_at_with_access(&path, &access).await {
                 let repo_owner = git::parse_owner_from_url(&url).unwrap_or_default();
                 if repo_owner.to_ascii_lowercase() == owner_lower {
-                    let canonical_root = git::canonical_main_repo_root(&path).await;
+                    let Some(canonical_root) =
+                        git::canonical_main_repo_root_with_access(&path, &access).await
+                    else {
+                        continue;
+                    };
+                    if !consent.is_current()
+                        || !protected::git_project_access(&canonical_root, &consent.granted_dirs())
+                            .is_allowed()
+                    {
+                        continue;
+                    }
                     let root_key = repo_root_identity(&canonical_root);
                     if let std::collections::hash_map::Entry::Vacant(e) = by_root.entry(root_key) {
                         let dir_accessible = verify_dir_access(consent, &canonical_root).await;
+                        if !consent.is_current()
+                            || !protected::git_project_access(
+                                &canonical_root,
+                                &consent.granted_dirs(),
+                            )
+                            .is_allowed()
+                        {
+                            continue;
+                        }
                         let worktree_count = git::worktree_count_at(&canonical_root).await;
+                        if !access(&canonical_root) {
+                            continue;
+                        }
                         e.insert(LocatedRepo {
                             remote_url: normalize_remote_url(&url),
                             repo_root: canonical_root,
@@ -328,6 +374,9 @@ pub async fn persist_confirmed_parent_roots(
         // `Path::starts_with`: on Windows `fs::canonicalize` returns a `\\?\`
         // verbatim path while git repository roots are non-verbatim, so
         // `starts_with` never matches there.
+        if !protected::project_path_access(parent, &HashSet::new()).is_allowed() {
+            continue;
+        }
         let canonical_parent = tokio::fs::canonicalize(parent)
             .await
             .unwrap_or_else(|_| parent.clone());

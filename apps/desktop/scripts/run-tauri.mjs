@@ -15,10 +15,34 @@ try {
 
 const isWindows = process.platform === "win32"
 const command = isWindows ? "tauri.cmd" : "tauri"
+const preparedArgs = prepareCliDev(process.argv.slice(2))
+const separator = preparedArgs.indexOf("--")
+const tauriArgs = separator < 0 ? preparedArgs : preparedArgs.slice(0, separator)
+const runnerArgs = separator < 0 ? [] : preparedArgs.slice(separator + 1)
+const appSeparator = runnerArgs.indexOf("--")
+const cargoArgs = appSeparator < 0 ? runnerArgs : runnerArgs.slice(0, appSeparator)
+// Select the non-default Rust feature only for debug development commands.
+// Repeated --features options preserve the caller's other Cargo features.
+// Cargo short value options such as -F consume the rest of their flag cluster.
+if (
+  (tauriArgs[0] === "dev" ||
+    (tauriArgs[0] === "build" &&
+      (tauriArgs.includes("--debug") || tauriArgs.includes("-d")))) &&
+  !tauriArgs.includes("--release") &&
+  !cargoArgs.some(
+    (argument) =>
+      /^-[vqh]*r/.test(argument) ||
+      argument === "--release" ||
+      argument === "--profile" ||
+      argument.startsWith("--profile="),
+  )
+) {
+  preparedArgs.splice(1, 0, "--features", "cloud")
+}
 // Node refuses to spawn a `.cmd` file directly since 20.x, so Windows goes
 // through the shell. The shell receives one joined command line, which splits
 // an argument that contains a space, so quote those arguments here.
-const args = prepareCliDev(process.argv.slice(2)).map((argument) => {
+const args = preparedArgs.map((argument) => {
   if (!isWindows || !/[\s&|<>^"]/.test(argument)) return argument
   return `"${argument.replaceAll('"', '\\"')}"`
 })

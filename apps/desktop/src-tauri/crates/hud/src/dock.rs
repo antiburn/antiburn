@@ -44,7 +44,7 @@ pub(crate) const TAB_HOLD: Duration = Duration::from_millis(150);
 
 /// How often a peeked HUD checks whether it should park again.
 #[cfg(target_os = "macos")]
-const AUTO_DOCK_POLL: Duration = Duration::from_millis(200);
+const AUTO_DOCK_POLL: Duration = super::dismissal::SAMPLE_INTERVAL;
 
 /// How long a peeked HUD stays after the pointer leaves it and the edge.
 #[cfg(target_os = "macos")]
@@ -101,6 +101,8 @@ pub(crate) struct DockState {
     pub(crate) docked: bool,
     /// The HUD sits in the notch. `docked` then means collapsed.
     pub(crate) island: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) island_closing: Option<super::island::CloseTiming>,
     /// The reader wants the notch. It stays true while a display change takes
     /// the notch away, so the island comes back when a notch returns.
     pub(crate) island_wanted: bool,
@@ -125,6 +127,8 @@ static DOCK: Mutex<DockState> = Mutex::new(DockState {
     edge: DockEdge::Right,
     docked: false,
     island: false,
+    #[cfg(target_os = "macos")]
+    island_closing: None,
     island_wanted: false,
     home: None,
     #[cfg(target_os = "macos")]
@@ -137,29 +141,7 @@ static DOCK: Mutex<DockState> = Mutex::new(DockState {
 });
 
 #[cfg(any(target_os = "macos", test))]
-#[derive(Clone, Copy)]
-pub(crate) struct ParkTiming {
-    start: Instant,
-    last_inside: Instant,
-    hold: Duration,
-    linger: Duration,
-}
-
-#[cfg(any(target_os = "macos", test))]
-impl ParkTiming {
-    pub(crate) fn new(now: Instant, hold: Duration, linger: Duration) -> Self {
-        Self {
-            start: now,
-            last_inside: now,
-            hold,
-            linger,
-        }
-    }
-
-    fn should_park(self, now: Instant) -> bool {
-        should_dock(now, self.start, self.hold, self.linger, self.last_inside)
-    }
-}
+pub(crate) use super::dismissal::Dismissal as ParkTiming;
 
 /// Lock the dock state.
 ///
@@ -290,6 +272,7 @@ pub fn tear_off(app: &tauri::AppHandle) -> bool {
         dock.home = None;
         #[cfg(target_os = "macos")]
         {
+            dock.island_closing = None;
             dock.park_timing = None;
         }
         dock.generation += 1;
@@ -359,6 +342,7 @@ pub(crate) fn reset() {
     let mut dock = state();
     dock.docked = false;
     dock.island = false;
+    dock.island_closing = None;
     dock.home = None;
     dock.park_timing = None;
     dock.generation += 1;
@@ -576,6 +560,9 @@ fn dock_at_generation(
     };
     super::hide_detail(app);
     tracing::info!(event = "hud_dock", edge = ?edge, x = target.0, y = target.1);
+    if expected.is_some() {
+        watch_slide_reentry(app.clone(), window.clone(), generation);
+    }
     let watcher = (app.clone(), window.clone());
     drop(guard);
     slide(window.clone(), start, target, generation, move || {
@@ -585,13 +572,73 @@ fn dock_at_generation(
     });
 }
 
+/// Reverse an automatic park when the pointer returns to the revealed HUD.
+#[cfg(target_os = "macos")]
+fn watch_slide_reentry(app: AppHandle, window: WebviewWindow, generation: u64) {
+    tauri::async_runtime::spawn(async move {
+        let until = Instant::now() + SLIDE_DURATION;
+        while Instant::now() < until {
+            tokio::time::sleep(super::dismissal::SAMPLE_INTERVAL).await;
+            let (home, scale) = {
+                let dock = state();
+                if dock.generation != generation || !dock.docked || dock.island {
+                    return;
+                }
+                (dock.home, dock.scale)
+            };
+            if !super::work_is_active() || super::drag_in_progress() {
+                return;
+            }
+            if let (Some(home), Some(report)) = (home, super::cursor_report(&window)) {
+                let region = revealed_region(home, report.frame, scale, super::interface_scale());
+                if super::dismissal::Zone::at(report.cursor, &[region])
+                    == super::dismissal::Zone::Inside
+                {
+                    undock_if_current(&app, &window, Duration::ZERO, PEEK_LINGER, Some(generation));
+                    return;
+                }
+            }
+        }
+    });
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn revealed_region(
+    home: (f64, f64),
+    frame: (f64, f64, f64, f64),
+    scale: f64,
+    interface_scale: f64,
+) -> (f64, f64, f64, f64) {
+    let inset = SIDE_INSET * interface_scale;
+    (
+        home.0 / scale + inset,
+        home.1 / scale,
+        (frame.2 - 2.0 * inset).max(0.0),
+        frame.3,
+    )
+}
+
 /// Slide a docked HUD in, then park it again after a quiet spell.
 ///
 /// `hold` is the least time the HUD stays. `linger` is how long it stays
 /// after the pointer leaves it.
 #[cfg(target_os = "macos")]
 fn undock(app: &AppHandle, window: &WebviewWindow, hold: Duration, linger: Duration) {
+    undock_if_current(app, window, hold, linger, None);
+}
+
+#[cfg(target_os = "macos")]
+fn undock_if_current(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    hold: Duration,
+    linger: Duration,
+    expected: Option<u64>,
+) {
     let guard = super::resize_apply_guard();
+    if expected.is_some_and(|generation| state().generation != generation) {
+        return;
+    }
     if !state().docked {
         return;
     }
@@ -686,13 +733,24 @@ fn spawn_tab_watcher(app: AppHandle, window: WebviewWindow, generation: u64) {
                 let dock = state();
                 (dock.edge, dock.frame, dock.scale)
             };
-            let on_strip = match (docked_frame, window.cursor_position().ok()) {
-                (Some(strip), Some(cursor)) => on_tab_strip(
-                    edge,
-                    &strip,
-                    tab_depth(edge, scale, super::interface_scale()),
-                    (cursor.x, cursor.y),
-                ),
+            if !super::work_is_active() || super::drag_in_progress() {
+                on_tab_since = None;
+                continue;
+            }
+            let on_strip = match (docked_frame, super::cursor_report(&window)) {
+                (Some(strip), Some(report)) => {
+                    on_tab_strip(
+                        edge,
+                        &Rect {
+                            x: strip.x / scale,
+                            y: strip.y / scale,
+                            width: strip.width / scale,
+                            height: strip.height / scale,
+                        },
+                        tab_depth(edge, scale, super::interface_scale()) / scale,
+                        report.cursor,
+                    ) && report.inside
+                }
                 _ => false,
             };
             if !on_strip {
@@ -725,28 +783,13 @@ fn spawn_auto_dock(
     hold: Duration,
     linger: Duration,
 ) {
-    let on_strip = |window: &WebviewWindow| {
-        let (edge, docked_frame, scale) = {
-            let dock = state();
-            (dock.edge, dock.frame, dock.scale)
-        };
-        match (docked_frame, window.cursor_position().ok()) {
-            (Some(strip), Some(cursor)) => on_tab_strip(
-                edge,
-                &strip,
-                tab_depth(edge, scale, super::interface_scale()),
-                (cursor.x, cursor.y),
-            ),
-            _ => false,
-        }
-    };
     spawn_auto_park(
         app,
         window,
         generation,
         hold,
         linger,
-        on_strip,
+        |_| None,
         move |app, window| {
             let edge = state().edge;
             tracing::info!(event = "hud_auto_dock", generation);
@@ -767,7 +810,7 @@ pub(crate) fn spawn_auto_park(
     generation: u64,
     hold: Duration,
     linger: Duration,
-    near: impl Fn(&WebviewWindow) -> bool + Send + 'static,
+    region: impl Fn(&WebviewWindow) -> Option<super::dismissal::Zone> + Send + 'static,
     park: impl FnOnce(&AppHandle, &WebviewWindow) + Send + 'static,
 ) {
     {
@@ -790,8 +833,22 @@ pub(crate) fn spawn_auto_park(
             if app.get_webview_window(super::OVERLAY_LABEL).is_none() {
                 return;
             }
+            if !super::work_is_active() || super::drag_in_progress() {
+                continue;
+            }
             let now = Instant::now();
-            let inside = near(&window) || super::cursor_inside(&window).unwrap_or(false);
+            let zone = if state().island {
+                region(&window)
+            } else {
+                super::cursor_report(&window).map(|report| {
+                    let (x, y, width, height) = report.frame;
+                    let inset = SIDE_INSET * super::interface_scale();
+                    super::dismissal::Zone::at(
+                        report.cursor,
+                        &[(x + inset, y, (width - 2.0 * inset).max(0.0), height)],
+                    )
+                })
+            };
             let should_park = {
                 let mut dock = state();
                 if dock.generation != generation {
@@ -800,10 +857,7 @@ pub(crate) fn spawn_auto_park(
                 let Some(timing) = dock.park_timing.as_mut() else {
                     return;
                 };
-                if inside {
-                    timing.last_inside = now;
-                }
-                !inside && timing.should_park(now)
+                timing.sample(now, zone)
             };
             if should_park {
                 park(&app, &window);
@@ -965,19 +1019,6 @@ fn edge_dropped_on(frame: &Rect, window: &Rect, side_inset: f64) -> Option<DockE
         .map(|(edge, _)| edge)
 }
 
-/// Whether the peeked HUD should park: the hold passed, and the pointer has
-/// been off it for the linger. Pure.
-#[cfg(any(target_os = "macos", test))]
-fn should_dock(
-    now: Instant,
-    start: Instant,
-    hold: Duration,
-    linger: Duration,
-    last_inside: Instant,
-) -> bool {
-    now.duration_since(start) >= hold && now.duration_since(last_inside) >= linger
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -986,10 +1027,35 @@ mod tests {
     fn retained_wake_timing_survives_scale_reconciliation() {
         let start = Instant::now();
         let timing = ParkTiming::new(start, Duration::from_millis(4800), Duration::from_secs(3));
-        let resumed = timing;
-        assert!(!resumed.should_park(start + Duration::from_millis(1500)));
-        assert!(!resumed.should_park(start + Duration::from_millis(4799)));
-        assert!(resumed.should_park(start + Duration::from_millis(4800)));
+        let mut resumed = timing;
+        assert!(!resumed.sample(
+            start + Duration::from_millis(1500),
+            Some(super::super::dismissal::Zone::Far)
+        ));
+        assert!(!resumed.sample(
+            start + Duration::from_millis(4799),
+            Some(super::super::dismissal::Zone::Far)
+        ));
+        assert!(resumed.sample(
+            start + Duration::from_millis(4800),
+            Some(super::super::dismissal::Zone::Far)
+        ));
+    }
+
+    #[test]
+    fn closing_reentry_uses_the_home_instead_of_the_moving_frame() {
+        let home = (-3840.0, -200.0);
+        let moving = (-2000.0, -100.0, 176.0, 80.0);
+        let rect = revealed_region(home, moving, 2.0, 1.0);
+        assert_eq!(rect, (-1912.0, -100.0, 160.0, 80.0));
+        assert_eq!(
+            super::super::dismissal::Zone::at((-1900.0, -50.0), &[rect]),
+            super::super::dismissal::Zone::Inside,
+        );
+        assert_eq!(
+            super::super::dismissal::Zone::at((-1000.0, -50.0), &[rect]),
+            super::super::dismissal::Zone::Far,
+        );
     }
 
     const FRAME: Rect = Rect {
@@ -1159,49 +1225,6 @@ mod tests {
         assert!(on_tab_strip(DockEdge::Top, &FRAME, 8.0, (500.0, 57.0)));
         assert!(!on_tab_strip(DockEdge::Top, &FRAME, 8.0, (500.0, 58.0)));
         assert!(on_tab_strip(DockEdge::Bottom, &FRAME, 8.0, (500.0, 649.0)));
-    }
-
-    #[test]
-    fn auto_dock_waits_for_the_hold_and_the_linger() {
-        let start = Instant::now();
-        let hold = Duration::from_secs(5);
-        let linger = Duration::from_secs(3);
-        assert!(!should_dock(
-            start + Duration::from_secs(4),
-            start,
-            hold,
-            linger,
-            start
-        ));
-        assert!(should_dock(
-            start + Duration::from_secs(5),
-            start,
-            hold,
-            linger,
-            start
-        ));
-        let hovered = start + Duration::from_secs(4);
-        assert!(!should_dock(
-            start + Duration::from_secs(6),
-            start,
-            hold,
-            linger,
-            hovered
-        ));
-        assert!(should_dock(
-            start + Duration::from_secs(7),
-            start,
-            hold,
-            linger,
-            hovered
-        ));
-        assert!(should_dock(
-            start + linger,
-            start,
-            Duration::ZERO,
-            linger,
-            start
-        ));
     }
 
     #[test]

@@ -296,30 +296,72 @@ fn safe_dir(path: &Path, create: bool) -> Result<()> {
 fn check_ancestors(path: &Path) -> Result<()> {
     for ancestor in path.ancestors() {
         if let Ok(m) = fs::symlink_metadata(ancestor) {
-            #[cfg(windows)]
-            super::windows::check_ancestor(ancestor, &m)?;
-            #[cfg(target_os = "macos")]
-            super::macos::check_ancestor(ancestor)?;
-            ensure!(
-                m.is_dir() && !m.file_type().is_symlink(),
-                "CLI directory ancestor is redirected"
-            );
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                // Root-owned platform ancestors can contain user directories.
-                ensure!(
-                    m.uid() == 0 || m.uid() == unsafe { libc::geteuid() },
-                    "CLI ancestor belongs to another user"
-                );
-                ensure!(
-                    m.mode() & 0o022 == 0 || (m.uid() == 0 && m.mode() & 0o1000 != 0),
-                    "CLI ancestor permits unrelated writes"
-                );
-            }
+            check_directory_ancestor(ancestor, &m)?;
         }
     }
     Ok(())
+}
+
+fn check_directory_ancestor(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = path;
+    #[cfg(windows)]
+    super::windows::check_ancestor(path, metadata)?;
+    #[cfg(target_os = "macos")]
+    super::macos::check_ancestor(path)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "CLI directory ancestor is redirected"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            directory_owner_is_safe(metadata.uid(), metadata.mode(), unsafe { libc::geteuid() }),
+            "CLI ancestor permits unrelated ownership or writes"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(test, unix))]
+#[path = "tests/path_policy_tests.rs"]
+mod path_policy_tests;
+
+#[cfg(unix)]
+fn directory_owner_is_safe(owner: u32, mode: u32, user: u32) -> bool {
+    (owner == 0 || owner == user) && (mode & 0o022 == 0 || (owner == 0 && mode & 0o1000 != 0))
+}
+
+/// Validate an existing directory and every ancestor without changing permissions.
+/// Reject missing, unreadable, or redirected paths and unrelated mutation rights.
+/// Root-owned OS directories and root-owned sticky directories remain permitted.
+/// On macOS, deny-only and read-only ancestor ACLs do not block validation.
+pub fn validate_directory_ancestors(path: &Path) -> Result<()> {
+    ensure!(
+        path.is_absolute()
+            && !path
+                .components()
+                .any(|part| part == std::path::Component::ParentDir),
+        "Managed paths must be absolute without parent traversal"
+    );
+    for ancestor in path.ancestors() {
+        let metadata = fs::symlink_metadata(ancestor)?;
+        check_directory_ancestor(ancestor, &metadata)?;
+    }
+    Ok(())
+}
+
+/// Validate a managed regular file's ownership and mutation policy, without writes.
+/// Callers must also validate its parent with `validate_directory_ancestors`.
+/// Extended file ACLs are refused; existing permissions and ACLs remain unchanged.
+pub fn validate_owned_file(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "Managed file is redirected or is not a regular file"
+    );
+    check_owner(path, &metadata)
 }
 
 fn atomic_bytes(
@@ -353,6 +395,8 @@ fn atomic_bytes(
             super::macos::copy_attributes(source, &file)?;
         }
         file.sync_all()?;
+        #[cfg(target_os = "macos")]
+        validate_owned_file(&temp)?;
         #[cfg(windows)]
         super::windows::check_owned(&temp, &file.metadata()?)?;
         // Windows replacement opens the staging file without sharing.
@@ -369,10 +413,15 @@ fn atomic_bytes(
             fs::rename(&temp, path)
                 .context("CLI replacement deferred; destination may be locked")?;
         } else {
-            fs::hard_link(&temp, path).context(
-                "CLI destination appeared during publication or does not support native links",
-            )?;
-            fs::remove_file(&temp)?;
+            #[cfg(target_os = "macos")]
+            super::macos::rename_exclusive(&temp, path)?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                fs::hard_link(&temp, path).context(
+                    "CLI destination appeared during publication or does not support native links",
+                )?;
+                fs::remove_file(&temp)?;
+            }
         }
         sync_dir(parent)?;
         Ok(())
@@ -389,14 +438,14 @@ fn sync_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn retry_startup(
-    mut operation: impl FnMut() -> Result<()>,
+fn retry_startup<T>(
+    mut operation: impl FnMut() -> Result<T>,
     timeout: std::time::Duration,
-) -> Result<()> {
+) -> Result<T> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match operation() {
-            Ok(()) => return Ok(()),
+            Ok(value) => return Ok(value),
             Err(error) => {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 let busy = matches!(
@@ -617,6 +666,25 @@ impl Installation {
 
     pub fn reconcile(&self) -> Result<()> {
         let _lock = self.lock()?;
+        self.reconcile_locked()
+    }
+
+    /// Stage and validate the runtime under one lock. Keep the returned lock
+    /// alive until any files that bind this runtime have been published.
+    pub fn reconcile_for_binding(&self, startup: bool) -> Result<(File, CliRuntime)> {
+        let stage = || {
+            let lock = self.lock()?;
+            self.reconcile_locked()?;
+            Ok((lock, self.runtime(&self.receipt()?)?))
+        };
+        if startup {
+            retry_startup(stage, std::time::Duration::from_secs(5))
+        } else {
+            stage()
+        }
+    }
+
+    fn reconcile_locked(&self) -> Result<()> {
         let mut r = self.receipt()?;
         let obsolete = r.previous.clone();
         let m: Manifest = serde_json::from_slice(
@@ -743,6 +811,29 @@ impl Installation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn first_receipt_publication_keeps_one_name_and_preserves_collisions() {
+        use std::os::unix::fs::MetadataExt;
+
+        let f = Fixture::new();
+        f.i.reconcile_at_startup().unwrap();
+        let path = f.i.root.join("receipt.json");
+        let bytes = fs::read(&path).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.nlink(), 1);
+        assert!(atomic_bytes(&path, b"collision", false, None, false).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&path).unwrap().ino(), metadata.ino());
+        assert!(fs::read_dir(&f.i.root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".cli-stage-")
+        }));
+    }
 
     struct Fixture {
         _temp: tempfile::TempDir,

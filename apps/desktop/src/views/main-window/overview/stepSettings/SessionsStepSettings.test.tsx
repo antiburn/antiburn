@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
+import { emptyCloudSnapshot } from "../../../../lib/cloud"
 import { DEFAULT_SETTINGS } from "../../../../lib/ipc"
 import { SessionsStepSettings } from "./SessionsStepSettings"
+import { localToolsStatus } from "../../../../onboarding/__tests__/cloudProjectFixtures"
 
 /**
  * The Sessions step owns the activity window, monitoring, scanning, folders,
@@ -55,6 +57,10 @@ function mockCommands(overrides: Record<string, unknown> = {}) {
       return Promise.resolve(typeof override === "function" ? override(args) : override)
     }
     switch (command) {
+      case "cloud_status":
+        return Promise.resolve(emptyCloudSnapshot)
+      case "get_local_tools_status":
+        return Promise.resolve(localToolsStatus())
       case "get_settings":
         return Promise.resolve(DEFAULT_SETTINGS)
       case "get_scan_status":
@@ -300,8 +306,8 @@ describe("SessionsStepSettings scanning", () => {
   })
 })
 
-describe("SessionsStepSettings folders without git", () => {
-  it("saves the switch and leaves it off by default", async () => {
+describe("SessionsStepSettings folders without Git", () => {
+  it("saves the switch and defaults on and persists an explicit opt-out", async () => {
     let stored = { ...DEFAULT_SETTINGS }
     invoke.mockImplementation((command: string, args?: { settings?: typeof stored }) => {
       switch (command) {
@@ -325,16 +331,16 @@ describe("SessionsStepSettings folders without git", () => {
     })
     render(<SessionsStepSettings />)
 
-    const toggle = await screen.findByRole("switch", { name: "Include folders without git" })
-    expect(toggle).not.toBeChecked()
+    const toggle = await screen.findByRole("switch", { name: "Include folders without Git" })
+    expect(toggle).toBeChecked()
 
     fireEvent.click(toggle)
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("set_settings", {
-        settings: expect.objectContaining({ includeNonRepoFolders: true }),
+        settings: expect.objectContaining({ includeNonRepoFolders: false }),
       }),
     )
-    await waitFor(() => expect(toggle).toBeChecked())
+    await waitFor(() => expect(toggle).not.toBeChecked())
   })
 })
 
@@ -414,5 +420,64 @@ describe("SessionsStepSettings scan folders", () => {
       expect(invoke).toHaveBeenCalledWith("add_scan_root", { path: "/home/avery/work" }),
     )
     expect(await screen.findByText("/home/avery/work")).toBeInTheDocument()
+  })
+})
+
+describe("SessionsStepSettings Cloud preference", () => {
+  it("omits Cloud controls and commands in ordinary builds", async () => {
+    mockCommands({ app_info: { ...INFO, cloudEnabled: false } })
+    render(<SessionsStepSettings />)
+    await screen.findByText("42 sessions · 3.5 MB")
+    expect(screen.queryByText("Antiburn Cloud")).not.toBeInTheDocument()
+    expect(invoke.mock.calls.some(([command]) => String(command).startsWith("cloud_"))).toBe(
+      false,
+    )
+  })
+
+  it("disables unavailable uploads without changing saved intent and opens Learn more", async () => {
+    mockCommands({
+      app_info: { ...INFO, cloudEnabled: true },
+      get_settings: { ...DEFAULT_SETTINGS, cloudUploadEnabled: true },
+      cloud_begin: emptyCloudSnapshot,
+    })
+    render(<SessionsStepSettings />)
+    const learnMore = await screen.findByRole("button", { name: "Learn more" })
+    await waitFor(() => expect(learnMore).toBeEnabled())
+    const toggle = screen.getByRole("switch", { name: "Upload sessions" })
+    expect(toggle).toHaveAttribute("aria-disabled", "true")
+    expect(toggle).not.toBeChecked()
+    expect(
+      screen.queryByText("Your sessions stay on this device. No sessions are uploaded."),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText("Available when Antiburn Cloud launches."),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByText(/Saved preference only/)).not.toBeInTheDocument()
+    fireEvent.focus(toggle)
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available.",
+    )
+    fireEvent.click(toggle)
+    fireEvent.keyDown(toggle, { key: " " })
+    fireEvent.keyDown(toggle, { key: "Enter" })
+    expect(invoke.mock.calls.some(([command]) => command === "set_settings")).toBe(false)
+    fireEvent.click(learnMore)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_begin"))
+    expect(invoke.mock.calls.some(([command]) => command === "cloud_start_sync")).toBe(false)
+  })
+
+  it("preserves configured account controls", async () => {
+    mockCommands({
+      app_info: { ...INFO, cloudEnabled: true },
+      cloud_status: { ...emptyCloudSnapshot, authEnabled: true, status: "signed_out" },
+      cloud_sign_out: { ...emptyCloudSnapshot, authEnabled: true, status: "signed_out" },
+    })
+    render(<SessionsStepSettings />)
+    const signIn = await screen.findByRole("button", { name: "Sign in" })
+    expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
+    expect(screen.getByText("Not signed in")).toBeVisible()
+    expect(screen.queryByText("You’re signed out on this device.")).not.toBeInTheDocument()
+    fireEvent.click(signIn)
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("cloud_begin"))
   })
 })

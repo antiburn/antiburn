@@ -172,7 +172,12 @@ export function SegmentedMeter({
       {expectedFraction != null && (
         <span
           data-testid="segmented-meter-notch"
-          className="absolute -inset-y-[2px] w-[1.5px] bg-(--color-label)"
+          className={cn(
+            "absolute -inset-y-[2px] w-[1.5px]",
+            clamped != null && clamped >= Math.min(1, Math.max(0, expectedFraction)) * 100
+              ? "bg-system-red"
+              : "bg-label-tertiary",
+          )}
           style={{ left: `${Math.min(100, Math.max(0, expectedFraction * 100))}%` }}
         />
       )}

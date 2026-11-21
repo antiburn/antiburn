@@ -1,8 +1,9 @@
 # Main-window navigation and local search
 
 The retained main renderer owns a bounded history of 100 destinations. A destination is
-Overview, Agents, Limits, Memories, Sessions with its contextual filters and optional session identity, or Checks with an
-optional check ID. Explicit navigation appends; Back and Forward restore; automatic initial
+Agents, Limits, Memories, Sessions with its contextual filters and optional session identity, or
+Checks with an optional check ID. Sessions opens by default. Legacy native Overview requests
+open Sessions and preserve its current filters. Explicit navigation appends; Back and Forward restore; automatic initial
 selection replaces. Selecting the same destination can reveal it again without appending.
 New navigation after Back removes the forward branch. Deleted session targets are pruned.
 History lives for the renderer lifetime. The sidebar stays visible above the 720 CSS pixel
@@ -45,9 +46,8 @@ the empty-query group's five-result limit.
 The registry contains pure metadata and imports no other modules. Icons, React
 components, session instances, and event handlers belong to the renderer. History
 uses the registry-derived `MainViewId`; native cross-window requests retain their
-narrower DTO and an explicit mapping at the renderer boundary. A new local view
-does not extend native routes or permissions. Adding a native route still requires
-an explicit TypeScript/Rust contract change.
+narrower DTO. A new local view does not extend native routes or permissions.
+Adding a native route requires a TypeScript/Rust contract change.
 
 Settings host session counts use the revisioned native navigation route, including
 pending-request recovery when the main window opens. Only Settings can send an
@@ -61,15 +61,10 @@ that pane, for example Settings → Sessions for a blocked repository.
 
 ### Sidebar summaries
 
-Agents and Sessions show scan counts. Checks shows the unsnoozed number of checks
-that need a fix. Limits shows the same rounded subscription utilization percentages
-as Overview, in account order; missing figures are omitted. Counts and transitions
-belong to the renderer, not the navigation registry. The Agents page lists local
-agent discovery results and links to agent-filtered Sessions and Agent settings.
-
-First-run cards dock into their sidebar destinations. The sidebar remains disabled
-until setup finishes. Each step after Welcome has an explicit Back button, which
-changes only the visible step and does not lower the backend scan gate.
+The sidebar shows Sessions and Checks. Checks shows the unsnoozed number of checks
+that need a fix. The renderer owns counts and transitions. Search can open Agents,
+Limits, and Memories. The Agents page lists local discovery results and links to
+agent-filtered Sessions and Agent settings.
 
 ### Feature-owned search metadata
 
@@ -104,14 +99,10 @@ presentation, not runtime enablement or activation. Discovered definitions do
 not acquire native fix prompts, Auto Fix, verification watches, burn estimates,
 or savings through navigation or row reuse.
 
-The Agents, Sessions, and Checks Settings panes render the same components as
-the first run's "Show settings" disclosure. Their controls are ordinary
-Settings targets in `settingsSearchTargets.ts`, with the pane `agents`,
-`sessions`, or `checks`. Search opens them in the Settings window and
-`SettingsTargetFocus` reveals and focuses the row, as for every other pane.
-The first-run disclosure renders the same rows, with the same
-`data-settings-control` IDs, but search does not target it. Search is not
-available while the first run takes over the main window.
+The Agents, Sessions, and Checks Settings panes declare their controls in
+`settingsSearchTargets.ts` with the pane `agents`, `sessions`, or `checks`.
+Search opens them in the Settings window and `SettingsTargetFocus` reveals
+and focuses the row, as for every other pane.
 
 Decision-provider controls belong to the Checks Settings metadata. Search can
 reveal the Jev, Ollama, Cloudflare, and Custom setup fields in the connection
@@ -172,11 +163,11 @@ Search only navigates. It does not toggle controls, scan, fix, export, or delete
 Queries are transient and local. Analytics carries only explicit actions and fixed result
 categories, described in `docs/analytics-measurement.md`.
 
-The Memories sidebar count uses a separate directory-only read of local Claude Code
+The Memories count uses a separate directory-only read of local Claude Code
 memory files. It uses the report's file exclusions and 500-file per-project limit.
-It loads when the main window becomes visible after onboarding completes, then refreshes on focus or
+It loads when the main window becomes visible, then refreshes on focus or
 reopening if the last attempt is at least one minute old. Successful full reports
 supply the count, and archive/restore actions invalidate it immediately. Reads are
 coalesced; older results cannot replace a report or a count invalidated by an edit.
 The count is held only in memory. Failures retain the last known value; before a
-successful read the sidebar shows no number. No timer or filesystem watcher runs.
+successful read there is no count. No timer or filesystem watcher runs.

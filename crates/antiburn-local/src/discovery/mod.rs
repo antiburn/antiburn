@@ -29,13 +29,35 @@
 pub mod agents;
 pub mod fork;
 pub mod scanner;
+mod source_fs;
+
+/// Admit native source paths without deriving authority from project grants.
+pub fn source_path_access(path: &Path) -> crate::paths::protected::ProjectAccessDecision {
+    crate::paths::protected::project_path_access(path, &Default::default())
+}
+
+/// Open a native companion database for read-only session analysis.
+pub fn open_native_companion_database(path: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    source_fs::open_database(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+}
+
+/// List the files of a native companion database after checking each path.
+pub fn native_companion_database_paths(path: &Path) -> rusqlite::Result<[PathBuf; 3]> {
+    source_fs::admit_native_database(path)
+}
+
 pub mod source_version;
 
 use crate::model::AgentKind;
 use crate::platform::environment::{DiscoveryEnvironment, WslEnvironmentInfo};
 use async_trait::async_trait;
 use scanner::TitleSource;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 pub use fork::{DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation};
@@ -220,15 +242,59 @@ pub enum DirectSessionSource {
 // with the agent's `owns_path` implementation. If you change an agent's
 // on-disk layout, update both `owns_path` and the sample helper.
 
+/// The protected-folder grants and generation check used by one discovery pass.
+#[derive(Clone)]
+pub struct ProjectAccessSnapshot {
+    granted_dirs: Arc<HashSet<String>>,
+    policy_is_current: Arc<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl ProjectAccessSnapshot {
+    /// Build a grant snapshot with a live policy-generation check.
+    pub fn new(
+        granted_dirs: HashSet<String>,
+        policy_is_current: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            granted_dirs: Arc::new(granted_dirs),
+            policy_is_current: Arc::new(policy_is_current),
+        }
+    }
+
+    /// Return the protected directories admitted by this snapshot.
+    pub fn granted_dirs(&self) -> &HashSet<String> {
+        &self.granted_dirs
+    }
+
+    /// Check whether this snapshot still matches the stored policy.
+    pub fn is_current(&self) -> bool {
+        (self.policy_is_current)()
+    }
+}
+
+#[async_trait]
 /// One agent's view of the local machine.
 ///
 /// Implementations are stateless and cheap to construct; discovery holds them
 /// as `&'static dyn AgentExplorer`. Only [`Self::discover_recent`] and
 /// [`Self::owns_path`] are required — every other hook has a default that is
 /// correct (if unoptimized) for an agent that does not need it.
-#[async_trait]
 pub trait AgentExplorer: Send + Sync {
     async fn discover_recent(&self, now: i64, since_secs: i64) -> Vec<SessionLog>;
+
+    /// Discover with an explicit project-access snapshot.
+    ///
+    /// Explorers that only read their own session sources can retain the
+    /// default. Project-path decoders should use the supplied grants and check
+    /// policy freshness before probing protected candidates.
+    async fn discover_recent_with_project_access(
+        &self,
+        now: i64,
+        since_secs: i64,
+        _access: ProjectAccessSnapshot,
+    ) -> Vec<SessionLog> {
+        self.discover_recent(now, since_secs).await
+    }
 
     /// Discover recent sessions and send them in bounded, activity-ordered batches.
     ///
@@ -246,6 +312,20 @@ pub trait AgentExplorer: Send + Sync {
     ) {
         let mut logs = self.discover_recent(now, since_secs).await;
         send_discovery_batches(agent, &mut logs, batch_size, true, &sender).await;
+    }
+
+    /// Discover with project grants while preserving an explorer's batch strategy.
+    async fn discover_recent_batches_with_project_access(
+        &self,
+        agent: AgentKind,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        _access: ProjectAccessSnapshot,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        self.discover_recent_batches(agent, now, since_secs, batch_size, sender)
+            .await;
     }
 
     /// Optional O(1)-ish point lookup for agents with a durable per-session
@@ -491,7 +571,7 @@ pub struct DiscoveryBatch {
     pub complete: bool,
 }
 
-async fn send_discovery_batches(
+pub(super) async fn send_discovery_batches(
     agent: AgentKind,
     logs: &mut Vec<SessionLog>,
     batch_size: usize,
@@ -1006,17 +1086,19 @@ impl SessionLog {
 
 pub async fn session_source_content(source: &SessionSource) -> Option<String> {
     match source {
-        SessionSource::File(path) => match tokio::fs::read_to_string(path).await {
-            Ok(content) => Some(content),
-            Err(error) => {
-                ::tracing::debug!(
-                    event = "session_source_unreadable",
-                    path = %path.display(),
-                    error = %error
-                );
-                None
+        SessionSource::File(path) => {
+            match crate::discovery::source_fs::asynchronous::read_to_string(path).await {
+                Ok(content) => Some(content),
+                Err(error) => {
+                    ::tracing::debug!(
+                        event = "session_source_unreadable",
+                        path = %path.display(),
+                        error = %error
+                    );
+                    None
+                }
             }
-        },
+        }
         SessionSource::Inline { content, .. } => Some(content.clone()),
         SessionSource::ProviderDb {
             agent: AgentKind::OpenCode,
@@ -1040,7 +1122,9 @@ pub async fn session_source_content(source: &SessionSource) -> Option<String> {
             ..
         } => {
             let transcript = agents::antigravity::sibling_brain_transcript(db_path, session_id)?;
-            tokio::fs::read_to_string(transcript).await.ok()
+            crate::discovery::source_fs::asynchronous::read_to_string(transcript)
+                .await
+                .ok()
         }
         SessionSource::ProviderDb {
             agent,
@@ -1114,7 +1198,9 @@ pub async fn session_source_tail(source: &SessionSource) -> Option<String> {
         _ => return session_source_content(source).await,
     };
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
-    let mut file = tokio::fs::File::open(&path).await.ok()?;
+    let mut file = crate::discovery::source_fs::asynchronous::open(&path)
+        .await
+        .ok()?;
     let len = file.metadata().await.ok()?.len();
     let start = len.saturating_sub(ACTIVITY_TAIL_BYTES);
     if start > 0 {
@@ -1325,7 +1411,9 @@ async fn read_file_source(path: &Path) -> Option<(Option<SourceStat>, u64, Optio
 async fn open_file_for_head_read(path: &Path) -> Option<tokio::fs::File> {
     #[cfg(any(test, feature = "test-instrumentation"))]
     record_tracked_head_read(path);
-    tokio::fs::File::open(path).await.ok()
+    crate::discovery::source_fs::asynchronous::open(path)
+        .await
+        .ok()
 }
 
 #[cfg(any(test, feature = "test-instrumentation"))]
@@ -1480,7 +1568,7 @@ async fn recent_files_matching(
     tokio::task::spawn_blocking(move || {
         let mut results = Vec::new();
         for dir in &dirs {
-            let Ok(entries) = std::fs::read_dir(dir) else {
+            let Ok(entries) = crate::discovery::source_fs::read_dir(dir) else {
                 continue;
             };
             for entry in entries.flatten() {
@@ -1494,7 +1582,7 @@ async fn recent_files_matching(
                 }
 
                 // Only consider regular files (follow symlinks)
-                let Ok(metadata) = std::fs::metadata(&path) else {
+                let Ok(metadata) = crate::discovery::source_fs::metadata(&path) else {
                     continue;
                 };
                 if !metadata.is_file() {
@@ -1563,7 +1651,7 @@ async fn collect_dirs_matching(
         let mut found = Vec::new();
         let mut stack = vec![root];
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
+            let Ok(entries) = crate::discovery::source_fs::read_dir(&dir) else {
                 continue;
             };
 
@@ -1601,7 +1689,7 @@ async fn collect_dirs_matching(
 /// Used to skip a mirror directory that exists but holds nothing, so an empty
 /// mirror never joins the discovery walk.
 pub async fn dir_has_json_files(dir: &Path) -> bool {
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+    let Ok(mut entries) = crate::discovery::source_fs::asynchronous::read_dir(dir).await else {
         return false;
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
@@ -1705,7 +1793,7 @@ pub async fn find_chat_session_dirs(root: &Path) -> Vec<PathBuf> {
         let mut stack = vec![root];
 
         while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
+            let Ok(entries) = crate::discovery::source_fs::read_dir(&dir) else {
                 continue;
             };
 
@@ -1893,6 +1981,26 @@ impl Explorers {
         .await;
     }
 
+    /// Discover native and WSL sessions with the caller's current project grants.
+    pub async fn discover_recent_batches_with_project_access(
+        &self,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        access: ProjectAccessSnapshot,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        self.discover_recent_batches_with_wsl_and_project_access(
+            now,
+            since_secs,
+            batch_size,
+            sender,
+            crate::platform::environment::discover_wsl_environments(),
+            Some(access),
+        )
+        .await;
+    }
+
     async fn discover_recent_batches_with_wsl(
         &self,
         now: i64,
@@ -1901,13 +2009,48 @@ impl Explorers {
         sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
         environments: impl std::future::Future<Output = Vec<WslEnvironmentInfo>> + Send,
     ) {
-        let native = self.discover_recent_batches_for_agents(
-            AgentKind::ALL,
+        self.discover_recent_batches_with_wsl_and_project_access(
             now,
             since_secs,
             batch_size,
-            sender.clone(),
-        );
+            sender,
+            environments,
+            None,
+        )
+        .await;
+    }
+
+    async fn discover_recent_batches_with_wsl_and_project_access(
+        &self,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+        environments: impl std::future::Future<Output = Vec<WslEnvironmentInfo>> + Send,
+        access: Option<ProjectAccessSnapshot>,
+    ) {
+        let native = async {
+            if let Some(access) = access {
+                self.discover_recent_batches_for_agents_with_project_access(
+                    AgentKind::ALL,
+                    now,
+                    since_secs,
+                    batch_size,
+                    access,
+                    sender.clone(),
+                )
+                .await;
+            } else {
+                self.discover_recent_batches_for_agents(
+                    AgentKind::ALL,
+                    now,
+                    since_secs,
+                    batch_size,
+                    sender.clone(),
+                )
+                .await;
+            }
+        };
         let explorers = *self;
         let wsl_sender = sender.clone();
         let wsl = async move {
@@ -1959,6 +2102,44 @@ impl Explorers {
             tasks.spawn(async move {
                 explorer
                     .discover_recent_batches(agent, now, since_secs, batch_size, sender)
+                    .await;
+            });
+        }
+        loop {
+            tokio::select! {
+                _ = sender.closed() => break,
+                result = tasks.join_next() => match result {
+                    None => break,
+                    Some(Ok(())) => {},
+                    Some(Err(error)) => tracing::warn!(%error, "agent batch discovery task failed"),
+                },
+            }
+        }
+    }
+
+    /// Discover selected native agents with the caller's current project grants.
+    ///
+    /// Explorers that do not use project paths keep their existing behavior.
+    pub async fn discover_recent_batches_for_agents_with_project_access(
+        &self,
+        agents: &[AgentKind],
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        access: ProjectAccessSnapshot,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        let mut tasks = tokio::task::JoinSet::new();
+        for agent in AgentKind::ALL.iter().filter(|agent| agents.contains(agent)) {
+            let explorer = self.get(agent);
+            let agent = *agent;
+            let access = access.clone();
+            let sender = sender.clone();
+            tasks.spawn(async move {
+                explorer
+                    .discover_recent_batches_with_project_access(
+                        agent, now, since_secs, batch_size, access, sender,
+                    )
                     .await;
             });
         }

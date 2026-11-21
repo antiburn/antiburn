@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "antiburn-local"
-version = "0.14.1"
+version = "0.15.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "antiburn-remote"
-version = "0.10.0"
+version = "0.11.2"
 dependencies = [
  "antiburn-local",
  "anyhow",
@@ -448,8 +448,6 @@ checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
 [[package]]
 name = "libsqlite3-sys"
 version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
 dependencies = [
  "cc",
  "pkg-config",
@@ -553,9 +551,9 @@ dependencies = [
 
 [[package]]
 name = "pulldown-cmark"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "278e9268c93b9e498a2da46c34d90ba93a3255eb99009646398f34bc73ab36eb"
+checksum = "3db2be46835f013dd3f4fa7f5f7402c537787b54ebb6fe2b94bbdd7e2669bb7b"
 dependencies = [
  "bitflags",
  "memchr",

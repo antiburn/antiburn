@@ -1,0 +1,26 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "cloud-account",
+  "description": "Allow account and onboarding surfaces to manage Cloud connections and consent-bound source requests.",
+  "windows": ["main", "settings", "onboarding"],
+  "permissions": [
+    "allow-cloud-status",
+    "allow-cloud-begin",
+    "allow-cloud-cancel",
+    "allow-cloud-sign-out",
+    "allow-cloud-reset-local",
+    "allow-cloud-save-draft",
+    "allow-cloud-source-picker-directory",
+    "allow-cloud-start-sync",
+    "allow-cloud-prepare-sync",
+    "allow-cloud-reconcile-sync",
+    "allow-cloud-cancel-sync",
+    "allow-cloud-project-groups",
+    "allow-cloud-sync-projects",
+    "allow-cloud-sync-status",
+    "allow-cloud-enable-sync",
+    "allow-cloud-set-sync-project",
+    "allow-cloud-pause-sync",
+    "allow-cloud-retry-sync"
+  ]
+}

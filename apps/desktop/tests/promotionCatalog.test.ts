@@ -98,15 +98,15 @@ describe("promotion YAML definitions", () => {
     const source = await readFile(path.join(claudeDirectory, "promo.yaml"), "utf8")
     const definition = parsePromotionYaml(source, "claude-mod/promo.yaml")
     expect(definition.screens.announcement.media?.light).toEqual({
-      kind: "video",
-      src: "./assets/claude-mod-desktop-light-no-label-800.mp4",
+      kind: "image",
+      src: "./assets/claude-mod-desktop-light-no-label-800.webp",
       poster: "./assets/claude-mod-desktop-light-no-label-poster.png",
     })
     const module = await generatePromotionModule({ production: true })
     expect(module.code).toContain("media.light.src = __promotionAsset")
     expect(module.code).toContain("media.light.poster = __promotionAsset")
     expect(module.watchFiles).toContain(
-      path.join(claudeDirectory, "assets/claude-mod-desktop-light-no-label-800.mp4"),
+      path.join(claudeDirectory, "assets/claude-mod-desktop-light-no-label-800.webp"),
     )
     const base = { kind: "image", src: "./dark.png", alt: "Preview" }
     const withLight = (light: unknown) =>
@@ -117,7 +117,7 @@ describe("promotion YAML definitions", () => {
       })
     expect(() =>
       validatePromotionDefinition(withLight({ kind: "video", src: "./light.mp4" })),
-    ).toThrow("video requires a static poster")
+    ).toThrow("expected image")
     expect(() =>
       validatePromotionDefinition(withLight({ kind: "image", src: "../outside.png" })),
     ).toThrow("expected a relative local asset path")
@@ -138,6 +138,82 @@ describe("promotion YAML definitions", () => {
       await expect(generatePromotionModule({ directory, production: true })).rejects.toThrow(
         'Missing promotion asset "./assets/missing.svg"',
       )
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("accepts still posters and rejects animated posters for both themes", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "promotion-poster-"))
+    try {
+      const folder = path.join(directory, "sample")
+      await mkdir(folder)
+      const webp = Buffer.from(
+        "UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA",
+        "base64",
+      )
+      const gif = Buffer.from(
+        "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+        "base64",
+      )
+      const frame = gif.subarray(gif.indexOf(Buffer.from([0x2c])), gif.length - 1)
+      const animatedGif = Buffer.concat([
+        gif.subarray(0, gif.length - 1),
+        frame,
+        Buffer.from([0x3b]),
+      ])
+      const animatedWebp = await readFile(
+        path.join(claudeDirectory, "assets/claude-mod-desktop-dark-no-label-800.webp"),
+      )
+      const png = await readFile(
+        path.join(claudeDirectory, "assets/claude-mod-desktop-dark-no-label-poster.png"),
+      )
+      const animatedPng = Buffer.concat([
+        png.subarray(0, 33),
+        Buffer.from([0, 0, 0, 8, 97, 99, 84, 76, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0]),
+        png.subarray(33),
+      ])
+      await writeFile(path.join(folder, "source.png"), png)
+      const yaml = (poster: string, light: boolean) => `schema_version: 1
+id: sample
+revision: 1
+title: Sample
+screens:
+  announcement:
+    title: Sample
+    description: Example
+    media:
+      kind: image
+      src: ./source.png
+      alt: Example
+${
+  light
+    ? `      light:
+        kind: image
+        src: ./source.png
+        poster: ./${poster}
+`
+    : `      poster: ./${poster}
+`
+}`
+      for (const [name, bytes, valid] of [
+        ["still.gif", gif, true],
+        ["still.webp", webp, true],
+        ["still.png", png, true],
+        ["animated.gif", animatedGif, false],
+        ["animated.webp", animatedWebp, false],
+        ["disguised.png", animatedWebp, false],
+        ["disguised.jpg", animatedGif, false],
+        ["animated.png", animatedPng, false],
+      ] as const) {
+        await writeFile(path.join(folder, name), bytes)
+        for (const light of [false, true]) {
+          await writeFile(path.join(folder, "promo.yaml"), yaml(name, light))
+          const result = generatePromotionModule({ directory, production: true })
+          if (valid) await expect(result).resolves.toBeDefined()
+          else await expect(result).rejects.toThrow("must be a still")
+        }
+      }
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -168,7 +244,7 @@ describe("promotion catalog module", () => {
     expect(module.ids).toEqual(["claude-mod"])
     expect(module.code).toContain("Pace your Claude Code usage across sessions.")
     expect(module.code).toContain("__promotionAsset0")
-    expect(module.code).toContain("claude-mod-desktop-dark-no-label-800.mp4?no-inline")
+    expect(module.code).toContain("claude-mod-desktop-dark-no-label-800.webp?no-inline")
     expect(module.code).not.toContain("dummy-promo")
     expect(module.code).not.toContain("Different content")
     expect(module.code).not.toContain("dummy-promo.svg")
@@ -202,7 +278,7 @@ it("accepts registered YAML analytics enrollment and rejects arbitrary tracking 
   }
 })
 
-it("requires a static video poster for reduced motion and loading failures", () => {
+it("rejects video media, which the Linux webview cannot play safely", () => {
   const definition = baseDefinition({
     screens: {
       announcement: {
@@ -212,9 +288,27 @@ it("requires a static video poster for reduced motion and loading failures", () 
       },
     },
   })
-  expect(() => validatePromotionDefinition(definition)).toThrow(
-    "video requires a static poster",
-  )
+  expect(() => validatePromotionDefinition(definition)).toThrow("expected image")
+})
+
+it("requires a static poster for an animated image", () => {
+  const animated = (src: string) =>
+    baseDefinition({
+      screens: {
+        announcement: {
+          title: "Animated",
+          description: "Example",
+          media: { kind: "image", src, alt: "Example" },
+        },
+      },
+    })
+  for (const src of ["./assets/demo.webp", "./assets/demo.gif"]) {
+    expect(() => validatePromotionDefinition(animated(src))).toThrow(
+      "an animated image requires a static poster",
+    )
+  }
+  // A still format carries no motion, so it needs no poster.
+  expect(() => validatePromotionDefinition(animated("./assets/demo.png"))).not.toThrow()
 })
 
 it("keeps unknown HTTPS destinations outside the native opener scope", () => {
@@ -341,3 +435,54 @@ describe("promotion sidebar schema", () => {
     )
   })
 })
+
+/**
+ * Read the animation facts out of a WebP file.
+ *
+ * A WebP is RIFF: a 12-byte header, then chunks of a 4-byte name, a 4-byte
+ * little-endian length, and a payload padded to an even length. `VP8X` holds
+ * the flags and the canvas size, `ANIM` holds the loop count, and each `ANMF`
+ * holds one frame and its duration.
+ */
+function readWebpAnimation(bytes: Buffer) {
+  if (bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP")
+    throw new Error("not a WebP file")
+  let animated = false
+  let loops: number | null = null
+  let width = 0
+  let height = 0
+  const durations: number[] = []
+  for (let at = 12; at + 8 <= bytes.length;) {
+    const name = bytes.toString("ascii", at, at + 4)
+    const size = bytes.readUInt32LE(at + 4)
+    const body = at + 8
+    if (name === "VP8X") {
+      animated = (bytes[body] & 0x02) !== 0
+      width = bytes.readUIntLE(body + 4, 3) + 1
+      height = bytes.readUIntLE(body + 7, 3) + 1
+    }
+    if (name === "ANIM") loops = bytes.readUInt16LE(body + 4)
+    if (name === "ANMF") durations.push(bytes.readUIntLE(body + 12, 3))
+    at = body + size + (size % 2)
+  }
+  return { animated, loops, width, height, durations }
+}
+
+it.each(["dark", "light"])(
+  "ships the %s Claude Mod media as a looping animation, not a still frame",
+  async (variant) => {
+    const name = `claude-mod-desktop-${variant}-no-label-800`
+    const media = readWebpAnimation(
+      await readFile(path.join(claudeDirectory, `assets/${name}.webp`)),
+    )
+    expect(media.animated).toBe(true)
+    expect(media.durations.length).toBeGreaterThan(1)
+    // `0` means the animation repeats forever.
+    expect(media.loops).toBe(0)
+    // The encoder merges equal neighbouring frames and adds their durations,
+    // so the frame count moves between encodes but the total length does not.
+    expect(media.durations.reduce((whole, each) => whole + each, 0)).toBe(12_800)
+    // A size change against the poster would move the panel layout.
+    expect([media.width, media.height]).toEqual([800, 416])
+  },
+)

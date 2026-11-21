@@ -64,8 +64,8 @@ function isRowDisabled(row: FlatRow): boolean {
 
 /** Source-list navigation for a multi-pane window.
  *
- *  Exposed as a vertical tablist with a roving tabindex: only the selected row
- *  is tabbable, and ↑/↓/Home/End move both selection and focus. Each row's
+ *  The selected row is the tab stop. If it is absent or disabled, the first
+ *  enabled row is the tab stop. ↑/↓/Home/End move selection and focus. Each row's
  *  `aria-controls` points at `<id>-panel`, so the pane it drives should carry
  *  that id with `role="tabpanel"` and `aria-labelledby="<id>-tab"`.
  *
@@ -103,6 +103,10 @@ export function SidebarNav({
 }) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>())
   const rows = flattenItems(items)
+  const selectedIndex = rows.findIndex((row) => row.item.id === value && !isRowDisabled(row))
+  const tabStopIndex =
+    selectedIndex >= 0 ? selectedIndex : rows.findIndex((row) => !isRowDisabled(row))
+  const tabStopId = rows[tabStopIndex]?.item.id
 
   // Steps over disabled rows in `delta`'s direction, wrapping at the ends,
   // so keyboard navigation never lands on one.
@@ -116,11 +120,12 @@ export function SidebarNav({
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (rows.length === 0) return
-    const current = rows.findIndex((row) => row.item.id === value)
+    if (tabStopIndex < 0) return
+    const focusedIndex = rows.findIndex((row) => rowRefs.current.get(row.item.id) === e.target)
+    const currentIndex = focusedIndex >= 0 ? focusedIndex : tabStopIndex
     let next: number
-    if (e.key === "ArrowDown") next = stepIndex(current, 1)
-    else if (e.key === "ArrowUp") next = stepIndex(current, -1)
+    if (e.key === "ArrowDown") next = stepIndex(currentIndex, 1)
+    else if (e.key === "ArrowUp") next = stepIndex(currentIndex, -1)
     else if (e.key === "Home") next = rows.findIndex((row) => !isRowDisabled(row))
     else if (e.key === "End")
       next = rows.length - 1 - [...rows].reverse().findIndex((row) => !isRowDisabled(row))
@@ -129,8 +134,8 @@ export function SidebarNav({
 
     e.preventDefault()
     const target = rows[next]
-    if (!target || target.item.id === value) return
-    onChange(target.item.id)
+    if (!target) return
+    if (target.item.id !== value) onChange(target.item.id)
     // The row already exists in the DOM regardless of selection, so focus can
     // move synchronously — no need to wait for the re-render.
     rowRefs.current.get(target.item.id)?.focus()
@@ -169,6 +174,7 @@ export function SidebarNav({
               <SidebarNavRow
                 item={item}
                 selected={selected}
+                tabStop={item.id === tabStopId}
                 onChange={onChange}
                 {...(onActivate ? { onActivate } : {})}
                 rowRefs={rowRefs}
@@ -189,6 +195,7 @@ export function SidebarNav({
                     <SidebarNavRow
                       item={child}
                       selected={childSelected}
+                      tabStop={child.id === tabStopId}
                       onChange={onChange}
                       {...(onActivate ? { onActivate } : {})}
                       rowRefs={rowRefs}
@@ -218,6 +225,7 @@ export function SidebarNav({
 function SidebarNavRow({
   item,
   selected,
+  tabStop,
   onChange,
   onActivate,
   rowRefs,
@@ -227,6 +235,7 @@ function SidebarNavRow({
 }: {
   item: SidebarNavItem | SidebarNavChildItem
   selected: boolean
+  tabStop: boolean
   onChange: (next: string) => void
   onActivate?: () => void
   rowRefs: RefObject<Map<string, HTMLButtonElement>>
@@ -258,7 +267,7 @@ function SidebarNavRow({
       aria-description={item.status}
       title={item.status}
       style={{ viewTransitionName: item.transitionName }}
-      tabIndex={selected && !disabled ? 0 : -1}
+      tabIndex={tabStop ? 0 : -1}
       onClick={() => {
         if (disabled) return
         onChange(item.id)

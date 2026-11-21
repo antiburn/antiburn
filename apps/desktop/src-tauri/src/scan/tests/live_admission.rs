@@ -102,7 +102,7 @@ async fn changing_revisions_do_not_repeat_hashes_or_hold_the_next_scan() {
         .map(|(_, log)| log.clone())
         .collect::<Vec<_>>();
     let (hooks, mut arrivals) = hash_barrier(&logs, PreparationStage::FingerprintCommit);
-    let policy = policy(home.path(), Some(hooks.clone()));
+    let policy = policy(&store, home.path(), Some(hooks.clone()));
     let mut admission = writer(&store);
     let AdmissionIo::Test { now, .. } = &admission.io else {
         unreachable!()
@@ -198,7 +198,7 @@ async fn changing_revisions_do_not_repeat_hashes_or_hold_the_next_scan() {
     };
     now.store(1002, Ordering::Release);
     let (_sender, live) = mpsc::channel(1);
-    let next_policy = super::policy(home.path(), None);
+    let next_policy = super::policy(&store, home.path(), None);
     tokio::time::timeout(
         Duration::from_secs(5),
         run(queued_scan, live, None, &next_policy, &mut queued),
@@ -429,7 +429,7 @@ async fn three_post_baseline_results_write_a_mocked_status_while_fingerprint_is_
         .unwrap();
     let (hooks, mut arrivals) =
         hash_barrier(std::slice::from_ref(&log), PreparationStage::Fingerprint);
-    let policy = policy(&root, Some(hooks.clone()));
+    let policy = policy(&store, &root, Some(hooks.clone()));
     let mut admission = writer(&store);
     let (sender, finite) = mpsc::channel(1);
     let (_live_sender, live) = mpsc::channel(1);

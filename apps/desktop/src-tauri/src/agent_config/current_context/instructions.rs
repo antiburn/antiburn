@@ -430,11 +430,11 @@ impl Collector<'_> {
                 if let Some(value) = value {
                     for entry in self.config_paths(value, global, true) {
                         let target = if let Some(relative) = entry.strip_prefix("~/") {
-                            home.map(|home| home.join(relative))
+                            home.map(|home| join_configured_path(home, relative))
                         } else if Path::new(&entry).is_absolute() {
                             Some(PathBuf::from(&entry))
                         } else {
-                            workspace.map(|(_, cwd)| cwd.join(&entry))
+                            workspace.map(|(_, cwd)| join_configured_path(cwd, &entry))
                         };
                         if let Some(target) = target {
                             match allowed_root(&target, home, workspace, self.reads.admission) {
@@ -514,7 +514,7 @@ impl Collector<'_> {
     ) -> Vec<PathBuf> {
         if let Some(relative) = entry.strip_prefix("~/") {
             match home {
-                Some(home) => vec![home.join(relative)],
+                Some(home) => vec![join_configured_path(home, relative)],
                 None => {
                     self.limit(global, false, "configured_path_root_unavailable");
                     Vec::new()
@@ -526,7 +526,7 @@ impl Collector<'_> {
             match hierarchy(cwd, root) {
                 Ok(directories) => directories
                     .into_iter()
-                    .map(|directory| directory.join(entry))
+                    .map(|directory| join_configured_path(&directory, entry))
                     .collect(),
                 Err(reason) => {
                     self.limit(global, false, reason);
@@ -538,6 +538,14 @@ impl Collector<'_> {
             Vec::new()
         }
     }
+}
+
+fn join_configured_path(base: &Path, entry: &str) -> PathBuf {
+    let relative: PathBuf = Path::new(entry)
+        .components()
+        .filter(|component| *component != Component::CurDir)
+        .collect();
+    base.join(relative)
 }
 
 const PI_INSTRUCTIONS: [&str; 5] = [

@@ -55,7 +55,7 @@ async function settle() {
 }
 
 describe("PromotionSession", () => {
-  it("waits for onboarding and foreground visibility, then persists only actual presentation", async () => {
+  it("waits for environment readiness and foreground visibility, then persists only actual presentation", async () => {
     let foreground = false
     const env = environment({ loadReady: async () => false, isForeground: () => foreground })
     const session = new PromotionSession([promo], env.adapter)
@@ -377,12 +377,12 @@ describe("sidebar promotion opening", () => {
     stopRevised()
   })
 
-  it.each(["onboarding", "hidden", "missing", "development"])(
+  it.each(["not-ready", "hidden", "missing", "development"])(
     "rejects %s opening without changing history",
     async (reason) => {
       const env = environment({
         loadReady: async () => false,
-        isManualReady: () => reason !== "onboarding",
+        isManualReady: () => reason !== "not-ready",
         loadVisible: async () => reason !== "hidden",
       })
       const session = new PromotionSession(
@@ -399,7 +399,7 @@ describe("sidebar promotion opening", () => {
     },
   )
 
-  it("keeps manual visibility gated by FTUE completion across readiness events", async () => {
+  it("keeps manual visibility gated by environment readiness across readiness events", async () => {
     let complete = true
     const env = environment({ loadReady: async () => false, isManualReady: () => complete })
     const session = new PromotionSession([promo], env.adapter)

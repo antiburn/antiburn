@@ -11,7 +11,7 @@ describe("main view registry", () => {
     }
   })
 
-  it.each(["", "unknown", "toString", "constructor", "__proto__", "filter:all"])(
+  it.each(["overview", "", "unknown", "toString", "constructor", "__proto__", "filter:all"])(
     "rejects non-view IDs: %s",
     (id) => expect(isMainViewId(id)).toBe(false),
   )

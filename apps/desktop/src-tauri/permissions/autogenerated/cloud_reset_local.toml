@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-reset-local"
+description = "Enables the cloud_reset_local command without any pre-configured scope."
+commands.allow = ["cloud_reset_local"]
+
+[[permission]]
+identifier = "deny-cloud-reset-local"
+description = "Denies the cloud_reset_local command without any pre-configured scope."
+commands.deny = ["cloud_reset_local"]

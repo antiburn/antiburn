@@ -189,9 +189,11 @@ fn service_path_in(
 }
 
 async fn read_service(path: &Path) -> Result<WslServiceInfo, CliBridgeError> {
-    let file = tokio::fs::File::open(path).await.map_err(|_| {
-        CliBridgeError::Unavailable("registered WSL service was unavailable".into())
-    })?;
+    let file = crate::discovery::source_fs::asynchronous::open(path)
+        .await
+        .map_err(|_| {
+            CliBridgeError::Unavailable("registered WSL service was unavailable".into())
+        })?;
     let bytes = read_bounded(file, MAX_REGISTRATION_BYTES + 1)
         .await
         .map_err(|_| invalid("registered WSL service could not be read"))?;

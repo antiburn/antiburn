@@ -1403,7 +1403,76 @@ describe("OverlayWindow", () => {
       act(() =>
         emitNative("hud-island:state", {
           ...HUD_ISLAND_OFF,
+          island: "collapsed",
+          wing: 30,
+          fillet: 19,
+          notch: 200,
+          height: 32,
           revision: 3,
+          bodyWidth: 180,
+          bodyMaxHeight: 500,
+        }),
+      )
+      expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("false")
+      expect(
+        screen.getByTestId("island-body").classList.contains("hud-island-body-closed"),
+      ).toBe(true)
+      expect(screen.getByTestId("island-header").style.height).toBe("32px")
+      expect(screen.getByTestId("island-header").style.width).toBe("260px")
+      act(() =>
+        emitNative("hud-island:state", {
+          ...HUD_ISLAND_OFF,
+          island: "collapsed",
+          wing: 30,
+          fillet: 19,
+          notch: 200,
+          height: 32,
+          revision: 4,
+          bodyWidth: 170,
+          bodyMaxHeight: 500,
+        }),
+      )
+      expect(screen.getByTestId("island-body")).toBeTruthy()
+      expect(screen.getByTestId("island-header").style.width).toBe("260px")
+      act(() =>
+        emitNative("hud-island:state", {
+          ...HUD_ISLAND_OFF,
+          island: "expanded",
+          wing: 30,
+          fillet: 19,
+          notch: 200,
+          height: 32,
+          revision: 5,
+          bodyWidth: 260,
+          bodyMaxHeight: 500,
+        }),
+      )
+      expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("true")
+      fireEvent.transitionEnd(screen.getByTestId("island-body"), {
+        propertyName: "opacity",
+      })
+      expect(screen.getByTestId("island-body")).toBeTruthy()
+      act(() =>
+        emitNative("hud-island:state", {
+          ...HUD_ISLAND_OFF,
+          island: "collapsed",
+          wing: 30,
+          fillet: 19,
+          notch: 200,
+          height: 32,
+          revision: 6,
+          bodyWidth: 260,
+          bodyMaxHeight: 500,
+        }),
+      )
+      await advance(290)
+      expect(screen.queryByTestId("island-body")).toBeNull()
+      expect(resizeOverlayWindow).toHaveBeenLastCalledWith(expect.any(Number), false, false, 6)
+
+      act(() =>
+        emitNative("hud-island:state", {
+          ...HUD_ISLAND_OFF,
+          revision: 7,
         }),
       )
       expect(container.querySelector("[data-island]")).toBeNull()
@@ -1647,6 +1716,157 @@ describe("OverlayWindow", () => {
       if (!island) throw new Error("no island")
       return island
     }
+
+    it("keeps the HUD body visible without a transition in the notch preview", async () => {
+      const { container } = render(<OverlayWindow />)
+      await waitFor(() => expect(nativeEvents.get("hud-island:state")?.size).toBe(1))
+      act(() =>
+        emitNative("hud-island:state", {
+          ...HUD_ISLAND_OFF,
+          island: "preview",
+          revision: 1,
+        }),
+      )
+      const body = screen.getByTestId("island-body")
+      expect(body.classList.contains("hud-island-body-preview")).toBe(true)
+      expect(body.getAttribute("data-open")).toBe("true")
+      expect(container.querySelector("[data-island]")?.getAttribute("data-island")).toBe(
+        "preview",
+      )
+    })
+
+    it.each([false, true])(
+      "anchors delayed closing to transition start and preserves reopen=%s",
+      async (reopen) => {
+        await mountIsland()
+        act(() =>
+          emitNative("hud-island:state", { ...COLLAPSED, island: "expanded", revision: 2 }),
+        )
+        await waitFor(() =>
+          expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("true"),
+        )
+        vi.useFakeTimers()
+        try {
+          act(() => emitNative("hud-island:state", { ...COLLAPSED, revision: 3 }))
+          const body = screen.getByTestId("island-body")
+          await advance(100)
+          fireEvent.transitionRun(body, { propertyName: "opacity" })
+          await advance(200)
+          expect(screen.getByTestId("island-body")).toBe(body)
+          if (reopen) {
+            act(() =>
+              emitNative("hud-island:state", { ...COLLAPSED, island: "expanded", revision: 4 }),
+            )
+          } else {
+            fireEvent.transitionRun(body, { propertyName: "transform" })
+          }
+          await advance(89)
+          expect(screen.getByTestId("island-body")).toBe(body)
+          await advance(1)
+          if (reopen) {
+            expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("true")
+          } else {
+            expect(screen.queryByTestId("island-body")).toBeNull()
+          }
+        } finally {
+          vi.useRealTimers()
+        }
+      },
+    )
+
+    it("keeps the body mounted when a drag starts during its close", async () => {
+      const island = await mountIsland()
+      act(() =>
+        emitNative("hud-island:state", {
+          ...COLLAPSED,
+          island: "expanded",
+          revision: 2,
+        }),
+      )
+      await waitFor(() =>
+        expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("true"),
+      )
+      act(() =>
+        emitNative("hud-island:state", {
+          ...COLLAPSED,
+          island: "collapsed",
+          revision: 3,
+        }),
+      )
+      expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("false")
+      fireEvent.mouseDown(screen.getByTestId("island-body"), {
+        button: 0,
+        screenX: 700,
+        screenY: 30,
+      })
+      fireEvent.mouseDown(island, { button: 0, screenX: 700, screenY: 30 })
+      expect(island.getAttribute("data-drag-armed")).toBeNull()
+      expect(invoke).not.toHaveBeenCalledWith("expand_hud_island")
+      fireEvent.mouseDown(screen.getByTestId("island-header"), {
+        button: 0,
+        screenX: 700,
+        screenY: 10,
+      })
+      expect(invoke).toHaveBeenCalledWith("expand_hud_island")
+      act(() =>
+        emitNative("hud-island:state", {
+          ...COLLAPSED,
+          island: "expanded",
+          revision: 4,
+        }),
+      )
+      expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("true")
+      expect(island.getAttribute("data-drag-armed")).toBe("true")
+    })
+
+    it("finishes a pending exit when the native interface scale changes", async () => {
+      await mountIsland()
+      act(() =>
+        emitNative("hud-island:state", {
+          ...COLLAPSED,
+          island: "expanded",
+          revision: 2,
+        }),
+      )
+      await waitFor(() =>
+        expect(screen.getByTestId("island-body").getAttribute("data-open")).toBe("true"),
+      )
+      act(() => emitNative("hud-island:state", { ...COLLAPSED, revision: 3 }))
+      expect(screen.getByTestId("island-body")).toBeTruthy()
+      act(() => emitNative("hud-island:state", { ...COLLAPSED, scale: 2, revision: 4 }))
+      expect(screen.queryByTestId("island-body")).toBeNull()
+      expect(screen.getByTestId("island-header").style.height).toBe("16px")
+      expect(resizeOverlayWindow).toHaveBeenLastCalledWith(expect.any(Number), false, false, 4)
+    })
+
+    it("clears the closing body when the native HUD hides", async () => {
+      await mountIsland()
+      vi.useFakeTimers()
+      try {
+        act(() =>
+          emitNative("hud-island:state", {
+            ...COLLAPSED,
+            island: "expanded",
+            revision: 2,
+          }),
+        )
+        await advance(32)
+        act(() =>
+          emitNative("hud-island:state", {
+            ...COLLAPSED,
+            island: "collapsed",
+            revision: 3,
+          }),
+        )
+        expect(screen.getByTestId("island-body")).toBeTruthy()
+        act(() => emitNative("overlay_work_changed", false))
+        expect(screen.queryByTestId("island-body")).toBeNull()
+        await advance(290)
+        expect(screen.queryByTestId("island-body")).toBeNull()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
 
     it("ghosts the island on a press and tears nothing off for a click", async () => {
       const island = await mountIsland()

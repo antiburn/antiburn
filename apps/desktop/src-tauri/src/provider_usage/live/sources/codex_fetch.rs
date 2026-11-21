@@ -604,6 +604,7 @@ impl LiveUsageSource for CodexDirectFetch {
                         self.rollout_reading(now)
                             .map(|reading| Box::new(rollout_snapshot(reading, auth)))
                     }),
+                    retry_after: None,
                 }),
             }
         })
@@ -851,6 +852,25 @@ mod tests {
 
     fn detected(probe: &impl PresenceProbe) -> Detection {
         presence(probe).detection
+    }
+
+    #[test]
+    fn an_api_key_login_is_not_reported_as_a_failed_sign_in() {
+        // An API-key `auth.json` has no ChatGPT tokens, so there is no usage
+        // to read. The login works, so the pass reports no error.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        fs::write(&path, r#"{"OPENAI_API_KEY": "synthetic-key"}"#).expect("write");
+        let sources: Vec<Box<dyn crate::provider_usage::live::LiveUsageSource>> =
+            vec![Box::new(CodexDirectFetch::at(path))];
+        let collected = super::super::collect(
+            &sources,
+            true,
+            &crate::store::HiddenMeters::default(),
+            std::time::Duration::from_secs(300),
+        );
+        assert!(collected.snapshots.is_empty());
+        assert!(collected.errors.is_empty());
     }
 
     #[test]

@@ -52,6 +52,42 @@ test("omits fmt without the flag", () => {
   assert.ok(plan.steps.every((step) => step.step !== "fmt"));
 });
 
+test("checks capture defaults separately and enables cloud for Clippy and Nextest", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const plan = planRustChecks({ workspaces: "cloud-capture", platform });
+    assert.deepEqual(plan.skipped, []);
+    assert.deepEqual(
+      plan.steps.map(({ args }) => args),
+      [
+        ["check", "--lib", "--locked"],
+        [
+          "clippy",
+          "--all-targets",
+          "--locked",
+          "--features",
+          "cloud",
+          "--",
+          "-D",
+          "warnings",
+        ],
+        [
+          "nextest",
+          "run",
+          "--locked",
+          "--no-tests=pass",
+          "--features",
+          "cloud",
+        ],
+      ],
+    );
+    assert.ok(
+      plan.steps.every(({ cwd }) => cwd === "crates/antiburn-cloud-capture"),
+    );
+    const shell = planRustChecks({ workspaces: "shell", platform });
+    assert.ok(shell.steps.every(({ args }) => !args.includes("cloud")));
+  }
+});
+
 test("uses the per-workspace commands and directories", () => {
   const plan = planRustChecks({
     workspaces: "engine,remote,shell,nudge,tray-icon",

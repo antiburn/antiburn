@@ -13,9 +13,7 @@ pub(super) struct PiPolicy;
 fn trusted_workspace(candidate: Option<&Path>, root: Option<&Path>) -> bool {
     match (candidate, root) {
         (None, None) => true,
-        (Some(candidate), Some(root)) => candidate
-            .canonicalize()
-            .is_ok_and(|candidate| candidate.starts_with(root)),
+        (Some(candidate), Some(root)) => candidate.starts_with(root),
         _ => false,
     }
 }

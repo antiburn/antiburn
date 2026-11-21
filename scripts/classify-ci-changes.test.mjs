@@ -158,6 +158,32 @@ test("routes frontend changes without Rust matrices", () => {
   assert.equal(outputs.run_desktop, "false");
 });
 
+test("routes capture inputs to capture and shell checks", () => {
+  for (const file of [
+    "crates/antiburn-cloud-capture/src/spool.rs",
+    "crates/antiburn-cloud-capture/tests/capture.rs",
+    "fixtures/cloud/capture-v1/manifest.json",
+    "fixtures/cloud/capture-v1/project/main.jsonl",
+    "fixtures/cloud/capture-v1/sections.json",
+    "fixtures/cloud/capture-v1/reference/main.transcript.chunk-00000.gz",
+    "fixtures/cloud/capture-v1/project/new-synthetic-source.jsonl",
+    "fixtures/cloud/opencode/manifest.json",
+    "fixtures/cloud/opencode/current.sql",
+    "fixtures/cloud/opencode/earlier.sql",
+    "docs/cloud/capture-metadata.md",
+    "docs/cloud/capture-metadata.schema.json",
+  ]) {
+    for (const stage of ["draft", "ready", "main"]) {
+      const outputs = plan(stage, [file]);
+      assert.equal(outputs.engine_workspaces, "cloud-capture", `${stage} ${file}`);
+      assert.equal(outputs.run_desktop, "true", file);
+      assert.equal(desktopWorkspaces(outputs), "shell", file);
+      assert.equal(outputs.run_frontend, "false", file);
+      assert.equal(outputs.run_remote_build, "false", file);
+    }
+  }
+});
+
 test("fails closed for workflow and unknown paths", () => {
   for (const file of [
     ".github/workflows/ci.yml",
@@ -363,6 +389,7 @@ test("selects transitive dependents of a changed workspace", () => {
     "shell",
     "checks-store",
     "cli",
+    "cloud-capture",
   ]);
   assert.deepEqual(withDependents(["remote"]), ["remote", "shell"]);
   assert.deepEqual(withDependents(["hud"]), ["shell", "hud"]);
@@ -374,7 +401,7 @@ test("routes Rust paths to their workspaces", () => {
   const cases = [
     [
       "crates/antiburn-local/src/lib.rs",
-      "engine,remote,checks-store,cli",
+      "engine,remote,checks-store,cli,cloud-capture",
       "shell",
     ],
     ["crates/antiburn-remote/src/main.rs", "remote", "shell"],
@@ -416,12 +443,12 @@ test("routes a lockfile change to its workspace and the license checks", () => {
   for (const [file, engine, desktop] of [
     [
       "crates/antiburn-local/Cargo.lock",
-      "engine,remote,checks-store,cli",
+      "engine,remote,checks-store,cli,cloud-capture",
       "shell",
     ],
     [
       "crates/antiburn-local/deny.toml",
-      "engine,remote,checks-store,cli",
+      "engine,remote,checks-store,cli,cloud-capture",
       "shell",
     ],
     ["crates/antiburn-remote/Cargo.toml", "remote", "shell"],
@@ -814,11 +841,18 @@ test("routes files that only the shell reads from outside its workspace to the s
   assert.equal(desktopWorkspaces(mixed), "shell");
 });
 
+test("routes the demo CSP to the frontend without a Rust reader", () => {
+  const outputs = plan("ready", ["apps/desktop/src/onboarding/demo/csp.txt"]);
+  assert.equal(outputs.run_frontend, "true");
+  assert.equal(outputs.run_desktop, "false");
+  assert.equal(outputs.engine_workspaces, "");
+});
+
 test("routes engine fixtures that other workspaces embed to those workspaces", () => {
   const outputs = plan("ready", [
     "crates/antiburn-local/tests/fixtures/codex_characterization/task_complete_errors.jsonl",
   ]);
-  assert.equal(outputs.engine_workspaces, "engine,remote,checks-store,cli");
+  assert.equal(outputs.engine_workspaces, "engine,remote,checks-store,cli,cloud-capture");
   assert.equal(desktopWorkspaces(outputs), "shell");
 });
 
@@ -861,7 +895,15 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
   }).trim();
   const sources = execFileSync(
     "git",
-    ["ls-files", "--", "crates/**/*.rs", "apps/desktop/src-tauri/**/*.rs"],
+    [
+      "ls-files",
+      "--cached",
+      "--others",
+      "--exclude-standard",
+      "--",
+      "crates/**/*.rs",
+      "apps/desktop/src-tauri/**/*.rs",
+    ],
     { cwd: root, encoding: "utf8" },
   )
     .split("\n")
@@ -933,13 +975,13 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
 
 test("runs the readers of files read outside the workspaces", () => {
   for (const [file, engine, desktop] of [
-    ["docs/support.md", "engine,remote,checks-store,cli", "shell"],
-    ["docs/session-coverage.md", "engine,remote,checks-store,cli", "shell"],
-    ["docs/check-coverage.md", "engine,remote,checks-store,cli", "shell"],
+    ["docs/support.md", "engine,remote,checks-store,cli,cloud-capture", "shell"],
+    ["docs/session-coverage.md", "engine,remote,checks-store,cli,cloud-capture", "shell"],
+    ["docs/check-coverage.md", "engine,remote,checks-store,cli,cloud-capture", "shell"],
     ["docs/privacy-policy.md", "", "shell"],
     [
       "plugins/antiburn-live/hooks/catalog.ts",
-      "engine,remote,checks-store,cli",
+      "engine,remote,checks-store,cli,cloud-capture",
       "shell",
     ],
     ["apps/desktop/src/views/settings/PrivacyPane.tsx", "", "shell"],

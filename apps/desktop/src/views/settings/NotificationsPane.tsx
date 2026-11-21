@@ -70,7 +70,6 @@ const SAMPLE_KINDS: readonly { value: SampleNotificationKind; label: string }[] 
   { value: "scanFailure", label: "Scan failure" },
   { value: "diskSpaceLow", label: "Disk low" },
   { value: "usageMilestone", label: "Milestone" },
-  { value: "menuBarHome", label: "Menu bar home" },
   { value: "test", label: "Test" },
 ]
 

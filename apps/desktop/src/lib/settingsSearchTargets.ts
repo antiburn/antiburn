@@ -25,6 +25,18 @@ export const SETTINGS_SEARCH_TARGETS = {
     platform: "macos",
   },
   startAtLogin: { pane: "general", label: "Start at login", aliases: ["startup", "launch"] },
+  cloudUpload: {
+    pane: "sessions",
+    label: "Upload sessions",
+    aliases: ["Antiburn Cloud", "cloud upload"],
+    feature: "cloud",
+  },
+  cloudFolders: {
+    pane: "sessions",
+    label: "Cloud folders",
+    aliases: ["Cloud sources", "capture consent", "full-content capture"],
+    feature: "cloud",
+  },
   monitoring: {
     pane: "sessions",
     label: "Keep looking for new sessions",
@@ -70,7 +82,7 @@ export const SETTINGS_SEARCH_TARGETS = {
   },
   sourceNonRepoFolders: {
     pane: "sessions",
-    label: "Include folders without git",
+    label: "Include folders without Git",
     aliases: ["non-repo folders", "missing sessions", "not a repository"],
   },
   historicalScan: {
@@ -352,6 +364,7 @@ export const SETTINGS_SEARCH_TARGETS = {
     label: string
     aliases: readonly string[]
     platform?: "macos"
+    feature?: "cloud"
     platformLabels?: Partial<Record<Platform, string>>
   }
 >

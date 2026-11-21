@@ -20,6 +20,122 @@ fn roots() -> (tempfile::TempDir, PathBuf, PathBuf) {
 }
 
 #[test]
+fn inventory_stops_probing_after_live_policy_revocation() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    for (agent, first, denied) in [
+        (AgentKind::Claude, ".claude.json", ".claude/settings.json"),
+        (AgentKind::Codex, ".codex/config.toml", ".agents/skills"),
+    ] {
+        let (_temporary, home, project) = roots();
+        let home = home.canonicalize().unwrap();
+        for path in [
+            ".claude/settings.json",
+            ".codex/config.toml",
+            ".agents/skills/review/SKILL.md",
+        ] {
+            let path = home.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(
+                &path,
+                if path.extension().unwrap() == "json" {
+                    "{}"
+                } else {
+                    ""
+                },
+            )
+            .unwrap();
+        }
+        fs::write(home.join(".claude.json"), "{}").unwrap();
+        let context = ConfigContext::native_workspace(agent, &home, &project, &project);
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let current = Arc::new(AtomicBool::new(true));
+        let admission = ConfigReadAdmission::new({
+            let observed = observed.clone();
+            let current = current.clone();
+            let denied = home.join(denied);
+            move |path| {
+                observed.lock().unwrap().push(path.to_owned());
+                if path == denied {
+                    current.store(false, Ordering::Relaxed);
+                }
+                true
+            }
+        });
+        assert!(matches!(
+            ResourceInventory::discover_with_admission(
+                &context,
+                [],
+                None,
+                Some((&admission, &|| current.load(Ordering::Relaxed)))
+            ),
+            Err(ConfigUnavailableReason::UnsafePath)
+        ));
+        let observed = observed.lock().unwrap();
+        assert!(
+            observed
+                .iter()
+                .filter(|path| **path == home.join(first))
+                .count()
+                >= 4
+        );
+        assert_eq!(observed.last(), Some(&home.join(denied)));
+    }
+}
+
+#[test]
+fn inventory_keeps_admitted_resources_when_one_path_is_denied() {
+    let (_temporary, home, _) = roots();
+    let home = home.canonicalize().unwrap();
+    fs::create_dir(home.join(".claude")).unwrap();
+    fs::write(
+        home.join(".claude.json"),
+        r#"{"mcpServers":{"safe":{"command":"safe"}}}"#,
+    )
+    .unwrap();
+    let denied = home.join(".claude/settings.json");
+    fs::write(&denied, "{}").unwrap();
+    let admission = ConfigReadAdmission::new(move |path| path != denied);
+    let inventory = ResourceInventory::discover_with_admission(
+        &ConfigContext::native(AgentKind::Claude, &home, None),
+        [],
+        None,
+        Some((&admission, &|| true)),
+    )
+    .unwrap();
+    assert!(
+        inventory
+            .resources
+            .iter()
+            .any(|resource| resource.canonical_name == "safe")
+    );
+    assert!(inventory.issues.iter().any(|issue| {
+        issue.reason == InventoryIssueReason::Config(ConfigUnavailableReason::UnsafePath)
+    }));
+}
+
+#[test]
+fn inventory_discards_resources_when_policy_changes_during_indexed_merge() {
+    let (_temporary, home, _) = roots();
+    let home = home.canonicalize().unwrap();
+    let context = ConfigContext::native(AgentKind::Claude, &home, None);
+    let admission = ConfigReadAdmission::new(|_| true);
+    let current = std::cell::Cell::new(true);
+    let indexed = std::iter::from_fn(|| {
+        current.set(false);
+        None::<IndexedResourceEvidence<'_>>
+    });
+    assert!(matches!(
+        discover_inventory(&context, indexed, Some((&admission, &|| current.get()))),
+        Err(ConfigUnavailableReason::UnsafePath)
+    ));
+    assert!(!current.get());
+}
+
+#[test]
 fn indexed_identity_aliases_cover_all_native_agents() {
     let cases = [
         (AgentKind::Claude, "claude-code"),
@@ -241,7 +357,7 @@ fn legacy_opencode_parser_keeps_a_direct_server_named_servers() {
         advisory_resource_inventory(&context, []),
         Err(ConfigUnavailableReason::RuntimeOverride)
     );
-    let inventory = discover_inventory(&context, []).unwrap().finish();
+    let inventory = discover_inventory(&context, [], None).unwrap().finish();
 
     assert_eq!(
         resource(
@@ -374,7 +490,11 @@ fn json_mcp_enabled_and_disabled_fields_must_agree() {
 
 #[test]
 fn skill_traversal_budget_stops_recursive_descent() {
-    let mut builder = InventoryBuilder::new(AgentKind::Claude);
+    let mut builder = InventoryBuilder::new(&ConfigContext::native(
+        AgentKind::Claude,
+        std::env::temp_dir(),
+        None,
+    ));
     let mut directories_remaining = 0;
     enumerate_skill_directory(
         &mut builder,
@@ -469,7 +589,7 @@ fn legacy_opencode_parser_merges_jsonc_mcp_tools_and_skill_roots() {
         advisory_resource_inventory(&context, []),
         Err(ConfigUnavailableReason::RuntimeOverride)
     );
-    let inventory = discover_inventory(&context, []).unwrap().finish();
+    let inventory = discover_inventory(&context, [], None).unwrap().finish();
 
     assert_eq!(
         resource(
@@ -911,7 +1031,11 @@ fn symlinked_skill_roots_are_limits_and_are_not_followed() {
 
 #[test]
 fn resource_caps_are_independent_by_kind_and_scope() {
-    let mut builder = InventoryBuilder::new(AgentKind::Claude);
+    let mut builder = InventoryBuilder::new(&ConfigContext::native(
+        AgentKind::Claude,
+        std::env::temp_dir(),
+        None,
+    ));
     for index in 0..MAX_RESOURCES {
         builder.add(
             ResourceKind::Skill,

@@ -20,6 +20,58 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-19
+
+### Changed
+
+- Analytics installation IDs no longer change every 30 days. Your current ID
+  and queued events are kept on upgrade, so analytics can group activity from
+  one installation over longer periods. Turning analytics off still deletes
+  the local ID and unsent events; turning it back on starts a new ID.
+
+### Fixed
+
+- On Linux, onboarding examples load instead of showing “The example could not
+  load. You can continue.”
+- Reclaim unused local database space and keep its write-ahead log from
+  growing indefinitely.
+- Decode numeric model answers and saved savings correctly when precise JSON
+  number handling is enabled.
+
+## [0.11.1] - 2026-11-16
+
+### Changed
+
+- Antiburn opens to Sessions by default. First-run setup helps you find and
+  scan local sessions. You can skip Cloud setup when it’s offered.
+- On macOS, available transcripts can appear in Sessions while you decide
+  whether to grant access to a protected project folder. Grant access to see
+  its Git and project details.
+
+### Added
+
+- See live usage for supported accounts and pin the plan limits you want to
+  keep visible in the sidebar.
+- The desktop app sets up the bundled Antiburn CLI automatically. In Settings,
+  you can test or repair the CLI and manage integrations for supported coding
+  agents.
+- Write your own Burn Checks in YAML. Configure a supported connection and
+  enable **Run checks**. A check can apply local rules or ask a model a
+  question. The YAML format is experimental (`v1-alpha`) and may change.
+- Browse stored sessions from OpenCode 2.0.32. Live Burn Checks require a
+  registered local OpenCode service with the session database open.
+
+### Removed
+
+- YAML Burn Checks replace the fixed Ignored Instructions, Over-exploring,
+  Scope Creep, and Skill Opportunities checks. Add YAML definitions to run
+  replacements. Past results for those four checks are cleared on upgrade.
+
+### Fixed
+
+- When Codex leaves duplicate copies of a transcript, Antiburn analyzes the
+  copy it found when it indexed the session.
+
 ## [0.10.0] - 2026-10-14
 
 ### Added

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -5,9 +6,21 @@ use antiburn_local::analysis::{CoverageReason, EvidenceValue, SessionEvidence, S
 use antiburn_local::model::AgentKind;
 use serde_json::{Map, Value};
 
-use super::filesystem::{canonical_root, path_entry_exists, read_checked};
+use super::filesystem::{path_entry_exists_with_admission, read_checked_with_admission};
+use super::opencode_config_authority::ConfigReadAdmission;
 use super::vendors::{codex, json, opencode, pi};
 use super::{ConfigContext, ConfigUnavailableReason};
+
+pub(super) type InventoryAdmission<'a> = (&'a ConfigReadAdmission, &'a dyn Fn() -> bool);
+
+pub(super) fn ensure_inventory_current(
+    admission: Option<InventoryAdmission<'_>>,
+) -> Result<(), ConfigUnavailableReason> {
+    if admission.is_some_and(|(_, current)| !current()) {
+        return Err(ConfigUnavailableReason::UnsafePath);
+    }
+    Ok(())
+}
 
 pub mod skill_definitions;
 
@@ -100,19 +113,58 @@ struct ResourceKey {
     normalized_name: String,
 }
 
-struct InventoryBuilder {
+struct InventoryBuilder<'a> {
+    context: ConfigContext,
+    admission: Option<InventoryAdmission<'a>>,
+    stale: Cell<bool>,
     agent: AgentKind,
     resources: BTreeMap<ResourceKey, AdvisoryResource>,
     issues: Vec<InventoryIssue>,
 }
 
-impl InventoryBuilder {
-    fn new(agent: AgentKind) -> Self {
+impl InventoryBuilder<'_> {
+    fn new(context: &ConfigContext) -> Self {
         Self {
-            agent,
+            context: context.clone(),
+            admission: None,
+            stale: Cell::new(false),
+            agent: context.agent,
             resources: BTreeMap::new(),
             issues: Vec::new(),
         }
+    }
+
+    fn check_current(&self) -> Result<(), ConfigUnavailableReason> {
+        if self.stale.get() || self.admission.is_some_and(|(_, current)| !current()) {
+            self.stale.set(true);
+            return Err(ConfigUnavailableReason::UnsafePath);
+        }
+        Ok(())
+    }
+
+    fn check_admission(&self, path: &Path) -> Result<(), ConfigUnavailableReason> {
+        self.check_current()?;
+        let allowed = self.admission.is_none_or(|(check, _)| check.allows(path));
+        self.check_current()?;
+        if allowed {
+            Ok(())
+        } else {
+            Err(ConfigUnavailableReason::UnsafePath)
+        }
+    }
+
+    fn canonical_path(&self, path: &Path) -> Result<PathBuf, ConfigUnavailableReason> {
+        self.check_admission(path)?;
+        let canonical = self.context.canonical_path(path)?;
+        self.check_admission(&canonical)?;
+        Ok(canonical)
+    }
+
+    fn path_entry_exists(&self, path: &Path) -> Result<bool, ConfigUnavailableReason> {
+        self.check_admission(path)?;
+        self.context.check_path(path)?;
+        self.check_admission(path)?;
+        path_entry_exists_with_admission(path, || self.check_current())
     }
 
     fn issue(
@@ -281,6 +333,15 @@ impl ResourceInventory {
         indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
         authority: Option<&super::opencode_config_authority::CurrentConfigAuthority>,
     ) -> Result<ResourceInventory, ConfigUnavailableReason> {
+        Self::discover_with_admission(context, indexed, authority, None)
+    }
+
+    pub(crate) fn discover_with_admission<'a>(
+        context: &ConfigContext,
+        indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
+        authority: Option<&super::opencode_config_authority::CurrentConfigAuthority>,
+        admission: Option<InventoryAdmission<'_>>,
+    ) -> Result<ResourceInventory, ConfigUnavailableReason> {
         let indexed = indexed.into_iter().collect::<Vec<_>>();
         if context.source_format.is_some_and(|source| {
             indexed
@@ -294,16 +355,19 @@ impl ResourceInventory {
                 return Err(ConfigUnavailableReason::UnsupportedEnvironment);
             }
             let authority = authority.ok_or(ConfigUnavailableReason::RuntimeOverride)?;
-            return super::opencode_current::current_inventory(context, authority);
+            return super::opencode_current::current_inventory(context, authority, admission);
         }
-        Ok(discover_inventory(context, indexed)?.finish())
+        let inventory = discover_inventory(context, indexed, admission)?.finish();
+        ensure_inventory_current(admission)?;
+        Ok(inventory)
     }
 }
 
-fn discover_inventory<'a>(
+fn discover_inventory<'a, 'policy>(
     context: &ConfigContext,
     indexed: impl IntoIterator<Item = IndexedResourceEvidence<'a>>,
-) -> Result<InventoryBuilder, ConfigUnavailableReason> {
+    admission: Option<InventoryAdmission<'policy>>,
+) -> Result<InventoryBuilder<'policy>, ConfigUnavailableReason> {
     if !context.native_environment {
         return Err(ConfigUnavailableReason::UnsupportedEnvironment);
     }
@@ -324,9 +388,10 @@ fn discover_inventory<'a>(
     ) {
         return Err(ConfigUnavailableReason::UnsupportedAgent);
     }
-    let home = canonical_root(&context.home_root)?;
-    let (cwd, trusted_root) = canonical_workspace(context)?;
-    let mut builder = InventoryBuilder::new(context.agent);
+    let mut builder = InventoryBuilder::new(context);
+    builder.admission = admission;
+    let home = builder.canonical_path(&context.home_root)?;
+    let (cwd, trusted_root) = canonical_workspace(&builder)?;
     if context.runtime_override_present {
         builder.issue(
             None,
@@ -375,18 +440,21 @@ fn discover_inventory<'a>(
         }
         AgentKind::Omp => {}
     }
+    builder.check_current()?;
     merge_indexed(&mut builder, indexed);
+    builder.check_current()?;
     Ok(builder)
 }
 
 fn canonical_workspace(
-    context: &ConfigContext,
+    builder: &InventoryBuilder,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>), ConfigUnavailableReason> {
+    let context = &builder.context;
     match (&context.workspace_cwd, &context.trusted_workspace_root) {
         (None, None) => Ok((None, None)),
         (Some(cwd), Some(root)) => {
-            let root = canonical_root(root)?;
-            let cwd = canonical_root(cwd)?;
+            let root = builder.canonical_path(root)?;
+            let cwd = builder.canonical_path(cwd)?;
             if !cwd.starts_with(&root) {
                 return Err(ConfigUnavailableReason::UnsafePath);
             }
@@ -415,15 +483,16 @@ fn optional_json(
     scope: ResourceScope,
     strict: bool,
 ) -> Option<Value> {
-    match path_entry_exists(path) {
+    match builder.path_entry_exists(path) {
         Ok(false) => None,
-        Ok(true) => match read_checked(path, root).and_then(|file| {
-            if strict {
-                json::parse_strict(&file.bytes)
-            } else {
-                json::parse(&file.bytes)
-            }
-        }) {
+        Ok(true) => match read_checked_with_admission(path, root, || builder.check_admission(path))
+            .and_then(|file| {
+                if strict {
+                    json::parse_strict(&file.bytes)
+                } else {
+                    json::parse(&file.bytes)
+                }
+            }) {
             Ok(value) => Some(value),
             Err(reason) => {
                 builder.issue(None, scope, InventoryIssueReason::Config(reason));
@@ -485,6 +554,30 @@ fn enumerate_skill_directory(
         return;
     }
     *directories_remaining -= 1;
+    let entry = if directory.starts_with(safety_root) {
+        if builder.admission.is_some() {
+            builder.path_entry_exists(directory)
+        } else {
+            builder.context.path_entry_exists(directory)
+        }
+    } else {
+        Err(ConfigUnavailableReason::UnsafePath)
+    };
+    match entry {
+        Ok(false) => return,
+        Ok(true) => {}
+        Err(reason) => {
+            builder.issue(
+                Some(ResourceKind::Skill),
+                scope,
+                InventoryIssueReason::Config(reason),
+            );
+            return;
+        }
+    }
+    if builder.check_admission(directory).is_err() {
+        return;
+    }
     let metadata = match std::fs::symlink_metadata(directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
@@ -515,6 +608,9 @@ fn enumerate_skill_directory(
         );
         return;
     }
+    if builder.check_admission(directory).is_err() {
+        return;
+    }
     let Ok(canonical) = directory.canonicalize() else {
         builder.issue(
             Some(ResourceKind::Skill),
@@ -531,7 +627,10 @@ fn enumerate_skill_directory(
         );
         return;
     }
-    let entries = match std::fs::read_dir(directory) {
+    if builder.check_admission(&canonical).is_err() {
+        return;
+    }
+    let mut entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) => {
             builder.issue(
@@ -550,7 +649,8 @@ fn enumerate_skill_directory(
     };
     let mut retained = BTreeMap::new();
     let mut capped = false;
-    for entry in entries {
+    while builder.check_current().is_ok() {
+        let Some(entry) = entries.next() else { break };
         let Ok(entry) = entry else {
             builder.issue(
                 Some(ResourceKind::Skill),
@@ -574,6 +674,9 @@ fn enumerate_skill_directory(
         );
     }
     for (name, path) in retained {
+        if builder.check_current().is_err() {
+            return;
+        }
         let Some(name) = name.to_str().map(str::to_owned) else {
             builder.issue(
                 Some(ResourceKind::Skill),
@@ -583,8 +686,10 @@ fn enumerate_skill_directory(
             continue;
         };
         let skill = path.join("SKILL.md");
-        match path_entry_exists(&skill) {
-            Ok(true) => match skill_definitions::read_definition(&skill, safety_root) {
+        match builder.path_entry_exists(&skill) {
+            Ok(true) => match skill_definitions::read_definition(&skill, safety_root, || {
+                builder.check_admission(&skill)
+            }) {
                 Ok(file) => {
                     builder.add_with_tokens(
                         ResourceKind::Skill,
@@ -603,10 +708,12 @@ fn enumerate_skill_directory(
             },
             Ok(false) => {
                 // Cursor supports category directories below a skill root.
-                if matches!(
-                    std::fs::symlink_metadata(&path),
-                    Ok(metadata) if metadata.is_dir()
-                ) {
+                if builder.check_admission(&path).is_ok()
+                    && matches!(
+                        std::fs::symlink_metadata(&path),
+                        Ok(metadata) if metadata.is_dir()
+                    )
+                {
                     enumerate_skill_directory(
                         builder,
                         &path,
@@ -676,7 +783,8 @@ fn claude_inventory(
     cwd: Option<&Path>,
     trusted_root: Option<&Path>,
 ) {
-    if path_entry_exists(&home.join(".claude/plugins")).unwrap_or(true) {
+    let plugins = home.join(".claude/plugins");
+    if builder.path_entry_exists(&plugins).unwrap_or(true) {
         builder.issue(
             None,
             ResourceScope::Global,
@@ -1314,7 +1422,9 @@ fn codex_inventory(
         ResourceScope::Global,
     );
     if let (Some(cwd), Some(root)) = (cwd, trusted_root) {
-        let trusted = codex::project_is_trusted(&global_path, home, root).unwrap_or(false);
+        let trusted = global.as_ref().is_some_and(|document| {
+            codex::document_trusts_project(document, root).unwrap_or(false)
+        });
         if trusted {
             for directory in hierarchy(cwd, root) {
                 if let Some(document) = optional_toml(
@@ -1431,10 +1541,12 @@ fn optional_toml(
     root: &Path,
     scope: ResourceScope,
 ) -> Option<toml_edit::DocumentMut> {
-    match path_entry_exists(path) {
+    match builder.path_entry_exists(path) {
         Ok(false) => None,
         Ok(true) => {
-            match read_checked(path, root).and_then(|file| codex::parse_document(&file.bytes)) {
+            match read_checked_with_admission(path, root, || builder.check_admission(path))
+                .and_then(|file| codex::parse_document(&file.bytes))
+            {
                 Ok(value) => Some(value),
                 Err(reason) => {
                     builder.issue(None, scope, InventoryIssueReason::Config(reason));

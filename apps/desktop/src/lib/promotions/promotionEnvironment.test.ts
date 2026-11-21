@@ -1,67 +1,90 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-
-const onboarding = vi.hoisted(() => ({
-  progress: { mode: "pending", flow: "welcome" } as {
-    mode: "pending" | "firstRun" | "steady"
-    flow: string
-  },
-}))
-vi.mock("../../views/main-window/overview/overviewProgressStore", () => ({
-  overviewProgress: () => onboarding.progress,
-  subscribeOverviewProgress: () => () => {},
+const native = vi.hoisted(() => ({
+  readiness: vi.fn(),
+  changed: undefined as (() => void) | undefined,
+  stop: vi.fn(),
 }))
 vi.mock("../ipc", () => ({
   getMainWindowVisible: async () => true,
   onMainWindowVisibilityChanged: async () => () => {},
+  getPromotionReadiness: native.readiness,
+  onOnboardingChanged: async (listener: () => void) => {
+    native.changed = listener
+    return native.stop
+  },
 }))
-
 beforeEach(() => {
   vi.resetModules()
-  localStorage.clear()
-  vi.useFakeTimers()
-  vi.setSystemTime(new Date("2026-10-27T00:00:00Z"))
-  onboarding.progress = { mode: "pending", flow: "welcome" }
+  native.readiness.mockReset().mockResolvedValue({ manual: true, automatic: false })
+  native.stop.mockReset()
 })
-afterEach(() => {
-  vi.useRealTimers()
-  localStorage.clear()
-})
-
-describe("promotion environment readiness", () => {
-  it("allows manual opening immediately after the final FTUE step while automatic display waits", async () => {
+afterEach(() => localStorage.clear())
+describe("promotion environment", () => {
+  it("permits deliberate opens while automatic display waits for native eligibility", async () => {
     const { promotionEnvironment: env } = await import("./promotionEnvironment")
     expect(env.isManualReady()).toBe(false)
     expect(await env.loadReady()).toBe(false)
-    onboarding.progress = { mode: "firstRun", flow: "welcome" }
+    expect(env.isManualReady()).toBe(true)
+    const listener = vi.fn()
+    const stop = await env.onReady(listener)
+    await vi.waitFor(() => expect(listener).toHaveBeenLastCalledWith(false))
+    native.readiness.mockResolvedValue({ manual: true, automatic: true })
+    window.dispatchEvent(new Event("focus"))
+    await vi.waitFor(() => expect(listener).toHaveBeenLastCalledWith(true))
+    native.readiness.mockResolvedValue({ manual: false, automatic: false })
+    native.changed!()
     expect(env.isManualReady()).toBe(false)
-    expect(await env.loadReady()).toBe(false)
-    onboarding.progress = { mode: "firstRun", flow: "done" }
-    expect(env.isManualReady()).toBe(true)
-    expect(await env.loadReady()).toBe(false)
-    onboarding.progress = { mode: "steady", flow: "done" }
-    vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000)
-    expect(env.isManualReady()).toBe(true)
-    expect(await env.loadReady()).toBe(false)
-    vi.resetModules()
-    const { promotionEnvironment: later } = await import("./promotionEnvironment")
-    expect(await later.loadReady()).toBe(true)
+    await vi.waitFor(() => expect(listener).toHaveBeenLastCalledWith(false))
+    stop()
+    expect(native.stop).toHaveBeenCalledOnce()
+    const calls = native.readiness.mock.calls.length
+    window.dispatchEvent(new Event("focus"))
+    expect(native.readiness).toHaveBeenCalledTimes(calls)
   })
-
-  it("preserves the automatic cooldown and keeps sidebar history independent of seen state", async () => {
-    localStorage.setItem(
-      "antiburn.promotions.ftue.v1",
-      JSON.stringify({ completedAt: Date.now() }),
-    )
-    onboarding.progress = { mode: "steady", flow: "done" }
+  it("fails closed when eligibility cannot load", async () => {
+    native.readiness.mockRejectedValue(new Error("unavailable"))
     const { promotionEnvironment: env } = await import("./promotionEnvironment")
-    expect(env.isManualReady()).toBe(true)
     expect(await env.loadReady()).toBe(false)
+    expect(env.isManualReady()).toBe(false)
+  })
+  it("does not apply an old eligible response after onboarding resets", async () => {
+    let resolve!: (value: { manual: boolean; automatic: boolean }) => void
+    native.readiness.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    const { promotionEnvironment: env } = await import("./promotionEnvironment")
+    const old = env.loadReady()
+    native.readiness.mockResolvedValue({ manual: false, automatic: false })
+    expect(await env.loadReady()).toBe(false)
+    resolve({ manual: true, automatic: true })
+    expect(await old).toBe(false)
+    expect(env.isManualReady()).toBe(false)
+  })
+  it("does not publish a superseded subscription response over a newer initial load", async () => {
+    let resolve!: (value: { manual: boolean; automatic: boolean }) => void
+    native.readiness.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done
+      }),
+    )
+    const { promotionEnvironment: env } = await import("./promotionEnvironment")
+    const listener = vi.fn()
+    const stop = await env.onReady(listener)
+    native.readiness.mockResolvedValue({ manual: true, automatic: true })
+    expect(await env.loadReady()).toBe(true)
+    resolve({ manual: true, automatic: true })
+    await new Promise((done) => setTimeout(done, 0))
+    expect(listener).not.toHaveBeenCalled()
+    expect(env.isManualReady()).toBe(true)
+    stop()
+  })
+  it("keeps launcher history independent of automatic seen history", async () => {
+    const { promotionEnvironment: env } = await import("./promotionEnvironment")
     env.writeLauncherOpened('["claude-mod@1"]')
-    expect(env.readLauncherOpened()).toBe('["claude-mod@1"]')
     expect(env.readSeen()).toBeNull()
     env.writeSeen('["claude-mod@2"]')
     expect(env.readLauncherOpened()).toBe('["claude-mod@1"]')
-    vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000)
-    expect(await env.loadReady()).toBe(true)
   })
 })

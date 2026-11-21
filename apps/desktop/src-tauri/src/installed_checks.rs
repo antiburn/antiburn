@@ -38,8 +38,8 @@ use crate::insights_report::installed_checks::{
 use crate::jev::config::SystemOneProvider;
 use crate::jev::decision_evaluator::TypeSafeDecisionEvaluator;
 use crate::published_evidence_reader::StorePublishedEvidenceReader;
-use crate::store::Store;
 use crate::store::burn_checks::trace_refs;
+use crate::store::{RepositoryPolicySnapshot, Store, read_repository_policy_generation};
 use execution::{AppRuntime, InstalledDecisionEvaluator, SelectedJobRuntime};
 
 mod current_context;
@@ -243,6 +243,7 @@ fn publish_metadata(state: &InstalledChecks, definitions: &[InstalledCheckDefini
 fn persist_runtime_definitions(
     store: &Store,
     definitions: &[InstalledCheckDefinition],
+    policy_generation: Option<u64>,
 ) -> Result<()> {
     let runtime_definitions = definitions
         .iter()
@@ -268,7 +269,14 @@ fn persist_runtime_definitions(
             },
         })
         .collect::<Vec<_>>();
-    antiburn_checks_store::replace_runtime_definitions(&mut store.lock(), &runtime_definitions)?;
+    let mut connection = store.lock();
+    if let Some(generation) = policy_generation {
+        ensure!(
+            read_repository_policy_generation(&connection)? == generation,
+            "installed check folder access changed"
+        );
+    }
+    antiburn_checks_store::replace_runtime_definitions(&mut connection, &runtime_definitions)?;
     Ok(())
 }
 
@@ -300,9 +308,10 @@ fn publish_inventory(
     state: &InstalledChecks,
     store: &Store,
     definitions: &[InstalledCheckDefinition],
+    policy_generation: Option<u64>,
     mut emit: impl FnMut(InventoryEvent),
 ) -> Result<bool> {
-    persist_runtime_definitions(store, definitions)?;
+    persist_runtime_definitions(store, definitions, policy_generation)?;
     let changed = publish_metadata(state, definitions);
     if changed {
         emit(InventoryEvent::Availability);
@@ -356,7 +365,13 @@ fn finish_inventory_update<E>(
             host.inventory_ready,
             "installed check inventory has not completed discovery"
         );
-        publish_inventory(state, &host.store, &host.definitions, &mut emit)?;
+        publish_inventory(
+            state,
+            &host.store,
+            &host.definitions,
+            host.inventory_generation,
+            &mut emit,
+        )?;
         Ok(())
     });
     let Err(error) = result else {
@@ -650,6 +665,7 @@ struct InstalledCheckHost<E> {
     global_directory: Option<PathBuf>,
     current_context: current_context::CurrentContextCapture,
     watch_directories: Vec<PathBuf>,
+    inventory_generation: Option<u64>,
     diagnostic_log: diagnostics::DiagnosticLog,
     source_states: BTreeMap<antiburn_checks::domain::ActivationId, diagnostics::SourceState>,
     scope_work: BTreeMap<ActivationScope, bool>,
@@ -679,6 +695,7 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
             global_directory,
             current_context: current_context::CurrentContextCapture::default(),
             watch_directories: Vec::new(),
+            inventory_generation: None,
             diagnostic_log: diagnostics::DiagnosticLog::default(),
             source_states: BTreeMap::new(),
             scope_work: BTreeMap::new(),
@@ -697,10 +714,11 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
     fn reconcile(&mut self, admission: &Admission) -> Result<()> {
         self.inventory_ready = false;
         let _phase = diagnostics::SlowPhase::start("reconcile");
+        let policy = self.store.repository_policy_snapshot()?;
         let scopes = live_projects(&self.store)?;
         let repositories = native_repositories(self.store.repositories()?);
         let mut errors = diagnostics::DiagnosticBatch::new();
-        let directories = self.load_directories(&repositories, &mut errors)?;
+        let directories = self.load_directories(&policy, &repositories, &mut errors)?;
         let mut discovered = Vec::new();
         let mut metadata = Vec::new();
         let mut definition_count = 0;
@@ -747,6 +765,10 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
             discovered.push((scope.clone(), root, definitions, scope_admission));
         }
         for (scope, root, definitions, scope_admission) in discovered {
+            ensure!(
+                self.store.repository_policy_is_current(policy.generation)?,
+                "installed check folder access changed"
+            );
             let project = self.projects.get_mut(&scope).expect("project inserted");
             let head = project.store.publication_head()?;
             let ids = project
@@ -887,7 +909,8 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
                 update_condition_diagnostic(&mut metadata, &self.diagnostic_log, activation);
             }
         }
-        persist_runtime_definitions(&self.store, &metadata)?;
+        persist_runtime_definitions(&self.store, &metadata, Some(policy.generation))?;
+        self.inventory_generation = Some(policy.generation);
         self.definitions = metadata;
         self.inventory_ready = true;
         Ok(())
@@ -895,6 +918,7 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
 
     fn load_directories(
         &mut self,
+        policy: &RepositoryPolicySnapshot,
         repositories: &BTreeMap<PathBuf, bool>,
         errors: &mut diagnostics::DiagnosticBatch,
     ) -> Result<BTreeMap<PathBuf, loader::DirectoryChecks>> {
@@ -902,7 +926,6 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
             repositories.len() <= MAX_DEFINITIONS,
             "too many installed check projects"
         );
-        let mut granted = self.store.granted_dirs()?;
         let mut directories = BTreeMap::new();
         let mut incomplete = false;
         self.watch_directories.clear();
@@ -921,8 +944,9 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
             if directories.contains_key(&directory) {
                 continue;
             }
+            let admitted = |path: &Path| project_folder_admitted(&self.store, policy, path);
             let checks = if enabled {
-                loader::load_directory(&self.store, &directory, &granted)
+                loader::load_directory(&self.store, &directory, admitted)
             } else {
                 loader::disabled(&directory)
             };
@@ -930,13 +954,16 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
                 .error
                 .as_ref()
                 .is_some_and(|error| error.code == DiagnosticCode::DiscoveryReadFailed);
-            granted = self.store.granted_dirs()?;
-            if enabled && !protected::cwd_resolution_blocked(&directory, &granted) {
+            if enabled && admitted(&directory) {
                 self.watch_directories.push(directory.clone());
             }
             diagnostics::collect(errors, checks.error.as_slice());
             directories.insert(directory, checks);
         }
+        ensure!(
+            self.store.repository_policy_is_current(policy.generation)?,
+            "installed check folder access changed"
+        );
         if incomplete {
             return Err(CheckDirectoryReadFailure {
                 directories: directories
@@ -956,9 +983,10 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
 
     fn refresh_paused_inventory(&mut self) -> Result<()> {
         self.inventory_ready = false;
+        let policy = self.store.repository_policy_snapshot()?;
         let repositories = native_repositories(self.store.repositories()?);
         let mut errors = diagnostics::DiagnosticBatch::new();
-        let directories = self.load_directories(&repositories, &mut errors)?;
+        let directories = self.load_directories(&policy, &repositories, &mut errors)?;
         let mut scopes = live_projects(&self.store)?;
         let mut represented_roots = BTreeSet::new();
         let mut configurations = Vec::new();
@@ -1066,7 +1094,8 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
             metadata.len() <= MAX_DEFINITIONS,
             "installed checks exceed the {MAX_DEFINITIONS}-definition report limit"
         );
-        persist_runtime_definitions(&self.store, &metadata)?;
+        persist_runtime_definitions(&self.store, &metadata, Some(policy.generation))?;
+        self.inventory_generation = Some(policy.generation);
         self.definitions = metadata;
         self.inventory_ready = true;
         self.diagnostic_log.publish(errors);
@@ -1076,6 +1105,12 @@ impl<E: DecisionEvaluator + 'static> InstalledCheckHost<E> {
     /// Apply a bounded number of pages. Evaluation tasks run on the async runtime
     /// while this helper catches up on a blocking worker.
     fn catch_up(&mut self) -> Result<(bool, bool)> {
+        if let Some(generation) = self.inventory_generation {
+            ensure!(
+                self.store.repository_policy_is_current(generation)?,
+                "installed check folder access changed"
+            );
+        }
         let _phase = diagnostics::SlowPhase::start("catch_up");
         let scopes = self
             .projects
@@ -2306,10 +2341,18 @@ pub(crate) fn lifecycle_changes_projects(event: &crate::session_lifecycle::Sessi
     }
 }
 
+fn project_folder_admitted(store: &Store, policy: &RepositoryPolicySnapshot, path: &Path) -> bool {
+    store
+        .repository_policy_is_current(policy.generation)
+        .unwrap_or(false)
+        && protected::project_path_access(path, &policy.granted_dirs).is_allowed()
+}
+
 fn refresh_watcher(
     app: &tauri::AppHandle,
     watcher: &mut Option<watch::DirectoryWatcher>,
     directories: &[PathBuf],
+    expected_generation: Option<u64>,
     previous_failure: &mut Option<diagnostics::RuntimeFailure>,
 ) {
     if watcher.is_none() {
@@ -2328,8 +2371,15 @@ fn refresh_watcher(
             }
         }
     }
+    let store = app.state::<Store>();
+    let policy = store.repository_policy_snapshot().ok();
     if let Some(watcher) = watcher
-        && watcher.refresh(directories)
+        && watcher.refresh(directories, |path| {
+            policy.as_ref().is_some_and(|policy| {
+                expected_generation == Some(policy.generation)
+                    && project_folder_admitted(&store, policy, path)
+            })
+        })
     {
         app.state::<InstalledChecks>().wake.notify_one();
     }
@@ -2402,6 +2452,16 @@ async fn run(app: &tauri::AppHandle) -> Result<()> {
         if state.stopping.load(Ordering::Acquire) {
             break;
         }
+        if host.inventory_generation.is_some_and(|generation| {
+            !host
+                .store
+                .repository_policy_is_current(generation)
+                .unwrap_or(false)
+        }) {
+            state.delivery_ready.store(false, Ordering::Release);
+            watcher = None;
+            discover = true;
+        }
         let gate = if !crate::jev::settings::yaml_discovery_enabled(&app.state::<Store>()) {
             "disabled"
         } else if !state.credentials_restored.load(Ordering::Acquire) {
@@ -2467,6 +2527,7 @@ async fn run(app: &tauri::AppHandle) -> Result<()> {
                 app,
                 &mut watcher,
                 &host.watch_directories,
+                host.inventory_generation,
                 &mut previous_watch_failure,
             );
             catch_up_more = false;
@@ -2560,6 +2621,7 @@ async fn run(app: &tauri::AppHandle) -> Result<()> {
                 app,
                 &mut watcher,
                 &host.watch_directories,
+                host.inventory_generation,
                 &mut previous_watch_failure,
             );
         }

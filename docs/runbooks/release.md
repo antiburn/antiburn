@@ -609,6 +609,8 @@ application release.
    attests provenance, and drafts the release. Main CI tests the repository
    tree; this step proves that the tarball is complete on its own. The engine
    release does not repeat the desktop platform matrix.
+   The catalog parity test runs in repository CI and depends on the plugin
+   checkout. The source tarball excludes that test.
 4. Review the draft: verify its checksum and provenance, inspect its contents,
    and read the release notes. The workflow already tests the extracted archive.
    To reproduce that gate locally, extract into an empty directory, enter
@@ -635,6 +637,19 @@ SHA is the supported rollback:
 ```toml
 antiburn-local = { git = "https://github.com/antiburn/antiburn", rev = "<full-sha>" } # antiburn-local-v<version>
 ```
+
+The consumer's workspace root must also select the vendored SQLite security
+backport at the same SHA:
+
+```toml
+[patch.crates-io]
+libsqlite3-sys = { git = "https://github.com/antiburn/antiburn", rev = "<full-sha>" }
+```
+
+Cargo ignores dependency-local patches. Updating only the engine SHA leaves
+consumers exposed to RUSTSEC-2026-0459. See the
+[backport notes](../../crates/antiburn-local/vendor/libsqlite3-sys/BACKPORT.md)
+for source-archive consumers, verification, and external-library exceptions.
 
 While this repository is private, downstream consumers authenticate on their
 own side; nothing about this repository or its workflows changes, and the

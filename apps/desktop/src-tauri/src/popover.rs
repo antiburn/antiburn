@@ -381,7 +381,7 @@ pub struct PopoverState {
     nudge_key_handoff: Mutex<NudgeKeyHandoff>,
     /// The generation of the current renderer.
     renderer_generation: AtomicU64,
-    /// The bounded first-run prewarm and its eviction callbacks.
+    /// The bounded startup prewarm and its eviction callbacks.
     retention: Mutex<Retention>,
     /// Content-free timing for the active menu-bar open request.
     timing: timing::PopoverTiming,
@@ -1101,8 +1101,7 @@ pub fn rebuild_after_destroy(app: &AppHandle) {
     }
 }
 
-/// Build one hidden renderer for the handoff into the menu bar once the first
-/// run finishes.
+/// Build one hidden renderer during normal startup.
 pub fn prewarm(app: &AppHandle) {
     if app.get_webview_window(LABEL).is_some() {
         return;

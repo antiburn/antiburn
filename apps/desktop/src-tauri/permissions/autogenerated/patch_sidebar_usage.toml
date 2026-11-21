@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-patch-sidebar-usage"
+description = "Enables the patch_sidebar_usage command without any pre-configured scope."
+commands.allow = ["patch_sidebar_usage"]
+
+[[permission]]
+identifier = "deny-patch-sidebar-usage"
+description = "Denies the patch_sidebar_usage command without any pre-configured scope."
+commands.deny = ["patch_sidebar_usage"]

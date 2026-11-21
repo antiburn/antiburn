@@ -125,16 +125,19 @@ There is no setting and no dock control; the drop is the gesture.
   first.
 - **The tab.** While docked, the crate polls the global cursor every 100ms.
   The cursor resting on the tab for 150ms peeks the HUD in to its home
-  position. It parks again 3s after the pointer leaves it, or after 3s if the
-  pointer never reaches it.
+  position. Once the pointer has entered the HUD, departure within 48 logical
+  px starts a 400ms grace period. Departure beyond that zone parks it at the
+  next 50ms cursor sample. Before first interaction, the wake keeps its 4.8s
+  minimum hold.
 - **Tearing off.** A drag on a docked or peeked HUD undocks it. The HUD webview
   calls `tear_off_overlay` as the drag starts, so the auto-dock timer stops
   and the drop lands wherever the pointer leaves it. A drop near an edge docks
   again.
 - **Wake.** The HUD webview asks the shell to wake a docked HUD for two
   reasons: a transcript write more than an hour after the previous one it saw
-  through events, and a spend rate at the ceiling for two polls in a row. A
-  woken HUD stays at least 2.8s, and longer while hovered. The burn wake re-arms
+  through events, and a spend rate at the ceiling for two polls in a row. An
+  unattended wake parks after 4.8s. Pointer entry releases the minimum hold;
+  after interaction, the departure grace applies. The burn wake re-arms
   only after the rate drops below the ceiling. Both start cold: a fresh dock
   never wakes on its first sample. Each wake is logged with its reason.
 - **Displays.** The dock edge is the edge of the display the HUD was dropped
@@ -161,17 +164,21 @@ crate stores it with the dock state.
   light. It takes the brand colour; the mode colour is off for now. It pulses
   between three-quarters and one-third opacity on the spend-rate period, and
   holds the dim value under reduced motion. The detail window never opens from the collapsed row.
-- **Expanded.** The crate polls the global cursor every 100ms while
-  collapsed. The pointer resting for 150ms in the hotspot, the notch plus
+- **Expanded.** The crate polls the global cursor every 50ms while
+  collapsed. The pointer resting for 100ms in the hotspot, the notch plus
   10px either side and 5px below, or on a wing, expands the island: the full
   HUD hangs below the notch row. Each bar carries a label row, its name on
   the left and its figure on the right, and the time to its reset under it,
   so the island has no caption to clip. When the token map shows, a legend
   under it names each session with its rate and its top mode. The content
   is padded to half the wing, so the bars start under the marks and not
-  nearer the edge than them. It collapses 3s after the pointer leaves the
-  island and the hotspot. A wake expands it the same way, for as long as a
-  docked HUD peeks.
+  nearer the edge than them. Pointer movement outside the island starts a 400ms grace
+  period within a 48px proximity zone; movement beyond that zone collapses it
+  at the next 50ms cursor sample. A brief re-entry cancels the close. The body
+  reveals downward from the fixed header over 200ms, using a rounded inset clip,
+  opacity, and a 4px upward starting offset. Closing retracts the clip over 240ms
+  with an ease-out slowdown near the notch and fades during the final 100ms. An unattended wake parks after 4.8s. Pointer entry releases its minimum hold
+  and uses the same close behavior.
 - **No detail card.** The island opens no detail window: the open island
   carries what the card would say. A card left over from the floating frame
   hides when the HUD lands in the notch.
@@ -341,9 +348,9 @@ live macOS validation after changes to the native window mechanism.
   turn on the token map. The static segments keep the bar colour.
 - Under reduced motion the LED does not blink. The detail window states the
   spend rate in words instead.
-- A transcript write stays live for 90 seconds.
-- The renderer reads liveness once when shown. Session and scan events push
-  later changes, and one timer clears the live state at its expiry.
+- The session lifecycle registry owns liveness. A session works for 30 seconds
+  after its last write and remains active for list pills until 180 seconds.
+  Renderers reconcile snapshots and sequenced events without local expiry timers.
 - The renderer polls the token map every 5 seconds over a 5 minute window. The
   shell caches parsed samples per transcript fingerprint and keeps at most one
   hour of samples per session.
@@ -370,11 +377,9 @@ live macOS validation after changes to the native window mechanism.
   segments from the left. An unlit segment does not move. A segment takes
   two brightness levels, off and the peak, instead of a smooth ramp: the
   three segments of the band hold the peak together, and the band hops a
-  segment at a time, like a lamp. The gleam peaks
-  at about a quarter of full strength on the HUD, which floats over the
-  reader's work, and at a bit over half in the popover, which the reader
-  opened. A
-  segment keeps its colour under it either way. Above a dark
+  segment at a time, like a lamp. The popover gleam peaks at 0.56 opacity.
+  The HUD uses its separate blink, not the sweep. A segment keeps its colour
+  under the gleam. Above a dark
   segment the gleam is the shimmer white the session list runs across a
   running session's title, because the bar colours sit too close to the
   brand tint for a 6-pixel dot to show the tint above them. Above a light
@@ -385,9 +390,8 @@ live macOS validation after changes to the native window mechanism.
   the closed popover bar the gleam runs from twelve o'clock to the end of
   the ring's arc and fades there; a ring under an eighth flashes its first
   eighth in the brand tint.
-- The cycle is 4 seconds, the cycle of the shimmer the session list runs
-  across a running session's title, on the HUD and in the popover alike: a
-  live session moves at one pace on every surface. The two also share a
+- The popover sweep cycle is 4 seconds, matching the session list's shimmer
+  across a running session's title. The two also share a
   phase. A CSS animation starts when the browser applies it, so the
   renderer sets the start time of each live animation from the wall clock
   instead. A title shimmer and a meter sweep therefore hold the same point
@@ -410,6 +414,11 @@ live macOS validation after changes to the native window mechanism.
 - Under reduced motion the sweep stops, and the next segment to light holds
   the brand tint instead, which is the first segment when usage is too low
   to light one. The ring holds its next eighth.
+- `installLivePhase` owns animation start times. Components and stylesheets
+  must not add per-render phase delays. The stylesheet registers `--led-sweep`
+  with `@property` for numeric interpolation. Webviews without CSS `round()`
+  use a smooth gleam instead of brightness steps. Without relative color
+  support, lit segments keep the white gleam fallback.
 - Liveness comes from the session lifecycle registry: the renderer
   subscribes to `session:lifecycle`, then reads the versioned
   `get_live_sessions` snapshot, and applies only deltas with a higher
@@ -472,7 +481,7 @@ launch, so a docked HUD comes back docked.
 
 ## Platform boundary
 
-v1 is macOS-only. The native crate returns without creating a window on other
+The HUD is macOS-only. The native crate returns without creating a window on other
 platforms, and the frontend hides the Settings entry point there. Windows needs tuning
 for its taskbar position. Linux waits for reliable Wayland positioning and
 always-on-top behavior.
@@ -488,3 +497,18 @@ always-on-top behavior.
 
 The separate detail window and content-sized HUD frame close this list. The HUD
 does not expand, and the detail window is sized before it appears.
+
+## Manual macOS pointer sampling check
+
+Browser fixtures inject island states and do not test the native cursor sampler.
+Run this check on macOS with a real notch, then repeat at a second interface scale:
+
+1. Place the HUD in the notch and open it with the pointer.
+2. Move within the notch header and the visible body. Each region must keep it open.
+3. Move just outside the body, within 48 logical points. It must close after about 400ms.
+4. Move beyond 48 points. It must start closing at the next cursor sample.
+5. During closing, return to the visible body or header. It must reopen.
+6. Move over the lower body area after its clip retracts. It must continue closing.
+
+Repeat on a mixed-DPI display arrangement. This exercises the native
+`cursor_report` and `pointer_zone` path; synthetic zone tests do not replace it.

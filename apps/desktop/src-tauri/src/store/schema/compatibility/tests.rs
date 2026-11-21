@@ -312,10 +312,10 @@ fn pinned_histories_preserve_populated_state_through_disk_open_and_reopen() {
                 let store = Store::open(directory.path()).unwrap_or_else(|error| {
                     panic!("branch={branch}, version={version}: {error:#}")
                 });
-                assert_eq!(store.schema_version().unwrap(), 92);
+                assert_eq!(store.schema_version().unwrap(), 94);
                 store.migrate().unwrap();
                 let connection = store.lock();
-                assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(92));
+                assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(94));
                 for (table, (columns, expected)) in &before {
                     assert_eq!(
                         rows(&connection, table, columns),
@@ -470,10 +470,10 @@ fn v92_indexes_preserve_v91_rows_and_roll_back_failed_creation() {
         }
         store.migrate().unwrap();
         for _ in 0..2 {
-            assert_eq!(store.schema_version().unwrap(), 92);
+            assert_eq!(store.schema_version().unwrap(), 94);
             {
                 let connection = store.lock();
-                assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(92));
+                assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(94));
                 for (table, (columns, expected)) in &before {
                     assert_eq!(rows(&connection, table, columns), *expected, "{table}");
                 }
@@ -531,7 +531,7 @@ fn pre_registry_branch_versions_keep_populated_state_through_open_and_reopen() {
         for _ in 0..2 {
             let store = Store::open(directory.path()).unwrap();
             let connection = store.lock();
-            assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(92));
+            assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(94));
             for (table, (columns, expected)) in &before {
                 assert_eq!(
                     rows(&connection, table, columns),
@@ -578,7 +578,7 @@ fn main_registry_rows_and_initialization_survive_retirement_and_reopen() {
             let (columns, expected) = &before[table];
             assert_eq!(rows(&connection, table, columns), *expected);
         }
-        assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(92));
+        assert_eq!(read_profile(&connection).unwrap(), Profile::canonical(94));
     }
 }
 
@@ -990,7 +990,7 @@ fn failed_evidence_migration_rolls_back_temporary_work_and_keeps_the_version() {
         .execute_batch("DROP TABLE current_evidence_copy")
         .unwrap();
     store.migrate().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 92);
+    assert_eq!(store.schema_version().unwrap(), 94);
 }
 
 #[test]
@@ -1284,7 +1284,7 @@ fn interrupted_untyped_upgrade_keeps_its_boundary_and_preserves_newer_typed_gaps
         drop(connection);
         for _ in 0..2 {
             let store = Store::open(directory.path()).unwrap();
-            assert_eq!(store.schema_version().unwrap(), 92);
+            assert_eq!(store.schema_version().unwrap(), 94);
             assert_eq!(gap_kind(&store.lock(), old_gap), "partial");
             assert_eq!(gap_kind(&store.lock(), new_gap), "invalidated");
             assert!(store.internal_value(UNTYPED_GAP_HEAD_KEY).is_none());

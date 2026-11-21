@@ -557,6 +557,9 @@ async fn refresh_sessions_locked(
             continue;
         };
         let path = PathBuf::from(&record.source_label);
+        if !super::watch::source_path_allowed(&path) {
+            continue;
+        }
         if !path.exists() {
             // The tick's full pass evicts a session whose source vanished;
             // a targeted refresh only skips it.

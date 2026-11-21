@@ -294,3 +294,44 @@ fn claude_sidecars_do_not_cross_pair_models_when_roster_order_differs_from_call_
     );
     assert_ne!(status(&evidence), BadgeStatus::Finding);
 }
+
+#[tokio::test]
+async fn duplicate_claude_parents_keep_the_selected_parents_children() {
+    let (_other_directory, other) = fixture("Agent", "claude-opus-4-6", "claude-sonnet-4-6");
+    let (_selected_directory, selected) = fixture("Agent", "claude-opus-4-6", "claude-haiku-4-5");
+    let RawSource::File(path) = &selected[0].source else {
+        panic!("fixture must use a file");
+    };
+    let pass = analyze_for_evidence(
+        AgentKind::Claude,
+        "parent",
+        None,
+        ClaimedSource {
+            path: Some(path.clone()),
+            fingerprint: None,
+            generation: 0,
+        },
+        PassSignal::new(),
+        Some(MemoryTurnRowStore::new("claude", "parent")),
+        None,
+    )
+    .await;
+    assert_eq!(pass.outcome, PassOutcome::Published);
+    assert_eq!(pass.analysis.source_path.as_deref(), path.to_str());
+    assert!(
+        pass.analysis
+            .inclusive_model_breakdown
+            .contains_key("claude-haiku-4-5")
+    );
+    assert!(
+        !pass
+            .analysis
+            .inclusive_model_breakdown
+            .contains_key("claude-sonnet-4-6")
+    );
+    assert_eq!(
+        observed(&pass.evidence.unwrap().subagents).children.len(),
+        1
+    );
+    assert_eq!(other[0].session_id, selected[0].session_id);
+}

@@ -118,12 +118,22 @@ pub(crate) fn recover_uncertain_write_with_cache(
     let Some(home) = antiburn_local::paths::home_dir() else {
         return store.defer_remediation_recovery(&record.remediation_id, "homeUnavailable", now);
     };
+    let policy = store.repository_policy_snapshot()?;
     let trusted_root = if definition.workspace_key.is_some() {
         store
             .repositories()?
             .into_iter()
+            .filter(|repository| repository.enabled && repository.wsl_distro.is_none())
             .filter_map(|repository| repository.repo_root)
-            .filter_map(|root| PathBuf::from(root).canonicalize().ok())
+            .filter_map(|root| {
+                if !store
+                    .repository_policy_is_current(policy.generation)
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                admitted_canonical_path(&home, Path::new(&root), &policy.granted_dirs)
+            })
             .find(|project| {
                 definition.workspace_key.as_deref()
                     == hashed_workspace_key(store, project).ok().as_deref()
@@ -138,15 +148,20 @@ pub(crate) fn recover_uncertain_write_with_cache(
             now,
         );
     }
-    let workspace_cwd = trusted_root
-        .as_ref()
-        .map(|root| recovery_workspace_cwd(root, definition.workspace_relative_cwd.as_deref()))
-        .transpose()?;
+    let workspace_cwd = trusted_root.as_ref().and_then(|root| {
+        recovery_workspace_cwd(
+            &home,
+            root,
+            definition.workspace_relative_cwd.as_deref(),
+            &policy.granted_dirs,
+        )
+    });
     let Some(mut context) = config_context(
         agent,
         &home,
         workspace_cwd.as_deref(),
         trusted_root.as_deref(),
+        &policy.granted_dirs,
     ) else {
         return store.defer_remediation_recovery(
             &record.remediation_id,
@@ -167,7 +182,7 @@ pub(crate) fn recover_uncertain_write_with_cache(
                 now,
             );
         };
-        let authority = match authorities.get_for_recovery(cwd) {
+        let authority = match authorities.get_for_recovery(store, policy.generation, cwd) {
             Ok(authority) => authority,
             Err(reason) => return recovery_authority_unavailable(store, record, reason, now),
         };

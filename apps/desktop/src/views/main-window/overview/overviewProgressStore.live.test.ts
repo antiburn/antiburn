@@ -129,7 +129,7 @@ class FakeScanController {
   }
 }
 
-const DEFAULT_TEST_SETTINGS = { ...DEFAULT_SETTINGS, onboardingCompleted: true }
+const DEFAULT_TEST_SETTINGS = { ...DEFAULT_SETTINGS }
 
 const SETTLED_REPORT = {
   evidenceSettled: true,
@@ -173,7 +173,7 @@ beforeEach(() => {
       case "get_folder_permissions":
         return { deferred: [], granted: [], supported: true }
       case "finish_first_run":
-        return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: true }
+        return { ...DEFAULT_TEST_SETTINGS }
       case "advance_first_run":
         return undefined
       case "start_live_usage":
@@ -221,9 +221,11 @@ describe("overviewProgressStore's live IPC boundary", () => {
     runLaunchPass()
 
     await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
-    expect(overviewProgress().agents.rows).toEqual([
-      { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
-    ])
+    await vi.waitFor(() =>
+      expect(overviewProgress().agents.rows).toEqual([
+        { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
+      ]),
+    )
     await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
     expect(overviewProgress().sessions.completed).toBe(49)
     expect(overviewProgress().sessions.total).toBe(49)
@@ -243,9 +245,11 @@ describe("overviewProgressStore's live IPC boundary", () => {
     stops.push(stop)
 
     await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
-    expect(overviewProgress().agents.rows).toEqual([
-      { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
-    ])
+    await vi.waitFor(() =>
+      expect(overviewProgress().agents.rows).toEqual([
+        { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
+      ]),
+    )
     await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
     expect(overviewProgress().sessions.completed).toBe(49)
   })
@@ -300,42 +304,6 @@ describe("overviewProgressStore vs. a denied get_scan_status command", () => {
     await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
     expect(overviewProgress().sessions.done).toBe(true)
   })
-
-  it("(e) still resolves the first-run decision when the only recovery read is denied", async () => {
-    // The pass already ran and finished before the Overview subscribed (no
-    // events left to catch), and the usual recovery path — a direct
-    // `get_scan_status` read — is denied. This used to be the reported bug:
-    // the old "ever scanned before" signal came from that same denied read,
-    // so the steps block's decision never resolved. `onboardingCompleted`
-    // comes from `get_settings` instead, a call this scenario does not deny,
-    // so the decision — and the steps the Agents and Sessions steps never latch to —
-    // resolve regardless.
-    mocks.invoke.mockImplementation(async (command: string) => {
-      if (command === "get_main_window_visible") return true
-      if (command === "get_scan_status") throw new Error("main-window: command not allowed")
-      if (command === "get_checks_report") return SETTLED_REPORT
-      if (command === "get_settings") return DEFAULT_TEST_SETTINGS
-      if (command === "get_folder_permissions")
-        return { deferred: [], granted: [], supported: true }
-      throw new Error(`Unexpected command: ${command}`)
-    })
-    runLaunchPass()
-
-    const { subscribeOverviewProgress, overviewProgress } =
-      await import("./overviewProgressStore")
-    const stop = subscribeOverviewProgress(() => undefined)
-    stops.push(stop)
-
-    await vi.waitFor(() => expect(overviewProgress().mode).toBe("steady"))
-    // Neither the Agents step nor the Sessions step ever latches without the denied read to
-    // source their rows from — the steady row falls back to whatever
-    // `scanStatusStore`'s own snapshot holds, which is also empty here.
-    expect(overviewProgress().agents.done).toBe(false)
-    expect(overviewProgress().sessions.done).toBe(false)
-    // The Checks step does not wait on either of them outside the steps block: it
-    // finishes from the settled checks report alone.
-    await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
-  })
 })
 
 describe("overviewProgressStore across an unsubscribe/resubscribe cycle", () => {
@@ -382,309 +350,6 @@ describe("overviewProgressStore across an unsubscribe/resubscribe cycle", () => 
   })
 })
 
-describe("overviewProgressStore's flow progression", () => {
-  it("docks each step as the reader presses Next, and advances the backend gate to match", async () => {
-    const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
-      await import("./overviewProgressStore")
-    stops.push(subscribeOverviewProgress(() => undefined))
-    await waitForListener("ftue:reset")
-    await waitForListener("scan:finished")
-
-    emit("ftue:reset", null)
-    runLaunchPass()
-
-    await vi.waitFor(() => expect(overviewProgress().mode).toBe("firstRun"))
-    await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
-    // The flow sits on the welcome step until Next, which opens the agents gate.
-    expect(overviewProgress().flow).toBe("welcome")
-    expect(mocks.invoke).not.toHaveBeenCalledWith("advance_first_run", expect.anything())
-
-    await nextStep()
-    expect(overviewProgress().flow).toBe("agents")
-    expect(mocks.invoke).toHaveBeenCalledWith("advance_first_run", { stage: "agents" })
-
-    await nextStep()
-    expect(overviewProgress().flow).toBe("limits")
-    expect(mocks.invoke).not.toHaveBeenCalledWith("advance_first_run", { stage: "sessions" })
-
-    skipLiveLimits()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("sessions"))
-    await vi.waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith("advance_first_run", { stage: "sessions" }),
-    )
-    await vi.waitFor(() => expect(overviewProgress().stepShown).toBe(true))
-
-    await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("checks"))
-    expect(mocks.invoke).toHaveBeenCalledWith("advance_first_run", { stage: "checks" })
-
-    await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("fixes"))
-
-    await nextStep()
-    await vi.waitFor(() => expect(overviewProgress().flow).toBe("done"))
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
-  })
-})
-
-describe("overviewProgressStore's step moves", () => {
-  it("hides the next card until the move lands, and ignores a second press meanwhile", async () => {
-    const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
-      await import("./overviewProgressStore")
-    stops.push(subscribeOverviewProgress(() => undefined))
-    await waitForListener("ftue:reset")
-    await waitForListener("scan:finished")
-
-    emit("ftue:reset", null)
-    runLaunchPass()
-    await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
-    await nextStep()
-    expect(overviewProgress().flow).toBe("agents")
-
-    const move = nextStep()
-    expect(overviewProgress().flow).toBe("limits")
-    expect(overviewProgress().stepShown).toBe(false)
-    skipLiveLimits()
-    expect(overviewProgress().flow).toBe("limits")
-
-    await move
-    expect(overviewProgress().stepShown).toBe(true)
-  })
-
-  it("asks for the first live reading after Show live limits starts live usage", async () => {
-    const { subscribeOverviewProgress, overviewProgress, showLiveLimits, nextStep } =
-      await import("./overviewProgressStore")
-    stops.push(subscribeOverviewProgress(() => undefined))
-    await waitForListener("ftue:reset")
-    await waitForListener("scan:finished")
-
-    emit("ftue:reset", null)
-    runLaunchPass()
-    await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
-    await nextStep()
-    await nextStep()
-    expect(overviewProgress().flow).toBe("limits")
-
-    await showLiveLimits()
-    const commands = mocks.invoke.mock.calls.map(([command]) => command)
-    expect(commands.indexOf("refresh_live_usage")).toBeGreaterThan(
-      commands.indexOf("start_live_usage"),
-    )
-    expect(commands.indexOf("start_live_usage")).toBeGreaterThanOrEqual(0)
-    expect(overviewProgress().flow).toBe("sessions")
-  })
-})
-
-describe("overviewProgressStore's rewind", () => {
-  async function reachFixes(liveLimits: "show" | "skip") {
-    const store = await import("./overviewProgressStore")
-    stops.push(store.subscribeOverviewProgress(() => undefined))
-    await waitForListener("ftue:reset")
-    await waitForListener("scan:finished")
-    emit("ftue:reset", null)
-    runLaunchPass()
-    await vi.waitFor(() => expect(store.overviewProgress().agents.done).toBe(true))
-    await store.nextStep()
-    await store.nextStep()
-    expect(store.overviewProgress().flow).toBe("limits")
-    if (liveLimits === "show") {
-      await store.showLiveLimits()
-      emit("settings:changed", { ...DEFAULT_TEST_SETTINGS, liveUsageStarted: true })
-    } else {
-      store.skipLiveLimits()
-    }
-    await vi.waitFor(() => expect(store.overviewProgress().flow).toBe("sessions"))
-    await vi.waitFor(() => expect(store.overviewProgress().stepShown).toBe(true))
-    await vi.waitFor(() => expect(store.overviewProgress().sessions.done).toBe(true))
-    await store.nextStep()
-    await vi.waitFor(() => expect(store.overviewProgress().checks.done).toBe(true))
-    await store.nextStep()
-    expect(store.overviewProgress().flow).toBe("fixes")
-    return store
-  }
-
-  it("goes back to a docked step and undocks every later one", async () => {
-    const store = await reachFixes("skip")
-    await store.previousStep()
-    await store.previousStep()
-    await vi.waitFor(() => expect(store.overviewProgress().flow).toBe("sessions"))
-    expect(store.stepDocked(store.overviewProgress().flow, "sessions")).toBe(false)
-    expect(store.stepDocked(store.overviewProgress().flow, "checks")).toBe(false)
-    expect(store.stepDocked(store.overviewProgress().flow, "agents")).toBe(true)
-    await store.nextStep()
-    expect(store.overviewProgress().flow).toBe("checks")
-  })
-
-  it("can return to Welcome without sending backend commands or losing completed work", async () => {
-    const store = await reachFixes("skip")
-    mocks.invoke.mockClear()
-    for (const expected of ["checks", "sessions", "limits", "agents", "welcome"]) {
-      await store.previousStep()
-      expect(store.overviewProgress().flow).toBe(expected)
-    }
-    expect(mocks.invoke).not.toHaveBeenCalled()
-    expect(store.overviewProgress().agents.done).toBe(true)
-    expect(store.overviewProgress().sessions.done).toBe(true)
-    await store.previousStep()
-    expect(store.overviewProgress().flow).toBe("welcome")
-  })
-
-  it("offers the live limits step again only when the reader skipped it", async () => {
-    const skipped = await reachFixes("skip")
-    await skipped.previousStep()
-    await skipped.previousStep()
-    await skipped.previousStep()
-    await skipped.previousStep()
-    await vi.waitFor(() => expect(skipped.overviewProgress().flow).toBe("agents"))
-    await skipped.nextStep()
-    expect(skipped.overviewProgress().flow).toBe("limits")
-  })
-
-  it("passes over the live limits step once live usage is on", async () => {
-    const shown = await reachFixes("show")
-    await shown.previousStep()
-    await shown.previousStep()
-    await shown.previousStep()
-    await shown.previousStep()
-    await vi.waitFor(() => expect(shown.overviewProgress().flow).toBe("agents"))
-    await shown.nextStep()
-    expect(shown.overviewProgress().flow).toBe("sessions")
-  })
-
-  it("keeps completion open after a failed finish and lets Get Started retry", async () => {
-    const store = await reachFixes("skip")
-    const invoke = mocks.invoke.getMockImplementation()!
-    mocks.invoke.mockImplementation(async (command, args) => {
-      if (command === "finish_first_run") throw new Error("save failed")
-      return invoke(command, args)
-    })
-    await store.nextStep()
-    expect(mocks.invoke).not.toHaveBeenCalledWith("note_interaction", {
-      interaction: { kind: "firstRunAction", action: "enhance_opened" },
-    })
-    expect(store.overviewProgress()).toMatchObject({
-      flow: "fixes",
-      actionPending: false,
-      actionError: expect.any(String),
-    })
-    mocks.invoke.mockImplementation(invoke)
-    await store.nextStep()
-    expect(store.overviewProgress()).toMatchObject({ flow: "done", actionError: null })
-  })
-
-  it("finishes setup on Get Started without an Enhance action", async () => {
-    const store = await reachFixes("skip")
-    await store.nextStep()
-    expect(store.overviewProgress().flow).toBe("done")
-    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
-    expect(mocks.invoke).not.toHaveBeenCalledWith("note_interaction", {
-      interaction: { kind: "firstRunAction", action: "enhance_opened" },
-    })
-  })
-
-  it("reports the result once, however often the reader returns to it", async () => {
-    const store = await reachFixes("skip")
-    await store.previousStep()
-    await vi.waitFor(() => expect(store.overviewProgress().flow).toBe("checks"))
-    await store.nextStep()
-    expect(store.overviewProgress().flow).toBe("fixes")
-    const results = mocks.invoke.mock.calls.filter(
-      ([command, args]) =>
-        command === "note_interaction" &&
-        (args as { interaction: { step?: string } }).interaction.step === "result",
-    )
-    expect(results).toHaveLength(1)
-  })
-})
-
-describe("overviewProgressStore's first-run analytics", () => {
-  function noteInteractionCalls(): { interaction: Record<string, unknown> }[] {
-    return mocks.invoke.mock.calls
-      .filter(([command]) => command === "note_interaction")
-      .map(([, args]) => args as { interaction: Record<string, unknown> })
-  }
-
-  it.each(["checks_disabled", "not_assessed"] as const)(
-    "reports each funnel step once, then %s and the finish",
-    async (expectedResult) => {
-      const invoke = mocks.invoke.getMockImplementation()!
-      mocks.invoke.mockImplementation(async (command, args) => {
-        if (command === "get_settings")
-          return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
-        if (command === "get_checks_report" && expectedResult === "not_assessed")
-          return {
-            ...SETTLED_REPORT,
-            installedChecks: [{ ...installedCheckFixture, finding: 0, clean: 0, targets: [] }],
-          }
-        return invoke(command, args)
-      })
-
-      const { subscribeOverviewProgress, overviewProgress, skipLiveLimits, nextStep } =
-        await import("./overviewProgressStore")
-      stops.push(subscribeOverviewProgress(() => undefined))
-      await waitForListener("scan:finished")
-
-      runLaunchPass()
-
-      await vi.waitFor(() => expect(overviewProgress().mode).toBe("firstRun"))
-      await vi.waitFor(() => expect(overviewProgress().agents.done).toBe(true))
-
-      await nextStep()
-      await vi.waitFor(() => expect(overviewProgress().flow).toBe("agents"))
-      await nextStep()
-      await vi.waitFor(() => expect(overviewProgress().flow).toBe("limits"))
-      skipLiveLimits()
-      await vi.waitFor(() => expect(overviewProgress().flow).toBe("sessions"))
-      await vi.waitFor(() => expect(overviewProgress().stepShown).toBe(true))
-      await vi.waitFor(() => expect(overviewProgress().sessions.done).toBe(true))
-      await nextStep()
-      await vi.waitFor(() => expect(overviewProgress().flow).toBe("checks"))
-      await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
-      await nextStep()
-      await vi.waitFor(() => expect(overviewProgress().flow).toBe("fixes"))
-      await nextStep()
-      await vi.waitFor(() => expect(overviewProgress().flow).toBe("done"))
-      await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("finish_first_run"))
-
-      const steps = noteInteractionCalls().filter(
-        ({ interaction }) => interaction.kind === "firstRunStepReached",
-      )
-      expect(steps.filter((call) => call.interaction.step === "started")).toHaveLength(1)
-      const found = steps.filter((call) => call.interaction.step === "found")
-      expect(found).toHaveLength(1)
-      expect(found[0]?.interaction.sessions).toBe(49)
-      expect(steps.filter((call) => call.interaction.step === "read")).toHaveLength(1)
-      expect(steps.filter((call) => call.interaction.step === "checked")).toHaveLength(1)
-      const result = steps.filter((call) => call.interaction.step === "result")
-      expect(result).toHaveLength(1)
-      expect(result[0]?.interaction.result).toBe(expectedResult)
-      // The shell command records `first_run_finished` after it saves.
-      expect(
-        noteInteractionCalls().filter(
-          ({ interaction }) => interaction.kind === "firstRunFinished",
-        ),
-      ).toHaveLength(0)
-    },
-  )
-
-  it("reports nothing in steady mode, where the funnel never shows", async () => {
-    // onboardingCompleted stays true (the default fixture), so the device
-    // never enters firstRun mode and the funnel events have nothing to fire.
-    runLaunchPass()
-
-    const { subscribeOverviewProgress, overviewProgress } =
-      await import("./overviewProgressStore")
-    stops.push(subscribeOverviewProgress(() => undefined))
-
-    await vi.waitFor(() => expect(overviewProgress().mode).toBe("steady"))
-    await vi.waitFor(() => expect(overviewProgress().checks.done).toBe(true))
-    expect(noteInteractionCalls()).toHaveLength(0)
-    expect(mocks.invoke).not.toHaveBeenCalledWith("finish_first_run")
-  })
-})
-
 describe("overviewProgressStore's steady mode", () => {
   it("does not change the Agents rows in the snapshot when a new full pass starts", async () => {
     // The device has scanned before: a full pass already ran and finished
@@ -695,19 +360,22 @@ describe("overviewProgressStore's steady mode", () => {
       await import("./overviewProgressStore")
     stops.push(subscribeOverviewProgress(() => undefined))
 
-    await vi.waitFor(() => expect(overviewProgress().mode).toBe("steady"))
-    expect(overviewProgress().agents.rows).toEqual([
-      { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
-    ])
+    await vi.waitFor(() =>
+      expect(overviewProgress().agents.rows).toEqual([
+        { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
+      ]),
+    )
 
     await waitForListener("scan:started")
     // A routine 5-minute tick (or another launch) starts a fresh pass:
     // discovery resets to empty, same as every full pass's start.
     controller.start()
 
-    expect(overviewProgress().agents.rows).toEqual([
-      { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
-    ])
+    await vi.waitFor(() =>
+      expect(overviewProgress().agents.rows).toEqual([
+        { agent: "claude-code", label: "Claude Code", sessions: 49, done: true },
+      ]),
+    )
   })
 })
 
@@ -751,8 +419,7 @@ describe("overview progress recovery", () => {
     const invoke = mocks.invoke.getMockImplementation()!
     mocks.invoke.mockImplementation(async (command, args) => {
       if (command === "get_scan_status") return scan
-      if (command === "get_settings")
-        return { ...DEFAULT_TEST_SETTINGS, onboardingCompleted: false }
+      if (command === "get_settings") return { ...DEFAULT_TEST_SETTINGS }
       return invoke(command, args)
     })
     const store = await import("./overviewProgressStore")
@@ -800,50 +467,5 @@ describe("overview progress recovery", () => {
     await pending
     await Promise.resolve()
     expect(store.overviewProgress().checks.windowSessions).toBe(142)
-  })
-
-  it("keeps the current step after a failed gate command and permits retry", async () => {
-    const store = await import("./overviewProgressStore")
-    stops.push(store.subscribeOverviewProgress(() => undefined))
-    await waitForListener("ftue:reset")
-    emit("ftue:reset", null)
-    const invoke = mocks.invoke.getMockImplementation()!
-    mocks.invoke.mockImplementation(async (command, args) => {
-      if (command === "advance_first_run") throw new Error("unavailable")
-      return invoke(command, args)
-    })
-    await store.nextStep()
-    expect(store.overviewProgress()).toMatchObject({
-      flow: "welcome",
-      actionPending: false,
-      actionError: expect.any(String),
-    })
-    mocks.invoke.mockImplementation(invoke)
-    await store.nextStep()
-    expect(store.overviewProgress()).toMatchObject({ flow: "agents", actionError: null })
-  })
-
-  it("drops the wiped pass's counts at a reset instead of showing them on the step cards", async () => {
-    const store = await import("./overviewProgressStore")
-    stops.push(store.subscribeOverviewProgress(() => undefined))
-    await waitForListener("ftue:reset")
-    await waitForListener("scan:finished")
-    emit("main:visibility-changed", true)
-    runLaunchPass()
-    await vi.waitFor(() => expect(store.overviewProgress().sessions.completed).toBe(49))
-    const permissions = mocks.invoke.mock.calls.filter(
-      ([command]) => command === "get_folder_permissions",
-    ).length
-
-    emit("ftue:reset", null)
-
-    expect(store.overviewProgress()).toMatchObject({
-      agents: { done: false, rows: [] },
-      sessions: { done: false, completed: 0 },
-      checks: { done: false },
-    })
-    expect(
-      mocks.invoke.mock.calls.filter(([command]) => command === "get_folder_permissions"),
-    ).toHaveLength(permissions + 1)
   })
 })

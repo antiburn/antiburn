@@ -604,6 +604,7 @@ pub fn run_pass(
                     agent,
                     &record.key.session_id,
                     analysis::ClaimedSource {
+                        path: None,
                         fingerprint: record.source_fingerprint,
                         generation: 0,
                     },
@@ -821,6 +822,7 @@ mod tests {
             crate::agents::kind_from_slug("claude-code").unwrap(),
             "synthetic",
             analysis::ClaimedSource {
+                path: None,
                 fingerprint: Some(parent_fingerprint(&path).unwrap()),
                 generation: 0,
             },
@@ -936,6 +938,7 @@ mod tests {
                 crate::agents::kind_from_slug("claude-code").unwrap(),
                 "synthetic",
                 analysis::ClaimedSource {
+                    path: None,
                     fingerprint: record.source_fingerprint.clone(),
                     generation: 0,
                 },

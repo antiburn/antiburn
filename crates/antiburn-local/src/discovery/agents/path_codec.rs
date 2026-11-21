@@ -57,6 +57,55 @@ pub async fn decode_hyphenated_absolute_path(
     encoded: &str,
     home_boundary: &Path,
 ) -> Option<PathBuf> {
+    decode_hyphenated_with_policy(encoded, home_boundary, |path| {
+        crate::paths::protected::project_path_access_in(
+            Some(home_boundary),
+            path,
+            &Default::default(),
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+pub(crate) async fn hyphenated_path_access_deferral(
+    encoded: &str,
+    home_boundary: &Path,
+) -> Option<(PathBuf, crate::paths::protected::ProjectAccessDecision)> {
+    decode_hyphenated_with_policy(encoded, home_boundary, |path| {
+        crate::paths::protected::project_path_access_in(
+            Some(home_boundary),
+            path,
+            &Default::default(),
+        )
+    })
+    .await
+    .err()
+}
+
+pub(crate) async fn decode_hyphenated_with_policy(
+    encoded: &str,
+    home_boundary: &Path,
+    mut access: impl FnMut(&Path) -> crate::paths::protected::ProjectAccessDecision,
+) -> Result<Option<PathBuf>, (PathBuf, crate::paths::protected::ProjectAccessDecision)> {
+    let mut deferred = None;
+    let result =
+        decode_hyphenated_with_deferral(encoded, home_boundary, &mut deferred, &mut access).await;
+    if result.is_none()
+        && let Some(deferred) = deferred
+    {
+        return Err(deferred);
+    }
+    Ok(result)
+}
+
+async fn decode_hyphenated_with_deferral(
+    encoded: &str,
+    home_boundary: &Path,
+    deferred: &mut Option<(PathBuf, crate::paths::protected::ProjectAccessDecision)>,
+    access: &mut impl FnMut(&Path) -> crate::paths::protected::ProjectAccessDecision,
+) -> Option<PathBuf> {
     let trimmed = encoded.strip_prefix('-')?;
     if trimmed.is_empty() {
         return None;
@@ -100,6 +149,11 @@ pub async fn decode_hyphenated_absolute_path(
                 return None;
             }
 
+            let decision = access(&candidate);
+            if !decision.is_allowed() {
+                deferred.get_or_insert((candidate, decision));
+                continue;
+            }
             if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
                 let next_idx = if end_idx == trimmed.len() {
                     end_idx
@@ -135,6 +189,43 @@ pub async fn decode_cursor_workspace_path_buf(
     encoded: &str,
     home_boundary: &Path,
 ) -> Option<PathBuf> {
+    decode_cursor_workspace_path_buf_with_project_access(
+        encoded,
+        home_boundary,
+        &crate::discovery::ProjectAccessSnapshot::new(Default::default(), || true),
+    )
+    .await
+}
+
+pub async fn decode_cursor_workspace_path_buf_with_project_access(
+    encoded: &str,
+    home_boundary: &Path,
+    access: &crate::discovery::ProjectAccessSnapshot,
+) -> Option<PathBuf> {
+    decode_cursor_workspace_path_buf_with_access_check(
+        encoded,
+        home_boundary,
+        access,
+        PATH_DECODE_MAX_CANDIDATES,
+        |candidate| {
+            crate::paths::protected::project_path_access_in(
+                Some(home_boundary),
+                candidate,
+                access.granted_dirs(),
+            )
+            .is_allowed()
+        },
+    )
+    .await
+}
+
+async fn decode_cursor_workspace_path_buf_with_access_check(
+    encoded: &str,
+    home_boundary: &Path,
+    access: &crate::discovery::ProjectAccessSnapshot,
+    max_candidates: usize,
+    mut project_path_is_allowed: impl FnMut(&Path) -> bool,
+) -> Option<PathBuf> {
     if encoded.trim().is_empty() {
         return None;
     }
@@ -143,7 +234,7 @@ pub async fn decode_cursor_workspace_path_buf(
     let mut checked_candidates = 0usize;
     while let Some((prefix, start_idx)) = stack.pop() {
         if start_idx >= encoded.len() {
-            return Some(prefix);
+            return access.is_current().then_some(prefix);
         }
 
         let mut next = Vec::new();
@@ -169,10 +260,20 @@ pub async fn decode_cursor_workspace_path_buf(
             }
 
             checked_candidates += 1;
-            if checked_candidates > PATH_DECODE_MAX_CANDIDATES {
+            if checked_candidates > max_candidates {
                 return None;
             }
 
+            if !access.is_current() {
+                return None;
+            }
+            if !project_path_is_allowed(&candidate) {
+                continue;
+            }
+
+            if !access.is_current() {
+                return None;
+            }
             if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
                 let next_idx = if end_idx == encoded.len() {
                     end_idx
@@ -192,6 +293,8 @@ pub async fn decode_cursor_workspace_path_buf(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use std::collections::HashSet;
     use tempfile::TempDir;
 
     #[tokio::test(flavor = "current_thread")]
@@ -206,6 +309,111 @@ mod tests {
         let encoded = encode_cursor(&repo_root);
         let decoded = decode_cursor_workspace_path_buf(&encoded, dir.path()).await;
         assert_eq!(decoded, Some(repo_root));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cursor_decoder_counts_candidates_before_project_admission() {
+        let access = crate::discovery::ProjectAccessSnapshot::new(Default::default(), || true);
+        let mut admission_checks = 0;
+
+        let decoded = decode_cursor_workspace_path_buf_with_access_check(
+            "a-b-c-d",
+            Path::new("/"),
+            &access,
+            2,
+            |_| {
+                admission_checks += 1;
+                false
+            },
+        )
+        .await;
+
+        assert_eq!(decoded, None);
+        assert_eq!(admission_checks, 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[cfg(unix)]
+    async fn cursor_decoder_rejects_result_when_policy_changes_during_last_probe() {
+        let access_checks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let check_count = std::sync::Arc::clone(&access_checks);
+        let access = crate::discovery::ProjectAccessSnapshot::new(Default::default(), move || {
+            check_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2
+        });
+
+        let decoded = decode_cursor_workspace_path_buf_with_access_check(
+            "tmp",
+            Path::new("/"),
+            &access,
+            PATH_DECODE_MAX_CANDIDATES,
+            |_| true,
+        )
+        .await;
+
+        assert_eq!(decoded, None);
+        assert_eq!(access_checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[cfg(target_os = "macos")]
+    async fn cursor_decoder_uses_the_callers_protected_folder_grant() {
+        let home = TempDir::new().unwrap();
+        let repo_root = home.path().join("Documents").join("repo");
+        tokio::fs::create_dir_all(&repo_root).await.unwrap();
+        let encoded = encode_cursor(&repo_root);
+
+        let no_grants = crate::discovery::ProjectAccessSnapshot::new(HashSet::new(), || true);
+        assert_eq!(
+            decode_cursor_workspace_path_buf_with_project_access(&encoded, home.path(), &no_grants)
+                .await,
+            None
+        );
+
+        let grants = crate::discovery::ProjectAccessSnapshot::new(
+            HashSet::from(["Documents".to_owned()]),
+            || true,
+        );
+        assert_eq!(
+            decode_cursor_workspace_path_buf_with_project_access(&encoded, home.path(), &grants)
+                .await,
+            Some(repo_root)
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "macos")]
+    async fn decoder_retains_protected_deferral_without_creating_project_directory() {
+        let dir = TempDir::new().unwrap();
+        let target = dir.path().join("Documents/repo");
+        let encoded = encode_claude(&target);
+        let deferred = hyphenated_path_access_deferral(&encoded, dir.path())
+            .await
+            .unwrap();
+        assert_eq!(deferred.0, dir.path().join("Documents"));
+        assert_eq!(
+            deferred.1,
+            crate::paths::protected::ProjectAccessDecision::DeferredProtected(
+                "Documents".to_owned()
+            )
+        );
+        assert!(
+            decode_hyphenated_absolute_path(&encoded, dir.path())
+                .await
+                .is_none()
+        );
+        assert!(
+            hyphenated_path_access_deferral("-synthetic-workspace", dir.path())
+                .await
+                .is_none()
+        );
+        std::fs::create_dir_all(&target).unwrap();
+        let grants = std::collections::HashSet::from(["Documents".to_owned()]);
+        let resolved = decode_hyphenated_with_policy(&encoded, dir.path(), |path| {
+            crate::paths::protected::project_path_access_in(Some(dir.path()), path, &grants)
+        })
+        .await
+        .unwrap();
+        assert_eq!(resolved, Some(target));
     }
 
     /// Replicate Claude's project-name encoding for tests across platforms.

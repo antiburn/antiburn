@@ -137,8 +137,14 @@ async fn scan_evicts_stale_grant_and_defers_dir() {
     );
 
     // With the grant gone, the ungranted branch defers it without reading.
-    let (_repos, deferred_again) =
-        scan_roots_for_repos(home.path(), "acme", false, &[], &consent).await;
+    let (_repos, deferred_again) = scan_roots_for_repos(
+        home.path(),
+        "acme",
+        false,
+        std::slice::from_ref(&protected_root),
+        &consent,
+    )
+    .await;
     assert!(
         deferred_again
             .iter()
@@ -195,7 +201,10 @@ async fn scan_probes_external_grants_only_when_asked() {
 
     let (repos, deferred) = scan_roots_for_repos(home.path(), "acme", false, &[], &consent).await;
     assert!(repos.is_empty(), "no probe, so the root stays deferred");
-    assert!(deferred.iter().any(|d| d.protected_dir == "Documents"));
+    assert!(
+        deferred.is_empty(),
+        "default roots carry no project evidence"
+    );
 
     let (repos, deferred) = scan_roots_for_repos(home.path(), "acme", true, &[], &consent).await;
     assert!(

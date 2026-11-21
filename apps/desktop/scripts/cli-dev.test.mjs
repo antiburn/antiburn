@@ -26,12 +26,37 @@ for (const host of [
   })
 }
 
-test("ordinary launch commands do not read the host or build payloads", () => {
+test("manual launch without CLI preparation does not read the host or build payloads", () => {
   const args = ["dev", "--config", "src-tauri/tauri.debug.conf.json"]
   const fail = () => {
     throw new Error("unexpected preparation")
   }
   assert.equal(prepareCliDev(args, { readHost: fail, buildPayload: fail }), args)
+})
+
+test("CLI preparation preserves Cloud features and other Tauri options", () => {
+  const input = [
+    "dev",
+    "--with-cli",
+    "--features",
+    "cloud",
+    "--features=analytics",
+    "--target",
+    "aarch64-apple-darwin",
+    "--config",
+    "src-tauri/tauri.debug.conf.json",
+  ]
+  assert.deepEqual(
+    prepareCliDev(input, {
+      readHost: () => "host: aarch64-apple-darwin",
+      buildPayload: () => {},
+    }),
+    [
+      ...input.filter((argument) => argument !== "--with-cli"),
+      "--config",
+      "src-tauri/tauri.sidecar.conf.json",
+    ],
+  )
 })
 
 test("debug bundles are prepared and build failures prevent launching", () => {
@@ -87,4 +112,32 @@ test("missing or empty target values fail before building", () => {
       /requires a value/,
     )
   }
+})
+
+test("sidecar options precede the runner separator and preserve all forwarded arguments", () => {
+  const forwarded = ["--", "--", "--verbose", "--target", "other-target", "--with-cli"]
+  const built = []
+  const args = ["dev", "--with-cli", ...forwarded]
+  assert.deepEqual(
+    prepareCliDev(args, {
+      readHost: () => "host: aarch64-apple-darwin",
+      buildPayload: (target) => built.push(target),
+    }),
+    ["dev", "--config", "src-tauri/tauri.sidecar.conf.json", ...forwarded],
+  )
+  assert.deepEqual(built, ["aarch64-apple-darwin"])
+})
+
+test("forwarded preparation and debug flags do not change Tauri build selection", () => {
+  const args = ["dev", "--", "--with-cli", "--target=other-target"]
+  const fail = () => assert.fail("forwarded flags must not prepare a payload")
+  assert.equal(prepareCliDev(args, { readHost: fail, buildPayload: fail }), args)
+  assert.throws(
+    () =>
+      prepareCliDev(["build", "--with-cli", "--", "--debug"], {
+        readHost: () => "host: aarch64-apple-darwin",
+        buildPayload: fail,
+      }),
+    /requires dev or build --debug/,
+  )
 })

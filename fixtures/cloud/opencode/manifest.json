@@ -1,0 +1,37 @@
+{
+  "capture_version": 1,
+  "files": [
+    {
+      "bytes": 2850,
+      "path": "README.md",
+      "sha256": "5b3fdd818421ab0bac5f759ff4b466220a2c2f8d370813b869f703b446b2ff6f"
+    },
+    {
+      "bytes": 657,
+      "path": "earlier.sql",
+      "sha256": "5070820cb0ecf870bb6eb7da6920603c898fc84f2bd0ce8ff977ef8af08d2cf6"
+    },
+    {
+      "bytes": 9840,
+      "path": "current.sql",
+      "sha256": "82b81b422555765cf44967d4c516b89fc9ee0eec9d9c6e4ea3236041f3a72509"
+    },
+    {
+      "bytes": 1687,
+      "path": "reference/main.capture.json",
+      "sha256": "a488ef5ec3709e9ff3e5ce47b55b4cb18f64c11e3ebf66c637f936992a5726c3"
+    },
+    {
+      "bytes": 3485,
+      "path": "reference/main.native-rows.chunk-00000.gz",
+      "sha256": "ec0fcd8a1621c6fe4daa09139ccc80063f3b7af8b01679ea2a051d950e553048"
+    },
+    {
+      "bytes": 198,
+      "path": "reference/main.capture-metadata.chunk-00000.gz",
+      "sha256": "1f3a301cc743dd82014114bed35c06030703accca13601545dc757dc769a4240"
+    }
+  ],
+  "fixture_version": "opencode-native-fixtures-v1",
+  "synthetic": true
+}

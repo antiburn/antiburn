@@ -40,6 +40,7 @@ export const WORKSPACES = [
       "checks",
       "checks-store",
       "cli-runtime",
+      "cloud-capture",
       "engine",
       "remote",
       "nudge",
@@ -119,6 +120,12 @@ export const WORKSPACES = [
     directory: "apps/cli",
     group: "engine",
     dependsOn: ["engine", "checks-store"],
+  },
+  {
+    id: "cloud-capture",
+    directory: "crates/antiburn-cloud-capture",
+    group: "engine",
+    dependsOn: ["engine"],
   },
 ];
 

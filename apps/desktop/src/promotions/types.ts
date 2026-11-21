@@ -6,7 +6,7 @@ export type PromotionAction =
   | { type: "app"; label: string; target: "settings"; pane: "usage" }
 
 type PromotionMediaSource = {
-  kind: "image" | "video"
+  kind: "image"
   src: string
   poster?: string
 }

@@ -6,18 +6,8 @@ import {
   type ChecksReportPayload,
 } from "../../../lib/insightsIpc"
 import {
-  advanceFirstRun,
-  finishFirstRun,
   getFolderPermissions,
-  getSettings,
-  noteInteraction,
-  onFtueReset,
-  onSettingsChanged,
-  refreshLiveUsage,
-  startLiveUsage,
   type AgentFoundCount,
-  type AppSettings,
-  type FirstRunResult,
   type ScanHistoryProgress,
   type ScanStatus,
 } from "../../../lib/ipc"
@@ -30,15 +20,6 @@ import {
 } from "../../../lib/presentation/checkRowStatus"
 import { scanStatusStore } from "../../../lib/scanStatusStore"
 import type { DeferredPermissionDir } from "../../../lib/types/repository"
-import { withViewTransition } from "../../../lib/viewTransition"
-import {
-  INITIAL_FIRST_RUN_LATCH,
-  advanceFirstRunLatch,
-  resetFirstRunLatch,
-  type FirstRunInputs,
-  type FirstRunLatch,
-} from "./firstRun"
-
 interface FindRow {
   /** The agent's discovery slug, for its icon. */
   agent: string
@@ -56,10 +37,7 @@ interface AgentsStep {
 
 interface SessionsStep {
   done: boolean
-  /** Sessions in the current 30-day window. The first-run steps and their
-   *  `stepDone` gating read this and `total`, never the combined figures
-   *  below, so the gate a reader is waiting on never moves with the
-   *  background history pass. */
+  /** Sessions read in the current window. */
   completed: number
   total: number
   /** What the Sessions step shows: `completed`/`total` plus the background
@@ -117,83 +95,20 @@ export interface HistoryProgress {
   total: number
 }
 
-/** Steady mode always exposes `done`. */
-export type FlowStep =
-  "welcome" | "agents" | "limits" | "sessions" | "checks" | "fixes" | "done"
-
-/** Steps with scan progress. */
-export type ProgressStepKey = "agents" | "sessions" | "checks" | "fixes"
-
-const FLOW_ORDER: readonly FlowStep[] = [
-  "welcome",
-  "agents",
-  "limits",
-  "sessions",
-  "checks",
-  "fixes",
-  "done",
-]
-
-function flowIndex(step: FlowStep): number {
-  return FLOW_ORDER.indexOf(step)
-}
-
-const STEP_DOCKED_AT: Record<ProgressStepKey, FlowStep> = {
-  agents: "limits",
-  sessions: "checks",
-  checks: "fixes",
-  fixes: "done",
-}
-
-// Skip Limits on a revisit if live usage is already active.
-function nextFlow(from: ProgressStepKey, liveUsageOn: boolean): FlowStep {
-  if (from === "agents" && liveUsageOn) return "sessions"
-  return STEP_DOCKED_AT[from]
-}
-
-export function stepDocked(flow: FlowStep, step: ProgressStepKey): boolean {
-  return flowIndex(flow) >= flowIndex(STEP_DOCKED_AT[step])
-}
-
-// Move the name from the completed card to its sidebar row.
-export function progressStepTransitionName(step: ProgressStepKey): string {
-  return `progress-step-${step}`
-}
-
-export const LIVE_LIMITS_TRANSITION_NAME = "progress-live-limits"
-
-export const RECENT_SESSIONS_TRANSITION_NAME = "overview-recent-sessions"
-
-export const USAGE_TRANSITION_NAME = "overview-usage"
-
 export interface OverviewProgress {
-  /**
-   * `pending`: the first-run latch has not decided yet. Render nothing.
-   * `firstRun`: this session shows the takeover and the docking steps, as it
-   * always has. `steady`: the device has scanned before; the nav rows are a
-   * permanent status row for the current 30 days.
-   */
-  mode: "pending" | "firstRun" | "steady"
-  /** The takeover's current stage. `"done"` in every mode but `firstRun`. */
-  flow: FlowStep
-  /**
-   * Whether the takeover shows the card for `flow`. False while the previous
-   * card moves to its place, so the next card appears only after it lands.
-   */
-  stepShown: boolean
-  actionPending: boolean
-  actionError: string | null
   agents: AgentsStep
   sessions: SessionsStep
   checks: ChecksStep
   /** Every category in the checks report, for the persistent checklist. */
   categories: FixCategory[]
   failingCount: number
-  /** Hide history until the first-run flow finishes. */
   history: HistoryProgress | null
 }
 
-export interface ProgressInputs extends FirstRunInputs {
+export interface ProgressInputs {
+  scanStatus: ScanStatus | null
+  checksReport: ChecksReportPayload | null
+  checksReportCurrent: boolean
   deferred: DeferredPermissionDir[]
 }
 
@@ -248,11 +163,7 @@ function toFixCategory(category: CheckRow): FixCategory {
   }
 }
 
-function deriveHistory(
-  exposedFlow: FlowStep,
-  history: ScanHistoryProgress | undefined,
-): HistoryProgress | null {
-  if (exposedFlow !== "done") return null
+function deriveHistory(history: ScanHistoryProgress | undefined): HistoryProgress | null {
   if (!history || history.state === "none") return null
   if (history.state === "pending") return { state: "pending", completed: 0, total: 0 }
   if (history.state === "running") {
@@ -263,98 +174,39 @@ function deriveHistory(
   return { state: "done", completed: history.completed, total: history.total }
 }
 
-function deriveMode(latch: FirstRunLatch): OverviewProgress["mode"] {
-  if (!latch.decided) return "pending"
-  return latch.showSteps ? "firstRun" : "steady"
-}
-
 export function deriveOverviewProgress(
-  latch: FirstRunLatch,
   inputs: ProgressInputs,
-  flow: FlowStep,
-  stepShown: boolean,
   lastPass: LastPass,
 ): OverviewProgress {
-  const mode = deriveMode(latch)
-  // Steady behaves as "done": every step reads as docked, so the row always
-  // shows the live/last-pass numbers rather than a one-time latch.
-  const exposedFlow: FlowStep = mode === "steady" ? "done" : flow
-
-  const agentsDocked = stepDocked(exposedFlow, "agents")
-  const sessionsDocked = stepDocked(exposedFlow, "sessions")
-  const checksDocked = stepDocked(exposedFlow, "checks")
-
-  const agentsRows = agentsDocked
-    ? (lastPass.lastFound ?? inputs.scanStatus?.foundByAgent ?? [])
-    : latch.agentsDone
-      ? latch.agentsFound
-      : (inputs.scanStatus?.foundByAgent ?? [])
+  const agentsRows = lastPass.lastFound ?? inputs.scanStatus?.foundByAgent ?? []
   const agents: AgentsStep = {
-    done: latch.agentsDone,
-    rows: agentsRows.map((row) => ({
-      agent: row.agent,
-      label: agentDisplayName(row.agent),
-      sessions: row.sessions,
-      done: row.done,
-    })),
+    done: agentsRows.length > 0 && agentsRows.every((row) => row.done),
+    rows: agentsRows.map((row) => ({ ...row, label: agentDisplayName(row.agent) })),
   }
-
-  const sessionsSource = sessionsDocked
-    ? (lastPass.lastRead ?? inputs.scanStatus?.read ?? { completed: 0, total: 0 })
-    : latch.sessionsDone
-      ? latch.sessionsRead
-      : (inputs.scanStatus?.read ?? { completed: 0, total: 0 })
-  const history = deriveHistory(exposedFlow, inputs.scanStatus?.history)
-  // The combined figures count the history pass's own sessions once it has
-  // some to report. Before then — including throughout the first-run steps,
-  // where `history` is always null — they equal the 30-day numbers.
+  const sessionsSource = lastPass.lastRead ??
+    inputs.scanStatus?.read ?? { completed: 0, total: 0 }
+  const history = deriveHistory(inputs.scanStatus?.history)
   const historyToCount =
     history && (history.state === "reading" || history.state === "done") ? history : null
   const sessions: SessionsStep = {
-    done: latch.sessionsDone,
-    completed: sessionsSource.completed,
-    total: sessionsSource.total,
-    displayCompleted: historyToCount
-      ? sessionsSource.completed + historyToCount.completed
-      : sessionsSource.completed,
-    displayTotal: historyToCount
-      ? sessionsSource.total + historyToCount.total
-      : sessionsSource.total,
+    done: lastPass.lastRead != null,
+    ...sessionsSource,
+    displayCompleted: sessionsSource.completed + (historyToCount?.completed ?? 0),
+    displayTotal: sessionsSource.total + (historyToCount?.total ?? 0),
     deferred: inputs.deferred,
   }
-
-  const checks: ChecksStep = checksDocked
-    ? {
-        done: latch.checksDone,
-        windowSessions: inputs.checksReport?.windowSessions ?? 0,
-        pendingEvidence: inputs.checksReport?.pendingEvidence ?? 0,
-        deferredEvidence: inputs.checksReport?.deferredEvidence ?? 0,
-      }
-    : latch.checksDone
-      ? {
-          done: true,
-          windowSessions: latch.checksResult.windowSessions,
-          pendingEvidence: latch.checksResult.deferredEvidence,
-          deferredEvidence: latch.checksResult.deferredEvidence,
-        }
-      : {
-          done: false,
-          windowSessions: inputs.checksReport?.windowSessions ?? 0,
-          pendingEvidence: inputs.checksReport?.pendingEvidence ?? 0,
-          deferredEvidence: inputs.checksReport?.deferredEvidence ?? 0,
-        }
-
+  const checks: ChecksStep = {
+    done: inputs.checksReportCurrent && (inputs.checksReport?.evidenceSettled ?? false),
+    windowSessions: inputs.checksReport?.windowSessions ?? 0,
+    pendingEvidence: inputs.checksReport?.pendingEvidence ?? 0,
+    deferredEvidence: inputs.checksReport?.deferredEvidence ?? 0,
+  }
   const categories = inputs.checksReport
     ? checkRows(inputs.checksReport).map(toFixCategory)
     : []
   const failingCount = categories.filter((category) => category.status === "needsFix").length
 
   return {
-    mode,
-    flow: exposedFlow,
-    stepShown,
-    actionPending: false,
-    actionError: null,
     agents,
     sessions,
     checks,
@@ -364,16 +216,8 @@ export function deriveOverviewProgress(
   }
 }
 
-let latch: FirstRunLatch = INITIAL_FIRST_RUN_LATCH
-let flow: FlowStep = "welcome"
-let stepShown = true
-let actionPending = false
-let actionError: string | null = null
-let flowRevision = 0
 let liveScanStatus: ScanStatus | null = null
 let liveChecksReport: ChecksReportPayload | null = null
-let liveOnboardingCompleted: boolean | null = null
-let liveUsageOn = false
 let liveDeferred: DeferredPermissionDir[] = []
 let liveChecksReportCurrent = false
 let lastPass: LastPass = INITIAL_LAST_PASS
@@ -383,72 +227,21 @@ let lastPass: LastPass = INITIAL_LAST_PASS
 let scanRunsSeen = 0
 let requestChecks: (() => void) | null = null
 let refreshFolderPermissions: (() => void) | null = null
-// One-shot flags for `antiburn.first_run_step_reached`. Reset alongside the
-// latch whenever a wipe starts a new first run.
-let reportedFirstRunStarted = false
-let reportedFirstRunFound = false
-let reportedFirstRunRead = false
-let reportedFirstRunChecked = false
-let reportedFirstRunResult = false
-
 function currentInputs(): ProgressInputs {
   return {
     scanStatus: liveScanStatus,
     checksReport: liveChecksReport,
     deferred: liveDeferred,
-    onboardingCompleted: liveOnboardingCompleted,
     checksReportCurrent: liveChecksReportCurrent,
   }
 }
 
-let snapshot: OverviewProgress = deriveOverviewProgress(
-  latch,
-  currentInputs(),
-  flow,
-  stepShown,
-  lastPass,
-)
+let snapshot: OverviewProgress = deriveOverviewProgress(currentInputs(), lastPass)
 const listeners = new Set<() => void>()
 
 function recompute(): void {
-  snapshot = deriveOverviewProgress(latch, currentInputs(), flow, stepShown, lastPass)
-  snapshot = { ...snapshot, actionPending, actionError }
+  snapshot = deriveOverviewProgress(currentInputs(), lastPass)
   for (const listener of listeners) listener()
-  maybeReportFirstRunSteps()
-}
-
-/** Which result the finished check step shows, for `first_run_step_reached`. */
-export function firstRunResult(progress: OverviewProgress): FirstRunResult {
-  if (progress.checks.windowSessions === 0) return "empty"
-  if (progress.categories.length === 0) return "checks_disabled"
-  if (progress.categories.some((category) => category.finding > 0)) return "fixes_found"
-  return progress.categories.some(
-    (category) => category.status === "passing" && category.clean > 0,
-  )
-    ? "clean"
-    : "not_assessed"
-}
-
-// Report completed work once. Report the result only when its step opens.
-function maybeReportFirstRunSteps(): void {
-  if (snapshot.mode !== "firstRun") return
-  if (!reportedFirstRunStarted) {
-    reportedFirstRunStarted = true
-    noteInteraction({ kind: "firstRunStepReached", step: "started" })
-  }
-  if (!reportedFirstRunFound && snapshot.agents.done) {
-    reportedFirstRunFound = true
-    const sessions = snapshot.agents.rows.reduce((sum, row) => sum + row.sessions, 0)
-    noteInteraction({ kind: "firstRunStepReached", step: "found", sessions })
-  }
-  if (!reportedFirstRunRead && snapshot.sessions.done) {
-    reportedFirstRunRead = true
-    noteInteraction({ kind: "firstRunStepReached", step: "read" })
-  }
-  if (!reportedFirstRunChecked && snapshot.checks.done) {
-    reportedFirstRunChecked = true
-    noteInteraction({ kind: "firstRunStepReached", step: "checked" })
-  }
 }
 
 function onScanStatus(status: ScanStatus | null): void {
@@ -464,159 +257,13 @@ function onScanStatus(status: ScanStatus | null): void {
     requestChecks?.()
     refreshFolderPermissions?.()
   }
-  latch = advanceFirstRunLatch(latch, currentInputs())
   recompute()
 }
 
 function onChecksReport(report: ChecksReportPayload | null, current: boolean): void {
   liveChecksReport = report
   liveChecksReportCurrent = current
-  latch = advanceFirstRunLatch(latch, currentInputs())
   recompute()
-}
-
-function onSettings(settings: AppSettings): void {
-  liveOnboardingCompleted = settings.onboardingCompleted
-  liveUsageOn = settings.liveUsageEnabled && settings.liveUsageStarted
-  latch = advanceFirstRunLatch(latch, currentInputs())
-  recompute()
-}
-
-function onReset(): void {
-  flowRevision += 1
-  actionPending = false
-  actionError = null
-  latch = resetFirstRunLatch()
-  flow = "welcome"
-  stepShown = true
-  // The wipe clears `onboardingCompleted`, so this device is a first run
-  // again until the pass the reset triggers finishes it.
-  liveOnboardingCompleted = false
-  // The wipe also clears every session the last pass found and read, so the
-  // step cards must not show the old pass, report or folders.
-  liveScanStatus = null
-  liveChecksReport = null
-  liveChecksReportCurrent = false
-  liveDeferred = []
-  lastPass = INITIAL_LAST_PASS
-  // A checks report requested before the wipe is then not current.
-  scanRunsSeen += 1
-  // The reset starts a new first run, so its funnel must report again.
-  reportedFirstRunStarted = false
-  reportedFirstRunFound = false
-  reportedFirstRunRead = false
-  reportedFirstRunChecked = false
-  reportedFirstRunResult = false
-  recompute()
-  refreshFolderPermissions?.()
-}
-
-export async function showLiveLimits(): Promise<void> {
-  if (flow !== "limits" || !stepShown || actionPending) return
-  const revision = flowRevision
-  await startLiveUsage()
-  if (revision !== flowRevision) return
-  // Starting collects nothing. Ask for the first reading now, as Settings →
-  // Usage does, so the pane does not wait for the next background pass.
-  void refreshLiveUsage().catch(() => undefined)
-  noteInteraction({ kind: "firstRunAction", action: "live_usage_started" })
-  await moveTo("sessions")
-}
-
-export function skipLiveLimits(): void {
-  if (flow !== "limits" || !stepShown || actionPending) return
-  noteInteraction({ kind: "firstRunAction", action: "live_usage_skipped" })
-  void moveTo("sessions")
-}
-
-// Confirm the backend command before the next step becomes visible.
-async function moveTo(to: FlowStep): Promise<boolean> {
-  if (actionPending) return false
-  const revision = flowRevision
-  actionPending = true
-  actionError = null
-  recompute()
-  try {
-    if (to === "agents" || to === "sessions" || to === "checks") {
-      await advanceFirstRun(to)
-    } else if (to === "done") {
-      await finishFirstRun()
-    }
-    if (revision !== flowRevision) return false
-    await withViewTransition(() => {
-      if (revision !== flowRevision) return
-      flow = to
-      stepShown = false
-      recompute()
-    })
-    if (revision !== flowRevision) return false
-    if (to === "fixes" && !reportedFirstRunResult) {
-      reportedFirstRunResult = true
-      noteInteraction({
-        kind: "firstRunStepReached",
-        step: "result",
-        result: firstRunResult(snapshot),
-      })
-    }
-    await withViewTransition(() => {
-      if (revision !== flowRevision) return
-      stepShown = true
-      recompute()
-    })
-    return true
-  } catch {
-    if (revision === flowRevision) {
-      stepShown = true
-      actionError = "Could not continue setup. Try again."
-    }
-    return false
-  } finally {
-    if (revision === flowRevision) {
-      actionPending = false
-      recompute()
-    }
-  }
-}
-
-export function stepDone(step: ProgressStepKey, progress: OverviewProgress): boolean {
-  return step === "fixes" || progress[step].done
-}
-
-export async function nextStep(): Promise<void> {
-  const from = flow
-  // `stepShown` is false while a move runs, so a second press cannot skip a
-  // step.
-  if (!stepShown || actionPending) return
-  if (from === "welcome") {
-    await moveTo("agents")
-    return
-  }
-  if (from !== "agents" && from !== "sessions" && from !== "checks" && from !== "fixes") return
-  if (!stepDone(from, snapshot)) return
-  await moveTo(nextFlow(from, liveUsageOn))
-}
-
-// Back changes the visible step without restarting completed work.
-export async function previousStep(): Promise<void> {
-  if (snapshot.mode !== "firstRun" || flow === "done" || !stepShown || actionPending) return
-  const previous = FLOW_ORDER[flowIndex(flow) - 1]
-  if (!previous) return
-  actionError = null
-  actionPending = true
-  const revision = flowRevision
-  recompute()
-  try {
-    await withViewTransition(() => {
-      if (revision !== flowRevision) return
-      flow = previous
-      recompute()
-    })
-  } finally {
-    if (revision === flowRevision) {
-      actionPending = false
-      recompute()
-    }
-  }
 }
 
 /* ---- Ref-counted subscriptions: start on the first listener, stop on the
@@ -638,7 +285,6 @@ async function start(): Promise<void> {
   const thisGeneration = ++generation
   let visible = false
   let visibilityRevision = 0
-  let settingsRevision = 0
   let readGeneration = 0
   let checksPending = false
   let checksDirty = false
@@ -719,20 +365,6 @@ async function start(): Promise<void> {
         if (thisGeneration === generation) refreshChecks()
       }),
     ),
-    attach(
-      thisGeneration,
-      onSettingsChanged((settings) => {
-        if (thisGeneration !== generation) return
-        settingsRevision += 1
-        onSettings(settings)
-      }),
-    ),
-    attach(
-      thisGeneration,
-      onFtueReset(() => {
-        if (thisGeneration === generation) onReset()
-      }),
-    ),
   ])
   if (thisGeneration !== generation) return
   onScanStatus(scanStatusStore.getSnapshot())
@@ -741,13 +373,6 @@ async function start(): Promise<void> {
     .then((visible) => {
       if (thisGeneration === generation && visibilityRevision === visibilityAtRead)
         setVisible(visible)
-    })
-    .catch(() => undefined)
-  const settingsAtRead = settingsRevision
-  void getSettings()
-    .then((settings) => {
-      if (thisGeneration === generation && settingsRevision === settingsAtRead)
-        onSettings(settings)
     })
     .catch(() => undefined)
 }

@@ -13,8 +13,15 @@ const ROOT = execFileSync("git", ["rev-parse", "--show-toplevel"], {
   encoding: "utf8",
 }).trim();
 
-function trackedFiles(...patterns) {
-  return execFileSync("git", ["ls-files", "--", ...patterns], {
+function repositoryFiles(...patterns) {
+  return execFileSync("git", [
+    "ls-files",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "--",
+    ...patterns,
+  ], {
     cwd: ROOT,
     encoding: "utf8",
   })
@@ -76,7 +83,7 @@ function isDoctestFence(info) {
 /** The `file:line` of each doctest in the library sources of a workspace. */
 function doctests(workspace) {
   const found = [];
-  const sources = trackedFiles(`${workspace.directory}/src/*.rs`).filter(
+  const sources = repositoryFiles(`${workspace.directory}/src/*.rs`).filter(
     (file) => owningWorkspace(file).id === workspace.id,
   );
   for (const source of sources) {

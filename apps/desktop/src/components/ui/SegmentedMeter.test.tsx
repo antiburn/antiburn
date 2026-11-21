@@ -161,3 +161,14 @@ describe("SegmentedMeter", () => {
     expect(container.firstElementChild).toHaveAttribute("aria-hidden", "true")
   })
 })
+
+it("mutes pace below the marker and turns red when reached", () => {
+  const { getByTestId, rerender } = render(
+    <SegmentedMeter percent={24} expectedFraction={0.25} />,
+  )
+  expect(getByTestId("segmented-meter-notch")).toHaveClass("bg-label-tertiary")
+  rerender(<SegmentedMeter percent={25} expectedFraction={0.25} />)
+  expect(getByTestId("segmented-meter-notch")).toHaveClass("bg-system-red")
+  rerender(<SegmentedMeter percent={null} expectedFraction={0.25} />)
+  expect(getByTestId("segmented-meter-notch")).toHaveClass("bg-label-tertiary")
+})

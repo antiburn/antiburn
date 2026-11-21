@@ -42,17 +42,20 @@ fn hud_notch_reads_do_not_dispatch_mutations_to_the_main_thread() {
     assert!(!source.contains("on_main_value(&app, antiburn_hud::settle_after_drag)"));
     assert!(!source.contains("move |app| antiburn_hud::restore_dock(app, dock)"));
     let restore = include_str!("../hud.rs")
-        .split_once("pub fn restore_at_launch(")
-        .unwrap()
+        .split_once("pub fn restore_if_enabled(")
+        .expect("the automatic HUD restore entry point")
         .1;
-    let restore = restore.split_once("\n}").unwrap().0;
+    let restore = restore.split_once("\n}").expect("the restore body").0;
+    let notch = restore
+        .find("antiburn_hud::refresh_notch()")
+        .expect("restore reads the notch on the main thread");
     let dispatch = restore
         .find("spawn_blocking")
-        .expect("startup dispatches to a worker");
+        .expect("restore dispatches to a worker");
     let open = restore
         .find("antiburn_hud::open")
-        .expect("startup opens the HUD");
-    assert!(dispatch < open);
+        .expect("restore opens the HUD");
+    assert!(notch < dispatch && dispatch < open);
 }
 
 #[test]

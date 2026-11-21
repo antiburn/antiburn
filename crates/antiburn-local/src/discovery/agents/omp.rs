@@ -120,7 +120,8 @@ pub(crate) fn agent_dir_in(home: &Path) -> PathBuf {
 
 async fn log_dirs_in(home: &Path) -> Vec<PathBuf> {
     let sessions_dir = agent_dir_in(home).join("sessions");
-    let mut entries = match tokio::fs::read_dir(&sessions_dir).await {
+    let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(&sessions_dir).await
+    {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),
     };

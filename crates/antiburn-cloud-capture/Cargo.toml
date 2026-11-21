@@ -1,0 +1,57 @@
+[workspace]
+
+[package]
+name = "antiburn-cloud-capture"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/antiburn/antiburn"
+description = "Feature-gated, network-free desktop capture and durable upload queue."
+publish = false
+
+[features]
+default = []
+cloud = ["dep:base64", "dep:errno", "dep:flate2", "dep:libc", "dep:rusqlite", "dep:serde", "dep:serde_json", "dep:sha2"]
+
+[dependencies]
+flate2 = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", features = ["arbitrary_precision", "raw_value"], optional = true }
+sha2 = { version = "0.11", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+base64 = { version = "0.22", optional = true }
+errno = { version = "0.3", optional = true }
+libc = { version = "0.2", optional = true }
+rusqlite = { version = "0.32.1", features = ["bundled", "blob", "hooks", "limits"], optional = true }
+
+[dev-dependencies]
+jsonschema = { version = "0.61.2", default-features = false }
+tempfile = "3"
+
+[patch.crates-io]
+libsqlite3-sys = { path = "../antiburn-local/vendor/libsqlite3-sys" }
+
+[[test]]
+name = "capture"
+required-features = ["cloud"]
+
+[[test]]
+name = "opencode_capture"
+required-features = ["cloud"]
+
+[[test]]
+name = "project_selection_integration_tests"
+required-features = ["cloud"]
+
+[[test]]
+name = "project_capture_integration_tests"
+required-features = ["cloud"]
+
+[[test]]
+name = "metadata_schema"
+required-features = ["cloud"]
+
+[[example]]
+name = "write_fixture"
+required-features = ["cloud"]

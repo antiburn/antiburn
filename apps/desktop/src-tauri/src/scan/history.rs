@@ -12,7 +12,6 @@
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::dto::{ScanHistoryProgress, ScanHistoryState};
-use crate::first_run_gate::{FirstRunGate, FirstRunStage};
 use crate::store::Store;
 use crate::store::model::{CURRENT_WINDOW_DAYS, RETAIN_SESSION_DATA_FOREVER};
 
@@ -59,6 +58,16 @@ pub(crate) fn reset_done(store: &Store) {
 fn done_for_current_retention(store: &Store, retention_days: i32) -> bool {
     store.internal_value(HISTORY_DONE_RETENTION_KEY).as_deref()
         == Some(retention_days.to_string().as_str())
+}
+
+pub(crate) fn discovery_complete(store: &Store, controller: &ScanController) -> bool {
+    if controller.history_discovery_active() {
+        return false;
+    }
+    let retention_days = store.settings_snapshot().session_data_retention_days;
+    // The first pass remains incomplete before its request and after dequeue.
+    window_secs(retention_days, unix_now()).is_none()
+        || done_for_current_retention(store, retention_days)
 }
 
 /// Compute the live progress for [`crate::dto::ScanStatus::history`].
@@ -120,7 +129,7 @@ pub(crate) fn push_progress(app: &AppHandle, force: bool) {
 
 /// Ask the scheduler for the one-time automatic historical pass, if the
 /// current retention warrants one, the first current pass has already
-/// finished, onboarding is complete, and history is not already done for
+/// finished, and history is not already done for
 /// this retention.
 ///
 /// Safe to call repeatedly: once the completion marker matches the live
@@ -128,20 +137,10 @@ pub(crate) fn push_progress(app: &AppHandle, force: bool) {
 /// retention in a launch, so a failed or cancelled pass waits for the next
 /// launch or the reader's own "Older sessions" scan.
 pub(crate) fn maybe_start_automatic_pass(app: &AppHandle) {
-    request_automatic_pass(
-        &app.state::<FirstRunGate>(),
-        &app.state::<ScanController>(),
-        &app.state::<Store>(),
-    );
+    request_automatic_pass(&app.state::<ScanController>(), &app.state::<Store>());
 }
 
-fn request_automatic_pass(gate: &FirstRunGate, controller: &ScanController, store: &Store) {
-    // The first run's own steps own discovery until it finishes. The
-    // reader's own "Older sessions" Scan now button is not gated — see
-    // `crate::commands::scan_history`, which calls `run_pass` directly.
-    if gate.stage() != FirstRunStage::Done {
-        return;
-    }
+fn request_automatic_pass(controller: &ScanController, store: &Store) {
     if !controller.first_current_pass_done() {
         return;
     }
@@ -197,7 +196,6 @@ mod tests {
         use std::sync::atomic::Ordering;
 
         let store = store();
-        let gate = FirstRunGate::new(true);
         let controller = ScanController::default();
         let worker = crate::insights_worker::WorkerHandle::with_active_backlog_for_test(&store);
         assert!(worker.backlog_active());
@@ -205,72 +203,131 @@ mod tests {
         assert!(super::super::on_demand_start(&controller));
         controller.request(ScanTrigger::SettingsTransition);
 
-        request_automatic_pass(&gate, &controller, &store);
+        request_automatic_pass(&controller, &store);
 
         assert!(worker.backlog_active());
         assert!(controller.running.load(Ordering::SeqCst));
         assert!(!super::super::on_demand_start(&controller));
         assert!(!controller.history_pass_running());
         assert!(matches!(
-            controller.take_pending_trigger(),
+            controller.take_pending_trigger().0,
             Some(ScanTrigger::HistoricalScan)
         ));
 
-        request_automatic_pass(&gate, &controller, &store);
-        assert!(controller.take_pending_trigger().is_none());
+        request_automatic_pass(&controller, &store);
+        assert!(controller.take_pending_trigger().0.is_none());
         assert!(worker.backlog_active());
     }
 
     #[test]
     fn automatic_history_preserves_enrollment_gates_without_consuming_the_request_claim() {
         let store = store();
-        let gate = FirstRunGate::new(false);
         let controller = ScanController::default();
+
+        request_automatic_pass(&controller, &store);
+        assert!(controller.take_pending_trigger().0.is_none());
+
         controller.mark_current_pass_done();
-
-        request_automatic_pass(&gate, &controller, &store);
-        assert!(controller.take_pending_trigger().is_none());
-
-        gate.finish();
-        request_automatic_pass(&gate, &controller, &store);
+        request_automatic_pass(&controller, &store);
         assert!(matches!(
-            controller.take_pending_trigger(),
+            controller.take_pending_trigger().0,
             Some(ScanTrigger::HistoricalScan)
         ));
 
         let controller = ScanController::default();
-        request_automatic_pass(&gate, &controller, &store);
-        assert!(controller.take_pending_trigger().is_none());
+        request_automatic_pass(&controller, &store);
+        assert!(controller.take_pending_trigger().0.is_none());
 
         controller.mark_current_pass_done();
         let mut settings = store.settings().unwrap();
         settings.session_data_retention_days = i32::try_from(CURRENT_WINDOW_DAYS).unwrap();
         store.save_settings(&settings).unwrap();
-        request_automatic_pass(&gate, &controller, &store);
-        assert!(controller.take_pending_trigger().is_none());
+        request_automatic_pass(&controller, &store);
+        assert!(controller.take_pending_trigger().0.is_none());
 
         settings.session_data_retention_days = 90;
         store.save_settings(&settings).unwrap();
         mark_done(&store, 90);
-        request_automatic_pass(&gate, &controller, &store);
-        assert!(controller.take_pending_trigger().is_none());
+        request_automatic_pass(&controller, &store);
+        assert!(controller.take_pending_trigger().0.is_none());
 
         reset_done(&store);
-        request_automatic_pass(&gate, &controller, &store);
+        request_automatic_pass(&controller, &store);
         assert!(matches!(
-            controller.take_pending_trigger(),
+            controller.take_pending_trigger().0,
             Some(ScanTrigger::HistoricalScan)
         ));
 
         settings.session_data_retention_days = RETAIN_SESSION_DATA_FOREVER;
         store.save_settings(&settings).unwrap();
-        request_automatic_pass(&gate, &controller, &store);
+        request_automatic_pass(&controller, &store);
         assert!(matches!(
-            controller.take_pending_trigger(),
+            controller.take_pending_trigger().0,
             Some(ScanTrigger::HistoricalScan)
         ));
-        request_automatic_pass(&gate, &controller, &store);
-        assert!(controller.take_pending_trigger().is_none());
+        request_automatic_pass(&controller, &store);
+        assert!(controller.take_pending_trigger().0.is_none());
+    }
+
+    #[test]
+    fn discovery_requires_a_completed_pass_without_queued_or_running_history() {
+        let store = store();
+        let controller = ScanController::default();
+        let retention = store.settings_snapshot().session_data_retention_days;
+
+        assert!(!discovery_complete(&store, &controller));
+        mark_done(&store, retention);
+        assert!(discovery_complete(&store, &controller));
+
+        controller.request(ScanTrigger::HistoricalScan);
+        assert!(!discovery_complete(&store, &controller));
+        let (trigger, dispatch) = controller.take_pending_trigger();
+        assert!(matches!(trigger, Some(ScanTrigger::HistoricalScan)));
+        assert!(!discovery_complete(&store, &controller));
+        assert!(controller.start_history_pass());
+        drop(dispatch);
+        assert!(!discovery_complete(&store, &controller));
+        controller
+            .history_pass_running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(discovery_complete(&store, &controller));
+    }
+
+    #[test]
+    fn dropping_a_dispatch_preserves_a_requeued_history_request() {
+        let store = store();
+        let controller = ScanController::default();
+        mark_done(
+            &store,
+            store.settings_snapshot().session_data_retention_days,
+        );
+        assert!(super::super::on_demand_start(&controller));
+
+        controller.request(ScanTrigger::HistoricalScan);
+        let (_, dispatch) = controller.take_pending_trigger();
+        assert!(!controller.start_history_pass());
+        controller.request(ScanTrigger::HistoricalScan);
+        drop(dispatch);
+        assert!(!discovery_complete(&store, &controller));
+
+        let (_, dispatch) = controller.take_pending_trigger();
+        drop(dispatch);
+        assert!(discovery_complete(&store, &controller));
+    }
+
+    #[test]
+    fn completion_for_narrower_retention_does_not_complete_a_wider_window() {
+        let store = store();
+        let controller = ScanController::default();
+        let mut settings = store.settings().unwrap();
+        settings.session_data_retention_days = 90;
+        store.save_settings(&settings).unwrap();
+        let scanned_retention = store.settings_snapshot().session_data_retention_days;
+
+        settings.session_data_retention_days = RETAIN_SESSION_DATA_FOREVER;
+        store.save_settings(&settings).unwrap();
+        mark_done(&store, scanned_retention);
+        assert!(!discovery_complete(&store, &controller));
     }
 
     #[test]

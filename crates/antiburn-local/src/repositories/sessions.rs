@@ -71,9 +71,21 @@ pub async fn resolve_granted_repos(
     // roots); scanned downward for child repositories below.
     let mut scan_down_dirs: Vec<PathBuf> = Vec::new();
 
+    let access = |path: &Path| {
+        consent.is_current()
+            && crate::paths::protected::git_project_access(path, &consent.granted_dirs())
+                .is_allowed()
+            && consent.is_current()
+    };
     for cwd in &cwds {
-        let granted = consent.granted_dirs();
-        let repo_root = match git::resolve_repo_root_with_fallbacks(Path::new(cwd), &granted).await
+        if !consent.is_current() {
+            break;
+        }
+        let repo_root = match git::resolve_repo_root_with_fallbacks_with_access(
+            Path::new(cwd),
+            &access,
+        )
+        .await
         {
             Ok(resolution) => resolution.repo_root,
             Err(_) => {
@@ -82,9 +94,28 @@ pub async fn resolve_granted_repos(
             }
         };
 
-        let canonical_root = git::canonical_main_repo_root(&repo_root).await;
+        if !consent.is_current()
+            || !crate::paths::protected::git_project_access(&repo_root, &consent.granted_dirs())
+                .is_allowed()
+        {
+            continue;
+        }
+        let Some(canonical_root) =
+            git::canonical_main_repo_root_with_access(&repo_root, &access).await
+        else {
+            continue;
+        };
+        if !consent.is_current()
+            || !crate::paths::protected::git_project_access(
+                &canonical_root,
+                &consent.granted_dirs(),
+            )
+            .is_allowed()
+        {
+            continue;
+        }
 
-        let url = match git::preferred_remote_url_at(&canonical_root).await {
+        let url = match git::preferred_remote_url_at_with_access(&canonical_root, &access).await {
             Ok(Some(url)) => url,
             _ => continue,
         };
@@ -112,6 +143,15 @@ pub async fn resolve_granted_repos(
         seen.insert(root_key);
         let full_name = format!("{repo_owner}/{repo_name}");
         let root_str = canonical_root.to_string_lossy().to_string();
+        if !consent.is_current()
+            || !crate::paths::protected::git_project_access(
+                &canonical_root,
+                &consent.granted_dirs(),
+            )
+            .is_allowed()
+        {
+            continue;
+        }
         let worktree_count = git::worktree_count_at(&canonical_root).await;
 
         // Resolved without a known-repository list. Opt-out: enabled by default.
@@ -228,5 +268,9 @@ pub async fn resolve_granted_repos(
         }
     }
 
-    results
+    if consent.is_current() {
+        results
+    } else {
+        Vec::new()
+    }
 }

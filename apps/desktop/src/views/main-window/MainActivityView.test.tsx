@@ -270,7 +270,9 @@ describe("MainActivityView", () => {
     const { session } = renderActivity()
     await ready(session)
     fireEvent.click(
-      screen.getByRole("button", { name: "Last 7 days, change time range in Overview" }),
+      screen.getByRole("button", {
+        name: "Last 7 days, change time range in Settings → Sessions",
+      }),
     )
     expect(onOpenRangeSettings).toHaveBeenCalledOnce()
   })

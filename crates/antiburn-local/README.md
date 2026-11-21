@@ -14,6 +14,10 @@ The crate is released as a source archive and is not published to crates.io.
 Consumers pin the full commit SHA for an `antiburn-local-v*` release tag. See
 the [release guide](../../docs/runbooks/release.md#how-consumers-pin-the-engine).
 
+**SQLite security:** downstream consumers must apply the workspace-root patch
+documented in [the backport notes](vendor/libsqlite3-sys/BACKPORT.md). Updating
+the engine dependency alone does not apply the WAL initialization fix.
+
 Public modules and compatibility changes are documented in the
 [crate changelog](CHANGELOG.md). The [API support notes](API-SUPPORT.md)
 classify public surfaces that the desktop application does not call directly.

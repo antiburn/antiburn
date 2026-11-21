@@ -16,12 +16,11 @@ use serde_json::{Value, json};
 mod json_encoding;
 
 use self::json_encoding::{decode_hex_jsonish, looks_like_jsonish};
-use super::path_codec::decode_cursor_workspace_path_buf;
 use crate::discovery::scanner::{self, AgentKind};
 use crate::discovery::{
-    AgentExplorer, DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation, SessionLog,
-    SessionSource, SurfacePaths, WatchRoot, app_config_dir_in, find_chat_session_dirs, home_dir,
-    recent_files_with_exts,
+    AgentExplorer, DiscoveryBatch, DuplicateForkDetector, FORK_OBSERVATION_KEY, ForkObservation,
+    ProjectAccessSnapshot, SessionLog, SessionSource, SurfacePaths, WatchRoot, app_config_dir_in,
+    find_chat_session_dirs, home_dir, recent_files_with_exts,
 };
 
 const CURSOR_PROJECT_SKIP_DIRS: &[&str] = &["mcps", "agent-tools", "terminals"];
@@ -85,6 +84,41 @@ impl AgentExplorer for CursorExplorer {
             None => return Vec::new(),
         };
         discover_recent_in(&home, now, since_secs, self.duplicate_fork_detector).await
+    }
+
+    async fn discover_recent_with_project_access(
+        &self,
+        now: i64,
+        since_secs: i64,
+        access: ProjectAccessSnapshot,
+    ) -> Vec<SessionLog> {
+        let home = match home_dir() {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        discover_recent_in_with_project_access(
+            &home,
+            now,
+            since_secs,
+            self.duplicate_fork_detector,
+            &access,
+        )
+        .await
+    }
+
+    async fn discover_recent_batches_with_project_access(
+        &self,
+        agent: AgentKind,
+        now: i64,
+        since_secs: i64,
+        batch_size: usize,
+        access: ProjectAccessSnapshot,
+        sender: tokio::sync::mpsc::Sender<DiscoveryBatch>,
+    ) {
+        let mut logs = self
+            .discover_recent_with_project_access(now, since_secs, access)
+            .await;
+        crate::discovery::send_discovery_batches(agent, &mut logs, batch_size, true, &sender).await;
     }
 
     /// Owns `~/.cursor/{projects,chats}/**` (CLI) and `<app-config>/Cursor/User/**`
@@ -157,6 +191,26 @@ async fn discover_recent_in(
     since_secs: i64,
     duplicate_fork_detector: Option<DuplicateForkDetector>,
 ) -> Vec<SessionLog> {
+    discover_recent_in_with_project_access(
+        home,
+        now,
+        since_secs,
+        duplicate_fork_detector,
+        &ProjectAccessSnapshot::new(HashSet::new(), || true),
+    )
+    .await
+}
+
+async fn discover_recent_in_with_project_access(
+    home: &Path,
+    now: i64,
+    since_secs: i64,
+    duplicate_fork_detector: Option<DuplicateForkDetector>,
+    access: &ProjectAccessSnapshot,
+) -> Vec<SessionLog> {
+    if !access.is_current() {
+        return Vec::new();
+    }
     let mut discovered: HashMap<String, CursorDiscoveredSession> = HashMap::new();
 
     let ws_root = app_config_dir_in("Cursor", home)
@@ -180,11 +234,13 @@ async fn discover_recent_in(
         merge_cursor_session(&mut discovered, candidate);
     }
 
-    for candidate in discover_agent_transcripts(home, now, since_secs).await {
+    for candidate in discover_agent_transcripts(home, now, since_secs, access).await {
         merge_cursor_session(&mut discovered, candidate);
     }
 
-    for candidate in discover_store_db_sessions(home, now, since_secs).await {
+    for candidate in
+        discover_store_db_sessions_with_project_access(home, now, since_secs, access).await
+    {
         merge_cursor_session(&mut discovered, candidate);
     }
 
@@ -242,7 +298,7 @@ async fn collect_agent_transcript_dirs(root: &Path) -> Vec<PathBuf> {
     let mut stack = vec![(root.to_path_buf(), 0usize)];
 
     while let Some((dir, depth)) = stack.pop() {
-        let mut entries = match tokio::fs::read_dir(&dir).await {
+        let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(&dir).await {
             Ok(entries) => entries,
             Err(_) => continue,
         };
@@ -285,6 +341,7 @@ async fn discover_agent_transcripts(
     home: &Path,
     now: i64,
     since_secs: i64,
+    access: &ProjectAccessSnapshot,
 ) -> Vec<CursorDiscoveredSession> {
     let cutoff = now - since_secs;
     let projects_dir = home.join(".cursor").join("projects");
@@ -297,10 +354,11 @@ async fn discover_agent_transcripts(
     for dir in transcript_dirs {
         let mut stack = vec![dir.clone()];
         while let Some(current) = stack.pop() {
-            let mut entries = match tokio::fs::read_dir(&current).await {
-                Ok(entries) => entries,
-                Err(_) => continue,
-            };
+            let mut entries =
+                match crate::discovery::source_fs::asynchronous::read_dir(&current).await {
+                    Ok(entries) => entries,
+                    Err(_) => continue,
+                };
 
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
@@ -320,10 +378,11 @@ async fn discover_agent_transcripts(
                     continue;
                 }
 
-                let metadata = match tokio::fs::metadata(&path).await {
-                    Ok(metadata) => metadata,
-                    Err(_) => continue,
-                };
+                let metadata =
+                    match crate::discovery::source_fs::asynchronous::metadata(&path).await {
+                        Ok(metadata) => metadata,
+                        Err(_) => continue,
+                    };
                 let mtime_epoch = match metadata.modified() {
                     Ok(mtime) => match mtime.duration_since(UNIX_EPOCH) {
                         Ok(d) => d.as_secs() as i64,
@@ -349,17 +408,23 @@ async fn discover_agent_transcripts(
                     } else if let Some(cached) = workspace_decode_cache.get(workspace_key) {
                         cached.clone()
                     } else {
-                        let decoded = decode_cursor_workspace_path(workspace_key, home).await;
+                        let decoded = decode_cursor_workspace_path_with_project_access(
+                            workspace_key,
+                            home,
+                            access,
+                        )
+                        .await;
                         workspace_decode_cache.insert(workspace_key.to_string(), decoded.clone());
                         decoded
                     }
                 } else {
                     None
                 };
-                let content = match tokio::fs::read_to_string(&path).await {
-                    Ok(content) => content,
-                    Err(_) => continue,
-                };
+                let content =
+                    match crate::discovery::source_fs::asynchronous::read_to_string(&path).await {
+                        Ok(content) => content,
+                        Err(_) => continue,
+                    };
                 let metadata = chat_metadata.get(session_id).cloned().unwrap_or_default();
                 let label = path.to_string_lossy().to_string();
                 let fork_observation =
@@ -423,7 +488,7 @@ async fn collect_cursor_chat_metadata(home: &Path) -> HashMap<String, CursorChat
     let mut out = HashMap::new();
     let mut stack = vec![(home.join(".cursor").join("chats"), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
-        let mut entries = match tokio::fs::read_dir(&dir).await {
+        let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(&dir).await {
             Ok(entries) => entries,
             Err(_) => continue,
         };
@@ -449,7 +514,9 @@ async fn collect_cursor_chat_metadata(home: &Path) -> HashMap<String, CursorChat
             else {
                 continue;
             };
-            let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            let Ok(content) =
+                crate::discovery::source_fs::asynchronous::read_to_string(&path).await
+            else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<Value>(&content) else {
@@ -478,7 +545,7 @@ async fn collect_workspace_paths(home: &Path) -> HashMap<String, String> {
         .join("User")
         .join("workspaceStorage");
     let mut out = HashMap::new();
-    let mut entries = match tokio::fs::read_dir(&ws_root).await {
+    let mut entries = match crate::discovery::source_fs::asynchronous::read_dir(&ws_root).await {
         Ok(entries) => entries,
         Err(_) => return out,
     };
@@ -494,7 +561,9 @@ async fn collect_workspace_paths(home: &Path) -> HashMap<String, String> {
             continue;
         }
         let workspace_json = workspace_dir.join("workspace.json");
-        let Ok(content) = tokio::fs::read_to_string(&workspace_json).await else {
+        let Ok(content) =
+            crate::discovery::source_fs::asynchronous::read_to_string(&workspace_json).await
+        else {
             continue;
         };
         let Some(path) = parse_workspace_json_path(&content) else {
@@ -507,13 +576,32 @@ async fn collect_workspace_paths(home: &Path) -> HashMap<String, String> {
     out
 }
 
+#[cfg(test)]
 async fn discover_store_db_sessions(
     home: &Path,
     now: i64,
     since_secs: i64,
 ) -> Vec<CursorDiscoveredSession> {
+    discover_store_db_sessions_with_project_access(
+        home,
+        now,
+        since_secs,
+        &ProjectAccessSnapshot::new(HashSet::new(), || true),
+    )
+    .await
+}
+
+async fn discover_store_db_sessions_with_project_access(
+    home: &Path,
+    now: i64,
+    since_secs: i64,
+    access: &ProjectAccessSnapshot,
+) -> Vec<CursorDiscoveredSession> {
     let chats_root = home.join(".cursor").join("chats");
-    if !tokio::fs::try_exists(&chats_root).await.unwrap_or(false) {
+    if !crate::discovery::source_fs::asynchronous::try_exists(&chats_root)
+        .await
+        .unwrap_or(false)
+    {
         return Vec::new();
     }
 
@@ -550,7 +638,9 @@ async fn discover_store_db_sessions(
         } else if let Some(cached) = workspace_decode_cache.get(&workspace_key).cloned() {
             cached
         } else {
-            let decoded = decode_cursor_workspace_path(&workspace_key, home).await;
+            let decoded =
+                decode_cursor_workspace_path_with_project_access(&workspace_key, home, access)
+                    .await;
             workspace_decode_cache.insert(workspace_key.clone(), decoded.clone());
             decoded
         };
@@ -607,14 +697,19 @@ async fn find_agent_transcript_workspace_key(
     if !is_safe_session_id(session_id) {
         return None;
     }
-    let mut entries = tokio::fs::read_dir(projects_dir).await.ok()?;
+    let mut entries = crate::discovery::source_fs::asynchronous::read_dir(projects_dir)
+        .await
+        .ok()?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let project_path = entry.path();
-        if !project_path.is_dir() {
+        if !crate::discovery::source_fs::is_dir(&project_path) {
             continue;
         }
         let candidate = project_path.join("agent-transcripts").join(session_id);
-        if tokio::fs::try_exists(&candidate).await.unwrap_or(false) {
+        if crate::discovery::source_fs::asynchronous::try_exists(&candidate)
+            .await
+            .unwrap_or(false)
+        {
             return project_path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -676,7 +771,9 @@ async fn discover_desktop_sessions(
         .join("globalStorage")
         .join("state.vscdb");
 
-    if !global_db.exists() || !ws_root.exists() {
+    if !crate::discovery::source_fs::exists(&global_db)
+        || !crate::discovery::source_fs::exists(&ws_root)
+    {
         return Vec::new();
     }
 
@@ -708,24 +805,26 @@ fn query_cursor_desktop_sessions(
         Err(_) => return Vec::new(),
     };
     let mut logs = Vec::new();
-    let workspace_dirs = match std::fs::read_dir(ws_root) {
+    let workspace_dirs = match crate::discovery::source_fs::read_dir(ws_root) {
         Ok(entries) => entries,
         Err(_) => return logs,
     };
 
     for workspace_entry in workspace_dirs.flatten() {
         let workspace_dir = workspace_entry.path();
-        if !workspace_dir.is_dir() {
+        if !crate::discovery::source_fs::is_dir(&workspace_dir) {
             continue;
         }
 
         let workspace_db = workspace_dir.join("state.vscdb");
         let workspace_json = workspace_dir.join("workspace.json");
-        if !workspace_db.exists() || !workspace_json.exists() {
+        if !crate::discovery::source_fs::exists(&workspace_db)
+            || !crate::discovery::source_fs::exists(&workspace_json)
+        {
             continue;
         }
 
-        let cwd = std::fs::read_to_string(&workspace_json)
+        let cwd = crate::discovery::source_fs::read_to_string(&workspace_json)
             .ok()
             .and_then(|content| parse_workspace_json_path(&content));
 
@@ -811,7 +910,7 @@ fn fetch_composer_last_updated_at_ms(global: &Connection, composer_id: &str) -> 
 }
 
 fn open_sqlite_readonly(path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open_with_flags(
+    let conn = crate::discovery::source_fs::open_database(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
@@ -1438,8 +1537,17 @@ fn set_embedded_fork_observation(content: &mut String, observation: &ForkObserva
     *content = format!("{metadata}\n{rest}");
 }
 
-async fn decode_cursor_workspace_path(encoded: &str, home_boundary: &Path) -> Option<String> {
-    let decoded = decode_cursor_workspace_path_buf(encoded, home_boundary).await?;
+async fn decode_cursor_workspace_path_with_project_access(
+    encoded: &str,
+    home_boundary: &Path,
+    access: &ProjectAccessSnapshot,
+) -> Option<String> {
+    let decoded = super::path_codec::decode_cursor_workspace_path_buf_with_project_access(
+        encoded,
+        home_boundary,
+        access,
+    )
+    .await?;
     Some(decoded.to_string_lossy().to_string())
 }
 
@@ -1533,13 +1641,13 @@ fn query_cursor_store_db_sessions(chats_root: &Path, cutoff: i64) -> Vec<CursorD
     let mut snapshots = Vec::new();
     let mut stack = vec![chats_root.to_path_buf()];
     while let Some(path) = stack.pop() {
-        let entries = match std::fs::read_dir(&path) {
+        let entries = match crate::discovery::source_fs::read_dir(&path) {
             Ok(entries) => entries,
             Err(_) => continue,
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            if crate::discovery::source_fs::is_dir(&path) {
                 stack.push(path);
                 continue;
             }
@@ -1642,7 +1750,7 @@ fn read_cursor_store_db_snapshot(path: &Path) -> Option<CursorStoreDbSnapshot> {
     }
 
     let metadata = parse_cursor_store_db_metadata(&meta_values)?;
-    let file_mtime = std::fs::metadata(path)
+    let file_mtime = crate::discovery::source_fs::metadata(path)
         .ok()?
         .modified()
         .ok()?
@@ -3136,6 +3244,52 @@ mod tests {
         assert_eq!(metadata.session_id.as_deref(), Some("abc"));
         assert_eq!(
             metadata.cwd.as_deref(),
+            Some(repo_root.to_string_lossy().as_ref())
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn cursor_agent_workspace_key_resolves_after_protected_folder_grant() {
+        let home = TempDir::new().unwrap();
+        let repo_root = home.path().join("Documents").join("repo");
+        tokio::fs::create_dir_all(&repo_root).await.unwrap();
+
+        let transcript = home
+            .path()
+            .join(".cursor")
+            .join("projects")
+            .join(encode_cursor_project_workspace_key(&repo_root))
+            .join("agent-transcripts")
+            .join("abc")
+            .join("abc.jsonl");
+        tokio::fs::create_dir_all(transcript.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &transcript,
+            "{\"role\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n",
+        )
+        .await
+        .unwrap();
+        let now = current_unix_epoch_for_tests();
+
+        let no_grants = ProjectAccessSnapshot::new(HashSet::new(), || true);
+        let before_grant =
+            discover_recent_in_with_project_access(home.path(), now, 3600, None, &no_grants).await;
+        let SessionSource::Inline { content, .. } = &before_grant[0].source else {
+            panic!("expected the inline Cursor transcript");
+        };
+        assert_eq!(scanner::parse_session_metadata_str(content).cwd, None);
+
+        let granted = ProjectAccessSnapshot::new(HashSet::from(["Documents".to_owned()]), || true);
+        let after_grant =
+            discover_recent_in_with_project_access(home.path(), now, 3600, None, &granted).await;
+        let SessionSource::Inline { content, .. } = &after_grant[0].source else {
+            panic!("expected the inline Cursor transcript");
+        };
+        assert_eq!(
+            scanner::parse_session_metadata_str(content).cwd.as_deref(),
             Some(repo_root.to_string_lossy().as_ref())
         );
     }

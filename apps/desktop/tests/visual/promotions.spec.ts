@@ -160,9 +160,9 @@ test("reduced motion and failed animation retain a full-bleed accessible poster"
   const image = media.locator("img")
   await expect(image).toHaveAttribute("src", /claude-mod-desktop-dark-no-label-poster/)
   await page.emulateMedia({ reducedMotion: "no-preference" })
-  const darkVideo = media.locator("video")
-  await expect(darkVideo).toHaveCSS("visibility", "visible")
-  await darkVideo.dispatchEvent("error")
+  await expect(image).toHaveAttribute("src", /claude-mod-desktop-dark-no-label-800.*\.webp/)
+  await expect(image).toHaveCSS("visibility", "visible")
+  await image.dispatchEvent("error")
   await expect(image).toHaveAttribute("src", /claude-mod-desktop-dark-no-label-poster/)
   await expect(media.locator("img")).toBeVisible()
   await expect(media.locator("img")).toHaveCSS("object-fit", "cover")
@@ -181,7 +181,7 @@ test("small viewport keeps the panel and footer reachable", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Learn more" })).toBeVisible()
 })
 
-test("new users wait 24 hours after FTUE before automatic display", async ({ page }) => {
+test("new users wait 24 hours after onboarding before automatic display", async ({ page }) => {
   await page.goto(
     "/tests/visual/?surface=main&theme=dark&state=populated&onboarding=complete&promoAge=0",
   )
@@ -196,12 +196,27 @@ test("new users wait 24 hours after FTUE before automatic display", async ({ pag
   await expect(page.locator(".promotion-panel")).toBeVisible()
 })
 
-test("MAIN-window FTUE never displays or marks a promo seen", async ({ page }) => {
+test("automatic promotion waits for a later native process but manual opening stays available", async ({
+  page,
+}) => {
+  await page.goto(
+    "/tests/visual/?surface=main&theme=dark&state=populated&onboarding=complete&promoAge=86400000&promoSession=current",
+  )
+  await expect(page.locator(".main-window")).toBeVisible()
+  await expect(page.locator(".promotion-panel")).toBeHidden()
+  await page.getByRole("button", { name: "Claude Mod, new", exact: true }).click()
+  await expect(page.locator(".promotion-panel")).toBeVisible()
+})
+
+test("incomplete native onboarding keeps Sessions usable without displaying or marking a promo seen", async ({
+  page,
+}) => {
   await page.goto("/tests/visual/?surface=main&theme=dark&state=populated")
-  await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeDisabled()
-  await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("antiburn.promotions.ftue.v1")))
-    .not.toBeNull()
+  await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeEnabled()
+  await expect(page.getByRole("tab", { name: "Sessions", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  )
   await expect(page.locator(".promotion-panel")).toHaveCount(0)
   expect(
     await page.evaluate(() => localStorage.getItem("antiburn.promotions.seen.v1")),
@@ -274,71 +289,53 @@ for (const reduced of [false, true]) {
   })
 }
 
-test("label-free videos and posters switch together between themes", async ({ page }) => {
+test("label-free animations and posters switch together between themes", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" })
   await page.goto(
     "/tests/visual/?surface=main&theme=light&scale=100&state=populated&onboarding=complete",
   )
   const panel = page.locator(".promotion-panel")
   await expect(panel).toBeVisible()
-  const video = panel.locator("video")
-  await expect(video).toHaveAttribute("src", /claude-mod-desktop-light-no-label-800.*\.mp4/)
-  await expect(video).toHaveAttribute(
-    "poster",
-    /claude-mod-desktop-light-no-label-poster.*\.png/,
-  )
-  await expect(panel.locator(".promotion-poster")).toHaveAttribute(
-    "src",
-    /claude-mod-desktop-light-no-label-poster.*\.png/,
-  )
-  await expect
-    .poll(() => video.evaluate((node: HTMLVideoElement) => node.currentTime))
-    .toBeGreaterThan(0)
-  expect(
-    await video.evaluate((node: HTMLVideoElement) => ({
-      width: node.videoWidth,
-      height: node.videoHeight,
-      muted: node.muted,
-      error: node.error?.code ?? null,
-    })),
-  ).toEqual({ width: 800, height: 416, muted: true, error: null })
+  const image = panel.locator(".promotion-media img")
+  // Chromium can decode the WebP at its canvas size. This does not prove animation advances.
+  const expectDecoded = async (theme: "light" | "dark") => {
+    const source = new RegExp(`claude-mod-desktop-${theme}-no-label-800.*\\.webp`)
+    await expect
+      .poll(() =>
+        image.evaluate(async (node: HTMLImageElement) => {
+          try {
+            await node.decode()
+            return {
+              src: node.currentSrc,
+              width: node.naturalWidth,
+              height: node.naturalHeight,
+            }
+          } catch {
+            return null
+          }
+        }),
+      )
+      .toEqual({ src: expect.stringMatching(source), width: 800, height: 416 })
+  }
+  await expectDecoded("light")
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "dark"
   })
-  await expect(video).toHaveAttribute("src", /claude-mod-desktop-dark-no-label-800.*\.mp4/)
-  await expect(video).toHaveAttribute(
-    "poster",
-    /claude-mod-desktop-dark-no-label-poster.*\.png/,
-  )
-  await expect(panel.locator(".promotion-poster")).toHaveAttribute(
-    "src",
-    /claude-mod-desktop-dark-no-label-poster.*\.png/,
-  )
-  await expect
-    .poll(() => video.evaluate((node: HTMLVideoElement) => node.currentTime))
-    .toBeGreaterThan(0)
-  await expect(video).toHaveAttribute("loop", "")
+  await expectDecoded("dark")
+  await expect(image).toHaveCSS("visibility", "visible")
   await page.evaluate(() => {
     document.documentElement.dataset.theme = "light"
   })
-  await expect(video).toHaveAttribute(
-    "poster",
-    /claude-mod-desktop-light-no-label-poster.*\.png/,
-  )
+  await expect(image).toHaveAttribute("src", /claude-mod-desktop-light-no-label-800.*\.webp/)
+  // Reduced motion keeps the image element and shows the still poster in it.
   await page.emulateMedia({ reducedMotion: "reduce" })
-  await expect(video).toHaveCSS("visibility", "hidden")
-  await expect.poll(() => video.evaluate((node: HTMLVideoElement) => node.paused)).toBe(true)
-  await expect(panel.locator(".promotion-poster")).toBeVisible()
+  await expect(image).toHaveAttribute("src", /claude-mod-desktop-light-no-label-poster.*\.png/)
+  await expect(image).toBeVisible()
   await page.evaluate(() => {
     delete document.documentElement.dataset.theme
   })
   await page.emulateMedia({ colorScheme: "dark" })
-  await expect(video).toHaveAttribute("src", /claude-mod-desktop-dark-no-label-800.*\.mp4/)
-  await expect(video).toHaveCSS("visibility", "hidden")
-  await expect(panel.locator(".promotion-media img")).toHaveAttribute(
-    "src",
-    /claude-mod-desktop-dark-no-label-poster.*\.png/,
-  )
+  await expect(image).toHaveAttribute("src", /claude-mod-desktop-dark-no-label-poster.*\.png/)
 })
 
 for (const theme of ["light", "dark"] as const) {
@@ -412,7 +409,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(reopened).toBeVisible()
     await expect(reopened).toBeFocused()
     await expect(reopened.locator(".promotion-launcher-badge")).toHaveCount(1)
-    await expect(page.getByRole("tab", { name: "Overview", exact: true })).toHaveAttribute(
+    await expect(page.getByRole("tab", { name: "Sessions", exact: true })).toHaveAttribute(
       "aria-selected",
       "true",
     )
@@ -435,7 +432,7 @@ for (const theme of ["light", "dark"] as const) {
   })
 }
 
-test("automatic viewing retains NEW and an incomplete FTUE hides the launcher", async ({
+test("automatic viewing retains NEW and incomplete onboarding blocks manual opening", async ({
   page,
 }) => {
   await page.goto("/tests/visual/?surface=main&state=populated&onboarding=complete")
@@ -450,6 +447,14 @@ test("automatic viewing retains NEW and an incomplete FTUE hides the launcher", 
   ).toBeNull()
   await page.goto("/tests/visual/?surface=main&state=populated&onboarding=firstRun")
   await expect(page.locator(".main-window")).toBeVisible()
-  await expect(page.getByRole("button", { name: /Claude Mod/ })).toHaveCount(0)
+  const launcher = page.getByRole("button", { name: "Claude Mod, new", exact: true })
+  await expect(launcher).toBeVisible()
+  await launcher.click()
   await expect(panel).toBeHidden()
+  expect(
+    await page.evaluate(() => localStorage.getItem("antiburn.promotions.launcher-opened.v1")),
+  ).toBeNull()
+  expect(
+    await page.evaluate(() => localStorage.getItem("antiburn.promotions.seen.v1")),
+  ).toBeNull()
 })

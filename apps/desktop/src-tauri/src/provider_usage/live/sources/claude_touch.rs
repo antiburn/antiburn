@@ -28,9 +28,10 @@
 //! spawn, then polled until *quiescent*: changed from the pre-spawn
 //! fingerprint **and** re-observed unchanged for [`STABLE_POLLS`] consecutive
 //! polls, because the CLI may write more than once and the first change must
-//! not be trusted. The whole verification is capped at [`MAX_POLLS`] polls of
-//! [`POLL_INTERVAL`] each — about fifteen seconds — and the child is killed
-//! when it concludes, either way.
+//! not be trusted. Verification has a wall-clock deadline of
+//! [`MAX_VERIFY_DURATION`] and a secondary cap of [`MAX_POLLS`] polls. The
+//! polls share one deadline, so repeated metadata retries cannot extend
+//! verification. The child is killed when verification concludes.
 //!
 //! The fingerprint is **metadata only**. On macOS it comes from
 //! `security find-generic-password` *without* `-w`, which returns item
@@ -44,16 +45,24 @@
 //! # The gate
 //!
 //! One expired credential must not spawn PTYs repeatedly. [`TouchGate`]
-//! holds a minutes-scale cooldown between attempts — a fixed
-//! [`TOUCH_COOLDOWN`], sitting above `cooldown.rs`'s failure ceiling the way
-//! that module's floor/ceiling pattern bounds its own retries — plus
-//! in-flight dedup, and a *terminal* state: when a settled refresh still
-//! produced a dead credential, the CLI's refresh token itself is bad
-//! (`invalid_grant`), waiting will not fix it, and the touch stays blocked
-//! until the credential material on disk changes — that is, until the reader
-//! runs `claude` and signs in again.
+//! holds a minutes-scale cooldown between attempts — [`TOUCH_COOLDOWN`] for
+//! a user-initiated check and the longer [`BACKGROUND_TOUCH_COOLDOWN`] for a
+//! background check — plus in-flight dedup, and a *terminal* state: when a
+//! settled refresh still produced a dead credential, the CLI's refresh token
+//! itself is bad (`invalid_grant`), waiting will not fix it, and the touch
+//! stays blocked until the credential material on disk changes — that is,
+//! until the reader runs `claude` and signs in again.
+//!
+//! An unchanged attempt remains recoverable. Offline operation and slow CLI
+//! startup do not prove that a refresh token is invalid.
+//!
+//! # Retrying an attribute read
+//!
+//! An attribute read can fail for a short time, for example while the CLI
+//! writes the item. [`with_retries_until`] retries such a read with a short
+//! backoff ([`RETRY_DELAYS`]) inside a bounded deadline.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::cli_locator;
@@ -63,9 +72,11 @@ use super::cli_locator;
 /// subprocess storm.
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// The hard cap on verification polls — thirty polls of half a second, the
-/// ~15 s deadline on the whole touch. Past it the refresh is treated as
-/// transiently failed, never awaited further.
+/// The wall-clock budget for one fingerprint read and the verification loop.
+const MAX_VERIFY_DURATION: Duration = Duration::from_secs(15);
+
+/// A secondary cap on verification polls. The wall-clock deadline also ends
+/// verification when metadata reads take longer than the poll interval.
 const MAX_POLLS: u32 = 30;
 
 /// How many consecutive polls a changed fingerprint must be re-observed
@@ -79,7 +90,72 @@ const STABLE_POLLS: u32 = 4;
 /// derived: a touch costs a PTY, a subprocess per verification poll, and up
 /// to fifteen seconds of deadline, so even the popover's eager polling gets
 /// exactly one attempt per five minutes.
-const TOUCH_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+pub(super) const TOUCH_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+/// The wait between attempts that background checks start.
+///
+/// The background monitor checks every five minutes. A longer wait keeps a
+/// login that does not recover from a PTY spawn on every tick. A
+/// user-initiated check still uses [`TOUCH_COOLDOWN`].
+pub(super) const BACKGROUND_TOUCH_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+
+/// The waits before each retry of a failed attribute read. Three retries
+/// follow the first attempt, so a read is tried four times in total.
+pub(super) const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_millis(1000),
+];
+
+/// Run `attempt` until it returns a value, at most once plus once per
+/// [`RETRY_DELAYS`] entry. `sleep` waits before each retry; a test supplies
+/// a sleep that returns at once.
+///
+/// `Err` holds the number of attempts that failed.
+#[cfg(test)]
+fn with_retries<T>(sleep: &dyn Fn(Duration), attempt: impl FnMut() -> Option<T>) -> Result<T, u32> {
+    with_retries_until(Instant::now() + Duration::from_secs(10), sleep, attempt)
+}
+
+/// Run `attempt` with the same retry schedule, but stop at `deadline`.
+///
+/// Callers must bound any blocking work inside `attempt`. `Err` holds the
+/// number of attempts that failed or started before the deadline.
+pub(super) fn with_retries_until<T>(
+    deadline: Instant,
+    sleep: &dyn Fn(Duration),
+    mut attempt: impl FnMut() -> Option<T>,
+) -> Result<T, u32> {
+    let mut attempts = 0_u32;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(attempts);
+        }
+        attempts += 1;
+        let result = attempt();
+        if Instant::now() >= deadline {
+            return Err(attempts);
+        }
+        if let Some(value) = result {
+            return Ok(value);
+        }
+        let Some(delay) = RETRY_DELAYS.get((attempts - 1) as usize) else {
+            return Err(attempts);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(attempts);
+        }
+        sleep((*delay).min(remaining));
+    }
+}
+
+/// How one touch attempt runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchRequest {
+    /// The wait since the last attempt before a new attempt may start.
+    pub cooldown: Duration,
+}
 
 /// An opaque, metadata-only summary of the credential carrier's state.
 ///
@@ -104,9 +180,9 @@ pub trait TouchEnvironment: Send + Sync {
     fn binary_present(&self) -> bool;
 
     /// The carrier's current metadata fingerprint, or `None` when the
-    /// carrier cannot be observed — in which case no touch runs, because a
-    /// refresh that cannot be verified must not be started.
-    fn fingerprint(&self) -> Option<Fingerprint>;
+    /// carrier cannot be observed by `deadline`. Use the deadline to bound
+    /// retries and subprocess reads. The touch needs a fingerprint to start.
+    fn fingerprint(&self, deadline: Instant) -> Option<Fingerprint>;
 
     /// Start the PTY touch. `None` means the spawn itself failed.
     fn spawn(&self) -> Option<Box<dyn TouchChild>>;
@@ -116,7 +192,7 @@ pub trait TouchEnvironment: Send + Sync {
 }
 
 /// What one touch attempt concluded.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TouchOutcome {
     /// The carrier changed from its pre-spawn fingerprint and settled at the
     /// named one. The caller may now read the secret — once.
@@ -127,7 +203,11 @@ pub enum TouchOutcome {
     /// The carrier still matches a refresh that produced a dead credential.
     /// Only a new sign-in changes this.
     Terminal,
-    /// The touch was skipped, failed to spawn, or never verified inside the
+    /// The touch did not start: the cooldown or another attempt blocked it,
+    /// the material could not be observed, or the spawn failed. A later
+    /// check can try again.
+    Skipped,
+    /// The CLI ran, but the material did not change and settle inside the
     /// deadline. The credential is exactly as expired as it was.
     NotRefreshed,
 }
@@ -136,32 +216,86 @@ pub enum TouchOutcome {
 /// verify, tear down.
 ///
 /// The child is killed as soon as verification concludes, settled or not —
-/// the hard deadline in [`MAX_POLLS`] is the child's lifetime cap.
-pub fn touch(env: &dyn TouchEnvironment, gate: &TouchGate) -> TouchOutcome {
+/// [`MAX_VERIFY_DURATION`] caps its verification lifetime.
+pub fn touch(
+    env: &dyn TouchEnvironment,
+    gate: &TouchGate,
+    request: TouchRequest,
+    credential: &Fingerprint,
+) -> TouchOutcome {
+    if !gate.reserve(request.cooldown, Some(credential)) {
+        return TouchOutcome::Skipped;
+    }
+    let _flight = Flight(gate);
+    touch_reserved(env, gate)
+}
+
+/// Start an owner-only refresh without holding collection or source locks.
+pub fn schedule(
+    env: Arc<dyn TouchEnvironment>,
+    gate: TouchGate,
+    request: TouchRequest,
+    credential: Fingerprint,
+    completed: impl FnOnce(&TouchOutcome) + Send + 'static,
+) {
+    if !gate.reserve(request.cooldown, Some(&credential)) {
+        completed(&TouchOutcome::Skipped);
+        return;
+    }
+    let worker_gate = gate.clone();
+    if std::thread::Builder::new()
+        .name("claude-refresh".into())
+        .spawn(move || {
+            let _flight = Flight(&worker_gate);
+            let outcome = touch_reserved(env.as_ref(), &worker_gate);
+            completed(&outcome);
+            super::claude_login::lock(&worker_gate.inner).completed = Some((credential, outcome));
+        })
+        .is_err()
+    {
+        gate.finish();
+    }
+}
+
+struct Flight<'a>(&'a TouchGate);
+impl Drop for Flight<'_> {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
+}
+
+impl TouchOutcome {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Settled(_) => "refreshed",
+            Self::CliMissing => "cli_missing",
+            Self::Terminal => "sign_in_required",
+            Self::Skipped => "gated",
+            Self::NotRefreshed => "unchanged",
+        }
+    }
+}
+
+fn touch_reserved(env: &dyn TouchEnvironment, gate: &TouchGate) -> TouchOutcome {
+    let deadline = Instant::now() + MAX_VERIFY_DURATION;
     if !env.binary_present() {
         log_touch_outcome("cli_missing");
         return TouchOutcome::CliMissing;
     }
-    let Some(before) = env.fingerprint() else {
+    let Some(before) = env.fingerprint(deadline) else {
         log_touch_outcome("metadata_unavailable");
-        return TouchOutcome::NotRefreshed;
+        return TouchOutcome::Skipped;
     };
     if gate.is_terminal(&before) {
         log_touch_outcome("terminal");
         return TouchOutcome::Terminal;
     }
-    if !gate.begin(&before) {
-        log_touch_outcome("cooldown_or_in_flight");
-        return TouchOutcome::NotRefreshed;
-    }
     let Some(mut child) = env.spawn() else {
-        gate.finish();
         log_touch_outcome("spawn_failed");
-        return TouchOutcome::NotRefreshed;
+        return TouchOutcome::Skipped;
     };
-    let settled = verify(env, &before);
+    let settled = verify(env, &before, deadline);
     child.kill();
-    gate.finish();
     match settled {
         Some(fingerprint) => {
             log_touch_outcome("settled");
@@ -180,13 +314,28 @@ fn log_touch_outcome(outcome: &'static str) {
 
 /// Poll the carrier until it is quiescent: changed from `before` and
 /// re-observed unchanged for [`STABLE_POLLS`] consecutive polls. `None`
-/// past [`MAX_POLLS`] polls — the deadline the module doc describes.
-fn verify(env: &dyn TouchEnvironment, before: &Fingerprint) -> Option<Fingerprint> {
+/// means the wall-clock deadline or poll cap expired.
+fn verify(
+    env: &dyn TouchEnvironment,
+    before: &Fingerprint,
+    deadline: Instant,
+) -> Option<Fingerprint> {
     let mut last: Option<Fingerprint> = None;
     let mut stable = 0_u32;
     for _ in 0..MAX_POLLS {
-        env.sleep(POLL_INTERVAL);
-        match env.fingerprint() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        env.sleep(POLL_INTERVAL.min(remaining));
+        if Instant::now() >= deadline {
+            return None;
+        }
+        let current = env.fingerprint(deadline);
+        if Instant::now() >= deadline {
+            return None;
+        }
+        match current {
             Some(current) if current != *before => {
                 if last.as_ref() == Some(&current) {
                     stable += 1;
@@ -208,9 +357,9 @@ fn verify(env: &dyn TouchEnvironment, before: &Fingerprint) -> Option<Fingerprin
 }
 
 /// The cooldown, dedup, and terminal state one source's touches share.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct TouchGate {
-    inner: Mutex<GateInner>,
+    inner: Arc<Mutex<GateInner>>,
 }
 
 #[derive(Default)]
@@ -225,6 +374,8 @@ struct GateInner {
     /// carrier still matches it, no touch runs: the fix is signing in with
     /// the CLI, not another touch.
     terminal: Option<Fingerprint>,
+    scheduled_credential: Option<Fingerprint>,
+    completed: Option<(Fingerprint, TouchOutcome)>,
 }
 
 impl TouchGate {
@@ -232,9 +383,22 @@ impl TouchGate {
         TouchGate::default()
     }
 
+    pub fn completed(&self, credential: &Fingerprint) -> Option<TouchOutcome> {
+        super::claude_login::lock(&self.inner)
+            .completed
+            .as_ref()
+            .filter(|(marker, _)| marker == credential)
+            .map(|(_, outcome)| outcome.clone())
+    }
+
     /// Whether a touch may start against the carrier's current fingerprint.
     /// `true` claims the in-flight slot and stamps the attempt.
-    fn begin(&self, before: &Fingerprint) -> bool {
+    #[cfg(test)]
+    fn begin(&self, before: &Fingerprint, cooldown: Duration) -> bool {
+        !self.is_terminal(before) && self.reserve(cooldown, None)
+    }
+
+    fn reserve(&self, cooldown: Duration, credential: Option<&Fingerprint>) -> bool {
         let mut inner = self
             .inner
             .lock()
@@ -242,22 +406,24 @@ impl TouchGate {
         if inner.in_flight {
             return false;
         }
-        if inner.terminal.as_ref() == Some(before) {
-            return false;
-        }
-        if inner
-            .last_attempt
-            .is_some_and(|at| at.elapsed() < TOUCH_COOLDOWN)
+        if let Some(credential) = credential
+            && inner.scheduled_credential.as_ref() != Some(credential)
         {
+            // A replacement login must not inherit the previous login's cooldown.
+            inner.last_attempt = None;
+            inner.scheduled_credential = Some(credential.clone());
+        }
+        if inner.last_attempt.is_some_and(|at| at.elapsed() < cooldown) {
             return false;
         }
         inner.in_flight = true;
+        inner.completed = None;
         inner.last_attempt = Some(Instant::now());
         true
     }
 
     /// Release the in-flight slot. The attempt stamp stays: settled or not,
-    /// the next touch waits out [`TOUCH_COOLDOWN`].
+    /// the next touch waits out the cooldown.
     fn finish(&self) {
         let mut inner = self
             .inner
@@ -288,13 +454,32 @@ impl TouchGate {
         inner.terminal = Some(fingerprint);
     }
 
-    /// Clear the terminal block after a refresh produced a live credential.
+    /// Clear the terminal block after the login works again.
     pub fn clear_terminal(&self) {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.terminal = None;
+    }
+
+    #[cfg(test)]
+    pub fn wait_for_worker(&self) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while super::claude_login::lock(&self.inner).in_flight {
+            assert!(Instant::now() < deadline, "refresh worker did not finish");
+            std::thread::yield_now();
+        }
+    }
+
+    /// Whether the gate blocks any material.
+    #[cfg(test)]
+    pub fn is_terminal_for_test(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .terminal
+            .is_some()
     }
 
     /// Backdate the cooldown so a test can attempt again immediately — the
@@ -336,19 +521,30 @@ impl TouchEnvironment for CliTouchEnvironment {
         cli_locator::locate(CLAUDE_BINARY).is_some()
     }
 
-    fn fingerprint(&self) -> Option<Fingerprint> {
+    fn fingerprint(&self, deadline: Instant) -> Option<Fingerprint> {
         let mut parts = Vec::new();
+        let sleep = |delay| std::thread::sleep(delay);
         #[cfg(target_os = "macos")]
-        match keychain_metadata() {
-            KeychainMetadata::Found(text) => parts.push(format!("keychain:{:016x}", hash(&text))),
-            KeychainMetadata::Absent => parts.push("keychain:absent".to_owned()),
-            KeychainMetadata::Unreadable => return None,
+        match keychain_metadata_with_retries_until(deadline, &sleep) {
+            Ok(KeychainMetadata::Found(text)) => {
+                parts.push(format!("keychain:{:016x}", hash(&text)));
+            }
+            Ok(KeychainMetadata::Absent) => parts.push("keychain:absent".to_owned()),
+            Ok(KeychainMetadata::Unreadable) | Err(_) => return None,
         }
-        match self.credentials_path.as_deref().map(std::fs::read) {
-            Some(Ok(bytes)) => parts.push(format!("file:{:016x}", hash(&bytes))),
-            Some(Err(_)) | None => parts.push("file:absent".to_owned()),
+        let file = self.credentials_path.as_deref().map(|path| {
+            with_retries_until(deadline, &sleep, || match std::fs::read(path) {
+                Ok(bytes) => Some(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+                Err(_) => None,
+            })
+        });
+        match file {
+            Some(Ok(Some(bytes))) => parts.push(format!("file:{:016x}", hash(&bytes))),
+            Some(Err(_)) => parts.push("file:unreadable".to_owned()),
+            Some(Ok(None)) | None => parts.push("file:absent".to_owned()),
         }
-        Some(Fingerprint(parts.join(";")))
+        (Instant::now() < deadline).then(|| Fingerprint(parts.join(";")))
     }
 
     fn spawn(&self) -> Option<Box<dyn TouchChild>> {
@@ -415,7 +611,7 @@ impl TouchChild for PtyTouchChild {
 
 /// A stable content hash for fingerprinting. Collision resistance is not a
 /// requirement — the fingerprint only has to change when the bytes do.
-fn hash(bytes: &[u8]) -> u64 {
+pub(super) fn hash(bytes: &[u8]) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::hash::DefaultHasher::new();
     bytes.hash(&mut hasher);
@@ -432,6 +628,9 @@ pub(super) enum KeychainMetadata {
     Unreadable,
 }
 
+#[cfg(target_os = "macos")]
+const KEYCHAIN_METADATA_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Read the Keychain item's attributes — never its secret.
 ///
 /// `security find-generic-password` without `-w` prints the item's
@@ -440,25 +639,66 @@ pub(super) enum KeychainMetadata {
 /// same bounded-subprocess shape as `anthropic_fetch::macos_keychain::read`:
 /// a reader thread, a hard deadline, and a kill on timeout.
 #[cfg(target_os = "macos")]
-pub(super) fn keychain_metadata() -> KeychainMetadata {
-    keychain_metadata_for("Claude Code-credentials", None)
+pub(super) fn keychain_metadata(deadline: Instant) -> KeychainMetadata {
+    keychain_metadata_for_until("Claude Code-credentials", None, deadline)
+}
+
+/// Read the Claude item's attributes until `deadline`. `Ok` is never
+/// [`KeychainMetadata::Unreadable`]. `Err` holds the failed attempt count.
+#[cfg(target_os = "macos")]
+pub(super) fn keychain_metadata_with_retries_until(
+    deadline: Instant,
+    sleep: &dyn Fn(Duration),
+) -> Result<KeychainMetadata, u32> {
+    with_retries_until(deadline, sleep, || {
+        match keychain_metadata_for_until("Claude Code-credentials", None, deadline) {
+            KeychainMetadata::Unreadable => None,
+            metadata => Some(metadata),
+        }
+    })
+}
+
+/// Retry `read` while it reports [`KeychainMetadata::Unreadable`].
+#[cfg(target_os = "macos")]
+pub(super) fn retry_metadata(
+    sleep: &dyn Fn(Duration),
+    mut read: impl FnMut() -> KeychainMetadata,
+) -> Result<KeychainMetadata, u32> {
+    with_retries_until(
+        Instant::now() + Duration::from_millis(750),
+        sleep,
+        || match read() {
+            KeychainMetadata::Unreadable => None,
+            metadata => Some(metadata),
+        },
+    )
 }
 
 /// Read attributes for the selected service and account without requesting the secret.
 #[cfg(target_os = "macos")]
 pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> KeychainMetadata {
+    keychain_metadata_for_until(service, account, Instant::now() + KEYCHAIN_METADATA_TIMEOUT)
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_metadata_for_until(
+    service: &str,
+    account: Option<&str>,
+    deadline: Instant,
+) -> KeychainMetadata {
     use std::io::Read as _;
     use std::process::Stdio;
     use std::sync::mpsc;
 
-    /// Matches `anthropic_fetch::macos_keychain::TIMEOUT` — a metadata read
-    /// is instant or wedged, never merely slow.
-    const TIMEOUT: Duration = Duration::from_secs(3);
     /// Attributes are a few hundred bytes; cap the read defensively.
     const MAX_BYTES: usize = 64 * 1024;
     /// `errSecItemNotFound`, the same exit the secret read classifies.
     const ITEM_NOT_FOUND_EXIT_CODE: i32 = 44;
 
+    let deadline = deadline.min(Instant::now() + KEYCHAIN_METADATA_TIMEOUT);
+    if Instant::now() >= deadline {
+        return KeychainMetadata::Unreadable;
+    }
     let mut child = match keychain_metadata_command(service, account)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -469,6 +709,8 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
         Err(_) => return KeychainMetadata::Unreadable,
     };
     let Some(mut stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
         return KeychainMetadata::Unreadable;
     };
     let (tx, rx) = mpsc::channel();
@@ -489,7 +731,7 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
         }
         let _ = tx.send(buffer);
     });
-    let bytes = match rx.recv_timeout(TIMEOUT) {
+    let bytes = match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(bytes) => bytes,
         Err(_) => {
             let _ = child.kill();
@@ -497,7 +739,7 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
             return KeychainMetadata::Unreadable;
         }
     };
-    let Ok(status) = child.wait() else {
+    let Some(status) = wait_for_child_until(&mut child, deadline) else {
         return KeychainMetadata::Unreadable;
     };
     if !status.success() {
@@ -511,6 +753,38 @@ pub(super) fn keychain_metadata_for(service: &str, account: Option<&str>) -> Key
         return KeychainMetadata::Unreadable;
     }
     KeychainMetadata::Found(bytes)
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_child_until(
+    child: &mut std::process::Child,
+    deadline: Instant,
+) -> Option<std::process::ExitStatus> {
+    loop {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return (Instant::now() < deadline).then_some(status);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -529,6 +803,14 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
+
+    const REQUEST: TouchRequest = TouchRequest {
+        cooldown: TOUCH_COOLDOWN,
+    };
+
+    fn touch(env: &dyn TouchEnvironment, gate: &TouchGate, request: TouchRequest) -> TouchOutcome {
+        super::touch(env, gate, request, &Fingerprint("cached-login".into()))
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -557,6 +839,7 @@ mod tests {
         binary_present: bool,
         script: Mutex<Vec<Fingerprint>>,
         polls: AtomicUsize,
+        deadlines: Mutex<Vec<Instant>>,
         spawns: AtomicUsize,
         spawn_fails: bool,
         killed: std::sync::Arc<AtomicBool>,
@@ -573,6 +856,7 @@ mod tests {
                 binary_present: true,
                 script: Mutex::new(script),
                 polls: AtomicUsize::new(0),
+                deadlines: Mutex::new(Vec::new()),
                 spawns: AtomicUsize::new(0),
                 spawn_fails: false,
                 killed: std::sync::Arc::new(AtomicBool::new(false)),
@@ -592,7 +876,8 @@ mod tests {
         fn binary_present(&self) -> bool {
             self.binary_present
         }
-        fn fingerprint(&self) -> Option<Fingerprint> {
+        fn fingerprint(&self, deadline: Instant) -> Option<Fingerprint> {
+            self.deadlines.lock().unwrap().push(deadline);
             self.polls.fetch_add(1, Ordering::SeqCst);
             let mut script = self.script.lock().unwrap();
             if script.len() > 1 {
@@ -613,11 +898,37 @@ mod tests {
     }
 
     #[test]
-    fn the_poll_floor_and_cap_bound_the_verification_deadline() {
+    fn gated_attempts_do_not_probe_metadata_and_all_polls_share_one_deadline() {
+        let gate = TouchGate::new();
+        let env = ScriptedEnv::new(&["a"]);
+        assert!(gate.reserve(TOUCH_COOLDOWN, Some(&Fingerprint("cached-login".into()))));
+        assert_eq!(touch(&env, &gate, REQUEST), TouchOutcome::Skipped);
+        assert_eq!(env.polls.load(Ordering::SeqCst), 0);
+        gate.finish();
+        assert_eq!(touch(&env, &gate, REQUEST), TouchOutcome::Skipped);
+        assert_eq!(env.polls.load(Ordering::SeqCst), 0);
+        gate.open_cooldown_for_test();
+        assert_eq!(touch(&env, &gate, REQUEST), TouchOutcome::NotRefreshed);
+        let deadlines = env.deadlines.lock().unwrap();
+        assert!(deadlines.len() > 1);
+        assert!(deadlines.iter().all(|deadline| *deadline == deadlines[0]));
+    }
+
+    #[test]
+    fn the_poll_floor_and_cap_are_bounded_by_the_verification_deadline() {
         assert!(POLL_INTERVAL >= Duration::from_millis(500));
-        let deadline = POLL_INTERVAL * MAX_POLLS;
-        assert!(deadline >= Duration::from_secs(14));
-        assert!(deadline <= Duration::from_secs(16));
+        assert!(POLL_INTERVAL * MAX_POLLS <= MAX_VERIFY_DURATION);
+        assert_eq!(MAX_VERIFY_DURATION, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn verification_stops_when_its_wall_clock_deadline_expires() {
+        let env = ScriptedEnv::new(&["before"]);
+        assert_eq!(
+            verify(&env, &Fingerprint("before".into()), Instant::now()),
+            None
+        );
+        assert_eq!(env.polls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -625,7 +936,7 @@ mod tests {
         // The carrier moves twice — `b`, then `c` — before settling. The
         // touch must report `c`, never the first change `b`.
         let env = ScriptedEnv::new(&["a", "b", "c"]);
-        let outcome = touch(&env, &TouchGate::new());
+        let outcome = touch(&env, &TouchGate::new(), REQUEST);
         assert_eq!(outcome, TouchOutcome::Settled(Fingerprint("c".into())));
         assert_eq!(env.spawns.load(Ordering::SeqCst), 1);
         assert!(env.killed.load(Ordering::SeqCst));
@@ -639,14 +950,20 @@ mod tests {
         // The carrier flaps back to its pre-spawn state and stays there:
         // whatever wrote it did not leave a new credential behind.
         let env = ScriptedEnv::new(&["a", "b", "a"]);
-        assert_eq!(touch(&env, &TouchGate::new()), TouchOutcome::NotRefreshed);
+        assert_eq!(
+            touch(&env, &TouchGate::new(), REQUEST),
+            TouchOutcome::NotRefreshed
+        );
         assert!(env.killed.load(Ordering::SeqCst));
     }
 
     #[test]
     fn a_carrier_that_never_changes_times_out_at_the_poll_cap() {
         let env = ScriptedEnv::new(&["a"]);
-        assert_eq!(touch(&env, &TouchGate::new()), TouchOutcome::NotRefreshed);
+        assert_eq!(
+            touch(&env, &TouchGate::new(), REQUEST),
+            TouchOutcome::NotRefreshed
+        );
         // One pre-spawn read plus exactly `MAX_POLLS` verification polls —
         // the hard cap that keeps macOS polling from becoming a subprocess
         // storm.
@@ -658,7 +975,10 @@ mod tests {
     fn an_absent_binary_skips_the_touch_entirely() {
         let mut env = ScriptedEnv::new(&["a", "b"]);
         env.binary_present = false;
-        assert_eq!(touch(&env, &TouchGate::new()), TouchOutcome::CliMissing);
+        assert_eq!(
+            touch(&env, &TouchGate::new(), REQUEST),
+            TouchOutcome::CliMissing
+        );
         assert_eq!(env.spawns.load(Ordering::SeqCst), 0);
         assert_eq!(env.polls.load(Ordering::SeqCst), 0);
     }
@@ -670,7 +990,7 @@ mod tests {
             fn binary_present(&self) -> bool {
                 true
             }
-            fn fingerprint(&self) -> Option<Fingerprint> {
+            fn fingerprint(&self, _deadline: Instant) -> Option<Fingerprint> {
                 None
             }
             fn spawn(&self) -> Option<Box<dyn TouchChild>> {
@@ -678,7 +998,10 @@ mod tests {
             }
             fn sleep(&self, _interval: Duration) {}
         }
-        assert_eq!(touch(&Blind, &TouchGate::new()), TouchOutcome::NotRefreshed);
+        assert_eq!(
+            touch(&Blind, &TouchGate::new(), REQUEST),
+            TouchOutcome::Skipped
+        );
     }
 
     #[test]
@@ -686,26 +1009,26 @@ mod tests {
         let mut env = ScriptedEnv::new(&["a"]);
         env.spawn_fails = true;
         let gate = TouchGate::new();
-        assert_eq!(touch(&env, &gate), TouchOutcome::NotRefreshed);
+        assert_eq!(touch(&env, &gate, REQUEST), TouchOutcome::Skipped);
         // The attempt stamp holds: a second immediate touch is on cooldown.
-        assert!(!gate.begin(&Fingerprint("a".into())));
+        assert!(!gate.begin(&Fingerprint("a".into()), TOUCH_COOLDOWN));
         gate.open_cooldown_for_test();
         // Not in-flight: with the cooldown opened, an attempt may start.
-        assert!(gate.begin(&Fingerprint("a".into())));
+        assert!(gate.begin(&Fingerprint("a".into()), TOUCH_COOLDOWN));
     }
 
     #[test]
     fn the_gate_dedups_in_flight_attempts_and_cools_down_between_them() {
         let gate = TouchGate::new();
         let fingerprint = Fingerprint("a".into());
-        assert!(gate.begin(&fingerprint));
+        assert!(gate.begin(&fingerprint, TOUCH_COOLDOWN));
         // In flight: no second attempt.
-        assert!(!gate.begin(&fingerprint));
+        assert!(!gate.begin(&fingerprint, TOUCH_COOLDOWN));
         gate.finish();
         // Finished, but inside `TOUCH_COOLDOWN`: still no second attempt.
-        assert!(!gate.begin(&fingerprint));
+        assert!(!gate.begin(&fingerprint, TOUCH_COOLDOWN));
         gate.open_cooldown_for_test();
-        assert!(gate.begin(&fingerprint));
+        assert!(gate.begin(&fingerprint, TOUCH_COOLDOWN));
     }
 
     #[test]
@@ -715,13 +1038,13 @@ mod tests {
         gate.open_cooldown_for_test();
         // The carrier still matches the terminal fingerprint: waiting will
         // not fix `invalid_grant`, so no touch runs.
-        assert!(!gate.begin(&Fingerprint("dead".into())));
+        assert!(!gate.begin(&Fingerprint("dead".into()), TOUCH_COOLDOWN));
         let env = ScriptedEnv::new(&["dead", "fresh"]);
-        assert_eq!(touch(&env, &gate), TouchOutcome::Terminal);
+        assert_eq!(touch(&env, &gate, REQUEST), TouchOutcome::Terminal);
         assert_eq!(env.spawns.load(Ordering::SeqCst), 0);
-        // The reader signed in again — the material changed — so the block
-        // lifts on its own.
-        assert!(gate.begin(&Fingerprint("fresh".into())));
+        // New material lifts the terminal block after the probe cooldown.
+        gate.open_cooldown_for_test();
+        assert!(gate.begin(&Fingerprint("fresh".into()), TOUCH_COOLDOWN));
     }
 
     #[test]
@@ -730,6 +1053,141 @@ mod tests {
         gate.mark_terminal(Fingerprint("dead".into()));
         gate.clear_terminal();
         gate.open_cooldown_for_test();
-        assert!(gate.begin(&Fingerprint("dead".into())));
+        assert!(gate.begin(&Fingerprint("dead".into()), TOUCH_COOLDOWN));
+    }
+
+    #[test]
+    fn a_background_attempt_waits_longer_than_a_user_attempt() {
+        assert!(BACKGROUND_TOUCH_COOLDOWN > TOUCH_COOLDOWN);
+        let gate = TouchGate::new();
+        let fingerprint = Fingerprint("a".into());
+        assert!(gate.begin(&fingerprint, BACKGROUND_TOUCH_COOLDOWN));
+        gate.finish();
+        assert!(!gate.begin(&fingerprint, BACKGROUND_TOUCH_COOLDOWN));
+        // A zero cooldown shows that the stamp alone decides.
+        assert!(gate.begin(&fingerprint, Duration::ZERO));
+    }
+
+    #[test]
+    fn a_single_attempt_that_does_not_settle_remains_recoverable() {
+        let request = REQUEST;
+        let gate = TouchGate::new();
+        let env = ScriptedEnv::new(&["blank"]);
+        assert_eq!(touch(&env, &gate, request), TouchOutcome::NotRefreshed);
+        gate.open_cooldown_for_test();
+        let again = ScriptedEnv::new(&["blank"]);
+        assert_eq!(touch(&again, &gate, request), TouchOutcome::NotRefreshed);
+        assert_eq!(again.spawns.load(Ordering::SeqCst), 1);
+        // A refresh before expiry keeps trying after a timeout.
+        let gate = TouchGate::new();
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["a"]), &gate, REQUEST),
+            TouchOutcome::NotRefreshed
+        );
+        gate.open_cooldown_for_test();
+        assert!(gate.begin(&Fingerprint("a".into()), TOUCH_COOLDOWN));
+    }
+
+    #[test]
+    fn repeated_offline_attempts_do_not_require_sign_in() {
+        let request = REQUEST;
+        let gate = TouchGate::new();
+        for _ in 0..5 {
+            assert_eq!(
+                touch(&ScriptedEnv::new(&["dead"]), &gate, request),
+                TouchOutcome::NotRefreshed
+            );
+            gate.open_cooldown_for_test();
+        }
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["dead"]), &gate, request),
+            TouchOutcome::NotRefreshed
+        );
+        gate.open_cooldown_for_test();
+        let blocked = ScriptedEnv::new(&["dead"]);
+        assert_eq!(touch(&blocked, &gate, request), TouchOutcome::NotRefreshed);
+        assert_eq!(blocked.spawns.load(Ordering::SeqCst), 1);
+        assert!(!gate.is_terminal_for_test());
+        gate.open_cooldown_for_test();
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["new"]), &gate, request),
+            TouchOutcome::NotRefreshed
+        );
+    }
+
+    #[test]
+    fn a_working_login_keeps_later_attempts_recoverable() {
+        let request = REQUEST;
+        let gate = TouchGate::new();
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["a"]), &gate, request),
+            TouchOutcome::NotRefreshed
+        );
+        gate.clear_terminal();
+        gate.open_cooldown_for_test();
+        assert_eq!(
+            touch(&ScriptedEnv::new(&["a"]), &gate, request),
+            TouchOutcome::NotRefreshed
+        );
+    }
+
+    #[test]
+    fn a_failed_read_is_retried_three_times_with_backoff() {
+        let waits = Mutex::new(Vec::new());
+        let sleep = |delay: Duration| waits.lock().unwrap().push(delay);
+        let calls = AtomicUsize::new(0);
+        let result: Result<(), u32> = with_retries(&sleep, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        assert_eq!(result, Err(4));
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert_eq!(*waits.lock().unwrap(), RETRY_DELAYS.to_vec());
+
+        let waits = Mutex::new(Vec::new());
+        let sleep = |delay: Duration| waits.lock().unwrap().push(delay);
+        let calls = AtomicUsize::new(0);
+        let result = with_retries(&sleep, || {
+            (calls.fetch_add(1, Ordering::SeqCst) == 1).then_some("found")
+        });
+        assert_eq!(result, Ok("found"));
+        assert_eq!(*waits.lock().unwrap(), vec![RETRY_DELAYS[0]]);
+    }
+
+    #[test]
+    fn an_expired_deadline_prevents_another_retry() {
+        let calls = AtomicUsize::new(0);
+        let result = with_retries_until(Instant::now(), &|_| {}, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None::<()>
+        });
+        assert_eq!(result, Err(0));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn retry_backoff_uses_only_the_remaining_deadline() {
+        let calls = AtomicUsize::new(0);
+        let deadline = Instant::now() + Duration::from_millis(20);
+        let result = with_retries_until(deadline, &std::thread::sleep, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None::<()>
+        });
+        assert_eq!(result, Err(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_absent_item_is_an_answer_and_is_not_retried() {
+        let calls = AtomicUsize::new(0);
+        let result = retry_metadata(&|_| {}, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            KeychainMetadata::Absent
+        });
+        assert!(matches!(result, Ok(KeychainMetadata::Absent)));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let result = retry_metadata(&|_| {}, || KeychainMetadata::Unreadable);
+        assert!(matches!(result, Err(4)));
     }
 }
