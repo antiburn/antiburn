@@ -22,7 +22,7 @@ export type InvitationState =
 
 type InvitationAction =
   | { action: "list" }
-  | { action: "start"; invitation_id: string | null }
+  | { action: "start"; invitation_id: string | null; workspace_name?: string }
   | { action: "status" | "finish" | "cancel"; id: string }
 
 export type InvitationReply =
@@ -33,6 +33,7 @@ export type InvitationReply =
       join: boolean
       state: InvitationState
       workspace_id: string | null
+      workspace_name?: string | null
     }
   | { kind: "uncertain"; id: string; join: boolean }
   | { kind: "expired" }

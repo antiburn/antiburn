@@ -144,12 +144,17 @@ function AccountInvitations({
   const refresh = () => send({ action: "list" })
   const ready = reply?.kind === "attempt" && reply.state === "ready"
   const waiting = isWaiting(reply)
+  const workspaceName = reply?.kind === "attempt" ? reply.workspace_name : null
   const listing = reply?.kind === "list" ? reply.listing : null
   const message = error
     ? error
     : reply?.kind === "attempt"
-      ? reply.state === "ready" && !reply.join
-        ? "Account verified. Finish checking for invitations."
+      ? reply.state === "ready"
+        ? reply.join
+          ? workspaceName
+            ? `Account verified. Join ${workspaceName} to accept the invitation.`
+            : attemptMessage.ready
+          : "Account verified. Finish checking for invitations."
         : attemptMessage[reply.state]
       : reply?.kind === "uncertain"
         ? "Cloud has not confirmed the result. Check the same attempt before trying again."
@@ -167,7 +172,7 @@ function AccountInvitations({
   return (
     <section aria-label="Workspace invitations" className="flex min-w-0 flex-col gap-2">
       <h2 className="type-callout font-medium">Workspace invitations</h2>
-      <p className="type-footnote text-label-secondary" role="status">
+      <p className="min-w-0 break-words type-footnote text-label-secondary" role="status">
         {message}
       </p>
       {listing?.state === "checked" && listing.invitations.length > 0 && (
@@ -183,7 +188,13 @@ function AccountInvitations({
               <PushButton
                 ariaLabel={`Verify invitation to ${invitation.workspace_name}`}
                 disabled={busy}
-                onClick={() => send({ action: "start", invitation_id: invitation.id })}
+                onClick={() =>
+                  send({
+                    action: "start",
+                    invitation_id: invitation.id,
+                    workspace_name: invitation.workspace_name,
+                  })
+                }
               >
                 Verify invitation
               </PushButton>

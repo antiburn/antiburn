@@ -64,7 +64,10 @@ fn serve(
 }
 
 #[test]
-fn capability_version_one_alone_enables_invitations_without_device_proof() {
+fn capability_version_one_alone_opts_in_at_account_sign_in() {
+    use super::super::{engine::Engine, state::StateStore, tests::MemoryVault};
+    use std::sync::Arc;
+
     for (body, expected) in [
         (r#"{"version":1}"#, true),
         (r#"{"version":2}"#, false),
@@ -72,7 +75,21 @@ fn capability_version_one_alone_enables_invitations_without_device_proof() {
         ("{}", false),
     ] {
         let (config, worker) = serve(|_| vec![Some((200, body.into()))]);
-        assert_eq!(supported(&config), expected);
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = Engine::new(
+            Some(config),
+            Box::new(Arc::new(MemoryVault::default())),
+            Box::new(auth::HttpTransport),
+            StateStore::new(directory.path()),
+        );
+        let (url, _, _) = engine.begin(1_000, 1).unwrap();
+        let url = Url::parse(&url).unwrap();
+        assert_eq!(url.path(), "/devices/authorize/account");
+        assert_eq!(
+            url.query_pairs()
+                .any(|(key, value)| key == "native_invitations" && value == "true"),
+            expected
+        );
         let requests = worker.join().unwrap();
         assert_eq!(
             requests[0].line,
@@ -81,6 +98,38 @@ fn capability_version_one_alone_enables_invitations_without_device_proof() {
         assert!(!requests[0].headers.contains("authorization:"));
         assert!(!requests[0].headers.contains("cookie:"));
         assert!(!requests[0].headers.contains("origin:"));
+    }
+}
+
+#[test]
+fn invitation_list_distinguishes_checked_empty_from_needing_browser_proof() {
+    let (config, worker) = serve(|_| {
+        vec![
+            Some((200, r#"{"state":"check_required"}"#.into())),
+            Some((200, r#"{"state":"checked","invitations":[]}"#.into())),
+            Some((404, "{}".into())),
+        ]
+    });
+    assert!(matches!(
+        list(&config, "test-device").unwrap(),
+        Listing::CheckRequired
+    ));
+    assert!(matches!(
+        list(&config, "test-device").unwrap(),
+        Listing::Checked { invitations } if invitations.is_empty()
+    ));
+    assert!(matches!(
+        list(&config, "test-device").unwrap(),
+        Listing::Unavailable
+    ));
+    for request in worker.join().unwrap() {
+        assert_eq!(request.line, "GET /v1/devices/invitations HTTP/1.1");
+        assert!(
+            request
+                .headers
+                .contains("authorization: bearer test-device")
+        );
+        assert!(request.body.is_empty());
     }
 }
 
@@ -140,6 +189,7 @@ fn finish_requires_ready_and_recovers_a_lost_reply_on_the_same_attempt() {
     let id = "attempt-1".to_owned();
     send(Action::Start {
         invitation_id: Some("invitation-1".into()),
+        workspace_name: Some("Example Team".into()),
     })
     .unwrap();
     assert!(matches!(
@@ -152,8 +202,9 @@ fn finish_requires_ready_and_recovers_a_lost_reply_on_the_same_attempt() {
         Reply::Attempt {
             state: State::Joined,
             workspace_id: Some(workspace_id),
+            workspace_name: Some(workspace_name),
             ..
-        } if workspace_id == "team-1"
+        } if workspace_id == "team-1" && workspace_name == "Example Team"
     ));
     assert!(pending.is_none());
     let requests = worker.join().unwrap();
@@ -203,6 +254,7 @@ fn check_attempt_sends_null_and_cancellation_sends_a_json_string() {
         |request| run_action(&mut pending, 1, request, &config, "test-device", |_| Ok(()));
     send(Action::Start {
         invitation_id: None,
+        workspace_name: None,
     })
     .unwrap();
     assert!(matches!(
