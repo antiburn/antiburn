@@ -118,14 +118,18 @@ impl Engine {
         let access = self.access.as_ref().ok_or(TransportError::Unauthorized)?;
         if !current()
             || access.session.user.id != identity.account_id
-            || access.session.workspace.id != identity.destination_id
+            || access
+                .session
+                .workspace
+                .as_ref()
+                .is_none_or(|workspace| workspace.id != identity.destination_id)
             || access.expires_at <= (self.clock)()
             || access.session.validate(config, (self.clock)()).is_err()
         {
             return Err(TransportError::Unauthorized);
         }
         let response = super::upload::api_request(config, &access.token, identity, route, body)?;
-        if matches!(response.status, 401 | 403) {
+        if response.status == 401 {
             self.access = None;
             self.status = AuthStatus::ReauthRequired;
         }
@@ -361,13 +365,15 @@ impl Engine {
                 Failure::Cancelled
             });
         }
-        let (session, expires_at) = session?;
+        let (mut session, expires_at) = session?;
+        session.workspace = None;
         let credential = Credential {
             epoch: record.epoch.clone(),
             issuer: config.issuer.clone(),
             resource: config.resource.clone(),
             refresh_token: tokens.refresh_token.clone(),
             cleanup_refresh_tokens: Vec::new(),
+            account_grant: true,
             session: Some(session.clone()),
         };
         if self.vault.write(Some(&credential)).is_err() {
@@ -399,7 +405,29 @@ impl Engine {
             session,
         });
         self.status = AuthStatus::SignedIn;
+        self.refresh_personal_destination(&current);
         Ok(())
+    }
+
+    /// Update upload eligibility separately from account authentication.
+    fn refresh_personal_destination(&mut self, current: &dyn Fn() -> bool) {
+        let (Some(config), Some(access)) = (&self.config, &mut self.access) else {
+            return;
+        };
+        if !current() {
+            return;
+        }
+        access.session.workspace = self
+            .transport
+            .destinations(config, &access.token)
+            .ok()
+            .filter(|_| current())
+            .and_then(|entries| {
+                entries
+                    .into_iter()
+                    .find(|entry| entry.workspace.kind == auth::WorkspaceKind::Personal)
+            })
+            .map(|entry| entry.workspace);
     }
 
     /// Retain original and returned proofs before state writes can fail.
@@ -431,6 +459,7 @@ impl Engine {
             } else {
                 vec![tokens.refresh_token.clone()]
             },
+            account_grant: false,
             session: None,
         };
         if self.vault.write(Some(&cleanup)).is_err() {
@@ -526,6 +555,12 @@ impl Engine {
                 && !access.token.is_empty()
         }) {
             self.status = AuthStatus::SignedIn;
+            if self
+                .session()
+                .is_some_and(|session| session.workspace.is_none())
+            {
+                self.refresh_personal_destination(&current);
+            }
             return Ok(());
         }
         self.access = None;
@@ -538,7 +573,8 @@ impl Engine {
         guard.write(&record)?;
         self.cleanup = record.cleanup;
         let credential = self.vault.read()?.ok_or(Failure::ReauthRequired)?;
-        if credential.epoch != record.epoch
+        if !credential.account_grant
+            || credential.epoch != record.epoch
             || !credential.cleanup_refresh_tokens.is_empty()
             || credential.issuer != config.issuer
             || credential.resource != config.resource

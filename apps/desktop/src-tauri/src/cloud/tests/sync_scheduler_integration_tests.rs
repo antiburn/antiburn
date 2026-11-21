@@ -460,11 +460,11 @@ impl Authority {
             },
             grant_id: format!("grant-{}", self.grant.load(Ordering::Acquire)),
             device_name: "Example desktop".into(),
-            workspace: Workspace {
+            workspace: Some(Workspace {
                 id: "personal".into(),
                 name: "Personal".into(),
                 kind: WorkspaceKind::Personal,
-            },
+            }),
             resource: self.origin.clone(),
             scope: "capture:write".into(),
             iss: self.origin.clone(),
@@ -491,7 +491,7 @@ impl AuthTransport for Arc<Authority> {
             token_type: "Bearer".into(),
             grant_id: format!("grant-{}", self.grant.load(Ordering::Acquire)),
             user_id: "account".into(),
-            workspace_id: "personal".into(),
+            legacy_workspace_claim: false,
             grant_expires_at: time::OffsetDateTime::from_unix_timestamp(self.deadline)
                 .unwrap()
                 .format(&time::format_description::well_known::Rfc3339)
@@ -511,6 +511,16 @@ impl AuthTransport for Arc<Authority> {
     fn revoke(&self, _: &Config, _: &str) -> Result<(), auth::Failure> {
         self.revocations.fetch_add(1, Ordering::AcqRel);
         Ok(())
+    }
+    fn destinations(
+        &self,
+        _: &Config,
+        _: &str,
+    ) -> Result<Vec<auth::EligibleDestination>, auth::Failure> {
+        Ok(vec![auth::EligibleDestination {
+            workspace: Authority::session(self).workspace.unwrap(),
+            membership_generation: None,
+        }])
     }
 }
 

@@ -104,25 +104,27 @@ Without a refresh credential, Settings requires an explicit local reset before
 reconnecting and keeps the warning. An explicit browser denial does not need this
 reset.
 
-The browser must name the workspace, permitted action, and device before the user
-approves the connection. The approved scope covers this first-party desktop
+The browser must name the account, permitted actions, and device before the user
+approves the connection. The approved scope covers this first-party Desktop
 client only. It does not grant general API-client or third-party authorization.
-Token responses bind opaque credentials to a grant, user, personal workspace,
-fixed grant deadline, `capture:write`, resource, and issuer. The flat session
-response supplies those same bindings, nullable display name, workspace name,
-device display label, and access deadline. Deadlines use RFC 3339 strings.
+Token responses bind opaque credentials to a device grant, account, fixed grant
+deadline, scope, resource, and issuer. The session response supplies those same
+bindings, nullable display name, device display label, and access deadline. It
+does not name a workspace. Deadlines use RFC 3339 strings. The scope is
+`capture:write` or `capture:write sessions:list sessions:read`.
 Desktop validation compares the token and session bindings before saving a
-refresh credential. A changed grant, account, destination, or fixed deadline
-cannot restore the saved connection.
+refresh credential. A changed grant, account, scope, or fixed deadline cannot
+restore the saved connection. Old workspace grants can only be revoked.
 
 Desktop authentication requests use the configured API origin:
 
 | Request                   | Desktop proof                                                                                                |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /desktop/authorize`  | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
-| `POST /v1/desktop/token`  | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
-| `GET /v1/desktop/session` | Access bearer                                                                                                |
-| `POST /v1/desktop/logout` | JSON `{refresh_token}`                                                                                       |
+| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and `device_name` |
+| `POST /v1/devices/token` | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
+| `GET /v1/devices/session` | Access bearer |
+| `POST /v1/devices/logout` | JSON `{refresh_token}` |
+| `GET /v1/captures/destinations` | Access bearer |
 
 Token, session, and logout requests send no cookies or Origin header. Token and
 logout proof does not use a bearer header. Desktop requests do not follow
@@ -163,7 +165,7 @@ uncertain response, process exit, invalid response, keyring failure, or failed
 session verification must not retry the predecessor. A non-timeout connection
 setup failure proves that no HTTP proof was sent; only that result can restore
 retry eligibility for the current account generation. Successful rotation needs
-the same grant ID, account, workspace, resource, scope, issuer, and fixed deadline.
+the same grant ID, account, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.
 Rejected refresh responses save the original and returned proofs for logout
@@ -205,7 +207,9 @@ retarget saved capture bytes.
 
 ## Destination and content consent
 
-Only the currently verified account and personal destination can enable sync.
+Destination discovery is separate from authentication. An empty or unavailable
+destination list does not sign the user out.
+Only the currently verified account and Personal destination can enable sync.
 Unknown membership or an explicit team destination blocks it; the desktop does
 not silently replace a team with personal. Consent also stays bound to the
 configured service origin. Account, destination, or service changes cannot
@@ -380,6 +384,7 @@ This never grants permission to read source again, change the capture, or
 overwrite a newer publication. Deletion and cancellation remain final.
 
 Capture API requests use the configured resource origin and desktop-held credentials.
+They use `/v1/captures/*`. A Personal reservation sends `membership_generation: null`.
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.
 Upload locations never enter saved state, renderer status, or diagnostics.

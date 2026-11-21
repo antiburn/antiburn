@@ -356,7 +356,11 @@ impl Runner {
                         && self.last_status_origin.as_deref() == engine.resource_origin()
                         && engine.session().is_some_and(|session| {
                             previous.account_id.as_deref() == Some(&session.user.id)
-                                && previous.destination_id.as_deref() == Some(&session.workspace.id)
+                                && previous.destination_id.as_deref()
+                                    == session
+                                        .workspace
+                                        .as_ref()
+                                        .map(|workspace| workspace.id.as_str())
                         })
                 });
                 let mut value = previous.cloned().unwrap_or_default();
@@ -364,7 +368,10 @@ impl Runner {
                     && let Some(session) = engine.session()
                 {
                     value.account_id = Some(session.user.id.clone());
-                    value.destination_id = Some(session.workspace.id.clone());
+                    value.destination_id = session
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.id.clone());
                 }
                 value.status = State::StorageUnavailable;
                 value.storage_known = false;
@@ -452,10 +459,16 @@ impl Runner {
                 conflict_rechecks_cleared = true
             );
         }
-        let Some(policy) = store
-            .cloud_sync_policy(&session.user.id, &session.workspace.id, &session.resource)
+        let policy = session
+            .workspace
+            .as_ref()
+            .map(|workspace| {
+                store.cloud_sync_policy(&session.user.id, &workspace.id, &session.resource)
+            })
+            .transpose()
             .map_err(|_| "Could not read Cloud sync consent.")?
-        else {
+            .flatten();
+        let Some(policy) = policy else {
             self.state = State::ConsentRequired;
             self.candidates.clear();
             self.discovery_cursor = None;
@@ -1582,15 +1595,22 @@ fn status(
             ..Status::default()
         });
     };
-    let policy = store
-        .cloud_sync_policy(&session.user.id, &session.workspace.id, &session.resource)
-        .map_err(|_| "Could not read Cloud sync consent.")?;
     let mut status = Status {
         status: state,
         account_id: Some(session.user.id.clone()),
-        destination_id: Some(session.workspace.id.clone()),
+        destination_id: session
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.id.clone()),
         ..Status::default()
     };
+    let Some(workspace) = session.workspace.as_ref() else {
+        status.status = State::ConsentRequired;
+        return Ok(status);
+    };
+    let policy = store
+        .cloud_sync_policy(&session.user.id, &workspace.id, &session.resource)
+        .map_err(|_| "Could not read Cloud sync consent.")?;
     let Some(policy) = policy else {
         status.status = State::ConsentRequired;
         return Ok(status);
@@ -1608,7 +1628,7 @@ fn status(
         })
         .collect();
     let jobs = store
-        .cloud_sync_jobs(&session.user.id, &session.workspace.id, &session.resource)
+        .cloud_sync_jobs(&session.user.id, &workspace.id, &session.resource)
         .map_err(|_| "Could not read capture progress.")?;
     let entries = host
         .spool()?
@@ -1650,13 +1670,13 @@ fn status(
     status.projects = policy.projects.clone();
     status.project_choices = policy.project_choices.clone();
     (status.accepted_count, status.suppressed_count) = store
-        .cloud_sync_outcome_counts(&session.user.id, &session.workspace.id, &session.resource)
+        .cloud_sync_outcome_counts(&session.user.id, &workspace.id, &session.resource)
         .map_err(|_| "Could not read accepted source state.")?;
     status.progress.negotiated = true;
     let mut has_progress = false;
     for entry in entries {
         if entry.identity.account_id == session.user.id
-            && entry.identity.destination_id == session.workspace.id
+            && entry.identity.destination_id == workspace.id
             && jobs
                 .iter()
                 .any(|job| job.identity == entry.identity && job.allowed(&policy))

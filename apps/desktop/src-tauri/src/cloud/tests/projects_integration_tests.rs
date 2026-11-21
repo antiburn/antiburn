@@ -48,7 +48,7 @@ impl Transport for Authority {
             token_type: "Bearer".into(),
             grant_id: "synthetic-grant".into(),
             user_id: "synthetic-user".into(),
-            workspace_id: "synthetic-personal".into(),
+            legacy_workspace_claim: false,
             grant_expires_at: "1970-01-01T02:46:40Z".into(),
             scope: "capture:write".into(),
             resource: ORIGIN.into(),
@@ -57,6 +57,16 @@ impl Transport for Authority {
     }
     fn session(&self, _: &Config, _: &str) -> Result<Session, auth::Failure> {
         Ok(crate::cloud::tests::session())
+    }
+    fn destinations(
+        &self,
+        _: &Config,
+        _: &str,
+    ) -> Result<Vec<auth::EligibleDestination>, auth::Failure> {
+        Ok(vec![auth::EligibleDestination {
+            workspace: crate::cloud::tests::session().workspace.unwrap(),
+            membership_generation: None,
+        }])
     }
     fn revoke(&self, _: &Config, _: &str) -> Result<(), auth::Failure> {
         Ok(())

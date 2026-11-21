@@ -137,7 +137,7 @@ fn cloud_execution_http_reserve_uses_exact_desktop_wire_and_api_bearer() {
         "reservation"
     );
     let request = server.join().unwrap();
-    assert_eq!(request.line, "POST /v1/desktop/captures/reserve HTTP/1.1");
+    assert_eq!(request.line, "POST /v1/captures/reserve HTTP/1.1");
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer synthetic-api-access")
@@ -149,6 +149,7 @@ fn cloud_execution_http_reserve_uses_exact_desktop_wire_and_api_bearer() {
         serde_json::json!({
             "identity": identity(), "maximum_expanded_bytes": 123_456,
             "agent": "claude-code", "source_format": "ClaudeJsonl", "native_session_id": "session",
+            "membership_generation": null,
         })
     );
 }
@@ -254,7 +255,7 @@ fn cloud_execution_http_status_queries_frozen_plan_without_json_body() {
     assert_eq!(
         request.line,
         format!(
-            "GET /v1/desktop/captures/capture-synthetic/status?plan_id=plan-one&manifest_sha256={} HTTP/1.1",
+            "GET /v1/captures/capture-synthetic/status?plan_id=plan-one&manifest_sha256={} HTTP/1.1",
             "a".repeat(64)
         )
     );
@@ -283,10 +284,7 @@ fn cloud_execution_http_capabilities_bound_capture_and_reject_missing_or_changed
     assert_eq!(limits.source_bytes, 128 * 1024 * 1024);
     assert_eq!(limits.capture_bytes, 256 * 1024 * 1024);
     let request = worker.join().unwrap();
-    assert_eq!(
-        request.line,
-        "GET /v1/desktop/captures/capabilities HTTP/1.1"
-    );
+    assert_eq!(request.line, "GET /v1/captures/capabilities HTTP/1.1");
     assert_eq!(
         request.headers.get("authorization").map(String::as_str),
         Some("Bearer synthetic-api-access")
@@ -516,7 +514,7 @@ fn cloud_execution_http_missing_endpoint_and_redirect_do_not_claim_reservation()
         assert_eq!(transport.failure, Some(expected));
         assert_eq!(
             server.join().unwrap().line,
-            "POST /v1/desktop/captures/reserve HTTP/1.1"
+            "POST /v1/captures/reserve HTTP/1.1"
         );
     }
 }
@@ -583,7 +581,7 @@ fn cloud_execution_http_saved_part_has_signed_checksum_length_and_no_api_bearer(
     let api = api_server.join().unwrap();
     assert_eq!(
         api.line,
-        "POST /v1/desktop/captures/capture-synthetic/parts HTTP/1.1"
+        "POST /v1/captures/capture-synthetic/parts HTTP/1.1"
     );
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&api.body).unwrap(),
@@ -641,7 +639,7 @@ fn capture_service() -> (String, JoinHandle<usize>) {
             } else {
                 serde_json::from_slice(&request.body).unwrap()
             };
-            let (status, body) = if request.line == "POST /v1/desktop/captures/reserve HTTP/1.1" {
+            let (status, body) = if request.line == "POST /v1/captures/reserve HTTP/1.1" {
                 assert_eq!(input["agent"], "claude-code");
                 (200, serde_json::json!({"reservation_id":"reservation"}))
             } else if request.line.contains("/manifest ") {
