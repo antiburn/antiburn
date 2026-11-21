@@ -83,6 +83,8 @@ pub struct Record {
 pub struct StateStore {
     directory: PathBuf,
     owner: Mutex<Option<Arc<File>>>,
+    #[cfg(test)]
+    active_directory_sync: Option<Arc<dyn Fn() -> Result<(), Failure> + Send + Sync>>,
 }
 
 impl StateStore {
@@ -91,7 +93,19 @@ impl StateStore {
         Self {
             directory: directory.to_owned(),
             owner: Mutex::new(None),
+            #[cfg(test)]
+            active_directory_sync: None,
         }
+    }
+
+    /// Inject an activation failure after rename without relying on filesystem timing.
+    #[cfg(test)]
+    pub(super) fn with_active_directory_sync(
+        mut self,
+        sync: impl Fn() -> Result<(), Failure> + Send + Sync + 'static,
+    ) -> Self {
+        self.active_directory_sync = Some(Arc::new(sync));
+        self
     }
 
     /// Acquire lifetime process ownership once. Call only in serialized blocking
@@ -112,6 +126,8 @@ impl StateStore {
         Ok(Guard {
             directory: self.directory.clone(),
             _owner: owner.as_ref().ok_or(Failure::Unavailable)?.clone(),
+            #[cfg(test)]
+            active_directory_sync: self.active_directory_sync.clone(),
         })
     }
 }
@@ -121,6 +137,8 @@ impl StateStore {
 pub struct Guard {
     directory: PathBuf,
     _owner: Arc<File>,
+    #[cfg(test)]
+    active_directory_sync: Option<Arc<dyn Fn() -> Result<(), Failure> + Send + Sync>>,
 }
 
 /// Apply private creation permissions and reject Unix symlink traversal.
@@ -197,8 +215,8 @@ impl Guard {
         Ok(record)
     }
 
-    /// Flush a private replacement before rename and directory sync. A failure
-    /// must leave the engine closed; it cannot establish successful credential cleanup.
+    /// Flush a private replacement before rename and directory sync. A failed
+    /// directory sync can leave the replacement visible without confirming durability.
     pub fn write(&mut self, value: &Record) -> Result<(), Failure> {
         let bytes = serde_json::to_vec(value).map_err(|_| Failure::CredentialFailed)?;
         let temporary = self
@@ -215,6 +233,12 @@ impl Guard {
                 .map_err(|_| Failure::CredentialFailed)?;
             fs::rename(&temporary, self.directory.join("cloud-auth-state-v2"))
                 .map_err(|_| Failure::CredentialFailed)?;
+            #[cfg(test)]
+            if value.phase == Phase::Active
+                && let Some(sync) = &self.active_directory_sync
+            {
+                sync()?;
+            }
             sync_directory(&self.directory)
         })();
         if result.is_err() {

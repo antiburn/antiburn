@@ -95,7 +95,8 @@ export interface CloudViewSnapshot {
 const messages = {
   idle: "",
   opening: "Opening your browser…",
-  waiting: "Waiting for browser approval. Finish in your browser, then return here.",
+  waiting:
+    "Waiting for browser approval. After signing in with GitHub, approve this device in your browser, then return here.",
   returned: "Browser step complete. Checking your sign-in…",
   signed_in: "Your account is verified.",
   signed_out: "You’re signed out on this device.",

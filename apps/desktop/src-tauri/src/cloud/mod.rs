@@ -575,18 +575,25 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                         return Ok(());
                     }
                     if let Some(callback) = callback {
-                        if let Err(error) = engine.callback(&attempt, callback, now(), current) {
-                            engine.status = error.into();
-                        }
+                        finish_browser_return(
+                            &mut engine,
+                            &attempt,
+                            callback,
+                            now(),
+                            current,
+                            |engine| {
+                                publish(&callback_app, engine);
+                            },
+                        );
                     } else {
                         if let Err(error) = engine.cancel(generation) {
                             engine.status = error.into();
                         } else {
                             engine.status = AuthStatus::Expired;
                         }
-                    }
-                    if current() {
-                        publish(&callback_app, &engine);
+                        if current() {
+                            publish(&callback_app, &engine);
+                        }
                     }
                     Ok(())
                 })
@@ -598,6 +605,28 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(result)
     })
     .await
+}
+
+/// Report an accepted loopback return before token, account, and keyring checks.
+/// A browser return is progress only. The engine still decides sign-in.
+fn finish_browser_return(
+    engine: &mut Engine,
+    attempt: &auth::Attempt,
+    callback: auth::Callback,
+    now: i64,
+    current: impl Fn() -> bool,
+    mut publish: impl FnMut(&Engine),
+) {
+    if current() && now < attempt.expires_at && matches!(callback, auth::Callback::Code(_)) {
+        engine.status = AuthStatus::Returned;
+        publish(engine);
+    }
+    if let Err(error) = engine.callback(attempt, callback, now, &current) {
+        engine.status = error.into();
+    }
+    if current() {
+        publish(engine);
+    }
 }
 
 /// A capability probe can finish after cancel or sign-out starts. If the

@@ -326,10 +326,31 @@
 }
 
 .cloud-screen-identity {
-  grid-template-rows: 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.cloud-identity-stage {
+  display: flex;
+  min-height: 0;
+  overflow: auto;
+  padding-block: 48px 24px;
+}
+.cloud-identity {
+  width: 100%;
+  margin: auto;
+}
+.cloud-identity > p {
+  max-width: 36ch;
+}
+.cloud-identity > section {
+  width: 100%;
+  border: 1px solid var(--color-onboarding-edge);
+  border-radius: var(--radius-onboarding);
+  padding: 14px;
+  text-align: start;
 }
 .cloud-screen-identity .cloud-footer {
   display: none;
+  border-top: 1px solid var(--color-onboarding-edge);
 }
 .cloud-identity-icon {
   border-radius: var(--radius-full);

@@ -1,6 +1,7 @@
 import { ToggleSwitch } from "../components/ui/ToggleSwitch"
 import { useState, useSyncExternalStore, type CSSProperties } from "react"
 import {
+  ArrowRight,
   ArrowUp,
   ArrowUpRight,
   Check,
@@ -76,6 +77,7 @@ export function CloudOnboarding({
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
+  const approvalPending = waiting || browserReturned
   const checkFailed = value.cloud.status === "sign_in_check_failed"
   const signOutFailed = value.cloud.status === "sign_out_failed"
   const retryingSignIn = value.authAction === "check_sign_in"
@@ -165,14 +167,14 @@ export function CloudOnboarding({
         value.screen,
         value.screen === "complete" || !value.cloud.authEnabled ? "done" : "use_locally",
       )
-    if (waiting && !(await session.cancelSilently())) return
+    if (approvalPending && !(await session.cancelSilently())) return
     onComplete()
   }
   const back = async () => {
     if (disabled) return
     if (value.screen === "handoff" || value.screen === "identity") {
       if (analytics) noteCloudAction(value.screen, "back")
-      if (waiting && !(await session.cancelSilently())) return
+      if (approvalPending && !(await session.cancelSilently())) return
       onBack()
     } else await session.go(value.screen === "folders" ? "identity" : "handoff", "back")
   }
@@ -206,7 +208,7 @@ export function CloudOnboarding({
               {!value.loaded || retryCloud || signOutFailed
                 ? null
                 : value.cloud.authEnabled
-                  ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
+                  ? "Use your browser to connect this device. Signing in doesn’t start uploads."
                   : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
@@ -255,7 +257,7 @@ export function CloudOnboarding({
           </div>
         </section>
       ) : value.screen === "identity" ? (
-        <section className="cloud-setup">
+        <section className="cloud-setup cloud-identity-stage">
           <div className="cloud-connection cloud-identity">
             <div className="cloud-identity-icon">
               {value.cloud.identity?.avatar ? (
@@ -270,8 +272,17 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
+            {canContinueSetup && (
+              <p className="type-onboarding-body text-onboarding-muted">
+                Next, choose which folders to sync. Nothing uploads until you turn on sync.
+              </p>
+            )}
             {visible && value.cloud.invitationEnabled && value.cloud.identity && (
-              <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+              <CloudInvitations
+                accountId={value.cloud.identity.id}
+                onJoined={session.load}
+                onlyWhenInvited
+              />
             )}
             {value.cloud.setupError && (
               <>
@@ -625,7 +636,9 @@ export function CloudOnboarding({
               Back
             </button>
           ) : null}
-          <div className="onboarding-actions flex-wrap">
+          <div
+            className={`onboarding-actions flex-wrap${value.screen === "identity" ? " w-full justify-between" : ""}`}
+          >
             {value.screen !== "folders" &&
               (error || (value.screen !== "complete" && value.error)) && (
                 <span className="type-footnote" role="alert">
@@ -654,11 +667,12 @@ export function CloudOnboarding({
             )}
             {canContinueSetup && (
               <button
-                className="onboarding-primary"
+                className="onboarding-primary ml-auto"
                 disabled={disabled}
                 onClick={() => void session.go("folders")}
               >
-                Continue Cloud setup
+                Continue
+                <ArrowRight size={16} aria-hidden />
               </button>
             )}
             {value.screen === "folders" && (

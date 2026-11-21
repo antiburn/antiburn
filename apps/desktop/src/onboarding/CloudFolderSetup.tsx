@@ -107,6 +107,10 @@ export function CloudFolderSetup({
   )
   const canStart =
     !loading && !busy && !onRetry && !startBlocked && !unresolved && assignments.length > 0
+  const includesTeam = options.some(
+    ({ id, kind }) =>
+      kind === "team" && assignments.some(({ destinationId }) => destinationId === id),
+  )
 
   return (
     <section className="cloud-folder-content min-h-0 flex-1 overflow-hidden">
@@ -116,6 +120,7 @@ export function CloudFolderSetup({
       <p id={`${id}-consent`} className="type-onboarding-body text-onboarding-muted">
         Start syncing uploads full sessions available now and new sessions from the selected
         folders and their worktrees to the destinations shown.
+        {includesTeam && " Team owners and admins can read sessions sent to their workspace."}
       </p>
       <p id={`${id}-selection`} className="type-callout text-onboarding-muted" role="status">
         {countLabel(assignments.length, "folder")} selected

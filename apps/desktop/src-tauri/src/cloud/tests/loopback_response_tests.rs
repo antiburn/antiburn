@@ -89,8 +89,8 @@ async fn cloud_async_loopback_invalid_page_does_not_consume_the_valid_return() {
     )
     .await;
     assert!(rejected.starts_with("HTTP/1.1 400 Bad Request"));
-    assert!(rejected.contains("Sign-in link not accepted"));
-    assert!(!rejected.contains("Browser step complete"));
+    assert!(rejected.contains("Couldn't finish sign-in"));
+    assert!(!rejected.contains("Device approved"));
     assert!(!task.is_finished());
 
     let accepted = browser_get(
@@ -99,9 +99,9 @@ async fn cloud_async_loopback_invalid_page_does_not_consume_the_valid_return() {
     )
     .await;
     assert!(accepted.starts_with("HTTP/1.1 200 OK"));
-    assert!(accepted.contains("Browser step complete"));
-    assert!(accepted.contains("Return to Antiburn"));
-    assert!(accepted.contains("The desktop app will finish checking your sign-in."));
+    assert!(accepted.contains("Device approved"));
+    assert!(accepted.contains("Back to Antiburn Desktop"));
+    assert!(accepted.contains("Desktop will finish checking your sign-in."));
     assert!(matches!(task.await.unwrap(), Some(Callback::Code(code)) if code == "synthetic-code"));
 }
 
@@ -114,9 +114,9 @@ async fn cloud_async_loopback_denied_page_does_not_claim_browser_completion() {
     )
     .await;
     assert!(denied.starts_with("HTTP/1.1 200 OK"));
-    assert!(denied.contains("Browser approval cancelled"));
-    assert!(denied.contains("Try again in the desktop app, or continue locally."));
+    assert!(denied.contains("Device not approved"));
+    assert!(denied.contains("Sign in again from the app, or keep using it without Cloud."));
     assert!(!denied.contains("access_denied"));
-    assert!(!denied.contains("Browser step complete"));
+    assert!(!denied.contains("Device approved"));
     assert!(matches!(task.await.unwrap(), Some(Callback::Cancelled)));
 }

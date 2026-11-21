@@ -493,33 +493,47 @@ impl Engine {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
             return Err(Failure::CredentialFailed);
         }
-        if !current() {
+        let acceptance_error = || {
+            if !current() {
+                Some(Failure::Cancelled)
+            } else if expires_at <= (self.clock)() {
+                Some(Failure::ReauthRequired)
+            } else {
+                None
+            }
+        };
+        if let Some(error) = acceptance_error() {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
-            return Err(Failure::Cancelled);
+            return Err(error);
+        }
+        // Keep the saved proof closed to restoration until the last network read
+        // finishes. Lookup failure alone does not block sign-in.
+        let destinations = self
+            .transport
+            .destinations(&config, &tokens.access_token)
+            .ok();
+        if let Some(error) = acceptance_error() {
+            self.discard_tokens(guard, record, &config, &tokens, previous)?;
+            return Err(error);
         }
         record.phase = Phase::Active;
         record.cleanup = record.cleanup.prior_warning_only();
-        guard.write(&record)?;
-        self.cleanup = record.cleanup;
-        // Durable writes can outlast access or overlap account cancellation.
-        let cancelled = !current();
-        if cancelled || expires_at <= (self.clock)() {
+        let write_error = guard.write(&record).err();
+        // A failed directory sync can leave Active visible. Close the saved
+        // proof on any write error, cancellation, or expiry.
+        if let Some(error) = acceptance_error().or(write_error) {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
-            return Err(if cancelled {
-                Failure::Cancelled
-            } else {
-                Failure::ReauthRequired
-            });
+            return Err(error);
         }
+        self.cleanup = record.cleanup;
         self.access = Some(Access {
             token: tokens.access_token,
             expires_at,
             epoch: record.epoch,
             session,
-            destinations: None,
+            destinations,
         });
         self.status = AuthStatus::SignedIn;
-        let _ = self.refresh_destinations(&current);
         self.select_destination_view(None);
         Ok(())
     }

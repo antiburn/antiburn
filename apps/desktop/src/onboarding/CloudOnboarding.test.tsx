@@ -84,6 +84,7 @@ it("uses GitHub for Cloud setup and cancels pending approval before continuing l
   expect(screen.getByText(/Signing in doesn’t start uploads/)).toBeVisible()
   fireEvent.click(github)
   expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
+  expect(screen.getByText(/After signing in with GitHub, approve this device/)).toBeVisible()
   expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
   expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeVisible()
   fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
@@ -105,6 +106,39 @@ it("does not show verified sign-in or reopen browser approval after the browser 
   expect(screen.getByText(/Check your connection and try again/)).toBeVisible()
   expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
 })
+
+it.each(["Back", "Continue locally"])(
+  "cancels verification before leaving with %s",
+  async (name) => {
+    const { port, emit } = fixture({ ...signIn, status: "returned" })
+    let finishCancel!: () => void
+    port.cancel = vi.fn<CloudPort["cancel"]>(
+      () =>
+        new Promise((resolve) => {
+          finishCancel = () => {
+            emit({ status: "cancelled" })
+            resolve(port.read())
+          }
+        }),
+    )
+    const onBack = vi.fn()
+    const onComplete = vi.fn()
+    render(
+      <CloudOnboarding port={port} analytics={false} onBack={onBack} onComplete={onComplete} />,
+    )
+    expect(await screen.findByText(/Checking your sign-in/)).toBeVisible()
+
+    fireEvent.click(screen.getByRole("button", { name }))
+    expect(port.cancel).toHaveBeenCalledOnce()
+    expect(onBack).not.toHaveBeenCalled()
+    expect(onComplete).not.toHaveBeenCalled()
+    await act(async () => finishCancel())
+
+    expect(onBack).toHaveBeenCalledTimes(name === "Back" ? 1 : 0)
+    expect(onComplete).toHaveBeenCalledTimes(name === "Continue locally" ? 1 : 0)
+    expect(screen.queryByRole("heading", { name: "You’re signed in" })).toBeNull()
+  },
+)
 
 it("offers sign-in or local setup after local sign-out", async () => {
   const { port } = fixture({

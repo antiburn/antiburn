@@ -140,7 +140,9 @@ one-year deadline. Refresh does not extend that deadline.
 
 A single Cloud blocking-work permit admits synchronous keyring, SQLite, source,
 state-file, and short HTTP operations before they enter Tokio's blocking pool.
-Ordinary requests fail clearly as busy without starting work. Cleanup waits
+Ordinary requests fail clearly as busy without starting work. An invitation
+list can wait up to 750 ms for sign-in to release the permit. It rechecks the
+account after the wait, and a timeout sends no request. Cleanup waits
 asynchronously for the permit. Sign-out and browser cancellation invalidate
 their account or browser generation before waiting. A busy connection attempt
 does not invalidate the pending browser attempt. An admitted connection attempt
@@ -305,7 +307,9 @@ project permission. Each child and fork remains an independent native source.
 
 A matching session uploads in full. This is an allowlist, not redaction:
 messages and tool results from other CWDs or paths in the same session remain
-part of the upload.
+part of the upload. Team owners and admins can read sessions in their team
+workspace. The folder setup shows this before users start syncing to a team.
+It does not apply to sessions sent to Personal.
 
 ### Source access and discovery limits
 

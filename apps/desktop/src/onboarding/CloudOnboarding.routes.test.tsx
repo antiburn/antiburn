@@ -5,11 +5,19 @@ import type { CloudOngoingConsent, CloudOngoingStatus, CloudSnapshot } from "../
 import { CloudAccount } from "../views/settings/CloudAccount"
 import { CloudOnboarding } from "./CloudOnboarding"
 import { CloudSession } from "./CloudSession"
+import { desktopInvitationPort } from "./cloudInvitationPort"
 import {
   cloudProjectFixture,
   ongoingStatus,
   projectGroup,
 } from "./__tests__/cloudProjectFixtures"
+
+vi.mock("./cloudInvitationPort", () => ({
+  desktopInvitationPort: vi.fn(async () => ({
+    kind: "list",
+    listing: { state: "checked", invitations: [] },
+  })),
+}))
 
 const personal = {
   id: "synthetic-personal",
@@ -353,9 +361,65 @@ it("can continue from identity when capture is supported and invitations are dis
       onComplete={vi.fn()}
     />,
   )
-  const next = await screen.findByRole("button", { name: "Continue Cloud setup" })
+  const next = await screen.findByRole("button", { name: "Continue" })
   expect(next).toBeVisible()
   fireEvent.click(next)
   expect(await screen.findByRole("heading", { name: "Choose folders to sync" })).toBeVisible()
   expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("moves to folder setup after Desktop verifies a first browser approval", async () => {
+  const { port, ongoing, emit } = fixture({
+    status: "signed_out",
+    identity: null,
+    destination: null,
+    destinations: null,
+    savedDestinationIds: null,
+    captureEnabled: false,
+    invitationEnabled: false,
+    draft: { screen: "handoff", folders: [] },
+  })
+  port.begin = vi.fn(async () => {
+    const waiting = { ...(await port.read()), status: "waiting" as const }
+    emit(waiting)
+    return waiting
+  })
+  const props = {
+    port,
+    analytics: false,
+    holdIdentity: true,
+    onBack: vi.fn(),
+    onComplete: vi.fn(),
+  }
+  const { rerender } = render(<CloudOnboarding {...props} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in with GitHub" }))
+  expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
+  rerender(<CloudOnboarding {...props} visible={false} />)
+
+  act(() => emit({ status: "returned" }))
+  expect(screen.getByText(/Checking your sign-in/)).toBeVisible()
+  expect(screen.queryByRole("heading", { name: "You’re signed in" })).toBeNull()
+  act(() =>
+    emit({
+      status: "signed_in",
+      identity: { id: accountId, login: "Example" },
+      destination: personal,
+      destinations: [personal],
+      savedDestinationIds: [],
+      captureEnabled: true,
+      invitationEnabled: true,
+    }),
+  )
+  rerender(<CloudOnboarding {...props} visible />)
+
+  expect(screen.getByRole("heading", { name: "You’re signed in" })).toBeVisible()
+  await waitFor(() =>
+    expect(desktopInvitationPort).toHaveBeenCalledWith(accountId, { action: "list" }),
+  )
+  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+  expect(await screen.findByRole("heading", { name: "Choose folders to sync" })).toBeVisible()
+  expect(await screen.findByRole("switch", { name: /Sync Studio/ })).not.toBeChecked()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(props.onComplete).not.toHaveBeenCalled()
 })

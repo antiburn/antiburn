@@ -18,6 +18,7 @@ use url::Url;
 const VERIFY_PATH: &str = "/devices/invitations/verify";
 const LIST_PATH: &str = "/v1/devices/invitations";
 const ATTEMPTS_PATH: &str = "/v1/devices/invitation-attempts";
+const LIST_ADMISSION_WAIT: Duration = Duration::from_millis(750);
 const VERIFY_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// The legacy desktop grant cannot act on device invitation routes.
@@ -70,6 +71,20 @@ pub(crate) enum Action {
     Dismiss {
         id: String,
     },
+}
+
+impl Action {
+    fn admission(&self) -> Priority {
+        match self {
+            // The signed-in event can reach the panel before sign-in releases the slot.
+            Self::List => Priority::Read(LIST_ADMISSION_WAIT),
+            Self::Start { .. }
+            | Self::Status { .. }
+            | Self::Finish { .. }
+            | Self::Cancel { .. }
+            | Self::Dismiss { .. } => Priority::Normal,
+        }
+    }
 }
 
 /// List entries are display data. A workspace slug does not authorize joining.
@@ -196,7 +211,7 @@ pub(crate) async fn cloud_invitations(
     let controller = app.state::<Controller>();
     let generation = controller.account_generation.load(Ordering::Acquire);
     let work = controller.blocking.clone();
-    work.run(Priority::Normal, move || {
+    work.run(request.admission(), move || {
         let controller = app.state::<Controller>();
         let current = || controller.account_generation.load(Ordering::Acquire) == generation;
         let mut engine = controller

@@ -84,12 +84,13 @@ it("confirms only visible assignments with full-session scope and named routes",
       .map((option) => option.textContent),
   ).toEqual(["Don’t sync", "Personal", "Example Studio"])
   expect(studio).toHaveDisplayValue("Don’t sync")
+  expect(start()).not.toHaveAccessibleDescription(/Team owners and admins can read/)
   fireEvent.change(studio, { target: { value: team.id } })
   fireEvent.change(website, { target: { value: personal.id } })
   expect(studio).toHaveDisplayValue("Example Studio")
   expect(website).toHaveDisplayValue("Personal")
   expect(start()).toHaveAccessibleDescription(
-    /full sessions available now and new sessions.*selected folders and their worktrees.*2 folders selected/,
+    /full sessions available now and new sessions.*selected folders and their worktrees.*Team owners and admins can read.*2 folders selected/,
   )
   expect(props.onStart).not.toHaveBeenCalled()
   fireEvent.click(start())

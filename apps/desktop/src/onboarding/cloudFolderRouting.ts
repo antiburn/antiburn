@@ -1,6 +1,5 @@
 import type {
   CloudDestinationBinding,
-  CloudEligibleDestination,
   CloudOngoingConsent,
   CloudOngoingPort,
   CloudOngoingStatus,
@@ -12,6 +11,8 @@ import type {
 } from "../lib/cloud"
 import { cloudSourceKey } from "../lib/cloud"
 import type { CloudViewSnapshot } from "./CloudSession"
+
+type CloudEligibleDestination = NonNullable<CloudSnapshot["destinations"]>[number]
 
 /** Compare consent-relevant roots without treating display-count changes as edits. */
 export function selectedFoldersKey(value: CloudSnapshot) {

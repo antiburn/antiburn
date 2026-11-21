@@ -2075,6 +2075,9 @@ The onboarding welcome vendor marks use monochrome black in light mode and white
 
 ## Cloud onboarding
 
+On the signed-in screen, the identity and any invitation controls scroll
+above the footer. The Continue button stays at the right edge of the footer.
+
 These layouts are for development builds. Antiburn Cloud is not live, and public
 builds keep it disabled. The public Cloud page is a [waiting-list signup](https://antiburn.com/cloud/).
 

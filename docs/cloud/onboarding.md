@@ -25,11 +25,19 @@ pausing the others. Joining a team does not change any saved folder route.
 
 ## Workspace invitations
 
-Sign in to Cloud in your system browser, then return to Desktop. Desktop shows
-pending invitations for the verified account. If the list needs another check,
-choose **Check in browser**. Use the same account as Desktop, then return to
-review your invitations. If Desktop asks, choose **Finish check**. Checking the
-list does not join a workspace.
+Sign in with GitHub in your system browser. Then review and approve the device
+connection before returning to Desktop. You do not need to sign in on the
+dashboard first. Cloud creates your Personal workspace on first sign-in.
+Desktop shows invitation controls during onboarding only when it finds a
+pending invitation or has a result from a review already in progress. You
+can continue to folder setup even if Desktop cannot check invitations.
+**Back** and **Continue locally** cancel sign-in while approval or verification
+is pending.
+
+If the list needs another check, open Cloud in Settings and choose **Check in
+browser**. Use the same account as Desktop, then return to review your
+invitations. If Desktop asks, choose **Finish check**. Checking the list does not
+join a workspace.
 
 Choose **Verify invitation** for the workspace you want to join. After the
 browser verifies your account, choose **Join workspace** in Desktop. If your

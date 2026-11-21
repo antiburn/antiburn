@@ -167,6 +167,7 @@ struct FakeTransport {
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_destinations: Option<Arc<dyn Fn() + Send + Sync>>,
     on_revoke: Option<Arc<dyn Fn() + Send + Sync>>,
     on_invitation_probe: Option<Arc<dyn Fn() + Send + Sync>>,
     returned_session: Mutex<Option<Session>>,
@@ -259,6 +260,9 @@ impl Transport for Arc<FakeTransport> {
         Ok(())
     }
     fn destinations(&self, _: &Config, _: &str) -> Result<Vec<auth::EligibleDestination>, Failure> {
+        if let Some(action) = &self.on_destinations {
+            action();
+        }
         if self.fail_destinations.load(Ordering::Acquire) {
             return Err(Failure::Offline);
         }
@@ -319,6 +323,56 @@ impl Fixture {
     }
     fn restart(&mut self) {
         self.engine = self.reopen();
+    }
+}
+
+#[test]
+fn cloud_browser_return_reports_progress_before_verified_sign_in() {
+    let mut fixture = Fixture::new();
+    let (_, _listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+    fixture.engine.status = AuthStatus::Waiting;
+    let mut outcomes = Vec::new();
+    finish_browser_return(
+        &mut fixture.engine,
+        &attempt,
+        auth::Callback::Code("synthetic-code".into()),
+        101,
+        || true,
+        |engine| {
+            outcomes.push((
+                engine.status == AuthStatus::Returned,
+                engine.session().is_some(),
+                fixture.transport.calls.load(Ordering::Acquire),
+            ));
+        },
+    );
+    assert_eq!(outcomes, [(true, false, 0), (false, true, 1)]);
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+}
+
+#[test]
+fn cloud_browser_return_does_not_report_progress_for_denial_or_cancellation() {
+    for (callback, current, expected_publications) in [
+        (auth::Callback::Cancelled, true, 1),
+        (auth::Callback::Code("synthetic-code".into()), false, 0),
+    ] {
+        let mut fixture = Fixture::new();
+        let (_, _listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+        let mut publications = 0;
+        finish_browser_return(
+            &mut fixture.engine,
+            &attempt,
+            callback,
+            101,
+            || current,
+            |engine| {
+                assert!(engine.status == AuthStatus::Cancelled);
+                publications += 1;
+            },
+        );
+        assert_eq!(publications, expected_publications);
+        assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 0);
+        assert!(fixture.engine.session().is_none());
     }
 }
 
@@ -602,6 +656,86 @@ fn cloud_cancel_during_session_request_saves_only_logout_proof() {
     fixture.restart();
     assert!(fixture.engine.refresh(102, || true).is_ok());
     assert!(fixture.engine.session().is_none());
+}
+
+#[test]
+fn cloud_cancel_during_callback_destination_lookup_cannot_complete_sign_in() {
+    let mut fixture = Fixture::new();
+    let generation = Arc::new(AtomicU64::new(1));
+    let cancel = generation.clone();
+    fixture.engine.transport = Arc::new(Arc::new(FakeTransport {
+        on_destinations: Some(Arc::new(move || {
+            cancel.fetch_add(1, Ordering::AcqRel);
+        })),
+        ..FakeTransport::default()
+    }));
+    let (_, _listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+    let mut publications = Vec::new();
+    finish_browser_return(
+        &mut fixture.engine,
+        &attempt,
+        auth::Callback::Code("synthetic".into()),
+        101,
+        || generation.load(Ordering::Acquire) == 1,
+        |engine| publications.push(engine.status == AuthStatus::Returned),
+    );
+    assert_eq!(publications, [true]);
+    assert_eq!(generation.load(Ordering::Acquire), 2);
+    fixture.engine.cancel(2).unwrap();
+    assert!(fixture.engine.status == AuthStatus::Cancelled);
+    assert!(fixture.engine.session().is_none());
+    let proof = fixture.vault.read().unwrap().unwrap();
+    assert!(!proof.account_grant);
+    assert!(proof.session.is_none());
+    fixture.restart();
+    fixture.engine.refresh(102, || true).unwrap();
+    assert!(fixture.engine.session().is_none());
+}
+
+#[test]
+fn cloud_failed_activation_after_rename_keeps_only_logout_proof() {
+    for cancel in [false, true] {
+        let mut fixture = Fixture::new();
+        let generation = Arc::new(AtomicU64::new(1));
+        let write_generation = generation.clone();
+        let state_file = fixture.directory.path().join("cloud-auth-state-v2");
+        fixture.engine.state = state::StateStore::new(fixture.directory.path())
+            .with_active_directory_sync(move || {
+                let record: state::Record =
+                    serde_json::from_slice(&std::fs::read(&state_file).unwrap()).unwrap();
+                assert!(record.phase == state::Phase::Active);
+                if cancel {
+                    write_generation.fetch_add(1, Ordering::AcqRel);
+                }
+                Err(Failure::CredentialFailed)
+            });
+        let (_, _listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+        assert_eq!(
+            fixture.engine.callback(
+                &attempt,
+                auth::Callback::Code("synthetic".into()),
+                101,
+                || generation.load(Ordering::Acquire) == 1,
+            ),
+            Err(if cancel {
+                Failure::Cancelled
+            } else {
+                Failure::CredentialFailed
+            }),
+        );
+        if cancel {
+            fixture.engine.cancel(2).unwrap();
+        }
+        let proof = fixture.vault.read().unwrap().unwrap();
+        assert!(!proof.account_grant);
+        assert!(proof.session.is_none());
+        fixture.engine.refresh(102, || true).unwrap();
+        assert!(fixture.engine.session().is_none());
+        fixture.restart();
+        fixture.engine.refresh(103, || true).unwrap();
+        assert!(fixture.engine.session().is_none());
+        assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    }
 }
 
 #[tokio::test]

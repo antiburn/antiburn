@@ -93,21 +93,21 @@ fn browser_response(result: Option<&Callback>) -> String {
     let (status, label, title, detail) = match result {
         Some(Callback::Code(_)) => (
             "200 OK",
-            "Browser step complete",
-            "Return to Antiburn",
-            "The desktop app will finish checking your sign-in. You can close this tab.",
+            "Device approved",
+            "Back to Antiburn Desktop",
+            "Desktop will finish checking your sign-in. You can close this tab.",
         ),
         Some(Callback::Cancelled) => (
             "200 OK",
-            "Browser approval cancelled",
-            "Return to Antiburn",
-            "You did not approve this sign-in. Try again in the desktop app, or continue locally.",
+            "Device not approved",
+            "Back to Antiburn Desktop",
+            "Sign in again from the app, or keep using it without Cloud.",
         ),
         None => (
             "400 Bad Request",
-            "Sign-in link not accepted",
-            "Check the Antiburn app",
-            "Return to the desktop app to check your sign-in or start again. You can close this tab.",
+            "Couldn't finish sign-in",
+            "Check Antiburn Desktop",
+            "If you're still signed out, start sign-in again from the app.",
         ),
     };
     let style = include_str!("../../resources/cloud-loopback/page.css");

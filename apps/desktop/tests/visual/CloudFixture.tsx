@@ -59,7 +59,7 @@ export function cloudFixture(name: string): CloudPort {
   ].includes(name)
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
-    authEnabled: !["marketing", "returned", "marketing_failed"].includes(name),
+    authEnabled: !["marketing", "marketing_failed"].includes(name),
     syncEnabled:
       name === "settings-progress" || name === "settings-reopened" || settingsFolders,
     captureEnabled: authenticated && name !== "unavailable",
