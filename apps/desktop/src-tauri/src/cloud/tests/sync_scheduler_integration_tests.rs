@@ -449,6 +449,7 @@ struct Authority {
     sessions: AtomicUsize,
     revocations: AtomicUsize,
     grant: AtomicUsize,
+    team_generation: AtomicUsize,
 }
 
 impl Authority {
@@ -517,10 +518,22 @@ impl AuthTransport for Arc<Authority> {
         _: &Config,
         _: &str,
     ) -> Result<Vec<auth::EligibleDestination>, auth::Failure> {
-        Ok(vec![auth::EligibleDestination {
+        let mut destinations = vec![auth::EligibleDestination {
             workspace: Authority::session(self).workspace.unwrap(),
             membership_generation: None,
-        }])
+        }];
+        let generation = self.team_generation.load(Ordering::Acquire);
+        if generation != 0 {
+            destinations.push(auth::EligibleDestination {
+                workspace: Workspace {
+                    id: "team".into(),
+                    name: "Example Team".into(),
+                    kind: WorkspaceKind::Team,
+                },
+                membership_generation: Some(format!("membership-{generation}")),
+            });
+        }
+        Ok(destinations)
     }
 }
 
@@ -554,7 +567,7 @@ impl Fixture {
         let policy = store
             .save_cloud_sync_policy(
                 "account",
-                "personal",
+                ("personal", None),
                 &service.origin,
                 &[SourceSelection {
                     source_kind: SourceKind::ClaudeJsonl,
@@ -578,6 +591,7 @@ impl Fixture {
             sessions: AtomicUsize::new(0),
             revocations: AtomicUsize::new(0),
             grant: AtomicUsize::new(0),
+            team_generation: AtomicUsize::new(0),
         });
         let vault = Arc::new(crate::cloud::tests::MemoryVault::default());
         let mut engine = Engine::new(
@@ -743,7 +757,7 @@ impl Fixture {
             .store
             .save_cloud_sync_policy(
                 "account",
-                "personal",
+                ("personal", None),
                 &self.service.origin,
                 &[SourceSelection {
                     source_kind: SourceKind::OpenCodeSqliteV2,
@@ -759,6 +773,87 @@ impl Fixture {
             .unwrap();
         database
     }
+}
+
+#[test]
+fn cloud_scheduler_removed_team_never_falls_back_or_reuses_saved_bytes_after_rejoin() {
+    let mut fixture = Fixture::new(READY, 0);
+    fixture
+        .authority
+        .team_generation
+        .store(1, Ordering::Release);
+    let roots = fixture
+        .policy
+        .roots
+        .iter()
+        .map(|root| SourceSelection {
+            source_kind: root.source_kind,
+            path: root.path.clone(),
+        })
+        .collect::<Vec<_>>();
+    let approve_team = |store: &Store, generation| {
+        store
+            .save_cloud_sync_policy(
+                "account",
+                ("team", Some(generation)),
+                &fixture.service.origin,
+                &roots,
+                &fixture.policy.projects,
+                &BTreeMap::new(),
+            )
+            .unwrap()
+    };
+    let first = approve_team(&fixture.store, "membership-1");
+    fixture.turn();
+    let original = fixture
+        .host
+        .spool()
+        .unwrap()
+        .entries()
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(original.identity.destination_id, "team");
+    let calls = fixture.service.requests.load(Ordering::Acquire);
+    for generation in [0, 2] {
+        fixture
+            .authority
+            .team_generation
+            .store(generation, Ordering::Release);
+        fixture.turn();
+        assert!(fixture.runner.state == State::Fenced);
+        assert_eq!(fixture.service.requests.load(Ordering::Acquire), calls);
+        assert!(fixture.engine.status == AuthStatus::SignedIn);
+        assert_eq!(
+            fixture.host.spool().unwrap().entries().unwrap()[0].identity,
+            original.identity
+        );
+    }
+    let revised = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            ("team", Some("membership-2")),
+            &fixture.service.origin,
+            &roots,
+            &first.projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert_ne!(first.revision, revised.revision);
+    fixture.turn();
+    let entries = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(entries.len(), 2);
+    let saved = entries
+        .iter()
+        .find(|entry| entry.identity == original.identity)
+        .unwrap();
+    assert_eq!(saved.manifest, original.manifest);
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.identity.destination_id == "team")
+    );
 }
 
 fn write_source(root: &Path, project: &Path, id: &str, message: &str) {
@@ -1106,7 +1201,7 @@ fn cloud_scheduler_removing_an_unrelated_folder_does_not_fence_saved_bytes() {
         .store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             &fixture.service.origin,
             &[SourceSelection {
                 source_kind: SourceKind::ClaudeJsonl,
@@ -1742,7 +1837,7 @@ fn cloud_scheduler_capacity_retry_cannot_reuse_a_narrowed_policy() {
         .store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             &fixture.service.origin,
             std::slice::from_ref(&root),
             &projects,
@@ -1756,7 +1851,7 @@ fn cloud_scheduler_capacity_retry_cannot_reuse_a_narrowed_policy() {
         .store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             &fixture.service.origin,
             &[root],
             &[ProjectSelection {
@@ -1793,7 +1888,7 @@ fn cloud_scheduler_capacity_retry_cannot_reuse_a_narrowed_policy() {
         .store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             &fixture.service.origin,
             &roots,
             &approved.projects,
@@ -1971,7 +2066,7 @@ fn cloud_scheduler_captures_a_selected_opencode_session_after_two_unselected_pag
         .store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             &fixture.service.origin,
             &[SourceSelection {
                 source_kind: SourceKind::OpenCodeSqliteV2,
@@ -2103,7 +2198,7 @@ fn cloud_scheduler_verified_suppression_is_terminal_and_other_sources_continue()
         .store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             &fixture.service.origin,
             &roots,
             &fixture.policy.projects,
@@ -2613,6 +2708,7 @@ fn cloud_scheduler_missing_pending_state_does_not_authorize_capture_or_recovery(
             .unwrap()
             .unwrap(),
         Job {
+            membership_generation: None,
             state: JobState::Interrupted,
             ..job
         }
@@ -2677,6 +2773,7 @@ fn cloud_scheduler_quarantined_queued_capture_is_not_abandoned_or_replaced() {
             .unwrap()
             .unwrap(),
         Job {
+            membership_generation: None,
             state: JobState::Interrupted,
             ..job
         }
@@ -2770,7 +2867,7 @@ fn cloud_project_choices_restore_in_status_after_reopen_and_old_missing_maps_sta
         .store
         .save_cloud_sync_policy(
             "account",
-            "personal",
+            ("personal", None),
             &fixture.service.origin,
             &roots,
             &fixture.policy.projects,

@@ -30,6 +30,7 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
         .unwrap();
     let path = database.to_str().unwrap().to_owned();
     let policy = Policy {
+        membership_generation: None,
         account_id: "account".into(),
         destination_id: "personal".into(),
         resource_origin: Some("https://api.example".into()),

@@ -132,6 +132,7 @@ pub(super) enum Failure {
     Backpressure,
     Offline,
     Unauthorized,
+    DestinationDenied,
     Conflict,
     SourceSuppressed,
     Unavailable,
@@ -186,10 +187,11 @@ pub(super) struct CapabilityFailure {
 pub(super) fn capabilities(
     engine: &mut Engine,
     account: &str,
-    destination: &str,
+    destination_scope: (&str, Option<&str>),
     account_current: &dyn Fn() -> bool,
     current: &dyn Fn() -> bool,
 ) -> Result<antiburn_cloud_capture::Limits, CapabilityFailure> {
+    let (destination, membership_generation) = destination_scope;
     let identity = CaptureIdentity {
         capture_id: "capabilities".into(),
         account_id: account.into(),
@@ -203,7 +205,8 @@ pub(super) fn capabilities(
             retry_after: None,
         })?
         .to_owned();
-    let mut transport = HttpTransport::new(engine, account_current, current, &origin, None);
+    let mut transport = HttpTransport::new(engine, account_current, current, &origin, None)
+        .with_membership(membership_generation);
     let response = transport
         .request(&identity, Route::Capabilities, &())
         .map_err(|_| CapabilityFailure {
@@ -251,6 +254,7 @@ pub(super) struct HttpTransport<'a> {
     current: &'a dyn Fn() -> bool,
     source: Option<Source>,
     resource_origin: String,
+    membership_generation: Option<String>,
     pub failure: Option<Failure>,
     pub retry_after: Option<Duration>,
 }
@@ -272,9 +276,16 @@ impl<'a> HttpTransport<'a> {
             current,
             source,
             resource_origin: resource_origin.into(),
+            membership_generation: None,
             failure: None,
             retry_after: None,
         }
+    }
+
+    /// Bind the adapter to the saved Team membership or to Personal (`None`).
+    pub(super) fn with_membership(mut self, generation: Option<&str>) -> Self {
+        self.membership_generation = generation.map(str::to_owned);
+        self
     }
 
     fn request(
@@ -285,7 +296,7 @@ impl<'a> HttpTransport<'a> {
     ) -> Result<ApiResponse, TransportError> {
         match self.engine.capture_request(
             identity,
-            &self.resource_origin,
+            (&self.resource_origin, self.membership_generation.as_deref()),
             route,
             body,
             self.account_current,
@@ -298,7 +309,8 @@ impl<'a> HttpTransport<'a> {
                         self.failure = None;
                         return Ok(response);
                     }
-                    401 | 403 => (Failure::Unauthorized, TransportError::Unauthorized),
+                    401 => (Failure::Unauthorized, TransportError::Unauthorized),
+                    403 => (Failure::DestinationDenied, TransportError::Unauthorized),
                     409 if matches!(route, Route::Reserve) && source_suppressed(&response.body) => {
                         (Failure::SourceSuppressed, TransportError::Conflict)
                     }
@@ -557,7 +569,7 @@ impl Transport for HttpTransport<'_> {
             "agent": source.agent,
             "source_format": source.source_format,
             "native_session_id": source.native_session_id,
-            "membership_generation": null,
+            "membership_generation": self.membership_generation,
         });
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

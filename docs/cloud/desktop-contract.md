@@ -118,13 +118,13 @@ restore the saved connection. Old workspace grants can only be revoked.
 
 Desktop authentication requests use the configured API origin:
 
-| Request                   | Desktop proof                                                                                                |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and `device_name` |
-| `POST /v1/devices/token` | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
-| `GET /v1/devices/session` | Access bearer |
-| `POST /v1/devices/logout` | JSON `{refresh_token}` |
-| `GET /v1/captures/destinations` | Access bearer |
+| Request                          | Desktop proof                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and `device_name`                  |
+| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
+| `GET /v1/devices/session`        | Access bearer                                                                                               |
+| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                      |
+| `GET /v1/captures/destinations`  | Access bearer                                                                                               |
 
 Token, session, and logout requests send no cookies or Origin header. Token and
 logout proof does not use a bearer header. Desktop requests do not follow
@@ -207,19 +207,25 @@ retarget saved capture bytes.
 
 ## Destination and content consent
 
-Destination discovery is separate from authentication. An empty or unavailable
-destination list does not sign the user out.
-Only the currently verified account and Personal destination can enable sync.
-Unknown membership or an explicit team destination blocks it; the desktop does
-not silently replace a team with personal. Consent also stays bound to the
-configured service origin. Account, destination, or service changes cannot
-retarget saved captures.
+Destination discovery is separate from device sign-in. An empty or unavailable
+destination list does not sign the user out. Each folder approval names one exact
+Personal or Team destination for the current account and service. The desktop
+saves the chosen destination and folder policy together. It runs the latest
+approved route and leaves other saved policies and captures intact.
+
+For Team uploads, approval and saved jobs keep the membership generation from
+`/v1/captures/destinations`. The desktop checks it before starting or retrying
+work. If the destination becomes unavailable, sync stops without switching
+destinations. Rejoining a Team does not restore old upload consent or resume
+old pending captures. Review the folders again to approve the current
+membership. New captures get new IDs; old captures keep their original bytes
+and destination.
 
 Sign-in, source access, folder toggles, and the legacy local **Upload sessions**
 preference do not grant upload consent. Clicking **Start syncing** confirms
 full-content upload for the current selection. The folder screen's short subtitle
 states the scope; no separate consent checkbox or footer notice is required. `desktop-project-sync-v1`
-binds the account, personal destination, exact provider sources, and approved
+binds the account, selected destination, exact provider sources, and approved
 project/worktree paths, with full content and ongoing sync enabled and external
 attachments disabled. It covers existing sessions and new sessions in those
 approved folder trees while uploads remain enabled.
@@ -326,7 +332,7 @@ uploads are pending. Closing onboarding stops renderer observation, not the
 saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
-Settings → Sessions shows the account, personal destination, upload switch,
+Settings → Sessions shows the account, selected destination, upload switch,
 folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
@@ -348,7 +354,7 @@ Pause stops admission of further sensitive work and saves the paused
 state. It does not delete spools, undo requests already sent, or delete remote
 content. Sign-out and account changes also stop unauthorized work without
 retargeting or deleting saved captures.
-Signing in again to the same account and workspace resumes eligible saved uploads
+Signing in again to the same account and destination resumes eligible saved uploads
 automatically. A new sign-in clears conflict cooldowns but preserves capacity
 and offline backoff. It does not replace the capture, change its destination,
 expand folder consent, or resume a paused policy.
@@ -385,6 +391,7 @@ overwrite a newer publication. Deletion and cancellation remain final.
 
 Capture API requests use the configured resource origin and desktop-held credentials.
 They use `/v1/captures/*`. A Personal reservation sends `membership_generation: null`.
+A Team reservation sends the saved generation for that exact destination.
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.
 Upload locations never enter saved state, renderer status, or diagnostics.

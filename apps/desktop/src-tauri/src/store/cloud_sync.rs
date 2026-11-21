@@ -35,7 +35,7 @@ pub(crate) struct ProjectSelection {
 #[path = "tests/cloud_sync_integration_tests.rs"]
 mod tests;
 
-/// Current consent for an account and personal workspace. Grants are not part of
+/// Current consent for an account and exact upload destination. Grants are not part of
 /// this identity. Pausing retains this policy, queued bytes, and terminal state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -44,6 +44,8 @@ pub(crate) struct Policy {
     pub destination_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_generation: Option<String>,
     pub consent_version: String,
     pub revision: String,
     pub roots: Vec<RootScope>,
@@ -108,6 +110,8 @@ pub(crate) struct Job {
     pub identity: CaptureIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_generation: Option<String>,
     pub source_scope_id: String,
     pub project_path: String,
     #[serde(default)]
@@ -128,6 +132,7 @@ impl Job {
             && self.resource_origin == policy.resource_origin
             && self.identity.account_id == policy.account_id
             && self.identity.destination_id == policy.destination_id
+            && self.membership_generation == policy.membership_generation
             && policy.allows(&self.source_scope_id, &self.project_path)
             && self
                 .project_folders
@@ -364,6 +369,19 @@ fn source_scope(
 }
 
 impl Store {
+    /// Read the account's last explicitly approved destination for this service.
+    /// A missing grant must not erase this preference or select a different route.
+    pub(crate) fn cloud_sync_destination(
+        &self,
+        account: &str,
+        resource: &str,
+    ) -> Result<Option<String>> {
+        Ok(self.lock().query_row(
+            "SELECT destination_id FROM cloud_sync_destination WHERE account_id=?1 AND resource_origin=?2",
+            params![account, resource], |row| row.get(0),
+        ).optional()?)
+    }
+
     /// Read only this account and workspace's explicit ongoing policy.
     /// Legacy setup preferences and saved source requests never create one.
     pub(crate) fn cloud_sync_policy(
@@ -403,12 +421,19 @@ impl Store {
     pub(crate) fn save_cloud_sync_policy(
         &self,
         account: &str,
-        destination: &str,
+        destination: (&str, Option<&str>),
         resource_origin: &str,
         roots: &[SourceSelection],
         projects: &[ProjectSelection],
         project_choices: &BTreeMap<String, bool>,
     ) -> Result<Policy> {
+        let (destination, membership_generation) = destination;
+        ensure!(
+            membership_generation.is_none_or(|value| !value.is_empty()
+                && value.len() <= 256
+                && !value.chars().any(char::is_control)),
+            "Cloud membership generation is invalid"
+        );
         ensure!(
             valid_resource_origin(resource_origin),
             "Cloud service origin is invalid"
@@ -454,6 +479,7 @@ impl Store {
             account_id: account.into(),
             destination_id: destination.into(),
             resource_origin: Some(resource_origin.into()),
+            membership_generation: membership_generation.map(str::to_owned),
             consent_version: ONGOING_CONSENT_VERSION.into(),
             revision: random_id()?,
             roots: scoped,
@@ -465,6 +491,11 @@ impl Store {
             "INSERT INTO cloud_sync_policy VALUES (?1, ?2, ?3)
              ON CONFLICT(account_id, destination_id) DO UPDATE SET record_json=excluded.record_json",
             params![account, destination, encode(&policy, 524_288)?],
+        )?;
+        transaction.execute(
+            "INSERT INTO cloud_sync_destination VALUES (?1, ?2, ?3)
+             ON CONFLICT(account_id, resource_origin) DO UPDATE SET destination_id=excluded.destination_id",
+            params![account, resource_origin, destination],
         )?;
         transaction.commit()?;
         Ok(policy)
@@ -724,6 +755,7 @@ impl Store {
                     if job.identity.account_id == identity.account_id
                         && job.identity.destination_id == identity.destination_id
                         && job.identity.source_id == identity.source_id
+                        && job.membership_generation == policy.membership_generation
                     {
                         return Ok(None);
                     }
@@ -737,6 +769,7 @@ impl Store {
         let job = Job {
             identity,
             resource_origin: policy.resource_origin.clone(),
+            membership_generation: policy.membership_generation.clone(),
             source_scope_id: source_scope_id.into(),
             project_path: project_path.into(),
             project_folders: policy

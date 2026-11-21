@@ -39,6 +39,12 @@ impl Store {
                 record_json TEXT NOT NULL CHECK(length(record_json) <= 524288),
                 PRIMARY KEY(account_id, destination_id)
             );
+            CREATE TABLE IF NOT EXISTS cloud_sync_destination (
+                account_id TEXT NOT NULL,
+                resource_origin TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                PRIMARY KEY(account_id, resource_origin)
+            );
             CREATE TABLE IF NOT EXISTS cloud_sync_scope (
                 account_id TEXT NOT NULL,
                 destination_id TEXT NOT NULL,
