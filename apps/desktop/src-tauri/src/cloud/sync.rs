@@ -168,6 +168,8 @@ fn selected_destination(store: &Store, session: &auth::Session) -> Result<Option
 /// authoritative after restart. Each bounded discovery page stays until drained.
 #[derive(Default)]
 struct Runner {
+    destination_id: Option<String>,
+    restore_only: bool,
     candidates: VecDeque<Selection>,
     next_reconcile: Option<Instant>,
     next_reservation: Option<Instant>,
@@ -200,7 +202,65 @@ struct DiscoveryCursor {
 pub(super) struct Scheduler {
     wake: Arc<Notify>,
     pub generation: AtomicU64,
-    runner: Mutex<Runner>,
+    runners: Mutex<RouteRunners>,
+}
+
+/// Keep discovery cursors, retry waits, and failures separate for each upload route.
+/// One turn serves one saved route so an unavailable Team cannot starve Personal.
+#[derive(Default)]
+struct RouteRunners {
+    idle: Runner,
+    owner: Option<(String, String)>,
+    cursor: Option<String>,
+    routes: BTreeMap<String, Runner>,
+}
+
+impl RouteRunners {
+    fn set_owner(&mut self, session: &auth::Session) {
+        if self.owner.as_ref().is_none_or(|(account, origin)| {
+            account != &session.user.id || origin != &session.resource
+        }) {
+            self.owner = Some((session.user.id.clone(), session.resource.clone()));
+            self.cursor = None;
+            self.routes.clear();
+            self.idle = Runner::default();
+        }
+    }
+
+    fn route(&mut self, session: Option<&auth::Session>, id: Option<&str>) -> &mut Runner {
+        let (Some(session), Some(id)) = (session, id) else {
+            return &mut self.idle;
+        };
+        self.set_owner(session);
+        self.routes.entry(id.to_owned()).or_insert_with(|| Runner {
+            destination_id: Some(id.to_owned()),
+            ..Runner::default()
+        })
+    }
+
+    fn next(
+        &mut self,
+        store: &Store,
+        session: Option<&auth::Session>,
+    ) -> Result<&mut Runner, String> {
+        self.idle.restore_only = true;
+        let Some(session) = session else {
+            return Ok(&mut self.idle);
+        };
+        self.set_owner(session);
+        self.idle.restore_only = true;
+        let next = |after| {
+            store
+                .next_cloud_sync_destination(&session.user.id, &session.resource, after)
+                .map_err(|_| "Could not read saved Cloud upload routes.".to_owned())
+        };
+        let mut destination = next(self.cursor.as_deref())?;
+        if destination.is_none() && self.cursor.is_some() {
+            destination = next(None)?;
+        }
+        self.cursor = destination.clone();
+        Ok(self.route(Some(session), destination.as_deref()))
+    }
 }
 
 /// Start once from Cloud initialization, regardless of renderer lifetime.
@@ -222,9 +282,9 @@ pub(super) fn start(app: tauri::AppHandle) {
                         .engine
                         .lock()
                         .map_err(|_| "Cloud is unavailable.")?;
-                    let mut runner = controller
+                    let mut runners = controller
                         .sync
-                        .runner
+                        .runners
                         .lock()
                         .map_err(|_| "Cloud sync is unavailable.")?;
                     let store = worker_app.state::<Store>();
@@ -250,7 +310,16 @@ pub(super) fn start(app: tauri::AppHandle) {
                         .project_cache
                         .lock()
                         .map_err(|_| "Project discovery is unavailable.")?;
-                    let failed = setup_failed
+                    let route = if setup_failed || !account_current() {
+                        Err("Cloud sync is unavailable.".into())
+                    } else {
+                        runners.next(&store, engine.session())
+                    };
+                    let (runner, route_failed) = match route {
+                        Ok(runner) => (runner, false),
+                        Err(_) => (&mut runners.idle, true),
+                    };
+                    let failed = route_failed
                         || runner
                             .turn(
                                 &store,
@@ -290,6 +359,17 @@ fn emit_status(app: &tauri::AppHandle, status: Status) -> Status {
 }
 
 impl Runner {
+    fn destination(
+        &self,
+        store: &Store,
+        session: &auth::Session,
+    ) -> Result<Option<String>, String> {
+        match &self.destination_id {
+            Some(id) => Ok(Some(id.clone())),
+            None => selected_destination(store, session),
+        }
+    }
+
     /// Fill only an empty queue. Partial sweeps continue on the next available
     /// turn; completed sweeps use the normal refresh interval.
     fn refresh_candidates(
@@ -362,7 +442,13 @@ impl Runner {
                 ..Status::default()
             })
         } else {
-            status(store, host, engine, self.state)
+            status_for_destination(
+                store,
+                host,
+                engine,
+                self.state,
+                self.destination_id.as_deref(),
+            )
         };
         let mut result = match read {
             Ok(value) => {
@@ -377,7 +463,8 @@ impl Runner {
                         && self.last_status_origin.as_deref() == engine.resource_origin()
                         && engine.session().is_some_and(|session| {
                             previous.account_id.as_deref() == Some(&session.user.id)
-                                && selected_destination(store, session)
+                                && self
+                                    .destination(store, session)
                                     .is_ok_and(|id| previous.destination_id == id)
                         })
                 });
@@ -386,7 +473,7 @@ impl Runner {
                     && let Some(session) = engine.session()
                 {
                     value.account_id = Some(session.user.id.clone());
-                    value.destination_id = selected_destination(store, session).ok().flatten();
+                    value.destination_id = self.destination(store, session).ok().flatten();
                 }
                 value.status = State::StorageUnavailable;
                 value.storage_known = false;
@@ -408,7 +495,7 @@ impl Runner {
     }
 
     /// Reconcile receipts locally even after logout. Network and source work need
-    /// current personal authority and the separate ongoing content policy.
+    /// authority for this exact destination and its separate ongoing policy.
     fn turn(
         &mut self,
         store: &Store,
@@ -463,6 +550,10 @@ impl Runner {
             self.next_reconcile = None;
             return Ok(());
         };
+        if self.restore_only {
+            self.state = State::Ready;
+            return Ok(());
+        }
         let sign_in_changed = self.retry_grant_id.as_deref() != Some(&session.grant_id);
         if sign_in_changed {
             self.retry_grant_id = Some(session.grant_id.clone());
@@ -475,7 +566,7 @@ impl Runner {
             );
         }
         let account = session.user.id.clone();
-        let destination = selected_destination(store, session)?;
+        let destination = self.destination(store, session)?;
         let policy = destination
             .as_deref()
             .map(|destination| store.cloud_sync_policy(&account, destination, &session.resource))
@@ -510,6 +601,16 @@ impl Runner {
                 _ => State::UploadUnavailable,
             };
             return Ok(());
+        }
+        if current()
+            && let Some(generation) = engine
+                .destination(&account, &policy.destination_id)
+                .and_then(|entry| entry.membership_generation.as_deref())
+            && let Some(origin) = policy.resource_origin.as_deref()
+        {
+            store
+                .retire_cloud_sync_membership(&account, &policy.destination_id, origin, generation)
+                .map_err(|_| "Could not retire captures from the previous Team membership.")?;
         }
         if !current()
             || engine
@@ -1629,6 +1730,7 @@ pub(super) fn source_observation(candidate: &Candidate) -> Result<String, String
     }
 }
 
+#[cfg(test)]
 fn status(
     store: &Store,
     host: &mut capture::Host,
@@ -1644,7 +1746,7 @@ fn status_for_destination(
     host: &mut capture::Host,
     engine: &Engine,
     state: State,
-    binding: Option<&DestinationBinding>,
+    destination: Option<&str>,
 ) -> Result<Status, String> {
     let Some(session) = engine.session() else {
         return Ok(Status {
@@ -1652,26 +1754,12 @@ fn status_for_destination(
             ..Status::default()
         });
     };
-    let active_destination = selected_destination(store, session)?;
-    let destination_id = if let Some(binding) = binding {
-        if binding.account_id != session.user.id
-            || (active_destination.as_deref() != Some(binding.destination_id.as_str())
-                && engine
-                    .destination(&binding.account_id, &binding.destination_id)
-                    .is_none())
-        {
-            return Err("The selected Cloud destination is unavailable.".into());
-        }
-        Some(binding.destination_id.clone())
-    } else {
-        active_destination.clone()
+    let destination_id = match destination {
+        Some(id) => Some(id.to_owned()),
+        None => selected_destination(store, session)?,
     };
     let mut status = Status {
-        status: if destination_id == active_destination {
-            state
-        } else {
-            State::Ready
-        },
+        status: state,
         account_id: Some(session.user.id.clone()),
         destination_id,
         ..Status::default()
@@ -1744,7 +1832,10 @@ fn status_for_destination(
             | JobState::Queued => status.queued_count += 1,
             JobState::Interrupted | JobState::Recovering => status.interrupted_count += 1,
             JobState::Fenced => status.fenced_count += 1,
-            JobState::Accepted | JobState::Suppressed | JobState::Abandoned => {}
+            JobState::Accepted
+            | JobState::Suppressed
+            | JobState::Abandoned
+            | JobState::MembershipRetired => {}
         }
     }
     status.consent_version = Some(policy.consent_version.clone());
@@ -1818,23 +1909,48 @@ pub(crate) async fn cloud_sync_status(
             .capture
             .lock()
             .map_err(|_| "Session capture is unavailable.")?;
-        let mut runner = controller
+        let mut runners = controller
             .sync
-            .runner
+            .runners
             .lock()
             .map_err(|_| "Cloud sync is unavailable.")?;
         if let Some(binding) = binding.as_ref() {
             if setup_failed || !current() {
                 return Err("Could not read saved Cloud sync consent.".into());
             }
-            let status =
-                status_for_destination(&store, &mut host, &engine, runner.state, Some(binding))?;
+            let session = engine.session().ok_or("Cloud account changed.")?;
+            if session.user.id != binding.account_id {
+                return Err("Cloud account changed.".into());
+            }
+            runners.set_owner(session);
+            let state = runners
+                .routes
+                .get(&binding.destination_id)
+                .map_or(State::Ready, |runner| runner.state);
+            let status = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                state,
+                Some(&binding.destination_id),
+            )?;
+            if status.policy_revision.is_none()
+                && engine
+                    .destination(&binding.account_id, &binding.destination_id)
+                    .is_none()
+            {
+                return Err("The selected Cloud destination is unavailable.".into());
+            }
             return if current() {
                 Ok(status)
             } else {
                 Err("Cloud account changed.".into())
             };
         }
+        let session = engine.session();
+        let selected =
+            session.and_then(|session| selected_destination(&store, session).ok().flatten());
+        let runner = runners.route(session, selected.as_deref());
         let result = runner.report_status(
             &store,
             &mut host,
@@ -2105,18 +2221,25 @@ pub(crate) async fn cloud_enable_sync(
                     &consent.project_choices,
                 )
                 .map_err(|_| "Could not save Cloud sync consent.")?;
-            let mut runner = controller
+            let mut runners = controller
                 .sync
-                .runner
+                .runners
                 .lock()
                 .map_err(|_| "Cloud sync is unavailable.")?;
+            let runner = runners.route(engine.session(), Some(&consent.destination_id));
             runner.next_reconcile = None;
             runner.state = State::Ready;
             let mut host = controller
                 .capture
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?;
-            let result = status(&store, &mut host, &engine, State::Ready)?;
+            let result = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                State::Ready,
+                Some(&consent.destination_id),
+            )?;
             if !account_current()
                 || controller.sync.generation.load(Ordering::Acquire) != content_generation + 1
             {
@@ -2302,37 +2425,44 @@ pub(crate) async fn cloud_set_sync_project(
                 .map_err(
                     |_| "Could not save the Cloud project change. Reload projects and try again.",
                 )?;
-            let mut runner = controller
+            let mut runners = controller
                 .sync
-                .runner
+                .runners
                 .lock()
                 .map_err(|_| "Cloud sync is unavailable.")?;
+            let runner = runners.route(engine.session(), Some(&binding.destination_id));
             if change.selected && !saved.paused {
                 runner.next_reconcile = None;
                 runner.retry_deadlines.clear();
                 runner.finalization_submissions.clear();
                 runner.state = State::Ready;
             }
-            let result =
-                status(&store, &mut host, &engine, runner.state).unwrap_or_else(|_| Status {
-                    status: State::StorageUnavailable,
-                    account_id: Some(saved.account_id),
-                    destination_id: Some(saved.destination_id),
-                    consent_version: Some(saved.consent_version),
-                    policy_revision: Some(saved.revision),
-                    paused: saved.paused,
-                    selected_sources: saved
-                        .roots
-                        .into_iter()
-                        .map(|root| SourceSelection {
-                            source_kind: root.source_kind,
-                            path: root.path,
-                        })
-                        .collect(),
-                    projects: saved.projects,
-                    project_choices: saved.project_choices,
-                    ..Status::default()
-                });
+            let result = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                runner.state,
+                Some(&binding.destination_id),
+            )
+            .unwrap_or_else(|_| Status {
+                status: State::StorageUnavailable,
+                account_id: Some(saved.account_id),
+                destination_id: Some(saved.destination_id),
+                consent_version: Some(saved.consent_version),
+                policy_revision: Some(saved.revision),
+                paused: saved.paused,
+                selected_sources: saved
+                    .roots
+                    .into_iter()
+                    .map(|root| SourceSelection {
+                        source_kind: root.source_kind,
+                        path: root.path,
+                    })
+                    .collect(),
+                projects: saved.projects,
+                project_choices: saved.project_choices,
+                ..Status::default()
+            });
             if !can_commit() {
                 return Err("Cloud account or upload controls changed. Saved work is kept.".into());
             }
@@ -2439,11 +2569,12 @@ async fn control(
                     &current,
                 )?;
             }
-            let mut runner = controller
+            let mut runners = controller
                 .sync
-                .runner
+                .runners
                 .lock()
                 .map_err(|_| "Cloud sync is unavailable.")?;
+            let runner = runners.route(engine.session(), Some(&binding.destination_id));
             runner.next_reconcile = None;
             runner.retry_deadlines.clear();
             runner.finalization_submissions.clear();
@@ -2452,7 +2583,13 @@ async fn control(
                 .capture
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?;
-            let mut result = status(&store, &mut host, &engine, runner.state)?;
+            let mut result = status_for_destination(
+                &store,
+                &mut host,
+                &engine,
+                runner.state,
+                Some(&binding.destination_id),
+            )?;
             if paused && !signed_in {
                 result.status = State::Paused;
                 result.paused = true;

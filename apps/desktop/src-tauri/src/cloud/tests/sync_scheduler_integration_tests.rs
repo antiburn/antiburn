@@ -45,6 +45,7 @@ const PART_CAPACITY: usize = 19;
 const PART_REJECTED: usize = 20;
 const CAPS_CAPACITY: usize = 21;
 const REPLACED_PART: usize = 22;
+const DENY_TEAM: usize = 23;
 
 struct Service {
     origin: String,
@@ -152,6 +153,7 @@ impl Service {
                     worker_reserves.fetch_add(1, Ordering::AcqRel);
                     let identity: CaptureIdentity =
                         serde_json::from_value(input["identity"].clone()).unwrap();
+                    let deny_team = mode == DENY_TEAM && identity.destination_id == "team";
                     if let Some(path) = worker_reserve_database.lock().unwrap().as_ref() {
                         let connection = rusqlite::Connection::open_with_flags(
                             path,
@@ -175,7 +177,9 @@ impl Service {
                     if mode == RESERVE_OFFLINE {
                         continue;
                     }
-                    if mode == UNKNOWN_CAPACITY {
+                    if deny_team {
+                        (403, serde_json::json!({}))
+                    } else if mode == UNKNOWN_CAPACITY {
                         (
                             429,
                             serde_json::json!({
@@ -853,6 +857,164 @@ fn cloud_scheduler_removed_team_never_falls_back_or_reuses_saved_bytes_after_rej
         entries
             .iter()
             .all(|entry| entry.identity.destination_id == "team")
+    );
+}
+
+fn approve_separate_team_folder(fixture: &Fixture) {
+    let team_project = fixture.project.with_file_name("team-project");
+    fs::create_dir(&team_project).unwrap();
+    write_source(&fixture.root, &team_project, "team-session", "team example");
+    fixture
+        .authority
+        .team_generation
+        .store(1, Ordering::Release);
+    fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            ("team", Some("membership-1")),
+            &fixture.service.origin,
+            &[SourceSelection {
+                source_kind: SourceKind::ClaudeJsonl,
+                path: fixture.root.to_str().unwrap().into(),
+            }],
+            &[ProjectSelection {
+                source_kind: SourceKind::ClaudeJsonl,
+                source_path: fixture.root.to_str().unwrap().into(),
+                project_path: team_project.to_str().unwrap().into(),
+            }],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+}
+
+fn scheduled_turn(fixture: &mut Fixture, runners: &mut RouteRunners) {
+    runners
+        .next(&fixture.store, fixture.engine.session())
+        .unwrap()
+        .turn(
+            &fixture.store,
+            &mut fixture.host,
+            &mut fixture.engine,
+            &|| true,
+            &|| true,
+            &mut fixture.cache,
+        )
+        .unwrap();
+}
+
+#[test]
+fn cloud_scheduler_runs_personal_and_team_folders_and_retires_only_stale_team_work() {
+    let mut fixture = Fixture::new(READY, 0);
+    approve_separate_team_folder(&fixture);
+    let mut runners = RouteRunners::default();
+    scheduled_turn(&mut fixture, &mut runners);
+    scheduled_turn(&mut fixture, &mut runners);
+    let entries = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(entries.len(), 2);
+    let personal = entries
+        .iter()
+        .find(|entry| entry.identity.destination_id == "personal")
+        .unwrap();
+    let team = entries
+        .iter()
+        .find(|entry| entry.identity.destination_id == "team")
+        .unwrap();
+    assert!(personal.identity.source_id.ends_with("/session"));
+    assert!(team.identity.source_id.ends_with("/team-session"));
+
+    fixture
+        .authority
+        .team_generation
+        .store(0, Ordering::Release);
+    scheduled_turn(&mut fixture, &mut runners);
+    scheduled_turn(&mut fixture, &mut runners);
+    assert!(runners.routes["team"].state == State::Fenced);
+    let saved = fixture
+        .store
+        .cloud_sync_job(&team.identity.capture_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.state, JobState::Queued);
+
+    fixture
+        .authority
+        .team_generation
+        .store(2, Ordering::Release);
+    for _ in 0..12 {
+        scheduled_turn(&mut fixture, &mut runners);
+    }
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
+            .unwrap()
+            .0,
+        1
+    );
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_job(&personal.identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Accepted
+    );
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_job(&team.identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::MembershipRetired
+    );
+    let retained = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].identity, team.identity);
+    assert_eq!(retained[0].manifest, team.manifest);
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_scheduler_team_denial_does_not_block_or_retarget_personal() {
+    let mut fixture = Fixture::new(DENY_TEAM, 0);
+    approve_separate_team_folder(&fixture);
+    let mut runners = RouteRunners::default();
+    for _ in 0..14 {
+        scheduled_turn(&mut fixture, &mut runners);
+    }
+    let requests = fixture.service.reserve_identities.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .any(|identity| identity.destination_id == "personal"
+                && identity.source_id.ends_with("/session"))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|identity| identity.destination_id == "team"
+                && identity.source_id.ends_with("/team-session"))
+    );
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
+            .unwrap()
+            .0,
+        1
+    );
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_outcome_counts("account", "team", &fixture.service.origin)
+            .unwrap()
+            .0,
+        0
     );
 }
 

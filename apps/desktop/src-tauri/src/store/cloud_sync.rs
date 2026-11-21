@@ -93,12 +93,17 @@ pub(crate) enum JobState {
     Suppressed,
     Recovering,
     Abandoned,
+    /// A verified newer Team membership cannot resume this job. Keep its spool.
+    MembershipRetired,
 }
 
 impl JobState {
     /// Terminal jobs keep their IDs after the spool releases its receipt.
     pub(crate) fn terminal(self) -> bool {
-        matches!(self, Self::Accepted | Self::Suppressed | Self::Abandoned)
+        matches!(
+            self,
+            Self::Accepted | Self::Suppressed | Self::Abandoned | Self::MembershipRetired
+        )
     }
 }
 
@@ -369,8 +374,8 @@ fn source_scope(
 }
 
 impl Store {
-    /// Read the account's last explicitly approved destination for this service.
-    /// A missing grant must not erase this preference or select a different route.
+    /// Read the last approved destination for the setup view, not for scheduling.
+    /// A missing grant must not erase this preference.
     pub(crate) fn cloud_sync_destination(
         &self,
         account: &str,
@@ -379,6 +384,25 @@ impl Store {
         Ok(self.lock().query_row(
             "SELECT destination_id FROM cloud_sync_destination WHERE account_id=?1 AND resource_origin=?2",
             params![account, resource], |row| row.get(0),
+        ).optional()?)
+    }
+
+    /// Return one saved route in stable order. Call with no cursor to start a new
+    /// sweep. Unavailable destinations stay in the sweep and never replace another route.
+    pub(crate) fn next_cloud_sync_destination(
+        &self,
+        account: &str,
+        resource: &str,
+        after: Option<&str>,
+    ) -> Result<Option<String>> {
+        Ok(self.lock().query_row(
+            "SELECT destination_id FROM cloud_sync_policy
+             WHERE account_id=?1 AND destination_id > coalesce(?2, '')
+             AND json_extract(CASE WHEN json_valid(record_json) THEN record_json END, '$.resourceOrigin')=?3
+             AND json_extract(CASE WHEN json_valid(record_json) THEN record_json END, '$.consentVersion')=?4
+             ORDER BY destination_id LIMIT 1",
+            params![account, after, resource, ONGOING_CONSENT_VERSION],
+            |row| row.get(0),
         ).optional()?)
     }
 
@@ -642,6 +666,7 @@ impl Store {
             "SELECT record_json FROM cloud_sync_job WHERE account_id=?1 AND destination_id=?2
              AND json_extract(record_json, '$.resource_origin')=?3
              AND json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned')
+             AND json_extract(record_json, '$.state') <> 'membership_retired'
              ORDER BY rowid LIMIT 129",
         )?;
         let mut jobs = Vec::new();
@@ -663,6 +688,28 @@ impl Store {
             }
         }
         Ok(jobs)
+    }
+
+    /// Retire pending jobs for prior memberships of this exact Team. The caller
+    /// must have just verified the new generation. Never modify spool bytes.
+    pub(crate) fn retire_cloud_sync_membership(
+        &self,
+        account: &str,
+        destination: &str,
+        resource_origin: &str,
+        current_generation: &str,
+    ) -> Result<()> {
+        self.lock().execute(
+            "UPDATE cloud_sync_job
+             SET record_json=json_remove(json_set(record_json, '$.state', 'membership_retired'), '$.reservation_retry_at')
+             WHERE account_id=?1 AND destination_id=?2
+             AND json_extract(record_json, '$.resource_origin')=?3
+             AND json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned')
+             AND json_extract(record_json, '$.state') <> 'membership_retired'
+             AND json_extract(record_json, '$.membership_generation') IS NOT ?4",
+            params![account, destination, resource_origin, current_generation],
+        )?;
+        Ok(())
     }
 
     /// Keep the accepted fingerprint or service suppression after restart.
@@ -745,7 +792,8 @@ impl Store {
         {
             let mut statement = transaction.prepare(
                 "SELECT record_json FROM cloud_sync_job
-                 WHERE json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned') LIMIT 129"
+                 WHERE json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned')
+                 AND json_extract(record_json, '$.state') <> 'membership_retired' LIMIT 129"
             )?;
             for raw in statement.query_map([], |row| row.get::<_, String>(0))? {
                 let job: Job = serde_json::from_str(&raw?)?;

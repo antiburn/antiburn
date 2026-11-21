@@ -209,17 +209,23 @@ retarget saved capture bytes.
 
 Destination discovery is separate from device sign-in. An empty or unavailable
 destination list does not sign the user out. Each folder approval names one exact
-Personal or Team destination for the current account and service. The desktop
-saves the chosen destination and folder policy together. It runs the latest
-approved route and leaves other saved policies and captures intact.
+Personal or Team destination for the current account and service. Saving one
+folder policy does not stop or replace another destination's policy. The
+desktop schedules each saved destination independently. It remembers the last
+approved destination for the setup view only.
 
 For Team uploads, approval and saved jobs keep the membership generation from
 `/v1/captures/destinations`. The desktop checks it before starting or retrying
-work. If the destination becomes unavailable, sync stops without switching
-destinations. Rejoining a Team does not restore old upload consent or resume
-old pending captures. Review the folders again to approve the current
-membership. New captures get new IDs; old captures keep their original bytes
-and destination.
+work. If a destination becomes unavailable, only that route stops. The desktop
+does not send its sessions to Personal or another Team. When the desktop sees
+a different membership generation, it retires pending jobs from the old
+membership and keeps their bytes and destination. Rejoining does not restore
+old consent. Review the folders again to approve the current membership. New
+captures get new IDs.
+
+Separate confirmed folder policies can cover the same session. Each matching
+destination gets its own capture ID and saved bytes. A folder policy for one
+destination never authorizes a capture for another destination.
 
 Sign-in, source access, folder toggles, and the legacy local **Upload sessions**
 preference do not grant upload consent. Clicking **Start syncing** confirms
@@ -334,6 +340,8 @@ independent of Cloud sync.
 
 Settings → Sessions shows the account, selected destination, upload switch,
 folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
+Upload status events identify the account and destination. A read for a named
+destination returns only that destination's status and does not change its policy.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
 uploads run or the policy is paused.
