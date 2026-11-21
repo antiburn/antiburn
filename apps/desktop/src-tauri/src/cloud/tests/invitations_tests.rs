@@ -87,7 +87,7 @@ fn capability_version_one_alone_opts_in_at_account_sign_in() {
         let mut engine = Engine::new(
             Some(config),
             Box::new(Arc::new(MemoryVault::default())),
-            Box::new(auth::HttpTransport),
+            Arc::new(auth::HttpTransport),
             StateStore::new(directory.path()),
         );
         let (url, _, _) = engine.begin(1_000, 1).unwrap();
@@ -139,6 +139,132 @@ fn invitation_list_distinguishes_checked_empty_from_needing_browser_proof() {
         );
         assert!(request.body.is_empty());
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invitation_list_waits_for_admission_but_cannot_use_a_stale_grant() {
+    use super::super::{engine::Engine, state::StateStore, tests::MemoryVault, work};
+    use std::{
+        future::poll_fn,
+        sync::{Arc, Mutex, atomic::AtomicU64, mpsc},
+        task::Poll,
+    };
+    use tokio::sync::oneshot;
+
+    let (config, server) = serve(|origin| {
+        let account = serde_json::json!({
+            "user_id": "synthetic-user",
+            "grant_id": "synthetic-grant",
+            "grant_expires_at": "1970-01-01T02:46:40Z",
+            "scope": auth::SCOPE,
+            "resource": origin,
+            "iss": "https://issuer.example",
+        });
+        let mut tokens = account.clone();
+        tokens["access_token"] = "test-device".into();
+        tokens["refresh_token"] = "test-refresh".into();
+        tokens["expires_in"] = 60.into();
+        tokens["token_type"] = "Bearer".into();
+        let mut session = account;
+        session["display_name"] = "Example".into();
+        session["device_name"] = "Example Desktop".into();
+        session["access_expires_at"] = "1970-01-01T00:02:40Z".into();
+        vec![
+            Some((200, r#"{"version":1}"#.into())),
+            Some((200, tokens.to_string())),
+            Some((200, session.to_string())),
+            Some((200, r#"{"workspaces":[]}"#.into())),
+            Some((200, r#"{"state":"checked","invitations":[]}"#.into())),
+        ]
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let work = work::BlockingWork::default();
+    let engine = work
+        .run(Priority::Normal, move || {
+            let mut engine = Engine::new(
+                Some(config),
+                Box::new(Arc::new(MemoryVault::default())),
+                Arc::new(auth::HttpTransport),
+                StateStore::new(directory.path()),
+            )
+            .with_clock(|| 100);
+            let (_, _, attempt) = engine.begin(100, 1).unwrap();
+            engine
+                .callback(
+                    &attempt,
+                    auth::Callback::Code("test-code".into()),
+                    100,
+                    || true,
+                )
+                .unwrap();
+            Ok(Arc::new(Mutex::new((directory, engine))))
+        })
+        .await
+        .unwrap();
+    let generation = Arc::new(AtomicU64::new(1));
+    for invalidate in [false, true] {
+        let holding_work = work.clone();
+        let (started, start) = oneshot::channel();
+        let (release, wait) = mpsc::channel();
+        let holding = tokio::spawn(async move {
+            holding_work
+                .run(Priority::Cleanup, move || {
+                    started.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(5))
+                        .map_err(|_| "test release".into())
+                })
+                .await
+        });
+        start.await.unwrap();
+        let mutation = Action::Cancel {
+            id: "test-attempt".into(),
+        };
+        let mutation = work.run::<(), _>(mutation.admission(), || panic!("must fail fast"));
+        tokio::pin!(mutation);
+        let first_poll = poll_fn(|cx| Poll::Ready(mutation.as_mut().poll(cx))).await;
+        assert_eq!(first_poll, Poll::Ready(Err(work::BUSY.into())));
+
+        let observed = generation.load(Ordering::Acquire);
+        let current_generation = generation.clone();
+        let engine = engine.clone();
+        let read = work.run(Action::List.admission(), move || {
+            let mut owner = engine.lock().unwrap();
+            let current = || current_generation.load(Ordering::Acquire) == observed;
+            Ok(owner.1.with_invitation_access(
+                "synthetic-user",
+                current,
+                |config, bearer, can_send| {
+                    list(&DeviceRequest {
+                        config,
+                        bearer,
+                        can_send,
+                    })
+                },
+            ))
+        });
+        tokio::pin!(read);
+        assert!(poll_fn(|cx| Poll::Ready(read.as_mut().poll(cx).is_pending())).await);
+        if invalidate {
+            generation.fetch_add(1, Ordering::AcqRel);
+        }
+        release.send(()).unwrap();
+        holding.await.unwrap().unwrap();
+        let result = read.await.unwrap();
+        if invalidate {
+            assert!(matches!(result, Err(Failure::Unavailable)));
+        } else {
+            assert!(
+                matches!(result, Ok(Listing::Checked { invitations }) if invitations.is_empty())
+            );
+        }
+    }
+    let requests = server.join().unwrap();
+    assert_eq!(requests[4].line, "GET /v1/devices/invitations HTTP/1.1");
+    assert!(
+        requests[4]
+            .headers
+            .contains("authorization: bearer test-device")
+    );
 }
 
 #[test]

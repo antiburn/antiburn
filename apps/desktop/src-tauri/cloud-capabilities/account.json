@@ -9,7 +9,6 @@
     "allow-cloud-invitations",
     "allow-cloud-cancel",
     "allow-cloud-sign-out",
-    "allow-cloud-reset-local",
     "allow-cloud-save-draft",
     "allow-cloud-source-picker-directory",
     "allow-cloud-start-sync",

@@ -3,12 +3,15 @@ import { useState, type ReactNode } from "react"
 import {
   type CloudSession,
   cloudGithubSignInLabel,
+  cloudOngoingStatusMessage,
   cloudStatusMessage,
   cloudUploadStatusUnknown,
   type CloudViewSnapshot,
 } from "../../onboarding/CloudSession"
 import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
 import { CloudInvitations } from "../../onboarding/CloudInvitations"
+import { CloudRoutedFolderSetup } from "../../onboarding/CloudRoutedFolderSetup"
+import { savedPersonalFolderPolicy } from "../../onboarding/cloudFolderRouting"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { ConnectionDialog } from "./ConnectionDialog"
@@ -29,9 +32,7 @@ const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
   storage_unavailable: "Could not read saved uploads.",
 }
 
-/** Render one observed account. Setup errors block source actions, not revocation.
- * Local reset needs a separate confirmation and cannot claim remote deletion.
- */
+/** Show account access separately from folder setup and upload errors. */
 export function CloudAccount({
   session,
   value,
@@ -42,150 +43,159 @@ export function CloudAccount({
   /** The caller owns the upload switch and its saved-policy gate. */
   children?: ReactNode
 }) {
-  const [confirmReset, setConfirmReset] = useState(false)
+  const [folderSetupAccount, setFolderSetupAccount] = useState<string | null>(null)
+  const managesPersonalPolicy = !!savedPersonalFolderPolicy(value.cloud, value.routedPolicies)
+  const openFolderSetup = () => {
+    setFolderSetupAccount(value.cloud.identity?.id ?? null)
+    if (!value.projects?.loading) void session.reviewFolderRoutes()
+  }
   const waiting = ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.status === "returned"
-  const readFailed = value.loaded && !!value.error && !value.cloud.identity && !waiting
+  const retryingSignIn = value.authAction === "check_sign_in"
+  const readFailed = value.loaded && !!value.error && !value.cloud.authEnabled
+  const checkFailed = value.cloud.status === "sign_in_check_failed"
+  const signOutFailed = value.cloud.status === "sign_out_failed"
+  const accountFailed =
+    !!value.error ||
+    checkFailed ||
+    signOutFailed ||
+    ["offline", "credential_failed"].includes(value.cloud.status)
   const accountMessage = value.error
     ? value.error === CLOUD_BUSY_MESSAGE
       ? "Cloud is busy."
       : value.error
-    : !["idle", "signed_in", "signed_out"].includes(value.cloud.status)
+    : !["idle", "signed_in", "signed_out"].includes(value.cloud.status) && !value.authAction
       ? cloudStatusMessage(value.cloud.status)
       : null
   return (
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
-          <p className="type-body text-label">
-            {readFailed
-              ? "Cloud account"
-              : value.cloud.identity
-                ? `Signed in as ${value.cloud.identity.login}`
-                : value.cloud.authEnabled
-                  ? "Not signed in"
-                  : "Antiburn Cloud is coming soon"}
+          <p className="type-body text-label" role="status">
+            {retryingSignIn
+              ? "Checking sign-in…"
+              : !value.loaded
+                ? "Checking Cloud…"
+                : value.authAction === "sign_out"
+                  ? "Signing out…"
+                  : readFailed || checkFailed || signOutFailed
+                    ? "Cloud account"
+                    : value.cloud.identity
+                      ? `Signed in as ${value.cloud.identity.login}`
+                      : value.cloud.status === "signed_out"
+                        ? "Signed out on this device"
+                        : value.cloud.authEnabled
+                          ? "Not signed in"
+                          : "Antiburn Cloud is coming soon"}
           </p>
           {value.cloud.identity && value.cloud.destination?.kind === "personal" && (
             <p className="type-footnote text-label-secondary">{value.cloud.destination.name}</p>
           )}
           {accountMessage && (
             <p
-              className={`type-footnote ${value.error ? "text-system-red-text" : "text-label-secondary"}`}
-              role={value.error ? "alert" : "status"}
+              className={`type-footnote ${accountFailed ? "text-system-red-text" : "text-label-secondary"}`}
+              role={accountFailed ? "alert" : "status"}
             >
               {accountMessage}
             </p>
           )}
         </div>
-        {readFailed && (
+        {(readFailed || checkFailed || retryingSignIn) && (
           <button
             className="ui-push-button"
             disabled={value.busy}
-            onClick={() => void session.load()}
+            onClick={() => void session.load("check_sign_in")}
           >
             Try again
           </button>
         )}
-        {!readFailed && !value.cloud.authEnabled && !value.cloud.identity && (
-          <button
-            className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-control type-callout text-label-secondary hover:text-label disabled:opacity-50"
-            disabled={!value.loaded || value.busy}
-            onClick={() => void session.begin()}
-          >
-            Learn more <ArrowUpRight size={13} aria-hidden="true" />
-          </button>
-        )}
+        {value.loaded &&
+          !readFailed &&
+          !retryingSignIn &&
+          !value.cloud.authEnabled &&
+          !value.cloud.identity && (
+            <button
+              className="inline-flex min-h-10 shrink-0 items-center gap-1 rounded-control type-callout text-label-secondary hover:text-label disabled:opacity-50"
+              disabled={value.busy}
+              onClick={() => void session.begin()}
+            >
+              Learn more <ArrowUpRight size={13} aria-hidden="true" />
+            </button>
+          )}
         {value.cloud.authEnabled &&
           !value.cloud.identity &&
           !readFailed &&
           !checkingSignIn &&
-          !value.cloud.revocationPending &&
-          !value.cloud.localCleanupPending && (
+          !checkFailed &&
+          !signOutFailed && (
             <button
               className="ui-push-button gap-1"
-              disabled={
-                !value.loaded ||
-                value.busy ||
-                ["reauth_required", "credential_failed"].includes(value.cloud.status)
-              }
+              disabled={!value.loaded || value.busy}
               onClick={() => void (waiting ? session.cancel() : session.begin())}
             >
-              {waiting ? "Cancel sign-in" : cloudGithubSignInLabel}
+              {value.authAction === "sign_in"
+                ? "Starting sign-in…"
+                : waiting
+                  ? "Cancel sign-in"
+                  : cloudGithubSignInLabel}
               {!waiting && <ArrowUpRight size={13} aria-hidden />}
             </button>
           )}
-        {(value.cloud.identity ||
-          value.cloud.revocationPending ||
-          value.cloud.localCleanupPending ||
-          value.cloud.status === "reauth_required" ||
-          value.cloud.status === "credential_failed") && (
+        {(value.cloud.identity || checkFailed || signOutFailed) && (
           <button
             className="ui-push-button"
             disabled={value.busy}
             onClick={() => void session.signOut()}
           >
-            {value.cloud.localCleanupPending
-              ? "Finish signing out"
-              : value.cloud.revocationPending
-                ? "Retry sign-out"
-                : "Sign out"}
+            Sign out
           </button>
         )}
       </div>
-      {value.cloud.remoteRevocationUnconfirmed && (
-        <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
-          Cloud has not confirmed an earlier sign-out. Open Cloud settings in your browser to
-          close that old connection.
-        </p>
-      )}
-      {value.cloud.localResetAvailable && (
-        <div className="flex flex-col gap-3 px-4 py-3 type-callout text-label">
-          {confirmReset ? (
-            <>
-              <p>
-                Reset sign-in on this device? You can sign in again, but the old connection may
-                still have access to Cloud. The warning will stay until you close that
-                connection in Cloud settings.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  className="ui-push-button"
-                  disabled={value.busy}
-                  onClick={() => {
-                    setConfirmReset(false)
-                    void session.resetLocal()
-                  }}
-                >
-                  Reset sign-in
-                </button>
-                <button
-                  className="ui-push-button"
-                  disabled={value.busy}
-                  onClick={() => setConfirmReset(false)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </>
-          ) : (
-            <button
-              className="ui-push-button"
-              disabled={value.busy}
-              onClick={() => setConfirmReset(true)}
-            >
-              Reset sign-in on this device
-            </button>
-          )}
-        </div>
-      )}
       {value.cloud.invitationEnabled && value.cloud.identity && (
         <div className="px-4 py-3">
           <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
         </div>
       )}
       {children}
-      {session.projectSyncSupported ? (
+      {session.projectSyncSupported && value.cloud.destinations !== undefined && (
+        <CloudUploadRoutes session={session} value={value} />
+      )}
+      {session.projectSyncSupported && value.cloud.destinations !== undefined ? (
+        value.cloud.identity &&
+        value.cloud.status === "signed_in" &&
+        (folderSetupAccount === value.cloud.identity.id ? (
+          <CloudRoutedFolderSetup
+            session={session}
+            value={value}
+            onFinish={() => setFolderSetupAccount(null)}
+          />
+        ) : managesPersonalPolicy ? (
+          <>
+            <CloudProjectsAccount session={session} value={value} />
+            <div className="px-4 pb-3">
+              <button
+                type="button"
+                className="ui-push-button"
+                disabled={value.busy}
+                onClick={openFolderSetup}
+              >
+                Add folders to sync
+              </button>
+            </div>
+          </>
+        ) : (
+          <SettingsRow searchId="cloudFolders">
+            <button
+              type="button"
+              className="ui-push-button mt-3"
+              disabled={value.busy}
+              onClick={openFolderSetup}
+            >
+              Choose folders to sync
+            </button>
+          </SettingsRow>
+        ))
+      ) : session.projectSyncSupported ? (
         <CloudProjectsAccount session={session} value={value} />
       ) : (
         <>
@@ -266,6 +276,73 @@ export function CloudAccount({
   )
 }
 
+/** Show persisted state and controls for each exact saved destination. */
+function CloudUploadRoutes({
+  session,
+  value,
+}: {
+  session: CloudSession
+  value: CloudViewSnapshot
+}) {
+  const { cloud, routedPolicies } = value
+  const message =
+    cloud.status !== "signed_in"
+      ? "Sign in to check saved uploads."
+      : !routedPolicies
+        ? value.projects?.loading || value.busy
+          ? "Checking saved uploads…"
+          : "Could not check saved upload routes."
+        : routedPolicies.length === 0
+          ? "No upload routes configured."
+          : undefined
+  return (
+    <SettingsRow searchId="cloudUpload" description={message}>
+      {routedPolicies?.map((policy, index) => {
+        const destinationId = policy.destinationId
+        if (!destinationId) return null
+        const destination = cloud.destinations?.find((entry) => entry.id === destinationId)
+        const name = destination?.name ?? `Saved destination ${index + 1}`
+        const unavailable = cloud.destinations !== null && !destination
+        const state = unavailable
+          ? "Destination unavailable"
+          : !policy.storageKnown || !policy.policyRevision
+            ? "Saved upload status is unavailable"
+            : policy.requiresDestinationReview
+              ? "Destination needs review"
+              : cloudOngoingStatusMessage(policy)
+        const action = policy.paused ? "Resume uploads" : "Pause uploads"
+        return (
+          <div
+            key={destinationId}
+            className="mt-3 flex flex-wrap items-center justify-between gap-2"
+          >
+            <div className="min-w-0">
+              <p className="type-callout text-label">{name}</p>
+              <p className="type-footnote text-label-secondary" role="status">
+                {state}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="ui-push-button"
+              aria-label={`${action} for ${name}`}
+              disabled={
+                value.busy ||
+                !policy.storageKnown ||
+                !policy.policyRevision ||
+                (policy.paused && (!destination || !!policy.requiresDestinationReview))
+              }
+              onClick={() => void session.controlSync(!policy.paused, destinationId)}
+            >
+              {action}
+            </button>
+          </div>
+        )
+      })}
+    </SettingsRow>
+  )
+}
+
 /** Keep initial choices local until Start. Saved switches revoke immediately or
  * require confirmation before adding content permission.
  */
@@ -277,17 +354,20 @@ function CloudProjectsAccount({
   value: CloudViewSnapshot
 }) {
   const projects = value.projects
+  const routed = value.cloud.destinations !== undefined
   const [confirm, setConfirm] = useState<{
     id: string
     name: string
     context: CloudViewSnapshot
   } | null>(null)
-  const policy = value.ongoing
+  const policy = routed
+    ? savedPersonalFolderPolicy(value.cloud, value.routedPolicies)
+    : value.ongoing
   const hasConsent = policy?.consentVersion === "desktop-project-sync-v1"
   const storageUnknown = cloudUploadStatusUnknown(policy)
   const starting = value.sync.status === "starting"
   if (!value.cloud.identity || value.cloud.status !== "signed_in") return null
-  if (!personalCloudDestination(value.cloud.destination ?? null)) {
+  if (routed ? !policy : !personalCloudDestination(value.cloud.destination ?? null)) {
     if (value.error) return null
     return (
       <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
@@ -341,7 +421,11 @@ function CloudProjectsAccount({
         : null
       : () => void session.loadProjects()
     : hasConsent && policy?.status !== "reauth_required" && retryableUploads
-      ? () => void session.controlSync(false)
+      ? () =>
+          void session.controlSync(
+            false,
+            routed ? (policy?.destinationId ?? undefined) : undefined,
+          )
       : null
   const empty =
     projects?.loaded &&
@@ -369,6 +453,7 @@ function CloudProjectsAccount({
     <>
       <SettingsRow
         searchId="cloudFolders"
+        label={routed ? "Personal folders" : undefined}
         trailing={
           projects?.loaded && projects.groups.length > 0 ? (
             <span className="type-footnote text-label-secondary">
@@ -393,7 +478,7 @@ function CloudProjectsAccount({
                 />
               </div>
               <ToggleSwitch
-                aria-label={`Sync ${group.name}: ${group.path}`}
+                aria-label={`Sync ${group.name}: ${group.path}${routed ? " to Personal" : ""}`}
                 aria-describedby={`cloud-settings-folder-${encodeURIComponent(group.id)}`}
                 checked={selected(group.id)}
                 disabled={
@@ -401,7 +486,8 @@ function CloudProjectsAccount({
                   starting ||
                   storageUnknown ||
                   projects.loading ||
-                  (!selected(group.id) && (!!value.cloud.setupError || !group.captureSupported))
+                  (!selected(group.id) &&
+                    (routed || !!value.cloud.setupError || !group.captureSupported))
                 }
                 onCheckedChange={(next) => {
                   if (!hasConsent) session.selectProject(group.id, next)

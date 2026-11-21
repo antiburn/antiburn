@@ -14,7 +14,6 @@ macro_rules! with_app_commands {
             #[cfg(feature = "cloud")]
             cloud::cloud_sign_out => "cloud_sign_out",
             #[cfg(feature = "cloud")]
-            cloud::cloud_reset_local => "cloud_reset_local",
             #[cfg(feature = "cloud")]
             cloud::cloud_save_draft => "cloud_save_draft",
             #[cfg(feature = "cloud")]

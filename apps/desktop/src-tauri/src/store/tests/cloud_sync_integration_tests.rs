@@ -45,6 +45,49 @@ fn job(store: &Store, policy: &Policy) -> Job {
 }
 
 #[test]
+fn cloud_saved_destination_inventory_includes_paused_non_last_routes_for_this_service() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let (roots, projects) = selections();
+    let save = |account, id, origin| {
+        store
+            .save_cloud_sync_policy(
+                account,
+                (id, None),
+                origin,
+                &roots,
+                &projects,
+                &BTreeMap::new(),
+            )
+            .unwrap()
+    };
+    let old = save("account", "former-team", ORIGIN);
+    store.set_cloud_sync_paused(&old, true).unwrap();
+    policy(&store);
+    save("account", "other-service-team", "https://other.example");
+    save("other-account", "other-account-team", ORIGIN);
+    assert_eq!(
+        store
+            .cloud_sync_destination("account", ORIGIN)
+            .unwrap()
+            .as_deref(),
+        Some("personal")
+    );
+    assert_eq!(
+        store.cloud_sync_destination_ids("account", ORIGIN).unwrap(),
+        ["former-team", "personal"]
+    );
+    assert_eq!(
+        store
+            .next_cloud_sync_destination("account", ORIGIN, Some("former-team"))
+            .unwrap()
+            .as_deref(),
+        Some("personal")
+    );
+}
+
+#[test]
 fn cloud_explicit_destination_switch_keeps_the_original_policy_and_job() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();

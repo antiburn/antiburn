@@ -126,13 +126,22 @@ export function CloudInvitations({
   accountId,
   onJoined,
   port = desktopInvitationPort,
+  onlyWhenInvited = false,
 }: {
   accountId: string
   onJoined: () => void
   port?: CloudInvitationPort
+  /** Keep optional discovery out of onboarding until there is an invite to act on. */
+  onlyWhenInvited?: boolean
 }) {
   return (
-    <AccountInvitations key={accountId} accountId={accountId} port={port} onJoined={onJoined} />
+    <AccountInvitations
+      key={accountId}
+      accountId={accountId}
+      port={port}
+      onJoined={onJoined}
+      onlyWhenInvited={onlyWhenInvited}
+    />
   )
 }
 
@@ -140,10 +149,12 @@ function AccountInvitations({
   accountId,
   port,
   onJoined,
+  onlyWhenInvited,
 }: {
   accountId: string
   port: CloudInvitationPort
   onJoined: () => void
+  onlyWhenInvited: boolean
 }) {
   const [controller] = useState(() => new InvitationView(accountId, port, onJoined))
   const { reply, busy, error } = useSyncExternalStore(
@@ -162,6 +173,12 @@ function AccountInvitations({
     )
   const workspaceName = reply?.kind === "attempt" ? reply.workspace_name : null
   const listing = reply?.kind === "list" ? reply.listing : null
+  // Keep any known invitation or active/result state visible, including retry.
+  if (
+    onlyWhenInvited &&
+    (!reply || (listing && (listing.state !== "checked" || !listing.invitations.length)))
+  )
+    return null
   const message = error
     ? error
     : reply?.kind === "attempt"

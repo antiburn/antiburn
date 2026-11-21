@@ -2075,6 +2075,9 @@ The onboarding welcome vendor marks use monochrome black in light mode and white
 
 ## Cloud onboarding
 
+On the signed-in screen, the identity and any invitation controls scroll
+above the footer. The Continue button stays at the right edge of the footer.
+
 These layouts are for development builds. Antiburn Cloud is not live, and public
 builds keep it disabled. The public Cloud page is a [waiting-list signup](https://antiburn.com/cloud/).
 
@@ -2105,13 +2108,13 @@ installed". This status comes from CLI and skill setup, not vendor callbacks or
 host skill discovery. Pending tool setup settles from events. Failed setup points
 to Repair in Settings → CLI and does not block Done or Cloud folder discovery.
 
-Grouped Cloud folder rows use a 72px minimum height, 16px folder icon, session
-count, and a switch. Onboarding selects new groups by default. Its list fills the available height and
-scrolls above pinned actions. It has no per-row remove button or Not now footer
-action. Desktop counts use known repository metadata; unavailable counts are
-explicit. Start syncing moves directly to completion without waiting for
-acceptance. Done stays available during background preparation, submission and
-reconciliation; no separate sync or recovery screen is shown.
+Grouped Cloud folder rows use a 72px minimum height, 16px folder icon, and local
+session and worktree counts. New rows start off. One available Personal
+destination uses a switch. Multiple destinations use a named destination picker
+with a Don't sync option. Unavailable and already-approved choices have visible
+labels. The list scrolls above the actions. Start syncing waits for policy
+saves, not uploads. If a save is unconfirmed, the same screen shows which
+destinations were confirmed and offers a retry for the rest.
 
 Project selection uses one row and one selection control per desktop project group.
 The row shows its name, main path, distinct-session count, and worktree count.
@@ -2122,7 +2125,7 @@ Desktop evidence owns
 grouping and recorded project/CWD paths, including CWD changes during a session;
 provider database paths and file paths in tool calls are not project membership.
 Desktop captures preserve the provider's native session format, such as Claude JSONL.
-New onboarding groups show as selected without saving that default. Start requires separate
+New onboarding groups show as off. Start requires separate
 full-content confirmation for the current selected path members. A later external
 worktree does not inherit that confirmation. Counts and display order do not change
 the selection.
@@ -2144,12 +2147,13 @@ paged empty discovery does not become a complete empty result. Folder content ca
 scroll without moving the completion action
 out of the footer.
 
-The folder list does not shrink to make room for consent paragraphs. A short
-subtitle states full-session scope. The account and destination share a compact
-chip; the selected group count sits above the list. Back, underlined Continue
-locally, and Start syncing are the folder footer's only content.
-Normal Settings shows account/sign-out, the upload switch, folder choices, and
-one short upload state. The Cloud card uses spacing instead of internal dividers.
+The folder list scrolls in the space below a short full-session scope subtitle
+and the selected group count. The footer keeps Back, Finish without syncing,
+and Start syncing in reach. After a save attempt, Finish setup keeps any
+previously confirmed rules.
+Normal Settings shows account/sign-out, folder choices, and a short status with
+pause or resume for each saved upload destination. The Cloud card uses spacing
+instead of internal dividers.
 Folder switches reflect saved permission, so new unapproved groups stay off.
 Turning a folder off saves immediately. Turning it on opens a full-session
 confirmation dialog in Settings only. There is no separate Update button.

@@ -49,6 +49,56 @@ describe("Cloud workspace invitations", () => {
     vi.useRealTimers()
   })
 
+  it.each([
+    [
+      "an empty list",
+      async () => ({ kind: "list", listing: { state: "checked", invitations: [] } }),
+    ],
+    [
+      "an unverified list",
+      async () => ({ kind: "list", listing: { state: "check_required" } }),
+    ],
+    ["an unavailable list", async () => ({ kind: "list", listing: { state: "unavailable" } })],
+    [
+      "a failed request",
+      async () => {
+        throw new Error("Cloud unavailable")
+      },
+    ],
+  ] satisfies [string, CloudInvitationPort][])(
+    "does not show invitations during onboarding with %s",
+    async (_, port) => {
+      await act(async () =>
+        render(
+          <CloudInvitations
+            accountId="account-1"
+            port={port}
+            onJoined={vi.fn()}
+            onlyWhenInvited
+          />,
+        ),
+      )
+      expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+      expect(screen.queryByRole("button")).toBeNull()
+    },
+  )
+
+  it("shows confirmed invites during onboarding", async () => {
+    await act(async () =>
+      render(
+        <CloudInvitations
+          accountId="account-1"
+          port={async () => checked}
+          onJoined={vi.fn()}
+          onlyWhenInvited
+        />,
+      ),
+    )
+    expect(
+      screen.getByRole("button", { name: "Verify invitation to Example Team" }),
+    ).toBeVisible()
+  })
+
   it("does not join on return from the browser", async () => {
     const port = vi
       .fn<CloudInvitationPort>()

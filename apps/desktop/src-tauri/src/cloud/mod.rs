@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     path::Path,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -50,21 +50,24 @@ pub enum AuthStatus {
     Expired,
     BrowserFailed,
     Offline,
+    SignInCheckFailed,
+    SignOutFailed,
     Rejected,
     InvalidResponse,
     CredentialFailed,
     Unavailable,
     ReauthRequired,
-    RevocationUnconfirmed,
 }
 
 impl From<Failure> for AuthStatus {
     fn from(value: Failure) -> Self {
         match value {
-            Failure::Offline | Failure::OfflineBeforeSend => Self::Offline,
+            Failure::Offline => Self::Offline,
+            Failure::OfflineBeforeSend => Self::SignInCheckFailed,
             Failure::Rejected => Self::Rejected,
             Failure::InvalidResponse => Self::InvalidResponse,
             Failure::CredentialFailed => Self::CredentialFailed,
+            Failure::SignOutFailed => Self::SignOutFailed,
             Failure::Cancelled => Self::Cancelled,
             Failure::Unavailable => Self::Unavailable,
             Failure::ReauthRequired => Self::ReauthRequired,
@@ -149,10 +152,8 @@ pub struct Snapshot {
     destinations: Option<Vec<auth::EligibleDestination>>,
     /// Preserve explicit selection when it is no longer eligible.
     saved_destination_id: Option<String>,
-    revocation_pending: bool,
-    local_cleanup_pending: bool,
-    local_reset_available: bool,
-    remote_revocation_unconfirmed: bool,
+    /// All saved upload routes for this account and resource, or null if unreadable.
+    saved_destination_ids: Option<Vec<String>>,
     setup_error: Option<String>,
     pending_sync: Option<capture::PendingSync>,
     draft: Draft,
@@ -227,23 +228,30 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         None
     };
     let mut saved_destination_id = None;
+    let mut saved_destination_ids = None;
     let mut destination_error = None;
     if let Some(session) = &mut view {
         let store = app.state::<crate::store::Store>();
         let saved =
             ensure_cloud_setup(&app.state::<Controller>().setup_ready, &store).and_then(|()| {
-                store
-                    .cloud_sync_destination(&session.user.id, &session.resource)
-                    .map_err(|_| "Could not read the saved Cloud destination.".into())
+                (|| -> anyhow::Result<_> {
+                    Ok((
+                        store.cloud_sync_destination(&session.user.id, &session.resource)?,
+                        store.cloud_sync_destination_ids(&session.user.id, &session.resource)?,
+                    ))
+                })()
+                .map_err(|_| "Could not read the saved Cloud destination.".into())
             });
         match saved {
-            Ok(Some(id)) => {
-                session.workspace = engine
-                    .destination(&session.user.id, &id)
-                    .map(|entry| entry.workspace.clone());
-                saved_destination_id = Some(id);
+            Ok((id, ids)) => {
+                if let Some(id) = id {
+                    session.workspace = engine
+                        .destination(&session.user.id, &id)
+                        .map(|entry| entry.workspace.clone());
+                    saved_destination_id = Some(id);
+                }
+                saved_destination_ids = Some(ids);
             }
-            Ok(None) => {}
             Err(error) => {
                 session.workspace = None;
                 destination_error = Some(error);
@@ -339,10 +347,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         destination: session.and_then(|session| session.workspace.clone()),
         destinations: session.and_then(|_| engine.destinations().map(<[_]>::to_vec)),
         saved_destination_id: saved_destination_id.filter(|_| session.is_some()),
-        revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
-        local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
-        local_reset_available: engine.local_reset_available,
-        remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
+        saved_destination_ids: saved_destination_ids.filter(|_| session.is_some()),
         setup_error,
         pending_sync,
         draft,
@@ -376,13 +381,13 @@ fn publish(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             AuthStatus::Cancelled => Some(Event::Cancelled),
             AuthStatus::Expired => Some(Event::Expired),
             AuthStatus::BrowserFailed => Some(Event::BrowserFailed),
-            AuthStatus::Offline => Some(Event::Offline),
+            AuthStatus::Offline | AuthStatus::SignInCheckFailed => Some(Event::Offline),
             AuthStatus::CredentialFailed => Some(Event::CredentialFailed),
             AuthStatus::Unavailable => Some(Event::Unavailable),
             AuthStatus::Rejected
             | AuthStatus::InvalidResponse
             | AuthStatus::ReauthRequired
-            | AuthStatus::RevocationUnconfirmed => Some(Event::Failed),
+            | AuthStatus::SignOutFailed => Some(Event::Failed),
         };
         if let Some(event) = event {
             crate::analytics::record_cloud_status(app, event);
@@ -413,7 +418,7 @@ pub fn initialize(
                 app.config().identifier.clone(),
                 directory,
             )),
-            Box::new(HttpTransport),
+            Arc::new(HttpTransport),
             state::StateStore::new(directory),
         )),
         attempt_generation: AtomicU64::new(0),
@@ -487,7 +492,7 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         }
         let account_generation = controller.account_generation.load(Ordering::Acquire);
         if engine.generation != account_generation {
-            return Err("Cloud account cleanup is still in progress.".to_owned());
+            return Err("Cloud is busy. Try again.".to_owned());
         }
         if engine.config.is_none() {
             engine.status = if app
@@ -508,6 +513,24 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 return Ok(publish(&app, &engine));
             }
         };
+        // A fresh browser sign-in cannot resume work admitted for an older grant.
+        if controller
+            .account_generation
+            .compare_exchange(
+                account_generation,
+                account_generation + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            engine
+                .abort_browser_launch(&attempt)
+                .map_err(|_| "Could not cancel Cloud sign-in.")?;
+            return Ok(snapshot(&app, &engine));
+        }
+        let account_generation = account_generation + 1;
+        engine.generation = account_generation;
         if !launch_account_browser(
             &mut engine,
             &attempt,
@@ -552,22 +575,25 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                         return Ok(());
                     }
                     if let Some(callback) = callback {
-                        if let Err(error) = engine.callback(&attempt, callback, now(), current) {
-                            engine.status = error.into();
-                        }
+                        finish_browser_return(
+                            &mut engine,
+                            &attempt,
+                            callback,
+                            now(),
+                            current,
+                            |engine| {
+                                publish(&callback_app, engine);
+                            },
+                        );
                     } else {
                         if let Err(error) = engine.cancel(generation) {
                             engine.status = error.into();
                         } else {
-                            engine.status = if engine.cleanup.blocks_connection() {
-                                AuthStatus::RevocationUnconfirmed
-                            } else {
-                                AuthStatus::Expired
-                            };
+                            engine.status = AuthStatus::Expired;
                         }
-                    }
-                    if current() {
-                        publish(&callback_app, &engine);
+                        if current() {
+                            publish(&callback_app, &engine);
+                        }
                     }
                     Ok(())
                 })
@@ -579,6 +605,28 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(result)
     })
     .await
+}
+
+/// Report an accepted loopback return before token, account, and keyring checks.
+/// A browser return is progress only. The engine still decides sign-in.
+fn finish_browser_return(
+    engine: &mut Engine,
+    attempt: &auth::Attempt,
+    callback: auth::Callback,
+    now: i64,
+    current: impl Fn() -> bool,
+    mut publish: impl FnMut(&Engine),
+) {
+    if current() && now < attempt.expires_at && matches!(callback, auth::Callback::Code(_)) {
+        engine.status = AuthStatus::Returned;
+        publish(engine);
+    }
+    if let Err(error) = engine.callback(attempt, callback, now, &current) {
+        engine.status = error.into();
+    }
+    if current() {
+        publish(engine);
+    }
 }
 
 /// A capability probe can finish after cancel or sign-out starts. If the
@@ -624,8 +672,8 @@ pub fn invalidate_pending(app: &tauri::AppHandle) {
     }
 }
 
-/// Cancel a browser attempt with cleanup priority, retaining uncertain approval
-/// for explicit recovery. Established auth and saved source requests survive.
+/// Cancel a browser attempt with cleanup priority. Established auth and saved
+/// source requests survive.
 #[tauri::command]
 pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     let generation = app
@@ -651,8 +699,8 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     .await
 }
 
-/// Fence account/browser work before waiting for cleanup admission. Desktop state
-/// closes access before revocation and secure deletion; source bytes stay intact.
+/// Fence account/browser work before waiting for local cleanup. Publish the
+/// local result before a separate remote request. Source bytes stay intact.
 #[tauri::command]
 pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
@@ -661,7 +709,8 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         .account_generation
         .fetch_add(1, Ordering::AcqRel)
         + 1;
-    let work = app.state::<Controller>().blocking.clone();
+    let controller = app.state::<Controller>();
+    let work = controller.blocking.clone();
     work.run(Priority::Cleanup, move || {
         let controller = app.state::<Controller>();
         let mut engine = controller
@@ -674,43 +723,19 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         ) {
             return Ok(snapshot(&app, &engine));
         }
-        if let Err(error) = engine.sign_out() {
-            engine.status = error.into();
-        }
+        let request = match engine.sign_out() {
+            Ok(request) => request,
+            Err(error) => {
+                engine.status = error.into();
+                None
+            }
+        };
         engine.generation = generation;
-        Ok(publish(&app, &engine))
-    })
-    .await
-}
-
-/// Apply an explicitly confirmed reset only when no secure refresh proof remains.
-/// Invalidate late work immediately and preserve the remote-revocation warning.
-#[tauri::command]
-pub async fn cloud_reset_local(app: tauri::AppHandle) -> Result<Snapshot, String> {
-    invalidate_pending(&app);
-    let generation = app
-        .state::<Controller>()
-        .account_generation
-        .fetch_add(1, Ordering::AcqRel)
-        + 1;
-    let work = app.state::<Controller>().blocking.clone();
-    work.run(Priority::Cleanup, move || {
-        let controller = app.state::<Controller>();
-        let mut engine = controller
-            .engine
-            .lock()
-            .map_err(|_| "Cloud is unavailable.")?;
-        if !engine.allows_account_cleanup(
-            generation,
-            controller.account_generation.load(Ordering::Acquire),
-        ) {
-            return Ok(snapshot(&app, &engine));
+        let result = publish(&app, &engine);
+        if let Some(request) = request {
+            let _ = engine.spawn_remote_logout(request);
         }
-        if let Err(error) = engine.reset_local() {
-            engine.status = error.into();
-        }
-        engine.generation = generation;
-        Ok(publish(&app, &engine))
+        Ok(result)
     })
     .await
 }

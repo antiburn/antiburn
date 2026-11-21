@@ -283,19 +283,6 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
       value = { ...value, status: "signed_out", identity: null, pendingSync: null }
       return value
     },
-    resetLocal: async () => {
-      clear()
-      value = {
-        ...value,
-        status: "signed_out",
-        identity: null,
-        pendingSync: null,
-        revocationPending: false,
-        localResetAvailable: false,
-        remoteRevocationUnconfirmed: true,
-      }
-      return value
-    },
     pick: async () => ["/Example/New folder"],
     localTools: {
       read: async () => {

@@ -953,11 +953,16 @@ mod tests {
             cfg!(feature = "cloud")
         );
         assert_eq!(
+            commands.contains(&"cloud_sign_out"),
+            cfg!(feature = "cloud")
+        );
+        assert!(!commands.contains(&"cloud_reset_local"));
+        assert_eq!(
             commands
                 .iter()
                 .filter(|name| name.starts_with("cloud_"))
                 .count(),
-            if cfg!(feature = "cloud") { 20 } else { 0 }
+            if cfg!(feature = "cloud") { 19 } else { 0 }
         );
     }
 

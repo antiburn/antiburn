@@ -13,7 +13,7 @@ async function openCloud(page: Page, state: string, theme = "light", scale = 100
   )
   await expect(page.locator(".cloud-footer")).toHaveCSS(
     "display",
-    ["identity", "identity_error"].includes(state) ? "none" : "flex",
+    state === "identity_error" ? "none" : "flex",
   )
 }
 
@@ -29,6 +29,36 @@ async function capture(page: Page, name: string) {
 }
 
 for (const theme of ["light", "dark"] as const) {
+  test(`named folder destinations and partial retry fit a narrow window in ${theme}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 620 })
+    await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" })
+    await page.goto(`/tests/visual/?surface=cloud&cloud=routed-folders&theme=${theme}`)
+    const studio = page.getByRole("combobox", { name: /Destination for Studio/ })
+    const website = page.getByRole("combobox", { name: /Destination for Website/ })
+    const start = page.getByRole("button", { name: "Start syncing" })
+    await expect(studio).toHaveValue("")
+    await expect(start).toBeDisabled()
+    await expect(page.getByRole("button", { name: "Finish without syncing" })).toBeInViewport()
+    await studio.selectOption("synthetic-personal")
+    await website.selectOption("synthetic-team")
+    await start.click()
+    await expect(page.getByText("Personal: Sync choices saved.")).toBeVisible()
+    await expect(
+      page.getByText("Example Studio: Could not confirm sync choices."),
+    ).toBeVisible()
+    await expect(page.getByRole("button", { name: "Finish setup" })).toBeInViewport()
+    const retry = page.getByRole("button", { name: "Retry unconfirmed destinations" })
+    await expect(retry).toBeInViewport()
+    expect(await page.locator(".cloud-shell").evaluate((element) => element.scrollWidth)).toBe(
+      375,
+    )
+    await capture(page, `${theme}-routed-folders-partial`)
+    await retry.click()
+    await expect(page.getByRole("heading", { name: "Cloud sync choices saved" })).toBeVisible()
+  })
+
   test(`Cloud sign-in and the local exit fit a narrow window in ${theme}`, async ({ page }) => {
     await openCloud(page, "auth", theme)
     await page.setViewportSize({ width: 375, height: 620 })
@@ -41,7 +71,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.keyboard.press("Tab")
     await expect(signIn).toBeFocused()
     await page.keyboard.press("Enter")
-    await expect(page.getByRole("status")).toContainText("Waiting for browser approval")
+    await expect(page.getByRole("status")).toContainText("approve this device")
     await expect(page.getByRole("button", { name: "Cancel sign-in" })).toBeInViewport()
     await expect(local).toBeInViewport()
     await capture(page, `${theme}-sign-in-narrow-waiting`)
@@ -108,9 +138,12 @@ for (const theme of ["light", "dark"] as const) {
         await expect(page.getByRole("status")).toContainText("cancelled")
       }
       if (state === "returned") {
-        await expect(page.getByRole("status")).toBeEmpty()
+        await expect(page.getByRole("status")).toContainText("Checking your sign-in")
         await expect(
-          page.getByRole("button", { name: "Learn more", exact: true }),
+          page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+        ).toHaveCount(0)
+        await expect(
+          page.getByRole("button", { name: "Continue locally", exact: true }),
         ).toBeEnabled()
         await expect(
           page.getByRole("button", { name: "Cancel sign-in", exact: true }),
@@ -125,7 +158,26 @@ for (const theme of ["light", "dark"] as const) {
   test(`verified identity and local folder choice in ${theme}`, async ({ page }) => {
     await openCloud(page, "identity", theme)
     await expect(page.getByRole("heading", { name: "You’re signed in" })).toBeVisible()
+    const next = page.getByRole("button", { name: "Continue", exact: true })
+    await expect(next).toBeInViewport()
+    const local = page.getByRole("button", { name: "Continue locally" })
+    expect((await next.boundingBox())!.x).toBeGreaterThan((await local.boundingBox())!.x)
+    await expect(page.getByText(/invitations/i)).toHaveCount(0)
     await capture(page, `${theme}-identity`)
+    await page.setViewportSize({ width: 375, height: 620 })
+    await expect(next).toBeInViewport()
+    const geometry = await next.evaluate((button) => {
+      const footer = button.closest("footer")!
+      const bounds = button.getBoundingClientRect()
+      return {
+        rightGap: footer.getBoundingClientRect().right - bounds.right,
+        padding: Number.parseFloat(getComputedStyle(footer).paddingRight),
+        overflow: document.documentElement.scrollWidth > innerWidth,
+      }
+    })
+    expect(geometry.rightGap).toBeCloseTo(geometry.padding)
+    expect(geometry.overflow).toBe(false)
+    await capture(page, `${theme}-identity-narrow`)
     await openCloud(page, "folders", theme)
     await expect(page.getByRole("switch")).toHaveCount(2)
     await expect(page.getByRole("switch").first()).toBeChecked()

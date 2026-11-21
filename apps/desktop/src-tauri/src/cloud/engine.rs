@@ -11,6 +11,8 @@ use super::{
     loopback::Listener,
     state::{Cleanup, Guard, Phase, Record, StateStore},
 };
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 struct Access {
     token: String,
@@ -30,7 +32,8 @@ mod execution_http_tests;
 pub struct Engine {
     pub config: Option<Config>,
     pub vault: Box<dyn Vault>,
-    pub transport: Box<dyn Transport>,
+    pub transport: Arc<dyn Transport>,
+    remote_logout: Arc<Semaphore>,
     pub state: StateStore,
     pub attempt: Option<Attempt>,
     access: Option<Access>,
@@ -38,7 +41,7 @@ pub struct Engine {
     clock: Box<dyn Fn() -> i64 + Send>,
     pub status: AuthStatus,
     pub cleanup: Cleanup,
-    pub local_reset_available: bool,
+    sign_out_marker_failed: bool,
     pub generation: u64,
 }
 
@@ -47,13 +50,14 @@ impl Engine {
     pub fn new(
         config: Option<Config>,
         vault: Box<dyn Vault>,
-        transport: Box<dyn Transport>,
+        transport: Arc<dyn Transport>,
         state: StateStore,
     ) -> Self {
         Self {
             config,
             vault,
             transport,
+            remote_logout: Arc::new(Semaphore::new(1)),
             state,
             attempt: None,
             access: None,
@@ -61,7 +65,7 @@ impl Engine {
             clock: Box::new(super::now),
             status: AuthStatus::Idle,
             cleanup: Cleanup::None,
-            local_reset_available: false,
+            sign_out_marker_failed: false,
             generation: 0,
         }
     }
@@ -211,7 +215,16 @@ impl Engine {
         let response = super::upload::api_request(config, &access.token, identity, route, body)?;
         if response.status == 401 {
             self.access = None;
-            self.status = AuthStatus::ReauthRequired;
+            self.status = if account_current()
+                && serde_json::from_slice::<auth::DeviceAuthError>(&response.body)
+                    .is_ok_and(|error| error.needs_sign_in())
+            {
+                self.sign_out()
+                    .err()
+                    .map_or(AuthStatus::ReauthRequired, AuthStatus::from)
+            } else {
+                AuthStatus::ReauthRequired
+            };
         }
         if !current() || self.session().is_none() {
             return Err(TransportError::Unauthorized);
@@ -246,22 +259,38 @@ impl Engine {
         generation: u64,
     ) -> Result<(String, Listener, Attempt), Failure> {
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
-        let (mut guard, record) = self.read_state()?;
-        if record.cleanup.blocks_connection() || record.phase == Phase::Active {
-            return Err(Failure::Unavailable);
-        }
-        if record.phase == Phase::Pending {
-            self.abandon_pending(&mut guard, record)?;
-            return Err(Failure::ReauthRequired);
-        }
-        if self.vault.read()?.is_some() {
-            return Err(Failure::ReauthRequired);
-        }
+        let (mut guard, record) = match self.read_state() {
+            Ok(state)
+                if !self.sign_out_marker_failed
+                    && state.1.phase == Phase::Active
+                    && self.session().is_some() =>
+            {
+                return Err(Failure::Unavailable);
+            }
+            Ok(state)
+                if !self.sign_out_marker_failed
+                    && state.1.phase == Phase::SignedOut
+                    && !state.1.cleanup.blocks_connection()
+                    && (!state.1.epoch.is_empty() || self.vault.read()?.is_none()) =>
+            {
+                state
+            }
+            _ => {
+                self.sign_out()?;
+                let prior_unconfirmed = self.cleanup.prior_unconfirmed();
+                let (guard, mut record) = self.read_state()?;
+                if prior_unconfirmed {
+                    record.cleanup = Cleanup::RemoteUnconfirmed;
+                }
+                (guard, record)
+            }
+        };
         // An explicit sign-in replaces any pending listener, including one lost on restart.
         self.attempt = None;
-        self.vault.write(None)?;
         let listener = Listener::bind()?;
-        let record = guard.replace(Phase::Pending, record.cleanup)?;
+        let record = guard.replace(Phase::Pending, record.cleanup.prior_warning_only())?;
+        self.sign_out_marker_failed = false;
+        self.cleanup = record.cleanup;
         let attempt = Attempt {
             state: auth::random()?,
             verifier: auth::random()?,
@@ -308,7 +337,6 @@ impl Engine {
         guard.replace(Phase::SignedOut, record.cleanup)?;
         self.attempt = None;
         self.cleanup = record.cleanup;
-        self.local_reset_available = false;
         self.status = AuthStatus::BrowserFailed;
         Ok(())
     }
@@ -325,32 +353,22 @@ impl Engine {
         if let Some(attempt) = self.attempt.take() {
             let (mut guard, record) = self.read_state()?;
             if record.epoch == attempt.epoch && record.phase == Phase::Pending {
-                return self.abandon_pending(&mut guard, record);
+                return self.abandon_pending(&mut guard);
             }
         }
         if self.access.is_none() && generation > 0 {
-            self.status = if self.cleanup.blocks_connection() {
-                AuthStatus::RevocationUnconfirmed
-            } else {
-                AuthStatus::Cancelled
-            };
+            self.status = AuthStatus::Cancelled;
         }
         Ok(())
     }
 
     /// Lost callback proof cannot establish remote revocation, even before exchange.
-    fn abandon_pending(&mut self, guard: &mut Guard, record: Record) -> Result<(), Failure> {
+    fn abandon_pending(&mut self, guard: &mut Guard) -> Result<(), Failure> {
         self.access = None;
         self.attempt = None;
-        let record = guard.replace(
-            Phase::SignedOut,
-            Cleanup::Revoke {
-                prior_unconfirmed: record.cleanup.prior_unconfirmed(),
-            },
-        )?;
+        let record = guard.replace(Phase::SignedOut, Cleanup::RemoteUnconfirmed)?;
         self.cleanup = record.cleanup;
-        self.status = AuthStatus::RevocationUnconfirmed;
-        self.local_reset_available = self.vault.read()?.is_none();
+        self.status = AuthStatus::Cancelled;
         Ok(())
     }
 
@@ -389,13 +407,19 @@ impl Engine {
         guard.write(&record)?;
         self.cleanup = record.cleanup;
         let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
-        let tokens = self.transport.exchange(
-            config,
-            &TokenRequest::AuthorizationCode {
-                code: &code,
-                code_verifier: &attempt.verifier,
-            },
-        )?;
+        let tokens = self
+            .transport
+            .exchange(
+                config,
+                &TokenRequest::AuthorizationCode {
+                    code: &code,
+                    code_verifier: &attempt.verifier,
+                },
+            )
+            .map_err(|failure| match failure {
+                Failure::OfflineBeforeSend => Failure::Offline,
+                other => other,
+            })?;
         self.accept(&mut guard, record, tokens, None, started_at, current)
     }
 
@@ -414,6 +438,9 @@ impl Engine {
         let session = tokens
             .validate(&config, started_at)
             .and_then(|()| {
+                if !current() {
+                    return Err(Failure::Cancelled);
+                }
                 if started_at.saturating_add(tokens.expires_in as i64) <= (self.clock)() {
                     return Err(Failure::InvalidResponse);
                 }
@@ -466,33 +493,47 @@ impl Engine {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
             return Err(Failure::CredentialFailed);
         }
-        if !current() {
+        let acceptance_error = || {
+            if !current() {
+                Some(Failure::Cancelled)
+            } else if expires_at <= (self.clock)() {
+                Some(Failure::ReauthRequired)
+            } else {
+                None
+            }
+        };
+        if let Some(error) = acceptance_error() {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
-            return Err(Failure::Cancelled);
+            return Err(error);
+        }
+        // Keep the saved proof closed to restoration until the last network read
+        // finishes. Lookup failure alone does not block sign-in.
+        let destinations = self
+            .transport
+            .destinations(&config, &tokens.access_token)
+            .ok();
+        if let Some(error) = acceptance_error() {
+            self.discard_tokens(guard, record, &config, &tokens, previous)?;
+            return Err(error);
         }
         record.phase = Phase::Active;
         record.cleanup = record.cleanup.prior_warning_only();
-        guard.write(&record)?;
-        self.cleanup = record.cleanup;
-        // Durable writes can outlast access or overlap account cancellation.
-        let cancelled = !current();
-        if cancelled || expires_at <= (self.clock)() {
+        let write_error = guard.write(&record).err();
+        // A failed directory sync can leave Active visible. Close the saved
+        // proof on any write error, cancellation, or expiry.
+        if let Some(error) = acceptance_error().or(write_error) {
             self.discard_tokens(guard, record, &config, &tokens, previous)?;
-            return Err(if cancelled {
-                Failure::Cancelled
-            } else {
-                Failure::ReauthRequired
-            });
+            return Err(error);
         }
+        self.cleanup = record.cleanup;
         self.access = Some(Access {
             token: tokens.access_token,
             expires_at,
             epoch: record.epoch,
             session,
-            destinations: None,
+            destinations,
         });
         self.status = AuthStatus::SignedIn;
-        let _ = self.refresh_destinations(&current);
         self.select_destination_view(None);
         Ok(())
     }
@@ -524,7 +565,7 @@ impl Engine {
     }
 
     /// Retain original and returned proofs before state writes can fail.
-    /// Confirm every proof's revocation before persisting permission to delete them.
+    /// Keep any proof Cloud may still accept for revocation.
     fn discard_tokens(
         &mut self,
         guard: &mut Guard,
@@ -555,34 +596,46 @@ impl Engine {
             account_grant: false,
             session: None,
         };
-        if self.vault.write(Some(&cleanup)).is_err() {
+        let stored = self.vault.write(Some(&cleanup));
+        if stored.is_err() {
             record.cleanup = Cleanup::Revoke {
                 prior_unconfirmed: true,
             };
-            let marked = guard.write(&record);
-            self.cleanup = record.cleanup;
-            let _ = self.transport.revoke(config, &tokens.refresh_token);
-            marked?;
-            return Err(Failure::CredentialFailed);
         }
         self.cleanup = record.cleanup;
-        guard.write(&record)?;
-        let mut confirmed = true;
-        for proof in std::iter::once(&cleanup.refresh_token).chain(&cleanup.cleanup_refresh_tokens)
-        {
-            confirmed &= self.transport.revoke(config, proof).is_ok();
-        }
-        if !confirmed {
-            return Ok(());
-        }
-        record.cleanup = Cleanup::DeleteCredential {
-            prior_unconfirmed: record.cleanup.prior_unconfirmed(),
-        };
-        guard.write(&record)?;
-        self.finish_local_deletion(guard, record)
+        let marked = guard.write(&record);
+        let _ =
+            self.spawn_remote_logout(auth::RemoteLogout::from_credential(config.clone(), cleanup));
+        marked?;
+        stored
     }
 
-    /// Finish previously confirmed remote revocation. A failed vault deletion or
+    /// Share one remote logout slot across stale proof cleanup and explicit sign-out.
+    /// The worker never reads or writes the saved proofs.
+    pub(super) fn spawn_remote_logout(
+        &self,
+        request: auth::RemoteLogout,
+    ) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        let slot = self.remote_logout.clone().try_acquire_owned().ok()?;
+        let transport = self.transport.clone();
+        Some(tauri::async_runtime::spawn_blocking(move || {
+            let _slot = slot;
+            if !request.send(transport.as_ref()) {
+                tracing::debug!(event = "cloud_remote_logout_unconfirmed");
+            }
+        }))
+    }
+
+    /// Do not send or remove another service origin's saved proof.
+    fn owns_credential(&self, credential: Option<&Credential>) -> bool {
+        credential.is_none_or(|credential| {
+            self.config.as_ref().is_some_and(|config| {
+                credential.issuer == config.issuer && credential.resource == config.resource
+            })
+        })
+    }
+
+    /// Finish authorized local deletion. A failed vault deletion or
     /// final state write remains retryable without restoring authenticated access.
     fn finish_local_deletion(
         &mut self,
@@ -590,7 +643,6 @@ impl Engine {
         mut record: Record,
     ) -> Result<(), Failure> {
         self.cleanup = record.cleanup;
-        self.local_reset_available = false;
         self.vault.write(None)?;
         record.cleanup = record.cleanup.prior_warning_only();
         guard.write(&record)?;
@@ -605,22 +657,30 @@ impl Engine {
         let Some(config) = self.config.clone() else {
             return Ok(());
         };
+        if self.sign_out_marker_failed {
+            return if self.status == AuthStatus::SignedOut {
+                Ok(())
+            } else {
+                Err(Failure::SignOutFailed)
+            };
+        }
         let (mut guard, mut record) = self.read_state()?;
         let checked_at = started_at.max((self.clock)());
         self.cleanup = record.cleanup;
-        self.local_reset_available = false;
         if record.phase != Phase::Active {
             self.access = None;
             if matches!(record.cleanup, Cleanup::DeleteCredential { .. }) {
-                return self.finish_local_deletion(&mut guard, record);
-            }
-            if matches!(record.cleanup, Cleanup::Revoke { .. }) {
-                self.local_reset_available = self.vault.read()?.is_none();
+                self.status = AuthStatus::SignedOut;
+                if self
+                    .vault
+                    .read()
+                    .is_ok_and(|value| self.owns_credential(value.as_ref()))
+                {
+                    let _ = self.finish_local_deletion(&mut guard, record);
+                }
+                return Ok(());
             }
             self.status = match record.phase {
-                Phase::SignedOut if record.cleanup.blocks_connection() => {
-                    AuthStatus::RevocationUnconfirmed
-                }
                 Phase::SignedOut => AuthStatus::SignedOut,
                 Phase::ReauthRequired => AuthStatus::ReauthRequired,
                 Phase::Pending
@@ -631,7 +691,7 @@ impl Engine {
                     AuthStatus::Waiting
                 }
                 Phase::Pending => {
-                    return self.abandon_pending(&mut guard, record);
+                    return self.abandon_pending(&mut guard);
                 }
                 Phase::Active => unreachable!(),
             };
@@ -694,9 +754,14 @@ impl Engine {
                     return Err(Failure::Cancelled);
                 }
                 self.cleanup = record.cleanup;
-                return Err(Failure::Offline);
+                return Err(Failure::OfflineBeforeSend);
             }
             Err(_) if !current() => return Err(Failure::Cancelled),
+            Err(Failure::ReauthRequired) => {
+                drop(guard);
+                self.sign_out()?;
+                return Err(Failure::ReauthRequired);
+            }
             Err(_) => return Err(Failure::ReauthRequired),
         };
         self.accept(
@@ -709,12 +774,13 @@ impl Engine {
         )
     }
 
-    /// Flush a new signed-out epoch before revoking all retained proofs.
-    /// Retry secure deletion only after its durable remote-confirmation marker.
-    pub fn sign_out(&mut self) -> Result<(), Failure> {
+    /// Close local access without waiting for Cloud. Explicit sign-out may send the
+    /// returned proof later. Neither the proof nor its outcome can change local state.
+    pub fn sign_out(&mut self) -> Result<Option<auth::RemoteLogout>, Failure> {
         self.access = None;
         self.attempt = None;
-        let mut guard = self.state.lock()?;
+        self.sign_out_marker_failed = true;
+        let mut guard = self.state.lock().map_err(|_| Failure::SignOutFailed)?;
         let previous = guard.read().unwrap_or(Record {
             phase: Phase::SignedOut,
             cleanup: Cleanup::Revoke {
@@ -722,69 +788,60 @@ impl Engine {
             },
             ..Record::default()
         });
-        // This marker blocks restored credentials even when the keyring or revocation fails.
-        let cleanup = if matches!(previous.cleanup, Cleanup::DeleteCredential { .. }) {
-            previous.cleanup
-        } else {
-            Cleanup::Revoke {
-                prior_unconfirmed: previous.cleanup.prior_unconfirmed(),
+        let already_closed = matches!(previous.cleanup, Cleanup::DeleteCredential { .. });
+        let prior_unconfirmed =
+            previous.cleanup.prior_unconfirmed() || previous.phase == Phase::Pending;
+        let cleanup = Cleanup::DeleteCredential {
+            prior_unconfirmed: prior_unconfirmed || !already_closed,
+        };
+        let mut record = match guard.replace(Phase::SignedOut, cleanup) {
+            Ok(record) => record,
+            Err(_) => {
+                if let Ok(saved) = self.vault.read()
+                    && self.owns_credential(saved.as_ref())
+                    && self.vault.write(None).is_ok()
+                {
+                    self.status = AuthStatus::SignedOut;
+                    self.cleanup = Cleanup::RemoteUnconfirmed;
+                    return Ok(self.logout_proof(&previous, saved));
+                }
+                return Err(Failure::SignOutFailed);
             }
         };
-        let mut record = guard.replace(Phase::SignedOut, cleanup)?;
-        self.status = AuthStatus::RevocationUnconfirmed;
+        self.sign_out_marker_failed = false;
+        self.status = AuthStatus::SignedOut;
         self.cleanup = record.cleanup;
-        self.local_reset_available = false;
-        if matches!(cleanup, Cleanup::DeleteCredential { .. }) {
-            return self.finish_local_deletion(&mut guard, record);
-        }
-        let credential = self.vault.read()?;
-        if credential.is_none() {
-            if previous.phase == Phase::SignedOut && !previous.cleanup.blocks_connection() {
-                record.cleanup = previous.cleanup.prior_warning_only();
-                guard.write(&record)?;
-                self.cleanup = record.cleanup;
-                self.status = AuthStatus::SignedOut;
-            } else {
-                self.local_reset_available = true;
-            }
-            return Ok(());
-        }
-        if let Some(credential) = credential {
-            let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
-            if credential.issuer != config.issuer || credential.resource != config.resource {
-                return Err(Failure::CredentialFailed);
-            }
-            let mut confirmed = true;
-            for proof in
-                std::iter::once(&credential.refresh_token).chain(&credential.cleanup_refresh_tokens)
-            {
-                confirmed &= self.transport.revoke(config, proof).is_ok();
-            }
-            if !confirmed {
-                return Ok(());
-            }
-        }
-        record.cleanup = Cleanup::DeleteCredential {
-            prior_unconfirmed: record.cleanup.prior_unconfirmed(),
+        let Ok(saved) = self.vault.read() else {
+            return Ok(None);
         };
-        guard.write(&record)?;
-        self.finish_local_deletion(&mut guard, record)
+        if !self.owns_credential(saved.as_ref()) {
+            return Ok(None);
+        }
+        if saved.is_none()
+            && previous.phase == Phase::SignedOut
+            && !previous.cleanup.blocks_connection()
+        {
+            record.cleanup = Cleanup::DeleteCredential { prior_unconfirmed };
+        }
+        let logout = self.logout_proof(&previous, saved);
+        let _ = self.finish_local_deletion(&mut guard, record);
+        Ok(logout)
     }
 
-    /// Permit reconnect only after explicit confirmation and an empty vault.
-    /// Keep uncertainty about older remote connections; never delete source bytes.
-    pub fn reset_local(&mut self) -> Result<(), Failure> {
-        self.access = None;
-        self.attempt = None;
-        let mut guard = self.state.lock()?;
-        let record = guard.read()?;
-        if !matches!(record.cleanup, Cleanup::Revoke { .. }) || self.vault.read()?.is_some() {
-            return Err(Failure::Unavailable);
+    /// Never send proof left from an earlier closed epoch as part of a browser attempt.
+    fn logout_proof(
+        &self,
+        previous: &Record,
+        saved: Option<Credential>,
+    ) -> Option<auth::RemoteLogout> {
+        if previous.phase == Phase::Pending
+            || matches!(previous.cleanup, Cleanup::DeleteCredential { .. })
+        {
+            return None;
         }
-        guard.replace(Phase::SignedOut, Cleanup::RemoteUnconfirmed)?;
-        self.cleanup = Cleanup::RemoteUnconfirmed;
-        self.local_reset_available = false;
-        self.status = AuthStatus::SignedOut;
-        Ok(())
+        Some(auth::RemoteLogout::from_credential(
+            self.config.clone()?,
+            saved?,
+        ))
     }
 }

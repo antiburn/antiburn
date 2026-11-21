@@ -9,6 +9,9 @@ OAuth or OpenID Connect service. Builds without the `cloud` feature include no C
 capabilities, callback scheme, account controls, or Cloud onboarding step. Local
 sessions and Checks do not need Cloud.
 
+See [Cloud onboarding in Desktop](onboarding.md) for the sign-in, invitation,
+and folder setup flow.
+
 ## Local analysis and Cloud capture
 
 [`antiburn-local`](../../crates/antiburn-local) owns local session discovery,
@@ -100,9 +103,8 @@ An OS missing-launcher error before browser handoff clears only that attempt and
 permits retry. Other opener errors do not prove that handoff failed.
 Browser approval can create a connection before the callback arrives. Canceling,
 replacing, or losing that callback therefore preserves unconfirmed revocation.
-Without a refresh credential, Settings requires an explicit local reset before
-reconnecting and keeps the warning. An explicit browser denial does not need this
-reset.
+The user can sign in again without a reset. An explicit browser denial does not
+add a warning.
 
 The browser must name the account, permitted actions, and device before the user
 approves the connection. The approved scope covers this first-party Desktop
@@ -138,8 +140,10 @@ one-year deadline. Refresh does not extend that deadline.
 
 A single Cloud blocking-work permit admits synchronous keyring, SQLite, source,
 state-file, and short HTTP operations before they enter Tokio's blocking pool.
-Ordinary requests fail clearly as busy without starting work. Cleanup waits
-asynchronously for the permit. Sign-out, reset, and browser cancellation invalidate
+Ordinary requests fail clearly as busy without starting work. An invitation
+list can wait up to 750 ms for sign-in to release the permit. It rechecks the
+account after the wait, and a timeout sends no request. Cleanup waits
+asynchronously for the permit. Sign-out and browser cancellation invalidate
 their account or browser generation before waiting. A busy connection attempt
 does not invalidate the pending browser attempt. An admitted connection attempt
 cannot replace a newer cancellation while it waits for a blocking worker.
@@ -168,11 +172,12 @@ retry eligibility for the current account generation. Successful rotation needs
 the same grant ID, account, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.
-Rejected refresh responses save the original and returned proofs for logout
-before updating local state. These cleanup credentials cannot restore an
-authenticated session. Cleanup requires confirmation for both proofs. A failed
-secure-storage write keeps an unconfirmed warning and attempts to revoke the
-returned proof.
+When Desktop rejects or receives stale tokens, it saves the original and
+returned proofs for logout. These proofs cannot restore a session. A separate
+worker tries to revoke them without blocking account work. The worker does not
+change local state, so the proofs stay closed until local sign-out or a new
+sign-in. If secure storage fails, Desktop keeps the outcome unconfirmed and
+still tries to revoke the proofs.
 Decoded responses retain bounded logout proof even when token bounds or authority
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
@@ -180,25 +185,28 @@ of a newer connection cannot prove that an older connection was revoked.
 Settings keeps the connection action available after onboarding. Desktop sign-out
 first flushes a new signed-out generation. Browser cancellation changes only the
 pending browser-attempt generation; it does not cancel an established connection
-or its refresh. Sign-out revokes only this client's current
-grant, not every connection on the account. A failed remote response stays visible
-as unconfirmed revocation. The client durably records confirmed remote revocation
-before deleting its keyring credential. A restart can therefore finish local
-deletion without requiring that deleted credential or repeating remote logout.
-A deletion failure remains visible, and the closed marker blocks login
-restoration. Cleanup-only keyring records cannot restore an authenticated session.
-Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
+or its refresh. Sign-out asks Cloud to revoke only the old grant, not every
+connection on the account. Only a synchronous HTTP 204 confirms remote logout.
+HTTP 401, HTTP 202, and network failures do not. Desktop publishes local sign-out
+before it starts remote logout. One separate worker sends only the old proof to
+its configured service origin. It makes one attempt per captured proof and does
+not read or write the keyring or saved state. A failed or skipped request does not
+block sign-in. The local marker does not claim remote revocation. A restart can
+finish keyring deletion without repeating remote logout. If deletion fails, the
+closed marker blocks access. Only a verified new sign-in can replace the old
+credential.
+If Desktop cannot write the marker, it tries to delete the old credential.
+If both fail, the current process still blocks access and reports a failure.
+Cleanup-only keyring records cannot restore an authenticated session.
 Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
 when authority changes.
 
-When remote revocation is unknown and no refresh credential remains, Settings
-offers an explicit local reset. The confirmation states that this does not revoke
-the old connection. Reset permits a new connection but preserves an
-unconfirmed-revocation warning, including after reconnect and restart. The user
-can revoke the old connection in browser Settings. Reset does not remove retry
-bytes or accept late browser callbacks.
+A device authorization denial from Cloud closes saved access and asks the user
+to sign in again. A connection failure that proves the refresh never reached
+Cloud does not end the saved sign-in. The user can revoke an old connection in
+browser Settings. That action is separate from signing in again on Desktop.
 
 Callback URLs, codes, tokens, PKCE material, and raw provider errors do not enter
 renderer events, logs, or analytics. Identity and folder paths do not enter
@@ -256,27 +264,31 @@ provider-source discovery, not accepted Cloud sessions. Only qualified Claude an
 V2 sources can produce upload jobs; a suggested project or checked row does not
 add support for another provider.
 
-New onboarding project choices default to selected in renderer memory. Loading a page or
-toggling an onboarding row does not save ongoing consent or switch uploads on. Existing
-explicit choices and saved opt-outs take precedence over a new default.
-**Start syncing** approves only the currently loaded selected groups and their
-exact current path members. **Load more folders** does not approve unseen groups.
-Until confirmation, an existing saved policy stays unchanged.
+New folders start off. With only Personal available, each row has a switch.
+With multiple destinations, each row lets the user choose Don't sync, Personal,
+or a named Team. A removed destination is not replaced with Personal.
+Loading a page or editing a choice does not enable uploads. **Start syncing**
+approves only visible groups and their exact current path members. It submits
+one policy per affected destination and keeps previously approved paths and
+sources intact. Folder setup checks all saved policies for this account and
+service, including unavailable destinations. If it cannot verify the saved
+policies, it blocks new routes. Onboarding does not move an approved folder to
+a different destination. **Finish without syncing** discards unsubmitted choices.
 
-After initial consent, Settings switches show saved project permission rather
-than draft defaults. Turning a group off removes its approved bindings immediately.
-Turning it on requires the Settings confirmation dialog for its full sessions and
-current worktrees. The command checks the exact policy revision and group membership,
-then changes only that group. Other groups, unseen pages, and the destination's
-pause state remain unchanged. The last group can be turned off without deleting saved captures.
-There is no Update button. Onboarding keeps its draft-and-Start flow without a dialog.
+If some destinations cannot confirm the save, setup lists the confirmed and
+unconfirmed results. Retry checks the unconfirmed policies before sending
+anything again. It does not submit a confirmed policy a second time. Saving a
+policy does not confirm that any content was uploaded.
 
-Confirmation saves the complete `projectChoices` map, including exclusions,
-atomically with the upload policy. Status returns the same map for reopen.
-These group choices are UI preferences, separate from provider-file preferences.
-Only the policy's approved `projects` grant upload permission. Older policies
-without a choice map load an empty map; the UI requires review before changing
-their selection.
+After initial consent, Settings can open the same folder picker to add new
+rules. Where Settings shows saved Personal folder switches, turning a group off
+removes only its approved bindings. Other groups, unseen pages, and pause state
+stay unchanged. Turning off a group does not delete saved captures.
+
+Confirmation saves `projectChoices` with the upload policy. It keeps prior
+exclusions and records the new approvals for that destination. These group
+choices are separate from provider-file preferences. Only the policy's approved
+`projects` grant upload permission.
 
 For local paths, current local Git metadata can group a repository and its
 worktrees into one displayed project. This is a present-day display association,
@@ -295,7 +307,9 @@ project permission. Each child and fork remains an independent native source.
 
 A matching session uploads in full. This is an allowlist, not redaction:
 messages and tool results from other CWDs or paths in the same session remain
-part of the upload.
+part of the upload. Team owners and admins can read sessions in their team
+workspace. The folder setup shows this before users start syncing to a team.
+It does not apply to sessions sent to Personal.
 
 ### Source access and discovery limits
 
@@ -332,14 +346,15 @@ capture; the host does not clip source or fall back to guessed limits.
 
 ### Background sync and saved bytes
 
-**Start syncing** moves onboarding to completion without waiting for capture,
-transfer, or integrity acceptance. **Done** remains available while setup or
-uploads are pending. Closing onboarding stops renderer observation, not the
-saved ongoing policy or desktop scheduler. Local tools setup remains
-independent of Cloud sync.
+Once the policy saves are confirmed, onboarding moves to completion without
+waiting for capture, transfer, or integrity acceptance. After a save attempt,
+**Finish setup** exits without repeating an unconfirmed save. Closing onboarding
+stops renderer observation, not the saved policy or desktop scheduler. Local
+tools setup stays independent of Cloud sync.
 
-Settings → Sessions shows the account, selected destination, upload switch,
-folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
+Settings → Sessions shows the account, saved destinations, and folder choices.
+Each saved destination reports its own upload state and has its own pause and
+resume controls. The normal view omits transfer counters.
 Upload status events identify the account and destination. A read for a named
 destination returns only that destination's status and does not change its policy.
 Folder-read and saved-upload failures use brief messages, with recovery actions
@@ -352,8 +367,8 @@ current folder policy retain their bytes but do not count as current upload fail
 counters and progress are unknown or last-known values, not current results. The desktop
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
 values must match the current account, destination, and service.
-**Upload sessions** pauses or resumes the confirmed policy. For saved-upload errors,
-**Retry** retries permitted saved work without expanding the selection.
+**Pause uploads** and **Resume uploads** affect only the named destination.
+For saved-upload errors, retry does not expand the confirmed selection.
 `recoveryRequiredCount` identifies missing or incomplete local captures that
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings

@@ -1,6 +1,7 @@
 import { ToggleSwitch } from "../components/ui/ToggleSwitch"
 import { useState, useSyncExternalStore, type CSSProperties } from "react"
 import {
+  ArrowRight,
   ArrowUp,
   ArrowUpRight,
   Check,
@@ -22,6 +23,7 @@ import {
 } from "./CloudSession"
 import { CloudProjectFolders } from "./CloudOnboardingFolders"
 import { CloudInvitations } from "./CloudInvitations"
+import { CloudRoutedFolderSetup } from "./CloudRoutedFolderSetup"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -66,14 +68,28 @@ export function CloudOnboarding({
   )
   const disabled = busy || value.busy
   const grouped = !!(port ?? desktopCloudPort).ongoing
+  const routed = grouped && value.cloud.destinations !== undefined
+  const routedFolderScreen = routed && value.screen === "folders"
+  const canContinueSetup =
+    value.screen === "identity" &&
+    (value.cloud.invitationEnabled || (value.cloud.captureEnabled && !value.error)) &&
+    !value.cloud.setupError
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
-  const signInBlocked =
-    value.cloud.authEnabled &&
-    (value.cloud.revocationPending ||
-      value.cloud.localCleanupPending ||
-      ["reauth_required", "credential_failed"].includes(value.cloud.status))
+  const approvalPending = waiting || browserReturned
+  const checkFailed = value.cloud.status === "sign_in_check_failed"
+  const signOutFailed = value.cloud.status === "sign_out_failed"
+  const retryingSignIn = value.authAction === "check_sign_in"
+  const retryCloud =
+    retryingSignIn || checkFailed || (!value.cloud.authEnabled && !!value.error)
+  const signInMessage =
+    value.loaded &&
+    !value.authAction &&
+    (value.cloud.authEnabled || value.cloud.status === "browser_failed")
+      ? cloudStatusMessage(value.cloud.status)
+      : ""
+  const signInError = checkFailed || signOutFailed ? signInMessage : ""
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -151,14 +167,14 @@ export function CloudOnboarding({
         value.screen,
         value.screen === "complete" || !value.cloud.authEnabled ? "done" : "use_locally",
       )
-    if (waiting && !(await session.cancelSilently())) return
+    if (approvalPending && !(await session.cancelSilently())) return
     onComplete()
   }
   const back = async () => {
     if (disabled) return
     if (value.screen === "handoff" || value.screen === "identity") {
       if (analytics) noteCloudAction(value.screen, "back")
-      if (waiting && !(await session.cancelSilently())) return
+      if (approvalPending && !(await session.cancelSilently())) return
       onBack()
     } else await session.go(value.screen === "folders" ? "identity" : "handoff", "back")
   }
@@ -180,14 +196,20 @@ export function CloudOnboarding({
           <div className="cloud-connection">
             <img className="cloud-app-icon" src={appIcon} alt="" />
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
-              {value.cloud.authEnabled
-                ? "Sign in to Antiburn Cloud"
-                : "Antiburn Cloud is coming soon"}
+              {!value.loaded
+                ? "Checking Cloud…"
+                : retryCloud || signOutFailed
+                  ? "Antiburn Cloud"
+                  : value.cloud.authEnabled
+                    ? "Sign in to Antiburn Cloud"
+                    : "Antiburn Cloud is coming soon"}
             </h1>
             <p className="type-onboarding-body text-onboarding-muted">
-              {value.cloud.authEnabled
-                ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
-                : "Learn about bringing your session insights together across devices."}
+              {!value.loaded || retryCloud || signOutFailed
+                ? null
+                : value.cloud.authEnabled
+                  ? "Use your browser to connect this device. Signing in doesn’t start uploads."
+                  : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
               <button
@@ -197,40 +219,45 @@ export function CloudOnboarding({
               >
                 Cancel sign-in
               </button>
-            ) : !browserReturned && !signInBlocked ? (
+            ) : value.loaded && !browserReturned && !signOutFailed ? (
               <button
                 className={
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
                 }
                 disabled={disabled || !value.loaded}
                 onClick={() =>
-                  void (!value.cloud.authEnabled ||
-                  value.cloud.status === "idle" ||
-                  value.cloud.status === "signed_out"
-                    ? session.begin()
-                    : session.retry())
+                  void (retryCloud ? session.load("check_sign_in") : session.begin())
                 }
               >
-                {value.cloud.authEnabled ? cloudGithubSignInLabel : "Learn more"}
-                <ArrowUpRight size={16} aria-hidden />
+                {value.authAction === "sign_in"
+                  ? "Starting sign-in…"
+                  : retryCloud
+                    ? "Try again"
+                    : value.cloud.authEnabled
+                      ? cloudGithubSignInLabel
+                      : "Learn more"}
+                {!retryCloud && <ArrowUpRight size={16} aria-hidden />}
               </button>
             ) : null}
-            <p className="cloud-status type-footnote" role="status">
-              {value.loaded
-                ? value.cloud.authEnabled || value.cloud.status === "browser_failed"
-                  ? cloudStatusMessage(value.cloud.status)
-                  : ""
-                : "Checking Cloud availability…"}
-            </p>
-            {signInBlocked && (
-              <p className="type-footnote text-onboarding-muted">
-                Continue locally, then open Settings → Sessions to manage this connection.
-              </p>
+            {(checkFailed || signOutFailed) && (
+              <button
+                className="onboarding-secondary"
+                disabled={disabled}
+                onClick={() => void session.signOut()}
+              >
+                {value.authAction === "sign_out" ? "Signing out…" : "Sign out"}
+              </button>
             )}
+            <div className="cloud-status type-footnote">
+              <p role="status">
+                {retryingSignIn ? "Checking sign-in…" : signInError ? "" : signInMessage}
+              </p>
+              {signInError && <p role="alert">{signInError}</p>}
+            </div>
           </div>
         </section>
       ) : value.screen === "identity" ? (
-        <section className="cloud-setup">
+        <section className="cloud-setup cloud-identity-stage">
           <div className="cloud-connection cloud-identity">
             <div className="cloud-identity-icon">
               {value.cloud.identity?.avatar ? (
@@ -245,8 +272,17 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
+            {canContinueSetup && (
+              <p className="type-onboarding-body text-onboarding-muted">
+                Next, choose which folders to sync. Nothing uploads until you turn on sync.
+              </p>
+            )}
             {visible && value.cloud.invitationEnabled && value.cloud.identity && (
-              <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+              <CloudInvitations
+                accountId={value.cloud.identity.id}
+                onJoined={session.load}
+                onlyWhenInvited
+              />
             )}
             {value.cloud.setupError && (
               <>
@@ -282,6 +318,15 @@ export function CloudOnboarding({
             )}
           </div>
         </section>
+      ) : routedFolderScreen ? (
+        <CloudRoutedFolderSetup
+          session={session}
+          value={value}
+          busy={busy}
+          error={error}
+          onBack={() => void back()}
+          onFinish={() => void finish()}
+        />
       ) : value.screen === "folders" ? (
         <section className="cloud-folder-content min-h-0 flex-1 overflow-hidden pb-0!">
           <h1 className="type-cloud-folder-title" tabIndex={-1} ref={focusHeading}>
@@ -469,22 +514,28 @@ export function CloudOnboarding({
           </section>
           <section className="onboarding-copy cloud-ready-copy">
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
-              {grouped
-                ? syncReady
-                  ? "Sessions sync in the background"
-                  : "Continue using Antiburn locally"
-                : captureEnabled
-                  ? captureSaved
-                    ? "Capture request saved"
-                    : value.sync.status === "starting"
-                      ? "Saving capture request"
-                      : "Continue using Antiburn locally"
-                  : value.cloud.syncEnabled
+              {routed
+                ? value.routedFolders?.results.some(({ saved }) => saved)
+                  ? "Cloud sync choices saved"
+                  : "Cloud setup complete"
+                : grouped
+                  ? syncReady
                     ? "Sessions sync in the background"
-                    : "Continue using Antiburn locally"}
+                    : "Continue using Antiburn locally"
+                  : captureEnabled
+                    ? captureSaved
+                      ? "Capture request saved"
+                      : value.sync.status === "starting"
+                        ? "Saving capture request"
+                        : "Continue using Antiburn locally"
+                    : value.cloud.syncEnabled
+                      ? "Sessions sync in the background"
+                      : "Continue using Antiburn locally"}
             </h1>
             <p className="type-onboarding-body">
-              {grouped ? (
+              {routed ? (
+                "Review saved destinations in Settings. Saving choices does not confirm any uploads."
+              ) : grouped ? (
                 "Manage Cloud uploads in Settings. You can pause uploads and review saved work there."
               ) : captureEnabled ? (
                 "Upload is unavailable. Saving a request does not confirm that any content was read or captured."
@@ -502,7 +553,8 @@ export function CloudOnboarding({
         </>
       )}
       <footer
-        className={`onboarding-footer cloud-footer${value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
+        className={`onboarding-footer cloud-footer${routedFolderScreen ? " hidden!" : canContinueSetup || (value.screen === "identity" && value.cloud.invitationEnabled) ? " flex!" : ""}`}
+        hidden={routedFolderScreen}
       >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
@@ -513,29 +565,33 @@ export function CloudOnboarding({
                   aria-hidden
                 />
                 <strong className="type-headline">
-                  {grouped
-                    ? value.ongoing && cloudUploadStatusUnknown(value.ongoing)
-                      ? cloudOngoingStatusMessage(value.ongoing)
-                      : value.sync.status === "starting"
-                        ? "Starting background sync"
-                        : value.sync.status === "ambiguous"
-                          ? "Cloud sync not confirmed"
-                          : value.ongoing
-                            ? cloudOngoingStatusMessage(value.ongoing)
-                            : "Cloud sync not confirmed"
-                    : captureEnabled
-                      ? "Upload unavailable"
-                      : accepted || syncing
-                        ? value.sync.status === "partial"
-                          ? "Sync needs attention"
-                          : value.sync.status === "complete"
-                            ? `Synced ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
-                            : `Syncing ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
-                        : syncUncertain
-                          ? "Sync status unavailable"
-                          : value.sync.status === "starting"
-                            ? "Starting background sync"
-                            : "Cloud sync not started"}
+                  {routed
+                    ? value.routedFolders?.results.some(({ saved }) => saved)
+                      ? "Sync choices saved"
+                      : "Check sync in Settings"
+                    : grouped
+                      ? value.ongoing && cloudUploadStatusUnknown(value.ongoing)
+                        ? cloudOngoingStatusMessage(value.ongoing)
+                        : value.sync.status === "starting"
+                          ? "Starting background sync"
+                          : value.sync.status === "ambiguous"
+                            ? "Cloud sync not confirmed"
+                            : value.ongoing
+                              ? cloudOngoingStatusMessage(value.ongoing)
+                              : "Cloud sync not confirmed"
+                      : captureEnabled
+                        ? "Upload unavailable"
+                        : accepted || syncing
+                          ? value.sync.status === "partial"
+                            ? "Sync needs attention"
+                            : value.sync.status === "complete"
+                              ? `Synced ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
+                              : `Syncing ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
+                          : syncUncertain
+                            ? "Sync status unavailable"
+                            : value.sync.status === "starting"
+                              ? "Starting background sync"
+                              : "Cloud sync not started"}
                 </strong>
                 <span className="type-callout text-onboarding-muted">
                   {grouped
@@ -580,7 +636,9 @@ export function CloudOnboarding({
               Back
             </button>
           ) : null}
-          <div className="onboarding-actions flex-wrap">
+          <div
+            className={`onboarding-actions flex-wrap${value.screen === "identity" ? " w-full justify-between" : ""}`}
+          >
             {value.screen !== "folders" &&
               (error || (value.screen !== "complete" && value.error)) && (
                 <span className="type-footnote" role="alert">
@@ -607,17 +665,16 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
-            {value.screen === "identity" &&
-              value.cloud.invitationEnabled &&
-              !value.cloud.setupError && (
-                <button
-                  className="onboarding-primary"
-                  disabled={disabled}
-                  onClick={() => void session.go("folders")}
-                >
-                  Continue Cloud setup
-                </button>
-              )}
+            {canContinueSetup && (
+              <button
+                className="onboarding-primary ml-auto"
+                disabled={disabled}
+                onClick={() => void session.go("folders")}
+              >
+                Continue
+                <ArrowRight size={16} aria-hidden />
+              </button>
+            )}
             {value.screen === "folders" && (
               <>
                 <button

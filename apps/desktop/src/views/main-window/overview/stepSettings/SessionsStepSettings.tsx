@@ -199,45 +199,47 @@ export function SessionsStepSettings() {
         <SectionGroup title="Antiburn Cloud">
           <Card divided={false}>
             <CloudAccount session={cloudSession} value={cloud}>
-              <SettingsToggleRow
-                searchId="cloudUpload"
-                checked={
-                  (!cloudUnavailable || cloudStorageUnknown) &&
-                  cloudConsent &&
-                  !cloud.ongoing?.paused
-                }
-                disabled={
-                  !loaded ||
-                  !cloud.loaded ||
-                  cloud.busy ||
-                  cloudStorageUnknown ||
-                  cloudUnavailable ||
-                  !cloudConsent
-                }
-                dimmed={cloudUnavailable}
-                disabledTooltip={
-                  !cloud.loaded
-                    ? "Checking Cloud availability…"
-                    : cloudStorageUnknown
-                      ? "Check disk space and file permissions, then retry saved uploads."
-                      : cloudUnavailable
-                        ? "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available."
-                        : !cloudConsent
-                          ? "Choose projects and confirm full-content sync below."
-                          : undefined
-                }
-                onChange={(next) => {
-                  if (
-                    loaded &&
-                    cloud.loaded &&
-                    !cloudUnavailable &&
-                    !cloudStorageUnknown &&
-                    cloudConsent
-                  ) {
-                    void cloudSession.controlSync(!next)
+              {cloud.cloud.destinations === undefined && (
+                <SettingsToggleRow
+                  searchId="cloudUpload"
+                  checked={
+                    (!cloudUnavailable || cloudStorageUnknown) &&
+                    cloudConsent &&
+                    !cloud.ongoing?.paused
                   }
-                }}
-              />
+                  disabled={
+                    !loaded ||
+                    !cloud.loaded ||
+                    cloud.busy ||
+                    cloudStorageUnknown ||
+                    cloudUnavailable ||
+                    !cloudConsent
+                  }
+                  dimmed={cloudUnavailable}
+                  disabledTooltip={
+                    !cloud.loaded
+                      ? "Checking Cloud availability…"
+                      : cloudStorageUnknown
+                        ? "Check disk space and file permissions, then retry saved uploads."
+                        : cloudUnavailable
+                          ? "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available."
+                          : !cloudConsent
+                            ? "Choose projects and confirm full-content sync below."
+                            : undefined
+                  }
+                  onChange={(next) => {
+                    if (
+                      loaded &&
+                      cloud.loaded &&
+                      !cloudUnavailable &&
+                      !cloudStorageUnknown &&
+                      cloudConsent
+                    ) {
+                      void cloudSession.controlSync(!next)
+                    }
+                  }}
+                />
+              )}
             </CloudAccount>
           </Card>
         </SectionGroup>

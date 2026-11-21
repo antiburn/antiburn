@@ -4,13 +4,40 @@ Cloud is optional. Standard builds do not include Cloud controls. In a
 Cloud-enabled build, you can finish onboarding locally without signing in,
 joining a workspace, or enabling sync.
 
+```mermaid
+flowchart TD
+    Start["Open Desktop onboarding"] --> Choice{"Use Cloud?"}
+    Choice -->|No| Local["Continue locally. No account needed."]
+    Choice -->|Yes| SignIn["Sign in and approve this device in the browser"]
+    SignIn --> Invites{"Pending invitations available?"}
+    Invites -->|Yes| Review["Review invitations in Desktop"]
+    Review -->|Verify then join| Join["Verify in the browser. Join and see the result in Desktop."]
+    Review -->|Skip| Folders
+    Join --> Folders
+    Invites -->|No| Folders["Choose folders and a destination for each"]
+    Folders -->|Confirm uploads| Sync["Sync to the approved destinations"]
+    Folders -->|Skip| Local
+```
+
+A folder has one destination. You can sync different folders to Personal and
+eligible teams at the same time. In Settings, pause one destination without
+pausing the others. Joining a team does not change any saved folder route.
+
 ## Workspace invitations
 
-Sign in to Cloud in your system browser, then return to Desktop. Desktop shows
-pending invitations for the verified account. If the list needs another check,
-choose **Check in browser**. Use the same account as Desktop, then return to
-review your invitations. If Desktop asks, choose **Finish check**. Checking the
-list does not join a workspace.
+Sign in with GitHub in your system browser. Then review and approve the device
+connection before returning to Desktop. You do not need to sign in on the
+dashboard first. Cloud creates your Personal workspace on first sign-in.
+Desktop shows invitation controls during onboarding only when it finds a
+pending invitation or has a result from a review already in progress. You
+can continue to folder setup even if Desktop cannot check invitations.
+**Back** and **Continue locally** cancel sign-in while approval or verification
+is pending.
+
+If the list needs another check, open Cloud in Settings and choose **Check in
+browser**. Use the same account as Desktop, then return to review your
+invitations. If Desktop asks, choose **Finish check**. Checking the list does not
+join a workspace.
 
 Choose **Verify invitation** for the workspace you want to join. After the
 browser verifies your account, choose **Join workspace** in Desktop. If your

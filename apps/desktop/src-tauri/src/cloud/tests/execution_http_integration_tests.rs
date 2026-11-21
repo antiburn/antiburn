@@ -53,6 +53,15 @@ fn read_request(stream: &mut std::net::TcpStream) -> Request {
 }
 
 fn server(status: u16, body: String, extra: &str) -> (String, JoinHandle<Request>) {
+    server_after(status, body, extra, || {})
+}
+
+fn server_after(
+    status: u16,
+    body: String,
+    extra: &str,
+    before_response: impl FnOnce() + Send + 'static,
+) -> (String, JoinHandle<Request>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -72,10 +81,72 @@ fn server(status: u16, body: String, extra: &str) -> (String, JoinHandle<Request
             }
         };
         let request = read_request(&mut stream);
+        before_response();
         write!(stream, "HTTP/1.1 {status} Synthetic\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{extra}\r\n{body}", body.len()).unwrap();
         request
     });
     (origin, worker)
+}
+
+#[tokio::test]
+async fn cloud_detached_logout_does_not_hold_account_work_open() {
+    use super::super::work::{BlockingWork, Priority};
+
+    let (seen, request_seen) = tokio::sync::oneshot::channel();
+    let (respond, allow_response) = std::sync::mpsc::channel();
+    let (origin, server) = server_after(204, String::new(), "", move || {
+        seen.send(()).unwrap();
+        allow_response.recv_timeout(Duration::from_secs(5)).unwrap();
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let state_path = directory.path().to_owned();
+    let work = BlockingWork::default();
+    let (mut engine, request) = work
+        .run(Priority::Cleanup, move || {
+            let mut engine = connected(&state_path, &origin);
+            let access = engine.access.as_ref().unwrap();
+            engine
+                .vault
+                .write(Some(&Credential {
+                    epoch: access.epoch.clone(),
+                    issuer: origin.clone(),
+                    resource: origin,
+                    refresh_token: "synthetic-old-refresh".into(),
+                    cleanup_refresh_tokens: Vec::new(),
+                    account_grant: true,
+                    session: Some(access.session.clone()),
+                }))
+                .unwrap();
+            let request = engine.sign_out().unwrap().unwrap();
+            assert!(engine.session().is_none());
+            assert!(engine.status == AuthStatus::SignedOut);
+            assert!(engine.vault.read().unwrap().is_none());
+            Ok((engine, request))
+        })
+        .await
+        .unwrap();
+    let logout = engine.spawn_remote_logout(request).unwrap();
+    request_seen.await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        work.run(Priority::Normal, move || {
+            engine.refresh(200, || true).unwrap();
+            assert!(engine.status == AuthStatus::SignedOut);
+            Ok(())
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    respond.send(()).unwrap();
+    logout.await.unwrap();
+    let request = server.join().unwrap();
+    assert_eq!(request.line, "POST /v1/devices/logout HTTP/1.1");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body).unwrap()["refresh_token"],
+        "synthetic-old-refresh"
+    );
+    assert!(!request.headers.contains_key("authorization"));
 }
 
 fn connected(directory: &Path, origin: &str) -> Engine {
@@ -86,7 +157,7 @@ fn connected(directory: &Path, origin: &str) -> Engine {
     let mut engine = Engine::new(
         Some(config),
         Box::new(Arc::new(super::super::tests::MemoryVault::default())),
-        Box::new(auth::HttpTransport),
+        Arc::new(auth::HttpTransport),
         StateStore::new(directory),
     )
     .with_clock(|| 100);
@@ -410,6 +481,37 @@ fn cloud_execution_http_rechecks_account_and_generation_before_sending_bearer() 
         ),
         Err(antiburn_cloud_capture::TransportError::Unauthorized)
     ));
+}
+
+#[test]
+fn cloud_execution_http_only_device_denial_closes_saved_access() {
+    use super::super::upload::Route;
+
+    for (status, code, closes) in [
+        (401, "reauthorization_required", true),
+        (401, "other", false),
+        (403, "forbidden", false),
+        (503, "service_unavailable", false),
+    ] {
+        let (origin, worker) = server(status, serde_json::json!({ "code": code }).to_string(), "");
+        let directory = tempfile::tempdir().unwrap();
+        let mut engine = connected(directory.path(), &origin);
+        let _ = engine.capture_request(
+            &identity(),
+            (&origin, None),
+            Route::Reserve,
+            &(),
+            &|| true,
+            &|| true,
+        );
+        worker.join().unwrap();
+        let record = engine.state.lock().unwrap().read().unwrap();
+        assert!((record.phase == Phase::SignedOut) == closes);
+        if closes {
+            assert!(engine.session().is_none());
+            assert!(record.cleanup.prior_unconfirmed());
+        }
+    }
 }
 
 #[test]

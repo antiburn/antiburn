@@ -104,6 +104,7 @@ pub enum Failure {
     Rejected,
     InvalidResponse,
     CredentialFailed,
+    SignOutFailed,
     Cancelled,
     Unavailable,
     ReauthRequired,
@@ -483,8 +484,34 @@ pub trait Transport: Send + Sync {
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
 
-/// Short blocking HTTP transport, used only inside the bounded Cloud worker.
-/// The engine's synchronous proof/write ordering stays intact; this is not async HTTP.
+/// A detached logout can only submit the old proofs to their original service.
+pub(super) struct RemoteLogout {
+    config: Config,
+    proofs: Vec<String>,
+}
+
+impl RemoteLogout {
+    /// Capture only the old logout proofs. Do not carry account state or vault access.
+    pub(super) fn from_credential(config: Config, credential: Credential) -> Self {
+        Self {
+            config,
+            proofs: std::iter::once(credential.refresh_token)
+                .chain(credential.cleanup_refresh_tokens)
+                .collect(),
+        }
+    }
+
+    /// Send each captured proof once; only HTTP 204 confirms a revocation.
+    pub(super) fn send(self, transport: &dyn Transport) -> bool {
+        let mut confirmed = true;
+        for proof in self.proofs {
+            confirmed &= transport.revoke(&self.config, &proof).is_ok();
+        }
+        confirmed
+    }
+}
+
+/// Short blocking HTTP transport for the admitted Cloud work and detached logout.
 pub struct HttpTransport;
 /// Check each request URL before attaching proof. Debug loopback HTTP bypasses
 /// proxies so plaintext credentials stay on the local connection.
@@ -554,19 +581,38 @@ fn exchange_failure(error: reqwest::Error) -> Failure {
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct DeviceAuthError {
+    code: String,
+}
+
+impl DeviceAuthError {
+    /// Match the device protocol denial, not a generic HTTP or destination error.
+    pub(super) fn needs_sign_in(&self) -> bool {
+        self.code == "reauthorization_required"
+    }
+}
+
 impl Transport for HttpTransport {
     fn supports_invitations(&self, config: &Config) -> bool {
         super::invitations::supported(config)
     }
 
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
-        let tokens: Tokens = decode(
-            client(&config.token)?
-                .post(config.token.clone())
-                .json(request)
-                .send()
-                .map_err(exchange_failure)?,
-        )?;
+        let response = client(&config.token)?
+            .post(config.token.clone())
+            .json(request)
+            .send()
+            .map_err(exchange_failure)?;
+        if matches!(request, TokenRequest::RefreshToken { .. })
+            && response.status() == reqwest::StatusCode::UNAUTHORIZED
+        {
+            return Err(match decode_json::<DeviceAuthError>(response) {
+                Ok(error) if error.needs_sign_in() => Failure::ReauthRequired,
+                _ => Failure::Rejected,
+            });
+        }
+        let tokens: Tokens = decode(response)?;
         // Keep usable logout proof until the engine decides whether to accept it.
         if !bounded(&tokens.refresh_token, 16_384) {
             return Err(Failure::InvalidResponse);

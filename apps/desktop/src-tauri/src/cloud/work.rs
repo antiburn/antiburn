@@ -1,16 +1,17 @@
 //! Admit Cloud blocking work before it enters Tokio's shared blocking pool.
 //! The permit stays with a running closure even if its awaiting caller stops.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::sync::Semaphore;
 
 /// Safe renderer error for work that has not started and can be retried.
 pub(super) const BUSY: &str = "Cloud is busy. Try again.";
 
-/// Normal work fails fast. Cleanup waits asynchronously for the current job and
-/// takes the next permit before later normal work can enter.
+/// Normal work fails fast. Reads that follow a status event can wait briefly
+/// for admission. Cleanup waits for the permit without a deadline.
 pub(super) enum Priority {
     Normal,
+    Read(Duration),
     Cleanup,
 }
 
@@ -44,6 +45,19 @@ impl BlockingWork {
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| BUSY.to_owned())?,
+            Priority::Read(wait) => {
+                let deadline = tokio::time::Instant::now() + wait;
+                let permit =
+                    tokio::time::timeout_at(deadline, self.admission.clone().acquire_owned())
+                        .await
+                        .map_err(|_| BUSY.to_owned())?
+                        .map_err(|_| "Cloud is unavailable.".to_owned())?;
+                // Both the timer and the permit may be ready on the next poll.
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(BUSY.to_owned());
+                }
+                permit
+            }
             Priority::Cleanup => self
                 .admission
                 .clone()
@@ -64,10 +78,12 @@ impl BlockingWork {
 mod tests {
     use super::*;
     use std::{
+        future::{Future, poll_fn},
         sync::{
             atomic::{AtomicU64, Ordering},
             mpsc,
         },
+        task::Poll,
         time::Duration,
     };
     use tokio::sync::oneshot;
@@ -102,6 +118,46 @@ mod tests {
         .unwrap();
         release.send(()).unwrap();
         first.await.unwrap().unwrap();
+        work.run(Priority::Normal, || Ok(())).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn cloud_read_admission_times_out_without_starting_work() {
+        let work = BlockingWork::default();
+        let held = work.admission.try_acquire().unwrap();
+        let limit = Duration::from_millis(750);
+        let started = tokio::time::Instant::now();
+        let result = tokio::time::timeout(
+            limit + Duration::from_millis(10),
+            work.run::<(), _>(Priority::Read(limit), || {
+                panic!("a timed-out read must not start")
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, Err(BUSY.into()));
+        assert!(started.elapsed() >= limit);
+        drop(held);
+        work.run(Priority::Normal, || Ok(())).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn cloud_read_admission_rejects_permit_released_after_deadline() {
+        let work = BlockingWork::default();
+        let held = work.admission.try_acquire().unwrap();
+        let limit = Duration::from_millis(750);
+        let read = work.run::<(), _>(Priority::Read(limit), || {
+            panic!("a late permit must not start work")
+        });
+        tokio::pin!(read);
+        poll_fn(|cx| {
+            assert!(read.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        tokio::time::advance(limit + Duration::from_millis(1)).await;
+        drop(held);
+        assert_eq!(read.await, Err(BUSY.into()));
         work.run(Priority::Normal, || Ok(())).await.unwrap();
     }
 

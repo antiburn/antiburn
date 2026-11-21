@@ -32,11 +32,6 @@ function fixture(initial: CloudSnapshot = emptyCloudSnapshot) {
       return value
     }),
     signOut: vi.fn(async () => ({ ...emptyCloudSnapshot, status: "signed_out" as const })),
-    resetLocal: vi.fn(async () => ({
-      ...emptyCloudSnapshot,
-      status: "signed_out" as const,
-      remoteRevocationUnconfirmed: true,
-    })),
     save: vi.fn(async (draft) => {
       value = { ...value, draft }
       return value
@@ -394,7 +389,7 @@ it("reopens a failed marketing link without cancelling an auth attempt", async (
   const session = new CloudSession(port),
     stop = session.subscribe(vi.fn())
   await settle()
-  await session.retry()
+  await session.begin()
   expect(port.begin).toHaveBeenCalledOnce()
   expect(port.cancel).not.toHaveBeenCalled()
   expect(session.getSnapshot().cloud.status).toBe("idle")
@@ -1032,7 +1027,6 @@ it("clears consent on every observed surface when a status read closes authority
     ...emptyCloudSnapshot,
     authEnabled: true,
     status: "reauth_required",
-    revocationPending: true,
   }
   await second.load()
   expect(first.getSnapshot()).toMatchObject({
