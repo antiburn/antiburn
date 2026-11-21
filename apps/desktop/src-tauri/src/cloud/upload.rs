@@ -27,13 +27,13 @@ pub(super) enum Route {
 impl Route {
     fn path(self, capture: &str) -> String {
         match self {
-            Self::Capabilities => "/v1/desktop/captures/capabilities".into(),
-            Self::Reserve => "/v1/desktop/captures/reserve".into(),
-            Self::Manifest => format!("/v1/desktop/captures/{capture}/manifest"),
-            Self::Status => format!("/v1/desktop/captures/{capture}/status"),
-            Self::Parts => format!("/v1/desktop/captures/{capture}/parts"),
-            Self::Finalize => format!("/v1/desktop/captures/{capture}/finalize"),
-            Self::Renew => format!("/v1/desktop/captures/{capture}/renew"),
+            Self::Capabilities => "/v1/captures/capabilities".into(),
+            Self::Reserve => "/v1/captures/reserve".into(),
+            Self::Manifest => format!("/v1/captures/{capture}/manifest"),
+            Self::Status => format!("/v1/captures/{capture}/status"),
+            Self::Parts => format!("/v1/captures/{capture}/parts"),
+            Self::Finalize => format!("/v1/captures/{capture}/finalize"),
+            Self::Renew => format!("/v1/captures/{capture}/renew"),
         }
     }
 }
@@ -557,6 +557,7 @@ impl Transport for HttpTransport<'_> {
             "agent": source.agent,
             "source_format": source.source_format,
             "native_session_id": source.native_session_id,
+            "membership_generation": null,
         });
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]

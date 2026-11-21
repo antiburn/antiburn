@@ -136,11 +136,11 @@ pub(super) fn session() -> Session {
         },
         grant_id: "synthetic-grant".into(),
         device_name: "Example desktop".into(),
-        workspace: Workspace {
+        workspace: Some(Workspace {
             id: "synthetic-personal".into(),
             name: "Personal".into(),
             kind: WorkspaceKind::Personal,
-        },
+        }),
         resource: "https://api.example".into(),
         scope: "capture:write".into(),
         iss: "https://api.example".into(),
@@ -156,6 +156,7 @@ struct FakeTransport {
     fail_before_send: AtomicBool,
     fail_revoke: AtomicBool,
     fail_session: AtomicBool,
+    fail_destinations: AtomicBool,
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -199,7 +200,7 @@ impl Transport for Arc<FakeTransport> {
                 .clone()
                 .unwrap_or_else(|| session().grant_id),
             user_id: session().user.id,
-            workspace_id: session().workspace.id,
+            legacy_workspace_claim: false,
             grant_expires_at: "1970-01-01T02:46:40Z".into(),
             scope: auth::SCOPE.into(),
             resource: config().resource,
@@ -232,6 +233,15 @@ impl Transport for Arc<FakeTransport> {
             return Err(Failure::Offline);
         }
         Ok(())
+    }
+    fn destinations(&self, _: &Config, _: &str) -> Result<Vec<auth::EligibleDestination>, Failure> {
+        if self.fail_destinations.load(Ordering::Acquire) {
+            return Err(Failure::Offline);
+        }
+        Ok(vec![auth::EligibleDestination {
+            workspace: session().workspace.unwrap(),
+            membership_generation: None,
+        }])
     }
 }
 
@@ -350,11 +360,11 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
     assert_eq!(config().resource, "https://api.example");
     assert_eq!(
         config().authorization.as_str(),
-        "https://api.example/desktop/authorize"
+        "https://api.example/devices/authorize/account"
     );
     assert_eq!(
         config().session.as_str(),
-        "https://api.example/v1/desktop/session"
+        "https://api.example/v1/devices/session"
     );
     for origin in [
         "http://api.example",
@@ -1186,7 +1196,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         identity: Some(Identity::from(&session())),
         expires_at: None,
         grant_expires_at: Some(10_000),
-        destination: Some(session().workspace),
+        destination: session().workspace,
         revocation_pending: false,
         local_cleanup_pending: false,
         local_reset_available: false,
@@ -1212,17 +1222,17 @@ fn cloud_snapshot_does_not_include_native_secrets() {
 fn cloud_folder_writes_require_the_exact_current_personal_context() {
     let binding = DestinationBinding {
         account_id: session().user.id,
-        destination_id: session().workspace.id,
+        destination_id: session().workspace.unwrap().id,
     };
     assert!(binding.matches(&session()));
     let mut other = session();
     other.user.id = "another-account".into();
     assert!(!binding.matches(&other));
     other = session();
-    other.workspace.id = "another-destination".into();
+    other.workspace.as_mut().unwrap().id = "another-destination".into();
     assert!(!binding.matches(&other));
     other = session();
-    other.workspace.kind = WorkspaceKind::Team;
+    other.workspace.as_mut().unwrap().kind = WorkspaceKind::Team;
     assert!(!binding.matches(&other));
 }
 
@@ -1290,8 +1300,47 @@ fn cloud_session_deadline_is_bounded_and_display_names_are_not_grant_bindings() 
     );
     value = session();
     value.user.display_name = "Another display name".into();
-    value.workspace.name = "Renamed workspace".into();
+    value.workspace = None;
     assert!(session().same_grant(&value));
+}
+
+#[test]
+fn cloud_device_connection_survives_destination_lookup_failure() {
+    let mut fixture = Fixture::new();
+    fixture
+        .transport
+        .fail_destinations
+        .store(true, Ordering::Release);
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    fixture
+        .engine
+        .callback(
+            &attempt,
+            auth::Callback::Code("synthetic".into()),
+            101,
+            || true,
+        )
+        .unwrap();
+    assert!(fixture.engine.session().unwrap().workspace.is_none());
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+    assert!(fixture.vault.read().unwrap().unwrap().account_grant);
+    fixture
+        .transport
+        .fail_destinations
+        .store(false, Ordering::Release);
+    fixture.engine.refresh(102, || true).unwrap();
+    assert_eq!(
+        fixture
+            .engine
+            .session()
+            .unwrap()
+            .workspace
+            .as_ref()
+            .unwrap()
+            .id,
+        "synthetic-personal"
+    );
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]

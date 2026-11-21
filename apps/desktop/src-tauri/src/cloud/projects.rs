@@ -621,7 +621,7 @@ fn discover_projects(
         return Err("Cloud account changed.".into());
     }
     let saved = store
-        .cloud_draft(&session.user.id, &session.workspace.id)
+        .cloud_draft(&session.user.id, &session.destination()?.id)
         .map_err(|_| "Could not read saved provider sources.")?
         .map(|raw| serde_json::from_str::<Draft>(&raw))
         .transpose()

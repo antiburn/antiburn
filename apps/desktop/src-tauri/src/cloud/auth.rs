@@ -8,8 +8,10 @@ use url::Url;
 
 /// Display metadata for browser consent, not a physical-device identity.
 pub const DEVICE_NAME: &str = "Antiburn desktop";
-/// The only first-party permission accepted by this desktop connection.
+/// Scope for capture-only device grants.
 pub const SCOPE: &str = "capture:write";
+/// Scope returned by local device approvals that also allow session reads.
+pub const READ_SCOPE: &str = "capture:write sessions:list sessions:read";
 /// Maximum opaque access lifetime in seconds; refresh does not extend the grant deadline.
 pub const MAX_ACCESS_SECONDS: u64 = 900;
 /// Maximum initial fixed grant lifetime in seconds.
@@ -25,6 +27,7 @@ pub struct Config {
     pub authorization: Url,
     pub token: Url,
     pub session: Url,
+    pub destinations: Url,
     pub revocation: Url,
 }
 
@@ -69,10 +72,11 @@ impl Config {
         Some(Self {
             issuer: issuer.to_owned(),
             resource: resource.to_owned(),
-            authorization: resource_url.join("desktop/authorize").ok()?,
-            token: resource_url.join("v1/desktop/token").ok()?,
-            revocation: resource_url.join("v1/desktop/logout").ok()?,
-            session: resource_url.join("v1/desktop/session").ok()?,
+            authorization: resource_url.join("devices/authorize/account").ok()?,
+            token: resource_url.join("v1/devices/token").ok()?,
+            revocation: resource_url.join("v1/devices/logout").ok()?,
+            session: resource_url.join("v1/devices/session").ok()?,
+            destinations: resource_url.join("v1/captures/destinations").ok()?,
         })
     }
 }
@@ -113,7 +117,7 @@ pub struct User {
     pub display_name: String,
 }
 
-/// Destination kind used to reject team grants in the personal-only native path.
+/// Kind of destination returned by the upload eligibility API.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceKind {
@@ -121,13 +125,20 @@ pub enum WorkspaceKind {
     Team,
 }
 
-/// Granted destination and display metadata, not a user-selectable upload fallback.
+/// Destination display metadata, not an authorization grant.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
     pub id: String,
     pub name: String,
     pub kind: WorkspaceKind,
+}
+
+/// One eligible upload destination. The generation changes when a user rejoins a team.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EligibleDestination {
+    pub workspace: Workspace,
+    pub membership_generation: Option<String>,
 }
 
 /// Desktop grant authority, not captured coding-session metadata.
@@ -138,7 +149,9 @@ pub struct Session {
     pub user: User,
     pub grant_id: String,
     pub device_name: String,
-    pub workspace: Workspace,
+    /// Upload destination view data. Never used to validate the account grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<Workspace>,
     pub resource: String,
     pub scope: String,
     pub iss: String,
@@ -162,11 +175,8 @@ impl Session {
             || !bounded(&self.user.display_name, 256)
             || !bounded(&self.grant_id, 256)
             || !bounded(&self.device_name, 100)
-            || !bounded(&self.workspace.id, 256)
-            || !bounded(&self.workspace.name, 256)
-            || self.workspace.kind != WorkspaceKind::Personal
             || self.resource != config.resource
-            || self.scope != SCOPE
+            || !matches!(self.scope.as_str(), SCOPE | READ_SCOPE)
             || self.iss != config.issuer
             || self.expires_at <= now
             || self.expires_at > now.saturating_add(MAX_GRANT_SECONDS)
@@ -177,16 +187,21 @@ impl Session {
     }
 
     /// Pin ownership, scope, origin, and the fixed deadline across refresh rotation.
-    /// Renamed account/workspace display labels do not change authority.
+    /// Destinations and display labels do not change account grant authority.
     pub fn same_grant(&self, other: &Self) -> bool {
         self.user.id == other.user.id
             && self.grant_id == other.grant_id
-            && self.workspace.id == other.workspace.id
-            && self.workspace.kind == other.workspace.kind
             && self.resource == other.resource
             && self.scope == other.scope
             && self.iss == other.iss
             && self.expires_at == other.expires_at
+    }
+
+    /// Require a verified destination before reading or changing local upload setup.
+    pub(super) fn destination(&self) -> Result<&Workspace, String> {
+        self.workspace
+            .as_ref()
+            .ok_or_else(|| "No verified Cloud upload destination.".into())
     }
 }
 
@@ -230,11 +245,17 @@ pub struct Tokens {
     pub token_type: String,
     pub grant_id: String,
     pub user_id: String,
-    pub workspace_id: String,
+    // Retain bounded cleanup proof even if an old response has this claim.
+    #[serde(rename = "workspace_id", default, deserialize_with = "legacy_claim")]
+    pub(super) legacy_workspace_claim: bool,
     pub grant_expires_at: String,
     pub scope: String,
     pub resource: String,
     pub iss: String,
+}
+
+fn legacy_claim<'de, D: serde::Deserializer<'de>>(value: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(value).map(|_| true)
 }
 
 impl Tokens {
@@ -257,8 +278,8 @@ impl Tokens {
         let expires_at = deadline(&self.grant_expires_at)?;
         if !bounded(&self.grant_id, 256)
             || !bounded(&self.user_id, 256)
-            || !bounded(&self.workspace_id, 256)
-            || self.scope != SCOPE
+            || self.legacy_workspace_claim
+            || !matches!(self.scope.as_str(), SCOPE | READ_SCOPE)
             || self.resource != config.resource
             || self.iss != config.issuer
             || expires_at <= now
@@ -273,7 +294,6 @@ impl Tokens {
     pub fn matches_session(&self, session: &Session) -> bool {
         self.grant_id == session.grant_id
             && self.user_id == session.user.id
-            && self.workspace_id == session.workspace.id
             && deadline(&self.grant_expires_at).ok() == Some(session.expires_at)
             && self.scope == session.scope
             && self.resource == session.resource
@@ -284,11 +304,9 @@ impl Tokens {
 /// Exact flat session wire shape; deadline conversion does not itself validate authority.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SessionResponse {
+struct DeviceSessionResponse {
     user_id: String,
     display_name: Option<String>,
-    workspace_id: String,
-    workspace_name: String,
     grant_id: String,
     device_name: String,
     scope: String,
@@ -298,10 +316,10 @@ struct SessionResponse {
     iss: String,
 }
 
-impl TryFrom<SessionResponse> for Session {
+impl TryFrom<DeviceSessionResponse> for Session {
     type Error = Failure;
 
-    fn try_from(value: SessionResponse) -> Result<Self, Self::Error> {
+    fn try_from(value: DeviceSessionResponse) -> Result<Self, Self::Error> {
         Ok(Self {
             user: User {
                 id: value.user_id,
@@ -309,11 +327,7 @@ impl TryFrom<SessionResponse> for Session {
             },
             grant_id: value.grant_id,
             device_name: value.device_name,
-            workspace: Workspace {
-                id: value.workspace_id,
-                name: value.workspace_name,
-                kind: WorkspaceKind::Personal,
-            },
+            workspace: None,
             resource: value.resource,
             scope: value.scope,
             iss: value.iss,
@@ -345,6 +359,9 @@ pub struct Credential {
     pub refresh_token: String,
     #[serde(default)]
     pub cleanup_refresh_tokens: Vec<String>,
+    /// Old workspace-scoped records are logout-only.
+    #[serde(default)]
+    pub account_grant: bool,
     pub session: Option<Session>,
 }
 
@@ -448,6 +465,12 @@ pub trait Transport: Send + Sync {
     fn exchange(&self, config: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure>;
     /// Read current server authority; the engine checks all returned bindings.
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure>;
+    /// List eligible upload destinations without changing the account grant.
+    fn destinations(
+        &self,
+        config: &Config,
+        access: &str,
+    ) -> Result<Vec<EligibleDestination>, Failure>;
     /// Return success only for synchronous HTTP 204 confirming this proof's grant.
     fn revoke(&self, config: &Config, refresh: &str) -> Result<(), Failure>;
 }
@@ -532,9 +555,23 @@ impl Transport for HttpTransport {
         Ok(tokens)
     }
     fn session(&self, config: &Config, access: &str) -> Result<Session, Failure> {
-        let response: SessionResponse = decode(
+        let response: DeviceSessionResponse = decode(
             client(&config.session)?
                 .get(config.session.clone())
+                .bearer_auth(access)
+                .send()
+                .map_err(|_| Failure::Offline)?,
+        )?;
+        response.try_into()
+    }
+    fn destinations(
+        &self,
+        config: &Config,
+        access: &str,
+    ) -> Result<Vec<EligibleDestination>, Failure> {
+        let response: DestinationResponse = decode(
+            client(&config.destinations)?
+                .get(config.destinations.clone())
                 .bearer_auth(access)
                 .send()
                 .map_err(|_| Failure::Offline)?,
@@ -552,6 +589,58 @@ impl Transport for HttpTransport {
         } else {
             Err(Failure::Offline)
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DestinationResponse {
+    workspaces: Vec<DestinationEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DestinationEntry {
+    workspace_id: String,
+    name: String,
+    #[serde(rename = "type")]
+    kind: WorkspaceKind,
+    #[serde(deserialize_with = "Option::deserialize")]
+    membership_generation: Option<String>,
+}
+
+impl TryFrom<DestinationResponse> for Vec<EligibleDestination> {
+    type Error = Failure;
+
+    fn try_from(response: DestinationResponse) -> Result<Self, Failure> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut personal_seen = false;
+        response
+            .workspaces
+            .into_iter()
+            .map(|entry| {
+                let generation_valid = match (&entry.kind, &entry.membership_generation) {
+                    (WorkspaceKind::Personal, None) => !std::mem::replace(&mut personal_seen, true),
+                    (WorkspaceKind::Team, Some(generation)) => bounded(generation, 256),
+                    _ => false,
+                };
+                if !generation_valid
+                    || !bounded(&entry.workspace_id, 256)
+                    || !bounded(&entry.name, 256)
+                    || !seen.insert(entry.workspace_id.to_ascii_lowercase())
+                {
+                    return Err(Failure::InvalidResponse);
+                }
+                Ok(EligibleDestination {
+                    workspace: Workspace {
+                        id: entry.workspace_id,
+                        name: entry.name,
+                        kind: entry.kind,
+                    },
+                    membership_generation: entry.membership_generation,
+                })
+            })
+            .collect()
     }
 }
 

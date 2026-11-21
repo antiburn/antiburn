@@ -35,10 +35,11 @@ fn server_with_reply(reply: Option<(u16, &str)>) -> (Config, JoinHandle<Request>
     let origin = format!("http://{}/", listener.local_addr().unwrap());
     let origin = url::Url::parse(&origin).unwrap();
     let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
-    config.authorization = origin.join("desktop/authorize").unwrap();
-    config.token = origin.join("v1/desktop/token").unwrap();
-    config.session = origin.join("v1/desktop/session").unwrap();
-    config.revocation = origin.join("v1/desktop/logout").unwrap();
+    config.authorization = origin.join("devices/authorize/account").unwrap();
+    config.token = origin.join("v1/devices/token").unwrap();
+    config.session = origin.join("v1/devices/session").unwrap();
+    config.revocation = origin.join("v1/devices/logout").unwrap();
+    config.destinations = origin.join("v1/captures/destinations").unwrap();
     let reply = reply.map(|(status, body)| (status, body.to_owned()));
     let worker = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
@@ -100,7 +101,7 @@ fn cloud_http_code_exchange_sends_only_first_party_json_proof() {
         Err(Failure::Rejected)
     ));
     let request = worker.join().unwrap();
-    assert_eq!(request.line, "POST /v1/desktop/token HTTP/1.1");
+    assert_eq!(request.line, "POST /v1/devices/token HTTP/1.1");
     request.native_only();
     assert!(request.header("authorization").is_none());
     assert_eq!(request.header("content-type"), Some("application/json"));
@@ -127,7 +128,7 @@ fn cloud_http_refresh_sends_only_first_party_json_proof() {
         Err(Failure::Rejected)
     ));
     let request = worker.join().unwrap();
-    assert_eq!(request.line, "POST /v1/desktop/token HTTP/1.1");
+    assert_eq!(request.line, "POST /v1/devices/token HTTP/1.1");
     request.native_only();
     assert!(request.header("authorization").is_none());
     assert_eq!(request.header("content-type"), Some("application/json"));
@@ -144,7 +145,7 @@ fn cloud_http_refresh_sends_only_first_party_json_proof() {
 fn cloud_http_refresh_distinguishes_connection_failure_from_a_lost_reply() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let mut config = Config::parse("https://api.example", "https://api.example").unwrap();
-    config.token = format!("http://{}/v1/desktop/token", listener.local_addr().unwrap())
+    config.token = format!("http://{}/v1/devices/token", listener.local_addr().unwrap())
         .parse()
         .unwrap();
     drop(listener);
@@ -169,7 +170,7 @@ fn cloud_http_refresh_distinguishes_connection_failure_from_a_lost_reply() {
         Err(Failure::Offline)
     ));
     let request = worker.join().unwrap();
-    assert_eq!(request.line, "POST /v1/desktop/token HTTP/1.1");
+    assert_eq!(request.line, "POST /v1/devices/token HTTP/1.1");
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&request.body).unwrap(),
         serde_json::json!({
@@ -187,7 +188,7 @@ fn cloud_http_session_sends_only_the_access_bearer() {
         Err(Failure::Rejected)
     ));
     let request = worker.join().unwrap();
-    assert_eq!(request.line, "GET /v1/desktop/session HTTP/1.1");
+    assert_eq!(request.line, "GET /v1/devices/session HTTP/1.1");
     request.native_only();
     assert_eq!(
         request.header("authorization"),
@@ -205,7 +206,7 @@ fn cloud_http_logout_sends_only_refresh_proof_and_requires_synchronous_204() {
             status == 204
         );
         let request = worker.join().unwrap();
-        assert_eq!(request.line, "POST /v1/desktop/logout HTTP/1.1");
+        assert_eq!(request.line, "POST /v1/devices/logout HTTP/1.1");
         request.native_only();
         assert!(request.header("authorization").is_none());
         assert_eq!(request.header("content-type"), Some("application/json"));
@@ -222,7 +223,6 @@ fn token_json() -> serde_json::Value {
         "refresh_token": "synthetic-desktop-refresh",
         "token_type": "Bearer", "expires_in": 60,
         "grant_id": "grant-synthetic", "user_id": "account-synthetic",
-        "workspace_id": "personal-synthetic",
         "grant_expires_at": "1970-01-01T02:46:40Z",
         "scope": "capture:write", "resource": "https://api.example",
         "iss": "https://api.example"
@@ -232,13 +232,68 @@ fn token_json() -> serde_json::Value {
 fn session_json() -> serde_json::Value {
     serde_json::json!({
         "user_id": "account-synthetic", "display_name": null,
-        "workspace_id": "personal-synthetic", "workspace_name": "Example personal workspace",
         "grant_id": "grant-synthetic", "device_name": "Example desktop",
         "scope": "capture:write", "resource": "https://api.example",
         "grant_expires_at": "1970-01-01T02:46:40Z",
         "access_expires_at": "1970-01-01T00:03:00Z",
         "iss": "https://api.example"
     })
+}
+
+#[test]
+fn cloud_http_destinations_use_device_bearer_and_require_exact_membership_shape() {
+    let personal = serde_json::json!({
+        "workspace_id": "personal-synthetic",
+        "name": "Personal",
+        "type": "personal",
+        "membership_generation": null
+    });
+    let team = serde_json::json!({
+        "workspace_id": "team-synthetic",
+        "name": "Example team",
+        "type": "team",
+        "membership_generation": "example-generation"
+    });
+    let (config, worker) = server(
+        200,
+        &serde_json::json!({"workspaces": [personal.clone(), team.clone()]}).to_string(),
+    );
+    let destinations = HttpTransport
+        .destinations(&config, "synthetic-access")
+        .unwrap();
+    let request = worker.join().unwrap();
+    request.native_only();
+    assert_eq!(request.line, "GET /v1/captures/destinations HTTP/1.1");
+    assert_eq!(
+        request.header("authorization"),
+        Some("Bearer synthetic-access")
+    );
+    assert!(request.body.is_empty());
+    assert_eq!(destinations[0].membership_generation, None);
+    assert_eq!(
+        destinations[1].membership_generation.as_deref(),
+        Some("example-generation")
+    );
+
+    let mut missing_generation = team.clone();
+    missing_generation
+        .as_object_mut()
+        .unwrap()
+        .remove("membership_generation");
+    let mut null_generation = team.clone();
+    null_generation["membership_generation"] = serde_json::Value::Null;
+    for entries in [
+        vec![personal.clone(), personal],
+        vec![missing_generation],
+        vec![null_generation],
+    ] {
+        let (config, worker) = server(200, &serde_json::json!({"workspaces": entries}).to_string());
+        assert!(matches!(
+            HttpTransport.destinations(&config, "synthetic-access"),
+            Err(Failure::InvalidResponse)
+        ));
+        worker.join().unwrap();
+    }
 }
 
 #[test]
@@ -267,7 +322,6 @@ fn cloud_http_frozen_token_and_flat_session_responses_bind_exact_authority() {
     for field in [
         "grant_id",
         "user_id",
-        "workspace_id",
         "scope",
         "resource",
         "iss",
@@ -278,6 +332,11 @@ fn cloud_http_frozen_token_and_flat_session_responses_bind_exact_authority() {
         let changed: super::auth::Tokens = serde_json::from_value(changed).unwrap();
         assert!(!changed.matches_session(&session), "{field}");
     }
+    let mut legacy = token_json();
+    legacy["workspace_id"] = "personal-synthetic".into();
+    let legacy: super::auth::Tokens = serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.validate(&config, 100), Err(Failure::InvalidResponse));
+    assert_eq!(legacy.refresh_token, tokens.refresh_token);
 }
 
 #[test]

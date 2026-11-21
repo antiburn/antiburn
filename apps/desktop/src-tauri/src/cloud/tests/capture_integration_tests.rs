@@ -36,7 +36,7 @@ fn fixture() -> (
     let consent = Consent {
         version: "native-full-content-v1".into(),
         account_id: session.user.id.clone(),
-        destination_id: session.workspace.id.clone(),
+        destination_id: session.destination().unwrap().id.clone(),
         selected_roots: vec![path],
         selected_sources: Vec::new(),
         full_content: true,
@@ -53,7 +53,7 @@ fn cloud_selected_sources_stay_durable_without_capture_bytes_or_upload_authority
         .prepare_cloud_capture(
             "request",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -97,7 +97,11 @@ fn cloud_selected_sources_stay_durable_without_capture_bytes_or_upload_authority
     drop(store);
     let store = Store::open(directory.path()).unwrap();
     let saved = store
-        .cloud_capture_request("request", &session.user.id, &session.workspace.id)
+        .cloud_capture_request(
+            "request",
+            &session.user.id,
+            &session.destination().unwrap().id,
+        )
         .unwrap();
     assert_eq!(saved, selected);
 }
@@ -117,7 +121,7 @@ fn cloud_source_consent_rejects_changed_roots_accounts_destinations_and_attachme
     consent.account_id = session.user.id.clone();
     consent.destination_id = "team".into();
     assert!(validate_selection(&session, &draft, &draft.folders, &consent).is_err());
-    consent.destination_id = session.workspace.id.clone();
+    consent.destination_id = session.destination().unwrap().id.clone();
     consent.attachments = true;
     assert!(validate_selection(&session, &draft, &draft.folders, &consent).is_err());
 }
@@ -144,7 +148,7 @@ fn cloud_spool_has_one_owner_and_account_loss_keeps_saved_requests() {
         .prepare_cloud_capture(
             "request",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -154,7 +158,11 @@ fn cloud_spool_has_one_owner_and_account_loss_keeps_saved_requests() {
     assert!(host.discover(&store, &request, || false).is_err());
     assert!(
         !store
-            .cloud_capture_request("request", &session.user.id, &session.workspace.id)
+            .cloud_capture_request(
+                "request",
+                &session.user.id,
+                &session.destination().unwrap().id
+            )
             .unwrap()
             .discovery_complete
     );
@@ -163,7 +171,7 @@ fn cloud_spool_has_one_owner_and_account_loss_keeps_saved_requests() {
         .prepare_cloud_capture(
             "next-request",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             2,
@@ -173,7 +181,11 @@ fn cloud_spool_has_one_owner_and_account_loss_keeps_saved_requests() {
     assert!(second.discover(&store, &next, || true).is_err());
     assert!(
         !store
-            .cloud_capture_request("next-request", &session.user.id, &session.workspace.id)
+            .cloud_capture_request(
+                "next-request",
+                &session.user.id,
+                &session.destination().unwrap().id
+            )
             .unwrap()
             .discovery_complete
     );
@@ -206,7 +218,7 @@ fn cloud_claude_child_locators_keep_root_relative_paths_and_independent_identiti
         .prepare_cloud_capture(
             "children",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -260,7 +272,7 @@ fn cloud_opencode_selection_freezes_each_database_session_without_payload_captur
         .prepare_cloud_capture(
             "mixed",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -306,7 +318,11 @@ fn cloud_opencode_selection_freezes_each_database_session_without_payload_captur
     let store = Store::open(directory.path()).unwrap();
     assert_eq!(
         store
-            .cloud_capture_request("mixed", &session.user.id, &session.workspace.id)
+            .cloud_capture_request(
+                "mixed",
+                &session.user.id,
+                &session.destination().unwrap().id
+            )
             .unwrap(),
         selected
     );
@@ -338,7 +354,7 @@ fn cloud_opencode_dispatch_requires_typed_consent_and_never_falls_back() {
         .prepare_cloud_capture(
             "typed",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -351,7 +367,11 @@ fn cloud_opencode_dispatch_requires_typed_consent_and_never_falls_back() {
             .contains("OpenCode V2")
     );
     let saved = store
-        .cloud_capture_request("typed", &session.user.id, &session.workspace.id)
+        .cloud_capture_request(
+            "typed",
+            &session.user.id,
+            &session.destination().unwrap().id,
+        )
         .unwrap();
     assert_eq!(saved, request);
     connection
@@ -388,7 +408,7 @@ fn cloud_discovery_at_the_source_limit_accepts_empty_roots_but_rejects_more_sour
         .prepare_cloud_capture(
             "at-limit",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -403,7 +423,7 @@ fn cloud_discovery_at_the_source_limit_accepts_empty_roots_but_rejects_more_sour
         .prepare_cloud_capture(
             "over-limit",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             2,
@@ -416,7 +436,11 @@ fn cloud_discovery_at_the_source_limit_accepts_empty_roots_but_rejects_more_sour
     );
     assert_eq!(
         store
-            .cloud_capture_request("over-limit", &session.user.id, &session.workspace.id)
+            .cloud_capture_request(
+                "over-limit",
+                &session.user.id,
+                &session.destination().unwrap().id
+            )
             .unwrap(),
         overflow
     );
@@ -447,7 +471,7 @@ fn cloud_mixed_discovery_limit_keeps_the_original_request_without_partial_select
         .prepare_cloud_capture(
             "bounded",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -457,7 +481,11 @@ fn cloud_mixed_discovery_limit_keeps_the_original_request_without_partial_select
     assert!(host.discover(&store, &request, || true).is_err());
     assert_eq!(
         store
-            .cloud_capture_request("bounded", &session.user.id, &session.workspace.id)
+            .cloud_capture_request(
+                "bounded",
+                &session.user.id,
+                &session.destination().unwrap().id
+            )
             .unwrap(),
         request
     );
@@ -476,7 +504,7 @@ fn cloud_account_invalidation_stops_discovery_before_the_next_provider_root() {
         .prepare_cloud_capture(
             "fenced",
             &session.user.id,
-            &session.workspace.id,
+            &session.destination().unwrap().id,
             &roots,
             consent.version(),
             1,
@@ -493,7 +521,11 @@ fn cloud_account_invalidation_stops_discovery_before_the_next_provider_root() {
     assert_eq!(checks.load(std::sync::atomic::Ordering::Relaxed), 3);
     assert_eq!(
         store
-            .cloud_capture_request("fenced", &session.user.id, &session.workspace.id)
+            .cloud_capture_request(
+                "fenced",
+                &session.user.id,
+                &session.destination().unwrap().id
+            )
             .unwrap(),
         request
     );

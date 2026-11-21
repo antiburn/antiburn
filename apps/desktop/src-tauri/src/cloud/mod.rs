@@ -118,8 +118,10 @@ impl DestinationBinding {
     /// Reject a changed account, destination, or explicit team without fallback.
     fn matches(&self, session: &auth::Session) -> bool {
         self.account_id == session.user.id
-            && self.destination_id == session.workspace.id
-            && session.workspace.kind == auth::WorkspaceKind::Personal
+            && session.workspace.as_ref().is_some_and(|workspace| {
+                self.destination_id == workspace.id
+                    && workspace.kind == auth::WorkspaceKind::Personal
+            })
     }
 }
 
@@ -183,13 +185,18 @@ fn ensure_cloud_setup(ready: &AtomicBool, store: &crate::store::Store) -> Result
 
 /// Read account-bound preferences in a blocking worker, never as content consent.
 fn draft(app: &tauri::AppHandle, session: Option<&auth::Session>) -> Result<Draft, String> {
-    let Some(session) = session else {
+    let Some((session, workspace)) = session.and_then(|session| {
+        session
+            .workspace
+            .as_ref()
+            .map(|workspace| (session, workspace))
+    }) else {
         return Ok(Draft::default());
     };
     let store = app.state::<crate::store::Store>();
     ensure_cloud_setup(&app.state::<Controller>().setup_ready, &store)?;
     let saved = store
-        .cloud_draft(&session.user.id, &session.workspace.id)
+        .cloud_draft(&session.user.id, &workspace.id)
         .map_err(|_| "Could not read Cloud setup.")?
         .map(|value| serde_json::from_str::<Draft>(&value))
         .transpose()
@@ -218,11 +225,12 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     let pending_sync = session
         .filter(|_| setup_error.is_none())
         .and_then(|session| {
+            let workspace = session.workspace.as_ref()?;
             match app
                 .state::<crate::store::Store>()
                 .current_cloud_capture_request(
                     &session.user.id,
-                    &session.workspace.id,
+                    &workspace.id,
                     &capture::selected_roots(&draft.folders),
                 ) {
                 Ok(request) => request.map(Into::into),
@@ -235,9 +243,12 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     let sync_enabled = session
         .filter(|_| setup_error.is_none())
         .is_some_and(|session| {
+            let Some(workspace) = session.workspace.as_ref() else {
+                return false;
+            };
             match app.state::<crate::store::Store>().cloud_sync_policy(
                 &session.user.id,
-                &session.workspace.id,
+                &workspace.id,
                 &session.resource,
             ) {
                 Ok(policy) => policy.is_some_and(|policy| !policy.paused),
@@ -259,7 +270,9 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
     Snapshot {
         auth_enabled: engine.config.is_some(),
-        capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
+        capture_enabled: cfg!(unix)
+            && session.is_some_and(|session| session.workspace.is_some())
+            && setup_error.is_none(),
         sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
             AuthStatus::Cancelled
@@ -275,7 +288,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
             .filter(|_| current)
             .map(|attempt| attempt.expires_at),
         grant_expires_at: session.map(|session| session.expires_at),
-        destination: session.map(|session| session.workspace.clone()),
+        destination: session.and_then(|session| session.workspace.clone()),
         revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
         local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
         local_reset_available: engine.local_reset_available,
@@ -659,7 +672,11 @@ pub async fn cloud_save_draft(
         }
         if capture::selected_roots(&previous.folders) != capture::selected_roots(&value.folders)
             && let Some(policy) = store
-                .cloud_sync_policy(&session.user.id, &session.workspace.id, &session.resource)
+                .cloud_sync_policy(
+                    &session.user.id,
+                    &session.destination()?.id,
+                    &session.resource,
+                )
                 .map_err(|_| "Could not read Cloud sync consent.")?
         {
             controller.sync.generation.fetch_add(1, Ordering::AcqRel);
@@ -669,7 +686,7 @@ pub async fn cloud_save_draft(
         }
         let encoded = serde_json::to_string(&value).map_err(|_| "Could not save Cloud setup.")?;
         store
-            .save_cloud_draft(&session.user.id, &session.workspace.id, &encoded)
+            .save_cloud_draft(&session.user.id, &session.destination()?.id, &encoded)
             .map_err(|_| "Could not save Cloud setup.")?;
         Ok(publish(&app, &engine))
     })
@@ -739,7 +756,7 @@ pub async fn cloud_prepare_sync(
             .prepare_cloud_capture(
                 &request_id,
                 &session.user.id,
-                &session.workspace.id,
+                &session.destination()?.id,
                 &roots,
                 consent.version(),
                 now(),
@@ -790,7 +807,7 @@ fn capture_request(
     let store = app.state::<crate::store::Store>();
     ensure_cloud_setup(&controller.setup_ready, &store)?;
     let request = store
-        .cloud_capture_request(request_id, &session.user.id, &session.workspace.id)
+        .cloud_capture_request(request_id, &session.user.id, &session.destination()?.id)
         .map_err(|_| "Capture request is unavailable.")?;
     let request = match action {
         CaptureAction::Read => request,
