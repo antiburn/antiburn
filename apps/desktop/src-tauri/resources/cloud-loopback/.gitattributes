@@ -1,0 +1,2 @@
+# Keep the CSP hash equal to the style text the browser reads on all platforms.
+page.css text eol=lf

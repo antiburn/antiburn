@@ -2,6 +2,8 @@
 //! The listener handles callback proof, not access/refresh tokens or keyring work.
 
 use super::auth::{Attempt, Callback, Config, Failure, validate_callback};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use sha2::{Digest, Sha256};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
     time::Duration,
@@ -67,20 +69,7 @@ impl Listener {
                     let result = request(&mut stream).await.and_then(|(target, host)| {
                         validate_callback(&target, &host, config, attempt, super::now())
                     });
-                    let status = if result.is_some() {
-                        "200 OK"
-                    } else {
-                        "400 Bad Request"
-                    };
-                    let body = if result.is_some() {
-                        "Return to Antiburn. You can close this page."
-                    } else {
-                        "This callback is not valid."
-                    };
-                    let response = format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
-                        body.len()
-                    );
+                    let response = browser_response(result.as_ref());
                     // A browser response failure must not repeat a valid callback.
                     let _ = timeout(
                         Duration::from_millis(250),
@@ -97,6 +86,43 @@ impl Listener {
         }
         None
     }
+}
+
+/// Show only the browser outcome. The desktop still owns verification and sign-in.
+fn browser_response(result: Option<&Callback>) -> String {
+    let (status, label, title, detail) = match result {
+        Some(Callback::Code(_)) => (
+            "200 OK",
+            "Browser step complete",
+            "Return to Antiburn",
+            "The desktop app will finish checking your sign-in. You can close this tab.",
+        ),
+        Some(Callback::Cancelled) => (
+            "200 OK",
+            "Browser approval cancelled",
+            "Return to Antiburn",
+            "You did not approve this sign-in. Try again in the desktop app, or continue locally.",
+        ),
+        None => (
+            "400 Bad Request",
+            "Sign-in link not accepted",
+            "Check the Antiburn app",
+            "Return to the desktop app to check your sign-in or start again. You can close this tab.",
+        ),
+    };
+    let style = include_str!("../../resources/cloud-loopback/page.css");
+    let style_hash = STANDARD.encode(Sha256::digest(style.as_bytes()));
+    let body = format!(
+        include_str!("../../resources/cloud-loopback/page.html"),
+        title = title,
+        style = style,
+        label = label,
+        detail = detail,
+    );
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; style-src 'sha256-{style_hash}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 /// Read one bounded HTTP/1.1 header block. Reject bodies and ambiguous routing
@@ -256,3 +282,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/loopback_response_tests.rs"]
+mod response_tests;

@@ -60,6 +60,66 @@ function fixture(patch: Partial<CloudSnapshot> = {}) {
   }
 }
 
+const signIn = {
+  status: "idle",
+  identity: null,
+  destination: null,
+  draft: { screen: "handoff", folders: [] },
+} satisfies Partial<CloudSnapshot>
+
+it("uses GitHub for Cloud setup and cancels pending approval before continuing locally", async () => {
+  const { port, start, emit } = fixture(signIn)
+  port.begin = vi.fn(async (): Promise<CloudSnapshot> => {
+    emit({ status: "waiting" })
+    return { ...emptyCloudSnapshot, authEnabled: true, status: "waiting" }
+  })
+  port.cancel = vi.fn(async (): Promise<CloudSnapshot> => ({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "cancelled",
+  }))
+  const done = vi.fn()
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  const github = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  expect(screen.getByText(/Signing in doesn’t start uploads/)).toBeVisible()
+  fireEvent.click(github)
+  expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeVisible()
+  fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
+  await waitFor(() => expect(done).toHaveBeenCalledOnce())
+  expect(port.cancel).toHaveBeenCalledOnce()
+  expect(start).not.toHaveBeenCalled()
+})
+
+it("does not show verified sign-in or reopen browser approval after the browser step", async () => {
+  const { port, emit } = fixture({ ...signIn, status: "returned" })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  expect(await screen.findByText(/Browser step complete. Checking your sign-in/)).toBeVisible()
+  expect(screen.queryByRole("heading", { name: "You’re signed in" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
+  act(() => emit({ status: "offline" }))
+  expect(screen.getByText(/Check your connection and try again/)).toBeVisible()
+  expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
+})
+
+it("directs blocked sign-in to Settings without keeping users in Cloud setup", async () => {
+  const { port } = fixture({
+    ...signIn,
+    status: "revocation_unconfirmed",
+    revocationPending: true,
+  })
+  const done = vi.fn()
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  expect(await screen.findByText(/open Settings → Sessions/)).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "Continue locally" }))
+  expect(done).toHaveBeenCalledOnce()
+})
+
 it("saves desktop capture requests with truthful completion copy", async () => {
   const { port, start } = fixture()
   const done = vi.fn()

@@ -449,7 +449,7 @@ it("reads folders on verified-account mount without a manual refresh action", as
   emit({ identity: null, status: "signed_out" })
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  await screen.findByRole("button", { name: "Sign in" })
+  await screen.findByRole("button", { name: "Sign in with GitHub" })
   expect(ongoing.groups).not.toHaveBeenCalled()
   act(() =>
     emit({

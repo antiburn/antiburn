@@ -87,11 +87,11 @@ export interface CloudViewSnapshot {
 const messages = {
   idle: "",
   opening: "Opening your browser…",
-  waiting: "Waiting for browser…",
-  returned: "Welcome back. Cloud is coming soon. Continue using Antiburn locally.",
+  waiting: "Waiting for browser approval. Finish in your browser, then return here.",
+  returned: "Browser step complete. Checking your sign-in…",
   signed_in: "Your account is verified.",
   signed_out: "You’re signed out on this device.",
-  cancelled: "Browser handoff cancelled. You can try again or continue locally.",
+  cancelled: "Sign-in cancelled.",
   expired: "This browser link expired. Try again to open a new link.",
   browser_failed: "Your browser could not open. Try again or continue locally.",
   offline: "Cloud could not connect. Check your connection and try again.",
@@ -105,6 +105,8 @@ const messages = {
   revocation_unconfirmed:
     "Signed out on this device. Cloud has not confirmed that the connection is closed. Open Cloud settings to finish.",
 } as const
+/** Keep the browser sign-in action named the same in setup and Settings. */
+export const cloudGithubSignInLabel = "Sign in with GitHub"
 /** Map closed desktop states to safe copy without exposing provider errors. */
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 /** Distinguish fresh setup from an unreadable saved-upload state. */

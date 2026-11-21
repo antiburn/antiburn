@@ -26,6 +26,8 @@ function fixture(initial?: CloudSnapshot) {
     return value
   })
   const signOut = vi.fn(async () => value)
+  const begin = vi.fn(async (): Promise<CloudSnapshot> => ({ ...value, status: "waiting" }))
+  const cancel = vi.fn(async (): Promise<CloudSnapshot> => ({ ...value, status: "cancelled" }))
   const save = vi.fn(async (draft: CloudSnapshot["draft"]) => {
     value = { ...value, draft }
     return value
@@ -46,6 +48,8 @@ function fixture(initial?: CloudSnapshot) {
       localTools: localToolsFixture().port,
       resetLocal,
       signOut,
+      begin,
+      cancel,
       save,
       prepareSync,
       start,
@@ -59,6 +63,8 @@ function fixture(initial?: CloudSnapshot) {
     session,
     resetLocal,
     signOut,
+    begin,
+    cancel,
     save,
     prepareSync,
     start,
@@ -78,14 +84,22 @@ function Account({ session }: { session: CloudSession }) {
 }
 
 it("requires an explicit reset and keeps the remote warning while reconnecting", async () => {
-  const { session, resetLocal, emit } = fixture()
+  const { session, resetLocal, begin, cancel, emit } = fixture()
   render(<Account session={session} />)
   fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in on this device" }))
   expect(resetLocal).not.toHaveBeenCalled()
   expect(screen.getByText(/the old connection may still have access to Cloud/)).toBeVisible()
   fireEvent.click(screen.getByRole("button", { name: "Reset sign-in" }))
   await waitFor(() => expect(resetLocal).toHaveBeenCalledOnce())
-  expect(await screen.findByRole("button", { name: "Sign in" })).toBeEnabled()
+  const github = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  expect(github).toBeEnabled()
+  fireEvent.click(github)
+  expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
+  expect(begin).toHaveBeenCalledOnce()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }))
+  expect(await screen.findByText("Sign-in cancelled.")).toBeVisible()
+  expect(cancel).toHaveBeenCalledOnce()
   expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
   act(() =>
     emit({

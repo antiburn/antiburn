@@ -2,6 +2,7 @@ import { ArrowUpRight, CircleAlert, Folder } from "lucide-react"
 import { useState, type ReactNode } from "react"
 import {
   type CloudSession,
+  cloudGithubSignInLabel,
   cloudStatusMessage,
   cloudUploadStatusUnknown,
   type CloudViewSnapshot,
@@ -41,7 +42,9 @@ export function CloudAccount({
   children?: ReactNode
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
-  const readFailed = value.loaded && !!value.error && !value.cloud.identity
+  const waiting = ["waiting", "opening"].includes(value.cloud.status)
+  const checkingSignIn = value.cloud.status === "returned"
+  const readFailed = value.loaded && !!value.error && !value.cloud.identity && !waiting
   const accountMessage = value.error
     ? value.error === CLOUD_BUSY_MESSAGE
       ? "Cloud is busy."
@@ -51,7 +54,7 @@ export function CloudAccount({
       : null
   return (
     <>
-      <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="min-w-0">
           <p className="type-body text-label">
             {readFailed
@@ -95,18 +98,20 @@ export function CloudAccount({
         {value.cloud.authEnabled &&
           !value.cloud.identity &&
           !readFailed &&
+          !checkingSignIn &&
           !value.cloud.revocationPending &&
           !value.cloud.localCleanupPending && (
             <button
-              className="ui-push-button"
+              className="ui-push-button gap-1"
               disabled={
                 !value.loaded ||
                 value.busy ||
                 ["reauth_required", "credential_failed"].includes(value.cloud.status)
               }
-              onClick={() => void session.begin()}
+              onClick={() => void (waiting ? session.cancel() : session.begin())}
             >
-              Sign in
+              {waiting ? "Cancel sign-in" : cloudGithubSignInLabel}
+              {!waiting && <ArrowUpRight size={13} aria-hidden />}
             </button>
           )}
         {(value.cloud.identity ||
