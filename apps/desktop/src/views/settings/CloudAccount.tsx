@@ -9,6 +9,7 @@ import {
 } from "../../onboarding/CloudSession"
 import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
 import { CloudInvitations } from "../../onboarding/CloudInvitations"
+import { CloudRoutedFolderSetup } from "../../onboarding/CloudRoutedFolderSetup"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { ConnectionDialog } from "./ConnectionDialog"
@@ -43,6 +44,14 @@ export function CloudAccount({
   children?: ReactNode
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
+  const [folderSetupAccount, setFolderSetupAccount] = useState<string | null>(null)
+  const managesPersonalPolicy =
+    value.cloud.destination?.kind === "personal" &&
+    value.ongoing?.consentVersion === "desktop-project-sync-v1"
+  const openFolderSetup = () => {
+    setFolderSetupAccount(value.cloud.identity?.id ?? null)
+    if (!value.projects?.loading) void session.reviewFolderRoutes()
+  }
   const waiting = ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed = value.loaded && !!value.error && !value.cloud.identity && !waiting
@@ -185,7 +194,42 @@ export function CloudAccount({
         </div>
       )}
       {children}
-      {session.projectSyncSupported ? (
+      {session.projectSyncSupported && value.cloud.destinations !== undefined ? (
+        value.cloud.identity &&
+        value.cloud.status === "signed_in" &&
+        (folderSetupAccount === value.cloud.identity.id ? (
+          <CloudRoutedFolderSetup
+            session={session}
+            value={value}
+            onFinish={() => setFolderSetupAccount(null)}
+          />
+        ) : managesPersonalPolicy ? (
+          <>
+            <CloudProjectsAccount session={session} value={value} />
+            <div className="px-4 pb-3">
+              <button
+                type="button"
+                className="ui-push-button"
+                disabled={value.busy}
+                onClick={openFolderSetup}
+              >
+                Add folders to sync
+              </button>
+            </div>
+          </>
+        ) : (
+          <SettingsRow searchId="cloudFolders">
+            <button
+              type="button"
+              className="ui-push-button mt-3"
+              disabled={value.busy}
+              onClick={openFolderSetup}
+            >
+              Choose folders to sync
+            </button>
+          </SettingsRow>
+        ))
+      ) : session.projectSyncSupported ? (
         <CloudProjectsAccount session={session} value={value} />
       ) : (
         <>
@@ -277,6 +321,7 @@ function CloudProjectsAccount({
   value: CloudViewSnapshot
 }) {
   const projects = value.projects
+  const routed = value.cloud.destinations !== undefined
   const [confirm, setConfirm] = useState<{
     id: string
     name: string
@@ -401,7 +446,8 @@ function CloudProjectsAccount({
                   starting ||
                   storageUnknown ||
                   projects.loading ||
-                  (!selected(group.id) && (!!value.cloud.setupError || !group.captureSupported))
+                  (!selected(group.id) &&
+                    (routed || !!value.cloud.setupError || !group.captureSupported))
                 }
                 onCheckedChange={(next) => {
                   if (!hasConsent) session.selectProject(group.id, next)

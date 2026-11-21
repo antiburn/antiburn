@@ -22,6 +22,7 @@ export function cloudFixture(name: string): CloudPort {
   const dev = name.startsWith("dev-") ? name.slice(4) : null
   if (isCloudDevScenario(dev)) return createCloudDevPort(dev)
   const settingsFolders = ["settings-folders", "settings-attention"].includes(name)
+  const routed = name === "routed-folders"
   const homePaths =
     name === "folders-long-paths" || settingsFolders || name === "settings-missing-sources"
   const authenticated = [
@@ -54,6 +55,7 @@ export function cloudFixture(name: string): CloudPort {
     "settings-folders",
     "settings-attention",
     "settings-missing-sources",
+    "routed-folders",
   ].includes(name)
   let value: CloudSnapshot = {
     ...emptyCloudSnapshot,
@@ -72,6 +74,24 @@ export function cloudFixture(name: string): CloudPort {
     destination: authenticated
       ? { id: "synthetic-personal", name: "Personal", kind: "personal" }
       : null,
+    ...(routed
+      ? {
+          destinations: [
+            {
+              id: "synthetic-personal",
+              name: "Personal",
+              kind: "personal",
+              membershipGeneration: null,
+            },
+            {
+              id: "synthetic-team",
+              name: "Example Studio",
+              kind: "team",
+              membershipGeneration: "generation-1",
+            },
+          ],
+        }
+      : {}),
     draft: {
       screen: ["identity", "identity_error"].includes(name)
         ? "identity"
@@ -184,6 +204,8 @@ export function cloudFixture(name: string): CloudPort {
       confirmedUploadBytes: 0,
     },
   }
+  const routedPolicies = new Map<string, CloudOngoingStatus>()
+  let failTeam = routed
   if (name === "settings-progress" || name === "settings-storage-error")
     ongoing = {
       ...ongoing,
@@ -283,10 +305,34 @@ export function cloudFixture(name: string): CloudPort {
           partial: name === "folders-empty-partial",
         }
       },
-      status: async () => ongoing,
+      status: async (binding) =>
+        routed && binding
+          ? (routedPolicies.get(binding.destinationId) ?? {
+              ...ongoing,
+              destinationId: binding.destinationId,
+            })
+          : ongoing,
       watch: async () => () => {},
       enable: async (consent) => {
         if (name === "ambiguous") throw new Error("Synthetic unknown result")
+        if (routed) {
+          if (consent.destinationId === "synthetic-team" && failTeam) {
+            failTeam = false
+            throw new Error("Synthetic save failure")
+          }
+          const status: CloudOngoingStatus = {
+            ...ongoing,
+            destinationId: consent.destinationId,
+            status: "ready",
+            storageKnown: true,
+            consentVersion: consent.version,
+            projects: consent.projects,
+            selectedSources: consent.selectedSources,
+            projectChoices: consent.projectChoices,
+          }
+          routedPolicies.set(consent.destinationId, status)
+          return status
+        }
         ongoing = {
           ...ongoing,
           storageKnown: true,

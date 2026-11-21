@@ -29,6 +29,36 @@ async function capture(page: Page, name: string) {
 }
 
 for (const theme of ["light", "dark"] as const) {
+  test(`named folder destinations and partial retry fit a narrow window in ${theme}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 375, height: 620 })
+    await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" })
+    await page.goto(`/tests/visual/?surface=cloud&cloud=routed-folders&theme=${theme}`)
+    const studio = page.getByRole("combobox", { name: /Destination for Studio/ })
+    const website = page.getByRole("combobox", { name: /Destination for Website/ })
+    const start = page.getByRole("button", { name: "Start syncing" })
+    await expect(studio).toHaveValue("")
+    await expect(start).toBeDisabled()
+    await expect(page.getByRole("button", { name: "Finish without syncing" })).toBeInViewport()
+    await studio.selectOption("synthetic-personal")
+    await website.selectOption("synthetic-team")
+    await start.click()
+    await expect(page.getByText("Personal: Sync choices saved.")).toBeVisible()
+    await expect(
+      page.getByText("Example Studio: Could not confirm sync choices."),
+    ).toBeVisible()
+    await expect(page.getByRole("button", { name: "Finish setup" })).toBeInViewport()
+    const retry = page.getByRole("button", { name: "Retry unconfirmed destinations" })
+    await expect(retry).toBeInViewport()
+    expect(await page.locator(".cloud-shell").evaluate((element) => element.scrollWidth)).toBe(
+      375,
+    )
+    await capture(page, `${theme}-routed-folders-partial`)
+    await retry.click()
+    await expect(page.getByRole("heading", { name: "Cloud sync choices saved" })).toBeVisible()
+  })
+
   test(`Cloud sign-in and the local exit fit a narrow window in ${theme}`, async ({ page }) => {
     await openCloud(page, "auth", theme)
     await page.setViewportSize({ width: 375, height: 620 })

@@ -2,6 +2,7 @@ import { Folder } from "lucide-react"
 import { useId } from "react"
 import { ToggleSwitch } from "../components/ui/ToggleSwitch"
 import { cloudDisplayPath } from "../lib/cloud"
+import type { FolderAssignment, FolderRoutes } from "./cloudFolderRouting"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -24,19 +25,29 @@ interface LocalFolder {
 export interface CloudFolderSetupProps {
   /** Current verified destinations. IDs must be unique and nonempty. */
   destinations: readonly FolderDestination[]
+  /** Do not report removal when the destination list could not be checked. */
+  destinationsKnown?: boolean
   /** Current local folder groups. Counts describe discovery, not Cloud uploads. */
   folders: readonly LocalFolder[]
   /** Omitted means untouched; null means explicitly off. Keep removed IDs until edited. */
-  choices: Readonly<Partial<Record<string, string | null>>>
+  choices: FolderRoutes
+  /** Saved choices remain visible but cannot be moved in setup. */
+  lockedChoices?: FolderRoutes
   homeDirectory?: string | null | undefined
   loading?: boolean
   busy?: boolean
+  choicesBlocked?: boolean
   /** Set this when a service or discovery error prevents a safe start. */
   startBlocked?: boolean
   message?: string | null
+  results?: readonly { id: string; name: string; saved: boolean }[]
+  onRetry?: (() => void) | undefined
+  onReview?: (() => void) | undefined
+  onLoadMore?: (() => void) | undefined
+  onBack?: (() => void) | undefined
   onChoiceChange: (folderId: string, destinationId: string | null) => void
   /** Revalidate these visible assignments against current discovery and account state. */
-  onStart: (assignments: readonly { folderId: string; destinationId: string }[]) => void
+  onStart: (assignments: readonly FolderAssignment[]) => void
   /** Leave setup without saving the draft or enabling uploads. */
   onFinish: () => void
 }
@@ -49,13 +60,21 @@ const focusHeading = (heading: HTMLHeadingElement | null) => heading?.focus()
 /** Render and confirm a draft without saving preferences or starting sync. */
 export function CloudFolderSetup({
   destinations,
+  destinationsKnown = true,
   folders,
   choices,
+  lockedChoices = {},
   homeDirectory,
   loading = false,
   busy = false,
+  choicesBlocked = false,
   startBlocked = false,
   message,
+  results = [],
+  onRetry,
+  onReview,
+  onLoadMore,
+  onBack,
   onChoiceChange,
   onStart,
   onFinish,
@@ -68,23 +87,26 @@ export function CloudFolderSetup({
   const personal = options.length === 1 && options[0]?.kind === "personal" ? options[0] : null
   const destinationIds = new Set(options.map((item) => item.id))
   const rows = folders.map((folder) => {
-    const destinationId = Object.hasOwn(choices, folder.id)
-      ? (choices[folder.id] ?? null)
+    const locked = Object.hasOwn(lockedChoices, folder.id)
+    const rowChoices = locked ? lockedChoices : choices
+    const destinationId = Object.hasOwn(rowChoices, folder.id)
+      ? (rowChoices[folder.id] ?? null)
       : null
     const removed = destinationId !== null && !destinationIds.has(destinationId)
     const unsupported = folder.captureSupported === false
-    return { folder, destinationId, removed, unsupported }
+    return { folder, destinationId, removed, unsupported, locked }
   })
   const unresolved = rows.some(
-    ({ destinationId, removed, unsupported }) =>
-      destinationId !== null && (removed || unsupported),
+    ({ destinationId, removed, unsupported, locked }) =>
+      !locked && destinationId !== null && (removed || unsupported),
   )
-  const assignments = rows.flatMap(({ folder, destinationId, removed, unsupported }) =>
-    destinationId !== null && !removed && !unsupported
+  const assignments = rows.flatMap(({ folder, destinationId, removed, unsupported, locked }) =>
+    destinationId !== null && !removed && !unsupported && !locked
       ? [{ folderId: folder.id, destinationId }]
       : [],
   )
-  const canStart = !loading && !busy && !startBlocked && !unresolved && assignments.length > 0
+  const canStart =
+    !loading && !busy && !onRetry && !startBlocked && !unresolved && assignments.length > 0
 
   return (
     <section className="cloud-folder-content min-h-0 flex-1 overflow-hidden">
@@ -103,7 +125,7 @@ export function CloudFolderSetup({
           className="cloud-folder-list min-h-0! max-h-none! flex-1 list-none p-0"
           aria-label="Local project folders"
         >
-          {rows.map(({ folder, destinationId, removed, unsupported }, index) => {
+          {rows.map(({ folder, destinationId, removed, unsupported, locked }, index) => {
             const name =
               folder.name ?? (folder.path.split(/[\\/]/).filter(Boolean).at(-1) || folder.path)
             const details = `${id}-folder-${index}`
@@ -111,7 +133,13 @@ export function CloudFolderSetup({
             const showSelect =
               (!personal || removed || unsupported) &&
               (options.length > 0 || destinationId !== null)
-            const canEdit = !loading && !busy && (!unsupported || destinationId !== null)
+            const canEdit =
+              !locked &&
+              !onRetry &&
+              !choicesBlocked &&
+              !loading &&
+              !busy &&
+              (!unsupported || destinationId !== null)
             return (
               <li key={folder.id} className="cloud-folder-row flex-wrap items-start!">
                 <Folder size={16} className="mt-0.5 shrink-0" aria-hidden />
@@ -134,13 +162,16 @@ export function CloudFolderSetup({
                         {countLabel(folder.worktreeCount, "worktree")}
                       </span>
                     )}
-                    {removed && !loading && (
+                    {removed && !loading && destinationsKnown && (
                       <span className="w-full text-system-red-text">
                         Destination no longer available
                       </span>
                     )}
                     {unsupported && (
                       <span className="w-full">Uploads unavailable for this folder</span>
+                    )}
+                    {locked && (
+                      <span className="w-full">Already approved for this destination</span>
                     )}
                   </div>
                 </div>
@@ -161,7 +192,11 @@ export function CloudFolderSetup({
                     <option value="">Don’t sync</option>
                     {removed && destinationId !== null && (
                       <option value={destinationId} disabled>
-                        {loading ? "Checking destination…" : "Unavailable destination"}
+                        {loading
+                          ? "Checking destination…"
+                          : destinationsKnown
+                            ? "Unavailable destination"
+                            : "Destination not verified"}
                       </option>
                     )}
                     {options.map((item) => (
@@ -210,23 +245,69 @@ export function CloudFolderSetup({
           No Cloud destinations are available.
         </p>
       ) : null}
+      {results.length > 0 && (
+        <div
+          className="max-h-24 overflow-y-auto type-callout text-label-secondary"
+          role="status"
+        >
+          {results.map(({ id, name, saved }) => (
+            <p key={id}>
+              {name}: {saved ? "Sync choices saved." : "Could not confirm sync choices."}
+            </p>
+          ))}
+        </div>
+      )}
+      {(onLoadMore || onReview) && (
+        <div className="flex flex-wrap gap-3">
+          {onLoadMore && (
+            <button
+              type="button"
+              className="onboarding-secondary"
+              disabled={busy || loading || !!onRetry}
+              onClick={onLoadMore}
+            >
+              Load more folders
+            </button>
+          )}
+          {onReview && (
+            <button
+              type="button"
+              className="onboarding-secondary"
+              disabled={busy}
+              onClick={onReview}
+            >
+              Refresh folders and choices
+            </button>
+          )}
+        </div>
+      )}
       <footer className="flex flex-wrap items-center justify-end gap-3">
+        {onBack && !results.length && (
+          <button
+            type="button"
+            className="onboarding-secondary mr-auto"
+            disabled={busy}
+            onClick={onBack}
+          >
+            Back
+          </button>
+        )}
         <button
           type="button"
           className="onboarding-secondary"
           disabled={busy}
           onClick={onFinish}
         >
-          Finish without syncing
+          {results.length ? "Finish setup" : "Finish without syncing"}
         </button>
         <button
           type="button"
           className="onboarding-primary"
           aria-describedby={`${id}-consent ${id}-selection`}
-          disabled={!canStart}
-          onClick={() => onStart(assignments)}
+          disabled={onRetry ? busy || loading : !canStart}
+          onClick={onRetry ?? (() => onStart(assignments))}
         >
-          Start syncing
+          {onRetry ? "Retry unconfirmed destinations" : "Start syncing"}
         </button>
       </footer>
     </section>

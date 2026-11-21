@@ -22,6 +22,7 @@ import {
 } from "./CloudSession"
 import { CloudProjectFolders } from "./CloudOnboardingFolders"
 import { CloudInvitations } from "./CloudInvitations"
+import { CloudRoutedFolderSetup } from "./CloudRoutedFolderSetup"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -66,6 +67,8 @@ export function CloudOnboarding({
   )
   const disabled = busy || value.busy
   const grouped = !!(port ?? desktopCloudPort).ongoing
+  const routed = grouped && value.cloud.destinations !== undefined
+  const routedFolderScreen = routed && value.screen === "folders"
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
@@ -282,6 +285,15 @@ export function CloudOnboarding({
             )}
           </div>
         </section>
+      ) : routedFolderScreen ? (
+        <CloudRoutedFolderSetup
+          session={session}
+          value={value}
+          busy={busy}
+          error={error}
+          onBack={() => void back()}
+          onFinish={() => void finish()}
+        />
       ) : value.screen === "folders" ? (
         <section className="cloud-folder-content min-h-0 flex-1 overflow-hidden pb-0!">
           <h1 className="type-cloud-folder-title" tabIndex={-1} ref={focusHeading}>
@@ -469,22 +481,28 @@ export function CloudOnboarding({
           </section>
           <section className="onboarding-copy cloud-ready-copy">
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
-              {grouped
-                ? syncReady
-                  ? "Sessions sync in the background"
-                  : "Continue using Antiburn locally"
-                : captureEnabled
-                  ? captureSaved
-                    ? "Capture request saved"
-                    : value.sync.status === "starting"
-                      ? "Saving capture request"
-                      : "Continue using Antiburn locally"
-                  : value.cloud.syncEnabled
+              {routed
+                ? value.routedFolders?.results.some(({ saved }) => saved)
+                  ? "Cloud sync choices saved"
+                  : "Cloud setup complete"
+                : grouped
+                  ? syncReady
                     ? "Sessions sync in the background"
-                    : "Continue using Antiburn locally"}
+                    : "Continue using Antiburn locally"
+                  : captureEnabled
+                    ? captureSaved
+                      ? "Capture request saved"
+                      : value.sync.status === "starting"
+                        ? "Saving capture request"
+                        : "Continue using Antiburn locally"
+                    : value.cloud.syncEnabled
+                      ? "Sessions sync in the background"
+                      : "Continue using Antiburn locally"}
             </h1>
             <p className="type-onboarding-body">
-              {grouped ? (
+              {routed ? (
+                "Review saved destinations in Settings. Saving choices does not confirm any uploads."
+              ) : grouped ? (
                 "Manage Cloud uploads in Settings. You can pause uploads and review saved work there."
               ) : captureEnabled ? (
                 "Upload is unavailable. Saving a request does not confirm that any content was read or captured."
@@ -502,7 +520,8 @@ export function CloudOnboarding({
         </>
       )}
       <footer
-        className={`onboarding-footer cloud-footer${value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
+        className={`onboarding-footer cloud-footer${routedFolderScreen ? " hidden!" : value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
+        hidden={routedFolderScreen}
       >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
@@ -513,29 +532,33 @@ export function CloudOnboarding({
                   aria-hidden
                 />
                 <strong className="type-headline">
-                  {grouped
-                    ? value.ongoing && cloudUploadStatusUnknown(value.ongoing)
-                      ? cloudOngoingStatusMessage(value.ongoing)
-                      : value.sync.status === "starting"
-                        ? "Starting background sync"
-                        : value.sync.status === "ambiguous"
-                          ? "Cloud sync not confirmed"
-                          : value.ongoing
-                            ? cloudOngoingStatusMessage(value.ongoing)
-                            : "Cloud sync not confirmed"
-                    : captureEnabled
-                      ? "Upload unavailable"
-                      : accepted || syncing
-                        ? value.sync.status === "partial"
-                          ? "Sync needs attention"
-                          : value.sync.status === "complete"
-                            ? `Synced ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
-                            : `Syncing ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
-                        : syncUncertain
-                          ? "Sync status unavailable"
-                          : value.sync.status === "starting"
-                            ? "Starting background sync"
-                            : "Cloud sync not started"}
+                  {routed
+                    ? value.routedFolders?.results.some(({ saved }) => saved)
+                      ? "Sync choices saved"
+                      : "Check sync in Settings"
+                    : grouped
+                      ? value.ongoing && cloudUploadStatusUnknown(value.ongoing)
+                        ? cloudOngoingStatusMessage(value.ongoing)
+                        : value.sync.status === "starting"
+                          ? "Starting background sync"
+                          : value.sync.status === "ambiguous"
+                            ? "Cloud sync not confirmed"
+                            : value.ongoing
+                              ? cloudOngoingStatusMessage(value.ongoing)
+                              : "Cloud sync not confirmed"
+                      : captureEnabled
+                        ? "Upload unavailable"
+                        : accepted || syncing
+                          ? value.sync.status === "partial"
+                            ? "Sync needs attention"
+                            : value.sync.status === "complete"
+                              ? `Synced ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
+                              : `Syncing ${selectedFolders} ${selectedFolders === 1 ? "folder" : "folders"}`
+                          : syncUncertain
+                            ? "Sync status unavailable"
+                            : value.sync.status === "starting"
+                              ? "Starting background sync"
+                              : "Cloud sync not started"}
                 </strong>
                 <span className="type-callout text-onboarding-muted">
                   {grouped

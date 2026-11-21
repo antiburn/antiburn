@@ -256,27 +256,29 @@ provider-source discovery, not accepted Cloud sessions. Only qualified Claude an
 V2 sources can produce upload jobs; a suggested project or checked row does not
 add support for another provider.
 
-New onboarding project choices default to selected in renderer memory. Loading a page or
-toggling an onboarding row does not save ongoing consent or switch uploads on. Existing
-explicit choices and saved opt-outs take precedence over a new default.
-**Start syncing** approves only the currently loaded selected groups and their
-exact current path members. **Load more folders** does not approve unseen groups.
-Until confirmation, an existing saved policy stays unchanged.
+New folders start off. With only Personal available, each row has a switch.
+With multiple destinations, each row lets the user choose Don't sync, Personal,
+or a named Team. A removed destination is not replaced with Personal.
+Loading a page or editing a choice does not enable uploads. **Start syncing**
+approves only visible groups and their exact current path members. It submits
+one policy per affected destination and keeps previously approved paths and
+sources intact. Onboarding does not move an approved folder to a different
+destination. **Finish without syncing** discards unsubmitted choices.
 
-After initial consent, Settings switches show saved project permission rather
-than draft defaults. Turning a group off removes its approved bindings immediately.
-Turning it on requires the Settings confirmation dialog for its full sessions and
-current worktrees. The command checks the exact policy revision and group membership,
-then changes only that group. Other groups, unseen pages, and the destination's
-pause state remain unchanged. The last group can be turned off without deleting saved captures.
-There is no Update button. Onboarding keeps its draft-and-Start flow without a dialog.
+If some destinations cannot confirm the save, setup lists the confirmed and
+unconfirmed results. Retry checks the unconfirmed policies before sending
+anything again. It does not submit a confirmed policy a second time. Saving a
+policy does not confirm that any content was uploaded.
 
-Confirmation saves the complete `projectChoices` map, including exclusions,
-atomically with the upload policy. Status returns the same map for reopen.
-These group choices are UI preferences, separate from provider-file preferences.
-Only the policy's approved `projects` grant upload permission. Older policies
-without a choice map load an empty map; the UI requires review before changing
-their selection.
+After initial consent, Settings can open the same folder picker to add new
+rules. Where Settings shows saved Personal folder switches, turning a group off
+removes only its approved bindings. Other groups, unseen pages, and pause state
+stay unchanged. Turning off a group does not delete saved captures.
+
+Confirmation saves `projectChoices` with the upload policy. It keeps prior
+exclusions and records the new approvals for that destination. These group
+choices are separate from provider-file preferences. Only the policy's approved
+`projects` grant upload permission.
 
 For local paths, current local Git metadata can group a repository and its
 worktrees into one displayed project. This is a present-day display association,
@@ -332,11 +334,11 @@ capture; the host does not clip source or fall back to guessed limits.
 
 ### Background sync and saved bytes
 
-**Start syncing** moves onboarding to completion without waiting for capture,
-transfer, or integrity acceptance. **Done** remains available while setup or
-uploads are pending. Closing onboarding stops renderer observation, not the
-saved ongoing policy or desktop scheduler. Local tools setup remains
-independent of Cloud sync.
+Once the policy saves are confirmed, onboarding moves to completion without
+waiting for capture, transfer, or integrity acceptance. After a save attempt,
+**Finish setup** exits without repeating an unconfirmed save. Closing onboarding
+stops renderer observation, not the saved policy or desktop scheduler. Local
+tools setup stays independent of Cloud sync.
 
 Settings → Sessions shows the account, selected destination, upload switch,
 folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
