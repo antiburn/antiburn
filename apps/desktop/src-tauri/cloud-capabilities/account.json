@@ -6,6 +6,7 @@
   "permissions": [
     "allow-cloud-status",
     "allow-cloud-begin",
+    "allow-cloud-invitations",
     "allow-cloud-cancel",
     "allow-cloud-sign-out",
     "allow-cloud-reset-local",

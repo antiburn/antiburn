@@ -949,11 +949,15 @@ mod tests {
         let commands: &[&str] = with_app_commands!(names);
         assert_eq!(commands.contains(&"cloud_begin"), cfg!(feature = "cloud"));
         assert_eq!(
+            commands.contains(&"cloud_invitations"),
+            cfg!(feature = "cloud")
+        );
+        assert_eq!(
             commands
                 .iter()
                 .filter(|name| name.starts_with("cloud_"))
                 .count(),
-            if cfg!(feature = "cloud") { 19 } else { 0 }
+            if cfg!(feature = "cloud") { 20 } else { 0 }
         );
     }
 
@@ -995,6 +999,7 @@ mod tests {
         for permission in [
             "allow-cloud-status",
             "allow-cloud-begin",
+            "allow-cloud-invitations",
             "allow-cloud-cancel",
             "allow-cloud-sign-out",
             "allow-cloud-prepare-sync",
