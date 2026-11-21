@@ -339,6 +339,8 @@ export class OverlaySession {
   private withdrawHide(): boolean {
     if (!this.snapshot.hideOffered) return false
     this.update({ hideOffered: false })
+    // The pointer is still on the HUD, so its detail card comes back as on hover.
+    if (this.snapshot.hovered) this.armShowTimer()
     return true
   }
 
@@ -828,7 +830,8 @@ export class OverlaySession {
         !this.active ||
         !this.snapshot.hovered ||
         this.snapshot.dragging ||
-        this.snapshot.dragArmed
+        this.snapshot.dragArmed ||
+        this.snapshot.hideOffered
       )
         return
       this.detailShown = true

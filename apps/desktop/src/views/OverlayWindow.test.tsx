@@ -1667,6 +1667,25 @@ describe("OverlayWindow", () => {
     expect(invoke).not.toHaveBeenCalledWith("tear_off_overlay")
   })
 
+  it("brings the hover detail back after a click takes Hide away", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(frame(container))
+      fireEvent.contextMenu(panel(container))
+      await advance(400)
+      expect(showHudDetail).not.toHaveBeenCalled()
+
+      fireEvent.mouseDown(panel(container), { button: 0, screenX: 700, screenY: 100 })
+      await advance(400)
+
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it.skip("closes the visible detail window with the HUD", async () => {
     vi.useFakeTimers()
     try {
