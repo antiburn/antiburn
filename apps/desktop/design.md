@@ -5,6 +5,7 @@ description: "antiburn desktop design system (native-feeling, Tauri; ships macOS
 sources:
   - src/onboarding/onboarding.css
   - src/onboarding/cloud.css
+  - src-tauri/resources/cloud-loopback/page.css
   - src/components/providerUsage/sidebar-usage.css
   - src/styles/tokens.css
   - src/styles/base.css
@@ -2155,4 +2156,19 @@ confirmation dialog in Settings only. There is no separate Update button.
 An explicit global pause remains in effect after folder changes. Read and upload
 failures use a red inline alert with an icon and a recovery action.
 
-The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding, and an 18px reserved status line to match the prototype. Auth handoff has the prototype footer separator; Learn more keeps its approved plain footer. Identity uses a circular 64px image and a 24px green badge with a 3px paper border and contrasting action ink.
+The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding,
+and an 18px reserved status line. Sign in with GitHub opens browser approval.
+Waiting offers Cancel sign-in, and onboarding keeps Continue locally available.
+Settings uses the same sign-in and cancel labels when connecting again. The
+signed-in state needs desktop verification. Sign-in alone never starts uploads.
+Auth handoff has the footer separator; Learn more keeps its plain footer.
+Identity uses a circular 64px image and a 24px green badge with a 3px paper border
+and contrasting action ink.
+
+The `/cloud/callback` browser page uses a static, responsive card with no motion
+or controls. Its embedded stylesheet copies the onboarding paper, ink, muted,
+edge, window, and brand tokens, with system light or dark appearance. It uses the
+popover radius, system sans, and onboarding type sizes. Update the embedded
+copies if those desktop tokens change. Valid, denied, and invalid returns use
+fixed copy. A valid return marks only the browser step complete and sends the
+user back to the app by instruction, not by a link or redirect.

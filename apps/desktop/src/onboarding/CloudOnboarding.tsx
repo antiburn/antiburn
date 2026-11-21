@@ -15,8 +15,9 @@ import { cloudSourceKey, cloudSourceKind, desktopCloudPort, type CloudPort } fro
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import {
   CloudSession,
-  cloudStatusMessage,
+  cloudGithubSignInLabel,
   cloudOngoingStatusMessage,
+  cloudStatusMessage,
   cloudUploadStatusUnknown,
 } from "./CloudSession"
 import { CloudProjectFolders } from "./CloudOnboardingFolders"
@@ -66,6 +67,12 @@ export function CloudOnboarding({
   const grouped = !!(port ?? desktopCloudPort).ongoing
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
+  const browserReturned = value.cloud.authEnabled && value.cloud.status === "returned"
+  const signInBlocked =
+    value.cloud.authEnabled &&
+    (value.cloud.revocationPending ||
+      value.cloud.localCleanupPending ||
+      ["reauth_required", "credential_failed"].includes(value.cloud.status))
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -173,12 +180,12 @@ export function CloudOnboarding({
             <img className="cloud-app-icon" src={appIcon} alt="" />
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               {value.cloud.authEnabled
-                ? "Sign in to antiburn cloud"
+                ? "Sign in to Antiburn Cloud"
                 : "Antiburn Cloud is coming soon"}
             </h1>
             <p className="type-onboarding-body text-onboarding-muted">
               {value.cloud.authEnabled
-                ? "Approve this desktop connection in your browser."
+                ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
                 : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
@@ -187,9 +194,9 @@ export function CloudOnboarding({
                 disabled={disabled}
                 onClick={() => void session.cancel()}
               >
-                Cancel
+                Cancel sign-in
               </button>
-            ) : (
+            ) : !browserReturned && !signInBlocked ? (
               <button
                 className={
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
@@ -203,10 +210,10 @@ export function CloudOnboarding({
                     : session.retry())
                 }
               >
-                {value.cloud.authEnabled ? "Connect in browser" : "Learn more"}
+                {value.cloud.authEnabled ? cloudGithubSignInLabel : "Learn more"}
                 <ArrowUpRight size={16} aria-hidden />
               </button>
-            )}
+            ) : null}
             <p className="cloud-status type-footnote" role="status">
               {value.loaded
                 ? value.cloud.authEnabled || value.cloud.status === "browser_failed"
@@ -214,9 +221,9 @@ export function CloudOnboarding({
                   : ""
                 : "Checking Cloud availability…"}
             </p>
-            {value.cloud.authEnabled && (
+            {signInBlocked && (
               <p className="type-footnote text-onboarding-muted">
-                You’ll return here when you’re signed in.
+                Continue locally, then open Settings → Sessions to manage this connection.
               </p>
             )}
           </div>
@@ -576,17 +583,11 @@ export function CloudOnboarding({
               )}
             {value.screen === "handoff" && !value.cloud.authEnabled && (
               <button
-                className={
-                  value.cloud.authEnabled ? "onboarding-secondary" : "onboarding-primary"
-                }
+                className="onboarding-primary"
                 disabled={disabled}
                 onClick={() => void finish()}
               >
-                {!value.cloud.authEnabled
-                  ? "Done"
-                  : value.cloud.status === "returned" || waiting
-                    ? "Continue to Sessions"
-                    : "Use locally for now"}
+                Done
               </button>
             )}
             {((value.screen === "handoff" && value.cloud.authEnabled) ||

@@ -1,0 +1,81 @@
+/* Standalone copies of the desktop onboarding tokens. */
+:root {
+  color-scheme: light dark;
+  --onboarding-paper: hsl(0 0% 100%);
+  --onboarding-ink: hsl(0 0% 12.5%);
+  --onboarding-muted: hsl(240 2% 39%);
+  --onboarding-edge: hsl(0 0% 0% / 0.125);
+  --surface-window: hsl(0 0% 96.4%);
+  --brand: hsl(18 92% 39%);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  --radius-popover: 10px;
+  --onboarding-title-size: 1.75rem;
+  --onboarding-body-size: 1.0625rem;
+  --title-3-size: 0.9375rem;
+  --line-height: 1.4;
+  --semibold: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --onboarding-paper: hsl(240 4% 14.7%);
+    --onboarding-ink: hsl(240 3% 93.5%);
+    --onboarding-muted: hsl(240 3.6% 68%);
+    --onboarding-edge: hsl(0 0% 100% / 0.125);
+    --surface-window: hsl(0 0% 12.5%);
+    --brand: hsl(17.6 100% 54%);
+  }
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 1.5rem;
+  background: var(--surface-window);
+  color: var(--onboarding-ink);
+  font-family: var(--font-sans);
+  line-height: var(--line-height);
+}
+
+main {
+  box-sizing: border-box;
+  width: min(100%, 30rem);
+  padding: clamp(1.5rem, 6vw, 2.5rem);
+  border: 1px solid var(--onboarding-edge);
+  border-radius: var(--radius-popover);
+  background: var(--onboarding-paper);
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+.brand,
+.outcome {
+  font-size: var(--title-3-size);
+  font-weight: var(--semibold);
+}
+
+.brand {
+  color: var(--brand);
+  margin-bottom: 2rem;
+}
+
+.outcome,
+.detail {
+  color: var(--onboarding-muted);
+}
+
+h1 {
+  margin-block: 0.25rem 0.75rem;
+  font-size: var(--onboarding-title-size);
+  font-weight: var(--semibold);
+}
+
+.detail {
+  font-size: var(--onboarding-body-size);
+}

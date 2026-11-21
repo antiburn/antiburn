@@ -29,6 +29,27 @@ async function capture(page: Page, name: string) {
 }
 
 for (const theme of ["light", "dark"] as const) {
+  test(`Cloud sign-in and the local exit fit a narrow window in ${theme}`, async ({ page }) => {
+    await openCloud(page, "auth", theme)
+    await page.setViewportSize({ width: 375, height: 620 })
+    const shell = page.getByRole("main", { name: "Antiburn Cloud setup" })
+    const signIn = page.getByRole("button", { name: "Sign in with GitHub", exact: true })
+    const local = page.getByRole("button", { name: "Continue locally", exact: true })
+    await expect(signIn).toBeInViewport()
+    await expect(local).toBeInViewport()
+    expect(await shell.evaluate((element) => element.scrollWidth)).toBe(375)
+    await page.keyboard.press("Tab")
+    await expect(signIn).toBeFocused()
+    await page.keyboard.press("Enter")
+    await expect(page.getByRole("status")).toContainText("Waiting for browser approval")
+    await expect(page.getByRole("button", { name: "Cancel sign-in" })).toBeInViewport()
+    await expect(local).toBeInViewport()
+    await capture(page, `${theme}-sign-in-narrow-waiting`)
+    await local.focus()
+    await page.keyboard.press("Enter")
+    await expect(page.locator("body")).toHaveAttribute("data-completed", "true")
+  })
+
   test(`Cloud handoff and recovery states stay truthful in ${theme}`, async ({ page }) => {
     const external: string[] = []
     const errors: string[] = []
@@ -78,12 +99,12 @@ for (const theme of ["light", "dark"] as const) {
       ).toHaveCount(0)
       if (state === "auth")
         await expect(
-          page.getByRole("button", { name: "Connect in browser", exact: true }),
+          page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
         ).toBeEnabled()
       if (state === "auth") {
-        await page.getByRole("button", { name: "Connect in browser", exact: true }).click()
+        await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click()
         await expect(page.getByRole("status")).toContainText("Waiting for browser")
-        await page.getByRole("button", { name: "Cancel", exact: true }).click()
+        await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click()
         await expect(page.getByRole("status")).toContainText("cancelled")
       }
       if (state === "returned") {
@@ -91,7 +112,9 @@ for (const theme of ["light", "dark"] as const) {
         await expect(
           page.getByRole("button", { name: "Learn more", exact: true }),
         ).toBeEnabled()
-        await expect(page.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0)
+        await expect(
+          page.getByRole("button", { name: "Cancel sign-in", exact: true }),
+        ).toHaveCount(0)
       }
       await capture(page, `${theme}-${state}`)
     }
@@ -214,8 +237,8 @@ test("Cloud prompt animation pauses while hidden and resumes without layout shif
 
 test("Cloud Dev walkthrough signs in and syncs simulated folders", async ({ page }) => {
   await openCloud(page, "dev-walkthrough")
-  await page.getByRole("button", { name: "Connect in browser", exact: true }).click()
-  await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Cancel sign-in", exact: true })).toBeVisible()
   await expect(page.getByRole("heading", { name: "You’re signed in" })).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "Choose what to sync to antiburn cloud" }),
@@ -240,7 +263,7 @@ test("Cloud Dev walkthrough signs in and syncs simulated folders", async ({ page
 test("prototype completion indicators pulse only for active sync", async ({ page }) => {
   for (const theme of ["light", "dark"]) {
     await openCloud(page, "dev-walkthrough", theme)
-    await page.getByRole("button", { name: "Connect in browser", exact: true }).click()
+    await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click()
     await page.getByRole("button", { name: "Start syncing", exact: true }).click()
     await page.emulateMedia({ reducedMotion: "no-preference" })
     const dot = page.locator(".cloud-sync-dot")
@@ -493,7 +516,9 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByText(/uploaded ·|Transferred/)).toHaveCount(0)
     await capture(page, `cloud-account-${theme}-blocked`)
     await page.getByRole("button", { name: "Sign out", exact: true }).click()
-    await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled()
+    await expect(
+      page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+    ).toBeEnabled()
     await expect(page.locator("[id^='cloud-settings-folder-']")).toHaveCount(0)
   })
 
