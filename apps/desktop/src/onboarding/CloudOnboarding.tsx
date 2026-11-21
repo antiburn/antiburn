@@ -21,6 +21,7 @@ import {
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import {
   CloudSession,
+  cloudGithubSignInLabel,
   cloudStatusMessage,
   cloudOngoingStatusMessage,
   cloudUploadStatusUnknown,
@@ -72,6 +73,7 @@ export function CloudOnboarding({
   const grouped = !!(port ?? desktopCloudPort).ongoing
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
+  const checkingSignIn = value.cloud.authEnabled && value.cloud.status === "returned"
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -257,12 +259,12 @@ export function CloudOnboarding({
             <img className="cloud-app-icon" src={appIcon} alt="" />
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               {value.cloud.authEnabled
-                ? "Sign in to antiburn cloud"
+                ? "Sign in to Antiburn Cloud"
                 : "Antiburn Cloud is coming soon"}
             </h1>
             <p className="type-onboarding-body text-onboarding-muted">
               {value.cloud.authEnabled
-                ? "Approve this device in your browser."
+                ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
                 : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
@@ -271,9 +273,9 @@ export function CloudOnboarding({
                 disabled={disabled}
                 onClick={() => void session.cancel()}
               >
-                Cancel
+                Cancel sign-in
               </button>
-            ) : (
+            ) : !checkingSignIn ? (
               <button
                 className={
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
@@ -287,10 +289,10 @@ export function CloudOnboarding({
                     : session.retry())
                 }
               >
-                {value.cloud.authEnabled ? "Connect in browser" : "Learn more"}
+                {value.cloud.authEnabled ? cloudGithubSignInLabel : "Learn more"}
                 <ArrowUpRight size={16} aria-hidden />
               </button>
-            )}
+            ) : null}
             <p className="cloud-status type-footnote" role="status">
               {value.loaded
                 ? value.cloud.authEnabled || value.cloud.status === "browser_failed"
@@ -298,11 +300,6 @@ export function CloudOnboarding({
                   : ""
                 : "Checking Cloud availability…"}
             </p>
-            {value.cloud.authEnabled && (
-              <p className="type-footnote text-onboarding-muted">
-                You’ll return here when you’re signed in.
-              </p>
-            )}
           </div>
         </section>
       ) : value.screen === "identity" ? (

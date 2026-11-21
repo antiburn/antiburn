@@ -4,6 +4,7 @@ import {
   type CloudSession,
   canBackfillUploads,
   canRetryPersonalUploads,
+  cloudGithubSignInLabel,
   cloudStatusMessage,
   cloudUploadStatusUnknown,
   teamFoldersToConfirm,
@@ -107,8 +108,9 @@ export function CloudAccount({
   folderRowId?: string
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
-  const readFailed = value.loaded && !!value.error && !value.cloud.identity
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
+  const checkingSignIn = value.cloud.status === "returned"
+  const readFailed = value.loaded && !!value.error && !value.cloud.identity && !waitingForBrowser
   const needsSignOut =
     !!value.cloud.identity ||
     value.cloud.revocationPending ||
@@ -124,7 +126,7 @@ export function CloudAccount({
       ? "Cloud is busy."
       : value.error
     : waitingForBrowser
-      ? "Approve this device in your browser to finish signing in."
+      ? cloudStatusMessage("waiting")
       : !["idle", "signed_in", "signed_out"].includes(value.cloud.status)
         ? cloudStatusMessage(value.cloud.status)
         : null
@@ -178,7 +180,7 @@ export function CloudAccount({
             Learn more <ArrowUpRight size={13} aria-hidden="true" />
           </button>
         )}
-        {value.loaded && value.cloud.authEnabled && !readFailed && !needsSignOut && (
+        {value.loaded && value.cloud.authEnabled && !readFailed && !needsSignOut && !checkingSignIn && (
           <button
             className="ui-push-button shrink-0 aria-disabled:opacity-50"
             aria-disabled={value.busy || undefined}
@@ -187,7 +189,7 @@ export function CloudAccount({
               void (waitingForBrowser ? session.cancel() : session.begin())
             }}
           >
-            {waitingForBrowser ? "Cancel sign-in" : "Sign in"}
+            {waitingForBrowser ? "Cancel sign-in" : cloudGithubSignInLabel}
           </button>
         )}
         {needsSignOut && (

@@ -99,7 +99,7 @@ it.each([true, false])(
           "Cloud could not connect. Check your connection and try again.",
         ),
       ).toBeVisible()
-      expect(screen.getByRole("button", { name: "Connect in browser" })).toBeEnabled()
+      expect(screen.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
     } else {
       expect(
         await screen.findByRole("heading", { name: "Antiburn Cloud is coming soon" }),
