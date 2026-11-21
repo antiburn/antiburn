@@ -90,6 +90,29 @@ export function confirmationContextKey(value: CloudViewSnapshot) {
   ])
 }
 
+/** Confirm the exact provider sources and project paths for one saved route. */
+export function folderRouteConfirmed(
+  status: CloudOngoingStatus | null | undefined,
+  binding: CloudDestinationBinding,
+  selected: CloudProjectSelection[],
+) {
+  return (
+    status?.accountId === binding.accountId &&
+    status.destinationId === binding.destinationId &&
+    status.storageKnown &&
+    status.consentVersion === "desktop-project-sync-v1" &&
+    selected.length > 0 &&
+    selected.every((project) =>
+      status.projects.some(
+        (saved) =>
+          saved.sourceKind === project.sourceKind &&
+          saved.sourcePath === project.sourcePath &&
+          saved.projectPath === project.projectPath,
+      ),
+    )
+  )
+}
+
 /** Use only the backend's exact saved paths when it reports stale Team consent. */
 export function teamFoldersToConfirm(value: CloudViewSnapshot, destinationId: string) {
   const policy = value.teamStatuses?.[destinationId]

@@ -30,6 +30,7 @@ import {
   cloudContextChange,
   cloudUploadStatusUnknown,
   confirmationContextKey,
+  folderRouteConfirmed,
   hasSavedProjectPermission,
   isCloudBusy,
   legacyCaptureConsent,
@@ -105,6 +106,7 @@ export class CloudSession {
   private needsChoiceReview = false
   private ongoingRevision = 0
   private projectSyncStarted = false
+  private folderRoutesNeedRetry = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private identityTimer = false
   private generation = 0
@@ -209,6 +211,7 @@ export class CloudSession {
       this.confirmedProjectChoices = {}
       this.needsChoiceReview = false
       this.projectSyncStarted = false
+      this.folderRoutesNeedRetry = false
     } else if (value.setupError && value.setupError !== this.snapshot.cloud.setupError) {
       this.projectGeneration++
     }
@@ -1353,12 +1356,15 @@ export class CloudSession {
     ]
     const errorField = settings ? "uploadActionError" : "error"
     if (destinations.length > 1) {
+      if (!settings) return this.startFolderRoutes(port, binding, groups, destinations)
       this.publish({
         [errorField]:
           "Enable folders for one workspace at a time. No folder choices were saved.",
       })
       return
     }
+    if (!settings && this.folderRoutesNeedRetry)
+      return this.startFolderRoutes(port, binding, groups, destinations)
     const destinationId = destinations[0]
     if (!destinationId) return
     const isTeam = destinationId !== binding.destinationId
@@ -1459,6 +1465,132 @@ export class CloudSession {
     }
   }
 
+  /** Use the existing workspace commands for one explicit onboarding choice.
+   * A failed route stays staged. Accepted routes are not submitted again.
+   */
+  private async startFolderRoutes(
+    port: NonNullable<CloudPort["ongoing"]>,
+    binding: CloudDestinationBinding,
+    groups: CloudProjectGroup[],
+    destinations: string[],
+  ) {
+    const targets = this.projectTargets
+    const routes = destinations.map((id) => ({
+      id,
+      groups: groups.filter((group) => targets[group.id] === id),
+      workspace: this.snapshot.projects?.workspaces?.find((item) => item.id === id),
+    }))
+    if (routes.some((route) => !route.workspace || !route.groups.length)) return
+    const generation = this.generation
+    const current = () =>
+      this.active &&
+      generation === this.generation &&
+      this.snapshot.cloud.captureEnabled === true &&
+      this.projectBinding()?.accountId === binding.accountId &&
+      this.projectBinding()?.destinationId === binding.destinationId
+    const failed: {
+      target: CloudDestinationBinding
+      name: string
+      selected: CloudProjectSelection[]
+    }[] = []
+    this.syncInFlight = true
+    this.publish({ busy: true, error: null })
+    if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
+    try {
+      for (const { id, groups, workspace } of routes) {
+        if (!current()) return
+        const target = { ...binding, destinationId: id }
+        const ids = groups.map((group) => group.id)
+        const choices = Object.fromEntries(ids.map((id) => [id, true]))
+        const selected = selectedProjects(
+          this.desktopProjects.filter((group) => ids.includes(group.id)),
+          this.projectSources,
+          choices,
+        )
+        try {
+          const projects = this.snapshot.projects
+          if (
+            !projects?.loaded ||
+            projects.loading ||
+            projects.error ||
+            cloudUploadStatusUnknown(this.snapshot.ongoing) ||
+            !projects.workspaces?.some(
+              (item) => item.id === id && item.kind === workspace?.kind,
+            ) ||
+            teamFoldersToConfirm(this.snapshot, id) ||
+            groups.some(
+              (group) =>
+                this.projectTargets[group.id] !== id ||
+                this.hasSavedProject(group.id) ||
+                !projects.groups.some(
+                  (item) =>
+                    item.id === group.id && item.confirmationKey === group.confirmationKey,
+                ),
+            )
+          )
+            throw new Error("Folder choices or workspace availability changed.")
+          const policy = this.projectPolicy(id)
+          if (policy?.consentVersion === "desktop-project-sync-v1") {
+            await this.addPendingProjects(port, target, groups, current, false, true)
+          } else {
+            const draft = this.projectChoices
+            const status = await port.enable({
+              ...target,
+              version: "desktop-project-sync-v1",
+              selectedSources: this.projectSources.filter((source) =>
+                selected.some(
+                  (project) =>
+                    project.sourceKind === source.sourceKind &&
+                    project.sourcePath === source.path,
+                ),
+              ),
+              projects: selected,
+              projectChoices: choices,
+              fullContent: true,
+              ongoing: true,
+              attachments: false,
+            })
+            if (!current()) return
+            const observed = this.projectPolicy(id)
+            if (observed === policy) this.receiveOngoing(status)
+            if (folderRouteConfirmed(this.projectPolicy(id), target, selected))
+              this.clearCommittedChoices(ids, draft)
+          }
+          if (!current()) return
+          if (!folderRouteConfirmed(this.projectPolicy(id), target, selected))
+            throw new Error("Cloud did not confirm these folders.")
+          if (id !== binding.destinationId)
+            this.publish({ lastTeamSync: this.projectPolicy(id) ?? null })
+        } catch {
+          if (!current()) return
+          failed.push({ target, name: workspace?.name ?? "Personal", selected })
+        }
+      }
+      if (!current()) return
+      if (failed.length) {
+        await this.loadProjects()
+        if (!current()) return
+        const remaining = failed.filter(
+          ({ target, selected }) =>
+            !folderRouteConfirmed(this.projectPolicy(target.destinationId), target, selected),
+        )
+        this.folderRoutesNeedRetry = remaining.length > 0
+        if (remaining.length) {
+          this.publish({
+            error: `Could not confirm folder sync for ${remaining.map(({ name }) => name).join(", ")}. Review the remaining choices and try again.`,
+          })
+          return
+        }
+      }
+      this.folderRoutesNeedRetry = false
+      this.projectSyncStarted = true
+      this.publish({ screen: "complete", sync: { status: "idle" } })
+    } finally {
+      this.syncInFlight = false
+      if (this.active && generation === this.generation) this.publish({ busy: false })
+    }
+  }
+
   /** Add groups one at a time so a failed group cannot replace any saved policy. */
   private async addPendingProjects(
     port: NonNullable<CloudPort["ongoing"]>,
@@ -1466,6 +1598,7 @@ export class CloudSession {
     groups: CloudProjectGroup[],
     stillBound: () => boolean,
     settings: boolean,
+    verify = false,
   ) {
     for (const group of groups) {
       if (!stillBound()) return
@@ -1481,16 +1614,22 @@ export class CloudSession {
       )
         throw new Error("The saved workspace or folder changed.")
       const draft = this.projectChoices
+      const selected = this.supportedProjectSelections(member)
       const status = await port.setProject({
         ...binding,
         groupId: group.id,
         selected: true,
-        projects: this.supportedProjectSelections(member),
+        projects: selected,
         folderPaths: member.folderPaths,
         expectedPolicyRevision: policy.policyRevision,
       })
       if (!stillBound()) return
       if (this.projectPolicy(binding.destinationId) === policy) this.receiveOngoing(status)
+      if (
+        verify &&
+        !folderRouteConfirmed(this.projectPolicy(binding.destinationId), binding, selected)
+      )
+        throw new Error("Cloud did not confirm this folder.")
       this.clearCommittedChoices([group.id], draft)
     }
   }

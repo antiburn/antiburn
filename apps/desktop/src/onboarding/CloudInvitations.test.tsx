@@ -50,6 +50,26 @@ describe("Cloud workspace invitations", () => {
     vi.useRealTimers()
   })
 
+  it("hides an empty onboarding list but keeps browser verification available", async () => {
+    const port = vi.fn<CloudInvitationPort>().mockResolvedValue({
+      kind: "list",
+      listing: { state: "checked", invitations: [] },
+    })
+    await act(async () => {
+      render(
+        <CloudInvitations accountId="account-1" port={port} onJoined={vi.fn()} hideEmpty />,
+      )
+    })
+    expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    port.mockResolvedValue({ kind: "list", listing: { state: "check_required" } })
+    await act(async () => {
+      render(
+        <CloudInvitations accountId="account-2" port={port} onJoined={vi.fn()} hideEmpty />,
+      )
+    })
+    expect(screen.getByRole("button", { name: "Check in browser" })).toBeVisible()
+  })
+
   it("distinguishes teams with the same name and joins only after an explicit click", async () => {
     const port = vi
       .fn<CloudInvitationPort>()
