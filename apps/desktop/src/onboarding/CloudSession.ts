@@ -2,7 +2,6 @@ import {
   emptyCloudSnapshot,
   CLOUD_BUSY_MESSAGE,
   desktopCloudPort,
-  cloudSourceKey,
   cloudSourceKind,
   cloudProjectChoices,
   mergeCloudProjectGroups,
@@ -28,6 +27,7 @@ import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalyti
 import { personalCloudDestination } from "../lib/cloudDestination"
 import type { LocalToolsStatus } from "../lib/ipcPayloads"
 import {
+  confirmationContextKey,
   folderDiscoveryBinding,
   folderGroupHasPolicy,
   folderRouteConsent,
@@ -37,36 +37,15 @@ import {
   folderRoutingAuthority,
   lockedFolderRoutes,
   matchesFolderConsent,
+  personalFolderRemovalBinding,
   readSavedFolderPolicies,
   sameSavedFolderInventory,
   savedFolderPolicyStatuses,
+  savedPersonalFolderPolicy,
+  selectedFoldersKey,
   type FolderAssignment,
   type FolderRoutes,
 } from "./cloudFolderRouting"
-
-/** Compare consent-relevant roots without treating display-count changes as edits. */
-function selectedFoldersKey(value: CloudSnapshot) {
-  return JSON.stringify(
-    value.draft.folders
-      .filter((folder) => folder.selected)
-      .map(cloudSourceKey)
-      .sort(),
-  )
-}
-
-/** Bind a rendered Start action to authority and exact selection, not display counts. */
-function confirmationContextKey(value: CloudViewSnapshot) {
-  return JSON.stringify([
-    value.cloud.identity?.id,
-    value.cloud.destination?.id,
-    value.cloud.destination?.kind,
-    value.cloud.status,
-    value.cloud.captureEnabled,
-    value.cloud.setupError,
-    selectedFoldersKey(value.cloud),
-    value.projects?.selectionKey,
-  ])
-}
 
 /** One surface's view state. Start or a confirmed Settings addition grants content consent. */
 export interface CloudViewSnapshot {
@@ -194,6 +173,7 @@ export class CloudSession {
   private localToolsStatusRevision = -1
   private projectGeneration = 0
   private desktopProjects: DesktopCloudProjectGroup[] = []
+  private projectReadBinding: CloudDestinationBinding | null = null
   private projectSources: CloudSourceSelection[] = []
   private projectCursor: CloudProjectCursor | null = null
   private projectChoices: CloudProjectChoices = {}
@@ -334,6 +314,7 @@ export class CloudSession {
     ) {
       this.projectGeneration++
       this.desktopProjects = []
+      this.projectReadBinding = null
       this.projectSources = []
       this.projectCursor = null
       this.projectChoices = {}
@@ -793,7 +774,9 @@ export class CloudSession {
       !port ||
       (!binding && !routeAccount) ||
       this.snapshot.projects?.loading ||
-      (more && (!binding || !this.projectCursor))
+      (more &&
+        (!this.projectCursor ||
+          binding?.destinationId !== this.projectReadBinding?.destinationId))
     )
       return
     const generation = ++this.projectGeneration
@@ -858,6 +841,7 @@ export class CloudSession {
         throw new Error("Project discovery repeated a page.")
       const groups = mergeCloudProjectGroups(more ? this.desktopProjects : [], page.groups)
       this.desktopProjects = groups
+      this.projectReadBinding = binding
       this.projectSources = [
         ...new Map(
           [...(more ? this.projectSources : []), ...page.sourceRoots].map((source) => [
@@ -1194,33 +1178,43 @@ export class CloudSession {
   projectHasSavedPermission = (id: string) =>
     folderGroupHasPolicy(
       this.desktopProjects.find((item) => item.id === id),
-      this.snapshot.ongoing,
+      this.personalPolicy(this.snapshot),
     )
+  private personalPolicy = ({ cloud, ongoing, routedPolicies }: CloudViewSnapshot) =>
+    cloud.destinations === undefined
+      ? ongoing
+      : savedPersonalFolderPolicy(cloud, routedPolicies)
   /** Save one Settings switch. The caller confirms additions before invoking this. */
   setSavedProject = async (context: CloudViewSnapshot, id: string, selected: boolean) => {
-    if (selected && this.snapshot.cloud.destinations !== undefined) return
+    const { cloud } = this.snapshot
+    const routed = cloud.destinations !== undefined
+    if (selected && routed) return
     const port = this.port.ongoing
-    const binding = this.projectBinding(!selected)
+    const prior = this.personalPolicy(context)
+    const policy = this.personalPolicy(this.snapshot)
+    const binding = routed
+      ? personalFolderRemovalBinding(cloud, policy, prior, this.projectReadBinding)
+      : this.projectBinding(!selected)
     const group = this.desktopProjects.find((item) => item.id === id)
-    const policyRevision = context.ongoing?.policyRevision
+    const policyRevision = prior?.policyRevision
     if (
       !this.active ||
       !port ||
       !binding ||
       !group ||
       !policyRevision ||
-      policyRevision !== this.snapshot.ongoing?.policyRevision ||
+      policyRevision !== policy?.policyRevision ||
       this.snapshot.busy ||
       this.syncInFlight ||
       this.snapshot.projects?.loading ||
-      this.snapshot.ongoing?.consentVersion !== "desktop-project-sync-v1" ||
-      !this.snapshot.ongoing.storageKnown ||
+      policy?.consentVersion !== "desktop-project-sync-v1" ||
+      !policy.storageKnown ||
       context.contextRevision !== this.consentRevision ||
-      confirmationContextKey(context) !== confirmationContextKey(this.snapshot)
+      (!routed && confirmationContextKey(context) !== confirmationContextKey(this.snapshot))
     )
       return
     if (
-      selected &&
+      (selected || routed) &&
       context.projects?.groups.find((item) => item.id === id)?.confirmationKey !==
         this.projectConfirmationKey(group)
     )
@@ -1248,7 +1242,7 @@ export class CloudSession {
         this.active &&
         generation === this.generation &&
         this.snapshot.cloud.identity?.id === binding.accountId &&
-        this.snapshot.cloud.destination?.id === binding.destinationId
+        (routed || this.snapshot.cloud.destination?.id === binding.destinationId)
       )
         this.publish({ error: "Could not confirm the folder change. Try the switch again." })
     } finally {

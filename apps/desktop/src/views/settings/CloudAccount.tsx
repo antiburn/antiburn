@@ -11,6 +11,7 @@ import {
 import { CloudProjectFolderSummary } from "../../onboarding/CloudOnboardingFolders"
 import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import { CloudRoutedFolderSetup } from "../../onboarding/CloudRoutedFolderSetup"
+import { savedPersonalFolderPolicy } from "../../onboarding/cloudFolderRouting"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { ConnectionDialog } from "./ConnectionDialog"
@@ -46,9 +47,7 @@ export function CloudAccount({
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
   const [folderSetupAccount, setFolderSetupAccount] = useState<string | null>(null)
-  const managesPersonalPolicy =
-    value.cloud.destination?.kind === "personal" &&
-    value.ongoing?.consentVersion === "desktop-project-sync-v1"
+  const managesPersonalPolicy = !!savedPersonalFolderPolicy(value.cloud, value.routedPolicies)
   const openFolderSetup = () => {
     setFolderSetupAccount(value.cloud.identity?.id ?? null)
     if (!value.projects?.loading) void session.reviewFolderRoutes()
@@ -398,12 +397,14 @@ function CloudProjectsAccount({
     name: string
     context: CloudViewSnapshot
   } | null>(null)
-  const policy = value.ongoing
+  const policy = routed
+    ? savedPersonalFolderPolicy(value.cloud, value.routedPolicies)
+    : value.ongoing
   const hasConsent = policy?.consentVersion === "desktop-project-sync-v1"
   const storageUnknown = cloudUploadStatusUnknown(policy)
   const starting = value.sync.status === "starting"
   if (!value.cloud.identity || value.cloud.status !== "signed_in") return null
-  if (!personalCloudDestination(value.cloud.destination ?? null)) {
+  if (routed ? !policy : !personalCloudDestination(value.cloud.destination ?? null)) {
     if (value.error) return null
     return (
       <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
@@ -457,7 +458,11 @@ function CloudProjectsAccount({
         : null
       : () => void session.loadProjects()
     : hasConsent && policy?.status !== "reauth_required" && retryableUploads
-      ? () => void session.controlSync(false, routed ? value.cloud.destination?.id : undefined)
+      ? () =>
+          void session.controlSync(
+            false,
+            routed ? (policy?.destinationId ?? undefined) : undefined,
+          )
       : null
   const empty =
     projects?.loaded &&
@@ -485,6 +490,7 @@ function CloudProjectsAccount({
     <>
       <SettingsRow
         searchId="cloudFolders"
+        label={routed ? "Personal folders" : undefined}
         trailing={
           projects?.loaded && projects.groups.length > 0 ? (
             <span className="type-footnote text-label-secondary">
@@ -509,7 +515,7 @@ function CloudProjectsAccount({
                 />
               </div>
               <ToggleSwitch
-                aria-label={`Sync ${group.name}: ${group.path}`}
+                aria-label={`Sync ${group.name}: ${group.path}${routed ? " to Personal" : ""}`}
                 aria-describedby={`cloud-settings-folder-${encodeURIComponent(group.id)}`}
                 checked={selected(group.id)}
                 disabled={

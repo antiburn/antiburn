@@ -10,6 +10,32 @@ import type {
   CloudSourceSelection,
   DesktopCloudProjectGroup,
 } from "../lib/cloud"
+import { cloudSourceKey } from "../lib/cloud"
+import type { CloudViewSnapshot } from "./CloudSession"
+
+/** Compare consent-relevant roots without treating display-count changes as edits. */
+export function selectedFoldersKey(value: CloudSnapshot) {
+  return JSON.stringify(
+    value.draft.folders
+      .filter((folder) => folder.selected)
+      .map(cloudSourceKey)
+      .sort(),
+  )
+}
+
+/** Bind a legacy Start action to authority and exact selection, not display counts. */
+export function confirmationContextKey(value: CloudViewSnapshot) {
+  return JSON.stringify([
+    value.cloud.identity?.id,
+    value.cloud.destination?.id,
+    value.cloud.destination?.kind,
+    value.cloud.status,
+    value.cloud.captureEnabled,
+    value.cloud.setupError,
+    selectedFoldersKey(value.cloud),
+    value.projects?.selectionKey,
+  ])
+}
 
 /** A draft edit never changes the policy. Null is an explicit opt-out. */
 export type FolderRoutes = Readonly<Partial<Record<string, string | null>>>
@@ -91,6 +117,44 @@ export function savedFolderPolicyStatuses(
   return states.length === destinationIds.length ? states : null
 }
 
+/** Find the saved Personal policy without using the last approved destination. */
+export function savedPersonalFolderPolicy(
+  cloud: CloudSnapshot,
+  policies: readonly CloudOngoingStatus[] | null | undefined,
+) {
+  const personalId = cloud.destinations?.find(({ kind }) => kind === "personal")?.id
+  if (!personalId || !cloud.identity || !cloud.savedDestinationIds?.includes(personalId))
+    return null
+  return (
+    policies?.find(
+      (policy) =>
+        policy.accountId === cloud.identity?.id &&
+        policy.destinationId === personalId &&
+        policy.consentVersion === "desktop-project-sync-v1",
+    ) ?? null
+  )
+}
+
+/** Keep folder revocation bound to the same Personal policy and group the user saw. */
+export function personalFolderRemovalBinding(
+  cloud: CloudSnapshot,
+  policy: CloudOngoingStatus | null | undefined,
+  prior: CloudOngoingStatus | null | undefined,
+  discovery: CloudDestinationBinding | null,
+): CloudDestinationBinding | null {
+  return cloud.status === "signed_in" &&
+    cloud.identity &&
+    policy?.storageKnown &&
+    policy.policyRevision &&
+    policy.policyRevision === prior?.policyRevision &&
+    policy.accountId === prior.accountId &&
+    policy.destinationId === prior.destinationId &&
+    discovery?.accountId === policy.accountId &&
+    discovery?.destinationId === policy.destinationId
+    ? discovery
+    : null
+}
+
 /** Fence consent on membership changes, not destination order or display names. */
 export function folderRoutingAuthority(value: CloudSnapshot) {
   return JSON.stringify([
@@ -109,7 +173,10 @@ export function folderRoutingAuthority(value: CloudSnapshot) {
 /** Use an explicit authorized destination for discovery, not for consent. */
 export function folderDiscoveryBinding(cloud: CloudSnapshot): CloudDestinationBinding | null {
   const { destinations, identity, status, setupError } = cloud
-  const first = destinations?.map((entry) => entry.id).sort()[0]
+  const savedPersonal = destinations?.find(
+    ({ id, kind }) => kind === "personal" && cloud.savedDestinationIds?.includes(id),
+  )
+  const first = savedPersonal?.id ?? destinations?.map((entry) => entry.id).sort()[0]
   return identity && first && status === "signed_in" && !setupError
     ? { accountId: identity.id, destinationId: first }
     : null

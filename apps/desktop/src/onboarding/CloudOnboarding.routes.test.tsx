@@ -282,6 +282,63 @@ it("shows both running Settings routes and pauses only the named Team", async ()
   expect(ongoing.pause).toHaveBeenCalledExactlyOnceWith({ accountId, destinationId: team.id })
 })
 
+it("revokes only the Personal folder when the Team was saved last", async () => {
+  const lastTeam = { ...team, id: "aaa-team" }
+  const { port, ongoing, policies } = fixture({
+    destinations: [lastTeam, personal],
+    destination: lastTeam,
+    savedDestinationId: lastTeam.id,
+    savedDestinationIds: [lastTeam.id, personal.id],
+  })
+  const personalPolicy = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    policyRevision: "personal-revision",
+    projects: studio.projects,
+  })
+  const teamPolicy = ongoingStatus({
+    destinationId: lastTeam.id,
+    status: "syncing",
+    consentVersion: "desktop-project-sync-v1",
+    policyRevision: "team-revision",
+    projects: website.projects,
+  })
+  policies.set(personal.id, personalPolicy)
+  policies.set(lastTeam.id, teamPolicy)
+  ongoing.setProject.mockImplementation(async ({ destinationId }) => {
+    const saved = { ...personalPolicy, policyRevision: "personal-removed", projects: [] }
+    policies.set(destinationId, saved)
+    return saved
+  })
+  const session = new CloudSession(port, false, true)
+  function Account() {
+    const value = useSyncExternalStore(session.subscribe, session.getSnapshot)
+    return <CloudAccount session={session} value={value} />
+  }
+  render(<Account />)
+  const studioSwitch = await screen.findByRole("switch", { name: /Sync Studio/ })
+  expect(studioSwitch).toHaveAccessibleName(/to Personal$/)
+  expect(studioSwitch).toBeChecked()
+  expect(screen.getByRole("switch", { name: /Sync Website/ })).not.toBeChecked()
+  expect(ongoing.groups).toHaveBeenCalledExactlyOnceWith(
+    { accountId, destinationId: personal.id },
+    null,
+  )
+  fireEvent.click(studioSwitch)
+  await waitFor(() => expect(studioSwitch).not.toBeChecked())
+  expect(ongoing.setProject).toHaveBeenCalledExactlyOnceWith({
+    accountId,
+    destinationId: personal.id,
+    expectedPolicyRevision: "personal-revision",
+    groupId: studio.id,
+    selected: false,
+    projects: [],
+    folderPaths: studio.folderPaths,
+  })
+  expect(policies.get(lastTeam.id)).toEqual(teamPolicy)
+  expect(screen.getByText("Sessions syncing")).toBeVisible()
+})
+
 it("can continue from identity when capture is supported and invitations are disabled", async () => {
   const { port, ongoing } = fixture({
     draft: { screen: "identity", folders: [] },
