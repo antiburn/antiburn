@@ -681,7 +681,9 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByText("Scanning…", { exact: true })).not.toBeVisible()
     expect(await backfill.boundingBox()).toEqual(idle)
     await page.getByRole("button", { name: "Sign out", exact: true }).click()
-    await expect(page.getByRole("button", { name: "Sign in with GitHub", exact: true })).toBeEnabled()
+    await expect(
+      page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+    ).toBeEnabled()
     await expect(page.locator("[id^='cloud-settings-folder-']")).toHaveCount(0)
   })
 

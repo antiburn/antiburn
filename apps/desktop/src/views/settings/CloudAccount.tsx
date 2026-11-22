@@ -110,7 +110,8 @@ export function CloudAccount({
   const [confirmReset, setConfirmReset] = useState(false)
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
   const checkingSignIn = value.cloud.status === "returned"
-  const readFailed = value.loaded && !!value.error && !value.cloud.identity && !waitingForBrowser
+  const readFailed =
+    value.loaded && !!value.error && !value.cloud.identity && !waitingForBrowser
   const needsSignOut =
     !!value.cloud.identity ||
     value.cloud.revocationPending ||
@@ -180,18 +181,22 @@ export function CloudAccount({
             Learn more <ArrowUpRight size={13} aria-hidden="true" />
           </button>
         )}
-        {value.loaded && value.cloud.authEnabled && !readFailed && !needsSignOut && !checkingSignIn && (
-          <button
-            className="ui-push-button shrink-0 aria-disabled:opacity-50"
-            aria-disabled={value.busy || undefined}
-            onClick={() => {
-              if (value.busy) return
-              void (waitingForBrowser ? session.cancel() : session.begin())
-            }}
-          >
-            {waitingForBrowser ? "Cancel sign-in" : cloudGithubSignInLabel}
-          </button>
-        )}
+        {value.loaded &&
+          value.cloud.authEnabled &&
+          !readFailed &&
+          !needsSignOut &&
+          !checkingSignIn && (
+            <button
+              className="ui-push-button shrink-0 aria-disabled:opacity-50"
+              aria-disabled={value.busy || undefined}
+              onClick={() => {
+                if (value.busy) return
+                void (waitingForBrowser ? session.cancel() : session.begin())
+              }}
+            >
+              {waitingForBrowser ? "Cancel sign-in" : cloudGithubSignInLabel}
+            </button>
+          )}
         {needsSignOut && (
           <button
             className="ui-push-button shrink-0"
