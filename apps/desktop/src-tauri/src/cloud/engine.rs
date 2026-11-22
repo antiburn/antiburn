@@ -380,6 +380,9 @@ impl Engine {
         }
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
         let (mut guard, mut record) = self.read_state()?;
+        if record.phase == Phase::ReauthRequired && record.cleanup.blocks_connection() {
+            return Err(Failure::Unavailable);
+        }
         if record.phase == Phase::Active
             && !self.sign_out_marker_failed
             && self.status != AuthStatus::ReauthRequired

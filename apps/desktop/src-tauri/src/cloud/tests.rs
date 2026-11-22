@@ -476,19 +476,11 @@ fn invitation_bearer_rejection_only_invalidates_the_current_account() {
         Err(Failure::Unavailable)
     ));
     fixture.transport.fail_revoke.store(true, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.cleanup.blocks_connection());
-    assert_eq!(fixture.vault.read().unwrap().unwrap().refresh_token, proof);
-    fixture
-        .transport
-        .fail_revoke
-        .store(false, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
+    let logout = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(!fixture.engine.cleanup.blocks_connection());
     assert!(fixture.vault.read().unwrap().is_none());
-    assert_eq!(
-        *fixture.transport.revoked.lock().unwrap(),
-        [proof.clone(), proof]
-    );
+    assert!(!logout.send(&fixture.transport));
+    assert_eq!(*fixture.transport.revoked.lock().unwrap(), [proof]);
     fixture.sign_in();
     assert!(fixture.engine.invitations_enabled());
 }
