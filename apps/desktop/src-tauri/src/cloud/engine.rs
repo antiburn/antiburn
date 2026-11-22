@@ -166,6 +166,7 @@ impl Engine {
     /// Send one bounded capture API request without returning access proof.
     /// Reject a changed service before credentials are used. Auth rotation uses
     /// only the account fence; content pause blocks dispatch without revocation.
+    /// HTTP 401 invalidates cached access. HTTP 403 leaves account access intact.
     pub(super) fn capture_request(
         &mut self,
         identity: &antiburn_cloud_capture::CaptureIdentity,
@@ -222,7 +223,7 @@ impl Engine {
             return Err(TransportError::Unauthorized);
         }
         let response = super::upload::api_request(config, &access.token, identity, route, body)?;
-        if response.status == 401 || (response.status == 403 && membership_generation.is_none()) {
+        if response.status == 401 {
             self.access = None;
             self.status = AuthStatus::ReauthRequired;
         }

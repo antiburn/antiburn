@@ -252,6 +252,7 @@ export interface CloudOngoingStatus {
     | "offline"
     | "reauth_required"
     | "upload_unavailable"
+    | "route_denied"
     | "fenced"
     | "interrupted"
     | "storage_unavailable"

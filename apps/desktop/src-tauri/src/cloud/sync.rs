@@ -41,6 +41,7 @@ mod git_checkout;
 const RESERVATION_RETRY_DELAY: Duration = Duration::from_secs(15);
 const INTEGRITY_POLL_DELAY: Duration = Duration::from_secs(5);
 const FINALIZATION_PROBE_LIMIT: u8 = 3;
+const ROUTE_DENIAL_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 /// Explicit full session content confirmation for initial and future sessions.
 /// Old source selections and upload preferences cannot deserialize as consent.
@@ -97,6 +98,7 @@ pub(crate) enum State {
     Offline,
     ReauthRequired,
     UploadUnavailable,
+    RouteDenied,
     Fenced,
     Interrupted,
     StorageUnavailable,
@@ -223,6 +225,7 @@ struct Runner {
     candidates: VecDeque<Selection>,
     next_reconcile: Option<Instant>,
     next_reservation: Option<Instant>,
+    route_denied_until: Option<Instant>,
     /// Bound retries of saved requests without delaying unrelated captures.
     retry_deadlines: BTreeMap<String, (Instant, upload::Failure)>,
     /// Rejections of both the saved request and its recovery. Stop probing a
@@ -806,6 +809,7 @@ impl Runner {
             self.conflict_finalization_replays
                 .retain(|id, _| !saved.contains(id));
             self.next_integrity_poll = None;
+            self.route_denied_until = None;
             self.state = State::Ready;
         }
         self.state
@@ -860,6 +864,15 @@ impl Runner {
                 upload::Failure::Conflict,
             ),
         );
+    }
+
+    /// Limit capture requests for this destination without pausing the device.
+    fn defer_route_denial(&mut self, retry_after: Option<Duration>) {
+        let delay = retry_after.map_or(ROUTE_DENIAL_RETRY_DELAY, |hint| {
+            hint.max(ROUTE_DENIAL_RETRY_DELAY)
+        });
+        self.route_denied_until = Some(Instant::now() + delay);
+        self.state = State::RouteDenied;
     }
 
     /// Fill only an empty queue. Partial sweeps continue on the next available
@@ -1210,6 +1223,7 @@ impl Runner {
             self.finalization_submissions.clear();
             self.conflict_finalization_replays.clear();
             self.next_integrity_poll = None;
+            self.route_denied_until = None;
             tracing::info!(
                 event = "cloud_sync_sign_in_changed",
                 conflict_rechecks_cleared = true
@@ -1224,6 +1238,14 @@ impl Runner {
         self.conflict_finalization_replays
             .retain(|id, _| jobs.iter().any(|job| &job.identity.capture_id == id));
         let now_instant = Instant::now();
+        if self
+            .route_denied_until
+            .is_some_and(|deadline| deadline > now_instant)
+        {
+            self.state = State::RouteDenied;
+            return Ok(());
+        }
+        self.route_denied_until = None;
         let backfill_active = self.backfill_revision.as_deref() == Some(&policy.revision);
         let can_poll_integrity = !(backfill_active && self.backfill_discovery_due)
             && self
@@ -1283,6 +1305,10 @@ impl Runner {
                     let kind = failure
                         .as_ref()
                         .map_or(upload::Failure::Unavailable, |err| err.failure);
+                    if kind == upload::Failure::RouteDenied {
+                        self.defer_route_denial(failure.and_then(|err| err.retry_after));
+                        return Ok(());
+                    }
                     let delay = failure
                         .and_then(|err| err.retry_after)
                         .unwrap_or(RESERVATION_RETRY_DELAY);
@@ -1326,7 +1352,10 @@ impl Runner {
                     transport.failure,
                     Some(upload::Failure::Offline | upload::Failure::Backpressure)
                 );
-                let attempts = if transient {
+                let route_denied = transport.failure == Some(upload::Failure::RouteDenied);
+                let attempts = if route_denied {
+                    replay_attempts
+                } else if transient {
                     replay_attempts + 1
                 } else {
                     FINALIZATION_PROBE_LIMIT
@@ -1344,8 +1373,12 @@ impl Runner {
                     self.finalization_submissions
                         .insert(entry.identity.capture_id.clone());
                 }
-                if transient && let Err(error) = replay {
-                    // Keep the finalize Retry-After without using up a status conflict probe.
+                if (transient
+                    || route_denied
+                    || matches!(transport.failure, Some(upload::Failure::Unauthorized)))
+                    && let Err(error) = replay
+                {
+                    // Preserve the finalize failure instead of the earlier status result.
                     result = Err(antiburn_cloud_capture::Error::Transport(error));
                 } else if status_conflict {
                     // Even HTTP 202 does not prove acceptance.
@@ -1374,7 +1407,10 @@ impl Runner {
                     succeeded = replay.is_ok(),
                 );
                 if let Err(error) = replay {
-                    if matches!(
+                    if transport.failure == Some(upload::Failure::RouteDenied) {
+                        self.finalization_submissions
+                            .remove(&entry.identity.capture_id);
+                    } else if matches!(
                         transport.failure,
                         Some(upload::Failure::Offline | upload::Failure::Backpressure)
                     ) {
@@ -1400,6 +1436,10 @@ impl Runner {
                     .insert(entry.identity.capture_id.clone());
             }
             self.state = transport_state(transport.failure, &result);
+            if transport.failure == Some(upload::Failure::RouteDenied) {
+                self.defer_route_denial(transport.retry_after);
+                return Ok(());
+            }
             if result.is_ok() {
                 self.conflict_attempts.remove(&job.identity.capture_id);
                 self.retry_deadlines.remove(&job.identity.capture_id);
@@ -1606,6 +1646,11 @@ impl Runner {
                     current,
                 ) {
                     Ok(capabilities) => slot.insert(capabilities),
+                    Err(failure) if failure.failure == upload::Failure::RouteDenied => {
+                        self.defer_route_denial(failure.retry_after);
+                        self.candidates.push_front(selection);
+                        return Ok(());
+                    }
                     Err(failure) => {
                         self.state = match failure.failure {
                             upload::Failure::Backpressure | upload::Failure::Offline => {
@@ -1852,6 +1897,9 @@ impl Runner {
                 return Ok(());
             }
             self.state = transport_state(transport.failure, &result);
+            if transport.failure == Some(upload::Failure::RouteDenied) {
+                self.defer_route_denial(transport.retry_after);
+            }
             let capacity_refused = matches!(
                 result,
                 Err(antiburn_cloud_capture::Error::Transport(
@@ -2186,6 +2234,7 @@ fn transport_state<T>(
         Some(upload::Failure::Backpressure) => State::Syncing,
         Some(upload::Failure::Offline) => State::Offline,
         Some(upload::Failure::Unauthorized) => State::ReauthRequired,
+        Some(upload::Failure::RouteDenied) => State::RouteDenied,
         Some(upload::Failure::Unavailable) => State::UploadUnavailable,
         Some(upload::Failure::Conflict) => State::Fenced,
         Some(upload::Failure::Rejected) => State::Interrupted,
@@ -2603,6 +2652,7 @@ fn status_for_destination(
                         state,
                         State::Offline
                             | State::UploadUnavailable
+                            | State::RouteDenied
                             | State::Fenced
                             | State::Interrupted
                     )

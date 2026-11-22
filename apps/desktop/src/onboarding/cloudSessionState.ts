@@ -250,6 +250,7 @@ export const cloudOngoingStatusMessage = (value: CloudOngoingStatus) => {
     offline: "Cloud is offline",
     reauth_required: "Reconnect to Cloud",
     upload_unavailable: "Cloud upload unavailable",
+    route_denied: "Cloud denied uploads to this workspace",
     fenced: "Some uploads need attention",
     interrupted: "Some sessions could not be prepared",
     storage_unavailable: "Could not open saved uploads",

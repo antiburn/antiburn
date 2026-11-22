@@ -455,6 +455,14 @@ automatically. A new sign-in clears conflict cooldowns but preserves capacity
 and offline backoff. It does not replace the capture, change its destination,
 expand folder consent, or resume a paused policy.
 
+During background sync, an HTTP 403 from the capture API means Cloud denied
+uploads to that workspace. Desktop keeps the account signed in and does not
+pause other destinations. After each denial, Desktop waits 60 to 300 seconds
+before the next automatic capture request for that destination. A new sign-in
+or **Retry saved uploads** clears that wait. An HTTP 401 instead invalidates
+the cached access token. A denial does not grant permission to repeat an
+incomplete reservation or read source again.
+
 Temporary request failures and HTTP 429 capacity rejections defer the current
 upload until its retry deadline. Valid `Retry-After` hints use a 1 to 300 second
 bound. A saved request's delay does not block other ready uploads.

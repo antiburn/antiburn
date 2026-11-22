@@ -50,6 +50,11 @@ const STATUS_FINALIZE_REPLAY: usize = 24;
 const STATUS_REPLAY_REJECTED: usize = 25;
 const STATUS_REPLAY_OFFLINE: usize = 26;
 const STATUS_REPLAY_CAPACITY: usize = 27;
+const PART_DENIED: usize = 28;
+const PART_UNAUTHORIZED: usize = 29;
+const CAPS_DENIED: usize = 30;
+const RESERVE_DENIED: usize = 31;
+const STATUS_REPLAY_DENIED: usize = 32;
 
 struct Service {
     origin: String,
@@ -141,6 +146,8 @@ impl Service {
                     }
                     if mode == CAPS_CAPACITY {
                         (429, serde_json::json!({}))
+                    } else if mode == CAPS_DENIED {
+                        (403, serde_json::json!({}))
                     } else if mode == CAPS_MISSING {
                         (404, serde_json::json!({}))
                     } else {
@@ -195,7 +202,9 @@ impl Service {
                     if mode == RESERVE_OFFLINE {
                         continue;
                     }
-                    if mode == UNKNOWN_CAPACITY {
+                    if mode == RESERVE_DENIED {
+                        (403, serde_json::json!({}))
+                    } else if mode == UNKNOWN_CAPACITY {
                         (
                             429,
                             serde_json::json!({
@@ -278,7 +287,10 @@ impl Service {
                     && line.contains("/status?")
                     && (matches!(
                         mode,
-                        STATUS_REPLAY_REJECTED | STATUS_REPLAY_OFFLINE | STATUS_REPLAY_CAPACITY
+                        STATUS_REPLAY_REJECTED
+                            | STATUS_REPLAY_OFFLINE
+                            | STATUS_REPLAY_CAPACITY
+                            | STATUS_REPLAY_DENIED
                     ) || (mode == STATUS_FINALIZE_REPLAY
                         && worker_finalizations.load(Ordering::Acquire) < 2))
                 {
@@ -345,6 +357,10 @@ impl Service {
                     (429, serde_json::json!({}))
                 } else if line.contains("/parts ") && mode == PART_REJECTED {
                     (422, serde_json::json!({}))
+                } else if line.contains("/parts ") && mode == PART_DENIED {
+                    (403, serde_json::json!({}))
+                } else if line.contains("/parts ") && mode == PART_UNAUTHORIZED {
+                    (401, serde_json::json!({}))
                 } else if (mode == PART_CONFLICT && line.contains("/parts "))
                     || (mode == FINALIZE_CONFLICT && line.contains("/finalize "))
                     || (mode == RENEWED_PART_CONFLICT && line.contains("/parts "))
@@ -402,6 +418,8 @@ impl Service {
                         (503, serde_json::json!({}))
                     } else if mode == STATUS_REPLAY_CAPACITY {
                         (429, serde_json::json!({}))
+                    } else if mode == STATUS_REPLAY_DENIED {
+                        (403, serde_json::json!({}))
                     } else if mode == STATUS_REPLAY_REJECTED {
                         (
                             409,
@@ -421,6 +439,8 @@ impl Service {
                 };
                 let retry_after = if status == 429 || status == 503 {
                     "Retry-After: 90\r\n"
+                } else if status == 403 && mode == PART_DENIED {
+                    "Retry-After: 3600\r\n"
                 } else {
                     ""
                 };
@@ -1592,6 +1612,173 @@ fn cloud_device_upload_pause_preserves_personal_and_team_capture_ids() {
         let reserves = fixture.service.reserve_identities.lock().unwrap();
         assert_eq!(reserves.as_slice(), &[saved.identity]);
     }
+}
+
+#[test]
+fn cloud_scheduler_route_denial_keeps_account_and_saved_upload() {
+    for (id, kind) in [
+        ("personal", WorkspaceKind::Personal),
+        ("team", WorkspaceKind::Team),
+    ] {
+        let mut fixture = Fixture::for_workspace(
+            PART_DENIED,
+            0,
+            Workspace {
+                id: id.into(),
+                name: id.into(),
+                kind,
+            },
+        );
+        fixture.turn();
+        let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+        let start = Instant::now();
+        let mut observed = Vec::new();
+        fixture.turn_published(&mut observed);
+        assert_eq!(observed[0].status, State::RouteDenied);
+        assert!(observed[0].retry_available);
+        assert_eq!(observed[0].destination_id.as_deref(), Some(id));
+        assert!(fixture.engine.status == AuthStatus::SignedIn);
+        assert!(fixture.engine.session().is_some());
+        assert!(fixture.store.cloud_device_upload_enabled().unwrap());
+        let deadline = fixture.runner.route_denied_until.unwrap();
+        assert!(deadline >= start + Duration::from_secs(300));
+        assert!(deadline <= Instant::now() + Duration::from_secs(300));
+        let requests = fixture.service.requests.load(Ordering::Acquire);
+        fixture.turn();
+        fixture.turn();
+        assert_eq!(fixture.runner.state, State::RouteDenied);
+        assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+        assert_eq!(fixture.authority.exchanges.load(Ordering::Acquire), 1);
+
+        fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+        fixture.service.mode.store(READY, Ordering::Release);
+        fixture.runner.route_denied_until = Some(Instant::now());
+        fixture.accept_first();
+        assert_eq!(
+            fixture
+                .service
+                .reserve_identities
+                .lock()
+                .unwrap()
+                .as_slice(),
+            &[saved.identity]
+        );
+    }
+}
+
+#[test]
+fn cloud_scheduler_capability_denial_waits_before_retrying() {
+    let mut fixture = Fixture::new(CAPS_DENIED, 0);
+    let start = Instant::now();
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::RouteDenied);
+    assert!(fixture.runner.route_denied_until.unwrap() >= start + ROUTE_DENIAL_RETRY_DELAY);
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 0);
+    fixture.turn();
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), 1);
+    fixture.service.mode.store(READY, Ordering::Release);
+    fixture.runner.route_denied_until = Some(Instant::now());
+    fixture.accept_first();
+}
+
+#[test]
+fn cloud_scheduler_personal_denial_leaves_team_upload_eligible() {
+    let mut fixture = Fixture::new(CAPS_DENIED, 0);
+    fixture.authority.other_team.store(true, Ordering::Release);
+    fixture
+        .store
+        .save_cloud_sync_policy_for_membership(
+            (
+                "account",
+                "team",
+                &fixture.service.origin,
+                &fixture.service.origin,
+                Some(("membership-0", "Team")),
+            ),
+            &[SourceSelection {
+                source_kind: SourceKind::ClaudeJsonl,
+                path: fixture.root.to_str().unwrap().into(),
+            }],
+            &fixture.policy.projects,
+            &BTreeMap::new(),
+            || true,
+        )
+        .unwrap();
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::RouteDenied);
+    let personal = std::mem::replace(
+        &mut fixture.runner,
+        Runner {
+            team: Some(("team".into(), "membership-0".into())),
+            ..Runner::default()
+        },
+    );
+    fixture.service.mode.store(READY, Ordering::Release);
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(saved.identity.destination_id, "team");
+    fixture.runner = personal;
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::RouteDenied);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+}
+
+#[test]
+fn cloud_scheduler_finalization_replay_reports_route_denial_not_status_conflict() {
+    let mut fixture = Fixture::new(VERIFY_PENDING, 0);
+    for _ in 0..8 {
+        fixture.turn();
+        if fixture.service.finalizations.load(Ordering::Acquire) == 1 {
+            break;
+        }
+    }
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert!(saved.completion_submitted);
+    fixture
+        .service
+        .mode
+        .store(STATUS_REPLAY_DENIED, Ordering::Release);
+    fixture.runner.next_integrity_poll = None;
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::RouteDenied);
+    assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 1);
+    assert_eq!(fixture.service.finalizations.load(Ordering::Acquire), 2);
+    assert_eq!(
+        fixture.host.spool().unwrap().entries().unwrap(),
+        vec![saved]
+    );
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+}
+
+#[test]
+fn cloud_scheduler_reservation_denial_does_not_retry_source_capture() {
+    let mut fixture = Fixture::new(RESERVE_DENIED, 0);
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    assert_eq!(fixture.runner.state, State::RouteDenied);
+    assert_eq!(saved.state, CaptureState::Preparing);
+    assert!(saved.reservation_id.is_none());
+    assert!(saved.manifest.is_none());
+    fixture.service.mode.store(READY, Ordering::Release);
+    fixture.runner.route_denied_until = Some(Instant::now());
+    fixture.turn();
+    let entries = fixture.host.spool().unwrap().entries().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].identity, saved.identity);
+    assert!(entries[0].manifest.is_none());
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn cloud_scheduler_unauthorized_capture_invalidates_account_access() {
+    let mut fixture = Fixture::new(PART_UNAUTHORIZED, 0);
+    fixture.turn();
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::ReauthRequired);
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(fixture.engine.session().is_none());
+    assert!(fixture.runner.route_denied_until.is_none());
 }
 
 #[test]
