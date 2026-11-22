@@ -205,7 +205,7 @@ fn policy(
         include_non_repo_folders: true,
         progress: false,
         refresh_repositories: false,
-        refresh_changed_sources: false,
+        source_refresh: None,
         historical_missing: None,
         hooks,
     }
@@ -221,25 +221,12 @@ fn batch(logs: Vec<SessionLog>) -> DiscoveryBatch {
 
 #[test]
 fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
-    let refresh = ScanController::default();
-    let now = tokio::time::Instant::now();
-    let agents = BTreeSet::from([AgentKind::Claude, AgentKind::Codex]);
-    refresh
-        .source_refreshes()
-        .next_allowed
-        .extend(agents.iter().map(|agent| (*agent, now + TICK)));
-    super::super::retry_superseded_project_deferrals(
-        &refresh,
-        &ScanTrigger::SourceRefresh {
-            agents: agents.iter().map(|agent| agent.slug()).collect(),
-        },
-    );
-    assert!(refresh.take_pending_trigger().0.is_none());
-    assert!(refresh.source_refreshes().take_due(now).is_empty());
-    assert_eq!(refresh.source_refreshes().take_due(now + TICK), agents);
-
     let historical = ScanController::default();
-    super::super::retry_superseded_project_deferrals(&historical, &ScanTrigger::HistoricalScan);
+    super::super::retry_superseded_project_deferrals(
+        &historical,
+        &ScanTrigger::HistoricalScan,
+        &HashSet::new(),
+    );
     assert!(matches!(
         historical
             .pending_trigger
@@ -250,7 +237,7 @@ fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
     ));
 
     let current = ScanController::default();
-    super::super::retry_superseded_project_deferrals(&current, &ScanTrigger::Tick);
+    super::super::retry_superseded_project_deferrals(&current, &ScanTrigger::Tick, &HashSet::new());
     assert!(matches!(
         current
             .pending_trigger
@@ -340,7 +327,7 @@ async fn superseded_project_deferral_publication_is_reported_after_policy_change
     .unwrap();
     writer.finish().unwrap();
 
-    assert!(described.project_deferrals_superseded);
+    assert!(described.superseded_project_deferrals.is_some());
 }
 
 #[tokio::test]

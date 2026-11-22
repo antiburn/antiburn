@@ -66,7 +66,7 @@ async fn scan_at(store: &Store, home: &std::path::Path, logs: Vec<SessionLog>, e
         include_non_repo_folders: true,
         progress: false,
         refresh_repositories: false,
-        refresh_changed_sources: false,
+        source_refresh: None,
         historical_missing: None,
         hooks: None,
     };

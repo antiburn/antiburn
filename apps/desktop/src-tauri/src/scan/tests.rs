@@ -2246,7 +2246,9 @@ fn source_refreshes_merge_separately_from_one_shot_triggers() {
     assert_eq!(
         controller
             .source_refreshes()
-            .take_due(tokio::time::Instant::now()),
+            .take_due(tokio::time::Instant::now())
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([AgentKind::OpenCode, AgentKind::Claude])
     );
 
@@ -2259,7 +2261,9 @@ fn source_refreshes_merge_separately_from_one_shot_triggers() {
     assert_eq!(
         controller
             .source_refreshes()
-            .take_due(tokio::time::Instant::now()),
+            .take_due(tokio::time::Instant::now())
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([AgentKind::OpenCode]),
         "a pending full trigger cannot discard a source refresh"
     );
@@ -2271,7 +2275,11 @@ fn a_source_refresh_waits_for_its_vendor_deadline() {
     let now = tokio::time::Instant::now();
     controller.request_source_refresh(AgentKind::Claude);
     assert_eq!(
-        controller.source_refreshes().take_due(now),
+        controller
+            .source_refreshes()
+            .take_due(now)
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([AgentKind::Claude])
     );
     controller
@@ -2283,7 +2291,11 @@ fn a_source_refresh_waits_for_its_vendor_deadline() {
     }
     controller.request_source_refresh(AgentKind::Codex);
     assert_eq!(
-        controller.source_refreshes().take_due(now),
+        controller
+            .source_refreshes()
+            .take_due(now)
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([AgentKind::Codex])
     );
     assert_eq!(
@@ -2297,7 +2309,11 @@ fn a_source_refresh_waits_for_its_vendor_deadline() {
             .is_empty()
     );
     assert_eq!(
-        controller.source_refreshes().take_due(now + TICK),
+        controller
+            .source_refreshes()
+            .take_due(now + TICK)
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([AgentKind::Claude])
     );
     assert_eq!(controller.source_refreshes().next_due(now + TICK), None);
@@ -2316,6 +2332,7 @@ fn source_refresh_runs_only_the_requested_agent_scope() {
     ));
     assert!(uses_history_window(&ScanTrigger::SourceRefresh {
         agents: vec!["opencode"],
+        project_deferral_replays: Arc::default(),
     }));
     assert!(!uses_history_window(&ScanTrigger::WatcherAgents {
         agents: vec!["opencode"],

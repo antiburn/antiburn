@@ -27,7 +27,7 @@ async fn source_refresh_repairs_a_second_source_that_changes_mid_pass() {
         release: Semaphore::new(0),
     });
     let mut policy = policy(&store, temp.path(), Some(hooks.clone()));
-    policy.refresh_changed_sources = true;
+    policy.source_refresh = Some(Arc::default());
 
     let (sender, finite) = mpsc::channel(1);
     let (_live_sender, live) = mpsc::channel(1);
@@ -65,6 +65,189 @@ async fn source_refresh_repairs_a_second_source_that_changes_mid_pass() {
             .claim_next_evidence(&[first_key.agent.as_str()], 399, 60)
             .unwrap()
             .is_none()
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn source_refresh_replays_a_superseded_folder_update_after_evidence_is_ready() {
+    const HOME_ENV: &str = "ANTIBURN_TEST_SOURCE_REFRESH_REPLAY_HOME";
+    let Some(home) = std::env::var_os(HOME_ENV).map(PathBuf::from) else {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "scan::owner::tests::source_refresh::source_refresh_replays_a_superseded_folder_update_after_evidence_is_ready",
+                "--nocapture",
+            ])
+            .env(HOME_ENV, &home)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+
+    let store = Store::open_in_memory(&home).unwrap();
+    let id = "11111111-1111-4111-8111-111111111111";
+    let mut restored = fixture_log(&home, id);
+    let old_activity = unix_now() - CURRENT_WINDOW_SECS - 60;
+    restored.updated_at = Some(old_activity);
+    let SessionSource::File(transcript) = &restored.source else {
+        unreachable!();
+    };
+    let cwd = home.join("Documents/project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let mut event: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(transcript).unwrap()).unwrap();
+    event["cwd"] = serde_json::json!(cwd);
+    event["timestamp"] = serde_json::json!(
+        time::OffsetDateTime::from_unix_timestamp(old_activity)
+            .unwrap()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    );
+    let bytes = format!("{event}\n");
+    std::fs::write(transcript, &bytes).unwrap();
+    let key = index_source(&store, &home, &restored).await;
+    std::fs::remove_file(transcript).unwrap();
+    let claim = store
+        .claim_next_evidence(&[key.agent.as_str()], 100, 60)
+        .unwrap()
+        .unwrap();
+    assert!(
+        store
+            .fail_evidence(
+                &claim,
+                crate::store::EvidenceFailure::Failed {
+                    revisions: crate::analysis::projection_revisions(),
+                },
+                crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING,
+            )
+            .unwrap()
+    );
+    assert!(
+        store
+            .has_local_evidence_source_refresh_targets(&key.agent)
+            .unwrap()
+    );
+    std::fs::write(transcript, bytes).unwrap();
+
+    let (entered, mut arrivals) = mpsc::unbounded_channel();
+    let hooks = Arc::new(PreparationHooks {
+        stage: PreparationStage::DeferralPublication,
+        blocked: HashSet::from([id.to_owned()]),
+        panic: HashSet::new(),
+        panic_once: AtomicBool::new(false),
+        entered,
+        release: Semaphore::new(0),
+    });
+    let mut first_policy = policy(&store, &home, Some(hooks.clone()));
+    first_policy.cutoff = None;
+    first_policy.source_refresh = Some(Arc::default());
+    let (sender, finite) = mpsc::channel(1);
+    let (_live_sender, live) = mpsc::channel(1);
+    sender.send(batch(vec![restored.clone()])).await.unwrap();
+    drop(sender);
+    let mut admission = writer(&store);
+    let (described, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            run(finite, live, None, &first_policy, &mut admission),
+            async {
+                assert_eq!(arrivals.recv().await.as_deref(), Some(id));
+                store.grant_dir("Desktop").unwrap();
+                hooks.release.add_permits(1);
+            }
+        )
+    })
+    .await
+    .unwrap();
+    admission.finish().unwrap();
+    assert!(store.deferred_permission_dirs().unwrap().is_empty());
+
+    let controller = ScanController::default();
+    let now = tokio::time::Instant::now();
+    controller
+        .source_refreshes()
+        .next_allowed
+        .insert(restored.agent_type, now + TICK);
+    retry_superseded_project_deferrals(
+        &controller,
+        &ScanTrigger::SourceRefresh {
+            agents: vec![restored.agent_type.slug()],
+            project_deferral_replays: Arc::default(),
+        },
+        &described.superseded_project_deferrals.unwrap(),
+    );
+    assert!(controller.source_refreshes().take_due(now).is_empty());
+    assert!(controller.take_pending_trigger().0.is_none());
+
+    // The source refresh requeues the missing evidence, and the worker settles
+    // that evidence before the next scan can run.
+    let claim = store
+        .claim_next_evidence(&[key.agent.as_str()], unix_now(), 60)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claim.key, key);
+    store
+        .lock()
+        .execute(
+            "UPDATE session_evidence
+         SET status = 'ready', analyzed_generation = ?4, last_error = NULL,
+             claimed_at_epoch = NULL, lease_expires_at_epoch = NULL
+         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3",
+            rusqlite::params![
+                key.environment_key,
+                key.agent,
+                key.session_id,
+                claim.source_generation,
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        store.evidence(&key).unwrap().unwrap().status,
+        crate::store::EvidenceStatus::Ready
+    );
+    assert!(
+        !store
+            .has_local_evidence_source_refresh_targets(&key.agent)
+            .unwrap()
+    );
+
+    controller.request_source_refresh(AgentKind::Codex);
+    let due = controller.source_refreshes().take_due(now + TICK);
+    let eligible = eligible_source_refresh_agents(
+        &store,
+        due.iter().map(|(agent, keys)| (*agent, !keys.is_empty())),
+    )
+    .unwrap();
+    assert_eq!(eligible, BTreeSet::from([restored.agent_type]));
+    let mut replay_policy = policy(&store, &home, None);
+    replay_policy.cutoff = None;
+    replay_policy.source_refresh = Some(Arc::new(due.into_values().flatten().collect()));
+    let unrelated = fixture_log(&home, "22222222-2222-4222-8222-222222222222");
+    let (sender, finite) = mpsc::channel(1);
+    let (_live_sender, live) = mpsc::channel(1);
+    sender.send(batch(vec![unrelated, restored])).await.unwrap();
+    drop(sender);
+    let mut admission = writer(&store);
+    let replay = run(finite, live, None, &replay_policy, &mut admission).await;
+    admission.finish().unwrap();
+    assert!(replay.superseded_project_deferrals.is_none());
+    assert_eq!(replay.records.len(), 1);
+    assert_eq!(replay.records[0].key, key);
+    assert_eq!(
+        store.deferred_permission_dirs().unwrap(),
+        vec![crate::dto::DeferredPermissionDir {
+            dir: "Documents".to_owned(),
+            path_count: 1,
+        }]
     );
 }
 

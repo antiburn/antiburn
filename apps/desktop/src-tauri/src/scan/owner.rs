@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use antiburn_local::discovery::{DiscoveryBatch, ProjectAccessSnapshot};
 use tokio::sync::mpsc;
@@ -45,7 +45,7 @@ struct OwnerPolicy {
     include_non_repo_folders: bool,
     progress: bool,
     refresh_repositories: bool,
-    refresh_changed_sources: bool,
+    source_refresh: Option<Arc<HashSet<SessionKey>>>,
     historical_missing: Option<(i64, HashSet<SessionKey>)>,
     #[cfg(test)]
     hooks: Option<Arc<prepare::PreparationHooks>>,
@@ -84,7 +84,7 @@ pub(super) struct PassInputs {
     pub repository_policy: RepositoryPolicySnapshot,
     pub include_non_repo_folders: bool,
     pub refresh_repositories: bool,
-    pub refresh_changed_sources: bool,
+    pub source_refresh: Option<Arc<HashSet<SessionKey>>>,
 }
 
 pub(super) async fn refresh_titles(
@@ -147,7 +147,7 @@ pub(super) async fn refresh_titles(
         include_non_repo_folders: store.settings_snapshot().include_non_repo_folders,
         progress: false,
         refresh_repositories: false,
-        refresh_changed_sources: false,
+        source_refresh: None,
         historical_missing: None,
         #[cfg(test)]
         hooks: None,
@@ -178,7 +178,7 @@ pub(super) async fn discover_and_run(
         repository_policy,
         include_non_repo_folders,
         refresh_repositories,
-        refresh_changed_sources,
+        source_refresh,
     } = inputs;
     let (sender, receiver) = mpsc::channel(2);
     let scope = scope.clone();
@@ -215,7 +215,7 @@ pub(super) async fn discover_and_run(
         include_non_repo_folders,
         progress,
         refresh_repositories,
-        refresh_changed_sources,
+        source_refresh,
         historical_missing: None,
         #[cfg(test)]
         hooks: None,
@@ -281,7 +281,7 @@ pub(super) async fn refresh_logs(
         include_non_repo_folders: settings.include_non_repo_folders,
         progress: false,
         refresh_repositories: false,
-        refresh_changed_sources: false,
+        source_refresh: None,
         historical_missing,
         #[cfg(test)]
         hooks: None,
@@ -342,9 +342,13 @@ async fn prepare_source_refresh_identity(
     store: &Store,
     description: DescriptionLog,
     origin: WorkOrigin,
+    project_deferral_replays: &HashSet<SessionKey>,
 ) -> anyhow::Result<Option<DescriptionLog>> {
     let reason = source_refresh_reason(store, description.key.clone()).await?;
-    if origin == WorkOrigin::Pass && reason.is_none() {
+    if origin == WorkOrigin::Pass
+        && reason.is_none()
+        && !project_deferral_replays.contains(&description.key)
+    {
         return Ok(None);
     }
     if reason == Some(EvidenceSourceRefresh::Changed)
@@ -358,6 +362,7 @@ async fn prepare_source_refresh_identity(
         };
         if origin == WorkOrigin::Pass
             && fresh.key != description.key
+            && !project_deferral_replays.contains(&fresh.key)
             && source_refresh_reason(store, fresh.key.clone())
                 .await?
                 .is_none()
@@ -529,7 +534,10 @@ async fn run_with_titles(
                 .map(|record| (activity_key, record.clone()))
                 .into_iter()
                 .collect();
-            let refresh_store = policy.refresh_changed_sources.then(|| writer.store.clone());
+            let source_refresh = policy
+                .source_refresh
+                .as_ref()
+                .map(|keys| (writer.store.clone(), Arc::clone(keys)));
             let origin = work.origin;
             #[cfg(test)]
             let hooks = policy.hooks.clone();
@@ -543,9 +551,9 @@ async fn run_with_titles(
                 let prepared = prepare_description_logs(vec![work.payload], &previous_map)
                     .await
                     .map(|mut logs| logs.pop());
-                let description = match (prepared, refresh_store) {
-                    (Ok(Some(description)), Some(store)) => {
-                        prepare_source_refresh_identity(&store, description, origin).await
+                let description = match (prepared, source_refresh) {
+                    (Ok(Some(description)), Some((store, keys))) => {
+                        prepare_source_refresh_identity(&store, description, origin, &keys).await
                     }
                     (result, _) => result,
                 };
@@ -944,15 +952,20 @@ async fn run_with_titles(
             )
             .await;
     }
-    let mut project_deferrals_superseded = false;
+    let mut superseded_project_deferrals = None;
     if !project_deferrals.is_empty() && !writer.io.cancelled() {
+        let replay_keys = if policy.source_refresh.is_some() {
+            project_deferrals.keys().cloned().collect()
+        } else {
+            HashSet::new()
+        };
         match writer
             .store
             .publish_session_project_deferrals(repository_policy.generation, project_deferrals)
         {
             Ok(RepositoryPolicyPublishOutcome::Published) => {}
             Ok(RepositoryPolicyPublishOutcome::Superseded) => {
-                project_deferrals_superseded = true;
+                superseded_project_deferrals = Some(replay_keys);
             }
             Err(error) => writer.fail(error),
         }
@@ -984,7 +997,7 @@ async fn run_with_titles(
         changed,
         list_changed: writer.list_changed,
         gate,
-        project_deferrals_superseded,
+        superseded_project_deferrals,
     }
 }
 
