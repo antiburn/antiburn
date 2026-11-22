@@ -138,6 +138,33 @@ it("requires an explicit reset and keeps the remote warning while reconnecting",
   expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
 })
 
+it("keeps the invitation warning when account cleanup unmounts the panel", async () => {
+  const { session, emit } = fixture({
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    invitationEnabled: true,
+    status: "signed_in",
+    identity: { id: "synthetic-account", login: "Example" },
+  })
+  render(<Account session={session} />)
+  await screen.findByRole("region", { name: "Workspace invitations" })
+  const warning = /Check your Cloud workspaces before trying again/
+  expect(screen.queryByText(warning)).toBeNull()
+  act(() =>
+    emit({
+      ...emptyCloudSnapshot,
+      authEnabled: true,
+      status: "reauth_required",
+      revocationPending: true,
+      invitationResultUnconfirmed: true,
+    }),
+  )
+  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+  expect(screen.getByText(warning)).toBeVisible()
+  expect(screen.getByText("Sign out on this device before you sign in again.")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+})
+
 it("canceling the reset confirmation does not call a native cleanup action", async () => {
   const { session, resetLocal, signOut } = fixture()
   render(<Account session={session} />)

@@ -57,6 +57,7 @@ its verification deadline. The other states are `ready`, `checked`,
 After a lost finish response, Desktop reads the same attempt before it offers
 another action, as long as the attempt has time left. It never starts a second
 attempt or retries the join automatically.
-If Cloud rejects the device access bearer, Desktop asks you to sign in again.
-If this happens before Desktop confirms a join, check your workspaces and
-invitations after you sign in and before you try again.
+If Cloud rejects the device access bearer, sign out on this device before you
+sign in again. If Desktop could not confirm an invitation result, check your
+Cloud workspaces before you try again. A new connection cannot check an attempt
+from the old connection. Desktop keeps the warning until you quit the app.

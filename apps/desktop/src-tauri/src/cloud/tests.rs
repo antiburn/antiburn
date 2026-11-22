@@ -439,6 +439,10 @@ fn invitation_bearer_rejection_only_invalidates_the_current_account() {
     );
     assert!(fixture.engine.status == AuthStatus::SignedIn);
     assert!(fixture.engine.invitations_enabled());
+    let record = || fixture.engine.state.lock().unwrap().read().unwrap();
+    assert!(record().phase == state::Phase::Active);
+    let epoch = record().epoch;
+    let proof = fixture.vault.read().unwrap().unwrap().refresh_token;
 
     assert_eq!(
         fixture.engine.with_invitation_access(
@@ -451,7 +455,75 @@ fn invitation_bearer_rejection_only_invalidates_the_current_account() {
     assert!(fixture.engine.status == AuthStatus::ReauthRequired);
     assert!(fixture.engine.session().is_none());
     assert!(!fixture.engine.invitations_enabled());
-    assert!(fixture.vault.read().unwrap().is_some());
+    let record = fixture.engine.state.lock().unwrap().read().unwrap();
+    assert!(record.phase == state::Phase::ReauthRequired);
+    assert_eq!(record.epoch, epoch);
+    assert!(record.cleanup.blocks_connection());
+    assert_eq!(fixture.vault.read().unwrap().unwrap().refresh_token, proof);
+
+    fixture.restart();
+    fixture.engine.refresh(101, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(fixture.engine.session().is_none());
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    fixture.transport.fail_revoke.store(true, Ordering::Release);
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.engine.cleanup.blocks_connection());
+    assert_eq!(fixture.vault.read().unwrap().unwrap().refresh_token, proof);
+    fixture
+        .transport
+        .fail_revoke
+        .store(false, Ordering::Release);
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.vault.read().unwrap().is_none());
+    assert_eq!(
+        *fixture.transport.revoked.lock().unwrap(),
+        [proof.clone(), proof]
+    );
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
+}
+
+#[test]
+fn invitation_reauth_storage_failure_stays_closed_until_sign_out() {
+    let mut fixture = Fixture::new();
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    let path = fixture.directory.path().join("cloud-auth-state-v2");
+    let active = std::fs::read(&path).unwrap();
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &session().user.id,
+            || true,
+            |_, _, _| {
+                std::fs::write(&path, b"{torn").unwrap();
+                Err::<(), _>(Failure::ReauthRequired)
+            }
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    std::fs::write(path, active).unwrap();
+    assert!(fixture.engine.cleanup.blocks_connection());
+    assert_eq!(
+        fixture.engine.refresh(101, || true),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.session().is_none());
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    fixture.engine.sign_out().unwrap();
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
 }
 
 struct Fixture {
@@ -1505,6 +1577,7 @@ fn cloud_lock_serializes_separate_processes() {
 fn cloud_snapshot_does_not_include_native_secrets() {
     let value = Snapshot {
         invitation_enabled: false,
+        invitation_result_unconfirmed: true,
         auth_enabled: true,
         capture_enabled: true,
         sync_enabled: false,
@@ -1522,6 +1595,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         draft: Draft::default(),
     };
     let encoded = serde_json::to_string(&value).unwrap();
+    assert!(encoded.contains(r#""invitationResultUnconfirmed":true"#));
     for field in [
         "access_token",
         "refresh_token",

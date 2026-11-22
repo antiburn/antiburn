@@ -340,6 +340,8 @@ export type CaptureConsent = CloudDestinationBinding & {
 export interface CloudSnapshot {
   /** The current signed-in device can use account invitation routes. */
   invitationEnabled?: boolean
+  /** Display-only warning for this launch. A new grant cannot read the old attempt. */
+  invitationResultUnconfirmed?: boolean
   authEnabled: boolean
   syncEnabled: boolean
   captureEnabled?: boolean

@@ -38,6 +38,9 @@ pub struct Engine {
     pub attempt: Option<Attempt>,
     access: Option<Access>,
     invitation_support: Option<bool>,
+    invitation_reauth_write_failed: bool,
+    /// Display-only warning for this process. Never carries the old attempt to a new grant.
+    pub(super) invitation_result_unconfirmed: bool,
     clock: Box<dyn Fn() -> i64 + Send>,
     pub status: AuthStatus,
     pub cleanup: Cleanup,
@@ -62,6 +65,8 @@ impl Engine {
             attempt: None,
             access: None,
             invitation_support: None,
+            invitation_reauth_write_failed: false,
+            invitation_result_unconfirmed: false,
             clock: Box::new(super::now),
             status: AuthStatus::Idle,
             cleanup: Cleanup::None,
@@ -183,7 +188,7 @@ impl Engine {
 
     /// Run an invitation request with current account authority. Keep bearer
     /// proof in Rust and reject stale renderer actions before dispatch. A 401
-    /// invalidates cached access only if the request still owns this account.
+    /// requires account cleanup only if the request still owns this account.
     pub(super) fn with_invitation_access<T>(
         &mut self,
         account_id: &str,
@@ -211,10 +216,34 @@ impl Engine {
             return Err(Failure::Cancelled);
         }
         if matches!(result, Err(Failure::ReauthRequired)) {
-            self.access = None;
-            self.status = AuthStatus::ReauthRequired;
+            self.reject_invitation_access(&current)?;
         }
         result
+    }
+
+    /// Close the rejected grant without discarding the proof needed for sign-out.
+    fn reject_invitation_access(&mut self, current: &dyn Fn() -> bool) -> Result<(), Failure> {
+        let state = self.state.lock().and_then(|mut guard| {
+            let record = guard.read()?;
+            Ok((guard, record))
+        });
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        self.access = None;
+        self.status = AuthStatus::ReauthRequired;
+        self.cleanup = Cleanup::Revoke {
+            prior_unconfirmed: self.cleanup.prior_unconfirmed(),
+        };
+        // If disk is unavailable, stay closed in this process until explicit cleanup.
+        self.invitation_reauth_write_failed = state
+            .and_then(|(mut guard, mut record)| {
+                record.phase = Phase::ReauthRequired;
+                record.cleanup = self.cleanup;
+                guard.write(&record)
+            })
+            .is_err();
+        Ok(())
     }
 
     /// Send one bounded capture API request without returning access proof.
@@ -313,7 +342,7 @@ impl Engine {
         now: i64,
         generation: u64,
     ) -> Result<(String, Listener, Attempt), Failure> {
-        if self.cleanup_only {
+        if self.cleanup_only || self.invitation_reauth_write_failed {
             return Err(Failure::Unavailable);
         }
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
@@ -649,6 +678,9 @@ impl Engine {
     /// Restore or rotate one fixed grant inside the worker. Persist uncertainty
     /// before exchange; never retry a predecessor after an uncertain response.
     pub fn refresh(&mut self, started_at: i64, current: impl Fn() -> bool) -> Result<(), Failure> {
+        if self.invitation_reauth_write_failed {
+            return Err(Failure::ReauthRequired);
+        }
         let Some(config) = self.config.clone() else {
             return Ok(());
         };
@@ -779,6 +811,7 @@ impl Engine {
             }
         };
         let mut record = guard.replace(Phase::SignedOut, cleanup)?;
+        self.invitation_reauth_write_failed = false;
         self.status = AuthStatus::RevocationUnconfirmed;
         self.cleanup = record.cleanup;
         self.local_reset_available = false;
@@ -847,6 +880,7 @@ impl Engine {
             return Err(Failure::Unavailable);
         }
         guard.replace(Phase::SignedOut, Cleanup::RemoteUnconfirmed)?;
+        self.invitation_reauth_write_failed = false;
         self.access = None;
         self.attempt = None;
         self.cleanup = Cleanup::RemoteUnconfirmed;

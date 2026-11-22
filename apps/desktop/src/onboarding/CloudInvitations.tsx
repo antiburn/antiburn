@@ -184,8 +184,8 @@ function AccountInvitations({
         ? "Cloud has not confirmed the result. Check the same attempt before trying again."
         : reply?.kind === "reauth_required"
           ? reply.uncertain
-            ? "Cloud has not confirmed the result. Sign in again and check your workspaces and invitations before trying again."
-            : "Sign in again to check workspace invitations."
+            ? "Cloud has not confirmed the result. Check your Cloud workspaces before trying again."
+            : "Reconnect to Cloud to check workspace invitations."
           : reply?.kind === "expired"
             ? reply.uncertain
               ? "Verification timed out before Cloud confirmed the result. Check your workspaces and invitations before trying again."

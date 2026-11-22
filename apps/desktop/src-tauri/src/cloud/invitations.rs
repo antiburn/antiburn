@@ -231,18 +231,23 @@ pub(crate) async fn cloud_invitations(
                         .map_err(|_| Failure::Unavailable)
                 })
             });
-        if current() && engine.status != status {
+        let reauth_required = current() && matches!(result, Err(Failure::ReauthRequired));
+        let uncertain = pending
+            .as_ref()
+            .filter(|attempt| attempt.generation == generation && attempt.uncertain);
+        let warn = reauth_required && uncertain.is_some_and(|attempt| attempt.join);
+        let warning_changed = warn && !engine.invitation_result_unconfirmed;
+        engine.invitation_result_unconfirmed |= warn;
+        let uncertain = uncertain.is_some();
+        drop(pending);
+        if current() && (engine.status != status || warning_changed) {
             let snapshot = super::snapshot(&app, &engine);
             if current() {
                 super::emit_snapshot(&app, snapshot);
             }
         }
         match result {
-            Err(Failure::ReauthRequired) if current() => Ok(Reply::ReauthRequired {
-                uncertain: pending
-                    .as_ref()
-                    .is_some_and(|attempt| attempt.generation == generation && attempt.uncertain),
-            }),
+            Err(Failure::ReauthRequired) if current() => Ok(Reply::ReauthRequired { uncertain }),
             result => result.map_err(|_| "Could not complete the Cloud invitation request.".into()),
         }
     })

@@ -142,6 +142,7 @@ fn existing_folder_choices() -> bool {
 pub struct Snapshot {
     auth_enabled: bool,
     invitation_enabled: bool,
+    invitation_result_unconfirmed: bool,
     capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
@@ -300,6 +301,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     Snapshot {
         auth_enabled: engine.config.is_some(),
         invitation_enabled: session.is_some() && engine.invitations_enabled(),
+        invitation_result_unconfirmed: engine.invitation_result_unconfirmed,
         capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
         sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
