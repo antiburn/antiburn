@@ -210,8 +210,9 @@ pub(crate) async fn cloud_invitations(
             .invitations
             .lock()
             .map_err(|_| "Could not open Cloud invitations.")?;
-        engine
-            .with_invitation_access(&account_id, current, |config, bearer, can_send| {
+        let status = engine.status;
+        let result =
+            engine.with_invitation_access(&account_id, &current, |config, bearer, can_send| {
                 let device = DeviceRequest {
                     config,
                     bearer,
@@ -222,8 +223,11 @@ pub(crate) async fn cloud_invitations(
                         .open_url(url.as_str(), None::<&str>)
                         .map_err(|_| Failure::Unavailable)
                 })
-            })
-            .map_err(|_| "Could not complete the Cloud invitation request.".into())
+            });
+        if current() && engine.status != status {
+            super::emit_snapshot(&app, super::snapshot(&app, &engine));
+        }
+        result.map_err(|_| "Could not complete the Cloud invitation request.".into())
     })
     .await
 }

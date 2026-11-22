@@ -181,6 +181,7 @@ struct FakeTransport {
     fail_before_send: AtomicBool,
     fail_revoke: AtomicBool,
     fail_session: AtomicBool,
+    invitation_supported: AtomicBool,
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -201,7 +202,7 @@ impl Transport for Arc<FakeTransport> {
         if let Some(action) = &self.on_invitation_probe {
             action();
         }
-        false
+        self.invitation_supported.load(Ordering::Acquire)
     }
 
     fn exchange(&self, _: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
@@ -368,6 +369,50 @@ fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTranspor
         state::StateStore::new(directory),
     )
     .with_clock(|| 100)
+}
+
+#[test]
+fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
+    let mut fixture = Fixture::new();
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(100));
+    let engine_clock = clock.clone();
+    fixture.engine = engine(
+        fixture.directory.path(),
+        fixture.vault.clone(),
+        fixture.transport.clone(),
+    )
+    .with_clock(move || engine_clock.load(Ordering::Acquire));
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
+    let account = session().user.id;
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &account,
+            || true,
+            |_, _, _| Err::<(), _>(Failure::Rejected)
+        ),
+        Err(Failure::Rejected)
+    );
+    assert_eq!(fixture.engine.status, AuthStatus::SignedIn);
+    fixture
+        .transport
+        .fail_exchange
+        .store(true, Ordering::Release);
+    clock.store(150, Ordering::Release);
+    assert_eq!(
+        fixture.engine.with_invitation_access::<()>(
+            &account,
+            || true,
+            |_, _, _| panic!("request sent")
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert_eq!(fixture.engine.status, AuthStatus::ReauthRequired);
+    assert!(!fixture.engine.invitations_enabled());
 }
 
 struct Fixture {

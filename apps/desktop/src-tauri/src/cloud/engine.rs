@@ -192,7 +192,12 @@ impl Engine {
         if !current() || self.invitation_support != Some(true) {
             return Err(Failure::Unavailable);
         }
-        self.refresh((self.clock)(), &current)?;
+        if let Err(error) = self.refresh((self.clock)(), &current) {
+            if current() {
+                self.status = error.into();
+            }
+            return Err(error);
+        }
         let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
         let access = self.access.as_ref().ok_or(Failure::ReauthRequired)?;
         if !current() || access.session.user.id != account_id {
