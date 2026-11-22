@@ -1094,6 +1094,9 @@ pub(crate) fn source_format(agent: AgentKind, source: &SessionSource) -> SourceF
         {
             SourceFormat::KiroChat
         }
+        (AgentKind::Kiro, SessionSource::File(path)) if is_kiro_crew_session_path(path) => {
+            SourceFormat::KiroCrewJsonl
+        }
         (AgentKind::Kiro, _) => SourceFormat::KiroSessionJson,
         _ => SourceFormat::Uncharacterized,
     }
@@ -1125,6 +1128,19 @@ fn path_has_component(path: &std::path::Path, expected: &str) -> bool {
     normalized_path(path)
         .split('/')
         .any(|component| component == expected)
+}
+
+/// A Kiro Crew session log: a `.jsonl` directly under `~/.kiro/crew/sessions/`,
+/// excluding cron worker logs (`cron_*`), lock files, and the `.index/` subtree.
+fn is_kiro_crew_session_path(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !name.ends_with(".jsonl") || name.starts_with("cron_") || name.starts_with('.') {
+        return false;
+    }
+    path.parent()
+        .is_some_and(|parent| normalized_path(parent).ends_with("/.kiro/crew/sessions/"))
 }
 
 fn is_uuid(value: &str) -> bool {
