@@ -51,10 +51,20 @@ it("uses exact desktop ongoing commands and event names", async () => {
   expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_project_groups", { binding, after })
   await port.enable(consent)
   expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_enable_sync", { consent })
-  await port.pause(binding)
-  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_pause_sync", { binding })
-  await port.retry(binding)
-  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_retry_sync", { binding })
+  await port.setEnabled(false)
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_set_sync_enabled", { enabled: false })
+  await port.setEnabled(true)
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_set_sync_enabled", { enabled: true })
+  await port.retry(binding, "shown-policy")
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_retry_sync", {
+    binding,
+    expectedPolicyRevision: "shown-policy",
+  })
+  await port.backfill!(binding, "shown-policy")
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_backfill_sync", {
+    binding,
+    expectedPolicyRevision: "shown-policy",
+  })
   expect(
     mocks.invoke.mock.calls.some(([command]) =>
       ["cloud_prepare_sync", "cloud_start_sync"].includes(command),
@@ -72,6 +82,17 @@ it("submits Start immediately after the desktop capability was verified", async 
   await pending
 })
 
+it("resets the exact workspace through gated desktop IPC", async () => {
+  mocks.invoke.mockResolvedValue("signed_out")
+  await expect(desktopCloudPort.resetWorkspace!(binding, "synthetic-team")).resolves.toBe(
+    "signed_out",
+  )
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_reset_workspace", {
+    binding,
+    workspaceId: "synthetic-team",
+  })
+})
+
 it.each(["browser", "ordinary build"])("keeps ongoing IPC unreachable in %s", async (build) => {
   if (build === "browser") mocks.hasShell.mockReturnValue(false)
   else mocks.appInfo.mockResolvedValue({ cloudEnabled: false })
@@ -80,8 +101,12 @@ it.each(["browser", "ordinary build"])("keeps ongoing IPC unreachable in %s", as
   expect(await port.status()).toBeNull()
   await port.groups(binding, null)
   await expect(port.enable(consent)).rejects.toThrow("unavailable")
-  await expect(port.pause(binding)).rejects.toThrow("unavailable")
-  await expect(port.retry(binding)).rejects.toThrow("unavailable")
+  await expect(port.setEnabled(false)).rejects.toThrow("unavailable")
+  await expect(port.retry(binding, "shown-policy")).rejects.toThrow("unavailable")
+  await expect(port.backfill!(binding, "shown-policy")).rejects.toThrow("unavailable")
+  await expect(desktopCloudPort.resetWorkspace!(binding, "synthetic-team")).resolves.toBe(
+    "unavailable",
+  )
   expect(mocks.invoke).not.toHaveBeenCalled()
   expect(mocks.listen).not.toHaveBeenCalled()
 })

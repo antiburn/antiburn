@@ -3,12 +3,17 @@
 //! renderer state, tracing, or errors.
 
 use super::{auth, engine::Engine};
+use crate::store::cloud_capture::SourceKind;
 use antiburn_cloud_capture::{
-    CaptureIdentity, CaptureManifest, Chunk, ChunkKey, ServerStatus, Transport, TransportError,
-    UploadPlan,
+    CaptureIdentity, CaptureManifest, Chunk, ChunkKey, Limits, ServerStatus, Transport,
+    TransportError, UploadPlan,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{collections::BTreeMap, io::Read, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Read,
+    time::Duration,
+};
 
 const MAX_API_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -27,13 +32,13 @@ pub(super) enum Route {
 impl Route {
     fn path(self, capture: &str) -> String {
         match self {
-            Self::Capabilities => "/v1/desktop/captures/capabilities".into(),
-            Self::Reserve => "/v1/desktop/captures/reserve".into(),
-            Self::Manifest => format!("/v1/desktop/captures/{capture}/manifest"),
-            Self::Status => format!("/v1/desktop/captures/{capture}/status"),
-            Self::Parts => format!("/v1/desktop/captures/{capture}/parts"),
-            Self::Finalize => format!("/v1/desktop/captures/{capture}/finalize"),
-            Self::Renew => format!("/v1/desktop/captures/{capture}/renew"),
+            Self::Capabilities => "/v1/captures/capabilities".into(),
+            Self::Reserve => "/v1/captures/reserve".into(),
+            Self::Manifest => format!("/v1/captures/{capture}/manifest"),
+            Self::Status => format!("/v1/captures/{capture}/status"),
+            Self::Parts => format!("/v1/captures/{capture}/parts"),
+            Self::Finalize => format!("/v1/captures/{capture}/finalize"),
+            Self::Renew => format!("/v1/captures/{capture}/renew"),
         }
     }
 }
@@ -149,28 +154,48 @@ pub(super) struct Capabilities {
     source_formats: Vec<String>,
 }
 
+/// Validated service bounds and exact format names.
+pub(super) struct UploadCapabilities {
+    pub limits: Limits,
+    formats: BTreeSet<String>,
+}
+
+impl UploadCapabilities {
+    /// An advertised format must match a local exporter exactly.
+    pub(super) fn supports(&self, kind: SourceKind) -> bool {
+        self.formats.contains(kind.upload_names().1)
+    }
+}
+
 impl Capabilities {
     /// Keep capture below the current service bound without clipping source.
-    pub(super) fn limits(&self) -> Result<antiburn_cloud_capture::Limits, Failure> {
+    pub(super) fn validate(self) -> Result<UploadCapabilities, Failure> {
         use antiburn_cloud_capture::{CHUNK_BYTES, METADATA_BYTES};
-        let formats = self
-            .source_formats
-            .iter()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
+        let format_count = self.source_formats.len();
+        let formats = self.source_formats.into_iter().collect::<BTreeSet<_>>();
         if !self.enabled
             || self.max_expanded_bytes > 1024 * 1024 * 1024
             || self.max_expanded_bytes <= 2 * METADATA_BYTES
             || self.chunk_expanded_bytes != CHUNK_BYTES
-            || formats.len() != self.source_formats.len()
-            || formats != std::collections::BTreeSet::from(["ClaudeJsonl", "OpenCodeSqliteV2"])
+            || formats.len() != format_count
+            || ![
+                SourceKind::ClaudeJsonl,
+                SourceKind::OpenCodeSqliteV2,
+                SourceKind::CodexJsonl,
+                SourceKind::PiJsonl,
+            ]
+            .iter()
+            .any(|kind| formats.contains(kind.upload_names().1))
         {
             return Err(Failure::Unavailable);
         }
-        Ok(antiburn_cloud_capture::Limits {
-            source_bytes: (self.max_expanded_bytes - 2 * METADATA_BYTES).min(128 * 1024 * 1024),
-            capture_bytes: self.max_expanded_bytes,
-            ..antiburn_cloud_capture::Limits::default()
+        Ok(UploadCapabilities {
+            limits: Limits {
+                source_bytes: (self.max_expanded_bytes - 2 * METADATA_BYTES).min(128 * 1024 * 1024),
+                capture_bytes: self.max_expanded_bytes,
+                ..Limits::default()
+            },
+            formats,
         })
     }
 }
@@ -186,14 +211,14 @@ pub(super) struct CapabilityFailure {
 pub(super) fn capabilities(
     engine: &mut Engine,
     account: &str,
-    destination: &str,
+    destination: (&str, Option<&str>),
     account_current: &dyn Fn() -> bool,
     current: &dyn Fn() -> bool,
-) -> Result<antiburn_cloud_capture::Limits, CapabilityFailure> {
+) -> Result<UploadCapabilities, CapabilityFailure> {
     let identity = CaptureIdentity {
         capture_id: "capabilities".into(),
         account_id: account.into(),
-        destination_id: destination.into(),
+        destination_id: destination.0.into(),
         source_id: "capabilities".into(),
     };
     let origin = engine
@@ -203,7 +228,8 @@ pub(super) fn capabilities(
             retry_after: None,
         })?
         .to_owned();
-    let mut transport = HttpTransport::new(engine, account_current, current, &origin, None);
+    let mut transport = HttpTransport::new(engine, account_current, current, &origin, None)
+        .with_membership_generation(destination.1);
     let response = transport
         .request(&identity, Route::Capabilities, &())
         .map_err(|_| CapabilityFailure {
@@ -214,7 +240,7 @@ pub(super) fn capabilities(
         failure: transport.failure.unwrap_or(Failure::Rejected),
         retry_after: transport.retry_after,
     })?;
-    value.limits().map_err(|failure| CapabilityFailure {
+    value.validate().map_err(|failure| CapabilityFailure {
         failure,
         retry_after: None,
     })
@@ -230,11 +256,7 @@ pub(super) struct Source {
 impl Source {
     /// Select exact public provider names, not an installed producer version.
     pub(super) fn from_candidate(candidate: &antiburn_cloud_capture::Candidate) -> Self {
-        use antiburn_cloud_capture::CaptureSourceKind;
-        let (agent, source_format) = match candidate.source_kind() {
-            CaptureSourceKind::ClaudeJsonl => ("claude-code", "ClaudeJsonl"),
-            CaptureSourceKind::OpenCodeSqliteV2 => ("opencode", "OpenCodeSqliteV2"),
-        };
+        let (agent, source_format) = SourceKind::from(candidate.source_kind()).upload_names();
         Self {
             agent,
             source_format,
@@ -251,8 +273,11 @@ pub(super) struct HttpTransport<'a> {
     current: &'a dyn Fn() -> bool,
     source: Option<Source>,
     resource_origin: String,
+    membership_generation: Option<String>,
     pub failure: Option<Failure>,
     pub retry_after: Option<Duration>,
+    /// Status and renewal both refused the exact frozen binding with a conflict.
+    pub status_renewal_conflict: bool,
 }
 
 impl<'a> HttpTransport<'a> {
@@ -272,9 +297,17 @@ impl<'a> HttpTransport<'a> {
             current,
             source,
             resource_origin: resource_origin.into(),
+            membership_generation: None,
             failure: None,
             retry_after: None,
+            status_renewal_conflict: false,
         }
+    }
+
+    /// Pin the Team membership from the saved job or explicit folder approval.
+    pub(super) fn with_membership_generation(mut self, generation: Option<&str>) -> Self {
+        self.membership_generation = generation.map(str::to_owned);
+        self
     }
 
     fn request(
@@ -285,7 +318,7 @@ impl<'a> HttpTransport<'a> {
     ) -> Result<ApiResponse, TransportError> {
         match self.engine.capture_request(
             identity,
-            &self.resource_origin,
+            (&self.resource_origin, self.membership_generation.as_deref()),
             route,
             body,
             self.account_current,
@@ -364,6 +397,8 @@ impl<'a> HttpTransport<'a> {
             Err(_) if self.failure == Some(Failure::Conflict) => {
                 tracing::info!(event = "cloud_capture_renewal_started", route = ?route);
                 if let Err(error) = self.renew(identity, binding) {
+                    self.status_renewal_conflict =
+                        matches!(route, Route::Status) && self.failure == Some(Failure::Conflict);
                     tracing::warn!(
                         event = "cloud_capture_renewal_failed",
                         route = ?route,
@@ -401,6 +436,18 @@ impl<'a> HttpTransport<'a> {
             self.failure = Some(Failure::Rejected);
             TransportError::Rejected
         })
+    }
+
+    /// Replay only the saved finalization. Do not try to renew from this path.
+    pub(super) fn replay_saved_finalization(
+        &mut self,
+        reservation: &str,
+        manifest: &CaptureManifest,
+        plan: &UploadPlan,
+    ) -> Result<(), TransportError> {
+        let binding = Context::new(reservation, plan);
+        let response = self.request(&manifest.identity, Route::Finalize, &binding)?;
+        check_finalization_response(&response)
     }
 }
 
@@ -557,6 +604,7 @@ impl Transport for HttpTransport<'_> {
             "agent": source.agent,
             "source_format": source.source_format,
             "native_session_id": source.native_session_id,
+            "membership_generation": self.membership_generation,
         });
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -656,10 +704,14 @@ impl Transport for HttpTransport<'_> {
         let binding = Context::new(reservation_id, plan);
         let response =
             self.request_with_renewal(&manifest.identity, Route::Finalize, &binding, &binding)?;
-        if response.status == 202 {
-            Ok(())
-        } else {
-            Err(TransportError::Rejected)
-        }
+        check_finalization_response(&response)
+    }
+}
+
+fn check_finalization_response(response: &ApiResponse) -> Result<(), TransportError> {
+    if response.status == 202 {
+        Ok(())
+    } else {
+        Err(TransportError::Rejected)
     }
 }

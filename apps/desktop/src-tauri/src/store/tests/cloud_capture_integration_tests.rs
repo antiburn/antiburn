@@ -15,6 +15,8 @@ fn cloud_provider_wire_values_match_native_candidate_kinds() {
             CaptureSourceKind::OpenCodeSqliteV2,
             "\"opencode_sqlite_v2\"",
         ),
+        (CaptureSourceKind::CodexJsonl, "\"codex_jsonl\""),
+        (CaptureSourceKind::PiJsonl, "\"pi_jsonl\""),
     ] {
         let native = SourceKind::from(kind);
         assert_eq!(serde_json::to_string(&native).unwrap(), wire);

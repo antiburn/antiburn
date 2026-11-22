@@ -246,6 +246,7 @@ it("cancels only the pending browser attempt before local completion", async () 
   port.cancelSync = vi.fn()
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  expect(await screen.findByText("Approve this device in your browser.")).toBeVisible()
   fireEvent.click(await screen.findByRole("button", { name: "Continue locally" }))
   await waitFor(() => expect(done).toHaveBeenCalledOnce())
   expect(port.cancel).toHaveBeenCalledOnce()
@@ -319,7 +320,7 @@ it("keeps one existing-style row and selection control per project group", () =>
   expect(screen.queryByText(/database|Claude source|OpenCode/i)).not.toBeInTheDocument()
   expect(screen.getByText("/Example/Studio")).toHaveAttribute("title", projectGroups[0]!.path)
   fireEvent.click(screen.getByRole("switch", { name: "Sync Studio: /Example/Studio" }))
-  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false)
+  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false, undefined)
 })
 
 it("preserves an explicit group opt-out while new groups show selected without a write", () => {

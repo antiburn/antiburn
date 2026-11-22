@@ -5,6 +5,7 @@ description: "antiburn desktop design system (native-feeling, Tauri; ships macOS
 sources:
   - src/onboarding/onboarding.css
   - src/onboarding/cloud.css
+  - src/onboarding/cloud-loopback.css
   - src/components/providerUsage/sidebar-usage.css
   - src/styles/tokens.css
   - src/styles/base.css
@@ -1064,6 +1065,10 @@ Notes for what isn't expressible as a token:
   before completing search focus. When Model usage has no visible content, its
   search result focuses the Model-based checks group without selecting a control.
   Keep the standard separation between groups.
+- **Cloud folder settings**: Keep Save in one compact footer row. Use the space
+  beside Save for status and recovery actions without moving the button or
+  the folder rows. Use the standard push button's short background and opacity
+  transition, with the global reduced-motion limit.
 - **CLI settings pane** — present the CLI as an internal runtime managed by antiburn.
   Add the purpose-led pane description: “Helps antiburn share check findings with
   your coding agents.” The card explains automatic management by antiburn.

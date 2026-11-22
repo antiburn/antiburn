@@ -18,8 +18,36 @@ use std::{
 pub(crate) const ONGOING_CONSENT_VERSION: &str = "desktop-project-sync-v1";
 /// Bound active jobs across all accounts, including fenced and interrupted work.
 pub(crate) const MAX_ACTIVE_JOBS: usize = 128;
+/// Keep frozen routing evidence within the existing job and discovery budgets.
+pub(crate) const MAX_RECORDED_PROJECT_PATH_BYTES: usize = 8192;
 const MAX_SOURCES: u64 = 16_384;
 const MAX_JOBS: u64 = 32_768;
+
+type PolicyBinding<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<(&'a str, &'a str)>,
+);
+
+enum PolicyWrite<'a> {
+    Create(&'a dyn Fn() -> bool),
+    Reapprove(&'a Policy, &'a dyn Fn() -> bool),
+    #[cfg(test)]
+    ReplaceFixture,
+}
+
+fn device_upload_enabled(connection: &Connection) -> Result<bool> {
+    Ok(connection
+        .query_row(
+            "SELECT enabled FROM cloud_device_upload WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
 
 /// Recorded project directory chosen by the user for one native source.
 /// A touched file or a path mentioned in tool output cannot satisfy this rule.
@@ -35,8 +63,8 @@ pub(crate) struct ProjectSelection {
 #[path = "tests/cloud_sync_integration_tests.rs"]
 mod tests;
 
-/// Current consent for an account and personal workspace. Grants are not part of
-/// this identity. Pausing retains this policy, queued bytes, and terminal state.
+/// Current folder consent for one account, workspace, and service. Team consent
+/// stays bound to one membership generation, not a device grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Policy {
@@ -44,6 +72,17 @@ pub(crate) struct Policy {
     pub destination_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_origin: Option<String>,
+    /// Legacy Team marker. It identifies saved consent for cleanup only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_grant_id: Option<String>,
+    /// Present only after explicit approval for this Team membership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_generation: Option<String>,
+    /// Last verified team name. The name is display data, not grant authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
     pub consent_version: String,
     pub revision: String,
     pub roots: Vec<RootScope>,
@@ -55,12 +94,36 @@ pub(crate) struct Policy {
 }
 
 impl Policy {
+    /// Include legacy Team consent so the user can remove or confirm its folders.
+    pub(crate) fn is_team(&self) -> bool {
+        self.membership_generation.is_some()
+            || self.team_grant_id.is_some()
+            || self.workspace_name.is_some()
+    }
+
+    /// Compare saved Team consent with current membership proof.
+    pub(crate) fn needs_team_membership(&self, generation: &str) -> bool {
+        self.is_team()
+            && (self.team_grant_id.is_some()
+                || self.membership_generation.as_deref() != Some(generation))
+    }
+
+    fn has_membership_authority(&self) -> bool {
+        !self.is_team()
+            || (self.team_grant_id.is_none()
+                && self
+                    .membership_generation
+                    .as_deref()
+                    .is_some_and(valid_membership_generation))
+    }
+
     /// Match the exact source and a recorded project under a selected directory.
     /// Component matching excludes sibling checkouts outside that directory.
     /// Source roots do not imply
     /// permission for every project in a shared provider database.
     pub(crate) fn allows(&self, scope: &str, project: &str) -> bool {
-        self.resource_origin.is_some()
+        self.has_membership_authority()
+            && self.resource_origin.is_some()
             && self.roots.iter().any(|root| {
                 root.source_scope_id == scope
                     && self.projects.iter().any(|selected| {
@@ -108,10 +171,21 @@ pub(crate) struct Job {
     pub identity: CaptureIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_origin: Option<String>,
+    /// Legacy Team marker. It does not authorize recovery or upload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_grant_id: Option<String>,
+    /// Freeze the Team generation at admission. Retry must not change it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership_generation: Option<String>,
     pub source_scope_id: String,
     pub project_path: String,
     #[serde(default)]
     pub project_folders: Vec<String>,
+    /// Exact source CWD evidence used to check a saved capture's source, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recorded_project_paths: Option<Vec<String>>,
     pub observation_key: String,
     pub state: JobState,
     /// Earliest capacity retry in Unix seconds. Absent outside the proved
@@ -121,13 +195,28 @@ pub(crate) struct Job {
 }
 
 impl Job {
+    /// Match the job's account, workspace, origins, and membership. Call before
+    /// recovery as well as upload. A legacy Team marker can never match.
+    pub(crate) fn matches_membership(&self, policy: &Policy) -> bool {
+        self.resource_origin.is_some()
+            && self.resource_origin == policy.resource_origin
+            && self.issuer_origin.is_some()
+            && self.issuer_origin == policy.issuer_origin
+            && self.identity.account_id == policy.account_id
+            && self.identity.destination_id == policy.destination_id
+            && self.same_membership_generation(policy)
+    }
+
+    fn same_membership_generation(&self, policy: &Policy) -> bool {
+        self.team_grant_id.is_none()
+            && policy.has_membership_authority()
+            && self.membership_generation == policy.membership_generation
+    }
+
     /// Keep every approved folder bound to saved bytes. Narrowing the current
     /// policy fences the whole capture instead of removing part of its content.
     pub(crate) fn allowed(&self, policy: &Policy) -> bool {
-        self.resource_origin.is_some()
-            && self.resource_origin == policy.resource_origin
-            && self.identity.account_id == policy.account_id
-            && self.identity.destination_id == policy.destination_id
+        self.matches_membership(policy)
             && policy.allows(&self.source_scope_id, &self.project_path)
             && self
                 .project_folders
@@ -143,6 +232,14 @@ impl Job {
                     .resource_origin
                     .as_deref()
                     .is_none_or(valid_resource_origin)
+                && self
+                    .issuer_origin
+                    .as_deref()
+                    .is_none_or(valid_resource_origin)
+                && self
+                    .membership_generation
+                    .as_deref()
+                    .is_none_or(valid_membership_generation)
                 && safe_id(&self.identity.account_id)
                 && safe_id(&self.identity.destination_id)
                 && safe_id(&self.source_scope_id)
@@ -158,6 +255,14 @@ impl Job {
                     .project_folders
                     .iter()
                     .all(|path| valid_project_path(path))
+                && self.recorded_project_paths.as_ref().is_none_or(|paths| {
+                    !paths.is_empty()
+                        && paths.len() <= 256
+                        && paths.iter().map(String::len).sum::<usize>()
+                            <= MAX_RECORDED_PROJECT_PATH_BYTES
+                        && paths.iter().all(|path| valid_project_path(path))
+                        && paths.contains(&self.project_path)
+                })
                 && !self.observation_key.is_empty()
                 && self.observation_key.len() <= 4096,
             "Cloud job binding changed"
@@ -221,6 +326,17 @@ fn random_id() -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+fn valid_membership_generation(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+}
+
+fn valid_team_membership(generation: &str, name: &str) -> bool {
+    valid_membership_generation(generation)
+        && !name.is_empty()
+        && name.len() <= 256
+        && !name.chars().any(char::is_control)
+}
+
 fn safe_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -253,6 +369,29 @@ fn encode(value: &impl Serialize, limit: usize) -> Result<String> {
     let raw = serde_json::to_string(value)?;
     ensure!(raw.len() <= limit, "Cloud record exceeds its limit");
     Ok(raw)
+}
+
+fn saved_policy(
+    connection: &Connection,
+    account: &str,
+    destination: &str,
+) -> Result<Option<Policy>> {
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT record_json FROM cloud_sync_policy WHERE account_id=?1 AND destination_id=?2",
+            params![account, destination],
+            |row| row.get(0),
+        )
+        .optional()?;
+    raw.map(|raw| {
+        let policy: Policy = serde_json::from_str(&raw)?;
+        ensure!(
+            policy.account_id == account && policy.destination_id == destination,
+            "Cloud policy binding changed"
+        );
+        Ok(policy)
+    })
+    .transpose()
 }
 
 fn source_in(
@@ -315,7 +454,8 @@ fn job_in(connection: &Connection, capture_id: &str) -> Result<Option<Job>> {
     .transpose()
 }
 
-/// Find or allocate the stable scope for this account, service, and source.
+/// Keep source identity at the resource destination. A new issuer or grant
+/// requires fresh consent but must not bypass prior acceptance or suppression.
 fn source_scope(
     transaction: &Transaction<'_>,
     account: &str,
@@ -363,43 +503,175 @@ fn source_scope(
     })
 }
 
+fn append_cloud_projects(
+    transaction: &Transaction<'_>,
+    policy: &mut Policy,
+    origin: &str,
+    projects: &BTreeSet<ProjectSelection>,
+) -> Result<()> {
+    ensure!(
+        projects
+            .iter()
+            .all(|project| valid_project_path(&project.project_path)),
+        "Choose recorded Cloud projects"
+    );
+    policy.projects.extend(projects.iter().cloned());
+    policy.projects.sort();
+    policy.projects.dedup();
+    ensure!(
+        policy.projects.len() <= 100,
+        "Choose bounded Cloud projects"
+    );
+    let roots: BTreeSet<_> = projects
+        .iter()
+        .map(|project| SourceSelection {
+            source_kind: project.source_kind,
+            path: project.source_path.clone(),
+        })
+        .collect();
+    for root in roots {
+        if !policy
+            .roots
+            .iter()
+            .any(|existing| existing.source_kind == root.source_kind && existing.path == root.path)
+        {
+            ensure!(policy.roots.len() < 100, "Choose bounded Cloud sources");
+            policy.roots.push(source_scope(
+                transaction,
+                &policy.account_id,
+                &policy.destination_id,
+                origin,
+                &root,
+            )?);
+        }
+    }
+    policy
+        .roots
+        .sort_by(|a, b| (a.source_kind, &a.path).cmp(&(b.source_kind, &b.path)));
+    Ok(())
+}
+
+/// The source observation key and whether the user asked to re-offer it.
+pub(crate) enum SourceObservation<'a> {
+    ChangedOnly(&'a str),
+    Backfill(&'a str),
+}
+
 impl Store {
+    /// Read the switch for this device profile. No saved preference means the
+    /// user has not approved any folders or used the device switch.
+    pub(crate) fn cloud_device_upload_enabled(&self) -> Result<bool> {
+        device_upload_enabled(&self.lock())
+    }
+
+    /// Persist the device switch without changing a policy, job, or spool.
+    pub(crate) fn set_cloud_device_upload_enabled(&self, enabled: bool) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO cloud_device_upload (id, enabled) VALUES (1, ?1)
+             ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
+            [enabled],
+        )?;
+        Ok(())
+    }
+
     /// Read only this account and workspace's explicit ongoing policy.
-    /// Legacy setup preferences and saved source requests never create one.
-    pub(crate) fn cloud_sync_policy(
+    /// An old policy without a proved issuer cannot authorize upload.
+    pub(crate) fn cloud_sync_policy_for_origins(
         &self,
         account: &str,
         destination: &str,
         resource_origin: &str,
+        issuer_origin: &str,
     ) -> Result<Option<Policy>> {
         ensure!(
-            valid_resource_origin(resource_origin),
+            valid_resource_origin(resource_origin) && valid_resource_origin(issuer_origin),
             "Cloud service origin is invalid"
         );
-        let raw: Option<String> = self.lock().query_row(
-            "SELECT record_json FROM cloud_sync_policy WHERE account_id=?1 AND destination_id=?2",
-            params![account, destination], |row| row.get(0),
-        ).optional()?;
-        let policy = raw
-            .map(|raw| -> Result<Policy> {
-                let policy: Policy = serde_json::from_str(&raw)?;
-                ensure!(
-                    policy.account_id == account && policy.destination_id == destination,
-                    "Cloud policy binding changed"
-                );
-                Ok(policy)
-            })
-            .transpose()?;
+        let policy = saved_policy(&self.lock(), account, destination)?;
         Ok(policy.filter(|policy| {
             policy.consent_version == ONGOING_CONSENT_VERSION
                 && policy.resource_origin.as_deref() == Some(resource_origin)
+                && policy.issuer_origin.as_deref() == Some(issuer_origin)
         }))
+    }
+
+    /// Read saved Team consent for the verified account and both origins.
+    /// Missing or revoked membership does not hide the local off controls.
+    pub(crate) fn saved_team_sync_policies(
+        &self,
+        account: &str,
+        personal_workspace: &str,
+        resource: &str,
+        issuer: &str,
+    ) -> Result<Vec<Policy>> {
+        ensure!(
+            valid_resource_origin(resource) && valid_resource_origin(issuer),
+            "Cloud service origins are invalid"
+        );
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT destination_id, record_json FROM cloud_sync_policy
+             WHERE account_id=?1 AND destination_id<>?2
+               AND json_extract(record_json, '$.resourceOrigin')=?3
+               AND json_extract(record_json, '$.issuerOrigin')=?4
+               AND json_extract(record_json, '$.consentVersion')=?5
+                AND (json_type(record_json, '$.membershipGeneration')='text'
+                     OR json_type(record_json, '$.teamGrantId')='text'
+                     OR json_type(record_json, '$.workspaceName')='text')
+             ORDER BY destination_id LIMIT 101",
+        )?;
+        let mut policies = Vec::new();
+        for row in statement.query_map(
+            params![
+                account,
+                personal_workspace,
+                resource,
+                issuer,
+                ONGOING_CONSENT_VERSION
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )? {
+            let (destination, raw) = row?;
+            let policy: Policy = serde_json::from_str(&raw)?;
+            ensure!(
+                policies.len() < 100
+                    && policy.account_id == account
+                    && policy.destination_id == destination
+                    && policy.resource_origin.as_deref() == Some(resource)
+                    && policy.issuer_origin.as_deref() == Some(issuer)
+                    && policy.is_team()
+                    && policy
+                        .membership_generation
+                        .as_deref()
+                        .is_none_or(valid_membership_generation)
+                    && policy.team_grant_id.as_deref().is_none_or(safe_id)
+                    && policy.projects.len() <= 100
+                    && policy
+                        .projects
+                        .iter()
+                        .all(|project| valid_project_path(&project.project_path)),
+                "Invalid saved team consent"
+            );
+            policies.push(policy);
+        }
+        Ok(policies)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cloud_sync_policy(
+        &self,
+        account: &str,
+        destination: &str,
+        origin: &str,
+    ) -> Result<Option<Policy>> {
+        self.cloud_sync_policy_for_origins(account, destination, origin, origin)
     }
 
     /// Save a newly confirmed allowlist and its stable account/workspace/root keys.
     /// Choices are the complete UI snapshot, including false and unrelated group
     /// entries. They never grant source access. Save them in the policy transaction
     /// without retargeting jobs or clearing service suppression.
+    #[cfg(test)]
     pub(crate) fn save_cloud_sync_policy(
         &self,
         account: &str,
@@ -409,8 +681,145 @@ impl Store {
         projects: &[ProjectSelection],
         project_choices: &BTreeMap<String, bool>,
     ) -> Result<Policy> {
+        self.save_cloud_sync_policy_for_grant(
+            (account, destination, resource_origin, resource_origin, None),
+            roots,
+            projects,
+            project_choices,
+        )
+    }
+
+    /// Create a policy for explicitly confirmed folders. The caller verifies
+    /// current authority and passes the exact Team generation and workspace name.
+    /// An existing row must never be replaced by a new approval.
+    pub(crate) fn save_cloud_sync_policy_for_membership(
+        &self,
+        binding: PolicyBinding<'_>,
+        roots: &[SourceSelection],
+        projects: &[ProjectSelection],
+        project_choices: &BTreeMap<String, bool>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        self.write_cloud_sync_policy(
+            binding,
+            roots,
+            projects,
+            project_choices,
+            PolicyWrite::Create(&current),
+        )
+    }
+
+    /// Confirm new folders only after the user turns off all folders under the
+    /// exact old Team policy. The new membership must be current at commit.
+    /// Old jobs, bytes, and service deletion markers stay under their old bindings.
+    /// The `current` check runs under the store lock. It must not call the store.
+    pub(crate) fn reapprove_cloud_sync_policy_for_membership(
+        &self,
+        previous: &Policy,
+        binding: PolicyBinding<'_>,
+        roots: &[SourceSelection],
+        projects: &[ProjectSelection],
+        project_choices: &BTreeMap<String, bool>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        self.write_cloud_sync_policy(
+            binding,
+            roots,
+            projects,
+            project_choices,
+            PolicyWrite::Reapprove(previous, &current),
+        )
+    }
+
+    /// Renew the exact saved Team folders with current membership proof. Add
+    /// only the validated new selections. Keep the pause, old scopes and jobs.
+    /// The caller verifies the Team and checks current local authority at commit.
+    pub(crate) fn renew_cloud_team_sync_policy(
+        &self,
+        binding: PolicyBinding<'_>,
+        expected_revision: &str,
+        confirmed_paths: &BTreeSet<String>,
+        additions: Option<(&BTreeSet<ProjectSelection>, &BTreeMap<String, bool>)>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        let (account, destination, resource, issuer, team) = binding;
+        let (generation, name) = team
+            .filter(|(generation, name)| valid_team_membership(generation, name))
+            .ok_or_else(|| anyhow::anyhow!("Current Team membership is required"))?;
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let mut policy = saved_policy(&transaction, account, destination)?
+            .ok_or_else(|| anyhow::anyhow!("No saved Team folders"))?;
         ensure!(
-            valid_resource_origin(resource_origin),
+            policy.consent_version == ONGOING_CONSENT_VERSION
+                && policy.revision == expected_revision
+                && policy.resource_origin.as_deref() == Some(resource)
+                && policy.issuer_origin.as_deref() == Some(issuer)
+                && valid_resource_origin(resource)
+                && valid_resource_origin(issuer)
+                && policy.needs_team_membership(generation)
+                && !confirmed_paths.is_empty()
+                && policy.projects.len() <= 100
+                && policy
+                    .projects
+                    .iter()
+                    .all(|project| valid_project_path(&project.project_path))
+                && policy
+                    .projects
+                    .iter()
+                    .map(|project| &project.project_path)
+                    .collect::<BTreeSet<_>>()
+                    == confirmed_paths.iter().collect(),
+            "Saved Team folders or membership changed"
+        );
+        policy.team_grant_id = None;
+        policy.membership_generation = Some(generation.to_owned());
+        policy.workspace_name = Some(name.to_owned());
+        if let Some((projects, choices)) = additions {
+            append_cloud_projects(&transaction, &mut policy, resource, projects)?;
+            policy.project_choices.extend(choices.clone());
+        }
+        policy.revision = random_id()?;
+        transaction.execute(
+            "UPDATE cloud_sync_policy SET record_json=?3 WHERE account_id=?1 AND destination_id=?2",
+            params![account, destination, encode(&policy, 524_288)?],
+        )?;
+        ensure!(current(), "Cloud account or upload controls changed");
+        transaction.commit()?;
+        Ok(policy)
+    }
+
+    /// Replace a policy only when a test needs to simulate an older client.
+    #[cfg(test)]
+    pub(crate) fn save_cloud_sync_policy_for_grant(
+        &self,
+        binding: PolicyBinding<'_>,
+        roots: &[SourceSelection],
+        projects: &[ProjectSelection],
+        project_choices: &BTreeMap<String, bool>,
+    ) -> Result<Policy> {
+        self.write_cloud_sync_policy(
+            binding,
+            roots,
+            projects,
+            project_choices,
+            PolicyWrite::ReplaceFixture,
+        )
+    }
+
+    fn write_cloud_sync_policy(
+        &self,
+        binding: PolicyBinding<'_>,
+        roots: &[SourceSelection],
+        projects: &[ProjectSelection],
+        project_choices: &BTreeMap<String, bool>,
+        write: PolicyWrite<'_>,
+    ) -> Result<Policy> {
+        let (account, destination, resource_origin, issuer_origin, team) = binding;
+        ensure!(
+            valid_resource_origin(resource_origin)
+                && valid_resource_origin(issuer_origin)
+                && team.is_none_or(|(generation, name)| valid_team_membership(generation, name)),
             "Cloud service origin is invalid"
         );
         ensure!(
@@ -440,6 +849,32 @@ impl Store {
         );
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
+        match &write {
+            PolicyWrite::Create(_) => ensure!(
+                saved_policy(&transaction, account, destination)?.is_none_or(|saved| {
+                    saved.issuer_origin.is_none()
+                        && saved
+                            .resource_origin
+                            .as_deref()
+                            .is_none_or(|origin| origin == resource_origin)
+                }),
+                "A Cloud folder policy is already saved for this workspace"
+            ),
+            PolicyWrite::Reapprove(previous, _) => ensure!(
+                previous.is_team()
+                    && previous.consent_version == ONGOING_CONSENT_VERSION
+                    && previous.projects.is_empty()
+                    && previous.resource_origin.as_deref() == Some(resource_origin)
+                    && previous.issuer_origin.as_deref() == Some(issuer_origin)
+                    && team
+                        .is_some_and(|(generation, _)| previous.needs_team_membership(generation))
+                    && saved_policy(&transaction, account, destination)?.as_ref()
+                        == Some(*previous),
+                "Confirm the saved Team folders before adding more."
+            ),
+            #[cfg(test)]
+            PolicyWrite::ReplaceFixture => {}
+        }
         let mut scoped = Vec::new();
         for root in roots {
             scoped.push(source_scope(
@@ -450,10 +885,19 @@ impl Store {
                 root,
             )?);
         }
+        let (team_grant_id, membership_generation) = match &write {
+            #[cfg(test)]
+            PolicyWrite::ReplaceFixture => (team.map(|(grant, _)| grant.to_owned()), None),
+            _ => (None, team.map(|(generation, _)| generation.to_owned())),
+        };
         let policy = Policy {
             account_id: account.into(),
             destination_id: destination.into(),
             resource_origin: Some(resource_origin.into()),
+            issuer_origin: Some(issuer_origin.into()),
+            team_grant_id,
+            membership_generation,
+            workspace_name: team.map(|(_, name)| name.to_owned()),
             consent_version: ONGOING_CONSENT_VERSION.into(),
             revision: random_id()?,
             roots: scoped,
@@ -466,6 +910,19 @@ impl Store {
              ON CONFLICT(account_id, destination_id) DO UPDATE SET record_json=excluded.record_json",
             params![account, destination, encode(&policy, 524_288)?],
         )?;
+        // The first explicit folder approval can start uploads. Later approvals
+        // must not override the saved device preference.
+        transaction.execute(
+            "INSERT OR IGNORE INTO cloud_device_upload VALUES (1, 1)",
+            [],
+        )?;
+        match write {
+            PolicyWrite::Reapprove(_, current) | PolicyWrite::Create(current) => {
+                ensure!(current(), "Cloud account or upload controls changed");
+            }
+            #[cfg(test)]
+            PolicyWrite::ReplaceFixture => {}
+        }
         transaction.commit()?;
         Ok(policy)
     }
@@ -479,6 +936,7 @@ impl Store {
         group_id: &str,
         selected: bool,
         projects: &BTreeSet<ProjectSelection>,
+        clear_source_hold: bool,
         current: impl Fn() -> bool,
     ) -> Result<Policy> {
         let origin = policy
@@ -486,6 +944,11 @@ impl Store {
             .as_deref()
             .filter(|origin| valid_resource_origin(origin))
             .ok_or_else(|| anyhow::anyhow!("Cloud service origin is invalid"))?;
+        policy
+            .issuer_origin
+            .as_deref()
+            .filter(|origin| valid_resource_origin(origin))
+            .ok_or_else(|| anyhow::anyhow!("Cloud issuer is invalid"))?;
         ensure!(
             policy.consent_version == ONGOING_CONSENT_VERSION,
             "Cloud consent is required"
@@ -504,40 +967,13 @@ impl Store {
         let mut saved = policy.clone();
         if selected {
             ensure!(
-                !projects.is_empty()
-                    && projects
-                        .iter()
-                        .all(|project| valid_project_path(&project.project_path)),
+                policy.has_membership_authority() && !projects.is_empty(),
                 "Choose recorded Cloud projects"
             );
-            saved.projects.extend(projects.iter().cloned());
-            saved.projects.sort();
-            saved.projects.dedup();
-            ensure!(saved.projects.len() <= 100, "Choose bounded Cloud projects");
-            let roots: BTreeSet<_> = projects
-                .iter()
-                .map(|project| SourceSelection {
-                    source_kind: project.source_kind,
-                    path: project.source_path.clone(),
-                })
-                .collect();
-            for root in roots {
-                if !saved.roots.iter().any(|existing| {
-                    existing.source_kind == root.source_kind && existing.path == root.path
-                }) {
-                    ensure!(saved.roots.len() < 100, "Choose bounded Cloud sources");
-                    saved.roots.push(source_scope(
-                        &transaction,
-                        &policy.account_id,
-                        &policy.destination_id,
-                        origin,
-                        &root,
-                    )?);
-                }
+            append_cloud_projects(&transaction, &mut saved, origin, projects)?;
+            if clear_source_hold {
+                saved.paused = false;
             }
-            saved
-                .roots
-                .sort_by(|a, b| (a.source_kind, &a.path).cmp(&(b.source_kind, &b.path)));
         } else {
             saved.projects.retain(|project| !projects.contains(project));
             saved.roots.retain(|root| {
@@ -563,13 +999,17 @@ impl Store {
     /// Persist pause or explicit retry without changing consent or frozen jobs.
     pub(crate) fn set_cloud_sync_paused(&self, policy: &Policy, paused: bool) -> Result<Policy> {
         let mut saved = self
-            .cloud_sync_policy(
+            .cloud_sync_policy_for_origins(
                 &policy.account_id,
                 &policy.destination_id,
                 policy
                     .resource_origin
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("Confirm Cloud sync for this service"))?,
+                policy
+                    .issuer_origin
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("Confirm Cloud sync for this issuer"))?,
             )?
             .ok_or_else(|| anyhow::anyhow!("Cloud consent is required"))?;
         ensure!(saved == *policy, "Cloud policy changed");
@@ -598,8 +1038,8 @@ impl Store {
         Ok(saved)
     }
 
-    /// Return bounded active jobs for the original account. Terminal IDs remain
-    /// durable but do not consume active queue admission.
+    /// Return bounded active jobs for the original account. Terminal jobs and
+    /// jobs with no issuer stay on disk but do not consume active queue admission.
     pub(crate) fn cloud_sync_jobs(
         &self,
         account: &str,
@@ -610,6 +1050,7 @@ impl Store {
         let mut statement = connection.prepare(
             "SELECT record_json FROM cloud_sync_job WHERE account_id=?1 AND destination_id=?2
              AND json_extract(record_json, '$.resource_origin')=?3
+             AND json_extract(record_json, '$.issuer_origin') IS NOT NULL
              AND json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned')
              ORDER BY rowid LIMIT 129",
         )?;
@@ -660,6 +1101,7 @@ impl Store {
 
     /// Freeze a new capture job before reservation. At most one active job may own
     /// a source; unchanged and service-suppressed sources do not create jobs.
+    #[cfg(test)]
     pub(crate) fn enqueue_cloud_sync(
         &self,
         policy: &Policy,
@@ -668,6 +1110,31 @@ impl Store {
         source_id: &str,
         observation_key: &str,
     ) -> Result<Option<Job>> {
+        self.enqueue_cloud_sync_with_paths(
+            policy,
+            source_scope_id,
+            project_path,
+            source_id,
+            SourceObservation::ChangedOnly(observation_key),
+            None,
+        )
+    }
+
+    /// Freeze routing evidence and the upload identity in the same transaction
+    /// that checks the current policy, existing active jobs, and suppression.
+    pub(crate) fn enqueue_cloud_sync_with_paths(
+        &self,
+        policy: &Policy,
+        source_scope_id: &str,
+        project_path: &str,
+        source_id: &str,
+        observation: SourceObservation<'_>,
+        recorded_project_paths: Option<&[String]>,
+    ) -> Result<Option<Job>> {
+        let (observation_key, changed_only) = match observation {
+            SourceObservation::ChangedOnly(key) => (key, true),
+            SourceObservation::Backfill(key) => (key, false),
+        };
         ensure!(
             !policy.paused
                 && policy.consent_version == ONGOING_CONSENT_VERSION
@@ -676,6 +1143,13 @@ impl Store {
                     .resource_origin
                     .as_deref()
                     .is_some_and(valid_resource_origin),
+            "Cloud project is not allowed"
+        );
+        ensure!(
+            policy
+                .issuer_origin
+                .as_deref()
+                .is_some_and(valid_resource_origin),
             "Cloud project is not allowed"
         );
         ensure!(
@@ -696,6 +1170,15 @@ impl Store {
         };
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
+        ensure!(
+            device_upload_enabled(&transaction)?,
+            "Cloud uploads are paused on this device"
+        );
+        ensure!(
+            saved_policy(&transaction, &policy.account_id, &policy.destination_id)?.as_ref()
+                == Some(policy),
+            "Cloud policy changed"
+        );
         if let Some(source) = source_in(
             &transaction,
             &identity.account_id,
@@ -706,15 +1189,21 @@ impl Store {
                 source.resource_origin == policy.resource_origin,
                 "Cloud source service changed"
             );
-            if source.suppressed || source.observation_key.as_deref() == Some(observation_key) {
+            if source.suppressed
+                || (changed_only && source.observation_key.as_deref() == Some(observation_key))
+            {
                 return Ok(None);
             }
         }
         let mut active = 0;
         {
+            // Filter before LIMIT so legacy rows cannot hide jobs that can still
+            // resume under their original issuer. Do not rewrite legacy records.
             let mut statement = transaction.prepare(
                 "SELECT record_json FROM cloud_sync_job
-                 WHERE json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned') LIMIT 129"
+                 WHERE json_extract(record_json, '$.issuer_origin') IS NOT NULL
+                 AND json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned')
+                 LIMIT 129"
             )?;
             for raw in statement.query_map([], |row| row.get::<_, String>(0))? {
                 let job: Job = serde_json::from_str(&raw?)?;
@@ -724,6 +1213,7 @@ impl Store {
                     if job.identity.account_id == identity.account_id
                         && job.identity.destination_id == identity.destination_id
                         && job.identity.source_id == identity.source_id
+                        && job.same_membership_generation(policy)
                     {
                         return Ok(None);
                     }
@@ -737,6 +1227,9 @@ impl Store {
         let job = Job {
             identity,
             resource_origin: policy.resource_origin.clone(),
+            issuer_origin: policy.issuer_origin.clone(),
+            team_grant_id: None,
+            membership_generation: policy.membership_generation.clone(),
             source_scope_id: source_scope_id.into(),
             project_path: project_path.into(),
             project_folders: policy
@@ -752,6 +1245,7 @@ impl Store {
                 })
                 .map(|project| project.project_path.clone())
                 .collect(),
+            recorded_project_paths: recorded_project_paths.map(<[String]>::to_vec),
             observation_key: observation_key.into(),
             state: JobState::Pending,
             reservation_retry_at: None,

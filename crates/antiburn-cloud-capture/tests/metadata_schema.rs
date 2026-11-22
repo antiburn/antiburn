@@ -554,7 +554,7 @@ fn maintained_examples_have_valid_structure_and_exact_evidence_bindings() {
         let billing: Value = serde_json::from_str(examples[3]).unwrap();
         validator.validate(&common).unwrap();
         let mut claude = metadata("claude-code", "ClaudeJsonl");
-        claude["sections"]["example.capture-git"] = git;
+        claude["sections"]["antiburn.git-checkout"] = git;
         claude["sections"]["example.session-billing"] = billing;
         validator.validate(&claude).unwrap();
         let parsed: CaptureMetadata = serde_json::from_value(claude).unwrap();

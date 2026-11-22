@@ -1,6 +1,8 @@
 use super::*;
 use crate::cloud::{
-    auth::{self, Config, Session, TokenRequest, Tokens, Transport, Vault},
+    auth::{
+        self, AccountSession, Config, EligibleWorkspace, TokenRequest, Tokens, Transport, Vault,
+    },
     state::StateStore,
 };
 use std::{fs, sync::Arc};
@@ -48,15 +50,21 @@ impl Transport for Authority {
             token_type: "Bearer".into(),
             grant_id: "synthetic-grant".into(),
             user_id: "synthetic-user".into(),
-            workspace_id: "synthetic-personal".into(),
+            legacy_workspace_claim: false,
             grant_expires_at: "1970-01-01T02:46:40Z".into(),
             scope: "capture:write".into(),
             resource: ORIGIN.into(),
             iss: ORIGIN.into(),
         })
     }
-    fn session(&self, _: &Config, _: &str) -> Result<Session, auth::Failure> {
-        Ok(crate::cloud::tests::session())
+    fn session(&self, _: &Config, _: &str) -> Result<AccountSession, auth::Failure> {
+        Ok(crate::cloud::tests::session().into())
+    }
+    fn workspaces(&self, _: &Config, _: &str) -> Result<Vec<EligibleWorkspace>, auth::Failure> {
+        Ok(vec![EligibleWorkspace {
+            workspace: crate::cloud::tests::session().workspace,
+            membership_generation: None,
+        }])
     }
     fn revoke(&self, _: &Config, _: &str) -> Result<(), auth::Failure> {
         Ok(())
@@ -178,6 +186,63 @@ impl Fixture {
         )
         .unwrap()
     }
+}
+
+#[test]
+fn first_save_checks_current_group_and_explicit_source() {
+    let mut fixture = Fixture::new();
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    let discovery = fixture.discover(Vec::new());
+    let group = &discovery.groups[0];
+    let projects = group.projects.iter().cloned().collect();
+    let binding = fixture.binding();
+    let choices = BTreeMap::from([(group.id.clone(), true)]);
+    let unselected = BTreeMap::from([(group.id.clone(), false)]);
+    assert!(
+        confirm_project_choices(
+            &fixture.store,
+            &mut fixture.cache,
+            &binding,
+            &unselected,
+            &projects,
+            &|| true,
+        )
+        .is_err()
+    );
+    assert!(
+        confirm_project_choices(
+            &fixture.store,
+            &mut fixture.cache,
+            &binding,
+            &choices,
+            &projects,
+            &|| false,
+        )
+        .is_err()
+    );
+    assert!(
+        confirm_project_choices(
+            &fixture.store,
+            &mut fixture.cache,
+            &binding,
+            &choices,
+            &projects,
+            &|| true,
+        )
+        .is_ok()
+    );
+    fixture.save_source("synthetic-user", "synthetic-personal", false);
+    assert!(
+        confirm_project_choices(
+            &fixture.store,
+            &mut fixture.cache,
+            &binding,
+            &choices,
+            &projects,
+            &|| true,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -537,7 +602,10 @@ fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_
             .capture_supported
     );
     connection
-        .execute_batch("CREATE TABLE session_unknown(session_id TEXT);")
+        .execute_batch(
+            "CREATE TABLE session_unknown(session_id TEXT);
+             INSERT INTO session_unknown VALUES ('ses_main');",
+        )
         .unwrap();
     let unsupported = fixture.discover(known.0);
     assert!(unsupported.partial);

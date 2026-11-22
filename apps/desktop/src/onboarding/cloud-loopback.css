@@ -1,0 +1,76 @@
+/* Browser-only styles. The loopback response embeds this file without assets. */
+:root {
+  color-scheme: light dark;
+  --window: hsl(0 0% 96.4%);
+  --paper: hsl(0 0% 100%);
+  --ink: hsl(0 0% 12.5%);
+  --muted: hsl(240 2% 39%);
+  --edge: hsl(0 0% 0% / 0.125);
+  --brand: hsl(18 92% 39%);
+  --radius: 1rem;
+  --onboarding-title: 600 1.75rem/1.4 system-ui, sans-serif;
+  --onboarding-body: 400 1.0625rem/1.4 system-ui, sans-serif;
+  --status-label: 600 0.9375rem/1.4 system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --window: hsl(0 0% 12.5%);
+    --paper: hsl(240 4% 14.7%);
+    --ink: hsl(240 3% 93.5%);
+    --muted: hsl(240 3.6% 68%);
+    --edge: hsl(0 0% 100% / 0.125);
+    --brand: hsl(17.6 100% 54%);
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  margin: 0;
+  padding: 1rem;
+  background: var(--window);
+  color: var(--ink);
+  font: var(--onboarding-body);
+}
+main {
+  width: min(100%, 27rem);
+  padding: clamp(1.25rem, 5vw, 2rem);
+  overflow-wrap: anywhere;
+  background: var(--paper);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  font: var(--status-label);
+}
+header span {
+  display: flex;
+  color: var(--brand);
+}
+header svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+h1 {
+  margin: 0;
+  font: var(--onboarding-title);
+  letter-spacing: -0.4px;
+}
+p {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+}
+.next {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--edge);
+  color: var(--ink);
+  font: var(--status-label);
+}

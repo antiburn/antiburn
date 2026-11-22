@@ -42,7 +42,7 @@ path = "src/lib.rs"
 [features]
 default = []
 # Manual development builds only. Distribution builds do not select Cloud.
-cloud = ["tauri/dynamic-acl", "dep:antiburn-cloud-capture", "tokio/net"]
+cloud = ["tauri/dynamic-acl", "dep:antiburn-cloud-capture", "dep:hostname", "tokio/net"]
 # Set only by packaged distribution builds. Release-profile development runs
 # deliberately omit it so they cannot change the machine's login items.
 distribution = []
@@ -105,6 +105,7 @@ async-trait = "0.1"
 base64 = "0.23"
 # Derives installation-scoped provider account keys without storing subjects.
 hmac = "0.13"
+hostname = { version = "0.4.2", optional = true }
 # Direct provider usage and public model-pricing fetches: plain HTTPS requests
 # to the relevant public or provider endpoint, with the reader's own
 # credential — a `GET` for the usage reading itself, and, for Codex, the
@@ -285,6 +286,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 # This dev-dependency resolves the engine counters for test builds only.
 # Release runtime builds exclude it.
 antiburn-local = { path = "../../../crates/antiburn-local", features = [

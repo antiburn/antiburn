@@ -443,7 +443,7 @@ describe("SessionsStepSettings Cloud preference", () => {
     render(<SessionsStepSettings />)
     const learnMore = await screen.findByRole("button", { name: "Learn more" })
     await waitFor(() => expect(learnMore).toBeEnabled())
-    const toggle = screen.getByRole("switch", { name: "Upload sessions" })
+    const toggle = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
     expect(toggle).toHaveAttribute("aria-disabled", "true")
     expect(toggle).not.toBeChecked()
     expect(

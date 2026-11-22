@@ -39,7 +39,28 @@ impl Store {
                 record_json TEXT NOT NULL CHECK(length(record_json) <= 524288),
                 PRIMARY KEY(account_id, destination_id)
             );
-            CREATE TABLE IF NOT EXISTS cloud_sync_scope (
+            CREATE TABLE IF NOT EXISTS cloud_device_upload (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                enabled INTEGER NOT NULL CHECK(enabled IN (0, 1))
+            );
+            INSERT INTO cloud_device_upload (id, enabled)
+                SELECT 1, NOT EXISTS(
+                    SELECT 1 FROM cloud_sync_policy
+                    WHERE CASE WHEN json_valid(record_json)
+                        THEN COALESCE(json_extract(record_json, '$.paused'), 1)
+                        ELSE 1 END
+                )
+                WHERE EXISTS (SELECT 1 FROM cloud_sync_policy)
+                ON CONFLICT(id) DO NOTHING;
+             CREATE TABLE IF NOT EXISTS cloud_workspace_slot (
+                 issuer TEXT NOT NULL,
+                 resource TEXT NOT NULL,
+                 account_id TEXT NOT NULL,
+                 workspace_id TEXT NOT NULL,
+                 anchor_grant_id TEXT,
+                 PRIMARY KEY (issuer, resource, account_id, workspace_id)
+             );
+             CREATE TABLE IF NOT EXISTS cloud_sync_scope (
                 account_id TEXT NOT NULL,
                 destination_id TEXT NOT NULL,
                 source_kind TEXT NOT NULL,
@@ -77,6 +98,84 @@ impl Store {
             );",
         )?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    /// Add a synthetic legacy slot for cleanup tests. New connections never create slots.
+    #[cfg(test)]
+    pub(crate) fn register_cloud_workspace_slot(
+        &self,
+        issuer: &str,
+        resource: &str,
+        account: &str,
+        workspace: &str,
+    ) -> Result<()> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let existing: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cloud_workspace_slot
+             WHERE issuer=?1 AND resource=?2 AND account_id=?3 AND workspace_id=?4)",
+            params![issuer, resource, account, workspace],
+            |row| row.get(0),
+        )?;
+        if !existing {
+            let count: usize = transaction.query_row(
+                "SELECT count(*) FROM cloud_workspace_slot WHERE issuer=?1 AND resource=?2",
+                params![issuer, resource],
+                |row| row.get(0),
+            )?;
+            ensure!(count < 16, "Too many saved workspace connections");
+            transaction.execute(
+                "INSERT INTO cloud_workspace_slot VALUES (?1, ?2, ?3, ?4, NULL)",
+                params![issuer, resource, account, workspace],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Return the exact slots for this installation and service, including slots
+    /// that still need cleanup when no account or membership list can be read.
+    pub(crate) fn cloud_workspace_slots(
+        &self,
+        issuer: &str,
+        resource: &str,
+    ) -> Result<Vec<(String, String)>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT account_id, workspace_id FROM cloud_workspace_slot
+             WHERE issuer=?1 AND resource=?2 ORDER BY account_id, workspace_id LIMIT 17",
+        )?;
+        let slots = statement
+            .query_map(params![issuer, resource], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        ensure!(
+            slots.len() <= 16
+                && slots.iter().all(|(account, workspace)| {
+                    !account.is_empty()
+                        && account.len() <= 256
+                        && !workspace.is_empty()
+                        && workspace.len() <= 256
+                }),
+            "Invalid saved workspace connections"
+        );
+        Ok(slots)
+    }
+
+    /// Remove only a slot whose explicit close has already succeeded.
+    pub(crate) fn remove_cloud_workspace_slot(
+        &self,
+        issuer: &str,
+        resource: &str,
+        account: &str,
+        workspace: &str,
+    ) -> Result<()> {
+        self.lock().execute(
+            "DELETE FROM cloud_workspace_slot WHERE issuer=?1 AND resource=?2 AND account_id=?3 AND workspace_id=?4",
+            params![issuer, resource, account, workspace],
+        )?;
         Ok(())
     }
 

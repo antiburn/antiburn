@@ -169,13 +169,13 @@ pub struct CaptureMetadata {
     pub agent: String,
     /// Native layout name, such as `ClaudeJsonl` or `OpenCodeSqliteV2`.
     pub source_format: String,
-    /// Session identity from the native filename or selected SQLite row.
+    /// Session identity from the native filename, owned rollout header, or selected SQLite row.
     pub native_session_id: String,
     /// Claude child filename ID; OpenCode personas leave this absent.
     pub native_agent_id: Option<String>,
     /// Historical owned runtime version, absent when evidence cannot prove one.
     pub source_agent_version: Option<String>,
-    /// Bounded Claude version/ownership pairs; OpenCode leaves this empty.
+    /// Bounded owned or inherited version observations; OpenCode leaves this empty.
     pub version_observations: Vec<VersionObservation>,
     /// Whether the Claude scan avoided partial records and invalid versions.
     pub version_scan_complete: bool,

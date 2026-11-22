@@ -61,16 +61,10 @@ describe("Cloud Dev simulation", () => {
     })
     await vi.advanceTimersByTimeAsync(1500)
     expect((await port.ongoing!.status())?.status).toBe("syncing")
-    await port.ongoing!.pause({
-      accountId: "cloud-dev-account",
-      destinationId: "cloud-dev-personal",
-    })
+    await port.ongoing!.setEnabled(false)
     await vi.runAllTimersAsync()
     expect((await port.ongoing!.status())?.status).toBe("paused")
-    await port.ongoing!.retry({
-      accountId: "cloud-dev-account",
-      destinationId: "cloud-dev-personal",
-    })
+    await port.ongoing!.setEnabled(true)
     await vi.runAllTimersAsync()
     expect((await port.ongoing!.status())?.status).toBe("syncing")
     stop()

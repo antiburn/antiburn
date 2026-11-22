@@ -33,6 +33,10 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
         account_id: "account".into(),
         destination_id: "personal".into(),
         resource_origin: Some("https://api.example".into()),
+        issuer_origin: Some("https://api.example".into()),
+        team_grant_id: None,
+        membership_generation: None,
+        workspace_name: None,
         consent_version: ONGOING_CONSENT_VERSION.into(),
         revision: "revision".into(),
         roots: vec![RootScope {
@@ -108,6 +112,45 @@ fn cloud_scheduler_pages_wait_for_queue_drain_and_use_current_recorded_cwds() {
     .in_source_scope("scope")
     .unwrap();
     assert_eq!(last.source_id(), source_id);
+}
+
+#[test]
+fn cloud_scheduler_backfill_starts_over_and_retains_its_own_page_position() {
+    let (_directory, policy, _, _) = fixture();
+    let mut runner = Runner::default();
+    let mut cache = super::super::projects::Cache::default();
+    runner.refresh_candidates(&policy, &|| true, &mut cache);
+    runner.candidates.clear();
+    runner.refresh_candidates(&policy, &|| true, &mut cache);
+    assert_eq!(
+        runner.discovery_cursor.as_ref().unwrap().after.as_deref(),
+        Some("session-1023")
+    );
+
+    runner.schedule_backfill(&policy);
+    for (first, count) in [
+        ("session-0000", 512),
+        ("session-0512", 512),
+        ("session-1024", 1),
+    ] {
+        runner.refresh_candidates(&policy, &|| true, &mut cache);
+        assert!(runner.backfill_page);
+        assert_eq!(
+            runner
+                .candidates
+                .front()
+                .unwrap()
+                .candidate
+                .native_session_id(),
+            first
+        );
+        assert_eq!(runner.candidates.len(), count);
+        runner.candidates.clear();
+    }
+    runner.refresh_candidates(&policy, &|| true, &mut cache);
+    assert!(!runner.backfill_page);
+    assert!(runner.backfill_revision.is_none());
+    assert!(runner.candidates.is_empty());
 }
 
 #[test]

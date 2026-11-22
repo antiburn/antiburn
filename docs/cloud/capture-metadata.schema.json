@@ -25,11 +25,11 @@
     },
     "agent": {
       "type": "string",
-      "enum": ["claude-code", "opencode"]
+      "enum": ["claude-code", "codex", "opencode", "pi"]
     },
     "source_format": {
       "type": "string",
-      "enum": ["ClaudeJsonl", "OpenCodeSqliteV2"]
+      "enum": ["ClaudeJsonl", "CodexJsonl", "OpenCodeSqliteV2", "PiJsonl"]
     },
     "native_session_id": {
       "type": "string",

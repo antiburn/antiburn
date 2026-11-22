@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-workspaces"
+description = "Enables the cloud_workspaces command without any pre-configured scope."
+commands.allow = ["cloud_workspaces"]
+
+[[permission]]
+identifier = "deny-cloud-workspaces"
+description = "Denies the cloud_workspaces command without any pre-configured scope."
+commands.deny = ["cloud_workspaces"]

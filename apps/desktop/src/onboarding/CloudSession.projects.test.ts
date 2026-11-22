@@ -368,7 +368,7 @@ it("keeps a newer desktop status instead of a stale pause reply", async () => {
   try {
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     let finish!: (value: ReturnType<typeof ongoingStatus>) => void
-    ongoing.pause.mockImplementationOnce(
+    ongoing.setEnabled.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finish = resolve
@@ -385,10 +385,8 @@ it("keeps a newer desktop status instead of a stale pause reply", async () => {
     finish(ongoingStatus({ status: "paused", paused: true }))
     await pending
     expect(session.getSnapshot().ongoing?.status).toBe("offline")
-    expect(ongoing.pause).toHaveBeenCalledWith({
-      accountId: "synthetic-account",
-      destinationId: "synthetic-personal",
-    })
+    expect(ongoing.setEnabled).toHaveBeenCalledWith(false)
+    expect(ongoing.retry).not.toHaveBeenCalled()
   } finally {
     stop()
   }

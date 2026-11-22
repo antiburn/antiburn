@@ -2,17 +2,14 @@ import {
   emptyCloudSnapshot,
   CLOUD_BUSY_MESSAGE,
   desktopCloudPort,
-  cloudSourceKey,
   cloudSourceKind,
   cloudProjectChoices,
   mergeCloudProjectGroups,
-  cloudProjectSelectionKey,
   type CloudDraft,
   type CloudPort,
   type CloudScreen,
   type CloudSnapshot,
   type CloudSourceKind,
-  type CaptureConsent,
   type SyncResult,
   type CloudProjectGroup,
   type CloudProjectChoices,
@@ -22,118 +19,50 @@ import {
   type CloudDestinationBinding,
   type CloudProjectCursor,
   type CloudSourceSelection,
+  type CloudWorkspace,
+  type CloudWorkspaceRecovery,
 } from "../lib/cloud"
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
 import { personalCloudDestination } from "../lib/cloudDestination"
-import type { LocalToolsStatus } from "../lib/ipcPayloads"
+import {
+  accountViewPatch,
+  backfillTarget,
+  cloudContextChange,
+  cloudUploadStatusUnknown,
+  confirmationContextKey,
+  hasSavedProjectPermission,
+  isCloudBusy,
+  legacyCaptureConsent,
+  matchesUploadPolicy,
+  mergeProjectSources,
+  ongoingDestination,
+  projectBinding,
+  projectConfirmationKey,
+  projectSelectionKey,
+  projectSyncChoices,
+  projectViewGroups,
+  retryTarget,
+  reviewableProjectSelections,
+  selectedFoldersKey,
+  selectedProjects,
+  supportedProjectSelections,
+  teamFoldersToConfirm,
+  teamStatusPatch,
+  uploadActionError,
+  uploadPolicy,
+  workspaceRecoveryPatch,
+  type CloudViewSnapshot,
+} from "./cloudSessionState"
 
-/** Compare consent-relevant roots without treating display-count changes as edits. */
-function selectedFoldersKey(value: CloudSnapshot) {
-  return JSON.stringify(
-    value.draft.folders
-      .filter((folder) => folder.selected)
-      .map(cloudSourceKey)
-      .sort(),
-  )
-}
-
-/** Bind a rendered Start action to authority and exact selection, not display counts. */
-function confirmationContextKey(value: CloudViewSnapshot) {
-  return JSON.stringify([
-    value.cloud.identity?.id,
-    value.cloud.destination?.id,
-    value.cloud.destination?.kind,
-    value.cloud.status,
-    value.cloud.captureEnabled,
-    value.cloud.setupError,
-    selectedFoldersKey(value.cloud),
-    value.projects?.selectionKey,
-  ])
-}
-
-/** One surface's view state. Start or a confirmed Settings addition grants content consent. */
-export interface CloudViewSnapshot {
-  /** Fence actions rendered before an account, source, or folder selection change. */
-  contextRevision: number
-  /** Current home is display-only. Raw source and project paths retain authority. */
-  homeDirectory: string | null
-  cloud: CloudSnapshot
-  screen: CloudScreen
-  sync: SyncResult
-  /** CLI and skill evidence is independent of Cloud authority and vendor hooks. */
-  localTools: LocalToolsStatus | null
-  /** A failed status read or subscription cannot establish current tool readiness. */
-  localToolsError: boolean
-  busy: boolean
-  error: string | null
-  loaded: boolean
-  /** Retry the saved request's listing even after a transient warning clears. */
-  sourceListingNeedsRetry: boolean
-  /** Desktop project discovery with local defaults. No selection write happens on load. */
-  projects?: {
-    groups: CloudProjectGroup[]
-    choices: CloudProjectChoices
-    loading: boolean
-    loaded: boolean
-    partial: boolean
-    hasMore: boolean
-    needsChoiceReview: boolean
-    error: string | null
-    selectionKey: string
-  } | null
-  /** Desktop-owned ongoing policy and transfer counters, separate from local agents. */
-  ongoing?: CloudOngoingStatus | null
-}
-const messages = {
-  idle: "",
-  opening: "Opening your browser…",
-  waiting: "Waiting for browser…",
-  returned: "Welcome back. Cloud is coming soon. Continue using Antiburn locally.",
-  signed_in: "Your account is verified.",
-  signed_out: "You’re signed out on this device.",
-  cancelled: "Browser handoff cancelled. You can try again or continue locally.",
-  expired: "This browser link expired. Try again to open a new link.",
-  browser_failed: "Your browser could not open. Try again or continue locally.",
-  offline: "Cloud could not connect. Check your connection and try again.",
-  rejected: "Cloud could not verify this connection. Sign in again to continue.",
-  invalid_response: "Cloud returned an unexpected response. Try again later.",
-  credential_failed:
-    "Antiburn could not open your saved sign-in. Unlock your device's password storage, or sign out and sign in again.",
-  unavailable: "Cloud is not available in this build. You can continue locally.",
-  reauth_required:
-    "Sign out, then sign in again. If Cloud cannot confirm sign-out, open Cloud settings to finish.",
-  revocation_unconfirmed:
-    "Signed out on this device. Cloud has not confirmed that the connection is closed. Open Cloud settings to finish.",
-} as const
-/** Map closed desktop states to safe copy without exposing provider errors. */
-export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
-/** Distinguish fresh setup from an unreadable saved-upload state. */
-export const cloudUploadStatusUnknown = (value: CloudOngoingStatus | null | undefined) =>
-  !!value && !value.storageKnown && value.status !== "consent_required"
-/** Missing storage evidence must not turn a cached state into a current Ready claim. */
-export const cloudOngoingStatusMessage = (value: CloudOngoingStatus) => {
-  if (cloudUploadStatusUnknown(value)) return "Saved upload status is unavailable"
-  return {
-    consent_required: "Cloud sync not started",
-    ready: "Background sync enabled",
-    syncing: "Sessions syncing",
-    paused: "Cloud uploads paused",
-    offline: "Cloud is offline",
-    reauth_required: "Reconnect to Cloud",
-    upload_unavailable: "Cloud upload unavailable",
-    fenced: "Some uploads need attention",
-    interrupted: "Some sessions could not be prepared",
-    storage_unavailable: "Could not open saved uploads",
-  }[value.status]
-}
-
-/** Accept only the exact nonsecret admission error, not arbitrary desktop/provider text. */
-function isCloudBusy(error: unknown) {
-  return (
-    error === CLOUD_BUSY_MESSAGE ||
-    (error instanceof Error && error.message === CLOUD_BUSY_MESSAGE)
-  )
-}
+export {
+  canBackfillUploads,
+  canRetryPersonalUploads,
+  cloudOngoingStatusMessage,
+  cloudStatusMessage,
+  cloudUploadStatusUnknown,
+  teamFoldersToConfirm,
+  type CloudViewSnapshot,
+} from "./cloudSessionState"
 
 /**
  * Own one surface's Cloud view, timers, and explicit Start actions.
@@ -158,6 +87,7 @@ export class CloudSession {
   private listeners = new Set<() => void>()
   private stop: (() => void) | undefined
   private stopOngoing: (() => void) | undefined
+  private stopWorkspace: (() => void) | undefined
   private stopLocalTools: (() => void) | undefined
   private localToolsLoading = false
   private localToolsEventGeneration = 0
@@ -167,6 +97,7 @@ export class CloudSession {
   private projectSources: CloudSourceSelection[] = []
   private projectCursor: CloudProjectCursor | null = null
   private projectChoices: CloudProjectChoices = {}
+  private projectTargets: Record<string, string> = {}
   private confirmedProjectChoices: CloudProjectChoices = {}
   private needsChoiceReview = false
   private ongoingRevision = 0
@@ -214,6 +145,8 @@ export class CloudSession {
         this.stop = undefined
         this.stopOngoing?.()
         this.stopOngoing = undefined
+        this.stopWorkspace?.()
+        this.stopWorkspace = undefined
         this.stopLocalTools?.()
         this.stopLocalTools = undefined
         this.localToolsLoading = false
@@ -262,78 +195,37 @@ export class CloudSession {
    */
   private receive(value: CloudSnapshot) {
     this.revision++
-    const accountChanged = value.identity?.id !== this.snapshot.cloud.identity?.id
-    const destinationChanged =
-      value.destination?.id !== this.snapshot.cloud.destination?.id ||
-      value.destination?.kind !== this.snapshot.cloud.destination?.kind
-    const sourcesChanged = selectedFoldersKey(value) !== selectedFoldersKey(this.snapshot.cloud)
-    const contextChanged =
-      !value.identity ||
-      accountChanged ||
-      destinationChanged ||
-      sourcesChanged ||
-      value.status !== "signed_in" ||
-      !!value.setupError
-    if (
-      accountChanged ||
-      destinationChanged ||
-      !value.identity ||
-      value.status !== "signed_in"
-    ) {
+    const { resetProjects, contextChanged } = cloudContextChange(this.snapshot.cloud, value)
+    if (resetProjects) {
       this.projectGeneration++
       this.desktopProjects = []
       this.projectSources = []
       this.projectCursor = null
       this.projectChoices = {}
+      this.projectTargets = {}
       this.confirmedProjectChoices = {}
       this.needsChoiceReview = false
       this.projectSyncStarted = false
-    } else if (value.setupError) {
+    } else if (value.setupError && value.setupError !== this.snapshot.cloud.setupError) {
       this.projectGeneration++
     }
-    const retryInvalidated =
-      contextChanged ||
-      (value.pendingSync &&
-        (value.pendingSync.requestId !== this.preparedRequestId ||
-          value.pendingSync.result.status === "cancelled"))
+    const patch = accountViewPatch(this.snapshot, value, {
+      resetProjects,
+      contextChanged,
+      ongoing: !!this.port.ongoing,
+      projectSyncStarted: this.projectSyncStarted,
+      preparedRequestId: this.preparedRequestId,
+    })
     if (contextChanged) {
       this.requestId = null
       this.preparedRequestId = null
       this.consentRevision++
     }
-    const screen = value.identity
-      ? value.draft.screen === "handoff"
-        ? "identity"
-        : value.draft.screen
-      : "handoff"
     if (!this.port.ongoing && value.identity && value.pendingSync) {
       this.requestId = value.pendingSync.requestId
       this.preparedRequestId = value.pendingSync.requestId
     }
-    this.publish({
-      cloud: value,
-      ...(accountChanged ||
-      destinationChanged ||
-      !value.identity ||
-      value.status !== "signed_in"
-        ? { projects: null, ongoing: null }
-        : value.setupError && this.snapshot.projects
-          ? { projects: { ...this.snapshot.projects, loading: false } }
-          : {}),
-      screen:
-        value.identity &&
-        (this.port.ongoing ? this.projectSyncStarted || value.syncEnabled : value.pendingSync)
-          ? "complete"
-          : screen,
-      loaded: true,
-      ...(this.snapshot.error === CLOUD_BUSY_MESSAGE ? { error: null } : {}),
-      ...(retryInvalidated ? { sourceListingNeedsRetry: false } : {}),
-      ...(!this.port.ongoing && value.identity && value.pendingSync
-        ? { sync: value.pendingSync.result }
-        : contextChanged
-          ? { sync: { status: "unavailable" as const } }
-          : {}),
-    })
+    this.publish(patch)
   }
   /** Schedule only visible identity handoff or browser expiry; never poll signed-in accounts. */
   private schedule() {
@@ -465,13 +357,23 @@ export class CloudSession {
       }
       if (this.port.ongoing && !this.stopOngoing) {
         const stop = await this.port.ongoing.watch((status) => {
-          if (this.active && generation === this.generation) this.receiveOngoing(status)
+          if (this.active && generation === this.generation) this.receiveOngoing(status, true)
         })
         if (!this.active || generation !== this.generation) {
           stop()
           return
         }
         this.stopOngoing = stop
+      }
+      if (this.port.watchWorkspace && !this.stopWorkspace) {
+        const stop = await this.port.watchWorkspace((connection) => {
+          if (this.active && generation === this.generation) this.receiveWorkspace(connection)
+        })
+        if (!this.active || generation !== this.generation) {
+          stop()
+          return
+        }
+        this.stopWorkspace = stop
       }
       if (this.port.displayHome) {
         void this.port
@@ -519,22 +421,47 @@ export class CloudSession {
         })
     }
   }
+  /** Apply legacy cleanup only to the active account. It does not change consent. */
+  private receiveWorkspace(recovery: CloudWorkspaceRecovery) {
+    const { accountId, workspaceId } = recovery
+    const binding = this.projectBinding(true)
+    if (binding?.accountId !== accountId || binding.destinationId === workspaceId) return
+    this.receiveWorkspaceRecovery(recovery)
+  }
+  /** Merge recovery from a status read or a newer cleanup event. */
+  private receiveWorkspaceRecovery(recovery: CloudWorkspaceRecovery) {
+    const patch = workspaceRecoveryPatch(this.snapshot, recovery)
+    if (patch) this.publish(patch)
+  }
   /** Accept only the observed account's policy. No status event grants new consent. */
-  private receiveOngoing(status: CloudOngoingStatus) {
-    const { identity, destination, status: authStatus } = this.snapshot.cloud
-    const personal = personalCloudDestination(destination ?? null)
-    if (
-      !identity ||
-      !personal ||
-      authStatus !== "signed_in" ||
-      status.accountId !== identity.id ||
-      status.destinationId !== personal.id
-    )
+  private receiveOngoing(status: CloudOngoingStatus, includeTeams = false) {
+    const destination = ongoingDestination(this.snapshot.cloud, status)
+    const device =
+      status.deviceUploadEnabled === undefined
+        ? {}
+        : { deviceUploadEnabled: status.deviceUploadEnabled }
+    if (destination === "device") {
+      if (status.deviceUploadEnabled !== undefined) {
+        this.ongoingRevision++
+        this.publish(device)
+      }
       return
+    }
+    if (destination === "team" && status.destinationId) {
+      this.publish({
+        ...device,
+        ...teamStatusPatch(this.snapshot, status.destinationId, status),
+      })
+      return
+    }
+    if (destination !== "personal") return
     this.ongoingRevision++
+    if (includeTeams) {
+      for (const team of status.teamStatuses ?? []) this.receiveOngoing(team)
+    }
     if (cloudUploadStatusUnknown(status)) {
       this.invalidateContentConfirmation()
-      this.publish({ ongoing: status })
+      this.publish({ ...device, ongoing: status })
       return
     }
     this.confirmedProjectChoices = status.projectChoices ?? {}
@@ -547,11 +474,12 @@ export class CloudSession {
         projects.groups,
         this.confirmedProjectChoices,
         this.projectChoices,
-        !this.needsChoiceReview,
+        this.defaultProjectSelection(projects.workspaces),
       )
       const selectionKey = this.projectSelectionKey(projects.groups, choices)
       if (selectionKey !== projects.selectionKey) this.invalidateContentConfirmation()
       this.publish({
+        ...device,
         ongoing: status,
         projects: {
           ...projects,
@@ -560,86 +488,63 @@ export class CloudSession {
           needsChoiceReview: this.needsChoiceReview,
         },
       })
-    } else this.publish({ ongoing: status })
+    } else this.publish({ ...device, ongoing: status })
   }
   private projectBinding(allowSetupError = false): CloudDestinationBinding | null {
-    const { identity, destination, status, setupError } = this.snapshot.cloud
-    const personal = personalCloudDestination(destination ?? null)
-    return identity && personal && status === "signed_in" && (allowSetupError || !setupError)
-      ? { accountId: identity.id, destinationId: personal.id }
-      : null
+    return projectBinding(this.snapshot.cloud, allowSetupError)
   }
-  /** Require desktop project members and returned source roots together. This is
-   * metadata support, not content consent; other-agent suggestions stay visible.
-   */
+  /** Keep destination choices explicit when a team policy already exists. */
+  private defaultProjectSelection(workspaces?: readonly CloudWorkspace[]) {
+    return (
+      !this.needsChoiceReview &&
+      (workspaces?.length ?? 0) <= 1 &&
+      Object.keys(this.snapshot.teamStatuses ?? {}).length === 0
+    )
+  }
   private supportedProjectSelections(group: DesktopCloudProjectGroup): CloudProjectSelection[] {
-    return group.captureSupported
-      ? group.projects.filter(
-          (project) =>
-            group.folderPaths.includes(project.projectPath) &&
-            this.projectSources.some(
-              (source) =>
-                source.sourceKind === project.sourceKind && source.path === project.sourcePath,
-            ),
-        )
-      : []
+    return supportedProjectSelections(group, this.projectSources)
   }
-  /** Use typed desktop selections only. Suggestions from other agents stay display-only. */
   private selectedProjects(
     choices: CloudProjectChoices = this.snapshot.projects?.choices ?? {},
   ): CloudProjectSelection[] {
-    const selections = this.desktopProjects
-      .filter((group) => choices[group.id] ?? true)
-      .flatMap((group) => this.supportedProjectSelections(group))
-    return [
-      ...new Map(selections.map((project) => [JSON.stringify(project), project])).values(),
-    ].sort(
-      (a, b) =>
-        a.sourceKind.localeCompare(b.sourceKind) ||
-        a.sourcePath.localeCompare(b.sourcePath) ||
-        a.projectPath.localeCompare(b.projectPath),
+    return selectedProjects(this.desktopProjects, this.projectSources, choices)
+  }
+  private projectSelectionKey(
+    groups: CloudProjectGroup[],
+    choices: CloudProjectChoices,
+    workspaces = this.snapshot.projects?.workspaces,
+  ) {
+    return projectSelectionKey(
+      groups,
+      choices,
+      this.selectedProjects(choices),
+      this.projectTargets,
+      workspaces,
     )
   }
-  /** Include provider/source bindings in confirmation, not just the visible folder names. */
-  private projectSelectionKey(groups: CloudProjectGroup[], choices: CloudProjectChoices) {
-    return JSON.stringify([
-      cloudProjectSelectionKey(groups, choices),
-      this.selectedProjects(choices),
-    ])
-  }
-  /** Fence one Settings confirmation even while its group is excluded from Start. */
   private projectConfirmationKey(group: DesktopCloudProjectGroup) {
-    return JSON.stringify([
-      group.id,
-      group.environment,
-      group.path,
-      group.groupingComplete,
-      [...group.folderPaths].sort(),
-      this.supportedProjectSelections(group)
-        .map((project) =>
-          JSON.stringify([project.sourceKind, project.sourcePath, project.projectPath]),
-        )
-        .sort(),
-    ])
+    return projectConfirmationKey(group, this.supportedProjectSelections(group))
   }
   /** Read one bounded page without saving initial ON choices. Desktop code
    * owns source evidence and worktree grouping; failed pages never become empty success.
    */
   loadProjects = async (more = false) => {
     const port = this.port.ongoing
-    const binding = this.projectBinding()
+    const binding = this.projectBinding(!more)
     if (!port || !binding || this.snapshot.projects?.loading || (more && !this.projectCursor))
       return
     const generation = ++this.projectGeneration
     const current = () =>
       this.active &&
       generation === this.projectGeneration &&
-      JSON.stringify(this.projectBinding()) === JSON.stringify(binding)
+      JSON.stringify(this.projectBinding(!more)) === JSON.stringify(binding)
     const existing = this.snapshot.projects
     this.publish({
       projects: {
         groups: existing?.groups ?? [],
         choices: existing?.choices ?? {},
+        workspaces: existing?.workspaces,
+        targets: existing?.targets,
         loading: true,
         loaded: existing?.loaded ?? false,
         partial: existing?.partial ?? false,
@@ -650,11 +555,48 @@ export class CloudSession {
       },
     })
     try {
+      let workspaces = existing?.workspaces
       if (!more) {
         const revision = this.ongoingRevision
+        const previousTeams = this.snapshot.teamStatuses
+        const previousConnections = this.snapshot.workspaceConnections
         const status = await port.status()
         if (!current()) return
+        if (
+          status?.accountId === binding.accountId &&
+          status.destinationId === binding.destinationId
+        )
+          for (const team of status.teamStatuses ?? []) {
+            const id = team.destinationId
+            if (!id || id === binding.destinationId || team.accountId !== binding.accountId)
+              continue
+            if (previousTeams?.[id] === this.snapshot.teamStatuses?.[id])
+              this.receiveOngoing(team)
+            if (previousConnections?.[id] === this.snapshot.workspaceConnections?.[id])
+              this.receiveWorkspaceRecovery({
+                accountId: team.accountId,
+                workspaceId: id,
+                workspaceName: team.workspaceName,
+                localResetAvailable: team.localResetAvailable,
+                remoteRevocationUnconfirmed: team.remoteRevocationUnconfirmed,
+              })
+          }
         if (status && revision === this.ongoingRevision) this.receiveOngoing(status)
+        if (this.snapshot.cloud.setupError) {
+          this.publish({ projects: { ...this.snapshot.projects!, loading: false } })
+          return
+        }
+        if (this.port.workspaces) {
+          workspaces = (await this.port.workspaces(binding)) ?? undefined
+          if (!current()) return
+          if (
+            workspaces &&
+            !workspaces.some(
+              ({ id, kind }) => id === binding.destinationId && kind === "personal",
+            )
+          )
+            throw new Error("The signed-in workspace is not available for selection.")
+        }
       }
       const cursor = more ? this.projectCursor : null
       const page = await port.groups(binding, cursor)
@@ -663,37 +605,26 @@ export class CloudSession {
         throw new Error("Project discovery repeated a page.")
       const groups = mergeCloudProjectGroups(more ? this.desktopProjects : [], page.groups)
       this.desktopProjects = groups
-      this.projectSources = [
-        ...new Map(
-          [...(more ? this.projectSources : []), ...page.sourceRoots].map((source) => [
-            JSON.stringify([source.sourceKind, source.path]),
-            source,
-          ]),
-        ).values(),
-      ]
+      this.projectSources = mergeProjectSources(
+        more ? this.projectSources : [],
+        page.sourceRoots,
+      )
       this.projectCursor = page.nextCursor
-      const viewGroups = groups.map((group) => ({
-        id: group.id,
-        name: group.label,
-        path: group.path,
-        memberPaths: group.folderPaths,
-        worktreeCount: group.worktreeCount,
-        sessionCount: Math.max(group.sessionCount, group.captureSessionCount),
-        captureSupported: this.supportedProjectSelections(group).length > 0,
-        confirmationKey: this.projectConfirmationKey(group),
-      }))
+      const viewGroups = projectViewGroups(groups, this.projectSources)
       const choices = cloudProjectChoices(
         viewGroups,
         this.confirmedProjectChoices,
         this.projectChoices,
-        !this.needsChoiceReview,
+        this.defaultProjectSelection(workspaces),
       )
-      const selectionKey = this.projectSelectionKey(viewGroups, choices)
+      const selectionKey = this.projectSelectionKey(viewGroups, choices, workspaces ?? [])
       if (existing?.selectionKey !== selectionKey) this.invalidateContentConfirmation()
       this.publish({
         projects: {
           groups: viewGroups,
           choices,
+          workspaces,
+          targets: this.projectTargets,
           loaded: true,
           loading: false,
           partial: page.partial || (more && (existing?.partial ?? false)),
@@ -718,116 +649,316 @@ export class CloudSession {
   }
   /** Extend the visible draft only after an explicit page request. */
   loadMoreProjects = () => this.loadProjects(true)
-  /** Change one local group choice. Start, not a checkbox or a default, saves consent. */
-  selectProject = (id: string, selected: boolean) => {
+  /** Stage a local group choice for the current account. Only Start saves consent. */
+  selectProject = (id: string, selected: boolean, target?: string, settings = false) => {
     const projects = this.snapshot.projects
-    if (!projects || projects.loading || !projects.groups.some((group) => group.id === id))
+    const group = projects?.groups.find((item) => item.id === id)
+    const binding = this.projectBinding()
+    if (
+      !binding ||
+      !projects ||
+      projects.loading ||
+      this.snapshot.busy ||
+      !group ||
+      (selected &&
+        (!group.captureSupported ||
+          this.hasSavedProject(id, settings) ||
+          (target &&
+            target !== binding.destinationId &&
+            !projects.workspaces?.some(({ id, kind }) => id === target && kind === "team"))))
+    )
       return
     this.invalidateContentConfirmation()
+    this.projectTargets = { ...this.projectTargets }
+    delete this.projectTargets[id]
+    if (selected && target) this.projectTargets[id] = target
     this.projectChoices = { ...this.projectChoices, [id]: selected }
     const choices = { ...projects.choices, [id]: selected }
     this.publish({
       projects: {
         ...projects,
         choices,
+        targets: this.projectTargets,
         selectionKey: this.projectSelectionKey(projects.groups, choices),
       },
     })
   }
+
   /** Keep saved local grants visible when discovery loses a folder. Show grants
    * above or inside a group by directory boundary, never by a partial name.
    */
-  projectHasSavedPermission = (id: string) => {
-    const group = this.desktopProjects.find((item) => item.id === id)
+  projectHasSavedPermission = (
+    id: string,
+    policy: Pick<CloudOngoingStatus, "projects"> | null | undefined = this.snapshot.ongoing,
+    exact = false,
+  ) => {
+    return hasSavedProjectPermission(
+      this.desktopProjects.find((item) => item.id === id),
+      policy,
+      exact,
+    )
+  }
+
+  private hasSavedProject(id: string, exact = false) {
     return (
-      group?.environment === "native" &&
-      !!this.snapshot.ongoing?.projects.some((project) =>
-        [group.path, ...group.folderPaths].some(
-          (path) =>
-            path === project.projectPath ||
-            path.startsWith(`${project.projectPath.replace(/\/+$/, "")}/`) ||
-            project.projectPath.startsWith(`${path.replace(/\/+$/, "")}/`),
-        ),
+      this.projectHasSavedPermission(id, undefined, exact) ||
+      Object.values(this.snapshot.teamStatuses ?? {}).some((policy) =>
+        this.projectHasSavedPermission(id, policy, exact),
       )
     )
   }
-  /** Save one Settings switch. The caller confirms additions before invoking this. */
-  setSavedProject = async (context: CloudViewSnapshot, id: string, selected: boolean) => {
-    const port = this.port.ongoing
-    const binding = this.projectBinding(!selected)
+
+  /** Source recovery may recheck only an exact, already saved Personal binding. */
+  projectHasReviewableSource = (id: string) => {
     const group = this.desktopProjects.find((item) => item.id === id)
-    const policyRevision = context.ongoing?.policyRevision
+    return !!group && this.reviewableProjectSelections(group, this.snapshot.ongoing).length > 0
+  }
+
+  private reviewableProjectSelections(
+    group: DesktopCloudProjectGroup,
+    policy: CloudOngoingStatus | null | undefined,
+  ) {
+    return reviewableProjectSelections(this.supportedProjectSelections(group), policy)
+  }
+
+  /** Save the explicit Settings folder choice without a second prompt. */
+  setSavedProject = async (
+    context: CloudViewSnapshot,
+    id: string,
+    selected: boolean,
+    team?: string,
+    reviewSavedSource = false,
+  ) => {
+    const port = this.port.ongoing
+    const anchor = this.projectBinding(!selected)
+    const binding = anchor && { ...anchor, destinationId: team ?? anchor.destinationId }
+    const group = this.desktopProjects.find((item) => item.id === id)
+    const policyOf = (value: CloudViewSnapshot) =>
+      team ? value.teamStatuses?.[team] : value.ongoing
+    const policy = policyOf(this.snapshot)
+    const policyRevision = policyOf(context)?.policyRevision
+    const savedFolder = policy?.savedFolders?.find((folder) => folder.groupId === id)
     if (
-      !this.active ||
+      !this.isCurrentConfirmation(context) ||
       !port ||
       !binding ||
-      !group ||
+      (!group && !savedFolder) ||
       !policyRevision ||
-      policyRevision !== this.snapshot.ongoing?.policyRevision ||
+      policyRevision !== policy?.policyRevision ||
+      (team && selected) ||
       this.snapshot.busy ||
       this.syncInFlight ||
-      this.snapshot.projects?.loading ||
-      this.snapshot.ongoing?.consentVersion !== "desktop-project-sync-v1" ||
-      !this.snapshot.ongoing.storageKnown ||
-      context.contextRevision !== this.consentRevision ||
-      confirmationContextKey(context) !== confirmationContextKey(this.snapshot)
+      (!team && this.snapshot.projects?.loading) ||
+      (selected && !!this.snapshot.projects?.error) ||
+      policy?.consentVersion !== "desktop-project-sync-v1" ||
+      (!team && !policy.storageKnown) ||
+      (reviewSavedSource && (!policy.sourceConfirmationRequired || !selected || !!team)) ||
+      (selected && this.hasSavedProject(id, true) && !reviewSavedSource)
     )
       return
-    if (
-      selected &&
-      context.projects?.groups.find((item) => item.id === id)?.confirmationKey !==
-        this.projectConfirmationKey(group)
-    )
-      return
-    const projects = selected ? this.supportedProjectSelections(group) : []
-    if (selected && !projects.length) return
+    let projects: CloudProjectSelection[] = []
+    if (selected) {
+      if (
+        !group ||
+        context.projects?.groups.find((item) => item.id === id)?.confirmationKey !==
+          this.projectConfirmationKey(group)
+      )
+        return
+      projects = reviewSavedSource
+        ? this.reviewableProjectSelections(group, policy)
+        : this.supportedProjectSelections(group)
+      if (!projects.length) return
+    }
+    const folderPaths = group
+      ? selected
+        ? group.folderPaths
+        : [...new Set([group.path, ...group.folderPaths])]
+      : savedFolder
+        ? [savedFolder.path]
+        : []
     const generation = this.generation
     const revision = this.ongoingRevision
-    this.publish({ busy: true, error: null })
+    this.publish({ busy: true, uploadActionError: null })
     try {
       const status = await port.setProject({
         ...binding,
         groupId: id,
         selected,
         projects,
-        folderPaths: selected
-          ? group.folderPaths
-          : [...new Set([group.path, ...group.folderPaths])],
+        folderPaths,
         expectedPolicyRevision: policyRevision,
       })
-      if (this.active && generation === this.generation && revision === this.ongoingRevision)
+      if (
+        this.active &&
+        generation === this.generation &&
+        (team
+          ? policyOf(this.snapshot)?.policyRevision === policyRevision
+          : revision === this.ongoingRevision)
+      )
         this.receiveOngoing(status)
     } catch {
       if (
         this.active &&
         generation === this.generation &&
         this.snapshot.cloud.identity?.id === binding.accountId &&
-        this.snapshot.cloud.destination?.id === binding.destinationId
+        this.snapshot.cloud.destination?.id === anchor?.destinationId
       )
-        this.publish({ error: "Could not confirm the folder change. Try the switch again." })
+        this.publish({
+          uploadActionError: reviewSavedSource
+            ? "Restore saved sources or turn off their folders."
+            : "Could not update the folder. Try again.",
+        })
     } finally {
       if (this.active && generation === this.generation) this.publish({ busy: false })
     }
   }
-  /** Pause or retry the saved policy without expanding its sources or project paths. */
-  controlSync = async (paused: boolean) => {
+  /** Pause or resume uploads on this device without retrying interrupted work. */
+  controlSync = (paused: boolean) => this.changeSyncControl((port) => port.setEnabled(!paused))
+
+  /** Renew the exact saved Team selection and add the explicit same-Team draft. */
+  private async confirmTeamFolders(context: CloudViewSnapshot, destinationId: string) {
+    const binding = this.projectBinding()
+    const displayed = teamFoldersToConfirm(context, destinationId)
+    const current = teamFoldersToConfirm(this.snapshot, destinationId)
     const port = this.port.ongoing
-    const binding = this.projectBinding(true)
-    if (!port || !binding || this.snapshot.busy) return
+    if (
+      !binding ||
+      binding.destinationId === destinationId ||
+      !displayed ||
+      displayed.revision !== current?.revision ||
+      displayed.paths.length !== current.paths.length ||
+      displayed.paths.some((path, index) => path !== current.paths[index]) ||
+      !port?.confirmTeamFolders ||
+      this.snapshot.busy ||
+      this.syncInFlight
+    )
+      return
+    const additions: Record<string, CloudProjectSelection[]> = {}
+    for (const [id, target] of Object.entries(this.projectTargets)) {
+      const group = this.desktopProjects.find((item) => item.id === id)
+      if (
+        target !== destinationId ||
+        this.hasSavedProject(id, true) ||
+        !group ||
+        !context.projects?.loaded ||
+        context.projects.loading ||
+        context.projects.error ||
+        context.projects.groups.find((item) => item.id === id)?.confirmationKey !==
+          this.projectConfirmationKey(group)
+      )
+        return
+      additions[id] = this.supportedProjectSelections(group)
+      if (!additions[id].length) return
+    }
+    const addedGroups = Object.keys(additions)
+    const draft = this.projectChoices
+    const generation = this.generation
+    const stillBound = () =>
+      this.active &&
+      generation === this.generation &&
+      this.projectBinding()?.accountId === binding.accountId &&
+      this.projectBinding()?.destinationId === binding.destinationId
+    if (!stillBound()) return
+    this.publish({ busy: true, uploadActionError: null })
+    try {
+      const status = await port.confirmTeamFolders({
+        ...binding,
+        destinationId,
+        expectedPolicyRevision: displayed.revision,
+        folderPaths: displayed.paths,
+        ...(addedGroups.length ? { additions } : {}),
+      })
+      if (
+        stillBound() &&
+        status.accountId === binding.accountId &&
+        status.destinationId === destinationId
+      ) {
+        if (this.snapshot.teamStatuses?.[destinationId]?.policyRevision === displayed.revision)
+          this.receiveOngoing(status)
+        if (addedGroups.length) this.clearCommittedChoices(addedGroups, draft)
+      }
+    } catch (error) {
+      if (stillBound())
+        this.publish({
+          uploadActionError: isCloudBusy(error)
+            ? CLOUD_BUSY_MESSAGE
+            : "Could not save folders. Try again.",
+        })
+    } finally {
+      if (this.active && generation === this.generation) this.publish({ busy: false })
+    }
+  }
+
+  /** Retry only the Personal policy shown when the user selected Retry. */
+  retrySync = async (context: CloudViewSnapshot) => {
+    const target = retryTarget(context, this.snapshot, this.projectBinding(true))
+    if (target)
+      await this.changeSyncControl((port) => port.retry(target.binding, target.revision))
+  }
+
+  /** Retry the exact Team chosen in Settings. Never fall back to Personal. */
+  retryTeamSync = async (context: CloudViewSnapshot, destinationId: string) => {
+    const target = retryTarget(context, this.snapshot, this.projectBinding(true), destinationId)
+    const policy = this.snapshot.teamStatuses?.[destinationId]
+    if (target && policy && !this.syncInFlight)
+      await this.changeSyncControl(
+        (port) => port.retry(target.binding, target.revision),
+        policy,
+      )
+  }
+
+  /** Ask desktop to scan the exact saved policy shown in Settings. */
+  backfillSync = async (context: CloudViewSnapshot, teamId?: string) => {
+    const backfill = this.port.ongoing?.backfill
+    const target = backfillTarget(context, this.snapshot, this.projectBinding(true), teamId)
+    if (!backfill || !target || this.syncInFlight) return false
+    return this.changeSyncControl(
+      () => backfill(target.binding, target.revision),
+      target.team,
+      () =>
+        matchesUploadPolicy(
+          uploadPolicy(this.snapshot, teamId),
+          target.binding,
+          target.revision,
+        ),
+    )
+  }
+
+  private async changeSyncControl(
+    action: (port: NonNullable<CloudPort["ongoing"]>) => Promise<CloudOngoingStatus | void>,
+    team?: CloudOngoingStatus,
+    backfillCurrent?: () => boolean,
+  ) {
+    const port = this.port.ongoing
+    if (!this.active || !port || this.snapshot.busy) return false
     const generation = this.generation
     const revision = this.ongoingRevision
-    this.publish({ busy: true, error: null })
+    const current = () =>
+      this.active &&
+      generation === this.generation &&
+      (!backfillCurrent || backfillCurrent()) &&
+      (!team || team.accountId === this.projectBinding(true)?.accountId)
+    this.publish({ busy: true, uploadActionError: null })
     try {
-      const status = await (paused ? port.pause(binding) : port.retry(binding))
-      if (this.active && generation === this.generation && revision === this.ongoingRevision)
-        this.receiveOngoing(status)
+      const status = await action(port)
+      if (
+        status &&
+        current() &&
+        (team
+          ? !!team.destinationId &&
+            status.destinationId === team.destinationId &&
+            status.accountId === team.accountId &&
+            this.snapshot.teamStatuses?.[team.destinationId] === team
+          : revision === this.ongoingRevision)
+      )
+        this.receiveOngoing(status, true)
+      return current()
     } catch (error) {
-      if (this.active && generation === this.generation)
+      if (current())
         this.publish({
-          error: isCloudBusy(error)
-            ? CLOUD_BUSY_MESSAGE
-            : "Could not change Cloud uploads. Try again.",
+          uploadActionError: uploadActionError(error, !!backfillCurrent, !!team),
         })
+      return false
     } finally {
       if (this.active && generation === this.generation) this.publish({ busy: false })
     }
@@ -877,13 +1008,60 @@ export class CloudSession {
   cancel = () => this.run("cancel", this.port.cancel)
   /** Cancel while navigating away without adding a second action event. */
   cancelSilently = () => this.run(null, this.port.cancel)
-  /** Ask desktop code to close this account generation and revoke only its grant. */
+  /** Close the account connection and let desktop code clean up old Team grants. */
   signOut = () => {
     this.invalidateContentConfirmation()
     return this.run("sign_out", this.port.signOut)
   }
   /** Run only after the UI's separate reset confirmation; keep the remote warning. */
   resetLocal = () => this.run(null, this.port.resetLocal)
+  /** Clear an old Team connection without changing the account or folder consent. */
+  resetWorkspace = async (workspaceId: string) => {
+    const binding = this.projectBinding(true)
+    const connection = this.snapshot.workspaceConnections?.[workspaceId]
+    const reset = this.port.resetWorkspace
+    if (
+      !this.active ||
+      !binding ||
+      connection?.accountId !== binding.accountId ||
+      !connection.localResetAvailable ||
+      !reset ||
+      this.snapshot.busy
+    )
+      return false
+    const generation = this.generation
+    const current = () =>
+      this.active &&
+      generation === this.generation &&
+      this.projectBinding(true)?.accountId === binding.accountId &&
+      this.projectBinding(true)?.destinationId === binding.destinationId
+    this.publish({ busy: true, error: null })
+    try {
+      const status = await reset(binding, workspaceId)
+      if (!current()) return false
+      if (status !== "signed_out") {
+        this.publish({ error: "Could not clear the old Team connection. Try again." })
+        return false
+      }
+      if (this.snapshot.workspaceConnections?.[workspaceId] === connection)
+        this.receiveWorkspace({
+          ...connection,
+          localResetAvailable: false,
+          remoteRevocationUnconfirmed: true,
+        })
+      return true
+    } catch (error) {
+      if (current())
+        this.publish({
+          error: isCloudBusy(error)
+            ? CLOUD_BUSY_MESSAGE
+            : "Could not clear the old Team connection. Try again.",
+        })
+      return false
+    } finally {
+      if (this.active && generation === this.generation) this.publish({ busy: false })
+    }
+  }
   /** Fence in-flight work when its account, sources, or selected folders change. */
   private invalidateContentConfirmation() {
     this.consentRevision++
@@ -981,16 +1159,8 @@ export class CloudSession {
    * rows or changing a selection never calls this method. Retry keeps saved IDs.
    */
   startSync = async (context: CloudViewSnapshot = this.snapshot) => {
-    if (
-      !this.active ||
-      context.contextRevision !== this.consentRevision ||
-      confirmationContextKey(context) !== confirmationContextKey(this.snapshot)
-    )
-      return
-    if (this.port.ongoing) {
-      await this.startProjectSync()
-      return
-    }
+    if (!this.isCurrentConfirmation(context)) return
+    if (this.port.ongoing) return this.startProjectSync()
     const selected = this.snapshot.cloud.draft.folders.filter((folder) => folder.selected)
     const selectionKey = selectedFoldersKey(this.snapshot.cloud)
     const destination = personalCloudDestination(this.snapshot.cloud.destination ?? null)
@@ -1017,29 +1187,7 @@ export class CloudSession {
     const account = this.snapshot.cloud.identity.id
     const desktopCapture = this.snapshot.cloud.captureEnabled === true
     const destinationId = destination.id
-    const consent: CaptureConsent = {
-      accountId: account,
-      destinationId,
-      fullContent: true as const,
-      attachments: false as const,
-      ...(selected.some((folder) => cloudSourceKind(folder) === "opencode_sqlite_v2")
-        ? {
-            version: "native-full-content-v2" as const,
-            selectedSources: selected
-              .map((folder) => ({
-                sourceKind: cloudSourceKind(folder),
-                path: folder.path,
-              }))
-              .sort(
-                (a, b) =>
-                  a.sourceKind.localeCompare(b.sourceKind) || a.path.localeCompare(b.path),
-              ),
-          }
-        : {
-            version: "native-full-content-v1" as const,
-            selectedRoots: selected.map((folder) => folder.path).sort(),
-          }),
-    }
+    const consent = legacyCaptureConsent({ accountId: account, destinationId }, selected)
     const requestId = this.requestId ?? crypto.randomUUID()
     this.requestId = requestId
     const existing = this.preparedRequestId === requestId
@@ -1106,14 +1254,80 @@ export class CloudSession {
         this.publish({ sync: { status: "unavailable" } })
     }
   }
+  private isCurrentConfirmation(context: CloudViewSnapshot) {
+    return (
+      this.active &&
+      context.contextRevision === this.consentRevision &&
+      confirmationContextKey(context) === confirmationContextKey(this.snapshot)
+    )
+  }
+
+  /** Save new choices and renew a stale saved selection only for the same Team. */
+  startPendingProjects = async (
+    context: CloudViewSnapshot,
+    pendingOnly = true,
+    confirmTeam?: string,
+    reviewSavedSource?: string,
+  ) => {
+    if (!this.isCurrentConfirmation(context)) return
+    if (confirmTeam) {
+      await this.confirmTeamFolders(context, confirmTeam)
+    } else if (reviewSavedSource) {
+      await this.setSavedProject(context, reviewSavedSource, true, undefined, true)
+    } else {
+      await this.startProjectSync(pendingOnly, true)
+    }
+  }
+
+  private projectPolicy(destinationId: string) {
+    return destinationId === this.snapshot.cloud.destination?.id
+      ? this.snapshot.ongoing
+      : this.snapshot.teamStatuses?.[destinationId]
+  }
+
+  /** Clear only choices submitted by this operation. Keep later edits staged. */
+  private clearCommittedChoices(ids: string[], draft: CloudProjectChoices) {
+    const projects = this.snapshot.projects
+    if (!projects || draft !== this.projectChoices) return
+    const choicesDraft = { ...this.projectChoices }
+    const targets = { ...this.projectTargets }
+    for (const id of ids) {
+      delete choicesDraft[id]
+      delete targets[id]
+    }
+    this.projectChoices = choicesDraft
+    this.projectTargets = targets
+    this.invalidateContentConfirmation()
+    const choices = cloudProjectChoices(
+      projects.groups,
+      this.confirmedProjectChoices,
+      choicesDraft,
+      this.defaultProjectSelection(projects.workspaces),
+    )
+    this.publish({
+      projects: {
+        ...projects,
+        choices,
+        targets,
+        selectionKey: this.projectSelectionKey(projects.groups, choices),
+      },
+    })
+  }
+
   /** Commit the exact current group members through desktop ongoing consent. The
    * completion screen stays available while desktop acceptance is still unknown.
    */
-  private async startProjectSync() {
+  private async startProjectSync(pendingOnly = false, settings = false) {
     const port = this.port.ongoing
     const binding = this.projectBinding()
     const projects = this.snapshot.projects
-    const selected = this.selectedProjects()
+    const { choicesForStart, explicitOnly } = projectSyncChoices(
+      this.snapshot,
+      this.projectTargets,
+      pendingOnly,
+      (id) => this.hasSavedProject(id, settings),
+    )
+    const selected = this.selectedProjects(choicesForStart)
     if (
       !port ||
       !binding ||
@@ -1127,56 +1341,153 @@ export class CloudSession {
       !selected.length
     )
       return
-    const selectedSources = this.projectSources.filter((source) =>
-      selected.some(
-        (project) =>
-          project.sourceKind === source.sourceKind && project.sourcePath === source.path,
-      ),
+    const groups = projects.groups.filter(
+      (group) => group.captureSupported && choicesForStart[group.id],
     )
+    const destinations = [
+      ...new Set(groups.map(({ id }) => this.projectTargets[id] ?? binding.destinationId)),
+    ]
+    const errorField = settings ? "uploadActionError" : "error"
+    if (destinations.length > 1) {
+      this.publish({
+        [errorField]:
+          "Enable folders for one workspace at a time. No folder choices were saved.",
+      })
+      return
+    }
+    const destinationId = destinations[0]
+    if (!destinationId) return
+    const isTeam = destinationId !== binding.destinationId
+    if (isTeam && teamFoldersToConfirm(this.snapshot, destinationId)) return
+    if (
+      isTeam &&
+      !projects.workspaces?.some(({ id, kind }) => id === destinationId && kind === "team")
+    ) {
+      this.publish({
+        [errorField]: "A selected team is unavailable. Check the folder choices.",
+      })
+      return
+    }
+    const target = { ...binding, destinationId }
     const generation = this.generation
     const consentRevision = this.consentRevision
-    const revision = this.ongoingRevision
-    if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
+    const stillBound = () =>
+      this.active &&
+      generation === this.generation &&
+      this.projectBinding()?.accountId === binding.accountId &&
+      this.projectBinding()?.destinationId === binding.destinationId
+    const current = () => stillBound() && consentRevision === this.consentRevision
     this.syncInFlight = true
-    this.projectSyncStarted = true
     const starting: SyncResult = { status: "starting" }
-    this.publish({ screen: "complete", sync: starting, error: null })
     try {
-      const status = await port.enable({
-        ...binding,
-        version: "desktop-project-sync-v1",
-        selectedSources,
-        projects: selected,
-        projectChoices: { ...this.confirmedProjectChoices, ...projects.choices },
-        fullContent: true,
-        ongoing: true,
-        attachments: false,
+      if (!current() || groups.some((group) => this.hasSavedProject(group.id, settings))) return
+      if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
+      if (!pendingOnly) this.projectSyncStarted = true
+      this.publish({
+        ...(!pendingOnly ? { screen: "complete" as const } : {}),
+        busy: pendingOnly,
+        sync: starting,
+        [errorField]: null,
       })
-      if (
-        this.active &&
-        generation === this.generation &&
-        consentRevision === this.consentRevision
-      ) {
-        if (revision === this.ongoingRevision) this.receiveOngoing(status)
-        this.projectChoices = {}
-        this.publish({ sync: { status: "idle" }, screen: "complete" })
+      const policy = this.projectPolicy(destinationId)
+      if (policy?.consentVersion === "desktop-project-sync-v1") {
+        await this.addPendingProjects(port, target, groups, stillBound, settings)
+      } else {
+        const draft = this.projectChoices
+        const choices = explicitOnly
+          ? Object.fromEntries(groups.map(({ id }) => [id, true]))
+          : Object.fromEntries(
+              Object.entries(choicesForStart).filter(
+                ([id]) => (this.projectTargets[id] ?? binding.destinationId) === destinationId,
+              ),
+            )
+        const status = await port.enable({
+          ...target,
+          version: "desktop-project-sync-v1",
+          selectedSources: this.projectSources.filter((source) =>
+            selected.some(
+              (project) =>
+                project.sourceKind === source.sourceKind && project.sourcePath === source.path,
+            ),
+          ),
+          projects: selected,
+          projectChoices: {
+            ...(destinationId === binding.destinationId ? this.confirmedProjectChoices : {}),
+            ...choices,
+          },
+          fullContent: true,
+          ongoing: true,
+          attachments: false,
+        })
+        if (!stillBound()) return
+        const observed = this.projectPolicy(destinationId)
+        if (observed === policy) {
+          if (!current()) return
+          this.receiveOngoing(status)
+        }
+        if (isTeam) this.publish({ lastTeamSync: this.projectPolicy(destinationId) ?? null })
+        this.clearCommittedChoices(Object.keys(choices), draft)
       }
+      if (stillBound() && this.snapshot.sync === starting)
+        this.publish({ sync: { status: "idle" } })
     } catch (error) {
-      if (
-        this.active &&
-        generation === this.generation &&
-        consentRevision === this.consentRevision
-      )
+      const message = error instanceof Error ? error.message : error
+      if (stillBound() && (pendingOnly || current()))
         this.publish({
           sync: { status: "ambiguous" },
-          error: isCloudBusy(error)
+          [errorField]: isCloudBusy(error)
             ? CLOUD_BUSY_MESSAGE
-            : "Cloud sync was not confirmed. Check Cloud Settings to retry.",
+            : isTeam &&
+                message ===
+                  "Turn off all folders under the old Team policy before approving new uploads."
+              ? "Refresh your Cloud folders, then save your Team choices again."
+              : settings
+                ? "Could not save the folder choices. Try again."
+                : "Cloud sync was not confirmed. Check Cloud Settings to retry.",
         })
     } finally {
       this.syncInFlight = false
-      if (this.active && generation === this.generation && this.snapshot.sync === starting)
-        this.publish({ sync: { status: "unavailable" } })
+      if (this.active && generation === this.generation)
+        this.publish({
+          ...(pendingOnly ? { busy: false } : {}),
+          ...(this.snapshot.sync === starting ? { sync: { status: "unavailable" } } : {}),
+        })
+    }
+  }
+
+  /** Add groups one at a time so a failed group cannot replace any saved policy. */
+  private async addPendingProjects(
+    port: NonNullable<CloudPort["ongoing"]>,
+    binding: CloudDestinationBinding,
+    groups: CloudProjectGroup[],
+    stillBound: () => boolean,
+    settings: boolean,
+  ) {
+    for (const group of groups) {
+      if (!stillBound()) return
+      const member = this.desktopProjects.find(({ id }) => id === group.id)
+      const policy = this.projectPolicy(binding.destinationId)
+      if (
+        !member ||
+        group.confirmationKey !== this.projectConfirmationKey(member) ||
+        this.projectTargets[group.id] !== binding.destinationId ||
+        this.hasSavedProject(group.id, settings) ||
+        !policy?.policyRevision ||
+        (binding.destinationId === this.snapshot.cloud.destination?.id && !policy.storageKnown)
+      )
+        throw new Error("The saved workspace or folder changed.")
+      const draft = this.projectChoices
+      const status = await port.setProject({
+        ...binding,
+        groupId: group.id,
+        selected: true,
+        projects: this.supportedProjectSelections(member),
+        folderPaths: member.folderPaths,
+        expectedPolicyRevision: policy.policyRevision,
+      })
+      if (!stillBound()) return
+      if (this.projectPolicy(binding.destinationId) === policy) this.receiveOngoing(status)
+      this.clearCommittedChoices([group.id], draft)
     }
   }
 }

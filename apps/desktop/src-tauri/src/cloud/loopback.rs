@@ -1,6 +1,8 @@
 //! Guard the one-use browser callback with async socket reads and bounded timers.
 //! The listener handles callback proof, not access/refresh tokens or keyring work.
 
+mod page;
+
 use super::auth::{Attempt, Callback, Config, Failure, validate_callback};
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
@@ -67,20 +69,7 @@ impl Listener {
                     let result = request(&mut stream).await.and_then(|(target, host)| {
                         validate_callback(&target, &host, config, attempt, super::now())
                     });
-                    let status = if result.is_some() {
-                        "200 OK"
-                    } else {
-                        "400 Bad Request"
-                    };
-                    let body = if result.is_some() {
-                        "Return to Antiburn. You can close this page."
-                    } else {
-                        "This callback is not valid."
-                    };
-                    let response = format!(
-                        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nReferrer-Policy: no-referrer\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
-                        body.len()
-                    );
+                    let response = page::response(result.as_ref());
                     // A browser response failure must not repeat a valid callback.
                     let _ = timeout(
                         Duration::from_millis(250),
@@ -171,6 +160,45 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn cloud_async_loopback_shows_denial_from_a_valid_callback() {
+        let (listener, attempt) = pending_listener().await;
+        let address = attempt
+            .callback
+            .strip_prefix("http://")
+            .unwrap()
+            .strip_suffix("/cloud/callback")
+            .unwrap()
+            .to_owned();
+        let target = format!(
+            "/cloud/callback?state={}&iss=https%3A%2F%2Fapi.example&error=access_denied",
+            attempt.state
+        );
+        let task = tokio::spawn(async move {
+            listener
+                .wait(
+                    &Config::parse("https://api.example", "https://api.example").unwrap(),
+                    &attempt,
+                    || true,
+                )
+                .await
+        });
+        let mut stream = TcpStream::connect(&address).await.unwrap();
+        stream
+            .write_all(format!("GET {target} HTTP/1.1\r\nHost: {address}\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut reply = String::new();
+        timeout(Duration::from_secs(2), stream.read_to_string(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reply.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(reply.contains("<h1>Device access denied</h1>"));
+        assert!(!reply.contains("synthetic-state"));
+        assert!(matches!(task.await.unwrap(), Some(Callback::Cancelled)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn cloud_async_loopback_cancellation_does_not_need_a_connection_or_blocking_slot() {
         let (listener, attempt) = pending_listener().await;
         let active = Arc::new(AtomicBool::new(true));
@@ -246,6 +274,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(reply.starts_with("HTTP/1.1 400"));
+        assert!(reply.contains("<h1>Could not finish sign-in</h1>"));
         active.store(false, Ordering::Release);
         assert!(
             timeout(Duration::from_secs(1), task)
