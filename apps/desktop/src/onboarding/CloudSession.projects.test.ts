@@ -473,11 +473,18 @@ it("does not resume legacy saved requests or let them replace ongoing preparatio
     const pending = session.startSync()
     emit({ pendingSync: legacy })
     expect(session.getSnapshot()).toMatchObject({
-      screen: "complete",
+      screen: "folders",
       sync: { status: "starting" },
     })
-    finish(ongoingStatus({ status: "ready", consentVersion: "desktop-project-sync-v1" }))
+    finish(
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projects: projectGroup().projects,
+      }),
+    )
     await pending
+    expect(session.getSnapshot().screen).toBe("complete")
   } finally {
     stop()
   }

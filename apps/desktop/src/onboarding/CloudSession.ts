@@ -106,7 +106,6 @@ export class CloudSession {
   private needsChoiceReview = false
   private ongoingRevision = 0
   private projectSyncStarted = false
-  private folderRoutesNeedRetry = false
   private timer: ReturnType<typeof setTimeout> | undefined
   private identityTimer = false
   private generation = 0
@@ -211,7 +210,6 @@ export class CloudSession {
       this.confirmedProjectChoices = {}
       this.needsChoiceReview = false
       this.projectSyncStarted = false
-      this.folderRoutesNeedRetry = false
     } else if (value.setupError && value.setupError !== this.snapshot.cloud.setupError) {
       this.projectGeneration++
     }
@@ -1347,17 +1345,26 @@ export class CloudSession {
     const destinations = [
       ...new Set(groups.map(({ id }) => this.projectTargets[id] ?? binding.destinationId)),
     ]
+    if (!settings) {
+      const singleWorkspaceChoices =
+        destinations.length === 1 && !explicitOnly
+          ? Object.fromEntries(
+              Object.entries(choicesForStart).filter(
+                ([id]) =>
+                  (this.projectTargets[id] ?? binding.destinationId) === destinations[0],
+              ),
+            )
+          : undefined
+      return this.startFolderRoutes(port, binding, groups, destinations, singleWorkspaceChoices)
+    }
     const errorField = settings ? "uploadActionError" : "error"
     if (destinations.length > 1) {
-      if (!settings) return this.startFolderRoutes(port, binding, groups, destinations)
       this.publish({
         [errorField]:
           "Enable folders for one workspace at a time. No folder choices were saved.",
       })
       return
     }
-    if (!settings && this.folderRoutesNeedRetry)
-      return this.startFolderRoutes(port, binding, groups, destinations)
     const destinationId = destinations[0]
     if (!destinationId) return
     const isTeam = destinationId !== binding.destinationId
@@ -1466,14 +1473,19 @@ export class CloudSession {
     binding: CloudDestinationBinding,
     groups: CloudProjectGroup[],
     destinations: string[],
+    singleWorkspaceChoices?: CloudProjectChoices,
   ) {
-    const targets = this.projectTargets
+    const workspaceChoices = () =>
+      this.snapshot.projects?.workspaces ??
+      (this.snapshot.cloud.destination ? [this.snapshot.cloud.destination] : [])
+    const destinationFor = (id: string) => this.projectTargets[id] ?? binding.destinationId
     const routes = destinations.map((id) => ({
       id,
-      groups: groups.filter((group) => targets[group.id] === id),
-      workspace: this.snapshot.projects?.workspaces?.find((item) => item.id === id),
+      groups: groups.filter((group) => destinationFor(group.id) === id),
+      workspace: workspaceChoices().find((item) => item.id === id),
     }))
-    if (routes.some((route) => !route.workspace || !route.groups.length)) return
+    if (!routes.length || routes.some((route) => !route.workspace || !route.groups.length))
+      return
     const generation = this.generation
     const current = () =>
       this.active &&
@@ -1487,7 +1499,8 @@ export class CloudSession {
       selected: CloudProjectSelection[]
     }[] = []
     this.syncInFlight = true
-    this.publish({ busy: true, error: null })
+    const starting: SyncResult = { status: "starting" }
+    this.publish({ busy: true, error: null, sync: starting })
     if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
     try {
       for (const { id, groups, workspace } of routes) {
@@ -1507,13 +1520,13 @@ export class CloudSession {
             projects.loading ||
             projects.error ||
             cloudUploadStatusUnknown(this.snapshot.ongoing) ||
-            !projects.workspaces?.some(
+            !workspaceChoices().some(
               (item) => item.id === id && item.kind === workspace?.kind,
             ) ||
             teamFoldersToConfirm(this.snapshot, id) ||
             groups.some(
               (group) =>
-                this.projectTargets[group.id] !== id ||
+                destinationFor(group.id) !== id ||
                 this.hasSavedProject(group.id) ||
                 !projects.groups.some(
                   (item) =>
@@ -1538,7 +1551,7 @@ export class CloudSession {
                 ),
               ),
               projects: selected,
-              projectChoices: choices,
+              projectChoices: { ...singleWorkspaceChoices, ...choices },
               fullContent: true,
               ongoing: true,
               attachments: false,
@@ -1547,7 +1560,10 @@ export class CloudSession {
             const observed = this.projectPolicy(id)
             if (observed === policy) this.receiveOngoing(status)
             if (folderRouteConfirmed(this.projectPolicy(id), target, selected))
-              this.clearCommittedChoices(ids, draft)
+              this.clearCommittedChoices(
+                singleWorkspaceChoices ? Object.keys(singleWorkspaceChoices) : ids,
+                draft,
+              )
           }
           if (!current()) return
           if (!folderRouteConfirmed(this.projectPolicy(id), target, selected))
@@ -1567,7 +1583,6 @@ export class CloudSession {
           ({ target, selected }) =>
             !folderRouteConfirmed(this.projectPolicy(target.destinationId), target, selected),
         )
-        this.folderRoutesNeedRetry = remaining.length > 0
         if (remaining.length) {
           this.publish({
             error: `Could not confirm folder sync for ${remaining.map(({ name }) => name).join(", ")}. Review the remaining choices and try again.`,
@@ -1575,12 +1590,15 @@ export class CloudSession {
           return
         }
       }
-      this.folderRoutesNeedRetry = false
       this.projectSyncStarted = true
       this.publish({ screen: "complete", sync: { status: "idle" } })
     } finally {
       this.syncInFlight = false
-      if (this.active && generation === this.generation) this.publish({ busy: false })
+      if (this.active && generation === this.generation)
+        this.publish({
+          busy: false,
+          ...(this.snapshot.sync === starting ? { sync: { status: "idle" } } : {}),
+        })
     }
   }
 
@@ -1600,7 +1618,9 @@ export class CloudSession {
       if (
         !member ||
         group.confirmationKey !== this.projectConfirmationKey(member) ||
-        this.projectTargets[group.id] !== binding.destinationId ||
+        (this.projectTargets[group.id] ??
+          (verify ? this.snapshot.cloud.destination?.id : undefined)) !==
+          binding.destinationId ||
         this.hasSavedProject(group.id, settings) ||
         !policy?.policyRevision ||
         (binding.destinationId === this.snapshot.cloud.destination?.id && !policy.storageKnown)

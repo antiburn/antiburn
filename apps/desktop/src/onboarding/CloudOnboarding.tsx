@@ -558,6 +558,11 @@ export function CloudOnboarding({
               )}
             </div>
           )}
+          {grouped && value.sync.status === "starting" && (
+            <p className="type-callout text-onboarding-muted" role="status">
+              Confirming folder sync…
+            </p>
+          )}
         </section>
       ) : (
         <>
