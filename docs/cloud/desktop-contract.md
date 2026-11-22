@@ -65,9 +65,9 @@ also permit canonical loopback HTTP service origins. A custom release build
 that explicitly enables debug assertions uses the same debug behavior.
 
 Standard release builds keep Cloud disabled. Manually enabling `cloud` without
-debug assertions requires both HTTPS origins; it adds no implicit configuration.
-Route URLs still include the slash before the path. The resource origin owns
-the device API routes. Use an approved development service only.
+debug assertions defaults both origins to `https://api.antiburn.com` when
+neither variable is set. Set both variables to override that default with
+canonical HTTPS origins. The resource origin owns the device API routes.
 
 The explicit feature command also works for a debug build:
 
@@ -76,10 +76,9 @@ cd apps/desktop
 pnpm tauri dev --features cloud --config src-tauri/tauri.debug.conf.json
 ```
 
-A manual Cloud build does not permit production use. System-browser and OS
-credential-storage acceptance remain separate from synthetic checks. Capture and
-upload also require current service capabilities and explicit ongoing content
-consent; a build feature or successful sign-in is not permission.
+Enabling Cloud does not grant access. The service still controls sign-in.
+Capture and upload require the current service capabilities and explicit
+ongoing content consent.
 
 ## Browser approval
 
@@ -589,6 +588,8 @@ General Cloud tests remain enabled in every test profile. These mocks do not
 prove a live service connection.
 
 Run desktop Rust formatting, Clippy, and focused Nextest checks with `--features cloud`.
+Run `cargo nextest run --release --features cloud -E 'test(cloud_auth)'` in
+`apps/desktop/src-tauri` after building the frontend to check release origins.
 Also check the ordinary build with `--no-default-features`. Frontend checks cover
 Cloud stores, consent, ordinary-build entry-point exclusion, and searchable
 Settings controls. System-browser and OS-keyring acceptance on each supported
