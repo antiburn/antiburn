@@ -80,7 +80,6 @@ pub struct Record {
 
 /// Bind state files and lifetime process ownership to one desktop state directory.
 /// The owner lock is not in-process serialization; the controller supplies that.
-#[derive(Clone)]
 pub struct StateStore {
     directory: PathBuf,
     filename: String,
@@ -109,6 +108,11 @@ impl StateStore {
     /// Derive a keyring namespace without opening another directory.
     pub(super) fn workspace_vault_namespace(&self) -> PathBuf {
         self.directory.join(&self.filename)
+    }
+
+    /// Personal and old Team slots share one display-only warning file.
+    pub(super) fn remote_logout_warning_path(&self) -> PathBuf {
+        self.directory.join("cloud-remote-logout-unconfirmed")
     }
 
     /// Acquire lifetime process ownership once. Call only in serialized blocking
@@ -183,29 +187,25 @@ fn sync_directory(directory: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Record a failure without holding the owner lock or changing credential or epoch state.
+pub(super) fn record_remote_logout_failure(path: &Path) -> Result<(), Failure> {
+    match private_options().write(true).create_new(true).open(path) {
+        Ok(file) => file.sync_all().map_err(|_| Failure::CredentialFailed)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(Failure::CredentialFailed),
+    }
+    sync_directory(path.parent().ok_or(Failure::CredentialFailed)?)
+}
+
+/// Only the marker's presence matters. The file does not store proof.
+pub(super) fn remote_logout_unconfirmed(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 impl Guard {
-    /// Keep concrete remote logout failures separate from credential and epoch state.
-    pub(super) fn record_remote_logout_failure(&self) -> Result<(), Failure> {
-        match private_options()
-            .write(true)
-            .create_new(true)
-            .open(self.directory.join("cloud-remote-logout-unconfirmed"))
-        {
-            Ok(file) => file.sync_all().map_err(|_| Failure::CredentialFailed)?,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err(Failure::CredentialFailed),
-        }
-        sync_directory(&self.directory)
-    }
-
-    /// Read the shared warning for Personal and legacy Team slots. It has no proof.
-    pub(super) fn remote_logout_unconfirmed(&self) -> bool {
-        match fs::symlink_metadata(self.directory.join("cloud-remote-logout-unconfirmed")) {
-            Ok(_) => true,
-            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
-        }
-    }
-
     /// Read bounded, credential-free state and reject invalid cleanup/phase combinations.
     pub fn read(&mut self) -> Result<Record, Failure> {
         let file = match private_options()

@@ -9,11 +9,14 @@ use super::{
         TokenRequest, Transport, Vault, Workspace, WorkspaceKind,
     },
     loopback::Listener,
-    state::{Cleanup, Guard, Phase, Record, StateStore},
+    state::{self, Cleanup, Guard, Phase, Record, StateStore},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tokio::sync::Semaphore;
 
@@ -711,18 +714,18 @@ impl Engine {
         &self,
         request: RemoteLogout,
     ) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        let warning_path = self.state.remote_logout_warning_path();
         let Ok(permit) = self.remote_logout.clone().try_acquire_owned() else {
-            Self::record_remote_logout_failure(&self.state, &self.remote_logout_failed);
+            Self::record_remote_logout_failure(&warning_path, &self.remote_logout_failed);
             return None;
         };
         let transport = self.transport.clone();
-        let state = self.state.clone();
         let failed = self.remote_logout_failed.clone();
         let notify = self.notify_remote_logout_failure.clone();
         Some(tauri::async_runtime::spawn_blocking(move || {
             let _permit = permit;
             if !request.send(transport.as_ref()) {
-                Self::record_remote_logout_failure(&state, &failed);
+                Self::record_remote_logout_failure(&warning_path, &failed);
                 if let Some(notify) = notify {
                     notify();
                 }
@@ -730,13 +733,9 @@ impl Engine {
         }))
     }
 
-    fn record_remote_logout_failure(state: &StateStore, failed: &AtomicBool) {
+    fn record_remote_logout_failure(path: &Path, failed: &AtomicBool) {
         failed.store(true, Ordering::Release);
-        if state
-            .lock()
-            .and_then(|guard| guard.record_remote_logout_failure())
-            .is_err()
-        {
+        if state::record_remote_logout_failure(path).is_err() {
             tracing::debug!(event = "cloud_remote_logout_warning_not_saved");
         }
     }
@@ -746,10 +745,7 @@ impl Engine {
         self.cleanup.prior_unconfirmed()
             || self.remote_logout_failed.load(Ordering::Acquire)
             || (self.config.is_some()
-                && self
-                    .state
-                    .lock()
-                    .is_ok_and(|guard| guard.remote_logout_unconfirmed()))
+                && state::remote_logout_unconfirmed(&self.state.remote_logout_warning_path()))
     }
 
     #[cfg(test)]
@@ -950,7 +946,10 @@ impl Engine {
         self.local_reset_available = false;
         let Ok(saved) = self.vault.read() else {
             if !matches!(previous.cleanup, Cleanup::DeleteCredential { .. }) {
-                Self::record_remote_logout_failure(&self.state, &self.remote_logout_failed);
+                Self::record_remote_logout_failure(
+                    &self.state.remote_logout_warning_path(),
+                    &self.remote_logout_failed,
+                );
             }
             return Ok(None);
         };
