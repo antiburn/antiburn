@@ -115,7 +115,10 @@ fn invitation_list_distinguishes_checked_empty_from_needing_browser_proof() {
         vec![
             Some((200, r#"{"state":"check_required"}"#.into())),
             Some((200, r#"{"state":"checked","invitations":[]}"#.into())),
+            Some((401, "{}".into())),
+            Some((403, "{}".into())),
             Some((404, "{}".into())),
+            Some((405, "{}".into())),
         ]
     });
     assert!(matches!(
@@ -127,9 +130,16 @@ fn invitation_list_distinguishes_checked_empty_from_needing_browser_proof() {
         Listing::Checked { invitations } if invitations.is_empty()
     ));
     assert!(matches!(
-        list(&device(&config)).unwrap(),
-        Listing::Unavailable
+        list(&device(&config)),
+        Err(Failure::ReauthRequired)
     ));
+    assert!(matches!(list(&device(&config)), Err(Failure::Rejected)));
+    for _ in 0..2 {
+        assert!(matches!(
+            list(&device(&config)).unwrap(),
+            Listing::Unavailable
+        ));
+    }
     for request in worker.join().unwrap() {
         assert_eq!(request.line, "GET /v1/devices/invitations HTTP/1.1");
         assert!(
@@ -139,6 +149,44 @@ fn invitation_list_distinguishes_checked_empty_from_needing_browser_proof() {
         );
         assert!(request.body.is_empty());
     }
+}
+
+#[test]
+fn invitation_list_counts_unicode_name_characters_and_bounds_response_bytes() {
+    let name = "组🧪".repeat(100);
+    let checked = |id: &str, name: &str| {
+        serde_json::json!({
+            "state": "checked",
+            "invitations": [{ "id": id, "workspace_name": name, "workspace_slug": "example" }]
+        })
+        .to_string()
+    };
+    let (config, worker) = serve(|_| {
+        vec![
+            Some((200, checked("invite-1", &name))),
+            Some((200, checked("invite-1", &format!("{name}组")))),
+            Some((200, checked(&"组".repeat(100), &name))),
+            Some((
+                200,
+                format!(
+                    "{}{valid}",
+                    " ".repeat(65_536),
+                    valid = checked("invite-1", &name)
+                ),
+            )),
+        ]
+    });
+    assert!(matches!(
+        list(&device(&config)),
+        Ok(Listing::Checked { invitations }) if invitations[0].workspace_name == name
+    ));
+    for _ in 0..3 {
+        assert!(matches!(
+            list(&device(&config)),
+            Err(Failure::InvalidResponse)
+        ));
+    }
+    worker.join().unwrap();
 }
 
 #[test]
@@ -168,6 +216,11 @@ fn browser_open_requires_exact_api_url_and_one_ticket() {
     for id in ["", "..", "a/b", "a?b", "a%2fb"] {
         assert!(attempt_path(id).is_err(), "{id}");
     }
+    let long_ticket = format!(
+        "https://api.example/devices/invitations/verify?ticket={}",
+        "x".repeat(4097)
+    );
+    assert!(browser_url(&config, &long_ticket).is_err());
 }
 
 #[test]
@@ -196,24 +249,35 @@ fn finish_requires_ready_and_recovers_a_lost_reply_on_the_same_attempt() {
         })
     };
     let id = "attempt-1".to_owned();
+    let name = "组🧪".repeat(100);
     send(Action::Start {
         invitation_id: Some("invitation-1".into()),
-        workspace_name: Some("Example Team".into()),
+        workspace_name: Some(name.clone()),
+        workspace_slug: Some("example-team".into()),
     })
     .unwrap();
     assert!(matches!(
         send(Action::Finish { id: id.clone() }),
         Err(Failure::Cancelled)
     ));
-    send(Action::Status { id: id.clone() }).unwrap();
+    assert!(matches!(
+        send(Action::Status { id: id.clone() }).unwrap(),
+        Reply::Attempt {
+            state: State::Ready,
+            workspace_name: Some(workspace_name),
+            workspace_slug: Some(workspace_slug),
+            ..
+        } if workspace_name == name && workspace_slug == "example-team"
+    ));
     assert!(matches!(
         send(Action::Finish { id: id.clone() }).unwrap(),
         Reply::Attempt {
             state: State::Joined,
             workspace_id: Some(workspace_id),
             workspace_name: Some(workspace_name),
+            workspace_slug: Some(workspace_slug),
             ..
-        } if workspace_id == "team-1" && workspace_name == "Example Team"
+        } if workspace_id == "team-1" && workspace_name == name && workspace_slug == "example-team"
     ));
     assert!(matches!(
         send(Action::List).unwrap(),
@@ -289,6 +353,7 @@ fn check_attempt_sends_null_and_cancellation_sends_a_json_string() {
     send(Action::Start {
         invitation_id: None,
         workspace_name: None,
+        workspace_slug: None,
     })
     .unwrap();
     assert!(matches!(
@@ -343,6 +408,52 @@ fn finish_and_cancel_fence_the_fallback_status_request() {
         assert_eq!(checks.get(), 2, "fallback must check authority again");
         let requests = worker.join().unwrap();
         assert_eq!(requests[0].body, body);
+    }
+}
+
+#[test]
+fn bearer_rejection_preserves_uncertainty_and_never_replays_the_mutation() {
+    use std::cell::Cell;
+
+    for replies in [
+        vec![Some((401, "{}".into()))],
+        vec![None, Some((401, "{}".into()))],
+    ] {
+        let expected_dispatches = replies.len();
+        let (config, worker) = serve(|_| replies);
+        let checks = Cell::new(0);
+        let mut device = device(&config);
+        let can_send = || {
+            checks.set(checks.get() + 1);
+            checks.get() <= expected_dispatches
+        };
+        device.can_send = &can_send;
+        let id = "attempt-1";
+        let mut pending = Some(ready_attempt(Instant::now() + VERIFY_WINDOW));
+        assert!(matches!(
+            update(&mut pending, &Action::Finish { id: id.into() }, id, &device),
+            Err(Failure::ReauthRequired)
+        ));
+        assert_eq!(checks.get(), expected_dispatches);
+        assert!(matches!(
+            pending.as_ref().unwrap().reply(),
+            Reply::Uncertain { .. }
+        ));
+        assert!(matches!(
+            update(&mut pending, &Action::Finish { id: id.into() }, id, &device),
+            Err(Failure::Cancelled)
+        ));
+        let requests = worker.join().unwrap();
+        assert_eq!(
+            requests[0].line,
+            "POST /v1/devices/invitation-attempts/attempt-1 HTTP/1.1"
+        );
+        if expected_dispatches == 2 {
+            assert_eq!(
+                requests[1].line,
+                "GET /v1/devices/invitation-attempts/attempt-1 HTTP/1.1"
+            );
+        }
     }
 }
 
@@ -403,6 +514,7 @@ fn ready_attempt(deadline: Instant) -> Pending {
         generation: 1,
         join: true,
         workspace_name: Some("Example Team".into()),
+        workspace_slug: Some("example-team".into()),
         deadline,
         state: State::Ready,
         workspace_id: None,

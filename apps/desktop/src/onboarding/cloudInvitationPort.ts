@@ -22,7 +22,12 @@ export type InvitationState =
 
 type InvitationAction =
   | { action: "list" }
-  | { action: "start"; invitation_id: string | null; workspace_name?: string }
+  | {
+      action: "start"
+      invitation_id: string | null
+      workspace_name?: string
+      workspace_slug?: string
+    }
   | { action: "status" | "finish" | "cancel" | "dismiss"; id: string }
 
 export type InvitationReply =
@@ -34,9 +39,11 @@ export type InvitationReply =
       state: InvitationState
       workspace_id: string | null
       workspace_name?: string | null
+      workspace_slug?: string | null
     }
   | { kind: "uncertain"; id: string; join: boolean }
   | { kind: "expired"; uncertain?: boolean }
+  | { kind: "reauth_required"; uncertain: boolean }
 
 /** The renderer sends intent only. Desktop owns the account check, ticket, and browser. */
 export type CloudInvitationPort = (

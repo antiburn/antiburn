@@ -119,6 +119,10 @@ const attemptMessage: Record<InvitationState, string> = {
   closed: "This invitation is no longer open.",
 }
 
+function workspaceLabel(name: string | null | undefined, slug: string | null | undefined) {
+  return name && slug ? `${name} (${slug})` : name || slug
+}
+
 /** Render inside a signed-in Cloud surface. Key the view by account and reload
  * destinations on join. This view does not start sync or block local use.
  */
@@ -160,33 +164,41 @@ function AccountInvitations({
         ? { action: "dismiss", id: reply.id }
         : { action: "list" },
     )
-  const workspaceName = reply?.kind === "attempt" ? reply.workspace_name : null
+  const workspace =
+    reply?.kind === "attempt"
+      ? workspaceLabel(reply.workspace_name, reply.workspace_slug)
+      : null
+  const finishLabel = ready && reply.join ? "Join workspace" : "Finish check"
   const listing = reply?.kind === "list" ? reply.listing : null
   const message = error
     ? error
     : reply?.kind === "attempt"
       ? reply.state === "ready"
         ? reply.join
-          ? workspaceName
-            ? `Account verified. Join ${workspaceName} to accept the invitation.`
+          ? workspace
+            ? `Account verified. Join ${workspace} to accept the invitation.`
             : attemptMessage.ready
           : "Account verified. Finish checking for invitations."
         : attemptMessage[reply.state]
       : reply?.kind === "uncertain"
         ? "Cloud has not confirmed the result. Check the same attempt before trying again."
-        : reply?.kind === "expired"
+        : reply?.kind === "reauth_required"
           ? reply.uncertain
-            ? "Verification timed out before Cloud confirmed the result. Check your workspaces and invitations before trying again."
-            : "Verification timed out. You can try again."
-          : listing?.state === "check_required"
-            ? "Verify your account in your browser to check for invitations."
-            : listing?.state === "unavailable"
-              ? "Workspace invitations are unavailable."
-              : listing?.state === "checked" && listing.invitations.length === 0
-                ? "No pending workspace invitations."
-                : !reply && busy
-                  ? "Checking for workspace invitations…"
-                  : ""
+            ? "Cloud has not confirmed the result. Sign in again and check your workspaces and invitations before trying again."
+            : "Sign in again to check workspace invitations."
+          : reply?.kind === "expired"
+            ? reply.uncertain
+              ? "Verification timed out before Cloud confirmed the result. Check your workspaces and invitations before trying again."
+              : "Verification timed out. You can try again."
+            : listing?.state === "check_required"
+              ? "Verify your account in your browser to check for invitations."
+              : listing?.state === "unavailable"
+                ? "Workspace invitations are unavailable."
+                : listing?.state === "checked" && listing.invitations.length === 0
+                  ? "No pending workspace invitations."
+                  : !reply && busy
+                    ? "Checking for workspace invitations…"
+                    : ""
   return (
     <section aria-label="Workspace invitations" className="flex min-w-0 flex-col gap-2">
       <h2 className="type-callout font-medium">Workspace invitations</h2>
@@ -201,16 +213,17 @@ function AccountInvitations({
               key={invitation.id}
             >
               <span className="min-w-0 break-all type-callout">
-                {invitation.workspace_name}
+                {workspaceLabel(invitation.workspace_name, invitation.workspace_slug)}
               </span>
               <PushButton
-                ariaLabel={`Verify invitation to ${invitation.workspace_name}`}
+                ariaLabel={`Verify invitation to ${workspaceLabel(invitation.workspace_name, invitation.workspace_slug)}`}
                 disabled={busy}
                 onClick={() =>
                   send({
                     action: "start",
                     invitation_id: invitation.id,
                     workspace_name: invitation.workspace_name,
+                    workspace_slug: invitation.workspace_slug,
                   })
                 }
               >
@@ -232,10 +245,11 @@ function AccountInvitations({
         {ready && (
           <PushButton
             variant="primary"
+            ariaLabel={reply.join && workspace ? `${finishLabel} ${workspace}` : finishLabel}
             disabled={busy}
             onClick={() => send({ action: "finish", id: reply.id })}
           >
-            {reply.join ? "Join workspace" : "Finish check"}
+            {finishLabel}
           </PushButton>
         )}
         {(ready || waiting) && (
@@ -250,6 +264,7 @@ function AccountInvitations({
         ) : (
           !waiting &&
           !ready &&
+          reply?.kind !== "reauth_required" &&
           (reply || error) && (
             <PushButton disabled={busy} onClick={refresh}>
               {reply?.kind === "attempt" && reply.state === "checked"

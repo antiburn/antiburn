@@ -182,7 +182,8 @@ impl Engine {
     }
 
     /// Run an invitation request with current account authority. Keep bearer
-    /// proof in Rust and reject stale renderer actions before dispatch.
+    /// proof in Rust and reject stale renderer actions before dispatch. A 401
+    /// invalidates cached access only if the request still owns this account.
     pub(super) fn with_invitation_access<T>(
         &mut self,
         account_id: &str,
@@ -208,6 +209,10 @@ impl Engine {
         let result = request(config, &access.token, &can_send);
         if !current() {
             return Err(Failure::Cancelled);
+        }
+        if matches!(result, Err(Failure::ReauthRequired)) {
+            self.access = None;
+            self.status = AuthStatus::ReauthRequired;
         }
         result
     }

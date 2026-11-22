@@ -12,9 +12,10 @@ choose **Check in browser**. Use the same account as Desktop, then return to
 review your invitations. If Desktop asks, choose **Finish check**. Checking the
 list does not join a workspace.
 
-Choose **Verify invitation** for the workspace you want to join. After the
-browser verifies your account, choose **Join workspace** in Desktop. If your
-browser used a different account, start again with the account shown in Desktop.
+Check the workspace slug next to the name when you choose **Verify invitation**.
+After the browser verifies your account, confirm the name and slug. Then choose
+**Join workspace** in Desktop. If your browser used a different account, start
+again with the account shown in Desktop.
 If the invitation is closed or the workspace has no open seats, contact the
 workspace admin. You can still use Desktop locally.
 
@@ -56,3 +57,6 @@ its verification deadline. The other states are `ready`, `checked`,
 After a lost finish response, Desktop reads the same attempt before it offers
 another action, as long as the attempt has time left. It never starts a second
 attempt or retries the join automatically.
+If Cloud rejects the device access bearer, Desktop asks you to sign in again.
+If this happens before Desktop confirms a join, check your workspaces and
+invitations after you sign in and before you try again.

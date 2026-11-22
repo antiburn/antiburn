@@ -389,15 +389,6 @@ fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
     fixture.sign_in();
     assert!(fixture.engine.invitations_enabled());
     let account = session().user.id;
-    assert_eq!(
-        fixture.engine.with_invitation_access(
-            &account,
-            || true,
-            |_, _, _| Err::<(), _>(Failure::Rejected)
-        ),
-        Err(Failure::Rejected)
-    );
-    assert!(fixture.engine.status == AuthStatus::SignedIn);
     fixture
         .transport
         .fail_exchange
@@ -413,6 +404,54 @@ fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
     );
     assert!(fixture.engine.status == AuthStatus::ReauthRequired);
     assert!(!fixture.engine.invitations_enabled());
+}
+
+#[test]
+fn invitation_bearer_rejection_only_invalidates_the_current_account() {
+    let mut fixture = Fixture::new();
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    let account = session().user.id;
+    let current = std::cell::Cell::new(true);
+    for error in [Failure::Rejected, Failure::Unavailable, Failure::Offline] {
+        assert_eq!(
+            fixture
+                .engine
+                .with_invitation_access(&account, || true, |_, _, _| Err::<(), _>(error)),
+            Err(error)
+        );
+        assert!(fixture.engine.status == AuthStatus::SignedIn);
+        assert!(fixture.engine.invitations_enabled());
+    }
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &account,
+            || current.get(),
+            |_, _, _| {
+                current.set(false);
+                Err::<(), _>(Failure::ReauthRequired)
+            }
+        ),
+        Err(Failure::Cancelled)
+    );
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+    assert!(fixture.engine.invitations_enabled());
+
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &account,
+            || true,
+            |_, _, _| Err::<(), _>(Failure::ReauthRequired)
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(fixture.engine.session().is_none());
+    assert!(!fixture.engine.invitations_enabled());
+    assert!(fixture.vault.read().unwrap().is_some());
 }
 
 struct Fixture {

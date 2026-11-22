@@ -13,6 +13,7 @@ const checked: InvitationReply = {
     state: "checked",
     invitations: [
       { id: "invite-1", workspace_name: "Example Team", workspace_slug: "example" },
+      { id: "invite-2", workspace_name: "Example Team", workspace_slug: "example-other" },
     ],
   },
 }
@@ -49,26 +50,36 @@ describe("Cloud workspace invitations", () => {
     vi.useRealTimers()
   })
 
-  it("does not join on return from the browser", async () => {
+  it("distinguishes teams with the same name and joins only after an explicit click", async () => {
     const port = vi
       .fn<CloudInvitationPort>()
       .mockResolvedValueOnce(checked)
       .mockResolvedValueOnce(attempt("waiting"))
-      .mockResolvedValueOnce({ ...attempt("ready"), workspace_name: "Example Team" })
+      .mockResolvedValueOnce({
+        ...attempt("ready"),
+        workspace_name: "Example Team",
+        workspace_slug: "example-other",
+      })
       .mockResolvedValueOnce(attempt("joined"))
     const { onJoined } = await open(port)
-    await click("Verify invitation to Example Team")
+    expect(screen.getByText("Example Team (example)")).toBeVisible()
+    expect(screen.getByText("Example Team (example-other)")).toBeVisible()
+    expect(
+      screen.getByRole("button", { name: "Verify invitation to Example Team (example)" }),
+    ).toBeVisible()
+    await click("Verify invitation to Example Team (example-other)")
     expect(port).toHaveBeenLastCalledWith("account-1", {
       action: "start",
-      invitation_id: "invite-1",
+      invitation_id: "invite-2",
       workspace_name: "Example Team",
+      workspace_slug: "example-other",
     })
-    expect(screen.queryByRole("button", { name: "Join workspace" })).toBeNull()
+    expect(screen.queryByRole("button", { name: /^Join workspace/ })).toBeNull()
     await act(() => vi.advanceTimersByTimeAsync(2_000))
     expect(port).toHaveBeenLastCalledWith("account-1", { action: "status", id: "attempt-1" })
-    expect(screen.getByRole("status")).toHaveTextContent("Join Example Team")
+    expect(screen.getByRole("status")).toHaveTextContent("Join Example Team (example-other)")
     expect(onJoined).not.toHaveBeenCalled()
-    await click("Join workspace")
+    await click("Join workspace Example Team (example-other)")
     expect(port).toHaveBeenLastCalledWith("account-1", { action: "finish", id: "attempt-1" })
     expect(screen.getByRole("status")).toHaveTextContent("You joined the workspace.")
     expect(onJoined).toHaveBeenCalledOnce()
@@ -110,6 +121,20 @@ describe("Cloud workspace invitations", () => {
     expect(onJoined).toHaveBeenCalledOnce()
   })
 
+  it("does not retry a finish when Cloud requires sign-in", async () => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(attempt("ready"))
+      .mockResolvedValueOnce({ kind: "reauth_required", uncertain: true })
+    const { onJoined } = await open(port)
+    await click("Join workspace")
+    await act(() => vi.advanceTimersByTimeAsync(30_000))
+    expect(port).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole("status")).toHaveTextContent("Cloud has not confirmed the result.")
+    expect(screen.queryByRole("button")).toBeNull()
+    expect(onJoined).not.toHaveBeenCalled()
+  })
+
   it("shows a completed join on reopen until the result is dismissed", async () => {
     let finish: (reply: InvitationReply) => void = () => {}
     const port = vi
@@ -130,7 +155,7 @@ describe("Cloud workspace invitations", () => {
     await click("Refresh invitations")
     expect(port).toHaveBeenLastCalledWith("account-1", { action: "dismiss", id: "attempt-1" })
     expect(
-      screen.getByRole("button", { name: "Verify invitation to Example Team" }),
+      screen.getByRole("button", { name: "Verify invitation to Example Team (example)" }),
     ).toBeVisible()
   })
 

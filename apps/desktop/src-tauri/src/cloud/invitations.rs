@@ -57,6 +57,7 @@ pub(crate) enum Action {
     Start {
         invitation_id: Option<String>,
         workspace_name: Option<String>,
+        workspace_slug: Option<String>,
     },
     Status {
         id: String,
@@ -136,12 +137,16 @@ pub(crate) enum Reply {
         state: State,
         workspace_id: Option<String>,
         workspace_name: Option<String>,
+        workspace_slug: Option<String>,
     },
     Uncertain {
         id: String,
         join: bool,
     },
     Expired {
+        uncertain: bool,
+    },
+    ReauthRequired {
         uncertain: bool,
     },
 }
@@ -153,6 +158,7 @@ pub(super) struct Pending {
     generation: u64,
     join: bool,
     workspace_name: Option<String>,
+    workspace_slug: Option<String>,
     deadline: Instant,
     state: State,
     workspace_id: Option<String>,
@@ -177,6 +183,7 @@ impl Pending {
             state: self.state,
             workspace_id: self.workspace_id.clone(),
             workspace_name: self.workspace_name.clone(),
+            workspace_slug: self.workspace_slug.clone(),
         }
     }
 
@@ -225,9 +232,19 @@ pub(crate) async fn cloud_invitations(
                 })
             });
         if current() && engine.status != status {
-            super::emit_snapshot(&app, super::snapshot(&app, &engine));
+            let snapshot = super::snapshot(&app, &engine);
+            if current() {
+                super::emit_snapshot(&app, snapshot);
+            }
         }
-        result.map_err(|_| "Could not complete the Cloud invitation request.".into())
+        match result {
+            Err(Failure::ReauthRequired) if current() => Ok(Reply::ReauthRequired {
+                uncertain: pending
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.generation == generation && attempt.uncertain),
+            }),
+            result => result.map_err(|_| "Could not complete the Cloud invitation request.".into()),
+        }
     })
     .await
 }
@@ -275,6 +292,7 @@ fn run_action(
         Action::Start {
             invitation_id,
             workspace_name,
+            workspace_slug,
         } => {
             if let Some(attempt) = pending
                 && !attempt.state.is_terminal()
@@ -302,10 +320,11 @@ fn run_action(
                 id: created.id,
                 generation,
                 join: invitation_id.is_some(),
-                // This label comes from the rendered list. It names the choice
-                // but cannot change the invitation ID sent to the service.
+                // Display labels cannot change the invitation ID sent to the service.
                 workspace_name: workspace_name
-                    .filter(|name| invitation_id.is_some() && valid_label(name, 256)),
+                    .filter(|name| invitation_id.is_some() && valid_workspace_name(name)),
+                workspace_slug: workspace_slug
+                    .filter(|slug| invitation_id.is_some() && valid_label(slug, 256)),
                 deadline,
                 state: State::Waiting,
                 workspace_id: None,
@@ -355,12 +374,16 @@ fn update(
         attempt.uncertain = true;
         device
             .send(Method::POST, &path, Some(action.into()), deadline)
-            .or_else(|_| observe())
+            .or_else(|error| match error {
+                Failure::ReauthRequired => Err(error),
+                _ => observe(),
+            })
     } else {
         observe()
     };
     let status: Status = match observed {
         Ok(status) => status,
+        Err(Failure::ReauthRequired) => return Err(Failure::ReauthRequired),
         Err(_) if attempt.expired() => {
             let uncertain = attempt.uncertain;
             *pending = None;
@@ -387,7 +410,7 @@ fn list(device: &DeviceRequest<'_>) -> Result<Listing, Failure> {
     if let Listing::Checked { invitations } = &listing
         && invitations.iter().any(|entry| {
             !valid_label(&entry.id, 256)
-                || !valid_label(&entry.workspace_name, 256)
+                || !valid_workspace_name(&entry.workspace_name)
                 || !valid_label(&entry.workspace_slug, 256)
         })
     {
@@ -398,6 +421,12 @@ fn list(device: &DeviceRequest<'_>) -> Result<Listing, Failure> {
 
 fn valid_label(value: &str, max: usize) -> bool {
     !value.trim().is_empty() && value.len() <= max && !value.chars().any(char::is_control)
+}
+
+fn valid_workspace_name(value: &str) -> bool {
+    value.chars().take(201).count() <= 200
+        && !value.trim().is_empty()
+        && !value.chars().any(char::is_control)
 }
 
 fn attempt_path(id: &str) -> Result<String, Failure> {
@@ -478,7 +507,8 @@ impl DeviceRequest<'_> {
         match response.status() {
             status if status.is_success() => auth::decode_json(response),
             StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED => Err(Failure::Unavailable),
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Err(Failure::Rejected),
+            StatusCode::UNAUTHORIZED => Err(Failure::ReauthRequired),
+            StatusCode::FORBIDDEN => Err(Failure::Rejected),
             _ => Err(Failure::Offline),
         }
     }
