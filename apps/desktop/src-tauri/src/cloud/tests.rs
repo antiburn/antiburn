@@ -6,6 +6,28 @@ use auth::{
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]
+fn cloud_reports_browser_return_before_exchanging_the_code() {
+    let mut fixture = Fixture::new();
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    let mut returned = false;
+    complete_browser_return(
+        &mut fixture.engine,
+        &attempt,
+        auth::Callback::Code("synthetic-code".into()),
+        101,
+        || true,
+        |engine| {
+            assert!(engine.status == AuthStatus::Returned);
+            assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 0);
+            returned = true;
+        },
+    );
+    assert!(returned);
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+}
+
+#[test]
 fn cloud_source_preferences_keep_legacy_shapes_and_reject_unknown_providers() {
     let raw = r#"{"path":"/Example/claude/projects/project","selected":true}"#;
     let legacy: Folder = serde_json::from_str(raw).unwrap();

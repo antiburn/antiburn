@@ -553,9 +553,16 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                         return Ok(());
                     }
                     if let Some(callback) = callback {
-                        if let Err(error) = engine.callback(&attempt, callback, now(), current) {
-                            engine.status = error.into();
-                        }
+                        complete_browser_return(
+                            &mut engine,
+                            &attempt,
+                            callback,
+                            now(),
+                            current,
+                            |engine| {
+                                publish(&callback_app, engine);
+                            },
+                        );
                     } else {
                         if let Err(error) = engine.cancel(generation) {
                             engine.status = error.into();
@@ -580,6 +587,27 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
         Ok(result)
     })
     .await
+}
+
+/// Report a validated browser return before the token exchange can block.
+fn complete_browser_return(
+    engine: &mut Engine,
+    attempt: &auth::Attempt,
+    callback: auth::Callback,
+    returned_at: i64,
+    current: impl Fn() -> bool,
+    notify_returned: impl FnOnce(&Engine),
+) {
+    if !current() {
+        return;
+    }
+    if matches!(callback, auth::Callback::Code(_)) {
+        engine.status = AuthStatus::Returned;
+        notify_returned(engine);
+    }
+    if let Err(error) = engine.callback(attempt, callback, returned_at, current) {
+        engine.status = error.into();
+    }
 }
 
 /// A native missing-launcher error proves no handoff. Launcher exit failures and
