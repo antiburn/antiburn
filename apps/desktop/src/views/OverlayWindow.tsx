@@ -33,13 +33,33 @@ export function OverlayWindow() {
   const onIsland = state.island.island !== "off"
   const contentWidth = onIsland ? islandContentWidth(state) : FLOATING_CONTENT_PX
   const content = (
-    <HudContent
-      state={state}
-      session={session}
-      contentWidth={contentWidth}
-      // The island's live LED sits in its wing, so its bars do not blink.
-      blink={!onIsland}
-    />
+    // While Hide shows, the content keeps at least 24px of height, so the
+    // button stays a usable target when the HUD shows one bar or none.
+    <div className={state.hideOffered ? "relative min-h-6" : "relative"}>
+      <div className={state.hideOffered ? "invisible" : undefined}>
+        <HudContent
+          state={state}
+          session={session}
+          contentWidth={contentWidth}
+          // The island's live LED sits in its wing, so its bars do not blink.
+          blink={!onIsland}
+        />
+      </div>
+      {state.hideOffered && (
+        // The button covers the bars, so the HUD keeps its size.
+        <button
+          type="button"
+          onClick={session.close}
+          className={`absolute inset-0 rounded-control border type-footnote font-semibold transition-colors duration-[var(--duration-fast)] ${
+            onIsland
+              ? "border-hud-island-ink/30 text-hud-island-ink hover:bg-hud-island-ink/15"
+              : "border-hud-control-edge text-label hover:bg-label/10"
+          }`}
+        >
+          Hide HUD
+        </button>
+      )}
+    </div>
   )
 
   return (
@@ -47,6 +67,7 @@ export function OverlayWindow() {
       className="h-screen w-screen bg-transparent"
       onMouseEnter={() => session.requestHover(true)}
       onMouseLeave={() => session.requestHover(false)}
+      onContextMenu={session.offerHide}
     >
       {onIsland ? (
         <IslandPanel state={state} panelRef={panelRef} session={session}>
@@ -63,7 +84,8 @@ export function OverlayWindow() {
         >
           {/*
             The close control is off for now (Keith, 2026-09-16). The menu bar
-            toggle still hides the HUD. Restore this block to bring it back:
+            toggle and the right-click Hide button still hide the HUD. Restore this
+            block to bring it back:
 
             const showClose = state.hovered && !state.dragging
             <button

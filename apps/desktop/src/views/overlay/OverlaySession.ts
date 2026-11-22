@@ -92,6 +92,11 @@ export type OverlaySnapshot = {
    * enough to tear it off, or lets go. The island shows as a ghost.
    */
   dragArmed: boolean
+  /**
+   * True after a right-click, until the reader picks Hide or moves away.
+   * The HUD then shows a Hide button in place of its bars.
+   */
+  hideOffered: boolean
   /** Whether any session is live, from the shell's lifecycle bus. */
   sessionLive: boolean
   /** The providers a live session draws on, sorted. Their bars blink. */
@@ -130,6 +135,7 @@ const INITIAL_SNAPSHOT: OverlaySnapshot = {
   hovered: false,
   dragging: false,
   dragArmed: false,
+  hideOffered: false,
   sessionLive: false,
   liveProviders: [],
   liveModels: {},
@@ -268,7 +274,8 @@ export class OverlaySession {
       return
     }
 
-    if (this.snapshot.hovered) this.update({ hovered: false })
+    if (this.snapshot.hovered || this.snapshot.hideOffered)
+      this.update({ hovered: false, hideOffered: false })
     this.clearShowTimer()
     this.hideDetail()
   }
@@ -285,8 +292,13 @@ export class OverlaySession {
 
   startDrag = (event: ReactMouseEvent): void => {
     if (
-      !this.active ||
+      // Only the primary button drags. A right-click or Control-click opens
+      // the context menu instead.
+      event.button !== 0 ||
+      event.ctrlKey ||
       (event.target as HTMLElement).closest("button") ||
+      this.withdrawHide() ||
+      !this.active ||
       this.snapshot.dragging ||
       this.dragArm
     )
@@ -305,6 +317,31 @@ export class OverlaySession {
     this.update({ dragArmed: true })
     this.addDragListeners()
     void expandHudIsland().catch(() => {})
+  }
+
+  /**
+   * Offer Hide after a right-click or Control-click.
+   *
+   * macOS draws a native context menu under the HUD, because the HUD sits
+   * at screen-saver window level. So the HUD shows its own Hide button.
+   * Moving the pointer away or clicking the HUD again takes the offer back.
+   */
+  offerHide = (event: ReactMouseEvent): void => {
+    event.preventDefault()
+    if (!this.active || this.snapshot.dragging) return
+    this.clearShowTimer()
+    this.hideDetail()
+    this.update({ hideOffered: true })
+    if (this.snapshot.island.island === "collapsed") void expandHudIsland().catch(() => {})
+  }
+
+  /** Take back an open Hide offer. Return true when one was open. */
+  private withdrawHide(): boolean {
+    if (!this.snapshot.hideOffered) return false
+    this.update({ hideOffered: false })
+    // The pointer is still on the HUD, so its detail card comes back as on hover.
+    if (this.snapshot.hovered) this.armShowTimer()
+    return true
   }
 
   close = (): void => {
@@ -609,6 +646,7 @@ export class OverlaySession {
       hovered: false,
       dragging: false,
       dragArmed: false,
+      hideOffered: false,
       sessionLive: false,
       liveProviders: [],
       liveModels: {},
@@ -792,7 +830,8 @@ export class OverlaySession {
         !this.active ||
         !this.snapshot.hovered ||
         this.snapshot.dragging ||
-        this.snapshot.dragArmed
+        this.snapshot.dragArmed ||
+        this.snapshot.hideOffered
       )
         return
       this.detailShown = true
@@ -1012,6 +1051,7 @@ export class OverlaySession {
       this.snapshot.hovered === next.hovered &&
       this.snapshot.dragging === next.dragging &&
       this.snapshot.dragArmed === next.dragArmed &&
+      this.snapshot.hideOffered === next.hideOffered &&
       this.snapshot.sessionLive === next.sessionLive &&
       sameList(this.snapshot.liveProviders, next.liveProviders) &&
       sameProviderModels(this.snapshot.liveModels, next.liveModels) &&
