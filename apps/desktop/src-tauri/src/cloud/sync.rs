@@ -233,8 +233,8 @@ struct Runner {
     conflict_attempts: BTreeMap<String, u8>,
     /// Replay submitted finalization once per sign-in, restart, or explicit retry.
     finalization_submissions: BTreeSet<String>,
-    /// Count transient replays separately from status conflict probes. A
-    /// definite response after a status conflict ends automatic replay.
+    /// Track replay separately from status conflict probes. A zero count keeps
+    /// a denied replay pending without using a transient attempt.
     conflict_finalization_replays: BTreeMap<String, u8>,
     /// The first observed or last reconciled grant for this route.
     retry_grant: Option<RetryGrant>,
@@ -1326,11 +1326,11 @@ impl Runner {
                     .with_membership_generation(job.membership_generation.as_deref());
             let started = Instant::now();
             let mut result = host.spool()?.resume_step(&entry.identity, &mut transport);
-            let replay_attempts = self
+            let saved_replay_attempts = self
                 .conflict_finalization_replays
                 .get(&entry.identity.capture_id)
-                .copied()
-                .unwrap_or_default();
+                .copied();
+            let replay_attempts = saved_replay_attempts.unwrap_or_default();
             let status_conflict = transport.status_renewal_conflict;
             let status_pending = result.as_ref().is_ok_and(|step| {
                 step.entry.state == CaptureState::AwaitingIntegrity
@@ -1340,7 +1340,7 @@ impl Runner {
             {
                 self.backfill_discovery_due = true;
             }
-            if (status_conflict || (replay_attempts > 0 && status_pending))
+            if (status_conflict || (saved_replay_attempts.is_some() && status_pending))
                 && entry.state == CaptureState::AwaitingIntegrity
                 && let (Some(reservation), Some(manifest), Some(plan)) =
                     (&entry.reservation_id, &entry.manifest, &entry.upload_plan)

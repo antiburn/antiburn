@@ -1725,7 +1725,7 @@ fn cloud_scheduler_personal_denial_leaves_team_upload_eligible() {
 }
 
 #[test]
-fn cloud_scheduler_finalization_replay_reports_route_denial_not_status_conflict() {
+fn cloud_scheduler_retries_denied_finalization_replay_when_status_returns_to_pending() {
     let mut fixture = Fixture::new(VERIFY_PENDING, 0);
     for _ in 0..8 {
         fixture.turn();
@@ -1746,9 +1746,28 @@ fn cloud_scheduler_finalization_replay_reports_route_denial_not_status_conflict(
     assert_eq!(fixture.service.finalizations.load(Ordering::Acquire), 2);
     assert_eq!(
         fixture.host.spool().unwrap().entries().unwrap(),
-        vec![saved]
+        vec![saved.clone()]
     );
     assert!(fixture.engine.status == AuthStatus::SignedIn);
+
+    fixture
+        .service
+        .mode
+        .store(VERIFY_PENDING, Ordering::Release);
+    fixture.turn();
+    assert_eq!(fixture.service.finalizations.load(Ordering::Acquire), 2);
+    fixture.runner.route_denied_until = Some(Instant::now());
+    fixture.turn();
+    assert_eq!(fixture.service.finalizations.load(Ordering::Acquire), 3);
+    assert_eq!(fixture.service.renewals.load(Ordering::Acquire), 1);
+    assert_eq!(
+        fixture.host.spool().unwrap().entries().unwrap(),
+        vec![saved]
+    );
+
+    fixture.runner.next_integrity_poll = None;
+    fixture.turn();
+    assert_eq!(fixture.service.finalizations.load(Ordering::Acquire), 3);
 }
 
 #[test]
