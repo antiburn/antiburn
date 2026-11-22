@@ -15,7 +15,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    if let Err(error) = response.write_json(&mut tokio::io::stdout()).await {
+    if let Err(error) = response.write(&mut tokio::io::stdout()).await {
         tracing::error!(event = "cli_delivery_failed", error = %error);
         report_error(&format!("antiburn: {error}")).await;
         return ExitCode::FAILURE;

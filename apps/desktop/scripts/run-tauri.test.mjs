@@ -1,6 +1,16 @@
 import assert from "node:assert/strict"
 import { execFile, spawn } from "node:child_process"
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import { test } from "node:test"
@@ -187,6 +197,114 @@ test("debug launchers select Cloud without changing release or caller options", 
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test(
+  "Desktop stages the Cloud debug CLI while standalone packaging stages the release CLI",
+  {
+    skip: process.platform === "win32",
+  },
+  async (t) => {
+    const root = await mkdtemp(join(await realpath(tmpdir()), "antiburn-tauri-sidecar-"))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const target = "aarch64-apple-darwin"
+    const desktop = join(root, "apps", "desktop")
+    const packager = join(root, "scripts", "build-cli-sidecar.mjs")
+    const launcher = join(desktop, "scripts", "run-tauri.mjs")
+    await Promise.all(
+      ["scripts", "apps/desktop/scripts", "apps/cli", "bin"].map((path) =>
+        mkdir(join(root, path), { recursive: true }),
+      ),
+    )
+    await Promise.all([
+      copyFile(runner, launcher),
+      copyFile(
+        new URL("./cli-dev.mjs", import.meta.url),
+        join(desktop, "scripts", "cli-dev.mjs"),
+      ),
+      copyFile(new URL("../../../scripts/build-cli-sidecar.mjs", import.meta.url), packager),
+      writeFile(join(root, "apps", "cli", "Cargo.toml"), '[package]\nversion = "0.1.0"\n'),
+    ])
+    const cargo = join(root, "cargo.mjs")
+    await writeFile(
+      cargo,
+      `import { mkdirSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+const args = process.argv.slice(2)
+const target = args[args.indexOf("--target") + 1]
+const profile = args.includes("--release") ? "release" : "debug"
+const directory = join(process.env.CARGO_TARGET_DIR, target, profile)
+mkdirSync(directory, { recursive: true })
+const bytes = Buffer.alloc(32)
+bytes.writeUInt32LE(0xfeedfacf)
+bytes.writeUInt32LE(0x100000c, 4)
+bytes.write(profile, 8)
+writeFileSync(join(directory, "antiburn"), bytes)
+writeFileSync("cargo-args.json", JSON.stringify(args))
+`,
+    )
+    const desktopArgs = join(root, "tauri.mjs")
+    await writeFile(
+      desktopArgs,
+      "process.stdout.write(JSON.stringify(process.argv.slice(2)))\n",
+    )
+    for (const [name, body] of Object.entries({
+      cargo: `exec "${process.execPath}" "${cargo}" "$@"`,
+      rustc: `printf 'host: ${target}\\n'`,
+      otool: "printf 'binary:\\n /usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\\n'",
+      tauri: `exec "${process.execPath}" "${desktopArgs}" "$@"`,
+    })) {
+      await writeFile(join(root, "bin", name), `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+    }
+    const env = {
+      ...process.env,
+      PATH: `${join(root, "bin")}${delimiter}${process.env.PATH ?? ""}`,
+    }
+    const payload = join(desktop, "src-tauri", "cli-payload")
+    const run = (script, args) =>
+      execute(process.execPath, [script, ...args], { cwd: root, env })
+
+    const { stdout } = await run(launcher, ["dev", "--with-cli", "--target", target])
+    assert.deepEqual(JSON.parse(stdout), [
+      "dev",
+      "--features",
+      "cloud",
+      "--target",
+      target,
+      "--config",
+      "src-tauri/tauri.sidecar.conf.json",
+    ])
+    await checkPayload("debug", ["--features", "cloud"])
+
+    await run(packager, ["--target", target])
+    await checkPayload("release", ["--release"])
+
+    async function checkPayload(profile, buildOptions) {
+      const cargoArgs = JSON.parse(await readFile(join(root, "cargo-args.json"), "utf8"))
+      assert.deepEqual(cargoArgs, [
+        "build",
+        "--locked",
+        ...buildOptions,
+        "--manifest-path",
+        join(root, "apps", "cli", "Cargo.toml"),
+        "--target",
+        target,
+        "--bin",
+        "antiburn",
+      ])
+      const bytes = await readFile(join(payload, "antiburn-cli"))
+      assert.equal(bytes.toString("ascii", 8, 8 + profile.length), profile)
+      const manifest = JSON.parse(await readFile(join(payload, "manifest.json"), "utf8"))
+      assert.deepEqual(manifest, {
+        schema: 1,
+        target,
+        executable: "antiburn-cli",
+        version: "0.1.0",
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        delivery_protocols: ["delivery-v1"],
+      })
+    }
+  },
+)
 
 async function waitFor(read, accept, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs

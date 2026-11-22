@@ -6,6 +6,8 @@
 
 mod auth;
 mod capture;
+#[cfg(unix)]
+mod device_broker;
 mod engine;
 mod file_sources;
 #[cfg(test)]
@@ -398,6 +400,8 @@ pub fn initialize(
         account_generation: AtomicU64::new(0),
         recorded_status: Mutex::new(AuthStatus::Idle),
     });
+    #[cfg(unix)]
+    device_broker::start(app.clone(), directory.to_path_buf());
     sync::start(app.clone());
     Ok(())
 }
