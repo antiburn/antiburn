@@ -2108,6 +2108,46 @@ fn cloud_scheduler_new_sign_in_retries_saved_uploads_without_waiting_or_recaptur
 }
 
 #[test]
+fn cloud_scheduler_observes_first_grant_while_policy_is_held() {
+    let mut fixture = Fixture::new(PART_REJECTED, 0);
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    fixture.turn();
+    let id = &saved.identity.capture_id;
+    assert_eq!(
+        fixture.store.cloud_sync_job(id).unwrap().unwrap().state,
+        JobState::Interrupted
+    );
+    fixture.restart_scheduler();
+    let held_policy = fixture
+        .store
+        .set_cloud_sync_paused(&fixture.policy, true)
+        .unwrap();
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::Paused);
+    fixture.sign_in_again();
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::Paused);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+
+    fixture
+        .store
+        .set_cloud_sync_paused(&held_policy, false)
+        .unwrap();
+    fixture.service.mode.store(READY, Ordering::Release);
+    fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+    fixture.turn();
+    assert_eq!(
+        fixture.store.cloud_sync_job(id).unwrap().unwrap().state,
+        JobState::Queued
+    );
+    assert!(fixture.service.requests.load(Ordering::Acquire) > requests);
+    fixture.accept_first();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn cloud_scheduler_pause_during_refresh_preserves_rotated_credentials_and_stops_capture() {
     for stage in [1, 2] {
         let mut fixture = Fixture::new(READY, stage);
