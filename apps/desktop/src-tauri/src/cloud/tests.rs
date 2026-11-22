@@ -397,7 +397,7 @@ fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
         ),
         Err(Failure::Rejected)
     );
-    assert_eq!(fixture.engine.status, AuthStatus::SignedIn);
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
     fixture
         .transport
         .fail_exchange
@@ -411,7 +411,7 @@ fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
         ),
         Err(Failure::ReauthRequired)
     );
-    assert_eq!(fixture.engine.status, AuthStatus::ReauthRequired);
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
     assert!(!fixture.engine.invitations_enabled());
 }
 
