@@ -1182,6 +1182,60 @@ fn cloud_team_scheduler_blocks_changed_membership_even_after_fresh_account_appro
 }
 
 #[test]
+fn cloud_team_scheduler_retries_interrupted_upload_after_membership_lookup_recovers() {
+    let mut fixture = Fixture::for_workspace(
+        PART_REJECTED,
+        0,
+        Workspace {
+            id: "team".into(),
+            name: "Example Team".into(),
+            kind: WorkspaceKind::Team,
+        },
+    );
+    fixture.turn();
+    let saved = fixture.host.spool().unwrap().entries().unwrap().remove(0);
+    fixture.turn();
+    let job = || {
+        fixture
+            .store
+            .cloud_sync_job(&saved.identity.capture_id)
+            .unwrap()
+            .unwrap()
+    };
+    assert_eq!(job().state, JobState::Interrupted);
+
+    fixture.sign_in_again();
+    fixture
+        .authority
+        .workspaces_unavailable
+        .store(true, Ordering::Release);
+    let requests = fixture.service.requests.load(Ordering::Acquire);
+    fixture.turn();
+    assert_eq!(fixture.runner.state, State::ReauthRequired);
+    assert_eq!(fixture.service.requests.load(Ordering::Acquire), requests);
+
+    fixture
+        .authority
+        .workspaces_unavailable
+        .store(false, Ordering::Release);
+    fixture.service.mode.store(READY, Ordering::Release);
+    fs::remove_file(fixture.root.join("session.jsonl")).unwrap();
+    fixture.turn();
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_job(&saved.identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Queued
+    );
+    assert!(fixture.service.requests.load(Ordering::Acquire) > requests);
+    fixture.accept_first();
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
+}
+
+#[test]
 fn cloud_team_scheduler_never_reopens_legacy_folder_policy() {
     let workspace = Workspace {
         id: "team".into(),

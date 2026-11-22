@@ -1041,19 +1041,6 @@ impl Runner {
             .retry_grant_id
             .as_deref()
             .is_some_and(|grant| grant != session.grant_id);
-        if self.retry_grant_id.as_deref() != Some(&session.grant_id) {
-            self.retry_grant_id = Some(session.grant_id.clone());
-            self.retry_deadlines
-                .retain(|_, (_, reason)| *reason != upload::Failure::Conflict);
-            self.conflict_attempts.clear();
-            self.finalization_submissions.clear();
-            self.conflict_finalization_replays.clear();
-            self.next_integrity_poll = None;
-            tracing::info!(
-                event = "cloud_sync_sign_in_changed",
-                conflict_rechecks_cleared = true
-            );
-        }
         let Some(policy) = store
             .cloud_sync_policy_for_origins(
                 &session.user.id,
@@ -1168,6 +1155,20 @@ impl Runner {
                     .map_err(|_| "Could not save capture recovery state.")?;
                 job.state = next;
             }
+        }
+        // Keep the grant change pending until this route reconciles its jobs.
+        if self.retry_grant_id.as_deref() != Some(&session.grant_id) {
+            self.retry_grant_id = Some(session.grant_id.clone());
+            self.retry_deadlines
+                .retain(|_, (_, reason)| *reason != upload::Failure::Conflict);
+            self.conflict_attempts.clear();
+            self.finalization_submissions.clear();
+            self.conflict_finalization_replays.clear();
+            self.next_integrity_poll = None;
+            tracing::info!(
+                event = "cloud_sync_sign_in_changed",
+                conflict_rechecks_cleared = true
+            );
         }
         self.retry_deadlines
             .retain(|id, _| jobs.iter().any(|job| &job.identity.capture_id == id));
