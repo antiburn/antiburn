@@ -19,7 +19,7 @@ antiburn-checks-store = { path = "../../crates/antiburn-checks-store" }
 antiburn-local = { path = "../../crates/antiburn-local" }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "7"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.32.1", features = ["bundled", "hooks", "limits"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"

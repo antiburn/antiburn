@@ -3,6 +3,7 @@ pub mod cli;
 mod config;
 mod delivery;
 mod logging;
+pub mod search;
 
 use crate::cli::Command;
 
@@ -50,6 +51,7 @@ pub enum Response {
     Capabilities(Capabilities),
     Checks(checks::PendingChecks),
     Delivery(delivery::DeliveryResponse),
+    Search(search::SearchResponse),
 }
 
 impl Response {
@@ -80,6 +82,16 @@ impl Response {
                     .await
                     .map_err(|error| format!("could not flush delivery response: {error}"))
             }
+            Self::Search(response) => {
+                let mut output =
+                    serde_json::to_vec(&response).map_err(|error| error.to_string())?;
+                output.push(b'\n');
+                writer
+                    .write_all(&output)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                writer.flush().await.map_err(|error| error.to_string())
+            }
         }
     }
 }
@@ -94,20 +106,28 @@ pub async fn run_with_tracing(cli: cli::Cli) -> Result<Response, CliError> {
 
 async fn run_command(cli: cli::Cli, tracing: bool) -> Result<Response, CliError> {
     let cli::Cli { config, command } = cli;
-    if matches!(command, Command::Capabilities { .. }) {
-        return Ok(Response::Capabilities(Capabilities {
-            version: env!("CARGO_PKG_VERSION"),
-            delivery_protocols: ["delivery-v1"],
-        }));
-    }
-    let Command::Checks {
-        session_id,
-        delivery_v1,
-        consumer,
-        ack,
-    } = command
-    else {
-        unreachable!()
+    let (session_id, delivery_v1, consumer, ack) = match command {
+        Command::Capabilities { .. } => {
+            return Ok(Response::Capabilities(Capabilities {
+                version: env!("CARGO_PKG_VERSION"),
+                delivery_protocols: ["delivery-v1"],
+            }));
+        }
+        Command::Search(args) => {
+            let config = config::Config::load(config)
+                .await
+                .map_err(CliError::runtime)?;
+            return search::lookup(args, config)
+                .await
+                .map(Response::Search)
+                .map_err(CliError::runtime);
+        }
+        Command::Checks {
+            session_id,
+            delivery_v1,
+            consumer,
+            ack,
+        } => (session_id, delivery_v1, consumer, ack),
     };
     validate_id(&session_id).map_err(CliError::usage)?;
     let config = config::Config::load(config)
