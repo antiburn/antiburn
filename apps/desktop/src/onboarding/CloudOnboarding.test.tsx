@@ -321,9 +321,11 @@ it("requires sign-out and keeps the invitation warning through a new sign-in", a
       invitationEnabled: true,
     }),
   )
-  expect(await screen.findByText("No pending workspace invitations.")).toBeVisible()
+  expect(await screen.findByRole("heading", { name: "You’re signed in" })).toBeVisible()
   expect(screen.getByText(warning)).toBeVisible()
-  expect(invitationRequest).toHaveBeenCalledExactlyOnceWith("synthetic", { action: "list" })
+  await waitFor(() =>
+    expect(invitationRequest).toHaveBeenCalledExactlyOnceWith("synthetic", { action: "list" }),
+  )
 })
 
 it("offers explicit OpenCode database selection and stored-content consent without upload", async () => {
