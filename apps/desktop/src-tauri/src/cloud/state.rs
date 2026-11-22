@@ -80,6 +80,7 @@ pub struct Record {
 
 /// Bind state files and lifetime process ownership to one desktop state directory.
 /// The owner lock is not in-process serialization; the controller supplies that.
+#[derive(Clone)]
 pub struct StateStore {
     directory: PathBuf,
     filename: String,
@@ -183,6 +184,28 @@ fn sync_directory(directory: &Path) -> Result<(), Failure> {
 }
 
 impl Guard {
+    /// Keep concrete remote logout failures separate from credential and epoch state.
+    pub(super) fn record_remote_logout_failure(&self) -> Result<(), Failure> {
+        match private_options()
+            .write(true)
+            .create_new(true)
+            .open(self.directory.join("cloud-remote-logout-unconfirmed"))
+        {
+            Ok(file) => file.sync_all().map_err(|_| Failure::CredentialFailed)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(Failure::CredentialFailed),
+        }
+        sync_directory(&self.directory)
+    }
+
+    /// Read the shared warning for Personal and legacy Team slots. It has no proof.
+    pub(super) fn remote_logout_unconfirmed(&self) -> bool {
+        match fs::symlink_metadata(self.directory.join("cloud-remote-logout-unconfirmed")) {
+            Ok(_) => true,
+            Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+        }
+    }
+
     /// Read bounded, credential-free state and reject invalid cleanup/phase combinations.
     pub fn read(&mut self) -> Result<Record, Failure> {
         let file = match private_options()

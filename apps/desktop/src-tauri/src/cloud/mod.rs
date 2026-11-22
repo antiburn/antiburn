@@ -327,7 +327,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
                 .state::<Controller>()
                 .workspace_cleanup_failed
                 .load(Ordering::Acquire)
-            || engine.cleanup.prior_unconfirmed(),
+            || engine.remote_logout_unconfirmed(),
         setup_error,
         pending_sync,
         draft,
@@ -386,21 +386,27 @@ pub fn initialize(
     app.add_capability(include_str!("../../cloud-capabilities/account.json"))?;
     #[cfg(debug_assertions)]
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
+    let logout_app = app.clone();
     app.manage(Controller {
         blocking: BlockingWork::default(),
         setup_ready: AtomicBool::new(false),
         capture: Mutex::new(capture::Host::new(directory)),
         sync: sync::Scheduler::default(),
         project_cache: Mutex::new(projects::Cache::default()),
-        engine: Mutex::new(Engine::new(
-            Config::from_build(),
-            Box::new(KeyringVault::new(
-                app.config().identifier.clone(),
-                directory,
-            )),
-            Box::new(HttpTransport),
-            state::StateStore::new(directory),
-        )),
+        engine: Mutex::new(
+            Engine::new(
+                Config::from_build(),
+                Box::new(KeyringVault::new(
+                    app.config().identifier.clone(),
+                    directory,
+                )),
+                Box::new(HttpTransport),
+                state::StateStore::new(directory),
+            )
+            .with_remote_logout_notification(move || {
+                notify_remote_logout_failure(logout_app.clone())
+            }),
+        ),
         workspace_cleanup_failed: AtomicBool::new(false),
         attempt_generation: AtomicU64::new(0),
         account_generation: AtomicU64::new(0),
@@ -411,6 +417,23 @@ pub fn initialize(
     device_broker::start(app.clone(), directory.to_path_buf());
     sync::start(app.clone());
     Ok(())
+}
+
+/// Publish the durable warning with whichever account is current, without refreshing it.
+fn notify_remote_logout_failure(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let work = app.state::<Controller>().blocking.clone();
+        let _ = work
+            .run(Priority::Cleanup, move || {
+                let controller = app.state::<Controller>();
+                let engine = controller
+                    .engine
+                    .lock()
+                    .map_err(|_| "Cloud is unavailable.")?;
+                Ok(emit_snapshot(&app, snapshot(&app, &engine)))
+            })
+            .await;
+    });
 }
 
 /// Refresh native authority and notify all account surfaces, including when a

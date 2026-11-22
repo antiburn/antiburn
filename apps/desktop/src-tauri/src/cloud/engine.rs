@@ -11,7 +11,10 @@ use super::{
     loopback::Listener,
     state::{Cleanup, Guard, Phase, Record, StateStore},
 };
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::Semaphore;
 
 /// A best-effort logout owns only old proofs and their original service.
@@ -63,6 +66,8 @@ pub struct Engine {
     pub vault: Box<dyn Vault>,
     pub transport: Arc<dyn Transport>,
     remote_logout: Arc<Semaphore>,
+    remote_logout_failed: Arc<AtomicBool>,
+    notify_remote_logout_failure: Option<Arc<dyn Fn() + Send + Sync>>,
     pub state: StateStore,
     pub attempt: Option<Attempt>,
     access: Option<Access>,
@@ -92,6 +97,8 @@ impl Engine {
             vault,
             transport: transport.into(),
             remote_logout: Arc::new(Semaphore::new(1)),
+            remote_logout_failed: Arc::new(AtomicBool::new(false)),
+            notify_remote_logout_failure: None,
             state,
             attempt: None,
             access: None,
@@ -106,6 +113,15 @@ impl Engine {
             cleanup_only: false,
             sign_out_marker_failed: false,
         }
+    }
+
+    /// Notify the current account views after the worker records a failure.
+    pub(super) fn with_remote_logout_notification(
+        mut self,
+        notify: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        self.notify_remote_logout_failure = Some(Arc::new(notify));
+        self
     }
 
     /// Open an old workspace slot for recovery or revocation only.
@@ -127,6 +143,8 @@ impl Engine {
         );
         engine.cleanup_only = true;
         engine.remote_logout = self.remote_logout.clone();
+        engine.remote_logout_failed = self.remote_logout_failed.clone();
+        engine.notify_remote_logout_failure = self.notify_remote_logout_failure.clone();
         Ok(engine)
     }
 
@@ -688,19 +706,50 @@ impl Engine {
     }
 
     /// Start at most one detached logout across account and old Team slots.
-    /// Skip when occupied. The worker never writes state or blocks reconnect.
+    /// Skip when occupied. Failures mark only a warning, never the current grant.
     pub(super) fn try_remote_logout(
         &self,
         request: RemoteLogout,
     ) -> Option<tauri::async_runtime::JoinHandle<()>> {
-        let permit = self.remote_logout.clone().try_acquire_owned().ok()?;
+        let Ok(permit) = self.remote_logout.clone().try_acquire_owned() else {
+            Self::record_remote_logout_failure(&self.state, &self.remote_logout_failed);
+            return None;
+        };
         let transport = self.transport.clone();
+        let state = self.state.clone();
+        let failed = self.remote_logout_failed.clone();
+        let notify = self.notify_remote_logout_failure.clone();
         Some(tauri::async_runtime::spawn_blocking(move || {
             let _permit = permit;
             if !request.send(transport.as_ref()) {
-                tracing::debug!(event = "cloud_remote_logout_unconfirmed");
+                Self::record_remote_logout_failure(&state, &failed);
+                if let Some(notify) = notify {
+                    notify();
+                }
             }
         }))
+    }
+
+    fn record_remote_logout_failure(state: &StateStore, failed: &AtomicBool) {
+        failed.store(true, Ordering::Release);
+        if state
+            .lock()
+            .and_then(|guard| guard.record_remote_logout_failure())
+            .is_err()
+        {
+            tracing::debug!(event = "cloud_remote_logout_warning_not_saved");
+        }
+    }
+
+    /// The warning is sticky across later grants and never controls authentication.
+    pub(super) fn remote_logout_unconfirmed(&self) -> bool {
+        self.cleanup.prior_unconfirmed()
+            || self.remote_logout_failed.load(Ordering::Acquire)
+            || (self.config.is_some()
+                && self
+                    .state
+                    .lock()
+                    .is_ok_and(|guard| guard.remote_logout_unconfirmed()))
     }
 
     #[cfg(test)]
@@ -876,9 +925,9 @@ impl Engine {
             },
             ..Record::default()
         });
-        let already_closed = matches!(previous.cleanup, Cleanup::DeleteCredential { .. });
         let cleanup = Cleanup::DeleteCredential {
-            prior_unconfirmed: previous.cleanup.prior_unconfirmed() || !already_closed,
+            prior_unconfirmed: previous.cleanup.prior_unconfirmed()
+                || previous.phase == Phase::Pending,
         };
         let mut record = match guard.replace(Phase::SignedOut, cleanup) {
             Ok(record) => record,
@@ -900,17 +949,20 @@ impl Engine {
         self.cleanup = record.cleanup;
         self.local_reset_available = false;
         let Ok(saved) = self.vault.read() else {
+            if !matches!(previous.cleanup, Cleanup::DeleteCredential { .. }) {
+                Self::record_remote_logout_failure(&self.state, &self.remote_logout_failed);
+            }
             return Ok(None);
         };
         if !self.owns_credential(saved.as_ref()) {
             return Err(Failure::CredentialFailed);
         }
         if saved.is_none()
-            && previous.phase == Phase::SignedOut
-            && !previous.cleanup.blocks_connection()
+            && !matches!(previous.cleanup, Cleanup::DeleteCredential { .. })
+            && (previous.phase != Phase::SignedOut || previous.cleanup.blocks_connection())
         {
             record.cleanup = Cleanup::DeleteCredential {
-                prior_unconfirmed: previous.cleanup.prior_unconfirmed(),
+                prior_unconfirmed: true,
             };
         }
         let request = self.logout_proof(&previous, saved);

@@ -1324,7 +1324,7 @@ fn cloud_rejected_refresh_keeps_both_grant_proofs_until_explicit_local_sign_out(
     fixture.restart();
     let proof = fixture.engine.sign_out().unwrap().unwrap();
     assert!(!proof.send(fixture.engine.transport.as_ref()));
-    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    assert!(fixture.engine.remote_logout_unconfirmed());
     assert!(fixture.vault.read().unwrap().is_none());
     assert_eq!(
         *fixture.transport.revoked.lock().unwrap(),
@@ -1461,13 +1461,30 @@ fn cloud_logout_marker_blocks_restart_when_remote_revocation_is_unconfirmed() {
     assert!(fixture.engine.status == AuthStatus::SignedOut);
     assert!(fixture.engine.session().is_none());
     assert!(fixture.vault.read().unwrap().is_none());
-    assert!(!proof.send(fixture.engine.transport.as_ref()));
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+    fixture.engine.try_remote_logout(proof).unwrap();
+    fixture.engine.wait_remote_logout();
     fixture.restart();
     fixture.engine.refresh(102, || true).unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
-    assert!(fixture.engine.cleanup.prior_unconfirmed());
+    assert!(fixture.engine.remote_logout_unconfirmed());
     assert!(fixture.engine.session().is_none());
     fixture.engine.begin(103, 1).unwrap();
+}
+
+#[test]
+fn cloud_confirmed_remote_logout_leaves_no_warning_after_restart() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let proof = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+    fixture.engine.try_remote_logout(proof).unwrap();
+    fixture.engine.wait_remote_logout();
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
+    fixture.restart();
+    fixture.engine.refresh(102, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(!fixture.engine.remote_logout_unconfirmed());
 }
 
 #[test]
@@ -1495,15 +1512,18 @@ fn cloud_reconnect_does_not_wait_for_remote_logout_and_skips_an_occupied_slot() 
     assert!(fixture.vault.read().unwrap().is_none());
     assert!(fixture.engine.try_remote_logout(old).is_some());
     running.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(!fixture.engine.remote_logout_unconfirmed());
 
     fixture.sign_in();
     assert!(fixture.engine.session().is_some());
     let other = fixture.engine.sign_out().unwrap().unwrap();
     assert!(fixture.engine.try_remote_logout(other).is_none());
+    assert!(fixture.engine.remote_logout_unconfirmed());
     fixture.sign_in();
     assert!(fixture.engine.session().is_some());
     release.send(()).unwrap();
     fixture.engine.wait_remote_logout();
+    assert!(fixture.engine.remote_logout_unconfirmed());
     assert_eq!(
         *fixture.transport.revoked.lock().unwrap(),
         ["synthetic-refresh-0"]
@@ -1909,7 +1929,7 @@ fn cloud_restart_finishes_local_deletion_after_a_process_exit() {
     let (mut engine, transport) = process_engine(directory.path(), 2);
     engine.refresh(200, || true).unwrap();
     assert!(engine.status == AuthStatus::SignedOut);
-    assert!(engine.cleanup == state::Cleanup::RemoteUnconfirmed);
+    assert!(!engine.remote_logout_unconfirmed());
     assert_eq!(transport.revocations.load(Ordering::Acquire), 0);
     engine.begin(201, 1).unwrap();
 }

@@ -245,9 +245,10 @@ finishes.
 
 At most one detached logout runs at a time for the account and old Team slots.
 An occupied slot skips the new attempt. Desktop does not queue it for later.
-The worker can send only the old proofs to their original service. It cannot
-change credentials or clear the remote warning. Close old connections in
-Cloud settings to ensure that Cloud revoked them.
+The worker sends old proofs only to their original service and cannot change
+credentials or account state. Desktop records a warning if an attempt fails or
+is skipped. A confirmed logout does not add a warning or clear an older one.
+Close old connections in Cloud settings if Desktop reports this warning.
 Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
