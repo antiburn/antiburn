@@ -83,15 +83,17 @@ for (const theme of ["light", "dark"] as const) {
       if (state === "auth") {
         await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click()
         await expect(page.getByRole("status")).toContainText("Waiting for browser")
-        await page.getByRole("button", { name: "Cancel", exact: true }).click()
+        await page.getByRole("button", { name: "Cancel sign-in", exact: true }).click()
         await expect(page.getByRole("status")).toContainText("cancelled")
       }
       if (state === "returned") {
-        await expect(page.getByRole("status")).toBeEmpty()
+        await expect(page.getByRole("status")).toContainText("Checking your sign-in")
         await expect(
-          page.getByRole("button", { name: "Learn more", exact: true }),
-        ).toBeEnabled()
-        await expect(page.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0)
+          page.getByRole("button", { name: "Sign in with GitHub", exact: true }),
+        ).toHaveCount(0)
+        await expect(
+          page.getByRole("button", { name: "Cancel sign-in", exact: true }),
+        ).toHaveCount(0)
       }
       await capture(page, `${theme}-${state}`)
     }
@@ -215,7 +217,7 @@ test("Cloud prompt animation pauses while hidden and resumes without layout shif
 test("Cloud Dev walkthrough signs in and syncs simulated folders", async ({ page }) => {
   await openCloud(page, "dev-walkthrough")
   await page.getByRole("button", { name: "Sign in with GitHub", exact: true }).click()
-  await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Cancel sign-in", exact: true })).toBeVisible()
   await expect(page.getByRole("heading", { name: "You’re signed in" })).toBeVisible()
   await expect(
     page.getByRole("heading", { name: "Choose what to sync to antiburn cloud" }),

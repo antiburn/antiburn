@@ -105,9 +105,7 @@ it("lets the user cancel a pending browser approval from Settings", async () => 
     status: "waiting",
   })
   render(<Account session={session} />)
-  expect(
-    await screen.findByText("Approve this device in your browser to finish signing in."),
-  ).toBeVisible()
+  expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
   const action = screen.getByRole("button", { name: "Cancel sign-in" })
   action.focus()
   fireEvent.click(action)
