@@ -2320,8 +2320,7 @@ fn a_source_refresh_waits_for_its_vendor_deadline() {
 }
 
 #[test]
-fn failed_source_refresh_requeues_replay_keys_at_the_agent_deadline() {
-    let controller = ScanController::default();
+fn incomplete_source_refresh_requeues_replay_keys_at_the_agent_deadline() {
     let now = tokio::time::Instant::now();
     let agent = AgentKind::Codex;
     let due = now + TICK;
@@ -2330,23 +2329,38 @@ fn failed_source_refresh_requeues_replay_keys_at_the_agent_deadline() {
         agents: vec![agent.slug()],
         project_deferral_replays: Arc::new(HashSet::from([key.clone()])),
     };
-    controller
-        .source_refreshes()
-        .next_allowed
-        .insert(agent, due);
-    let outcome = Err(anyhow::anyhow!("transient scan failure"));
-    assert!(!retry_project_deferrals_after_pass(
-        &controller,
-        &trigger,
-        &outcome
-    ));
-    assert!(controller.take_pending_trigger().0.is_none());
-    let mut queue = controller.source_refreshes();
-    assert!(queue.take_due(now).is_empty());
-    assert_eq!(
-        queue.take_due(due),
-        BTreeMap::from([(agent, HashSet::from([key]))])
-    );
+    let summary = || PassSummary {
+        sessions: 0,
+        list_changed: false,
+        re_described: 0,
+        superseded_project_deferrals: None,
+    };
+    for (outcome, cancelled, expected) in [
+        (Err(anyhow::anyhow!("transient scan failure")), false, true),
+        (Ok(summary()), true, true),
+        (Ok(summary()), false, false),
+    ] {
+        let controller = ScanController::default();
+        controller
+            .source_refreshes()
+            .next_allowed
+            .insert(agent, due);
+        assert!(!retry_project_deferrals_after_pass(
+            &controller,
+            &trigger,
+            &outcome,
+            cancelled,
+        ));
+        assert!(controller.take_pending_trigger().0.is_none());
+        let mut queue = controller.source_refreshes();
+        assert!(queue.take_due(now).is_empty());
+        let expected_keys = if expected {
+            BTreeMap::from([(agent, HashSet::from([key.clone()]))])
+        } else {
+            BTreeMap::new()
+        };
+        assert_eq!(queue.take_due(due), expected_keys, "cancelled={cancelled}");
+    }
 }
 
 #[test]

@@ -264,6 +264,7 @@ fn retry_project_deferrals_after_pass(
     controller: &ScanController,
     trigger: &ScanTrigger,
     outcome: &anyhow::Result<PassSummary>,
+    cancelled: bool,
 ) -> bool {
     let superseded = outcome
         .as_ref()
@@ -271,7 +272,8 @@ fn retry_project_deferrals_after_pass(
         .and_then(|summary| summary.superseded_project_deferrals.as_ref());
     if let Some(keys) = superseded {
         retry_project_deferrals(controller, trigger, keys);
-    } else if outcome.is_err()
+    }
+    if (cancelled || outcome.is_err())
         && let ScanTrigger::SourceRefresh {
             project_deferral_replays,
             ..
@@ -1268,10 +1270,10 @@ async fn try_run_pass(
     .await;
 
     let controller = app.state::<ScanController>();
-    let project_deferrals_superseded =
-        retry_project_deferrals_after_pass(&controller, &trigger, &outcome);
-
     let cancelled = controller.cancelled();
+    let project_deferrals_superseded =
+        retry_project_deferrals_after_pass(&controller, &trigger, &outcome, cancelled);
+
     controller.update(|status| {
         status.running = false;
         status.cancelled = cancelled;
