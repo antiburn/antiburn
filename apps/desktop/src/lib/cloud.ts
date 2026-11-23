@@ -338,6 +338,10 @@ export type CaptureConsent = CloudDestinationBinding & {
  * syncEnabled reports a saved, unpaused ongoing policy, not upload acceptance.
  */
 export interface CloudSnapshot {
+  /** The current signed-in device can use account invitation routes. */
+  invitationEnabled?: boolean
+  /** Display-only warning for this launch. A new grant cannot read the old attempt. */
+  invitationResultUnconfirmed?: boolean
   authEnabled: boolean
   syncEnabled: boolean
   captureEnabled?: boolean

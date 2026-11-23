@@ -133,6 +133,12 @@ fn assert_team_reservation(scope: &'static str) {
         ]});
         let responses = [
             (
+                "GET",
+                "/v1/devices/invitation-capabilities",
+                serde_json::json!({"version": 0}),
+            ),
+            (
+                "POST",
                 "/v1/devices/token",
                 serde_json::json!({
                     "access_token":"account-bearer", "refresh_token":"account-refresh", "expires_in": 200,
@@ -142,6 +148,7 @@ fn assert_team_reservation(scope: &'static str) {
                 }),
             ),
             (
+                "GET",
                 "/v1/devices/session",
                 serde_json::json!({
                     "user_id":"synthetic-user", "display_name":"Example",
@@ -150,16 +157,17 @@ fn assert_team_reservation(scope: &'static str) {
                     "grant_expires_at":"1970-01-01T02:46:40Z", "access_expires_at":"1970-01-01T00:05:00Z",
                 }),
             ),
-            ("/v1/captures/destinations", workspaces.clone()),
-            ("/v1/captures/destinations", workspaces.clone()),
-            ("/v1/captures/destinations", workspaces),
+            ("GET", "/v1/captures/destinations", workspaces.clone()),
+            ("GET", "/v1/captures/destinations", workspaces.clone()),
+            ("GET", "/v1/captures/destinations", workspaces),
             (
+                "POST",
                 "/v1/captures/reserve",
                 serde_json::json!({"reservation_id":"team-reservation"}),
             ),
         ];
         listener.set_nonblocking(true).unwrap();
-        for (index, (path, body)) in responses.into_iter().enumerate() {
+        for (method, path, body) in responses {
             let deadline = Instant::now() + Duration::from_secs(4);
             let mut stream = loop {
                 match listener.accept() {
@@ -174,24 +182,18 @@ fn assert_team_reservation(scope: &'static str) {
                 }
             };
             let request = read_request(&mut stream);
-            assert_eq!(
-                request.line,
-                format!(
-                    "{} {path} HTTP/1.1",
-                    if matches!(index, 0 | 5) {
-                        "POST"
-                    } else {
-                        "GET"
-                    }
-                )
-            );
+            assert_eq!(request.line, format!("{method} {path} HTTP/1.1"));
             assert!(!request.headers.contains_key("cookie"));
             assert!(!request.headers.contains_key("origin"));
             assert_eq!(
                 request.headers.get("authorization").map(String::as_str),
-                (index != 0).then_some("Bearer account-bearer")
+                (!matches!(
+                    path,
+                    "/v1/devices/invitation-capabilities" | "/v1/devices/token"
+                ))
+                .then_some("Bearer account-bearer")
             );
-            if index == 5 {
+            if path == "/v1/captures/reserve" {
                 let body = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap();
                 assert_eq!(body["identity"]["destination_id"], team_id);
                 assert_eq!(body["membership_generation"], generation);
@@ -212,6 +214,7 @@ fn assert_team_reservation(scope: &'static str) {
     .with_clock(|| 100);
     let (url, _listener, attempt) = engine.begin(100, 1).unwrap();
     assert!(!url.contains("workspace_id"));
+    assert!(!url.contains("native_invitations"));
     engine
         .callback(
             &attempt,

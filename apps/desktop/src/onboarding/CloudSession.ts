@@ -239,6 +239,7 @@ export class CloudSession {
       !this.snapshot.busy &&
       this.snapshot.screen === "identity" &&
       !this.holdIdentity &&
+      !this.snapshot.cloud.invitationEnabled &&
       !this.snapshot.cloud.setupError &&
       !this.snapshot.error
     if (handoff && this.identityTimer) return

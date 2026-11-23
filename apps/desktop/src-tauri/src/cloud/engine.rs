@@ -37,6 +37,10 @@ pub struct Engine {
     pub state: StateStore,
     pub attempt: Option<Attempt>,
     access: Option<Access>,
+    invitation_support: Option<bool>,
+    invitation_reauth_write_failed: bool,
+    /// Display-only warning for this process. Never carries the old attempt to a new grant.
+    pub(super) invitation_result_unconfirmed: bool,
     clock: Box<dyn Fn() -> i64 + Send>,
     pub status: AuthStatus,
     pub cleanup: Cleanup,
@@ -60,6 +64,9 @@ impl Engine {
             state,
             attempt: None,
             access: None,
+            invitation_support: None,
+            invitation_reauth_write_failed: false,
+            invitation_result_unconfirmed: false,
             clock: Box::new(super::now),
             status: AuthStatus::Idle,
             cleanup: Cleanup::None,
@@ -163,6 +170,82 @@ impl Engine {
         Ok(result)
     }
 
+    /// Probe once when a saved session restores without a browser sign-in.
+    pub(super) fn check_invitation_support(&mut self) {
+        if self.invitation_support.is_none() && self.session().is_some() {
+            self.invitation_support = Some(
+                self.config
+                    .as_ref()
+                    .is_some_and(|config| self.transport.supports_invitations(config)),
+            );
+        }
+    }
+
+    /// Only a live account and a positive development capability enable invitations.
+    pub(super) fn invitations_enabled(&self) -> bool {
+        self.invitation_support == Some(true) && self.session().is_some()
+    }
+
+    /// Run an invitation request with current account authority. Keep bearer
+    /// proof in Rust and reject stale renderer actions before dispatch. A 401
+    /// requires account cleanup only if the request still owns this account.
+    pub(super) fn with_invitation_access<T>(
+        &mut self,
+        account_id: &str,
+        current: impl Fn() -> bool,
+        request: impl FnOnce(&Config, &str, &dyn Fn() -> bool) -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        if !current() || self.invitation_support != Some(true) {
+            return Err(Failure::Unavailable);
+        }
+        if let Err(error) = self.refresh((self.clock)(), &current) {
+            if current() {
+                self.status = error.into();
+            }
+            return Err(error);
+        }
+        let config = self.config.as_ref().ok_or(Failure::Unavailable)?;
+        let access = self.access.as_ref().ok_or(Failure::ReauthRequired)?;
+        if !current() || access.session.user.id != account_id {
+            return Err(Failure::Cancelled);
+        }
+        access.session.validate(config, (self.clock)())?;
+        let can_send = || current() && access.expires_at > (self.clock)();
+        let result = request(config, &access.token, &can_send);
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        if matches!(result, Err(Failure::ReauthRequired)) {
+            self.reject_invitation_access(&current)?;
+        }
+        result
+    }
+
+    /// Close the rejected grant without discarding the proof needed for sign-out.
+    fn reject_invitation_access(&mut self, current: &dyn Fn() -> bool) -> Result<(), Failure> {
+        let state = self.state.lock().and_then(|mut guard| {
+            let record = guard.read()?;
+            Ok((guard, record))
+        });
+        if !current() {
+            return Err(Failure::Cancelled);
+        }
+        self.access = None;
+        self.status = AuthStatus::ReauthRequired;
+        self.cleanup = Cleanup::Revoke {
+            prior_unconfirmed: self.cleanup.prior_unconfirmed(),
+        };
+        // If disk is unavailable, stay closed in this process until explicit cleanup.
+        self.invitation_reauth_write_failed = state
+            .and_then(|(mut guard, mut record)| {
+                record.phase = Phase::ReauthRequired;
+                record.cleanup = self.cleanup;
+                guard.write(&record)
+            })
+            .is_err();
+        Ok(())
+    }
+
     /// Send one bounded capture API request without returning access proof.
     /// Reject a changed service before credentials are used. Auth rotation uses
     /// only the account fence; content pause blocks dispatch without revocation.
@@ -259,7 +342,7 @@ impl Engine {
         now: i64,
         generation: u64,
     ) -> Result<(String, Listener, Attempt), Failure> {
-        if self.cleanup_only {
+        if self.cleanup_only || self.invitation_reauth_write_failed {
             return Err(Failure::Unavailable);
         }
         let config = self.config.clone().ok_or(Failure::Unavailable)?;
@@ -299,6 +382,12 @@ impl Engine {
             ("code_challenge_method", "S256"),
             ("device_name", device_name.as_str()),
         ]);
+        let supports_invitations = self.transport.supports_invitations(&config);
+        self.invitation_support = Some(supports_invitations);
+        if supports_invitations {
+            url.query_pairs_mut()
+                .append_pair("native_invitations", "true");
+        }
         self.access = None;
         self.attempt = Some(attempt.clone());
         self.status = AuthStatus::Opening;
@@ -589,6 +678,9 @@ impl Engine {
     /// Restore or rotate one fixed grant inside the worker. Persist uncertainty
     /// before exchange; never retry a predecessor after an uncertain response.
     pub fn refresh(&mut self, started_at: i64, current: impl Fn() -> bool) -> Result<(), Failure> {
+        if self.invitation_reauth_write_failed {
+            return Err(Failure::ReauthRequired);
+        }
         let Some(config) = self.config.clone() else {
             return Ok(());
         };
@@ -719,6 +811,7 @@ impl Engine {
             }
         };
         let mut record = guard.replace(Phase::SignedOut, cleanup)?;
+        self.invitation_reauth_write_failed = false;
         self.status = AuthStatus::RevocationUnconfirmed;
         self.cleanup = record.cleanup;
         self.local_reset_available = false;
@@ -787,6 +880,7 @@ impl Engine {
             return Err(Failure::Unavailable);
         }
         guard.replace(Phase::SignedOut, Cleanup::RemoteUnconfirmed)?;
+        self.invitation_reauth_write_failed = false;
         self.access = None;
         self.attempt = None;
         self.cleanup = Cleanup::RemoteUnconfirmed;

@@ -15,6 +15,12 @@ import {
   CloudFolderSyncControl,
   CloudProjectFolderSummary,
 } from "../../onboarding/CloudOnboardingFolders"
+import { CloudInvitations } from "../../onboarding/CloudInvitations"
+import {
+  cloudAccountCleanupPending,
+  cloudInvitationResultWarning,
+  cloudSignOutBeforeSignIn,
+} from "../../onboarding/cloudSessionState"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
 import { SettingsRow } from "./SettingsSearchRows"
 import { personalCloudDestination } from "../../lib/cloudDestination"
@@ -112,10 +118,10 @@ export function CloudAccount({
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed =
     value.loaded && !!value.error && !value.cloud.identity && !waitingForBrowser
+  const cleanupPending = cloudAccountCleanupPending(value.cloud)
   const needsSignOut =
     !!value.cloud.identity ||
-    value.cloud.revocationPending ||
-    value.cloud.localCleanupPending ||
+    cleanupPending ||
     value.cloud.status === "reauth_required" ||
     value.cloud.status === "credential_failed"
   const workspaceCount =
@@ -128,9 +134,11 @@ export function CloudAccount({
       : value.error
     : waitingForBrowser
       ? cloudStatusMessage("waiting")
-      : !["idle", "signed_in", "signed_out"].includes(value.cloud.status)
-        ? cloudStatusMessage(value.cloud.status)
-        : null
+      : cleanupPending && value.cloud.status === "reauth_required"
+        ? cloudSignOutBeforeSignIn
+        : !["idle", "signed_in", "signed_out"].includes(value.cloud.status)
+          ? cloudStatusMessage(value.cloud.status)
+          : null
   return (
     <>
       <div className="flex items-start justify-between gap-3 px-4 py-3">
@@ -205,12 +213,17 @@ export function CloudAccount({
           >
             {value.cloud.localCleanupPending
               ? "Finish signing out"
-              : value.cloud.revocationPending
+              : value.cloud.revocationPending && value.cloud.status !== "reauth_required"
                 ? "Retry sign-out"
                 : "Sign out"}
           </button>
         )}
       </div>
+      {value.cloud.invitationResultUnconfirmed && (
+        <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
+          {cloudInvitationResultWarning}
+        </p>
+      )}
       {value.cloud.remoteRevocationUnconfirmed && (
         <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
           Cloud has not confirmed an earlier sign-out. Open Cloud settings in your browser to
@@ -277,6 +290,11 @@ export function CloudAccount({
             reset={session.resetWorkspace}
           />
         ))}
+      {value.cloud.invitationEnabled && value.cloud.identity && (
+        <div className="px-4 py-3">
+          <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+        </div>
+      )}
       {children && <div className="border-t border-separator">{children}</div>}
       {session.projectSyncSupported ? (
         <CloudProjectsAccount session={session} value={value} folderRowId={folderRowId} />

@@ -181,9 +181,11 @@ struct FakeTransport {
     fail_before_send: AtomicBool,
     fail_revoke: AtomicBool,
     fail_session: AtomicBool,
+    invitation_supported: AtomicBool,
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_invitation_probe: Option<Arc<dyn Fn() + Send + Sync>>,
     returned_session: Mutex<Option<Session>>,
     returned_workspaces: Mutex<Option<Vec<Workspace>>>,
     revocations: AtomicU64,
@@ -196,6 +198,13 @@ struct FakeTransport {
 }
 
 impl Transport for Arc<FakeTransport> {
+    fn supports_invitations(&self, _: &Config) -> bool {
+        if let Some(action) = &self.on_invitation_probe {
+            action();
+        }
+        self.invitation_supported.load(Ordering::Acquire)
+    }
+
     fn exchange(&self, _: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         if let Some(action) = &self.on_exchange {
             action();
@@ -360,6 +369,161 @@ fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTranspor
         state::StateStore::new(directory),
     )
     .with_clock(|| 100)
+}
+
+#[test]
+fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
+    let mut fixture = Fixture::new();
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(100));
+    let engine_clock = clock.clone();
+    fixture.engine = engine(
+        fixture.directory.path(),
+        fixture.vault.clone(),
+        fixture.transport.clone(),
+    )
+    .with_clock(move || engine_clock.load(Ordering::Acquire));
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
+    let account = session().user.id;
+    fixture
+        .transport
+        .fail_exchange
+        .store(true, Ordering::Release);
+    clock.store(150, Ordering::Release);
+    assert_eq!(
+        fixture.engine.with_invitation_access::<()>(
+            &account,
+            || true,
+            |_, _, _| panic!("request sent")
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(!fixture.engine.invitations_enabled());
+}
+
+#[test]
+fn invitation_bearer_rejection_only_invalidates_the_current_account() {
+    let mut fixture = Fixture::new();
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    let account = session().user.id;
+    let current = std::cell::Cell::new(true);
+    for error in [Failure::Rejected, Failure::Unavailable, Failure::Offline] {
+        assert_eq!(
+            fixture
+                .engine
+                .with_invitation_access(&account, || true, |_, _, _| Err::<(), _>(error)),
+            Err(error)
+        );
+        assert!(fixture.engine.status == AuthStatus::SignedIn);
+        assert!(fixture.engine.invitations_enabled());
+    }
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &account,
+            || current.get(),
+            |_, _, _| {
+                current.set(false);
+                Err::<(), _>(Failure::ReauthRequired)
+            }
+        ),
+        Err(Failure::Cancelled)
+    );
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+    assert!(fixture.engine.invitations_enabled());
+    let record = || fixture.engine.state.lock().unwrap().read().unwrap();
+    assert!(record().phase == state::Phase::Active);
+    let epoch = record().epoch;
+    let proof = fixture.vault.read().unwrap().unwrap().refresh_token;
+
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &account,
+            || true,
+            |_, _, _| Err::<(), _>(Failure::ReauthRequired)
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(fixture.engine.session().is_none());
+    assert!(!fixture.engine.invitations_enabled());
+    let record = fixture.engine.state.lock().unwrap().read().unwrap();
+    assert!(record.phase == state::Phase::ReauthRequired);
+    assert_eq!(record.epoch, epoch);
+    assert!(record.cleanup.blocks_connection());
+    assert_eq!(fixture.vault.read().unwrap().unwrap().refresh_token, proof);
+
+    fixture.restart();
+    fixture.engine.refresh(101, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(fixture.engine.session().is_none());
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    fixture.transport.fail_revoke.store(true, Ordering::Release);
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.engine.cleanup.blocks_connection());
+    assert_eq!(fixture.vault.read().unwrap().unwrap().refresh_token, proof);
+    fixture
+        .transport
+        .fail_revoke
+        .store(false, Ordering::Release);
+    fixture.engine.sign_out().unwrap();
+    assert!(fixture.vault.read().unwrap().is_none());
+    assert_eq!(
+        *fixture.transport.revoked.lock().unwrap(),
+        [proof.clone(), proof]
+    );
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
+}
+
+#[test]
+fn invitation_reauth_storage_failure_stays_closed_until_sign_out() {
+    let mut fixture = Fixture::new();
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    let path = fixture.directory.path().join("cloud-auth-state-v2");
+    let active = std::fs::read(&path).unwrap();
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &session().user.id,
+            || true,
+            |_, _, _| {
+                std::fs::write(&path, b"{torn").unwrap();
+                Err::<(), _>(Failure::ReauthRequired)
+            }
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    std::fs::write(path, active).unwrap();
+    assert!(fixture.engine.cleanup.blocks_connection());
+    assert_eq!(
+        fixture.engine.refresh(101, || true),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.session().is_none());
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    fixture.engine.sign_out().unwrap();
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
 }
 
 struct Fixture {
@@ -575,6 +739,43 @@ fn cloud_browser_prelaunch_abort_requires_a_native_missing_launcher_error() {
         Error::other("launcher exited after handoff"),
     ] {
         assert!(!browser_launch_did_not_start(&OpenerError::Io(error)));
+    }
+}
+
+#[test]
+fn cloud_browser_does_not_open_after_invalidation_during_invitation_probe() {
+    for account_changed in [false, true] {
+        let mut fixture = Fixture::new();
+        let attempt_generation = Arc::new(AtomicU64::new(1));
+        let account_generation = Arc::new(AtomicU64::new(0));
+        let invalidated = if account_changed {
+            account_generation.clone()
+        } else {
+            attempt_generation.clone()
+        };
+        fixture.engine.transport = Box::new(Arc::new(FakeTransport {
+            on_invitation_probe: Some(Arc::new(move || {
+                invalidated.fetch_add(1, Ordering::AcqRel);
+            })),
+            ..FakeTransport::default()
+        }));
+        let (_, listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+        assert!(
+            !launch_account_browser(
+                &mut fixture.engine,
+                &attempt,
+                || attempt_generation.load(Ordering::Acquire) == 1
+                    && account_generation.load(Ordering::Acquire) == 0,
+                || panic!("invalidated sign-in must not open the browser"),
+            )
+            .unwrap()
+        );
+        drop(listener);
+        assert!(fixture.engine.status == AuthStatus::Cancelled);
+        assert!(fixture.engine.attempt.is_none());
+        assert!(!fixture.engine.cleanup.blocks_connection());
+        fixture.restart();
+        assert!(fixture.engine.begin(101, 3).is_ok());
     }
 }
 
@@ -1375,6 +1576,8 @@ fn cloud_lock_serializes_separate_processes() {
 #[test]
 fn cloud_snapshot_does_not_include_native_secrets() {
     let value = Snapshot {
+        invitation_enabled: false,
+        invitation_result_unconfirmed: true,
         auth_enabled: true,
         capture_enabled: true,
         sync_enabled: false,
@@ -1392,6 +1595,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         draft: Draft::default(),
     };
     let encoded = serde_json::to_string(&value).unwrap();
+    assert!(encoded.contains(r#""invitationResultUnconfirmed":true"#));
     for field in [
         "access_token",
         "refresh_token",

@@ -8,6 +8,7 @@
     "allow-cloud-workspaces",
     "allow-cloud-reset-workspace",
     "allow-cloud-begin",
+    "allow-cloud-invitations",
     "allow-cloud-cancel",
     "allow-cloud-sign-out",
     "allow-cloud-reset-local",

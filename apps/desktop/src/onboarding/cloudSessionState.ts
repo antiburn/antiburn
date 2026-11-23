@@ -135,6 +135,16 @@ const messages = {
 /** Map closed desktop states to safe copy without exposing provider errors. */
 export const cloudStatusMessage = (status: CloudSnapshot["status"]) => messages[status]
 
+/** Parent account views keep this warning after the invitation panel closes. */
+export const cloudInvitationResultWarning =
+  "Cloud did not confirm an earlier invitation result. Check your Cloud workspaces before trying again."
+
+/** A closed account grant can retain proof that must be cleaned up before reconnecting. */
+export const cloudAccountCleanupPending = (value: CloudSnapshot) =>
+  !!(value.revocationPending || value.localCleanupPending)
+
+export const cloudSignOutBeforeSignIn = "Sign out on this device before you sign in again."
+
 /** Distinguish fresh setup from an unreadable saved-upload state. */
 export const cloudUploadStatusUnknown = (value: CloudOngoingStatus | null | undefined) =>
   !!value && !value.storageKnown && value.status !== "consent_required"

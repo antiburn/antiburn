@@ -27,6 +27,12 @@ import {
   cloudUploadStatusUnknown,
 } from "./CloudSession"
 import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
+import { CloudInvitations } from "./CloudInvitations"
+import {
+  cloudAccountCleanupPending,
+  cloudInvitationResultWarning,
+  cloudSignOutBeforeSignIn,
+} from "./cloudSessionState"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -74,6 +80,12 @@ export function CloudOnboarding({
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
   const checkingSignIn = value.cloud.authEnabled && value.cloud.status === "returned"
+  const cleanupPending = cloudAccountCleanupPending(value.cloud)
+  const invitationWarning = value.cloud.invitationResultUnconfirmed && (
+    <p className="type-footnote text-onboarding-muted" role="status">
+      {cloudInvitationResultWarning}
+    </p>
+  )
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
@@ -275,6 +287,16 @@ export function CloudOnboarding({
               >
                 Cancel sign-in
               </button>
+            ) : cleanupPending ? (
+              !value.cloud.localResetAvailable && (
+                <button
+                  className="onboarding-secondary"
+                  disabled={disabled || !value.loaded}
+                  onClick={() => void session.signOut()}
+                >
+                  {value.cloud.localCleanupPending ? "Finish signing out" : "Sign out"}
+                </button>
+              )
             ) : !checkingSignIn ? (
               <button
                 className={
@@ -295,11 +317,16 @@ export function CloudOnboarding({
             ) : null}
             <p className="cloud-status type-footnote" role="status">
               {value.loaded
-                ? value.cloud.authEnabled || value.cloud.status === "browser_failed"
-                  ? cloudStatusMessage(value.cloud.status)
-                  : ""
+                ? cleanupPending
+                  ? value.cloud.localResetAvailable
+                    ? "Open Cloud in Settings to reset sign-in on this device."
+                    : cloudSignOutBeforeSignIn
+                  : value.cloud.authEnabled || value.cloud.status === "browser_failed"
+                    ? cloudStatusMessage(value.cloud.status)
+                    : ""
                 : "Checking Cloud availability…"}
             </p>
+            {invitationWarning}
           </div>
         </section>
       ) : value.screen === "identity" ? (
@@ -318,6 +345,10 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
+            {invitationWarning}
+            {visible && value.cloud.invitationEnabled && value.cloud.identity && (
+              <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+            )}
             {value.cloud.setupError && (
               <>
                 <p className="type-callout text-onboarding-muted" role="status">
@@ -597,7 +628,9 @@ export function CloudOnboarding({
           </section>
         </>
       )}
-      <footer className="onboarding-footer cloud-footer">
+      <footer
+        className={`onboarding-footer cloud-footer${value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
+      >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
             <div className="cloud-outcomes" role="group" aria-label="Setup status">
@@ -707,6 +740,17 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
+            {value.screen === "identity" &&
+              value.cloud.invitationEnabled &&
+              !value.cloud.setupError && (
+                <button
+                  className="onboarding-primary"
+                  disabled={disabled}
+                  onClick={() => void session.go("folders")}
+                >
+                  Continue Cloud setup
+                </button>
+              )}
             {value.screen === "folders" && (
               <>
                 <button
