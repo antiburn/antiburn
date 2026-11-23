@@ -104,15 +104,6 @@ pub enum EventName {
     /// The contextual Sessions filters changed.
     #[cfg(feature = "analytics")]
     SessionFiltersChanged,
-    /// A remote-host prerequisite check reached a closed result.
-    #[cfg(feature = "analytics")]
-    RemoteHostConnectionChecked,
-    /// A configured remote host was added, edited, or removed.
-    #[cfg(feature = "analytics")]
-    RemoteHostChanged,
-    /// A remote synchronization pass reached a terminal result.
-    #[cfg(feature = "analytics")]
-    RemoteSyncCompleted,
     /// An explicit project folder action completed.
     #[cfg(feature = "analytics")]
     ProjectFolderAction,
@@ -216,9 +207,6 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::BurnCheckDirectoryOpened,
     EventName::SessionFilterSelected,
     EventName::SessionFiltersChanged,
-    EventName::RemoteHostConnectionChecked,
-    EventName::RemoteHostChanged,
-    EventName::RemoteSyncCompleted,
     EventName::ProjectFolderAction,
     EventName::MemoryAction,
     EventName::QuotaIncidentsObserved,
@@ -277,9 +265,6 @@ impl EventName {
             EventName::MemoryAction => "antiburn.memory_action",
             EventName::SessionFilterSelected => "antiburn.session_filter_selected",
             EventName::SessionFiltersChanged => "antiburn.session_filters_changed",
-            EventName::RemoteHostConnectionChecked => "antiburn.remote_host_connection_checked",
-            EventName::RemoteHostChanged => "antiburn.remote_host_changed",
-            EventName::RemoteSyncCompleted => "antiburn.remote_sync_completed",
             EventName::QuotaIncidentsObserved => "antiburn.quota_incidents_observed",
             EventName::ProviderIncidentsObserved => "antiburn.provider_incidents_observed",
             EventName::ProviderIncidentsIngested => "antiburn.provider_incidents_ingested",
@@ -322,8 +307,6 @@ impl EventName {
             | EventName::BurnCheckDirectoryOpened
             | EventName::SessionFilterSelected
             | EventName::SessionFiltersChanged
-            | EventName::RemoteHostConnectionChecked
-            | EventName::RemoteHostChanged
             | EventName::ProjectFolderAction
             | EventName::MemoryAction
             | EventName::NavigationHistoryMoved
@@ -340,7 +323,6 @@ impl EventName {
                 Some("primary_activated" | "learn_more_activated" | "command_copied" | "dismissed")
             ),
             EventName::SurfaceViewed => facts.detail == Some("user"),
-            EventName::RemoteSyncCompleted => facts.detail == Some("manual"),
             // `started`, `found`, `read`, and `checked` are reported as the
             // first-run work completes on its own. Only `result` follows a
             // deliberate Next press.
@@ -1285,13 +1267,6 @@ pub enum SessionFilterAction {
     SpendNotable,
     SpendMaterial,
     SpendAll,
-    SourceAll,
-    SourceLocalAdded,
-    SourceLocalRemoved,
-    SourceRemoteAllAdded,
-    SourceRemoteAllRemoved,
-    SourceRemoteHostAdded,
-    SourceRemoteHostRemoved,
     ClearedAll,
 }
 
@@ -1428,42 +1403,6 @@ pub enum StepSettingsLabel {
 pub enum StepSettingsDetail {
     /// The first-run takeover's "Show settings" disclosure opened.
     FirstRun,
-}
-
-/// A privacy-safe result from checking one remote host connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteConnectionOutcome {
-    Ready,
-    Authentication,
-    HostKey,
-    HelperMissing,
-    Incompatible,
-    Connection,
-    Invalid,
-}
-
-/// A configured-host lifecycle operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteHostChange {
-    Added,
-    Edited,
-    Removed,
-    SyncEnabled,
-    SyncDisabled,
-}
-
-/// A terminal remote synchronization result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteSyncOutcome {
-    Succeeded,
-    Failed,
-}
-
-/// Why a remote synchronization pass started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteSyncOrigin {
-    Manual,
-    Automatic,
 }
 
 #[cfg(feature = "analytics")]
@@ -1783,13 +1722,6 @@ wire_values!(SessionFilterAction, {
     SessionFilterAction::SpendNotable => "spend_notable",
     SessionFilterAction::SpendMaterial => "spend_material",
     SessionFilterAction::SpendAll => "spend_all",
-    SessionFilterAction::SourceAll => "source_all",
-    SessionFilterAction::SourceLocalAdded => "source_local_added",
-    SessionFilterAction::SourceLocalRemoved => "source_local_removed",
-    SessionFilterAction::SourceRemoteAllAdded => "source_remote_all_added",
-    SessionFilterAction::SourceRemoteAllRemoved => "source_remote_all_removed",
-    SessionFilterAction::SourceRemoteHostAdded => "source_remote_host_added",
-    SessionFilterAction::SourceRemoteHostRemoved => "source_remote_host_removed",
     SessionFilterAction::ClearedAll => "cleared_all",
 });
 

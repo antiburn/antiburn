@@ -97,9 +97,6 @@ mod popover_peek;
 mod provider_accounts;
 mod provider_usage;
 pub mod remediation;
-mod remote_cache;
-mod remote_sessions;
-mod remote_sync;
 #[cfg(test)]
 #[path = "../eval/replay/mod.rs"]
 mod replay;
@@ -111,6 +108,7 @@ mod scan;
 mod session_lifecycle;
 mod session_projection;
 mod settings;
+mod ssh_cleanup;
 mod startup_registration;
 mod storage_health;
 mod store;
@@ -264,7 +262,8 @@ pub fn run() {
         // never chooses this location; the shell does, and hands it to the
         // engine's state helpers as an explicit argument.
         let data_dir = app.path().app_data_dir()?;
-        app.manage(store::Store::open(&data_dir)?);
+        let store = tauri::async_runtime::block_on(ssh_cleanup::open_store(data_dir.clone()))?;
+        app.manage(store);
         app.manage(remediation::RemediationController::new(data_dir.clone()));
         let main_window_state = main_window::MainWindowState::load(&app.state::<store::Store>());
         app.manage(main_window_state);
@@ -433,7 +432,6 @@ pub fn run() {
             schedulers.push(session_lifecycle::spawn(app.handle()));
             schedulers.push(session_projection::spawn(app.handle()));
             schedulers.push(scan::spawn_scheduler(app.handle()));
-            schedulers.push(remote_sync::spawn(app.handle()));
             schedulers.push(scan::live_poll::spawn_live_poll(app.handle()));
             schedulers.push(retention::spawn_scheduler(app.handle()));
             schedulers.push(insights_worker::spawn(app.handle()));
@@ -845,16 +843,6 @@ mod tests {
             "allow-get-consent-diagnostics",
             "allow-open-folder-access-settings",
             "allow-request-folder-access",
-            "allow-get-remote-hosts",
-            "allow-get-remote-sync-status",
-            "allow-check-remote-host",
-            "allow-add-remote-host",
-            "allow-update-remote-host",
-            "allow-set-remote-host-sync-enabled",
-            "allow-remove-remote-host",
-            "allow-scan-remote-host",
-            "allow-set-remote-sync-interval",
-            "allow-open-remote-helper-downloads",
             "allow-get-check-availability",
             "allow-open-main-window-section",
         ] {
@@ -867,6 +855,33 @@ mod tests {
         let default_capability = include_str!("../capabilities/default.json");
         assert!(default_capability.contains("\"settings\""));
         assert!(default_capability.contains("\"default\""));
+    }
+
+    #[test]
+    fn retired_ssh_commands_have_no_registered_handlers_or_default_permissions() {
+        let defaults = include_str!("../permissions/default.toml");
+        let main = include_str!("../capabilities/main.json");
+        let commands = include_str!("app_commands.rs");
+        for retired in [
+            "get_remote_hosts",
+            "get_remote_sync_status",
+            "check_remote_host",
+            "add_remote_host",
+            "update_remote_host",
+            "set_remote_host_sync_enabled",
+            "remove_remote_host",
+            "scan_remote_host",
+            "set_remote_sync_interval",
+            "open_remote_helper_downloads",
+        ] {
+            let permission = format!("\"allow-{}\"", retired.replace('_', "-"));
+            assert!(!defaults.contains(&permission), "retired {permission}");
+            assert!(!main.contains(&permission), "retired main {permission}");
+            assert!(
+                !commands.contains(&format!("\"{retired}\"")),
+                "retired {retired}"
+            );
+        }
     }
 
     #[test]
@@ -917,15 +932,6 @@ mod tests {
             "\"allow-refresh-repositories\"",
             "\"allow-remove-scan-root\"",
             "\"allow-set-repository-enabled\"",
-            "\"allow-get-remote-hosts\"",
-            "\"allow-check-remote-host\"",
-            "\"allow-add-remote-host\"",
-            "\"allow-update-remote-host\"",
-            "\"allow-set-remote-host-sync-enabled\"",
-            "\"allow-remove-remote-host\"",
-            "\"allow-scan-remote-host\"",
-            "\"allow-get-remote-sync-status\"",
-            "\"allow-set-remote-sync-interval\"",
             "\"allow-app-info\"",
             "\"allow-scan-history\"",
             "\"allow-cancel-scan\"",

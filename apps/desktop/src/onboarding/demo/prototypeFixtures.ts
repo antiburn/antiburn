@@ -175,12 +175,6 @@ export const sessions: (ActivityEntryPayload & {
           ? "~/Projects"
           : `~/Projects/${repo}`,
     additionalRepos: index === 7 ? ["workbench", "notebook"] : [],
-    remoteHostId:
-      index === 2 || index === 5
-        ? `prototype-remote-${index}`
-        : index === 3 || index === 6
-          ? `prototype-cloud-${index}`
-          : null,
     timestamp: iso(
       epoch - (index === 0 ? 60 : index < 8 ? index * 14000 : 98000 + (index - 7) * 21600),
     ),

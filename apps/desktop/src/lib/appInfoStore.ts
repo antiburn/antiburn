@@ -1,6 +1,6 @@
 /**
  * App info for views outside the Settings window, such as the Agents and
- * Sessions step settings: the app version (remote-host downloads) and the
+ * Sessions step settings: the app version and the
  * local index size (indexed sessions, database bytes).
  *
  * A single module-level store, built the same way as `scanStatusStore`: one

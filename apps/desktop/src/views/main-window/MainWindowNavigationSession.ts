@@ -24,6 +24,7 @@ const HISTORY_LIMIT = 100
 export type MainDestination = {
   section: MainViewId
   filters?: SessionFilters
+  /** Omit for section opening. Use null to keep detail empty during explicit navigation. */
   subject?: SessionSubject | null
   check?: CheckId
 }
@@ -50,7 +51,6 @@ function normalizeDestination(
       section: "activity",
       filters: normalizeSessionFilters(
         filters ?? {
-          source: { kind: "all" },
           agents: [],
           result: "all",
           spend: "all",
@@ -133,11 +133,12 @@ export class MainWindowNavigationSession {
 
   select(section: MainViewId): void {
     if (section === "activity" && this.activity) {
+      const { filters, subject } = this.activity.getSnapshot()
       this.navigate(
         {
           section,
-          filters: this.activity.getSnapshot().filters,
-          subject: this.activity.getSnapshot().subject,
+          filters,
+          ...(subject ? { subject } : {}),
         },
         false,
       )
@@ -177,9 +178,11 @@ export class MainWindowNavigationSession {
     replace: boolean,
     origin: "user" | "automatic",
   ): void {
+    const clearDefaultSelection = !replace && origin === "user" && destination.subject === null
     const normalized = normalizeDestination(destination, this.activity?.getSnapshot().filters)
     if (destinationKey(normalized) === destinationKey(this.history[this.index]!)) {
-      if (!replace) this.publish()
+      if (clearDefaultSelection) this.restore(origin, false, true)
+      else if (!replace) this.publish()
       return
     }
     if (replace) {
@@ -191,17 +194,20 @@ export class MainWindowNavigationSession {
       this.index = this.history.length - 1
     }
     this.noteHistoryChanged()
-    this.restore(origin, !replace && origin === "user")
+    this.restore(origin, !replace && origin === "user", clearDefaultSelection)
   }
 
-  private restore(origin: "user" | "automatic", reportFilterSelection = false): void {
+  private restore(
+    origin: "user" | "automatic",
+    reportFilterSelection = false,
+    clearDefaultSelection = false,
+  ): void {
     const destination = this.history[this.index]!
     this.restoring = true
     try {
       if (destination.section === "activity" && this.activity) {
         this.activity.restoreNavigation(
           destination.filters ?? {
-            source: { kind: "all" },
             agents: [],
             result: "all",
             spend: "all",
@@ -209,6 +215,7 @@ export class MainWindowNavigationSession {
           destination.subject ?? null,
           origin,
           reportFilterSelection,
+          clearDefaultSelection,
         )
       }
     } finally {
@@ -342,7 +349,6 @@ export class MainWindowNavigationSession {
         {
           section: "activity",
           filters: this.activity?.getSnapshot().filters ?? {
-            source: { kind: "all" },
             agents: [],
             result: "all",
             spend: "all",
@@ -384,31 +390,15 @@ export class MainWindowNavigationSession {
       return { section: request.destination.section }
     }
     const activity = this.activity?.getSnapshot()
-    if (request.destination.remoteHostId) {
-      return {
-        section: "activity",
-        filters: {
-          source: {
-            kind: "selected",
-            includeLocal: false,
-            remote: [request.destination.remoteHostId],
-          },
-          agents: [],
-          result: "all",
-          spend: "all",
-        },
-        subject: null,
-      }
-    }
+    const subject = request.destination.target ?? activity?.subject
     return {
       section: "activity",
       filters: activity?.filters ?? {
-        source: { kind: "all" },
         agents: [],
         result: "all",
         spend: "all",
       },
-      subject: request.destination.target ?? activity?.subject ?? null,
+      ...(subject ? { subject } : {}),
     }
   }
 

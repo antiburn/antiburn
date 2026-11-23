@@ -1,4 +1,4 @@
-import { GitBranchPlus, GitFork, Monitor, SquareTerminal } from "lucide-react"
+import { GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
 import {
   defaultRangeExtractor,
   useVirtualizer,
@@ -53,7 +53,6 @@ import type {
   SessionLimitAllocationPayload,
   SessionLimitAllocationSummaryPayload,
 } from "../../lib/ipc"
-import { remoteHostLabel, type RemoteHost } from "../../lib/remoteHosts"
 
 import "../../styles/session-rows.css"
 
@@ -142,7 +141,6 @@ export interface SessionListProps {
   onBadgeMetricChange?: (metric: "cost" | "weeklyPercent" | "fiveHourPercent") => void
   liveUsage?: LiveUsageSummaryPayload
   sessionLimitAllocations?: SessionLimitAllocationSummaryPayload
-  remoteHosts?: readonly RemoteHost[]
   /**
    * Burn Check verdicts, keyed by local session identity. The caller fetches
    * this for the full unfiltered list, so a filtered view still shows the
@@ -507,7 +505,6 @@ export interface SessionRowProps {
   showAgentLabel?: boolean
   busy?: boolean
   limitBadge?: SessionLimitBadgeInfo | undefined
-  remoteHostName?: string | undefined
 }
 
 /**
@@ -531,7 +528,6 @@ export function SessionRow({
   wslIcon,
   showRepository = false,
   limitBadge,
-  remoteHostName,
   showCost = true,
   showAgentLabel = false,
   busy = false,
@@ -556,12 +552,10 @@ export function SessionRow({
     snoozedDetectors,
   )
   const hasContextDetails = !!entry.branch || !!entry.wslDistro
-  const remoteOrigin = entry.remoteHostId ? (remoteHostName ?? "Remote computer") : null
   const hasContextIdentity = hasContextAnchor || hasRepo || hasContextDetails || showAgentLabel
   const contextDescription = [
     `Session source: ${agentDisplayName(entry.agent)}.`,
     modelNames.length > 0 ? `Models: ${modelNames.join(", ")}.` : "",
-    remoteOrigin ? `Synced from ${remoteOrigin}.` : "",
   ]
     .filter(Boolean)
     .join(" ")
@@ -660,7 +654,7 @@ export function SessionRow({
           )}
           data-session-context-row=""
         >
-          {(hasContextAnchor || remoteOrigin) && (
+          {hasContextAnchor && (
             <Tooltip label={contextTooltip}>
               <div
                 aria-label={contextDescription}
@@ -689,18 +683,6 @@ export function SessionRow({
                     data-additional-model-count=""
                   />
                 )}
-
-                {remoteOrigin ? (
-                  <Tooltip label={`Synced from ${remoteOrigin}`}>
-                    <span
-                      role="img"
-                      className="inline-flex shrink-0 items-center self-center text-label-tertiary"
-                      aria-label={`Remote session from ${remoteOrigin}`}
-                    >
-                      <Monitor size={12} aria-hidden="true" />
-                    </span>
-                  </Tooltip>
-                ) : null}
               </div>
             </Tooltip>
           )}
@@ -796,7 +778,6 @@ export function SessionList({
   onBadgeMetricChange,
   liveUsage,
   sessionLimitAllocations,
-  remoteHosts = [],
   hygieneBySession = EMPTY_HYGIENE_SNAPSHOT,
 }: SessionListProps) {
   const fiveHourAvailable =
@@ -1177,19 +1158,6 @@ export function SessionList({
                                   : {})}
                                 {...(renderAgentIcon ? { renderAgentIcon } : {})}
                                 {...(wslIcon ? { wslIcon } : {})}
-                                {...(virtualItem.item.entry.remoteHostId
-                                  ? {
-                                      remoteHostName: remoteHostLabel(
-                                        remoteHosts.find(
-                                          (host) =>
-                                            host.id === virtualItem.item.entry.remoteHostId,
-                                        ) ?? {
-                                          displayName: null,
-                                          sshAlias: "Remote computer",
-                                        },
-                                      ),
-                                    }
-                                  : {})}
                                 showRepository={showRepositories}
                                 {...(selectedMetric !== "cost" &&
                                 !virtualItem.item.entry.remoteHostId

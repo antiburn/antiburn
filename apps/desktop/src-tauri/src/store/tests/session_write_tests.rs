@@ -388,7 +388,7 @@ fn local_exclusion_keeps_remote_sessions_with_the_same_working_directory() {
 }
 
 #[test]
-fn failed_remote_host_delete_keeps_rows_and_source_bindings() {
+fn failed_saved_session_delete_keeps_rows_and_source_bindings() {
     let store = store();
     let mut first = session("remote-one", 1000);
     first.key = SessionKey::new("ssh:host", "claude-code", "remote-one");
@@ -409,7 +409,7 @@ fn failed_remote_host_delete_keeps_rows_and_source_bindings() {
          BEGIN SELECT RAISE(ABORT, 'remote delete failed'); END;",
         )
         .unwrap();
-    assert!(store.delete_remote_host("host").is_err());
+    assert!(store.delete_session(&second.key).is_err());
     assert_eq!(store.session_count().unwrap(), 2);
     assert_eq!(
         store

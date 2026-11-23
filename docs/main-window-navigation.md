@@ -49,11 +49,10 @@ uses the registry-derived `MainViewId`; native cross-window requests retain thei
 narrower DTO. A new local view does not extend native routes or permissions.
 Adding a native route requires a TypeScript/Rust contract change.
 
-Settings host session counts use the revisioned native navigation route, including
-pending-request recovery when the main window opens. Only Settings can send an
-Activity destination with a validated remote host ID. The renderer opens that
-host’s list with other facets cleared and no selected session. The link explicitly
-retains the user’s Sessions date range; the count represents all cached sessions.
+Only the popover can request a top-level native section. These requests do not
+accept a host filter. Stale session identities must not resolve to a local
+session with the same provider ID. Navigation does not expose host settings or a
+source filter.
 
 The popover's attention banners do not use this route. A banner action names a
 Settings pane (`openSettingsPane`), and the popover opens the Settings window on
