@@ -233,8 +233,8 @@ struct Runner {
     /// Count transient replays separately from status conflict probes. A
     /// definite response after a status conflict ends automatic replay.
     conflict_finalization_replays: BTreeMap<String, u8>,
-    /// A new sign-in clears conflict cooldowns, not saved account or policy bindings.
-    retry_grant_id: Option<String>,
+    /// The first observed or last reconciled grant for this route.
+    retry_grant: Option<RetryGrant>,
     binding: Option<(String, String, Option<String>, String)>,
     discovery_cursor: Option<DiscoveryCursor>,
     backfill_revision: Option<String>,
@@ -249,6 +249,12 @@ struct Runner {
     state: State,
     last_status: Option<Status>,
     last_status_origin: Option<String>,
+}
+
+struct RetryGrant {
+    account_id: String,
+    destination_id: String,
+    grant_id: String,
 }
 
 /// Memory-only position in the current policy's source sweep. A restart repeats
@@ -553,7 +559,7 @@ fn verified_team_turns<'a>(
             {
                 let live = runner.last_status.clone().filter(|_| {
                     runner.last_status_origin.as_deref() == Some(&session.resource)
-                        && runner.retry_grant_id.as_deref() == Some(&session.grant_id)
+                        && runner.has_retry_grant(session, id)
                 });
                 let status = runner.backfill_status(team_lookup_failed(policy, live, error));
                 runner.last_status = Some(status.clone());
@@ -698,7 +704,7 @@ fn saved_team_statuses(
                 .get(&key)
                 .filter(|runner| {
                     runner.last_status_origin.as_deref() == Some(&anchor.resource)
-                        && runner.retry_grant_id.as_deref() == Some(&anchor.grant_id)
+                        && runner.has_retry_grant(anchor, &policy.destination_id)
                         && runner.team.as_ref().is_some_and(|(id, generation)| {
                             id == &policy.destination_id
                                 && Some(generation) == policy.membership_generation.as_ref()
@@ -753,6 +759,43 @@ fn emit_status(app: &tauri::AppHandle, status: Status) -> Status {
 }
 
 impl Runner {
+    fn has_retry_grant(&self, session: &auth::Session, destination: &str) -> bool {
+        self.retry_grant.as_ref().is_some_and(|grant| {
+            grant.account_id == session.user.id
+                && grant.destination_id == destination
+                && grant.grant_id == session.grant_id
+        })
+    }
+
+    /// Remember the first grant before a hold can stop reconciliation.
+    /// A later grant on this route stays pending until saved jobs are reconciled.
+    fn observe_retry_grant(&mut self, session: &auth::Session) -> bool {
+        let destination = self
+            .team
+            .as_ref()
+            .map_or(&session.workspace.id, |(id, _)| id);
+        if let Some(grant) = &self.retry_grant
+            && grant.account_id == session.user.id
+            && &grant.destination_id == destination
+        {
+            return grant.grant_id != session.grant_id;
+        }
+        let grant = RetryGrant {
+            account_id: session.user.id.clone(),
+            destination_id: destination.clone(),
+            grant_id: session.grant_id.clone(),
+        };
+        if self.retry_grant.is_some() {
+            // Do not carry scheduling hints from another account or destination.
+            *self = Self {
+                team: self.team.take(),
+                ..Self::default()
+            };
+        }
+        self.retry_grant = Some(grant);
+        false
+    }
+
     /// Clear retry timers only for saved jobs admitted by the current policy.
     fn retry(&mut self, saved: &BTreeSet<String>) -> State {
         if !saved.is_empty() {
@@ -1018,13 +1061,17 @@ impl Runner {
             };
             return Ok(());
         }
+        let session = engine.session().cloned();
+        let new_sign_in = session
+            .as_ref()
+            .is_some_and(|session| self.observe_retry_grant(session));
         // Auth and acknowledged receipts are independent of upload admission.
         if !device_enabled || !current() {
             self.state = State::Paused;
             return Ok(());
         }
         cache.begin_scan();
-        let Some(session) = engine.session().cloned() else {
+        let Some(session) = session else {
             self.state = State::ReauthRequired;
             self.candidates.clear();
             self.discovery_cursor = None;
@@ -1037,23 +1084,6 @@ impl Runner {
             .map_or((session.workspace.id.as_str(), None), |(id, generation)| {
                 (id.as_str(), Some(generation.as_str()))
             });
-        let new_sign_in = self
-            .retry_grant_id
-            .as_deref()
-            .is_some_and(|grant| grant != session.grant_id);
-        if self.retry_grant_id.as_deref() != Some(&session.grant_id) {
-            self.retry_grant_id = Some(session.grant_id.clone());
-            self.retry_deadlines
-                .retain(|_, (_, reason)| *reason != upload::Failure::Conflict);
-            self.conflict_attempts.clear();
-            self.finalization_submissions.clear();
-            self.conflict_finalization_replays.clear();
-            self.next_integrity_poll = None;
-            tracing::info!(
-                event = "cloud_sync_sign_in_changed",
-                conflict_rechecks_cleared = true
-            );
-        }
         let Some(policy) = store
             .cloud_sync_policy_for_origins(
                 &session.user.id,
@@ -1168,6 +1198,22 @@ impl Runner {
                     .map_err(|_| "Could not save capture recovery state.")?;
                 job.state = next;
             }
+        }
+        // Keep the grant change pending until this route reconciles its jobs.
+        if new_sign_in {
+            if let Some(grant) = &mut self.retry_grant {
+                grant.grant_id = session.grant_id.clone();
+            }
+            self.retry_deadlines
+                .retain(|_, (_, reason)| *reason != upload::Failure::Conflict);
+            self.conflict_attempts.clear();
+            self.finalization_submissions.clear();
+            self.conflict_finalization_replays.clear();
+            self.next_integrity_poll = None;
+            tracing::info!(
+                event = "cloud_sync_sign_in_changed",
+                conflict_rechecks_cleared = true
+            );
         }
         self.retry_deadlines
             .retain(|id, _| jobs.iter().any(|job| &job.identity.capture_id == id));
@@ -3790,20 +3836,19 @@ async fn change_saved_upload_work(
                             ..Runner::default()
                         };
                     }
+                    runner.observe_retry_grant(&session);
                     runner.schedule_backfill(&policy);
                     status = team_policy_status(&policy, Some(status), None);
                     status = runner.backfill_status(status);
                     runner.last_status = Some(status.clone());
                     runner.last_status_origin = Some(session.resource.clone());
-                    runner
-                        .retry_grant_id
-                        .get_or_insert_with(|| session.grant_id.clone());
                 } else {
                     let mut runner = controller
                         .sync
                         .runner
                         .lock()
                         .map_err(|_| "Cloud sync is unavailable.")?;
+                    runner.observe_retry_grant(&session);
                     runner.schedule_backfill(&policy);
                     status = runner.backfill_status(status);
                 }

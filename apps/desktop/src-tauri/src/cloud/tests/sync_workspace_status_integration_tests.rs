@@ -280,7 +280,11 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
                 ..Status::default()
             }),
             last_status_origin: Some(RESOURCE.into()),
-            retry_grant_id: Some(session.grant_id.clone()),
+            retry_grant: Some(RetryGrant {
+                account_id: ACCOUNT.into(),
+                destination_id: TEAM.into(),
+                grant_id: session.grant_id.clone(),
+            }),
             backfill_revision: Some(policy.revision.clone()),
             discovery_cursor: Some(cursor.clone()),
             retry_deadlines: BTreeMap::from([(

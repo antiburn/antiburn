@@ -49,29 +49,22 @@ fn cloud_device_label_uses_only_a_safe_short_hostname() {
 
 #[test]
 fn cloud_auth_build_origins_default_only_when_both_are_absent() {
-    let default = Config::from_origins(None, None);
-    if cfg!(debug_assertions) {
-        let config = default.unwrap();
-        assert_eq!(config.issuer, "http://localhost:3000");
-        assert_eq!(config.resource, "http://localhost:3000");
-        assert_eq!(
-            config.authorization.as_str(),
-            "http://localhost:3000/devices/authorize/account"
-        );
-        assert_eq!(
-            config.token.as_str(),
-            "http://localhost:3000/v1/devices/token"
-        );
-        assert_eq!(
-            config.session.as_str(),
-            "http://localhost:3000/v1/devices/session"
-        );
-        assert_eq!(
-            config.revocation.as_str(),
-            "http://localhost:3000/v1/devices/logout"
-        );
+    let config = Config::from_origins(None, None).unwrap();
+    let origin = if cfg!(debug_assertions) {
+        "http://localhost:3000"
     } else {
-        assert!(default.is_none());
+        "https://api.antiburn.com"
+    };
+    assert_eq!(config.issuer, origin);
+    assert_eq!(config.resource, origin);
+    for (url, path) in [
+        (config.authorization, "/devices/authorize/account"),
+        (config.token, "/v1/devices/token"),
+        (config.session, "/v1/devices/session"),
+        (config.revocation, "/v1/devices/logout"),
+        (config.workspaces, "/v1/captures/destinations"),
+    ] {
+        assert_eq!(url.as_str(), format!("{origin}{path}"));
     }
 
     for (issuer, resource) in [
@@ -441,8 +434,7 @@ fn cloud_auth_transport_checks_every_url_before_sending_proof() {
 
 #[cfg(not(debug_assertions))]
 #[test]
-fn cloud_auth_release_disables_defaults_and_loopback_http_transport() {
-    assert!(Config::from_origins(None, None).is_none());
+fn cloud_auth_release_disables_loopback_http_transport() {
     for origin in [
         "http://localhost:3000",
         "http://127.0.0.1:3000",

@@ -264,9 +264,9 @@ change it.
 
 Cargo defaults and release commands do not enable Cloud. `tauri build`,
 `tauri dev --release`, and custom Cargo profiles do not receive the launcher's
-debug feature selection. A manually enabled Cloud build without debug assertions
-has no local default and accepts only explicit HTTPS origins. These development
-commands do not authorize production use.
+debug feature selection. If you enable `cloud` in a build without debug
+assertions, both origins default to `https://api.antiburn.com`. Set both
+build-time origins to use a different HTTPS service.
 
 And for the shell:
 

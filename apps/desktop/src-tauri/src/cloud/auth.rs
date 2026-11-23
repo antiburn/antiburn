@@ -63,8 +63,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// Use local defaults with debug assertions only when both origins are absent.
-    /// Partial or invalid overrides disable authentication. Other builds need explicit HTTPS.
+    /// Default both origins to localhost in debug and to Antiburn Cloud in release.
+    /// Partial or invalid overrides disable authentication.
     pub fn from_build() -> Option<Self> {
         Self::from_origins(
             option_env!("ANTIBURN_CLOUD_ISSUER"),
@@ -75,8 +75,13 @@ impl Config {
     /// Keep explicit origins as one complete pair; never fill a missing override.
     fn from_origins(issuer: Option<&str>, resource: Option<&str>) -> Option<Self> {
         match (issuer, resource) {
-            (None, None) if cfg!(debug_assertions) => {
-                Self::parse("http://localhost:3000", "http://localhost:3000")
+            (None, None) => {
+                let origin = if cfg!(debug_assertions) {
+                    "http://localhost:3000"
+                } else {
+                    "https://api.antiburn.com"
+                };
+                Self::parse(origin, origin)
             }
             (Some(issuer), Some(resource)) => Self::parse(issuer, resource),
             _ => None,
