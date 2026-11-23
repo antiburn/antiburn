@@ -170,7 +170,7 @@ tracing = "0.1"
 # The reset time a Claude limit error states is a local clock and a zone
 # name. Resolving it to an instant needs a zone database, which `time`
 # does not carry.
-jiff = "0.2"
+jiff = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # Runtime scheduling and async process I/O. The non-default Cloud feature adds net.
 tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time", "process", "io-util"] }
