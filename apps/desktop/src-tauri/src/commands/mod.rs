@@ -466,44 +466,36 @@ pub async fn set_settings(
     settings: AppSettings,
 ) -> CommandResult<AppSettings> {
     let _settings_command = SETTINGS_COMMAND_LOCK.lock().await;
-    let remote_host_ids = crate::remote_sessions::lifecycle_host_ids(&app);
     let database_app = app.clone();
     let (previous, saved) = run_blocking(move || {
-        crate::remote_sync::with_lifecycle_guard(&database_app, &remote_host_ids, || {
-            let store = database_app.state::<Store>();
-            let (previous, saved, removed) = {
-                let _analytics_transition = crate::analytics::lock_settings_transition();
-                let result = store.replace_settings_preserving_interface_scale(
-                    &settings,
-                    |tx, previous, saved| {
-                        // The preference must still save when analytics serialization or
-                        // queue storage fails. The withdrawal signal is best effort.
-                        let _ = crate::analytics::prepare_opt_out_in_transaction(
-                            &database_app,
-                            tx,
-                            previous,
-                            saved,
-                        );
-                        crate::store::apply_session_retention_in(
-                            tx,
-                            saved.session_data_retention_days,
-                            crate::retention::unix_now(),
-                        )
-                    },
-                )?;
-                crate::analytics::handle_settings_transition(&database_app, &result.0, &result.1);
-                result
-            };
-            // This revision covers the completed retention commit. No report holds the
-            // Store guard.
-            let revision = store.revision();
-            crate::retention::note_removed(&database_app, removed, revision);
-            if let Ok(root) = crate::remote_sessions::directory(&database_app) {
-                crate::remote_cache::prune_after_commit(&store, &root);
-            }
-            Ok((previous, saved))
-        })
-        .map_err(fail)
+        let store = database_app.state::<Store>();
+        let (previous, saved, removed) = {
+            let _analytics_transition = crate::analytics::lock_settings_transition();
+            let result = store
+                .replace_settings_preserving_interface_scale(&settings, |tx, previous, saved| {
+                    // The preference must still save when analytics serialization or
+                    // queue storage fails. The withdrawal signal is best effort.
+                    let _ = crate::analytics::prepare_opt_out_in_transaction(
+                        &database_app,
+                        tx,
+                        previous,
+                        saved,
+                    );
+                    crate::store::apply_session_retention_in(
+                        tx,
+                        saved.session_data_retention_days,
+                        crate::retention::unix_now(),
+                    )
+                })
+                .map_err(fail)?;
+            crate::analytics::handle_settings_transition(&database_app, &result.0, &result.1);
+            result
+        };
+        // This revision covers the completed retention commit. No report holds the
+        // Store guard.
+        let revision = store.revision();
+        crate::retention::note_removed(&database_app, removed, revision);
+        Ok((previous, saved))
     })
     .await?;
     apply_settings_transition_on_main(&app, &previous, &saved).await?;
@@ -2438,29 +2430,11 @@ pub async fn delete_session_data(
     .map_err(str::to_owned)?;
     let action_app = app.clone();
     let delete_key = key.clone();
-    let host_id = key.remote_host_id().map(str::to_owned);
     let removed = run_blocking(move || {
-        if let Some(host_id) = host_id {
-            crate::remote_sync::with_destructive_lifecycle_guard(
-                &action_app,
-                std::slice::from_ref(&host_id),
-                || {
-                    crate::remote_cache::delete_session(
-                        &action_app.state::<Store>(),
-                        crate::remote_sessions::directory(&action_app)
-                            .ok()
-                            .as_deref(),
-                        &delete_key,
-                    )
-                },
-            )
+        action_app
+            .state::<Store>()
+            .delete_session(&delete_key)
             .map_err(fail)
-        } else {
-            action_app
-                .state::<Store>()
-                .delete_session(&delete_key)
-                .map_err(fail)
-        }
     })
     .await?;
     if let Some((incarnation, revision)) = removed {
@@ -2491,15 +2465,12 @@ async fn wipe_local_session_data(app: &tauri::AppHandle) -> CommandResult<usize>
     app.state::<crate::insights_worker::WorkerHandle>()
         .invalidate_index();
     app.state::<ScanController>().invalidate_current_pass();
-    let host_ids = crate::remote_sessions::host_ids(app)?;
     let action_app = app.clone();
     let (removed, revision) = run_blocking(move || {
-        crate::remote_sync::with_destructive_lifecycle_guard(&action_app, &host_ids, || {
-            crate::remote_sessions::clear_cached_sessions_fenced(&action_app)
-                .map_err(anyhow::Error::msg)?;
-            action_app.state::<Store>().clear_local_session_data()
-        })
-        .map_err(fail)
+        action_app
+            .state::<Store>()
+            .clear_local_session_data()
+            .map_err(fail)
     })
     .await?;
     // A fresh index has not earned its historical pass yet, even under a
@@ -2525,9 +2496,6 @@ async fn wipe_local_session_data(app: &tauri::AppHandle) -> CommandResult<usize>
     // leaving a reader looking at an empty list until the next tick.
     app.state::<ScanController>()
         .request(ScanTrigger::IndexCleared);
-    for host_id in crate::remote_sessions::host_ids(app)? {
-        crate::remote_sync::enqueue_automatic(app, &host_id);
-    }
     Ok(removed)
 }
 
@@ -2666,17 +2634,6 @@ pub fn open_folder_access_settings(app: tauri::AppHandle) -> CommandResult<()> {
 pub fn open_github_repo(app: tauri::AppHandle) -> CommandResult<()> {
     app.opener()
         .open_url("https://github.com/antiburn/antiburn", None::<&str>)
-        .map_err(fail)
-}
-
-/// Open the official releases page used by the manual remote-helper setup.
-#[tauri::command]
-pub fn open_remote_helper_downloads(app: tauri::AppHandle) -> CommandResult<()> {
-    app.opener()
-        .open_url(
-            "https://github.com/antiburn/antiburn/releases",
-            None::<&str>,
-        )
         .map_err(fail)
 }
 
@@ -2867,9 +2824,21 @@ pub async fn open_project_folder(
 }
 
 pub(crate) fn reject_remote_cache_path(app: &tauri::AppHandle, target: &Path) -> CommandResult<()> {
-    let root = crate::remote_sessions::directory(app)?;
-    let root = std::fs::canonicalize(root)
-        .map_err(|_| "Remote session storage is unavailable".to_owned())?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(fail)?
+        .join("remote-sessions");
+    reject_remote_cache_target(target, &root)
+}
+
+/// Reject canonical targets inside saved SSH storage. An absent cache needs no guard.
+fn reject_remote_cache_target(target: &Path, root: &Path) -> CommandResult<()> {
+    let root = match std::fs::canonicalize(root) {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("Remote session storage is unavailable".to_owned()),
+    };
     if is_remote_cache_path(target, &root) {
         Err("Cached remote paths cannot be opened from this Mac".into())
     } else {

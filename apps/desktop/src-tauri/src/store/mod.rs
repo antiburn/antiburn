@@ -2227,51 +2227,35 @@ impl Store {
         Ok(removed.map(|incarnation| (incarnation, revision_of(&connection))))
     }
 
-    /// Count saved sessions by immutable host identity, without a discovery window.
-    pub(crate) fn remote_session_counts(&self) -> Result<HashMap<String, u32>> {
-        let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT substr(environment_key, 5), COUNT(*) FROM session
-             WHERE environment_key LIKE 'ssh:%' GROUP BY environment_key",
-        )?;
-        Ok(statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<HashMap<_, _>>>()?)
-    }
-
-    /// Delete every indexed row owned by one immutable remote-host identity.
-    pub fn delete_remote_host(&self, host_id: &str) -> Result<(usize, Revision)> {
-        anyhow::ensure!(
-            !host_id.is_empty() && !host_id.contains(['/', '\\']),
-            "invalid remote host ID"
-        );
-        let environment = format!("ssh:{host_id}");
-        let mut connection = self.lock();
-        let tx = connection.transaction()?;
-        let keys = {
-            let mut statement =
-                tx.prepare("SELECT agent, session_id FROM session WHERE environment_key = ?1")?;
-            statement
-                .query_map([&environment], |row| {
-                    Ok(SessionKey::new(
-                        &environment,
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
+    /// Remove retired SSH sessions in bounded batches through normal owned-row deletion.
+    /// Call on a blocking worker before session consumers start. Other origins and
+    /// preferences remain unchanged; each committed deletion is safe to retry.
+    pub(crate) fn purge_ssh_sessions(&self) -> Result<usize> {
         let mut removed = 0;
-        for key in &keys {
-            if delete_session_in(&tx, key)?.is_some() {
-                removed += 1;
+        loop {
+            let keys = {
+                let connection = self.lock();
+                let mut statement = connection.prepare(
+                    "SELECT environment_key, agent, session_id FROM session
+                     WHERE environment_key GLOB 'ssh:*' LIMIT 256",
+                )?;
+                statement
+                    .query_map([], |row| {
+                        Ok(SessionKey::new(
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            if keys.is_empty() {
+                return Ok(removed);
+            }
+            for key in keys {
+                removed += usize::from(self.delete_session(&key)?.is_some());
             }
         }
-        tx.commit()?;
-        for key in &keys {
-            self.bump_session_key_fence(key);
-        }
-        Ok((removed, revision_of(&connection)))
     }
 
     /* --------------------------------------------------------------------

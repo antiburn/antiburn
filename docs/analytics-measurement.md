@@ -77,17 +77,17 @@ Use only app versions that emit each signal. The public catalog identifies
 current and legacy events; these rows explain interpretation limits, not
 which producers are enabled.
 
-| Signal | Reporting limit |
-| --- | --- |
-| `app_launched` | Includes unattended startup; it does not prove a visit or a new installation. |
-| `scan_completed` | Full-pass outcomes and count buckets show coarse discovery health. Scoped passes do not establish scan-attempt counts. |
-| `setting_toggled` | A saved control key does not establish direction, current adoption, or successful OS integration. |
-| `session_opened` | Records navigation intent before analysis loads, not successful detail rendering. |
-| `error_occurred` | Suppressed repeated full-scan failures do not supply a general operation failure rate. |
-| `unrecognized_records_observed` | Settings Insights observations describe reader-selected cohorts, not population parser failure rates. |
-| `claude_limit_reset_observed` | A gated, changed reset diagnostic is not evidence of a viewed or used reset. |
-| `quota_incidents_observed`, `provider_incidents_observed` | Report-time observations do not count incidents when they were ingested. |
-| `provider_incidents_ingested` | Counts installations that ingested fresh new incident evidence, not provider requests. A closed laptop reports nothing. |
+| Signal                                                    | Reporting limit                                                                                                         |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `app_launched`                                            | Includes unattended startup; it does not prove a visit or a new installation.                                           |
+| `scan_completed`                                          | Full-pass outcomes and count buckets show coarse discovery health. Scoped passes do not establish scan-attempt counts.  |
+| `setting_toggled`                                         | A saved control key does not establish direction, current adoption, or successful OS integration.                       |
+| `session_opened`                                          | Records navigation intent before analysis loads, not successful detail rendering.                                       |
+| `error_occurred`                                          | Suppressed repeated full-scan failures do not supply a general operation failure rate.                                  |
+| `unrecognized_records_observed`                           | Settings Insights observations describe reader-selected cohorts, not population parser failure rates.                   |
+| `claude_limit_reset_observed`                             | A gated, changed reset diagnostic is not evidence of a viewed or used reset.                                            |
+| `quota_incidents_observed`, `provider_incidents_observed` | Report-time observations do not count incidents when they were ingested.                                                |
+| `provider_incidents_ingested`                             | Counts installations that ingested fresh new incident evidence, not provider requests. A closed laptop reports nothing. |
 
 Use the [event schema](../apps/desktop/src-tauri/src/analytics/event.rs) and
 [recording boundary](../apps/desktop/src-tauri/src/analytics/mod.rs) with the
@@ -263,20 +263,9 @@ use. No selected-agent arrays, raw serialized filters, session identifiers,
 titles, repository paths, result counts, cost values, or thresholds are sent.
 No new wire properties are added.
 
-Remote-source filtering extends this event at the first app version with remote
-sessions. Its additional closed actions are `source_all`, `source_local_added`,
-`source_local_removed`, `source_remote_all_added`, `source_remote_all_removed`,
-`source_remote_host_added`, and `source_remote_host_removed`. They carry no
-`detail`, host IDs, names, aliases, selected arrays, counts, or filter snapshots.
-The existing deliberate canonical-state-change boundary and exclusions apply.
-A mixed parent becoming fully selected records one remote-all addition;
-removing a source chip records its corresponding removal. Removing a grouped
-host chip records one remote-all removal and preserves Local. Opening a host
-from Settings records a host addition when it changes the selected source. Inventory loading,
-host removal reconciliation, wildcard expansion, migration, and history restores
-do not record filter use. Measure source-action reach among reporting Sessions
-viewers to evaluate filter discoverability; it is not a count of remote hosts or
-successful syncs.
+The SSH retirement version removes Source filtering and its `source_*` actions.
+Keep historical source-action reports separate. Filter restoration and removal
+of obsolete source selections emit no gesture event.
 
 Validation covers the real controller mutations, canonical no-ops, legacy and
 versioned restore, agent add/remove and resets, rapid saves, and save failure.
@@ -466,52 +455,6 @@ visits, preview use, and an offline backlog against the 50-event drain and
 failure. Do not merely increase queue size or add a blocking exit flush. Monitor
 delivery lag, duplicate message IDs, rejection counts, and event mix in the
 collector separately from product engagement.
-
-## Remote sessions measurement
-
-The product questions are whether reporting installations can connect a host,
-whether sync continues to work, and whether Source filtering is discoverable.
-Compare the distribution of connection-check outcomes among reporting
-installations that make a check. Compare scan outcomes by manual/automatic
-origin among installations with remote sync outcomes. Use persisted host-change
-events to measure configuration actions and Source gestures among Sessions
-viewers to measure filter use. These metrics guide setup guidance and reliability
-work; they do not count people, hosts, SSH attempts on the wire, or live remote
-activity. Segment at the first app version that ships these events.
-
-The backend owns three completed-outcome boundaries:
-
-- `remote_host_connection_checked`: one result for each explicit check or
-  preflight required by add/alias change. Its closed labels are `ready`,
-  `authentication`, `host_key`, `helper_missing`, `incompatible`, `timeout`,
-  `connection`, `invalid`, and `storage`. Timeout/storage are reserved values;
-  current unavailable-SSH failures map to connection. Checking and then saving
-  may legitimately perform two checks; this is not a unique-host funnel.
-- `remote_host_changed`: `added`, `edited`, `removed`, `sync_enabled`, or
-  `sync_disabled` only after durable
-  success, with configured-host count in the existing bucket. A canceled form,
-  rejected request, failed write, or refresh emits no configuration success.
-- `remote_sync_completed`: `succeeded` or `failed`, `manual` or `automatic`, and
-  the cached-session-count bucket after a current scan terminates. Removed,
-  canceled, or superseded generations do not report a completed outcome. A
-  failed scan can retain previously cached sessions; its bucket is not an
-  imported-session count.
-
-Connection and configuration volume is bounded by explicit operations. The
-single-flight scheduler coalesces queued scans; automatic runs follow the
-selected completion-based interval (at least one minute per host). Repeated
-polls, event subscriptions, renderer remounts, and hidden-window refreshes emit
-nothing. Background sync can emit while Settings is closed, so exclude it from
-engagement and visit metrics. Retries are new completed operations; delivery
-retries retain normal event-ID deduplication.
-
-Source filter actions follow the canonical gesture contract above. Session-open
-events add a closed `remote` environment alongside `native` and `wsl`. No host
-ID, alias, address, user, path, transcript, selected-source array, exact count,
-or raw error is serialized. No new envelope fields are added. Existing opt-out,
-unconfigured-build, environment-disablement, queue, and delivery rules remain
-unchanged. Validation must exercise the actual operation boundaries and their
-failure/cancellation branches as well as the closed wire schema.
 
 ### Claude login refresh
 

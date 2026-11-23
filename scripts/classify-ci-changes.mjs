@@ -11,10 +11,6 @@ const APP_RELEASE_FILES = [
   "apps/desktop/src-tauri/Cargo.lock",
   "apps/desktop/src-tauri/Cargo.toml",
   "apps/desktop/src-tauri/tauri.conf.json",
-  // The remote helper names its release archive from this manifest and reports
-  // the same version at run time, so a release bumps it with the application.
-  "crates/antiburn-remote/Cargo.lock",
-  "crates/antiburn-remote/Cargo.toml",
 ];
 
 const ENGINE_RELEASE_FILES = [
@@ -62,43 +58,25 @@ function cargoTomlWithVersionPlaceholder(contents) {
   return version === null ? null : { version, value: lines.join("") };
 }
 
+/** Replace one package version for comparison; return null when it is absent. */
 function cargoLockWithVersionPlaceholder(contents, packageName) {
-  const found = cargoLockWithVersionsPlaceholder(contents, [packageName]);
-  return found === null
-    ? null
-    : { version: found.versions[0], value: found.value };
-}
-
-/**
- * The same placeholder pass over several packages in one lockfile.
- *
- * The desktop lockfile records both `antiburn` and `antiburn-remote`, and a
- * release bumps them together. A pass over one of them alone sees the other's
- * new version as an unrelated change and rejects the release.
- *
- * Returns null unless every named package is present.
- */
-function cargoLockWithVersionsPlaceholder(contents, packageNames) {
-  const versions = [];
   const blocks = contents.split("[[package]]");
-  for (const packageName of packageNames) {
+  for (let index = 1; index < blocks.length; index += 1) {
+    const name = /^\s*name\s*=\s*"([^"]+)"/m.exec(blocks[index]);
+    if (!name || name[1] !== packageName) continue;
     let version = null;
-    for (let index = 1; index < blocks.length; index += 1) {
-      const name = /^\s*name\s*=\s*"([^"]+)"/m.exec(blocks[index]);
-      if (!name || name[1] !== packageName) continue;
-      blocks[index] = blocks[index].replace(
-        /^(\s*version\s*=\s*")([^"]+)(".*)$/m,
-        (_whole, prefix, found, suffix) => {
-          version = found;
-          return `${prefix}<version>${suffix}`;
-        },
-      );
-      break;
-    }
-    if (version === null) return null;
-    versions.push(version);
+    blocks[index] = blocks[index].replace(
+      /^(\s*version\s*=\s*")([^"]+)(".*)$/m,
+      (_whole, prefix, found, suffix) => {
+        version = found;
+        return `${prefix}<version>${suffix}`;
+      },
+    );
+    return version === null
+      ? null
+      : { version, value: blocks.join("[[package]]") };
   }
-  return { versions, value: blocks.join("[[package]]") };
+  return null;
 }
 
 function changedOnlyVersion(before, after, normalizer) {
@@ -108,20 +86,6 @@ function changedOnlyVersion(before, after, normalizer) {
     oldValue !== null &&
     newValue !== null &&
     oldValue.version !== newValue.version &&
-    isDeepStrictEqual(oldValue.value, newValue.value)
-  );
-}
-
-/** As changedOnlyVersion, but every named package must change. */
-function changedOnlyVersions(before, after, packageNames) {
-  const oldValue = cargoLockWithVersionsPlaceholder(before, packageNames);
-  const newValue = cargoLockWithVersionsPlaceholder(after, packageNames);
-  return (
-    oldValue !== null &&
-    newValue !== null &&
-    oldValue.versions.every(
-      (version, index) => version !== newValue.versions[index],
-    ) &&
     isDeepStrictEqual(oldValue.value, newValue.value)
   );
 }
@@ -145,20 +109,9 @@ export function isPureAppReleaseChange(files, readAtRef) {
       cargoTomlWithVersionPlaceholder,
     ) &&
     changedOnlyVersion(
-      readAtRef("base", "crates/antiburn-remote/Cargo.toml"),
-      readAtRef("head", "crates/antiburn-remote/Cargo.toml"),
-      cargoTomlWithVersionPlaceholder,
-    ) &&
-    changedOnlyVersion(
-      readAtRef("base", "crates/antiburn-remote/Cargo.lock"),
-      readAtRef("head", "crates/antiburn-remote/Cargo.lock"),
-      (contents) =>
-        cargoLockWithVersionPlaceholder(contents, "antiburn-remote"),
-    ) &&
-    changedOnlyVersions(
       readAtRef("base", "apps/desktop/src-tauri/Cargo.lock"),
       readAtRef("head", "apps/desktop/src-tauri/Cargo.lock"),
-      ["antiburn", "antiburn-remote"],
+      (contents) => cargoLockWithVersionPlaceholder(contents, "antiburn"),
     )
   );
 }
@@ -298,7 +251,6 @@ const FULL_RUN_SCRIPTS = [
   "scripts/ci-rust.mjs",
   "scripts/ci-workspaces.mjs",
   "scripts/classify-ci-changes.mjs",
-  "scripts/package-remote-helper.sh",
 ];
 
 const LICENSE_SCRIPT_FILES = ["scripts/third-party-notices.mjs"];
@@ -550,9 +502,6 @@ export function planOutputs({ stage, changes, release = {} }) {
     // only when it changes a lockfile. Then a new advisory cannot fail an
     // unrelated pull request. Nightly and release runs check every time.
     run_advisories: bool(nightly || (!draft && route.lockfile)),
-    // An engine change can break the static musl link of the helper, so
-    // every stage after draft builds it when the remote workspace is selected.
-    run_remote_build: bool(!draft && engineIds.includes("remote")),
     run_no_analytics_check: bool(
       (stage === "main" || nightly) && desktopIds.includes("shell"),
     ),

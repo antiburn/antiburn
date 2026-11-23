@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -32,24 +32,12 @@ function cargoLock(packageName, version, dependencyVersion = "1.0.0") {
   return `version = 4\n\n[[package]]\nname = "${packageName}"\nversion = "${version}"\ndependencies = [\n "serde",\n]\n\n[[package]]\nname = "serde"\nversion = "${dependencyVersion}"\n`;
 }
 
-// The desktop lockfile records the application and the remote helper, and a
-// release bumps both. A fixture with one of them cannot show that.
-function appCargoLock(appVersion, helperVersion, dependencyVersion = "1.0.0") {
-  return `version = 4\n\n[[package]]\nname = "antiburn"\nversion = "${appVersion}"\ndependencies = [\n "antiburn-remote",\n "serde",\n]\n\n[[package]]\nname = "antiburn-remote"\nversion = "${helperVersion}"\ndependencies = [\n "serde",\n]\n\n[[package]]\nname = "serde"\nversion = "${dependencyVersion}"\n`;
-}
-
-function remoteCargoToml(version, dependency = "1") {
-  return `[workspace]\n\n[package]\nname = "antiburn-remote"\nversion = "${version}"\n\n[dependencies]\nserde = "${dependency}"\n`;
-}
-
 const APP_RELEASE_FILES = [
   "CHANGELOG.md",
   "apps/desktop/package.json",
   "apps/desktop/src-tauri/Cargo.lock",
   "apps/desktop/src-tauri/Cargo.toml",
   "apps/desktop/src-tauri/tauri.conf.json",
-  "crates/antiburn-remote/Cargo.lock",
-  "crates/antiburn-remote/Cargo.toml",
 ];
 
 /** Every manifest of an app release bumped from `from` to `to`, and nothing else. */
@@ -65,15 +53,8 @@ function appReleaseValues(from, to) {
     }),
     "base:apps/desktop/src-tauri/Cargo.toml": cargoToml(from),
     "head:apps/desktop/src-tauri/Cargo.toml": cargoToml(to),
-    "base:apps/desktop/src-tauri/Cargo.lock": appCargoLock(from, from),
-    "head:apps/desktop/src-tauri/Cargo.lock": appCargoLock(to, to),
-    "base:crates/antiburn-remote/Cargo.toml": remoteCargoToml(from),
-    "head:crates/antiburn-remote/Cargo.toml": remoteCargoToml(to),
-    "base:crates/antiburn-remote/Cargo.lock": cargoLock(
-      "antiburn-remote",
-      from,
-    ),
-    "head:crates/antiburn-remote/Cargo.lock": cargoLock("antiburn-remote", to),
+    "base:apps/desktop/src-tauri/Cargo.lock": cargoLock("antiburn", from),
+    "head:apps/desktop/src-tauri/Cargo.lock": cargoLock("antiburn", to),
   };
 }
 
@@ -107,7 +88,6 @@ const OUTPUT_KEYS = [
   "run_installers",
   "run_licenses",
   "run_advisories",
-  "run_remote_build",
   "run_no_analytics_check",
   "run_release_metadata",
   "run_warm_release_cache",
@@ -179,7 +159,6 @@ test("routes capture inputs to capture and shell checks", () => {
       assert.equal(outputs.run_desktop, "true", file);
       assert.equal(desktopWorkspaces(outputs), "shell", file);
       assert.equal(outputs.run_frontend, "false", file);
-      assert.equal(outputs.run_remote_build, "false", file);
     }
   }
 });
@@ -195,7 +174,6 @@ test("fails closed for workflow and unknown paths", () => {
     "apps/desktop/src-tauri/vendor/foo/Cargo.toml",
     "scripts/ci-rust.mjs",
     "scripts/classify-ci-changes.mjs",
-    "scripts/package-remote-helper.sh",
   ]) {
     const outputs = plan("ready", [file]);
     assert.equal(outputs.engine_workspaces, ALL_WORKSPACES.engine, file);
@@ -207,7 +185,6 @@ test("fails closed for workflow and unknown paths", () => {
       "run_ci_scripts",
       "run_installers",
       "run_licenses",
-      "run_remote_build",
     ]) {
       assert.equal(outputs[key], "true", `${file} ${key}`);
     }
@@ -253,28 +230,12 @@ test("recognizes an app release when every executable manifest changes only vers
   );
 });
 
-test("rejects an app release that leaves the remote helper behind", () => {
-  const values = {
-    ...appReleaseValues("1.0.0", "1.0.1"),
-    "head:crates/antiburn-remote/Cargo.toml": remoteCargoToml("1.0.0"),
-    "head:crates/antiburn-remote/Cargo.lock": cargoLock(
-      "antiburn-remote",
-      "1.0.0",
-    ),
-    "head:apps/desktop/src-tauri/Cargo.lock": appCargoLock("1.0.1", "1.0.0"),
-  };
-  assert.equal(
-    isPureAppReleaseChange(APP_RELEASE_FILES, reader(values)),
-    false,
-  );
-});
-
 test("rejects an app release that smuggles a dependency change into Cargo files", () => {
   const values = {
     ...appReleaseValues("1.0.0", "1.0.1"),
     "head:apps/desktop/src-tauri/Cargo.toml": cargoToml("1.0.1", "2"),
-    "head:apps/desktop/src-tauri/Cargo.lock": appCargoLock(
-      "1.0.1",
+    "head:apps/desktop/src-tauri/Cargo.lock": cargoLock(
+      "antiburn",
       "1.0.1",
       "2.0.0",
     ),
@@ -385,13 +346,11 @@ test("chooses platforms per stage", () => {
 test("selects transitive dependents of a changed workspace", () => {
   assert.deepEqual(withDependents(["engine"]), [
     "engine",
-    "remote",
     "shell",
     "checks-store",
     "cli",
     "cloud-capture",
   ]);
-  assert.deepEqual(withDependents(["remote"]), ["remote", "shell"]);
   assert.deepEqual(withDependents(["hud"]), ["shell", "hud"]);
   assert.deepEqual(withDependents(["tray-icon"]), ["shell", "tray-icon"]);
   assert.deepEqual(withDependents(["shell"]), ["shell"]);
@@ -401,10 +360,9 @@ test("routes Rust paths to their workspaces", () => {
   const cases = [
     [
       "crates/antiburn-local/src/lib.rs",
-      "engine,remote,checks-store,cli,cloud-capture",
+      "engine,checks-store,cli,cloud-capture",
       "shell",
     ],
-    ["crates/antiburn-remote/src/main.rs", "remote", "shell"],
     ["apps/desktop/src-tauri/src/lib.rs", "", "shell"],
     ["apps/desktop/src-tauri/tauri.conf.json", "", "shell"],
     ["apps/desktop/src-tauri/crates/hud/src/lib.rs", "", "shell,hud"],
@@ -443,15 +401,14 @@ test("routes a lockfile change to its workspace and the license checks", () => {
   for (const [file, engine, desktop] of [
     [
       "crates/antiburn-local/Cargo.lock",
-      "engine,remote,checks-store,cli,cloud-capture",
+      "engine,checks-store,cli,cloud-capture",
       "shell",
     ],
     [
       "crates/antiburn-local/deny.toml",
-      "engine,remote,checks-store,cli,cloud-capture",
+      "engine,checks-store,cli,cloud-capture",
       "shell",
     ],
-    ["crates/antiburn-remote/Cargo.toml", "remote", "shell"],
     ["apps/desktop/src-tauri/Cargo.lock", "", "shell"],
     ["apps/desktop/src-tauri/about.toml", "", "shell"],
     ["apps/desktop/src-tauri/crates/hud/Cargo.lock", "", "shell,hud"],
@@ -601,7 +558,6 @@ test("selects every job for workflow changes", () => {
     "run_validator",
     "run_installers",
     "run_licenses",
-    "run_remote_build",
   ]) {
     assert.equal(outputs[key], "true", key);
   }
@@ -628,40 +584,8 @@ test("a draft keeps the selected workspaces but skips installers and licenses", 
   assert.equal(outputs.run_ci_scripts, "true");
   assert.equal(outputs.run_installers, "false");
   assert.equal(outputs.run_licenses, "false");
-  assert.equal(outputs.run_remote_build, "false");
   assert.equal(outputs.run_no_analytics_check, "false");
   assert.equal(outputs.run_advisories, "false");
-});
-
-test("builds the remote helper after draft when the engine or the helper changes", () => {
-  assert.equal(
-    plan("ready", ["crates/antiburn-local/src/lib.rs"]).run_remote_build,
-    "true",
-  );
-  assert.equal(
-    plan("ready", ["apps/desktop/src-tauri/src/lib.rs"]).run_remote_build,
-    "false",
-  );
-  assert.equal(
-    plan("draft", ["crates/antiburn-local/src/lib.rs"]).run_remote_build,
-    "false",
-  );
-  assert.equal(
-    plan("ready", ["crates/antiburn-remote/src/main.rs"]).run_remote_build,
-    "true",
-  );
-  assert.equal(
-    plan("draft", ["crates/antiburn-remote/src/main.rs"]).run_remote_build,
-    "false",
-  );
-  assert.equal(
-    plan("main", ["crates/antiburn-local/src/lib.rs"]).run_remote_build,
-    "true",
-  );
-  assert.equal(
-    plan("main", ["apps/desktop/src-tauri/src/lib.rs"]).run_remote_build,
-    "false",
-  );
 });
 
 test("runs the shell Clippy pass without analytics only on main and nightly", () => {
@@ -710,7 +634,6 @@ test("a release bump selects only release metadata", () => {
     "run_ci_scripts",
     "run_installers",
     "run_licenses",
-    "run_remote_build",
     "run_no_analytics_check",
   ]) {
     assert.equal(app[key], "false", key);
@@ -748,7 +671,7 @@ test("splits the desktop workspaces into a shell part and a crates part", () => 
         { name: "crates", workspaces: "trace,tray-icon", linux_deps: true },
       ],
     ],
-    [["engine", "remote"], []],
+    [["engine"], []],
     [[], []],
   ];
   for (const [workspaces, expected] of cases) {
@@ -846,7 +769,7 @@ test("routes engine fixtures that other workspaces embed to those workspaces", (
   const outputs = plan("ready", [
     "crates/antiburn-local/tests/fixtures/codex_characterization/task_complete_errors.jsonl",
   ]);
-  assert.equal(outputs.engine_workspaces, "engine,remote,checks-store,cli,cloud-capture");
+  assert.equal(outputs.engine_workspaces, "engine,checks-store,cli,cloud-capture");
   assert.equal(desktopWorkspaces(outputs), "shell");
 });
 
@@ -855,7 +778,6 @@ test("routes legal files inside a workspace to the license checks", () => {
     ["apps/desktop/src-tauri/vendor/tray-icon/LICENSE-MIT", "shell,tray-icon"],
     ["apps/desktop/src-tauri/vendor/tray-icon/LICENSE.spdx", "shell,tray-icon"],
     ["apps/desktop/src-tauri/crates/sound/COPYING", "shell,sound"],
-    ["crates/antiburn-remote/NOTICE", "shell"],
   ]) {
     const outputs = plan("ready", [file]);
     assert.equal(outputs.run_installers, "false", file);
@@ -901,7 +823,7 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
     { cwd: root, encoding: "utf8" },
   )
     .split("\n")
-    .filter(Boolean);
+    .filter((file) => file && existsSync(path.join(root, file)));
   const embed =
     /include_(?:str|bytes)!\s*\(\s*(?:concat!\s*\(\s*env!\s*\(\s*"([A-Z_]+)"\s*\)\s*,\s*"([^"]+)"|"([^"]+)")/g;
   // A string such as "/../../../docs/support.md" that the code appends to
@@ -969,13 +891,13 @@ test("lists every file that a workspace reads outside the Cargo workspaces", () 
 
 test("runs the readers of files read outside the workspaces", () => {
   for (const [file, engine, desktop] of [
-    ["docs/support.md", "engine,remote,checks-store,cli,cloud-capture", "shell"],
-    ["docs/session-coverage.md", "engine,remote,checks-store,cli,cloud-capture", "shell"],
-    ["docs/check-coverage.md", "engine,remote,checks-store,cli,cloud-capture", "shell"],
+    ["docs/support.md", "engine,checks-store,cli,cloud-capture", "shell"],
+    ["docs/session-coverage.md", "engine,checks-store,cli,cloud-capture", "shell"],
+    ["docs/check-coverage.md", "engine,checks-store,cli,cloud-capture", "shell"],
     ["docs/privacy-policy.md", "", "shell"],
     [
       "plugins/antiburn-live/hooks/catalog.ts",
-      "engine,remote,checks-store,cli,cloud-capture",
+      "engine,checks-store,cli,cloud-capture",
       "shell",
     ],
     ["apps/desktop/src/views/settings/PrivacyPane.tsx", "", "shell"],
@@ -1085,7 +1007,6 @@ test("routes desktop files by workspace before the frontend rule", () => {
 test("checks advisories after draft when a pull request changes a Cargo.lock", () => {
   for (const file of [
     "crates/antiburn-local/Cargo.lock",
-    "crates/antiburn-remote/Cargo.lock",
     "apps/desktop/src-tauri/Cargo.lock",
     "apps/desktop/src-tauri/vendor/tray-icon/Cargo.lock",
   ]) {

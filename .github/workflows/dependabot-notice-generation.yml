@@ -50,7 +50,6 @@ jobs:
       - name: Fetch Rust dependencies
         run: |
           cargo fetch --locked --manifest-path crates/antiburn-local/Cargo.toml
-          cargo fetch --locked --manifest-path crates/antiburn-remote/Cargo.toml
           cargo fetch --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
           cargo fetch --locked --manifest-path apps/cli/Cargo.toml
 

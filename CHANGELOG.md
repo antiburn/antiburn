@@ -20,6 +20,12 @@ CI changes, and documentation that no user acts on stay out — see
 
 ## [Unreleased]
 
+### Removed
+
+- Removed SSH remote host syncing, host settings, and Source filters. Upgrade
+  cleanup removes previously synced SSH sessions and their local cached copies.
+  Local and WSL sessions, preferences, and remote originals are unchanged.
+
 ## [0.11.1] - 2026-11-16
 
 ### Changed

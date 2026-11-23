@@ -124,7 +124,6 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
             navigationSession.navigate({
               section: "activity",
               filters: {
-                source: { kind: "selected", includeLocal: true, remote: [] },
                 agents: [agent],
                 result: "all",
                 spend: "all",

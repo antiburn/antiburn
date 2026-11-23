@@ -148,12 +148,6 @@ tests for the changed contract; live eval scores remain diagnostics, not gates.
 
 ### Desktop backend checks
 
-The Linux remote helper is another standalone workspace. When its protocol or
-engine inputs change, run `cargo fmt --check`, `cargo clippy --all-targets --locked
--- -D warnings`, and `cargo nextest run --locked` from `crates/antiburn-remote` as well.
-CI also builds its static Linux x64 and ARM64 archives. See
-[remote sessions](docs/remote-sessions.md) for manual setup and evidence limits.
-
 ```bash
 cd apps/desktop/src-tauri
 cargo fmt --check

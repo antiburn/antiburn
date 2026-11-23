@@ -10,7 +10,6 @@ import {
   type SessionUpdatedPayload,
 } from "../../lib/ipc"
 import { sessionKey } from "../../lib/sessionSubject"
-import { remoteHosts } from "../../lib/remoteHosts"
 import { liveSessions } from "../../lib/sessionLifecycle"
 import { toActivityEntry } from "../../lib/activityEntries"
 import { MainWindowNavigationSession } from "./MainWindowNavigationSession"
@@ -147,52 +146,6 @@ beforeEach(() => {
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
 describe("MainActivitySession", () => {
-  it("reads loaded hosts for a late subscriber and reconciles after settings load", async () => {
-    const settings = deferred<typeof DEFAULT_SETTINGS>()
-    mocks.getSettings.mockReturnValue(settings.promise)
-    const subscribe = vi.spyOn(remoteHosts, "subscribe").mockReturnValue(() => {})
-    const snapshot = vi.spyOn(remoteHosts, "getSnapshot").mockReturnValue({
-      ...remoteHosts.getSnapshot(),
-      loaded: true,
-      loading: false,
-      hosts: [
-        {
-          id: "host-a",
-          sshAlias: "host-a",
-          displayName: null,
-          automaticSyncEnabled: true,
-          status: "idle",
-          lastSuccessfulSyncEpoch: null,
-          cachedSessionCount: 1,
-          lastError: null,
-        },
-      ],
-    })
-    try {
-      const { session } = start()
-      await vi.waitFor(() => expect(session.getSnapshot().remoteHostsLoaded).toBe(true))
-      expect(session.getSnapshot().remoteHosts.map((host) => host.id)).toEqual(["host-a"])
-      expect(mocks.setSettings).not.toHaveBeenCalled()
-      settings.resolve({
-        ...DEFAULT_SETTINGS,
-        sessionFilter: serializeSessionFilters({
-          ...parseSessionFilters("all"),
-          source: { kind: "selected", includeLocal: false, remote: ["host-a", "removed"] },
-        }),
-      })
-      await ready(session)
-      expect(session.getSnapshot().filters.source).toEqual({
-        kind: "selected",
-        includeLocal: false,
-        remote: "all",
-      })
-    } finally {
-      sessions.forEach((session) => session.dispose())
-      subscribe.mockRestore()
-      snapshot.mockRestore()
-    }
-  })
-
   it("keeps the real Overview local across crowded remote refreshes and visibility changes", async () => {
     const now = Date.now()
     const remoteRows = Array.from({ length: 500 }, (_, i) =>
@@ -374,6 +327,86 @@ describe("MainActivitySession", () => {
 
     await vi.waitFor(() => expect(mocks.loadSessionAnalysis).toHaveBeenCalledOnce())
     await vi.waitFor(() => expect(mocks.getSessionQuota).toHaveBeenCalledOnce())
+  })
+
+  it.each(["pending", "empty"] as const)(
+    "keeps explicit agent navigation unselected when the initial list is %s",
+    async (initialList) => {
+      const pending = deferred<ActivityEntryPayload[]>()
+      mocks.listRecentSessions.mockReturnValueOnce(
+        initialList === "pending" ? pending.promise : Promise.resolve([]),
+      )
+      const { session } = start()
+      await vi.waitFor(() => expect(mocks.listRecentSessions).toHaveBeenCalledOnce())
+      if (initialList === "empty") await ready(session)
+
+      const navigation = new MainWindowNavigationSession(session)
+      navigation.navigate({
+        section: "activity",
+        filters: { agents: ["codex"], result: "all", spend: "all" },
+        subject: null,
+      })
+      const now = Date.now()
+      const entries = [
+        entry("newer-claude", { agent: "claude-code", timestamp: new Date(now).toISOString() }),
+        entry("older-codex", { agent: "codex", timestamp: new Date(now - 1000).toISOString() }),
+      ]
+      if (initialList === "pending") pending.resolve(entries)
+      else {
+        mocks.listRecentSessions.mockResolvedValueOnce(entries)
+        session.refreshList()
+      }
+
+      await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(2))
+      expect(session.getSnapshot().filters.agents).toEqual(["codex"])
+      expect(session.getSnapshot().subject).toBeNull()
+      expect(mocks.loadSessionAnalysis).not.toHaveBeenCalled()
+      expect(mocks.getSessionQuota).not.toHaveBeenCalled()
+
+      session.selectEntry(
+        session.getSnapshot().entries!.find((item) => item.agent === "codex")!,
+      )
+      expect(session.getSnapshot().subject).toMatchObject({
+        agent: "codex",
+        sessionId: "older-codex",
+      })
+    },
+  )
+
+  it("selects a default after ordinary Sessions opening with a pending list", async () => {
+    const pending = deferred<ActivityEntryPayload[]>()
+    mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
+    const { session } = start()
+    await vi.waitFor(() => expect(mocks.listRecentSessions).toHaveBeenCalledOnce())
+    const navigation = new MainWindowNavigationSession(session)
+    navigation.select("agents")
+    navigation.select("activity")
+    pending.resolve([entry("default")])
+
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().subject).toMatchObject({ sessionId: "default" }),
+    )
+    expect(mocks.loadSessionAnalysis).toHaveBeenCalledOnce()
+  })
+
+  it("keeps explicit empty selection when agent navigation matches the current destination", async () => {
+    const pending = deferred<ActivityEntryPayload[]>()
+    mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
+    const { session } = start()
+    await vi.waitFor(() => expect(mocks.listRecentSessions).toHaveBeenCalledOnce())
+    const filters = { agents: ["codex"], result: "all", spend: "all" } as const
+    session.restoreNavigation({ ...filters, agents: [...filters.agents] }, null)
+    const navigation = new MainWindowNavigationSession(session)
+    navigation.navigate({
+      section: "activity",
+      filters: { ...filters, agents: [...filters.agents] },
+      subject: null,
+    })
+    pending.resolve([entry("newer-claude"), entry("older-codex", { agent: "codex" })])
+
+    await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(2))
+    expect(session.getSnapshot().subject).toBeNull()
+    expect(mocks.loadSessionAnalysis).not.toHaveBeenCalled()
   })
 
   it("pauses and rejects a pending list while hidden, then reloads on resume", async () => {
@@ -1067,144 +1100,6 @@ describe("MainActivitySession", () => {
       kind: "sessionFiltersChanged",
       action: "agent_added",
     })
-  })
-
-  it("reports source gestures without host identity or inventory detail", async () => {
-    const { session } = start()
-    await ready(session)
-    session.getSnapshot().remoteHosts = [
-      {
-        id: "host-a",
-        sshAlias: "alpha",
-        displayName: "Alpha",
-        status: "idle",
-        lastSuccessfulSyncEpoch: null,
-        automaticSyncEnabled: true,
-        cachedSessionCount: 0,
-        lastError: null,
-      },
-      {
-        id: "host-b",
-        sshAlias: "beta",
-        displayName: null,
-        status: "idle",
-        lastSuccessfulSyncEpoch: null,
-        automaticSyncEnabled: true,
-        cachedSessionCount: 0,
-        lastError: null,
-      },
-    ]
-    mocks.noteInteraction.mockClear()
-
-    session.toggleLocalSource()
-    session.toggleLocalSource()
-    session.toggleRemoteSource()
-    session.toggleRemoteSource()
-    session.toggleRemoteHost("host-a")
-    session.toggleRemoteHost("host-a")
-    session.toggleRemoteHost("host-b")
-    session.resetSources()
-
-    expect(mocks.noteInteraction.mock.calls.map(([interaction]) => interaction)).toEqual([
-      { kind: "sessionFiltersChanged", action: "source_local_added" },
-      { kind: "sessionFiltersChanged", action: "source_local_removed" },
-      { kind: "sessionFiltersChanged", action: "source_remote_all_added" },
-      { kind: "sessionFiltersChanged", action: "source_remote_all_removed" },
-      { kind: "sessionFiltersChanged", action: "source_remote_host_added" },
-      { kind: "sessionFiltersChanged", action: "source_remote_host_removed" },
-      { kind: "sessionFiltersChanged", action: "source_remote_host_added" },
-      { kind: "sessionFiltersChanged", action: "source_all" },
-    ])
-  })
-
-  it("removes grouped remote sources once while retaining Local", async () => {
-    const { session } = start()
-    await ready(session)
-    session.restoreNavigation(
-      {
-        source: { kind: "selected", includeLocal: true, remote: "all" },
-        agents: [],
-        result: "all",
-        spend: "all",
-      },
-      null,
-    )
-    mocks.noteInteraction.mockClear()
-    session.clearRemoteSources()
-    expect(session.getSnapshot().filters.source).toEqual({
-      kind: "selected",
-      includeLocal: true,
-      remote: [],
-    })
-    expect(mocks.noteInteraction).toHaveBeenCalledExactlyOnceWith({
-      kind: "sessionFiltersChanged",
-      action: "source_remote_all_removed",
-    })
-  })
-
-  it("opens a host list without selecting a session and reports only the source action", async () => {
-    const session = new MainActivitySession()
-    sessions.push(session)
-    session.restoreNavigation(
-      {
-        source: { kind: "selected", includeLocal: false, remote: ["host-a"] },
-        agents: [],
-        result: "all",
-        spend: "all",
-      },
-      null,
-      "user",
-      true,
-    )
-    session.subscribe(() => undefined)
-    await ready(session)
-    expect(session.getSnapshot().subject).toBeNull()
-    expect(mocks.noteInteraction).toHaveBeenCalledWith({
-      kind: "sessionFiltersChanged",
-      action: "source_remote_host_added",
-    })
-    expect(mocks.noteInteraction).not.toHaveBeenCalledWith({
-      kind: "sessionFiltersChanged",
-      action: "cleared_all",
-    })
-  })
-
-  it("retains the explicit date-range preference when browsing a remote host", async () => {
-    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, activityWindowDays: 1 })
-    mocks.listRecentSessions.mockResolvedValue([
-      entry("old-remote", {
-        remoteHostId: "host-a",
-        timestamp: new Date(Date.now() - 2 * 86400000).toISOString(),
-        isActive: false,
-      }),
-    ])
-    const { session } = start()
-    await ready(session)
-    session.restoreNavigation(
-      {
-        source: { kind: "selected", includeLocal: false, remote: ["host-a"] },
-        agents: [],
-        result: "all",
-        spend: "all",
-      },
-      null,
-      "user",
-      true,
-    )
-    expect(session.getSnapshot().settings.activityWindowDays).toBe(1)
-    expect(orderedActivityEntries(session.getSnapshot())).toEqual([])
-    expect(session.getSnapshot().subject).toBeNull()
-  })
-
-  it("does not report source no-ops or automatic inventory reconciliation", async () => {
-    const { session } = start()
-    await ready(session)
-    mocks.noteInteraction.mockClear()
-
-    session.resetSources()
-    session.toggleRemoteHost("unknown")
-
-    expect(mocks.noteInteraction).not.toHaveBeenCalled()
   })
 
   it("falls back to all when persisted settings carry an unrecognized filter id", async () => {

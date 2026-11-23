@@ -388,10 +388,10 @@ describe("MainWindowNavigationSession", () => {
     stop()
   })
 
-  it("opens a host-only list through a recovered native destination", async () => {
+  it("opens ordinary Sessions for a section-only request", async () => {
     mocks.peek.mockResolvedValue({
       revision: 1,
-      destination: { section: "activity", target: null, remoteHostId: "host-a" },
+      destination: { section: "activity", target: null },
     })
     const { activity, session } = setup()
     const stop = session.subscribe(() => undefined)
@@ -399,7 +399,6 @@ describe("MainWindowNavigationSession", () => {
     expect(session.getSnapshot().destination).toEqual({
       section: "activity",
       filters: {
-        source: { kind: "selected", includeLocal: false, remote: ["host-a"] },
         agents: [],
         result: "all",
         spend: "all",

@@ -4,7 +4,6 @@ import { AGENT_SLUGS, agentDisplayName } from "../../../lib/presentation/agents"
 import type { AllowanceUsageSummaryPayload } from "../../../lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
-import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
 import { fixtureCheckAvailability, fixtureChecksReport, setFixtureCheckEnabled } from "./checks"
 import {
   fixtureProviderCommand,
@@ -293,18 +292,6 @@ function fixtureEntries(state: FixtureState) {
         models: [],
         modelRuns: [],
       }))
-  if (hasRemoteFixture()) {
-    return [
-      ...entries,
-      ...entries.map((entry, index) => ({
-        ...entry,
-        sessionId: `remote-${index}`,
-        title: index === 0 ? "Review remote changes" : "Inspect build results",
-        remoteHostId: remoteFixtureIds[index],
-        isActive: false,
-      })),
-    ]
-  }
   if (state !== "long") return entries
   return entries.map((entry, index) =>
     index === 1
@@ -366,7 +353,6 @@ const nudge = {
 }
 
 function dataFor(command: string, args: Record<string, unknown> | undefined): unknown {
-  if (command.includes("remote_")) return remoteFixtureCommand(command, args)
   const state = fixtureState()
   const fault = fixtureFault()
   const empty = state === "empty"

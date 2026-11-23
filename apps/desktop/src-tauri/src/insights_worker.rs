@@ -262,7 +262,7 @@ fn run_record_pass(
     store: Store,
 ) -> PassFuture {
     if record.key.remote_host_id().is_some() {
-        return crate::remote_cache::run_pass(record.clone(), signal, claim_fence, store);
+        return Box::pin(async { analysis::unsupported_evidence_pass() });
     }
     run_record_pass_with(
         record,
@@ -397,14 +397,6 @@ pub fn spawn(app: &tauri::AppHandle) -> tauri::async_runtime::JoinHandle<()> {
         if let Err(error) = restore_store.recover_opencode_journal_claims() {
             ::tracing::error!(event = "journal_claim_recovery_failed", error = %error);
             return;
-        }
-        if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
-            crate::remote_cache::restore_fork_companions(&restore_store)
-        })
-        .await
-        .unwrap_or_else(|error| Err(error.into()))
-        {
-            ::tracing::warn!(event = "remote_fork_companion_restore_failed", error = %error);
         }
         let mut workers = JoinSet::new();
         if let Err(error) = app.state::<Store>().recover_native_file_claims() {

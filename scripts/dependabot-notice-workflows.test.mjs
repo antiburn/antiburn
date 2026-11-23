@@ -91,12 +91,7 @@ test("generation fetches each Rust notice workspace before generating notices", 
   assert.ok(fetchIndex >= 0 && fetchIndex < generationIndex);
   assert.deepEqual(
     steps[fetchIndex].run.trim().split("\n"),
-    [
-      "crates/antiburn-local",
-      "crates/antiburn-remote",
-      "apps/desktop/src-tauri",
-      "apps/cli",
-    ].map(
+    ["crates/antiburn-local", "apps/desktop/src-tauri", "apps/cli"].map(
       (directory) =>
         `cargo fetch --locked --manifest-path ${directory}/Cargo.toml`,
     ),

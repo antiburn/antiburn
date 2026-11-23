@@ -308,8 +308,8 @@ gh workflow run release-app.yml --ref main -f version=0.9.0
 
 The version input is required and can be an existing version or a supported
 prerelease such as `0.10.0-rc.1`. The workflow applies it only in runner checkouts
-to all application and helper manifests and lockfile entries. It runs all six
-desktop targets, both remote helpers, SBOMs, dependency and advisory checks,
+to all application manifests and lockfile entries. It runs all six
+desktop targets, SBOMs, dependency and advisory checks,
 installer tests, updater signing, platform signature checks, checksum assembly,
 and provenance. Artifact and installer names are the
 same as tag builds. Download individual platform artifacts or the assembled
@@ -344,29 +344,19 @@ release, and a draft can simply be deleted afterwards.
 
 ### 2.2 Bump every manifest, in one commit
 
-Six files state the version and all six must agree, or the tag is refused:
+Four files state the version and all four must agree, or the tag is refused:
 
 ```text
 apps/desktop/package.json                  "version"
 apps/desktop/src-tauri/tauri.conf.json     "version"
 apps/desktop/src-tauri/Cargo.toml          [package] version
 apps/desktop/src-tauri/Cargo.lock          the `antiburn` package entry
-crates/antiburn-remote/Cargo.toml          [package] version
-crates/antiburn-remote/Cargo.lock          the `antiburn-remote` package entry
 ```
 
-The remote helper is in the set because it ships as an asset of this release.
-Its archive name, its `--version` output and its `hello` response all come from
-its manifest, so a reader who holds a helper can name the release it came from.
-The helper bumps with the application even when its code does not change.
-
-The lockfiles are the ones people forget. Refresh them after editing the
-manifests. The desktop lockfile records both crates:
+Refresh the desktop lockfile after editing the manifest:
 
 ```bash
 cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn
-cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn-remote
-cargo update --manifest-path crates/antiburn-remote/Cargo.toml --package antiburn-remote
 ```
 
 If `cargo update` also moves unrelated entries in a lockfile, edit only the
@@ -443,24 +433,21 @@ tag only after the commit is on `main`.
    updater bundle, a detached signature, and a fragment of `latest.json`. These
    are the only jobs that can see a signing credential, and none may save a
    cache after doing so.
-5. **remote-helper** — builds static Linux x64 and ARM64 helpers on native
-   runners, runs their tests, checks static linkage, and verifies archive
-   extraction. It has no signing or repository-write credentials.
-6. **dependency-checks** and **installer-tests** — run in parallel with the
+5. **dependency-checks** and **installer-tests** — run in parallel with the
    builds and have no signing credentials. `dependency-checks` runs
-   `cargo deny` bans, licenses, and advisories for the engine, the remote
-   helper, and the desktop app, then `pnpm notices:check`. Main CI checks
+   `cargo deny` bans, licenses, and advisories for the current engine and desktop
+   workspaces, then `pnpm notices:check`. Main CI checks
    advisories nightly and when a `Cargo.lock` changes. A new advisory needs
    no code change, so the release checks them again. `installer-tests` tests and
    lints `install.sh`, `install.ps1`, and the Windows signing scripts.
-7. **assemble** — waits for the two checks above, so a failed check
+6. **assemble** — waits for the two checks above, so a failed check
    stops the release before anything is hashed, attested, or uploaded. It
-   requires both helper archives, adds the root `install.sh` and `install.ps1`, then merges the
+   adds the root `install.sh` and `install.ps1`, then merges the
    fragments into `latest.json` with immutable
    tag-specific URLs; verifies all six platform keys, asset presence, detached
    signatures, reported signing modes, and `SHA256SUMS`; attests provenance over
     every asset; and uploads the assembled `release` Actions artifact.
-8. **draft** — runs only for tag pushes and creates or updates the draft from
+7. **draft** — runs only for tag pushes and creates or updates the draft from
    the assembled assets.
 
 The main run and its cache warming finish before the exact-SHA gate opens, so
@@ -474,16 +461,6 @@ by each target, and the complete checksum table. Before the draft exists, the
 workflow has already required the six platform keys, immutable URLs, matching
 detached signatures, present assets, and a successful `sha256sum --check`.
 Those are machine gates, not boxes for a person to repeat.
-
-The release includes `antiburn-remote-<version>-x86_64-unknown-linux-musl.tar.gz`
-and `antiburn-remote-<version>-aarch64-unknown-linux-musl.tar.gz`. Both are covered
-by `SHA256SUMS`. Build provenance is included when the public-repository
-attestation steps run; private-repository releases skip those steps. Their archive version follows the application
-release, and §2.2 holds the helper's manifest to it, so `antiburn-remote --version`
-on an installed helper reports the release that shipped it. The helper's wire
-protocol version is a separate compatibility check.
-Follow [remote host setup](../remote-sessions.md) to exercise SSH discovery and
-offline cached analysis on a Linux host before publishing.
 
 Windows ships `antiburn_<version>_x64-setup.exe` and
 `antiburn_<version>_arm64-setup.exe`. The ARM64 job uses the native
@@ -588,17 +565,13 @@ application release.
    (`cargo update --manifest-path apps/desktop/src-tauri/Cargo.toml --package antiburn-local`):
    the shell path-depends on the engine, so its lockfile records the engine
    version, and the locked desktop CI legs and the license check fail on the
-   mismatch otherwise. Refresh the remote helper's lockfile as well
-   (`cargo update --manifest-path crates/antiburn-remote/Cargo.toml --package antiburn-local`):
-   it path-depends on the engine too, and the release's remote-helper jobs
-   build with `--locked`. Pull request CI does not run those jobs for a
-   release-only change, so the mismatch shows first in the app release run.
+   mismatch otherwise.
    If `cargo update` also moves unrelated entries in either lockfile, edit
    only the `antiburn-local` version line by hand instead.
 2. Review, merge, then tag `antiburn-local-v<version>` and push the tag.
 3. The workflow requires the successful main push run for the exact tag SHA
    and passing `cargo deny` bans, licenses, and advisories checks for the
-   engine and the remote helper plus `pnpm notices:check` (the shared
+   engine workspaces plus `pnpm notices:check` (the shared
    `dependency-checks` workflow with `desktop: false`; the desktop app
    checks run only for app releases). It then
    packages a deterministic source tarball with `LICENSE`, `NOTICE`,

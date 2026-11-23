@@ -47,7 +47,6 @@ jobs:
       run_installers: ${{ steps.changes.outputs.run_installers }}
       run_licenses: ${{ steps.changes.outputs.run_licenses }}
       run_advisories: ${{ steps.changes.outputs.run_advisories }}
-      run_remote_build: ${{ steps.changes.outputs.run_remote_build }}
       run_no_analytics_check: ${{ steps.changes.outputs.run_no_analytics_check }}
       run_release_metadata: ${{ steps.changes.outputs.run_release_metadata }}
       run_warm_release_cache: ${{ steps.changes.outputs.run_warm_release_cache }}
@@ -270,16 +269,14 @@ jobs:
           components: rustfmt, clippy
 
       # rust-cache cleans each listed target directory with the dependency
-      # list of its own workspace only. Thus only the engine maps to the
-      # shared CARGO_TARGET_DIR. The remote entry keeps its default target
-      # path, which does not exist, and adds its lockfile to the cache key.
+      # list of its own workspace only. One workspace maps to the shared
+      # CARGO_TARGET_DIR; the others add their lockfiles to the cache key.
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: |
             crates/antiburn-checks -> ../../target/ci
             crates/antiburn-local
-            crates/antiburn-remote
             crates/antiburn-checks-store
             crates/antiburn-cli-runtime
             apps/cli
@@ -496,14 +493,6 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm --filter @antiburn/desktop build
 
-  remote-helper:
-    name: remote helper
-    needs: classify
-    if: needs.classify.outputs.run_remote_build == 'true'
-    uses: ./.github/workflows/build-remote-helper.yml
-    with:
-      test: false
-
   licenses:
     name: dependency licenses
     needs: classify
@@ -679,7 +668,6 @@ jobs:
       - engine
       - desktop-backend
       - desktop-frontend
-      - remote-helper
       - licenses
       - installer-tests
       - release-metadata
@@ -698,8 +686,6 @@ jobs:
       BACKEND_SELECTED: ${{ needs.classify.outputs.run_desktop }}
       FRONTEND_RESULT: ${{ needs.desktop-frontend.result }}
       FRONTEND_SELECTED: ${{ needs.classify.outputs.run_frontend }}
-      REMOTE_HELPER_RESULT: ${{ needs.remote-helper.result }}
-      REMOTE_HELPER_SELECTED: ${{ needs.classify.outputs.run_remote_build }}
       LICENSES_RESULT: ${{ needs.licenses.result }}
       LICENSES_SELECTED: ${{ needs.classify.outputs.run_licenses }}
       INSTALLER_TESTS_RESULT: ${{ needs.installer-tests.result }}
@@ -744,7 +730,6 @@ jobs:
           require_if_selected engine "$ENGINE_SELECTED" "$ENGINE_RESULT"
           require_if_selected desktop-backend "$BACKEND_SELECTED" "$BACKEND_RESULT"
           require_if_selected desktop-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
-          require_if_selected remote-helper "$REMOTE_HELPER_SELECTED" "$REMOTE_HELPER_RESULT"
           require_if_selected licenses "$LICENSES_SELECTED" "$LICENSES_RESULT"
           require_if_selected installer-tests "$INSTALLERS_SELECTED" "$INSTALLER_TESTS_RESULT"
           require_if_selected release-metadata "$RELEASE_METADATA_SELECTED" "$RELEASE_METADATA_RESULT"

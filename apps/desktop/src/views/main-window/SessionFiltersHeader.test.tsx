@@ -11,12 +11,6 @@ const COUNTS: SessionFilterCounts = {
   matching: 3,
   agentsAll: 8,
   agents: { codex: 2, "claude-code": 1, "future-agent": 0 },
-  source: {
-    all: 8,
-    local: 5,
-    remoteAll: 3,
-    remote: { "host-a": 2, "host-b": 1 },
-  },
   result: { all: 6, failing: 3, passing: 2 },
   spend: { all: 5, notable: 3, material: 4 },
 }
@@ -428,91 +422,15 @@ describe("SessionFiltersHeader", () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger))
   })
 
-  it("labels grouped remote chips and removes the group with one action", () => {
-    const onClearRemoteSources = vi.fn()
-    render(
-      <SessionFiltersHeader
-        {...props({
-          filters: {
-            source: { kind: "selected", includeLocal: true, remote: ["host-a", "host-b"] },
-            agents: [],
-            result: "all",
-            spend: "all",
-          },
-          onClearRemoteSources,
-        })}
-      />,
-    )
-    expect(screen.getByText("2 hosts", { exact: true })).toBeVisible()
-    fireEvent.click(screen.getByRole("button", { name: "Remove 2 hosts filter" }))
-    expect(onClearRemoteSources).toHaveBeenCalledOnce()
-    expect(screen.getByRole("button", { name: "Remove Local filter" })).toBeVisible()
-  })
-
-  it("renders a mixed remote parent, operable selected zero hosts, and source chips", () => {
-    const onToggleRemoteSource = vi.fn()
-    const onToggleRemoteHost = vi.fn()
-    render(
-      <SessionFiltersHeader
-        {...props({
-          filters: {
-            source: { kind: "selected", includeLocal: true, remote: ["host-a"] },
-            agents: [],
-            result: "all",
-            spend: "all",
-          },
-          counts: {
-            ...COUNTS,
-            source: {
-              all: 6,
-              local: 4,
-              remoteAll: 2,
-              remote: { "host-a": 0, "host-b": 2 },
-            },
-          },
-          remoteHosts: [
-            {
-              id: "host-a",
-              sshAlias: "alpha",
-              displayName: "Alpha",
-              status: "idle",
-              lastSuccessfulSyncEpoch: null,
-              automaticSyncEnabled: true,
-              cachedSessionCount: 0,
-              lastError: null,
-            },
-            {
-              id: "host-b",
-              sshAlias: "beta",
-              displayName: null,
-              status: "idle",
-              lastSuccessfulSyncEpoch: null,
-              automaticSyncEnabled: true,
-              cachedSessionCount: 2,
-              lastError: null,
-            },
-          ],
-          onToggleRemoteSource,
-          onToggleRemoteHost,
-        })}
-      />,
-    )
-
-    expect(screen.getByRole("button", { name: "Remove Local filter" })).toBeVisible()
-    expect(screen.getByRole("button", { name: "Remove Alpha filter" })).toBeVisible()
-    expect(screen.getByText("Alpha", { exact: true })).toBeVisible()
+  it("offers ordinary facets without a Source group", () => {
+    render(<SessionFiltersHeader {...props()} />)
     openFilters()
-    const parent = screen.getByRole("menuitemcheckbox", {
-      name: "Remote, 2 matching sessions",
-    })
-    expect(parent).toHaveAttribute("data-state", "indeterminate")
-    fireEvent.click(parent)
-    expect(onToggleRemoteSource).toHaveBeenCalledOnce()
-    const selectedZero = screen.getByRole("menuitemcheckbox", {
-      name: "Alpha, 0 matching sessions",
-    })
-    expect(selectedZero).not.toHaveAttribute("aria-disabled", "true")
-    fireEvent.click(selectedZero)
-    expect(onToggleRemoteHost).toHaveBeenCalledWith("host-a")
+    expect(screen.queryByText(/Source/)).toBeNull()
+    expect(
+      screen.queryByRole("menuitemcheckbox", { name: /^Local|^Remote|^All sources/ }),
+    ).toBeNull()
+    expect(screen.getByText("Agents · Select one or more")).toBeVisible()
+    expect(screen.getByText("Check result")).toBeVisible()
+    expect(screen.getByText("Spend")).toBeVisible()
   })
 })

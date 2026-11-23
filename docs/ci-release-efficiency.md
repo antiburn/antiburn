@@ -13,9 +13,9 @@ the new label. A push that arrives with "ready for review" runs the ready stage.
 
 | Stage | When | Rust platforms | Frontend platforms | Other checks |
 | --- | --- | --- | --- | --- |
-| draft | Draft pull request without `ci:full` | Linux | Linux | Changed-code quality scan; no licenses, installers, or remote helper build |
-| ready | Other pull request events | Linux, Windows, macOS | Linux, Windows | Changed-code quality scan; licenses, installers, advisories, and remote helper build when affected |
-| main | Push to `main` | Linux, Linux ARM64, Windows, Windows ARM64, macOS | Linux, Windows | Full-tree quality scan, affected advisories, release credentials, Clippy without analytics, remote helper build, and release cache warming |
+| draft | Draft pull request without `ci:full` | Linux | Linux | Changed-code quality scan; no licenses or installers |
+| ready | Other pull request events | Linux, Windows, macOS | Linux, Windows | Changed-code quality scan; licenses, installers, and advisories when affected |
+| main | Push to `main` | Linux, Linux ARM64, Windows, Windows ARM64, macOS | Linux, Windows | Full-tree quality scan, affected advisories, release credentials, Clippy without analytics, and release cache warming |
 | nightly | Schedule at 03:17 UTC or `workflow_dispatch` | Linux, Linux ARM64, Windows, Windows ARM64, macOS | Linux, Windows | All checks, including `cargo deny check advisories` |
 | release | App or engine tag push | Not repeated | Not repeated | Successful `main` push run for the exact tag SHA |
 
@@ -32,10 +32,9 @@ for example, `docs/support.md` selects the engine and shell through
 | `classify` | Design drift, classifier and workspace-registry tests on every event, then stage and workspace selection |
 | `ci-scripts` | CI and release script tests when scripts, workflows, or root package files change |
 | `repository` | Pull request DCO checks, main release credentials, secret scan, and changed-code or full-tree quality scan |
-| `engine` | Format, Clippy, and Nextest for the engine and remote helper workspaces, with one target directory per platform |
+| `engine` | Format, Clippy, and Nextest for the engine workspaces, with one target directory per platform |
 | `desktop-backend` | Shell and path-crate checks in parallel parts per platform; shell uses analytics, with a separate no-analytics Clippy pass on Linux main and nightly runs |
 | `desktop-frontend` | Format, lint, type check, Knip, and build on Linux; tests on each frontend platform |
-| `remote-helper` | Static musl build and packaging; engine CI owns its checks, while release builds retain their tests |
 | `licenses` | Dependency bans, licenses, advisories, and third-party notices |
 | `installer-tests` | POSIX and PowerShell installer tests and linters |
 | `release-metadata` | Version, tag, and changelog checks for version changes |

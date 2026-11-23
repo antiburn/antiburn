@@ -3,7 +3,6 @@ import { AGENT_SLUGS, agentDisplayName } from "../../../src/lib/presentation/age
 import type { AllowanceUsageSummaryPayload } from "../../../src/lib/providerUsageIpc"
 import { emitFixtureEvent } from "./event"
 import { fixtureDetailMap, fixtureIsland, fixtureTokenMap } from "./hud"
-import { hasRemoteFixture, remoteFixtureCommand, remoteFixtureIds } from "./remote"
 import { fixtureCheckAvailability, fixtureChecksReport, setFixtureCheckEnabled } from "./checks"
 import {
   fixtureProviderCommand,
@@ -288,18 +287,6 @@ function fixtureEntries(state: FixtureState) {
         models: [],
         modelRuns: [],
       }))
-  if (hasRemoteFixture()) {
-    return [
-      ...entries,
-      ...entries.map((entry, index) => ({
-        ...entry,
-        sessionId: `remote-${index}`,
-        title: index === 0 ? "Review remote changes" : "Inspect build results",
-        remoteHostId: remoteFixtureIds[index],
-        isActive: false,
-      })),
-    ]
-  }
   if (state !== "long") return entries
   return entries.map((entry, index) =>
     index === 1
@@ -363,7 +350,6 @@ const nudge = {
 let sidebarPreferences: Record<string, unknown> = {}
 
 function dataFor(command: string, args: Record<string, unknown> | undefined): unknown {
-  if (command.includes("remote_")) return remoteFixtureCommand(command, args)
   const state = fixtureState()
   const fault = fixtureFault()
   const empty = state === "empty"
@@ -395,9 +381,11 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return []
     case "agent_session_locations":
       return []
-    case "get_settings":
+    case "get_settings": {
+      const theme = new URLSearchParams(window.location.search).get("theme")
       return {
         ...settings,
+        theme: theme === "light" || theme === "dark" ? theme : "system",
         onboardingCompleted:
           new URLSearchParams(window.location.search).get("onboarding") === "complete",
         liveUsageStarted: true,
@@ -406,6 +394,7 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
           Number(new URLSearchParams(window.location.search).get("scale")) || 100,
         ...sidebarPreferences,
       }
+    }
     case "hud_island_available":
       return new URLSearchParams(window.location.search).get("hud") !== "floating"
     case "cloud_status":

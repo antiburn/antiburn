@@ -12,10 +12,10 @@ const CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        cleanup(&app);
+        cleanup(app.clone()).await;
         loop {
             tokio::time::sleep(CLEANUP_INTERVAL).await;
-            cleanup(&app);
+            cleanup(app.clone()).await;
         }
     })
 }
@@ -42,18 +42,20 @@ pub fn note_removed(app: &AppHandle, removed: usize, revision: Revision) {
     );
 }
 
-fn cleanup(app: &AppHandle) {
-    let hosts = crate::remote_sessions::lifecycle_host_ids(app);
-    let result = crate::remote_sync::with_lifecycle_guard(app, &hosts, || {
-        let result = app.state::<Store>().apply_session_retention(unix_now())?;
-        if let Ok(root) = crate::remote_sessions::directory(app) {
-            crate::remote_cache::prune_after_commit(&app.state::<Store>(), &root);
-        }
-        Ok(result)
-    });
+async fn cleanup(app: AppHandle) {
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let (removed, revision) = worker_app
+            .state::<Store>()
+            .apply_session_retention(unix_now())?;
+        note_removed(&worker_app, removed, revision);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
     match result {
-        Ok((removed, revision)) => note_removed(app, removed, revision),
-        Err(error) => tracing::warn!(event = "session_retention_failed", error = %error),
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(event = "session_retention_failed", error = %error),
+        Err(error) => tracing::warn!(event = "session_retention_worker_failed", error = %error),
     }
 }
 

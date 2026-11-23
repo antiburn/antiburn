@@ -629,33 +629,6 @@ describe("SessionList — rows", () => {
     ).toBeTruthy()
   })
 
-  it("marks a remote origin beside the model with an accessible host name", () => {
-    list({
-      entries: [
-        entry({
-          remoteHostId: "host-a",
-          modelRuns: [{ model: "claude-fable-5", thinkingMode: "high" }],
-        }),
-      ],
-      remoteHosts: [
-        {
-          id: "host-a",
-          sshAlias: "build-box",
-          displayName: "Build server",
-          status: "idle",
-          lastSuccessfulSyncEpoch: 1_799_000_000,
-          automaticSyncEnabled: true,
-          cachedSessionCount: 4,
-          lastError: null,
-        },
-      ],
-    })
-
-    const origin = screen.getByLabelText("Remote session from Build server")
-    expect(origin).toHaveAttribute("role", "img")
-    expect(origin.querySelector(".lucide-monitor")).toHaveAttribute("width", "12")
-  })
-
   it("does not show local quota state on a remote row", () => {
     list({
       entries: [

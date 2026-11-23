@@ -17,7 +17,6 @@ mod evidence_tests;
 mod reader_tests;
 mod reconcile_tests;
 mod remediation_tests;
-mod remote_count_tests;
 mod resume_tests;
 mod revision_tests;
 mod session_write_tests;

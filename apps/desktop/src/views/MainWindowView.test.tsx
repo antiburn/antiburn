@@ -527,7 +527,6 @@ describe("MainWindowView", () => {
       fireEvent.click(screen.getByRole("button", { name: "View Codex sessions" }))
       expect(tab("Sessions")).toHaveAttribute("aria-selected", "true")
       expect(activitySession().getSnapshot().filters).toEqual({
-        source: { kind: "selected", includeLocal: true, remote: [] },
         agents: ["codex"],
         result: "all",
         spend: "all",
