@@ -32,6 +32,7 @@ const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
   offline: "Cloud is offline.",
   reauth_required: "Sign in again to resume uploads.",
   upload_unavailable: "Cloud uploads are unavailable.",
+  route_denied: "Cloud denied uploads to this workspace. Check your workspace access.",
   fenced: "Some saved uploads are blocked.",
   interrupted: "Some sessions could not be prepared.",
   storage_unavailable: "Could not read saved uploads.",

@@ -102,12 +102,14 @@ pub(super) fn api_request(
         .and_then(|value| value.to_str().ok())
         .and_then(retry_delay);
     let mut body = Vec::new();
-    response
-        .take(MAX_API_BYTES + 1)
-        .read_to_end(&mut body)
-        .map_err(|_| TransportError::Offline)?;
-    if body.len() as u64 > MAX_API_BYTES {
-        return Err(TransportError::Rejected);
+    if !matches!(status, 401 | 403) {
+        response
+            .take(MAX_API_BYTES + 1)
+            .read_to_end(&mut body)
+            .map_err(|_| TransportError::Offline)?;
+        if body.len() as u64 > MAX_API_BYTES {
+            return Err(TransportError::Rejected);
+        }
     }
     Ok(ApiResponse {
         status,
@@ -137,6 +139,7 @@ pub(super) enum Failure {
     Backpressure,
     Offline,
     Unauthorized,
+    RouteDenied,
     Conflict,
     SourceSuppressed,
     Unavailable,
@@ -331,7 +334,8 @@ impl<'a> HttpTransport<'a> {
                         self.failure = None;
                         return Ok(response);
                     }
-                    401 | 403 => (Failure::Unauthorized, TransportError::Unauthorized),
+                    401 => (Failure::Unauthorized, TransportError::Unauthorized),
+                    403 => (Failure::RouteDenied, TransportError::Rejected),
                     409 if matches!(route, Route::Reserve) && source_suppressed(&response.body) => {
                         (Failure::SourceSuppressed, TransportError::Conflict)
                     }

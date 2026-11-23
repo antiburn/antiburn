@@ -1275,6 +1275,7 @@ it.each([
   { status: "fenced" as const },
   { status: "offline" as const },
   { status: "upload_unavailable" as const },
+  { status: "route_denied" as const },
 ])("keeps upload retry for other saved-work problems: %j", async (patch) => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.status.mockResolvedValue(
@@ -1293,7 +1294,11 @@ it.each([
   render(<Account session={session} />)
   const retry = await screen.findByRole("button", { name: "Retry saved uploads" })
   expect(retry).toBeEnabled()
-  if (patch.status === "interrupted") {
+  if (patch.status === "route_denied") {
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Cloud denied uploads to this workspace. Check your workspace access.",
+    )
+  } else if (patch.status === "interrupted") {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Some sessions need local recovery. Saved data is kept.",
     )
