@@ -905,7 +905,7 @@ fn repository_label(repositories: &[RepositoryRecord], cwd: Option<&str>) -> Str
 /// is a best-effort nudge, not a step the drilldown's own response depends
 /// on — the worker's next pass either way is what actually closes the gap.
 fn requeue_and_wake_worker(app: &tauri::AppHandle, store: &Store, key: &SessionKey) {
-    let _ = store.requeue_session_evidence(key);
+    let _ = store.request_drilldown_evidence(key);
     crate::insights_worker::wake(app);
 }
 

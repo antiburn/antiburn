@@ -85,7 +85,8 @@
 //! single handle the app aborts on exit, so nothing outlives
 //! the process.
 
-use std::collections::{BTreeMap, BTreeSet};
+use antiburn_local::analysis::RawSource;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,11 +169,12 @@ pub enum ScanTrigger {
         /// The rediscovered agents' slugs, for the log line.
         agents: Vec<&'static str>,
     },
-    /// Refresh retained source metadata for agents whose evidence read changed
-    /// mid-pass.
+    /// Refresh retained source metadata and replay deferred folder updates.
     SourceRefresh {
         /// The agents whose stored source claims need a fresh discovery.
         agents: Vec<&'static str>,
+        /// Sessions whose folder updates need the current repository policy.
+        project_deferral_replays: Arc<HashSet<SessionKey>>,
     },
     /// A burst reached [`watch::MAX_BURST_PATHS`] and may have dropped
     /// paths, so only a full pass can be sure to cover it.
@@ -257,12 +259,54 @@ fn uses_history_window(trigger: &ScanTrigger) -> bool {
     )
 }
 
-fn retry_superseded_project_deferrals(controller: &ScanController, trigger: &ScanTrigger) {
-    controller.request(if uses_history_window(trigger) {
-        ScanTrigger::HistoricalScan
-    } else {
-        ScanTrigger::WatcherOverflow
-    });
+/// Restore folder updates from the pass outcome before another scan can start.
+fn retry_project_deferrals_after_pass(
+    controller: &ScanController,
+    trigger: &ScanTrigger,
+    outcome: &anyhow::Result<PassSummary>,
+    cancelled: bool,
+) -> bool {
+    let superseded = outcome
+        .as_ref()
+        .ok()
+        .and_then(|summary| summary.superseded_project_deferrals.as_ref());
+    if let Some(keys) = superseded {
+        retry_project_deferrals(controller, trigger, keys);
+    }
+    if (cancelled || outcome.is_err())
+        && let ScanTrigger::SourceRefresh {
+            project_deferral_replays,
+            ..
+        } = trigger
+    {
+        // The scheduler still applies the agent cooldown for an admitted pass.
+        retry_project_deferrals(controller, trigger, project_deferral_replays);
+    }
+    superseded.is_some()
+}
+
+fn retry_project_deferrals(
+    controller: &ScanController,
+    trigger: &ScanTrigger,
+    keys: &HashSet<SessionKey>,
+) {
+    match trigger {
+        ScanTrigger::SourceRefresh { agents, .. } if !keys.is_empty() => {
+            let mut queue = controller.source_refreshes();
+            for key in keys {
+                if agents.contains(&key.agent.as_str())
+                    && let Some(agent) = AgentKind::from_slug(&key.agent)
+                {
+                    queue.pending.entry(agent).or_default().insert(key.clone());
+                }
+            }
+            drop(queue);
+            controller.kick.notify_one();
+        }
+        ScanTrigger::SourceRefresh { .. } => {}
+        ScanTrigger::HistoricalScan => controller.request(ScanTrigger::HistoricalScan),
+        _ => controller.request(ScanTrigger::WatcherOverflow),
+    }
 }
 
 fn pass_covers_work(
@@ -380,7 +424,7 @@ pub struct ScanController {
     pending_burst: Mutex<Option<watch::WatchBurst>>,
     /// One refresh bit per agent whose evidence reader rejected a stale claim.
     /// This stays separate from the coalesced one-shot trigger.
-    pending_source_refreshes: Mutex<BTreeSet<AgentKind>>,
+    source_refreshes: Mutex<SourceRefreshQueue>,
     /// Set once the first current-window pass finishes. The automatic
     /// historical pass (`history::maybe_start_automatic_pass`) checks this
     /// before it asks for anything, so it never races a fresh install's
@@ -396,6 +440,48 @@ pub struct ScanController {
     history_auto_requested_for: Mutex<Option<i32>>,
     /// True while a historical pass runs its discovery or describe phase.
     history_pass_running: AtomicBool,
+}
+
+#[derive(Default)]
+struct SourceRefreshQueue {
+    // Empty sets request evidence recovery only. Folder replays share the same deadline.
+    pending: BTreeMap<AgentKind, HashSet<SessionKey>>,
+    next_allowed: BTreeMap<AgentKind, tokio::time::Instant>,
+}
+
+impl SourceRefreshQueue {
+    fn take_due(&mut self, now: tokio::time::Instant) -> BTreeMap<AgentKind, HashSet<SessionKey>> {
+        let due: Vec<_> = self
+            .pending
+            .keys()
+            .copied()
+            .filter(|agent| self.next_allowed.get(agent).is_none_or(|due| *due <= now))
+            .collect();
+        due.into_iter()
+            .filter_map(|agent| self.pending.remove(&agent).map(|keys| (agent, keys)))
+            .collect()
+    }
+
+    fn next_due(&self, now: tokio::time::Instant) -> Option<tokio::time::Instant> {
+        self.pending
+            .keys()
+            .map(|agent| self.next_allowed.get(agent).copied().unwrap_or(now))
+            .min()
+    }
+}
+
+/// Admit due agents with folder updates to replay or evidence to recover.
+fn eligible_source_refresh_agents(
+    store: &Store,
+    requested: impl IntoIterator<Item = (AgentKind, bool)>,
+) -> anyhow::Result<BTreeSet<AgentKind>> {
+    let mut eligible = BTreeSet::new();
+    for (agent, has_replays) in requested {
+        if has_replays || store.has_local_evidence_source_refresh_targets(agent.slug())? {
+            eligible.insert(agent);
+        }
+    }
+    Ok(eligible)
 }
 
 impl ScanController {
@@ -436,31 +522,18 @@ impl ScanController {
     }
 
     pub fn request_source_refresh(&self, agent: AgentKind) {
-        self.pending_source_refreshes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(agent);
-        self.kick.notify_one();
-    }
-
-    fn take_source_refreshes(&self) -> BTreeSet<AgentKind> {
-        std::mem::take(
-            &mut *self
-                .pending_source_refreshes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        )
-    }
-
-    fn requeue_source_refreshes(&self, agents: BTreeSet<AgentKind>) {
-        if agents.is_empty() {
-            return;
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            self.source_refreshes().pending.entry(agent)
+        {
+            entry.insert(HashSet::new());
+            self.kick.notify_one();
         }
-        self.pending_source_refreshes
+    }
+
+    fn source_refreshes(&self) -> std::sync::MutexGuard<'_, SourceRefreshQueue> {
+        self.source_refreshes
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .extend(agents);
-        self.kick.notify_one();
     }
 
     /// Take the pending trigger, if any, for the scheduler to run next.
@@ -743,10 +816,18 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
             } else {
                 None
             };
+            let source_refresh_due = if scheduled_scanning_allowed(&app) {
+                controller
+                    .source_refreshes()
+                    .next_due(tokio::time::Instant::now())
+            } else {
+                None
+            };
             let woke = tokio::select! {
                 () = controller.kick.notified() => Wake::Kick,
                 () = tokio::time::sleep_until(next_tick) => Wake::Tick,
                 () = sleep_until_due(deferred_due) => Wake::Deferred,
+                () = sleep_until_due(source_refresh_due) => Wake::Deferred,
                 () = sleep_until_due(fingerprint_due) => Wake::FingerprintRetry,
                 result = watcher_health.changed(), if watcher_health_open => {
                     let status = result
@@ -833,29 +914,59 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 }
             }
 
-            // A trigger is pending unless this woke from the tick's own
-            // sleep arm with nothing requested. Either way a full pass
-            // supersedes every floor-gated or retrying scoped item: it
-            // re-describes everything they would have, so their floors are
-            // stamped as satisfied rather than left to run again soon.
-            let source_refreshes = controller.take_source_refreshes();
+            // A full pass can settle queued work that falls within its window.
+            // Watcher recovery can also reach indexed files outside that window.
+            let source_refreshes = controller
+                .source_refreshes()
+                .take_due(tokio::time::Instant::now());
             if !source_refreshes.is_empty() {
-                let trigger = ScanTrigger::SourceRefresh {
-                    agents: source_refreshes.iter().map(|agent| agent.slug()).collect(),
+                let store = (*app.state::<Store>()).clone();
+                let requested = source_refreshes
+                    .iter()
+                    .map(|(agent, keys)| (*agent, !keys.is_empty()))
+                    .collect::<Vec<_>>();
+                let eligibility = tokio::task::spawn_blocking(move || {
+                    eligible_source_refresh_agents(&store, requested)
+                })
+                .await;
+                let eligible = match eligibility {
+                    Ok(Ok(eligible)) => eligible,
+                    Ok(Err(error)) => {
+                        ::tracing::warn!(event = "scan_source_refresh_lookup_failed", %error);
+                        source_refreshes.keys().copied().collect()
+                    }
+                    Err(error) => {
+                        ::tracing::warn!(event = "scan_source_refresh_lookup_failed", %error);
+                        source_refreshes.keys().copied().collect()
+                    }
                 };
-                if run_covered_pass(
-                    &app,
-                    &mut ledger,
-                    trigger,
-                    source_refresh_scope(&source_refreshes),
-                    None,
-                )
-                .await
-                .is_none()
-                {
-                    controller.requeue_source_refreshes(source_refreshes);
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                    continue;
+                if !eligible.is_empty() {
+                    let trigger = ScanTrigger::SourceRefresh {
+                        agents: eligible.iter().map(|agent| agent.slug()).collect(),
+                        project_deferral_replays: Arc::new(
+                            source_refreshes.values().flatten().cloned().collect(),
+                        ),
+                    };
+                    if try_run_pass(&app, None, trigger, source_refresh_scope(&eligible), None)
+                        .await
+                        .is_none()
+                    {
+                        {
+                            let mut queue = controller.source_refreshes();
+                            for (agent, keys) in source_refreshes {
+                                if eligible.contains(&agent) {
+                                    queue.pending.entry(agent).or_default().extend(keys);
+                                }
+                            }
+                        }
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        continue;
+                    }
+                    let next = tokio::time::Instant::now() + TICK;
+                    controller
+                        .source_refreshes()
+                        .next_allowed
+                        .extend(eligible.into_iter().map(|agent| (agent, next)));
                 }
             }
             let (full_trigger, history_dispatch) = controller.take_pending_trigger();
@@ -865,7 +976,7 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 } else {
                     ScanTrigger::Tick
                 });
-                run_covered_pass(
+                let status = run_covered_pass(
                     &app,
                     &mut ledger,
                     trigger,
@@ -875,15 +986,31 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
                 .await;
                 let now = tokio::time::Instant::now();
                 last_full_pass = now;
-                floors.stamp(&pending_work, now);
-                floors.stamp(&retry_work, now);
-                pending_work = scoped::ScopedWork::default();
-                retry_work = scoped::ScopedWork::default();
-                deferred_due = None;
-                // A full pass just ran, so the next tick can wait a whole
-                // interval.
                 next_tick = now + tick_for_health(watcher_is_healthy);
-                continue;
+
+                if status.as_ref().is_some_and(pass_covers) {
+                    let sessions = pending_work
+                        .sessions
+                        .union(&retry_work.sessions)
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    let store = app.state::<Store>();
+                    let uncovered = match scoped::uncovered_historical_recoveries(
+                        &store,
+                        &sessions,
+                        unix_now(),
+                    )
+                    .await
+                    {
+                        Ok(uncovered) => uncovered,
+                        Err(error) => {
+                            ::tracing::warn!(event = "scan_historical_recovery_lookup_failed", %error);
+                            sessions
+                        }
+                    };
+                    floors.settle_full_pass(&mut pending_work, &uncovered, now);
+                    floors.settle_full_pass(&mut retry_work, &uncovered, now);
+                }
             }
 
             // T7: retry work a prior admission already stamped as run, but
@@ -1143,14 +1270,10 @@ async fn try_run_pass(
     .await;
 
     let controller = app.state::<ScanController>();
-    let project_deferrals_superseded = outcome
-        .as_ref()
-        .is_ok_and(|summary| summary.project_deferrals_superseded);
-    if project_deferrals_superseded {
-        retry_superseded_project_deferrals(&controller, &trigger);
-    }
-
     let cancelled = controller.cancelled();
+    let project_deferrals_superseded =
+        retry_project_deferrals_after_pass(&controller, &trigger, &outcome, cancelled);
+
     controller.update(|status| {
         status.running = false;
         status.cancelled = cancelled;
@@ -1286,7 +1409,7 @@ fn scan_report(scope: &PassScope, outcome: Option<u64>) -> Option<Option<u64>> {
 /// picked up (see [`ScanController::request`]).
 fn log_scan_pass_requested(trigger: &ScanTrigger) {
     match trigger {
-        ScanTrigger::WatcherAgents { agents } | ScanTrigger::SourceRefresh { agents } => {
+        ScanTrigger::WatcherAgents { agents } | ScanTrigger::SourceRefresh { agents, .. } => {
             ::tracing::debug!(
                 event = "scan_pass_requested",
                 trigger = trigger.label(),
@@ -1309,8 +1432,9 @@ struct PassSummary {
     list_changed: bool,
     /// [`Described::changed`]'s length: new or refreshed rows.
     re_described: usize,
-    /// A newer repository policy rejected this pass's deferred-project snapshot.
-    project_deferrals_superseded: bool,
+    /// Present when a newer policy rejected publication. Source refreshes retain
+    /// the session keys to replay within their own discovery scope.
+    superseded_project_deferrals: Option<HashSet<SessionKey>>,
 }
 
 /// The age limit discovery applies to a routine pass, in seconds.
@@ -1388,6 +1512,13 @@ async fn pass(
             repository_policy,
             include_non_repo_folders,
             refresh_repositories: trigger.refreshes_repositories(),
+            source_refresh: match trigger {
+                ScanTrigger::SourceRefresh {
+                    project_deferral_replays,
+                    ..
+                } => Some(Arc::clone(project_deferral_replays)),
+                _ => None,
+            },
         },
         &mut incremental,
     )
@@ -1398,7 +1529,7 @@ async fn pass(
         changed,
         list_changed,
         gate,
-        project_deferrals_superseded,
+        ..
     } = &described;
     ::tracing::debug!(
         event = "scan_admission_finished",
@@ -1418,33 +1549,22 @@ async fn pass(
     }
     incremental.finish()?;
 
-    // `records` already holds only the scoped agents' sessions when `scope`
-    // is [`PassScope::Agents`], since discovery itself was scoped.
-    for (agent, seen, cursor) in per_agent_totals(records) {
-        checked(
-            app,
-            "The scan bookkeeping",
-            store.record_agent_scan(&agent, cursor, seen),
-        )?;
-    }
-
-    // Everything discovered so far is already persisted, so a cancel here keeps
-    // the reader's results and only skips the work still ahead.
-    let controller = app.state::<ScanController>();
-    if controller.cancelled() {
-        return Ok(PassSummary {
-            sessions: records.len(),
-            list_changed: *list_changed,
-            re_described: changed.len(),
-            project_deferrals_superseded: *project_deferrals_superseded,
-        });
+    // Keep the last discovery totals when a retry pass checks a subset.
+    if !matches!(trigger, ScanTrigger::SourceRefresh { .. }) {
+        for (agent, seen, cursor) in per_agent_totals(records) {
+            checked(
+                app,
+                "The scan bookkeeping",
+                store.record_agent_scan(&agent, cursor, seen),
+            )?;
+        }
     }
 
     Ok(PassSummary {
         sessions: records.len(),
         list_changed: *list_changed,
         re_described: changed.len(),
-        project_deferrals_superseded: *project_deferrals_superseded,
+        superseded_project_deferrals: described.superseded_project_deferrals,
     })
 }
 
@@ -1673,8 +1793,9 @@ struct Described {
     list_changed: bool,
     /// How the repository gate resolved every read session.
     gate: GateCounts,
-    /// A newer repository policy rejected this pass's deferred-project snapshot.
-    project_deferrals_superseded: bool,
+    /// Present when a newer policy rejected publication. Source refreshes retain
+    /// the session keys to replay within their own discovery scope.
+    superseded_project_deferrals: Option<HashSet<SessionKey>>,
 }
 
 enum AdmissionIo {
@@ -1747,6 +1868,86 @@ impl AdmissionIo {
     }
 }
 
+async fn source_is_available(source: &SessionSource, record: &SessionRecord) -> bool {
+    if let SessionSource::ProviderDb {
+        agent,
+        db_path,
+        session_id,
+        ..
+    } = source
+    {
+        return matches!(
+            crate::analysis::locate(*agent, session_id, record.wsl_distro.as_deref()).await,
+            Some(SessionSource::ProviderDb { db_path: current, session_id: current_id, .. })
+                if current == *db_path && current_id == *session_id
+        );
+    }
+    if matches!(source, SessionSource::Inline { .. }) {
+        return true;
+    }
+    let Some(agent) = agents::kind_from_slug(&record.key.agent) else {
+        return false;
+    };
+    let paths = match crate::analysis::raw_source(agent, source).await {
+        Some(RawSource::File(path)) => {
+            if agent == AgentKind::Kiro
+                && let Some((_, messages)) = crate::analysis::kiro_cli_bundle(&path)
+            {
+                vec![path, messages]
+            } else {
+                vec![path]
+            }
+        }
+
+        Some(RawSource::ClineBundle {
+            db_path,
+            manifest_path,
+            messages_path,
+        }) => {
+            let session_id = record.key.session_id.clone();
+            let admitted = tokio::task::spawn_blocking(move || -> rusqlite::Result<bool> {
+                let connection =
+                    antiburn_local::discovery::open_native_companion_database(&db_path)?;
+                connection.query_row(
+                    "SELECT EXISTS (
+                        SELECT 1 FROM sessions WHERE session_id = ?1 AND is_subagent = 0
+                    )",
+                    [session_id],
+                    |row| row.get(0),
+                )
+            })
+            .await;
+            if !matches!(admitted, Ok(Ok(true))) {
+                return false;
+            }
+            vec![manifest_path, messages_path]
+        }
+        Some(
+            RawSource::KiroCliV2Bundle {
+                metadata_path,
+                messages_path,
+            }
+            | RawSource::KiroCliV3Bundle {
+                metadata_path,
+                messages_path,
+            },
+        ) => {
+            vec![metadata_path, messages_path]
+        }
+        Some(RawSource::CopilotCliBundle { events_path, .. }) => vec![events_path],
+        _ => return false,
+    };
+    for path in paths {
+        if !tokio::fs::metadata(path)
+            .await
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return false;
+        }
+    }
+    true
+}
+
 struct IncrementalAdmission<'a> {
     io: AdmissionIo,
     store: &'a Store,
@@ -1792,7 +1993,7 @@ impl IncrementalAdmission<'_> {
         record: &SessionRecord,
         changed: bool,
     ) -> bool {
-        self.commit_with_incarnation(guard, record, changed)
+        self.commit_with_incarnation(guard, record, changed, None)
             .await
             .is_some()
     }
@@ -1802,6 +2003,7 @@ impl IncrementalAdmission<'_> {
         guard: &SessionWriteGuard,
         record: &SessionRecord,
         changed: bool,
+        source: Option<&SessionSource>,
     ) -> Option<crate::store::Incarnation> {
         self.outcomes
             .insert(record.key.clone(), AttemptOutcome::Failed);
@@ -1809,14 +2011,19 @@ impl IncrementalAdmission<'_> {
             return None;
         }
         let keys = [record.key.clone()];
-        let returned = match self.store.sessions_with_missing_source_for(&keys) {
-            Ok(returned) => returned,
+        let was_missing = match self.store.sessions_with_missing_source_for(&keys) {
+            Ok(missing) => missing.contains(&record.key),
             Err(error) => {
                 self.fail(error);
                 return None;
             }
         };
-        if !changed && !returned.contains(&record.key) {
+        let source_confirmed = was_missing
+            && match source {
+                Some(source) => source_is_available(source, record).await,
+                None => false,
+            };
+        if !changed && !source_confirmed {
             return match self.io.checked(self.store.accept_session_if_current(guard)) {
                 Ok(true) => {
                     self.outcomes.insert(
@@ -1839,10 +2046,18 @@ impl IncrementalAdmission<'_> {
                 return None;
             }
         };
-        let Some((incarnations, revision)) = (match self.io.checked(
+        let committed = if source_confirmed {
+            self.store.upsert_discovered_session_if_current(
+                guard,
+                record,
+                &self.evidence_agents,
+                true,
+            )
+        } else {
             self.store
-                .upsert_session_if_current(guard, record, &self.evidence_agents),
-        ) {
+                .upsert_session_if_current(guard, record, &self.evidence_agents)
+        };
+        let Some((incarnations, revision)) = (match self.io.checked(committed) {
             Ok(SessionCommitOutcome::Upserted(result)) => Some(result),
             Ok(SessionCommitOutcome::Deleted(_)) => None,
             Ok(SessionCommitOutcome::Rejected(_)) => None,
@@ -2208,7 +2423,7 @@ async fn describe_with_gate(
                 changed: Vec::new(),
                 list_changed: false,
                 gate: GateCounts::default(),
-                project_deferrals_superseded: false,
+                superseded_project_deferrals: None,
             };
         }
     };
@@ -2555,7 +2770,7 @@ async fn describe_with_gate(
         changed,
         list_changed,
         gate,
-        project_deferrals_superseded: false,
+        superseded_project_deferrals: None,
     }
 }
 
@@ -3027,8 +3242,9 @@ async fn describe_candidate_with_read(
         activity_at,
         queue_wait_ms = queued_at.elapsed().as_millis() as u64,
     );
-    let result = if let Some(reused) =
-        reuse_unchanged_record(&log, previous.as_ref(), indexed_title.as_ref()).await
+    let result = if read.is_none()
+        && let Some(reused) =
+            reuse_unchanged_record(&log, previous.as_ref(), indexed_title.as_ref()).await
     {
         let changed = previous.as_ref().is_some_and(|stored| stored != &reused);
         (DescribeOutcome::Session(Box::new(reused)), changed)

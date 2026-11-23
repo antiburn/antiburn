@@ -409,9 +409,22 @@ impl Floors {
         (run_now, deferred, earliest_due)
     }
 
+    /// Stamp covered work and keep file recoveries that still need a watcher refresh.
+    pub(super) fn settle_full_pass(
+        &mut self,
+        work: &mut ScopedWork,
+        uncovered: &BTreeSet<SessionActivityKey>,
+        now: Instant,
+    ) {
+        let mut covered = std::mem::take(work);
+        work.sessions = covered
+            .sessions
+            .extract_if(.., |key| uncovered.contains(key))
+            .collect();
+        self.stamp(&covered, now);
+    }
+
     /// Stamp every item in `work` as run at `now`, without deciding anything.
-    /// A full pass re-describes everything a scoped pass would have, so it
-    /// supersedes and satisfies every floor for the work it displaced.
     pub fn stamp(&mut self, work: &ScopedWork, now: Instant) {
         for key in &work.sessions {
             self.sessions.insert(key.clone(), now);
@@ -460,6 +473,32 @@ impl<K: Ord> Admission<'_, K> {
 pub struct ScopedSummary {
     pub sessions: usize,
     pub re_described: usize,
+}
+
+/// Find queued file recoveries that the completed scan did not resolve.
+pub(super) async fn uncovered_historical_recoveries(
+    store: &Store,
+    sessions: &BTreeSet<SessionActivityKey>,
+    now: i64,
+) -> anyhow::Result<BTreeSet<SessionActivityKey>> {
+    let retention = store.settings_snapshot().session_data_retention_days;
+    if sessions.is_empty() || super::history::window_secs(retention, now).is_none() {
+        return Ok(BTreeSet::new());
+    }
+    let keys = sessions.iter().cloned().collect::<Vec<_>>();
+    let reader = store.clone();
+    let records =
+        tokio::task::spawn_blocking(move || reader.session_records_for_activity_keys(&keys))
+            .await??;
+    let Some((_, missing)) =
+        super::owner::historical_missing_sources(store, &records, now, retention).await?
+    else {
+        return Ok(BTreeSet::new());
+    };
+    Ok(records
+        .into_iter()
+        .filter_map(|(key, record)| missing.contains(&record.key).then_some(key))
+        .collect())
 }
 
 /// T1: refresh exactly the sessions named in `keys`, without discovery,

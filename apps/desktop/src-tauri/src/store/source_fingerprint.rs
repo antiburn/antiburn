@@ -106,12 +106,13 @@ impl Store {
                 pending.admission_revision, fingerprint, pending.fingerprint, now, next_attempt],
         )? == 1;
         if changed
-            && pending
+            && (pending
                 .fingerprint
                 .as_deref()
                 .is_some_and(|old| old != fingerprint)
+                || evidence_source_missing_in(&transaction, &pending.key)?)
         {
-            mark_evidence_pending_in(&transaction, &pending.key)?;
+            enroll_evidence_after_source_update_in(&transaction, &pending.key, now, true)?;
         }
         transaction.commit()?;
         Ok(changed)

@@ -428,6 +428,7 @@ fn spawn_learning_worker(
             },
             &WorkerLoopReports {
                 ingested: &|_, _| {},
+                source_changed: &|_| {},
                 publication_drained: &|generation| {
                     state.publication_batches.fetch_add(1, Ordering::SeqCst);
                     gate.mark_turns_published(generation);
@@ -568,6 +569,7 @@ async fn a_busy_old_publication_cannot_enable_learning_after_reset_and_a_failed_
             },
             &WorkerLoopReports {
                 ingested: &|_, _| {},
+                source_changed: &|_| {},
                 publication_drained: &|generation| {
                     task_drained.lock().unwrap().push(generation);
                     task_gate.mark_turns_published(generation);

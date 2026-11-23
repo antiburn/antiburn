@@ -3,8 +3,12 @@ use super::*;
 use std::sync::atomic::AtomicI64;
 use tokio::sync::Semaphore;
 
+#[path = "tests/historical_source_recovery_integration_tests.rs"]
+mod historical_source_recovery;
 #[path = "tests/live_admission.rs"]
 mod live_admission;
+#[path = "tests/source_refresh_integration_tests.rs"]
+mod source_refresh;
 
 #[test]
 fn cursor_discovery_snapshot_carries_only_current_grants() {
@@ -67,6 +71,128 @@ fn writer(store: &Store) -> IncrementalAdmission<'_> {
     }
 }
 
+#[tokio::test]
+async fn missing_file_is_requeued_only_after_verified_return() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open_in_memory(temp.path()).unwrap();
+    for environment in ["native", "wsl:ubuntu"] {
+        let log = fixture_log(temp.path(), "11111111-1111-4111-8111-111111111111");
+        let SessionSource::File(path) = &log.source else {
+            unreachable!()
+        };
+        let outcome = describe_one(log.clone(), temp.path(), None).await;
+        let DescribeOutcome::Session(mut record) = outcome else {
+            panic!("fixture file was not admitted")
+        };
+        record.key.environment_key = environment.to_owned();
+        store
+            .upsert_sessions(std::slice::from_ref(&record), &["claude-code"])
+            .unwrap();
+        let claim = store
+            .claim_next_evidence(&["claude-code"], 100, 60)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim.key, record.key);
+        store
+            .fail_evidence(
+                &claim,
+                crate::store::EvidenceFailure::Failed {
+                    revisions: crate::analysis::projection_revisions(),
+                },
+                crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING,
+            )
+            .unwrap();
+        let original = std::fs::read(path).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        let mut admission = writer(&store);
+        let guard = store
+            .begin_session_write(&record.key, &record.source_label)
+            .unwrap();
+        assert!(
+            admission
+                .commit_with_incarnation(&guard, &record, false, Some(&log.source))
+                .await
+                .is_some()
+        );
+        assert!(
+            store
+                .claim_next_evidence(&["claude-code"], 101, 60)
+                .unwrap()
+                .is_none()
+        );
+
+        std::fs::write(path, original).unwrap();
+        let guard = store
+            .begin_session_write(&record.key, &record.source_label)
+            .unwrap();
+        assert!(
+            admission
+                .commit_with_incarnation(&guard, &record, false, Some(&log.source))
+                .await
+                .is_some()
+        );
+        assert_eq!(
+            store
+                .claim_next_evidence(&["claude-code"], 101, 60)
+                .unwrap()
+                .unwrap()
+                .key,
+            record.key
+        );
+    }
+}
+
+#[tokio::test]
+async fn bundle_recovery_requires_each_required_component() {
+    let temp = tempfile::tempdir().unwrap();
+    let log = fixture_log(temp.path(), "11111111-1111-4111-8111-111111111111");
+    let DescribeOutcome::Session(mut record) = describe_one(log, temp.path(), None).await else {
+        panic!("fixture file was not admitted");
+    };
+    let id = record.key.session_id.clone();
+    let dir = temp.path().join(".cline/data/tasks").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = dir.join(format!("{id}.json"));
+    let messages = dir.join(format!("{id}.messages.json"));
+    std::fs::write(&manifest, "{}").unwrap();
+    std::fs::write(&messages, "[]").unwrap();
+    let cline = SessionSource::File(manifest);
+    record.key.agent = "cline".into();
+    assert!(!source_is_available(&cline, &record).await);
+
+    let db = temp.path().join(".cline/data/db/sessions.db");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(&db).unwrap();
+    connection
+        .execute_batch("CREATE TABLE sessions (session_id TEXT, is_subagent INTEGER);")
+        .unwrap();
+    assert!(!source_is_available(&cline, &record).await);
+    connection
+        .execute("INSERT INTO sessions VALUES (?1, 0)", [&id])
+        .unwrap();
+    assert!(source_is_available(&cline, &record).await);
+    std::fs::remove_file(messages).unwrap();
+    assert!(!source_is_available(&cline, &record).await);
+
+    let dir = temp.path().join("session-state").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let events = dir.join("events.jsonl");
+    std::fs::write(&events, "{}").unwrap();
+    record.key.agent = "copilot".into();
+    assert!(source_is_available(&SessionSource::File(events), &record).await);
+
+    let dir = temp.path().join(format!("sess_{id}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let metadata = dir.join("session.json");
+    std::fs::write(&metadata, "{}").unwrap();
+    let kiro = SessionSource::File(metadata);
+    record.key.agent = "kiro".into();
+    assert!(!source_is_available(&kiro, &record).await);
+    std::fs::write(dir.join("messages.jsonl"), "{}").unwrap();
+    assert!(source_is_available(&kiro, &record).await);
+}
+
 fn policy(
     store: &Store,
     home: &std::path::Path,
@@ -79,6 +205,8 @@ fn policy(
         include_non_repo_folders: true,
         progress: false,
         refresh_repositories: false,
+        source_refresh: None,
+        historical_missing: None,
         hooks,
     }
 }
@@ -94,11 +222,10 @@ fn batch(logs: Vec<SessionLog>) -> DiscoveryBatch {
 #[test]
 fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
     let historical = ScanController::default();
-    super::super::retry_superseded_project_deferrals(
+    super::super::retry_project_deferrals(
         &historical,
-        &ScanTrigger::SourceRefresh {
-            agents: vec![AgentKind::Claude.slug()],
-        },
+        &ScanTrigger::HistoricalScan,
+        &HashSet::new(),
     );
     assert!(matches!(
         historical
@@ -110,7 +237,7 @@ fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
     ));
 
     let current = ScanController::default();
-    super::super::retry_superseded_project_deferrals(&current, &ScanTrigger::Tick);
+    super::super::retry_project_deferrals(&current, &ScanTrigger::Tick, &HashSet::new());
     assert!(matches!(
         current
             .pending_trigger
@@ -200,7 +327,7 @@ async fn superseded_project_deferral_publication_is_reported_after_policy_change
     .unwrap();
     writer.finish().unwrap();
 
-    assert!(described.project_deferrals_superseded);
+    assert!(described.superseded_project_deferrals.is_some());
 }
 
 #[tokio::test]
@@ -541,8 +668,14 @@ async fn production_owner_recovers_dropped_hash_after_restart_outside_the_activi
             .unwrap(),
         first
     );
+    assert!(
+        store
+            .claim_next_evidence(&["opencode"], 1329, 60)
+            .unwrap()
+            .is_none()
+    );
     let new_claim = store
-        .claim_next_evidence(&["opencode"], 1300, 60)
+        .claim_next_evidence(&["opencode"], 1330, 60)
         .unwrap()
         .unwrap();
     assert!(new_claim.source_generation > old_claim.source_generation);

@@ -66,6 +66,8 @@ async fn scan_at(store: &Store, home: &std::path::Path, logs: Vec<SessionLog>, e
         include_non_repo_folders: true,
         progress: false,
         refresh_repositories: false,
+        source_refresh: None,
+        historical_missing: None,
         hooks: None,
     };
     let (sender, finite) = mpsc::channel(1);
