@@ -119,8 +119,10 @@ telemetry, crash-reporting, or session-replay SDK.
 
 SSH collection has been retired. Upgrade cleanup removes previously synced SSH
 sessions and their cached transcripts, analysis, and evidence from this computer.
-Local and WSL sessions, preferences, and remote originals are unchanged. Cleanup
-does not connect to remote hosts or upload saved copies. Cloud content upload
+If a cached file cannot be removed, Antiburn logs the error and retries cleanup
+on the next launch. Cached files can remain on this computer until removal
+succeeds. Local and WSL sessions, preferences, and remote originals are unchanged.
+Cleanup does not connect to remote hosts or upload saved copies. Cloud content upload
 needs separate, explicit consent. SSH aliases, host names, remote paths, and
 connection diagnostics are not analytics data.
 
