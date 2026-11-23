@@ -13,6 +13,7 @@ use super::local_usage::{
     live_usage_settings, provider_usage_summary_for_store,
     session_limit_allocation_summary_for_store,
 };
+use super::recent_activity_entries;
 use super::usage::allowance_usage_for_store;
 use crate::store::provider_limit::{FactorPoint, LANE_FIVE_HOUR};
 use crate::store::{AnalysisRecord, Store};
@@ -247,4 +248,60 @@ fn live_usage_settings_match_through_the_reader() {
 
     assert_eq!(live_usage_settings(&writer), Some(settings.clone()));
     assert_eq!(live_usage_settings(&reader), Some(settings));
+}
+
+#[test]
+fn recent_activity_entries_match_through_the_reader() {
+    let (_directory, writer) = file_backed_store();
+    let now = crate::scan::unix_now();
+    seed_scenario(&writer, now);
+    let reader = writer
+        .open_reader(Duration::from_millis(100))
+        .expect("opens a reader");
+
+    for local_only in [false, true] {
+        let from_writer = recent_activity_entries(&writer, None, local_only, now)
+            .expect("the writer lists sessions");
+        let from_reader = recent_activity_entries(&reader, None, local_only, now)
+            .expect("the reader lists sessions");
+        assert_eq!(
+            serde_json::to_value(&from_writer).expect("serializes writer rows"),
+            serde_json::to_value(&from_reader).expect("serializes reader rows"),
+        );
+        assert_eq!(from_reader.len(), 1, "the seeded session is listed");
+    }
+}
+
+/// The session list must not wait for a long writer transaction.
+#[test]
+fn recent_activity_entries_do_not_wait_for_the_writer_lock() {
+    let (_directory, writer) = file_backed_store();
+    let now = crate::scan::unix_now();
+    seed_scenario(&writer, now);
+    let reader = writer
+        .open_reader(Duration::from_millis(100))
+        .expect("opens a reader");
+
+    let _held = writer.lock();
+    let entries = recent_activity_entries(&reader, None, false, now)
+        .expect("the reader lists sessions while the writer is locked");
+    assert_eq!(entries.len(), 1);
+}
+
+#[test]
+fn settings_show_a_save_at_once_and_do_not_wait_for_the_writer_lock() {
+    let (_directory, writer) = file_backed_store();
+    let reader = writer
+        .open_reader(Duration::from_millis(100))
+        .expect("opens a reader");
+    let mut settings = reader.settings().expect("reads the defaults");
+    settings.activity_window_days += 1;
+    writer.save_settings(&settings).expect("saves settings");
+
+    let held = writer.lock();
+    held.execute_batch("BEGIN IMMEDIATE")
+        .expect("starts a writer transaction");
+    assert_eq!(reader.settings().expect("reads the save"), settings);
+    held.execute_batch("ROLLBACK")
+        .expect("ends the transaction");
 }
