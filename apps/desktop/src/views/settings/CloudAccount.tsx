@@ -48,6 +48,20 @@ const localRecoveryError = "Some sessions need local recovery. Saved data is kep
 const sessionCountFormat = new Intl.NumberFormat()
 const uploadPercentFormat = new Intl.NumberFormat(undefined, { style: "percent" })
 
+/** Announce scan results and completion without reading each upload. */
+function backfillAnnouncement(
+  name: string,
+  progress: NonNullable<CloudOngoingStatus["uploadProgress"]>,
+) {
+  const { uploaded, total } = progress
+  if (total === null) return `${name}: Session total unavailable.`
+  if (total === 0) return `${name}: No sessions found for backfill.`
+  const count = `${sessionCountFormat.format(total)} ${total === 1 ? "session" : "sessions"}`
+  return uploaded === total
+    ? `${name}: Backfill complete. ${count} uploaded.`
+    : `${name}: Scan complete. ${count} found.`
+}
+
 /** Show counts without claiming a percentage until discovery has a nonzero total. */
 function BackfillUploadProgress({
   name,
@@ -58,7 +72,7 @@ function BackfillUploadProgress({
   progress: NonNullable<CloudOngoingStatus["uploadProgress"]>
   scanning: boolean
 }) {
-  if (total === 0) return <p role="status">No sessions found for backfill.</p>
+  if (total === 0) return <p>No sessions found for backfill.</p>
 
   const count = sessionCountFormat.format(uploaded)
   if (total === null) {
@@ -1046,8 +1060,12 @@ function CloudProjectsAccount({
                     {(label || !showButton) && (
                       <p className="font-medium text-label wrap-anywhere">{name}</p>
                     )}
-                    {showButton && (
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <div
+                      className={
+                        showButton ? "flex flex-wrap items-center gap-x-2 gap-y-1" : "sr-only"
+                      }
+                    >
+                      {showButton && (
                         <button
                           type="button"
                           className="ui-push-button h-auto! min-h-8 max-w-full shrink-0 text-left wrap-anywhere aria-disabled:opacity-60"
@@ -1067,21 +1085,26 @@ function CloudProjectsAccount({
                         >
                           Backfill sessions
                         </button>
-                        <span role="status" className="flex items-center gap-1">
-                          {active && (
-                            <>
-                              <LoaderCircle
-                                size={13}
-                                className="shrink-0 motion-safe:animate-spin"
-                                aria-hidden="true"
-                              />
-                              {label && <span className="sr-only">{name}: </span>}
-                              {waiting ? "Waiting for backfill to start…" : "Scanning folders…"}
-                            </>
-                          )}
-                        </span>
-                      </div>
-                    )}
+                      )}
+                      <span
+                        role="status"
+                        className={active ? "flex items-center gap-1" : "sr-only"}
+                      >
+                        {active ? (
+                          <>
+                            <LoaderCircle
+                              size={13}
+                              className="shrink-0 motion-safe:animate-spin"
+                              aria-hidden="true"
+                            />
+                            {label && <span className="sr-only">{name}: </span>}
+                            {waiting ? "Waiting for backfill to start…" : "Scanning folders…"}
+                          </>
+                        ) : (
+                          progress && backfillAnnouncement(name, progress)
+                        )}
+                      </span>
+                    </div>
                     {progress && (
                       <BackfillUploadProgress
                         name={name}

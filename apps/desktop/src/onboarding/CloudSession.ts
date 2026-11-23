@@ -25,6 +25,11 @@ import {
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
 import { personalCloudDestination } from "../lib/cloudDestination"
 import {
+  isCurrentProjectFolderRoute,
+  projectFolderRoutes,
+  projectSyncConsent,
+} from "./cloudProjectRoutes"
+import {
   accountViewPatch,
   backfillTarget,
   cloudContextChange,
@@ -1446,24 +1451,12 @@ export class CloudSession {
                 ([id]) => (this.projectTargets[id] ?? binding.destinationId) === destinationId,
               ),
             )
-        const status = await port.enable({
-          ...target,
-          version: "desktop-project-sync-v1",
-          selectedSources: this.projectSources.filter((source) =>
-            selected.some(
-              (project) =>
-                project.sourceKind === source.sourceKind && project.sourcePath === source.path,
-            ),
-          ),
-          projects: selected,
-          projectChoices: {
+        const status = await port.enable(
+          projectSyncConsent(target, this.projectSources, selected, {
             ...(destinationId === binding.destinationId ? this.confirmedProjectChoices : {}),
             ...choices,
-          },
-          fullContent: true,
-          ongoing: true,
-          attachments: false,
-        })
+          }),
+        )
         if (!stillBound()) return
         const observed = this.projectPolicy(destinationId)
         if (observed === policy) {
@@ -1510,17 +1503,9 @@ export class CloudSession {
     destinations: string[],
     singleWorkspaceChoices?: CloudProjectChoices,
   ) {
-    const workspaceChoices = () =>
-      this.snapshot.projects?.workspaces ??
-      (this.snapshot.cloud.destination ? [this.snapshot.cloud.destination] : [])
     const destinationFor = (id: string) => this.projectTargets[id] ?? binding.destinationId
-    const routes = destinations.map((id) => ({
-      id,
-      groups: groups.filter((group) => destinationFor(group.id) === id),
-      workspace: workspaceChoices().find((item) => item.id === id),
-    }))
-    if (!routes.length || routes.some((route) => !route.workspace || !route.groups.length))
-      return
+    const routes = projectFolderRoutes(this.snapshot, groups, destinations, destinationFor)
+    if (!routes) return
     const generation = this.generation
     const current = () =>
       this.active &&
@@ -1538,8 +1523,9 @@ export class CloudSession {
     this.publish({ busy: true, error: null, sync: starting })
     if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
     try {
-      for (const { id, groups, workspace } of routes) {
+      for (const route of routes) {
         if (!current()) return
+        const { id, groups, workspace } = route
         const target = { ...binding, destinationId: id }
         const ids = groups.map((group) => group.id)
         const choices = Object.fromEntries(ids.map((id) => [id, true]))
@@ -1549,24 +1535,9 @@ export class CloudSession {
           choices,
         )
         try {
-          const projects = this.snapshot.projects
           if (
-            !projects?.loaded ||
-            projects.loading ||
-            projects.error ||
-            cloudUploadStatusUnknown(this.snapshot.ongoing) ||
-            !workspaceChoices().some(
-              (item) => item.id === id && item.kind === workspace?.kind,
-            ) ||
-            teamFoldersToConfirm(this.snapshot, id) ||
-            groups.some(
-              (group) =>
-                destinationFor(group.id) !== id ||
-                this.hasSavedProject(group.id) ||
-                !projects.groups.some(
-                  (item) =>
-                    item.id === group.id && item.confirmationKey === group.confirmationKey,
-                ),
+            !isCurrentProjectFolderRoute(this.snapshot, route, destinationFor, (id) =>
+              this.hasSavedProject(id),
             )
           )
             throw new Error("Folder choices or workspace availability changed.")
@@ -1575,22 +1546,12 @@ export class CloudSession {
             await this.addPendingProjects(port, target, groups, current, false, true)
           } else {
             const draft = this.projectChoices
-            const status = await port.enable({
-              ...target,
-              version: "desktop-project-sync-v1",
-              selectedSources: this.projectSources.filter((source) =>
-                selected.some(
-                  (project) =>
-                    project.sourceKind === source.sourceKind &&
-                    project.sourcePath === source.path,
-                ),
-              ),
-              projects: selected,
-              projectChoices: { ...singleWorkspaceChoices, ...choices },
-              fullContent: true,
-              ongoing: true,
-              attachments: false,
-            })
+            const status = await port.enable(
+              projectSyncConsent(target, this.projectSources, selected, {
+                ...singleWorkspaceChoices,
+                ...choices,
+              }),
+            )
             if (!current()) return
             const observed = this.projectPolicy(id)
             if (observed === policy) this.receiveOngoing(status)

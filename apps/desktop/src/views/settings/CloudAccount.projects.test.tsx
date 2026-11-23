@@ -1016,24 +1016,35 @@ it("shows accepted sessions without a percentage until the scan has a nonzero to
       uploadProgress: { uploaded: 1, total: null },
     }),
   )
-  expect(screen.getByText("Scanning folders…")).toBeVisible()
+  const status = screen.getByText("Scanning folders…")
+  expect(status).toBeVisible()
+  expect(status).toHaveAttribute("role", "status")
   expect(screen.getByText("1 session uploaded")).toBeVisible()
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 2, total: null } }))
+  expect(status).toHaveTextContent("Personal: Session total unavailable.")
   expect(screen.getByText("2 sessions uploaded. Session total unavailable.")).toBeVisible()
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 0, total: 0 } }))
-  expect(screen.getByText("No sessions found for backfill.")).toBeVisible()
+  expect(screen.getByText("No sessions found for backfill.", { selector: "p" })).toBeVisible()
+  expect(status).toHaveTextContent("Personal: No sessions found for backfill.")
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
   expect(screen.queryByText(/%$/)).not.toBeInTheDocument()
 
+  const count = new Intl.NumberFormat().format(1000)
+  act(() => emitSync({ ...saved, uploadProgress: { uploaded: 998, total: 1000 } }))
+  expect(status).toHaveTextContent(`Personal: Scan complete. ${count} sessions found.`)
+  const statusText = status.firstChild
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 999, total: 1000 } }))
+  expect(status.firstChild).toBe(statusText)
+  expect(status).toHaveTextContent(`Personal: Scan complete. ${count} sessions found.`)
   expect(screen.getByText(">99%")).toBeVisible()
   expect(screen.queryByText("100%")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 1000, total: 1000 } }))
+  expect(status).toHaveTextContent(`Personal: Backfill complete. ${count} sessions uploaded.`)
   expect(screen.getByText("100%")).toBeVisible()
 
   act(() =>
