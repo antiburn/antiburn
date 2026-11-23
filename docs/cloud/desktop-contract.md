@@ -208,8 +208,8 @@ credential cleanup.
 
 Loopback accept, read, write, cancellation polling, and expiry use Tokio async I/O
 outside the controller mutex and blocking-work permit. The existing HTTP transport
-remains synchronous with a 15-second timeout per request, only inside admitted
-blocking work. This does not make the whole authentication engine asynchronous.
+remains synchronous with a 15-second timeout per request. Normal requests use
+admitted blocking work. Best-effort logout uses a separate blocking worker.
 
 A process-wide mutex serializes credential operations. One lifetime OS lock owns
 the vault namespace. A second process cannot write credentials until that owner
@@ -227,10 +227,9 @@ the same grant ID, account, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.
 Rejected refresh responses save the original and returned proofs for logout
-before updating local state. These cleanup credentials cannot restore an
-authenticated session. Cleanup requires confirmation for both proofs. A failed
-secure-storage write keeps an unconfirmed warning and attempts to revoke the
-returned proof.
+before updating local state. These cleanup credentials cannot restore a
+session. Best-effort logout can try both proofs without waiting on the main
+Cloud worker. A failed secure-storage write keeps an unconfirmed warning.
 Decoded responses retain bounded logout proof even when token bounds or authority
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
@@ -238,25 +237,26 @@ of a newer connection cannot prove that an older connection was revoked.
 Settings keeps the connection action available after onboarding. Desktop sign-out
 first flushes a new signed-out generation. Browser cancellation changes only the
 pending browser-attempt generation; it does not cancel an established connection
-or its refresh. Sign-out revokes only this client's current
-grant, not every connection on the account. A failed remote response stays visible
-as unconfirmed revocation. The client durably records confirmed remote revocation
-before deleting its keyring credential. A restart can therefore finish local
-deletion without requiring that deleted credential or repeating remote logout.
-A deletion failure remains visible, and the closed marker blocks login
-restoration. Cleanup-only keyring records cannot restore an authenticated session.
-Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
+or its refresh. Desktop closes local access and tries to remove the keyring
+credential before returning from sign-out. It does not wait for Cloud to revoke
+the old grant. A deletion failure leaves the closed marker in place and allows
+Desktop to retry local deletion. Reconnect can proceed once local cleanup
+finishes.
+
+At most one detached logout runs at a time for the account and old Team slots.
+An occupied slot skips the new attempt. Desktop does not queue it for later.
+The worker sends old proofs only to their original service and cannot change
+credentials or account state. Desktop records a warning if an attempt fails or
+is skipped. A confirmed logout does not add a warning or clear an older one.
+Close old connections in Cloud settings if Desktop reports this warning.
 Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
 when authority changes.
 
-When remote revocation is unknown and no refresh credential remains, Settings
-offers an explicit local reset. The confirmation states that this does not revoke
-the old connection. Reset permits a new connection but preserves an
-unconfirmed-revocation warning, including after reconnect and restart. The user
-can revoke the old connection in browser Settings. Reset does not remove retry
-bytes or accept late browser callbacks.
+Settings still offers local reset for older cleanup records with no refresh
+credential. A reset does not revoke the old connection, remove retry bytes, or
+accept late browser callbacks.
 
 Callback URLs, codes, tokens, PKCE material, and raw provider errors do not enter
 renderer events, logs, or analytics. Identity and folder paths do not enter
@@ -290,7 +290,10 @@ same resource, account, and workspace.
 
 Sign-in, source access, and the legacy local **Upload sessions** preference do
 not grant upload consent. Use **Start syncing** during onboarding or **Save**
-in Settings to approve selected folders. Each save selects one workspace.
+in Settings to approve selected folders. Onboarding can approve folders for
+more than one workspace in one action. Desktop saves each workspace separately
+and checks whether it saved the exact folders. A failed route stays selected for
+retry. Settings saves one workspace at a time.
 To change a saved folder's destination, turn off the old rule, then
 approve the folder for the new destination. This does not move sessions already
 in Cloud. The new rule may upload older local sessions. `desktop-project-sync-v1`

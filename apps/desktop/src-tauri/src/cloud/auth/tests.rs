@@ -210,7 +210,8 @@ fn cloud_legacy_keyring_record_can_revoke_but_never_refresh() {
     assert_eq!(engine.refresh(100, || true), Err(Failure::ReauthRequired));
     assert!(engine.session().is_none());
     assert!(revoked.lock().unwrap().is_empty());
-    engine.sign_out().unwrap();
+    let logout = engine.sign_out().unwrap().unwrap();
+    assert!(logout.send(engine.transport.as_ref()));
     assert_eq!(*revoked.lock().unwrap(), ["synthetic-legacy-refresh"]);
     assert!(engine.vault.read().unwrap().is_none());
 }
@@ -323,16 +324,18 @@ fn cloud_account_approval_requires_one_personal_anchor_and_rotation_cannot_chang
             assert!(engine.vault.read().unwrap().unwrap().account_grant);
             *script.eligible.lock().unwrap() = Ok(vec![changed.clone()]);
             assert_eq!(engine.refresh(131, || true), Err(Failure::ReauthRequired));
+            engine.wait_remote_logout();
             assert_eq!(
                 *script.revoked.lock().unwrap(),
                 ["synthetic-refresh-0", "synthetic-refresh-1"]
             );
         } else {
             assert_eq!(callback, Err(Failure::ReauthRequired));
+            engine.wait_remote_logout();
             assert_eq!(*script.revoked.lock().unwrap(), ["synthetic-refresh-0"]);
         }
         assert!(engine.session().is_none());
-        assert!(engine.vault.read().unwrap().is_none());
+        assert!(engine.vault.read().unwrap().unwrap().session.is_none());
     }
 }
 
@@ -484,6 +487,7 @@ mod debug_http {
         let (release, wait) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -629,7 +633,7 @@ mod debug_http {
             if cleanup_refresh_tokens.is_empty() {
                 assert_eq!(engine.refresh(100, || true), Err(Failure::ReauthRequired));
             }
-            assert_eq!(engine.sign_out(), Err(Failure::CredentialFailed));
+            assert_eq!(engine.sign_out().err(), Some(Failure::CredentialFailed));
             assert!(engine.session().is_none());
             let retained = engine.vault.read().unwrap().unwrap();
             assert_eq!(retained.issuer, old.issuer);

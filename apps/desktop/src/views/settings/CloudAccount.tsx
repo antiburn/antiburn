@@ -119,6 +119,7 @@ export function CloudAccount({
   const readFailed =
     value.loaded && !!value.error && !value.cloud.identity && !waitingForBrowser
   const cleanupPending = cloudAccountCleanupPending(value.cloud)
+  const requiresAccountCleanup = cleanupPending && value.cloud.status === "reauth_required"
   const needsSignOut =
     !!value.cloud.identity ||
     cleanupPending ||
@@ -134,7 +135,7 @@ export function CloudAccount({
       : value.error
     : waitingForBrowser
       ? cloudStatusMessage("waiting")
-      : cleanupPending && value.cloud.status === "reauth_required"
+      : requiresAccountCleanup
         ? cloudSignOutBeforeSignIn
         : !["idle", "signed_in", "signed_out"].includes(value.cloud.status)
           ? cloudStatusMessage(value.cloud.status)
@@ -192,7 +193,10 @@ export function CloudAccount({
         {value.loaded &&
           value.cloud.authEnabled &&
           !readFailed &&
-          !needsSignOut &&
+          !value.cloud.identity &&
+          !requiresAccountCleanup &&
+          !value.cloud.localCleanupPending &&
+          value.cloud.status !== "credential_failed" &&
           !checkingSignIn && (
             <button
               className="ui-push-button shrink-0 aria-disabled:opacity-50"

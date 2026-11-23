@@ -102,6 +102,7 @@ it("uses the existing account to save folder consent only for the chosen Team", 
       status: "ready",
       destinationId: "synthetic-team",
       consentVersion: "desktop-project-sync-v1",
+      projects: projectGroup().projects,
     }),
   )
   render(
@@ -129,14 +130,14 @@ it("uses the existing account to save folder consent only for the chosen Team", 
   )
 })
 
-it("explains a mixed draft and starts only after the user narrows it to one workspace", async () => {
+it("confirms a mixed draft and retries only the folder route that failed", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const docsProject = {
     sourceKind: "claude_jsonl" as const,
     sourcePath: "/Example/claude/projects/docs",
     projectPath: "/Example/Docs",
   }
-  ongoing.groups.mockResolvedValueOnce({
+  ongoing.groups.mockResolvedValue({
     groups: [
       projectGroup(),
       projectGroup({
@@ -155,6 +156,30 @@ it("explains a mixed draft and starts only after the user narrows it to one work
     nextCursor: null,
     partial: false,
   })
+  let personalStatus = ongoingStatus()
+  ongoing.status.mockImplementation(async () => personalStatus)
+  ongoing.enable
+    .mockImplementationOnce(async (consent) => {
+      personalStatus = ongoingStatus({
+        status: "ready",
+        consentVersion: consent.version,
+        projects: consent.projects,
+        selectedSources: consent.selectedSources,
+        projectChoices: consent.projectChoices,
+      })
+      return personalStatus
+    })
+    .mockRejectedValueOnce(new Error("Team unavailable"))
+    .mockImplementationOnce(async (consent) =>
+      ongoingStatus({
+        status: "ready",
+        destinationId: team.id,
+        consentVersion: consent.version,
+        projects: consent.projects,
+        selectedSources: consent.selectedSources,
+        projectChoices: consent.projectChoices,
+      }),
+    )
   port.workspaces = vi.fn(async () => [personal, team])
   render(
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
@@ -171,20 +196,38 @@ it("explains a mixed draft and starts only after the user narrows it to one work
   expect(
     screen.getByText(/Sync destinations: Personal workspace · Team workspace: Example Team/),
   ).toBeVisible()
-  expect(screen.getByText(/Set folders for any other workspace to Don't sync/)).toBeVisible()
-  expect(start).toBeDisabled()
+  expect(screen.getByText("Each folder uploads only to its selected workspace.")).toBeVisible()
+  expect(start).toBeEnabled()
   expect(ongoing.enable).not.toHaveBeenCalled()
 
-  fireEvent.change(docs, { target: { value: "" } })
-  expect(start).toBeEnabled()
   fireEvent.click(start)
-  await waitFor(() =>
-    expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        destinationId: personal.id,
-        projects: projectGroup().projects,
-      }),
-    ),
+  expect(
+    await screen.findByText(/Could not confirm folder sync for Example Team/),
+  ).toBeVisible()
+  expect(ongoing.enable).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({
+      destinationId: personal.id,
+      projects: projectGroup().projects,
+    }),
+  )
+  expect(ongoing.enable).toHaveBeenNthCalledWith(
+    2,
+    expect.objectContaining({ destinationId: team.id, projects: [docsProject] }),
+  )
+  expect(
+    screen.queryByRole("combobox", { name: /Sync destination for Studio/ }),
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole("combobox", { name: /Sync destination for Docs/ })).toHaveValue(
+    team.id,
+  )
+
+  fireEvent.click(screen.getByRole("button", { name: "Start syncing" }))
+  expect(await screen.findByText("Background sync enabled")).toBeVisible()
+  expect(ongoing.enable).toHaveBeenCalledTimes(3)
+  expect(ongoing.enable).toHaveBeenNthCalledWith(
+    3,
+    expect.objectContaining({ destinationId: team.id, projects: [docsProject] }),
   )
 })
 
@@ -283,7 +326,7 @@ it("lets older servers add an explicit Personal choice with the one-workspace sw
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
-it("keeps Done available while the desktop enable command is pending", async () => {
+it("waits for exact folder confirmation before offering Done", async () => {
   const { port, ongoing } = cloudProjectFixture()
   let finish!: (value: CloudOngoingStatus) => void
   ongoing.enable.mockImplementationOnce(
@@ -293,33 +336,45 @@ it("keeps Done available while the desktop enable command is pending", async () 
       }),
   )
   const done = vi.fn()
-  const { unmount } = render(
-    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />,
-  )
+  render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
   await screen.findByRole("switch")
   fireEvent.click(screen.getByRole("button", { name: "Start syncing" }))
-  expect(screen.getByText("Starting background sync")).toBeVisible()
+  expect(screen.getByText("Confirming folder sync…")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
+  expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument()
+  await act(async () =>
+    finish(
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projects: projectGroup().projects,
+      }),
+    ),
+  )
   fireEvent.click(screen.getByRole("button", { name: "Done" }))
   expect(done).toHaveBeenCalledOnce()
-  unmount()
-  finish(ongoingStatus({ status: "ready", consentVersion: "desktop-project-sync-v1" }))
-  await Promise.resolve()
   expect(ongoing.enable).toHaveBeenCalledOnce()
 })
 
-it("keeps an unconfirmed enable on completion when later desktop account snapshots arrive", async () => {
+it("keeps a failed single-workspace choice selected and ready to retry", async () => {
   const { port, ongoing, emit } = cloudProjectFixture()
   ongoing.enable.mockRejectedValueOnce(new Error("Synthetic unknown result"))
   render(
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
-  await screen.findByRole("switch")
-  fireEvent.click(screen.getByRole("button", { name: "Start syncing" }))
-  await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
+  const folder = await screen.findByRole("switch")
+  const start = screen.getByRole("button", { name: "Start syncing" })
+  fireEvent.click(start)
+  expect(await screen.findByText(/Could not confirm folder sync for Personal/)).toBeVisible()
   act(() => emit({ syncEnabled: false }))
-  expect(screen.getByRole("button", { name: "Done" })).toBeEnabled()
-  expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
-  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(folder).toBeChecked()
+  expect(start).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument()
+  expect(ongoing.enable).toHaveBeenCalledOnce()
+  fireEvent.click(start)
+  expect(await screen.findByRole("button", { name: "Done" })).toBeEnabled()
+  expect(ongoing.enable).toHaveBeenCalledTimes(2)
+  expect(ongoing.enable.mock.calls[0]).toEqual(ongoing.enable.mock.calls[1])
 })
 
 it("loads another page without approving new members until Start", async () => {

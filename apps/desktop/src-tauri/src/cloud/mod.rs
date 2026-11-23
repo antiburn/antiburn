@@ -40,7 +40,7 @@ use tauri_plugin_opener::OpenerExt;
 use work::{BlockingWork, Priority};
 
 /// Closed renderer-safe authentication outcomes, not permission to capture content.
-#[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthStatus {
     #[default]
@@ -327,7 +327,7 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
                 .state::<Controller>()
                 .workspace_cleanup_failed
                 .load(Ordering::Acquire)
-            || engine.cleanup.prior_unconfirmed(),
+            || engine.remote_logout_unconfirmed(),
         setup_error,
         pending_sync,
         draft,
@@ -386,21 +386,27 @@ pub fn initialize(
     app.add_capability(include_str!("../../cloud-capabilities/account.json"))?;
     #[cfg(debug_assertions)]
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
+    let logout_app = app.clone();
     app.manage(Controller {
         blocking: BlockingWork::default(),
         setup_ready: AtomicBool::new(false),
         capture: Mutex::new(capture::Host::new(directory)),
         sync: sync::Scheduler::default(),
         project_cache: Mutex::new(projects::Cache::default()),
-        engine: Mutex::new(Engine::new(
-            Config::from_build(),
-            Box::new(KeyringVault::new(
-                app.config().identifier.clone(),
-                directory,
-            )),
-            Box::new(HttpTransport),
-            state::StateStore::new(directory),
-        )),
+        engine: Mutex::new(
+            Engine::new(
+                Config::from_build(),
+                Box::new(KeyringVault::new(
+                    app.config().identifier.clone(),
+                    directory,
+                )),
+                Box::new(HttpTransport),
+                state::StateStore::new(directory),
+            )
+            .with_remote_logout_notification(move || {
+                notify_remote_logout_failure(logout_app.clone())
+            }),
+        ),
         workspace_cleanup_failed: AtomicBool::new(false),
         attempt_generation: AtomicU64::new(0),
         account_generation: AtomicU64::new(0),
@@ -411,6 +417,23 @@ pub fn initialize(
     device_broker::start(app.clone(), directory.to_path_buf());
     sync::start(app.clone());
     Ok(())
+}
+
+/// Publish the durable warning with whichever account is current, without refreshing it.
+fn notify_remote_logout_failure(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let work = app.state::<Controller>().blocking.clone();
+        let _ = work
+            .run(Priority::Cleanup, move || {
+                let controller = app.state::<Controller>();
+                let engine = controller
+                    .engine
+                    .lock()
+                    .map_err(|_| "Cloud is unavailable.")?;
+                Ok(emit_snapshot(&app, snapshot(&app, &engine)))
+            })
+            .await;
+    });
 }
 
 /// Refresh native authority and notify all account surfaces, including when a
@@ -520,6 +543,23 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 return Ok(publish(&app, &engine));
             }
         };
+        // A replacement sign-in cannot inherit a pending invitation or queued
+        // account work from the previous connection, even for the same user.
+        let next_account_generation = account_generation + 1;
+        if controller
+            .account_generation
+            .compare_exchange(
+                account_generation,
+                next_account_generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Ok(snapshot(&app, &engine));
+        }
+        let account_generation = next_account_generation;
+        engine.generation = account_generation;
         if !launch_account_browser(
             &mut engine,
             &attempt,
@@ -664,8 +704,8 @@ pub fn invalidate_pending(app: &tauri::AppHandle) {
     }
 }
 
-/// Cancel a browser attempt with cleanup priority, retaining uncertain approval
-/// for explicit recovery. Established auth and saved source requests survive.
+/// Cancel a browser attempt with cleanup priority. A lost approval leaves a
+/// warning but does not block reconnect. Established auth and requests survive.
 #[tauri::command]
 pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     let generation = app
@@ -692,7 +732,8 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
 }
 
 /// Fence account/browser work before waiting for cleanup admission. Desktop state
-/// closes access before revocation and secure deletion; source bytes stay intact.
+/// closes access and removes saved local proof without waiting for Cloud.
+/// Source bytes stay intact.
 #[tauri::command]
 pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
@@ -714,8 +755,12 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         ) {
             return Ok(snapshot(&app, &engine));
         }
-        if let Err(error) = engine.sign_out() {
-            engine.status = error.into();
+        match engine.sign_out() {
+            Ok(Some(proof)) => {
+                engine.try_remote_logout(proof);
+            }
+            Ok(None) => {}
+            Err(error) => engine.status = error.into(),
         }
         let store = app.state::<crate::store::Store>();
         let workspace_cleanup_failed = ensure_cloud_setup(&controller.setup_ready, &store).is_err()

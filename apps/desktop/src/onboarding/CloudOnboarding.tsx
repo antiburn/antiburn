@@ -173,11 +173,9 @@ export function CloudOnboarding({
     ? "A selected workspace can’t receive uploads. Choose another destination or Don't sync."
     : needsWorkspaceChoice
       ? "Choose a workspace or Don't sync for each marked folder before starting."
-      : workspaceConflict
-        ? "Start syncing uses one workspace at a time. Set folders for any other workspace to Don't sync, then add them in Settings."
-        : hasWorkspaceChoice
-          ? "Choose a destination for each folder you want to sync. Start syncing uses one workspace at a time."
-          : null
+      : hasWorkspaceChoice
+        ? "Each folder uploads only to its selected workspace."
+        : null
   const showWorkspaceNote = grouped && projects?.loaded && !projects.loading && !projects.error
   const folderMessage =
     error ??
@@ -346,8 +344,17 @@ export function CloudOnboarding({
               You’re signed in
             </h1>
             {invitationWarning}
+            {value.cloud.invitationEnabled && !value.cloud.setupError && (
+              <p className="type-onboarding-body text-onboarding-muted">
+                Set up folder sync now or continue locally. Signing in does not start uploads.
+              </p>
+            )}
             {visible && value.cloud.invitationEnabled && value.cloud.identity && (
-              <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+              <CloudInvitations
+                accountId={value.cloud.identity.id}
+                onJoined={session.load}
+                hideEmpty
+              />
             )}
             {value.cloud.setupError && (
               <>
@@ -550,6 +557,11 @@ export function CloudOnboarding({
                 </button>
               )}
             </div>
+          )}
+          {grouped && value.sync.status === "starting" && (
+            <p className="type-callout text-onboarding-muted" role="status">
+              Confirming folder sync…
+            </p>
           )}
         </section>
       ) : (
@@ -772,7 +784,6 @@ export function CloudOnboarding({
                         !!projects.error ||
                         needsWorkspaceChoice ||
                         workspaceUnavailable ||
-                        workspaceConflict ||
                         selectedFolders === 0
                       : !value.cloud.draft.folders.some((folder) => folder.selected))
                   }

@@ -130,13 +130,22 @@ export function CloudInvitations({
   accountId,
   onJoined,
   port = desktopInvitationPort,
+  hideEmpty = false,
 }: {
   accountId: string
   onJoined: () => void
   port?: CloudInvitationPort
+  /** Hide a confirmed empty list in onboarding, not verification or retry. */
+  hideEmpty?: boolean
 }) {
   return (
-    <AccountInvitations key={accountId} accountId={accountId} port={port} onJoined={onJoined} />
+    <AccountInvitations
+      key={accountId}
+      accountId={accountId}
+      port={port}
+      onJoined={onJoined}
+      hideEmpty={hideEmpty}
+    />
   )
 }
 
@@ -144,10 +153,12 @@ function AccountInvitations({
   accountId,
   port,
   onJoined,
+  hideEmpty,
 }: {
   accountId: string
   port: CloudInvitationPort
   onJoined: () => void
+  hideEmpty: boolean
 }) {
   const [controller] = useState(() => new InvitationView(accountId, port, onJoined))
   const { reply, busy, error } = useSyncExternalStore(
@@ -170,6 +181,8 @@ function AccountInvitations({
       : null
   const finishLabel = ready && reply.join ? "Join workspace" : "Finish check"
   const listing = reply?.kind === "list" ? reply.listing : null
+  if (hideEmpty && !error && listing?.state === "checked" && !listing.invitations.length)
+    return null
   const message = error
     ? error
     : reply?.kind === "attempt"

@@ -23,6 +23,15 @@ You can cancel verification or leave Cloud setup without joining. Verification
 times out after five minutes. If Desktop cannot confirm a join, use **Check
 result** to check the same attempt. A restart does not restore the attempt.
 Check whether the workspace appears in Cloud before you try again.
+
+## Choose folders
+
+After you sign in, continue locally or review the folders you want to sync.
+Signing in and accepting an invitation do not start uploads. If you have more
+than one workspace, choose a destination for each folder or choose **Don't sync**.
+Choose **Start syncing** to approve the selected folders. If Desktop cannot
+confirm a workspace's folders, review the remaining choices and try again.
+Desktop does not resubmit folders it has confirmed.
 If you leave and reopen the invitation view, Desktop shows the last completed
 result for the current account until you dismiss it.
 
