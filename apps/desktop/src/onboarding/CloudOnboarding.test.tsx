@@ -246,12 +246,23 @@ it("cancels only the pending browser attempt before local completion", async () 
   port.cancelSync = vi.fn()
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
-  expect(await screen.findByText("Approve this device in your browser.")).toBeVisible()
+  expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
+  expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeEnabled()
   fireEvent.click(await screen.findByRole("button", { name: "Continue locally" }))
   await waitFor(() => expect(done).toHaveBeenCalledOnce())
   expect(port.cancel).toHaveBeenCalledOnce()
   expect(port.cancelSync).not.toHaveBeenCalled()
   expect(port.prepareSync).not.toHaveBeenCalled()
+})
+
+it("waits for sign-in verification after the browser returns", async () => {
+  const { port } = fixture({ status: "returned", identity: null, destination: null })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  expect(await screen.findByText("Browser step complete. Checking your sign-in…")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
 })
 
 it("offers explicit OpenCode database selection and stored-content consent without upload", async () => {

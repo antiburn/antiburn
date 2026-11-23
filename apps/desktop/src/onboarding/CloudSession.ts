@@ -64,6 +64,9 @@ export {
   type CloudViewSnapshot,
 } from "./cloudSessionState"
 
+/** Use the same browser sign-in label in onboarding and Settings. */
+export const cloudGithubSignInLabel = "Sign in with GitHub"
+
 /**
  * Own one surface's Cloud view, timers, and explicit Start actions.
  * Desktop state owns credentials and durable requests. Events can arrive before

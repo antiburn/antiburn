@@ -105,13 +105,11 @@ it("lets the user cancel a pending browser approval from Settings", async () => 
     status: "waiting",
   })
   render(<Account session={session} />)
-  expect(
-    await screen.findByText("Approve this device in your browser to finish signing in."),
-  ).toBeVisible()
+  expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
   const action = screen.getByRole("button", { name: "Cancel sign-in" })
   action.focus()
   fireEvent.click(action)
-  expect(await screen.findByRole("button", { name: "Sign in" })).toHaveFocus()
+  expect(await screen.findByRole("button", { name: "Sign in with GitHub" })).toHaveFocus()
   expect(cancel).toHaveBeenCalledOnce()
   expect(signOut).not.toHaveBeenCalled()
 })
@@ -124,7 +122,7 @@ it("requires an explicit reset and keeps the remote warning while reconnecting",
   expect(screen.getByText(/the old connection may still have access to Cloud/)).toBeVisible()
   fireEvent.click(screen.getByRole("button", { name: "Reset sign-in" }))
   await waitFor(() => expect(resetLocal).toHaveBeenCalledOnce())
-  expect(await screen.findByRole("button", { name: "Sign in" })).toBeEnabled()
+  expect(await screen.findByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
   expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
   act(() =>
     emit({
