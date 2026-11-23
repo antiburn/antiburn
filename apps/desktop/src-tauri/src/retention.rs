@@ -72,14 +72,7 @@ pub fn note_removed(app: &AppHandle, removed: usize, revision: Revision) {
 }
 
 fn cleanup(app: &AppHandle) {
-    let hosts = crate::remote_sessions::lifecycle_host_ids(app);
-    let result = crate::remote_sync::with_lifecycle_guard(app, &hosts, || {
-        let result = app.state::<Store>().apply_session_retention(unix_now())?;
-        if let Ok(root) = crate::remote_sessions::directory(app) {
-            crate::remote_cache::prune_after_commit(&app.state::<Store>(), &root);
-        }
-        Ok(result)
-    });
+    let result = app.state::<Store>().apply_session_retention(unix_now());
     match result {
         Ok((removed, revision)) => note_removed(app, removed, revision),
         Err(error) => tracing::warn!(event = "session_retention_failed", error = %error),

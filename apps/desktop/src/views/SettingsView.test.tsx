@@ -668,9 +668,9 @@ describe("SettingsView", () => {
 
     await waitFor(() => expect(confirmDialog).toHaveBeenCalledTimes(1))
     const [message] = confirmDialog.mock.calls[0] as [string]
-    // The confirmation answers the two things a reader could reasonably fear.
-    expect(message).toMatch(/transcript files are not touched/i)
-    expect(message).toMatch(/rediscover/i)
+    expect(message).toMatch(/original transcript files are unchanged/i)
+    expect(message).toMatch(/local transcripts can be rediscovered/i)
+    expect(message).not.toMatch(/SSH/i)
 
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("clear_local_index"))
     expect(await screen.findByText(/Cleared 12 sessions/)).toBeInTheDocument()

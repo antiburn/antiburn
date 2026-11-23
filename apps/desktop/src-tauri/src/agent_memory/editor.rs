@@ -462,7 +462,14 @@ fn archive(
     let archived_at_ms = now_ms()?;
     let archive_id = format!("{archived_at_ms}-{file_name}");
     let archive_dir = archive_root.join(slug);
-    crate::remote_sessions::private_dir(&archive_dir).map_err(Stop::Failed)?;
+    fs::create_dir_all(&archive_dir)
+        .map_err(|_| Stop::Failed("Memory archive is unavailable".into()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&archive_dir, fs::Permissions::from_mode(0o700))
+            .map_err(|_| Stop::Failed("Memory archive is unavailable".into()))?;
+    }
     let data_path = archive_dir.join(&archive_id);
     let sidecar_path = archive_dir.join(format!("{archive_id}.json"));
     let sidecar = ArchiveSidecar {

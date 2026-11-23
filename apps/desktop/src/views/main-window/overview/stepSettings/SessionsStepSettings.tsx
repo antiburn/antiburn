@@ -16,7 +16,6 @@ import type { LocalRepositoryItem } from "../../../../lib/types/repository"
 import { useFolderPermissionFlow } from "../../../../lib/useFolderPermissionFlow"
 import { SettingsRow, SettingsToggleRow } from "../../../settings/SettingsSearchRows"
 import { useAppSettings, type AppSettingsController } from "../../../settings/useAppSettings"
-import { RemoteHostsSection } from "./RemoteHostsSection"
 import {
   MonitoringSection,
   RepositoriesSection,
@@ -27,7 +26,7 @@ import { SourcesSession } from "./SourcesSession"
 
 /**
  * The Sessions step's settings: folder access, where antiburn scans,
- * monitoring, the historical scan, the activity window, remote hosts, how
+ * monitoring, the historical scan, the activity window, how
  * much is indexed, and how long session data is kept.
  */
 
@@ -121,7 +120,7 @@ function RetentionSection({
     if (retentionLength(days) < retentionLength(settings.sessionDataRetentionDays)) {
       const period = days === 30 ? "30 days" : "90 days"
       const proceed = await confirm(
-        `This immediately removes antiburn’s local data for sessions whose last activity is older than ${period}. Providers retain session history for only 30 days, so antiburn may hold the only remaining history. Your coding agents’ transcript files are not touched.`,
+        `This immediately removes saved sessions and analysis whose last activity is older than ${period}. Original transcript files are unchanged. If the originals are no longer available, this may remove your only saved history.`,
         {
           title: `Keep session data for ${period}?`,
           kind: "warning",
@@ -136,7 +135,7 @@ function RetentionSection({
   return (
     <SettingsRow
       searchId="retention"
-      description="antiburn’s session index stays on this machine. Keeping it longer preserves history after providers’ 30-day retention window; a shorter period keeps antiburn’s local index lighter."
+      description="Choose how long antiburn keeps saved sessions and analysis on this computer. A shorter period removes older history. Original transcript files are unchanged."
       trailing={
         <SegmentedControl
           options={RETENTION_OPTIONS}
@@ -176,7 +175,7 @@ export function SessionsStepSettings() {
     (hasSavedFolders ? cloud.deviceUploadEnabled === undefined : !canSetUpCloud)
   const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [session] = useState(() => new SourcesSession())
-  const { repositories, scanRoots, permissions, scanning, remote } = useSyncExternalStore(
+  const { repositories, scanRoots, permissions, scanning } = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,
   )
@@ -271,12 +270,6 @@ export function SessionsStepSettings() {
 
       <MonitoringSection settings={settings} update={update} />
       <RecentDaysSection settings={settings} update={update} />
-
-      <RemoteHostsSection
-        remote={remote}
-        session={session}
-        appVersion={info?.appVersion ?? "VERSION"}
-      />
 
       <SectionGroup title="Local data">
         <Card>

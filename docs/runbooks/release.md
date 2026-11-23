@@ -482,8 +482,6 @@ attestation steps run; private-repository releases skip those steps. Their archi
 release, and §2.2 holds the helper's manifest to it, so `antiburn-remote --version`
 on an installed helper reports the release that shipped it. The helper's wire
 protocol version is a separate compatibility check.
-Follow [remote host setup](../remote-sessions.md) to exercise SSH discovery and
-offline cached analysis on a Linux host before publishing.
 
 Windows ships `antiburn_<version>_x64-setup.exe` and
 `antiburn_<version>_arm64-setup.exe`. The ARM64 job uses the native

@@ -777,9 +777,20 @@ fn a_returned_source_requeues_with_an_unchanged_fingerprint() {
     let mut returned = session("returned-source", 1_000);
     returned.source_fingerprint = Some(record.source_fingerprint);
 
-    store
-        .upsert_confirmed_session(&returned, &crate::agents::evidence_cohort())
+    let guard = store
+        .begin_session_write(&returned.key, &returned.source_label)
         .unwrap();
+    assert!(matches!(
+        store
+            .upsert_discovered_session_if_current(
+                &guard,
+                &returned,
+                &crate::agents::evidence_cohort(),
+                true,
+            )
+            .unwrap(),
+        SessionCommitOutcome::Upserted(_)
+    ));
 
     let evidence = store.evidence(&claim.key).unwrap().unwrap();
     assert_eq!(

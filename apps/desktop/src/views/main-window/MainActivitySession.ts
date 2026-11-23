@@ -36,16 +36,12 @@ import { costOutlierThreshold } from "../../lib/presentation/sessionAnalysis"
 import { AGENT_SLUGS } from "../../lib/presentation/agents"
 import {
   normalizeSessionFilters,
-  normalizeSessionSource,
   parseSessionFilters,
-  reconcileSessionSource,
   serializeSessionFilters,
   type SessionFilters,
   type SessionResultFilter,
   type SessionSpendFilter,
-  type SessionSourceFilter,
 } from "../../lib/sessionFilters"
-import { remoteHosts, type RemoteHost } from "../../lib/remoteHosts"
 import { sessionKey, loadSessionAnalysis, type SessionSubject } from "../../lib/sessionSubject"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 
@@ -70,8 +66,6 @@ export interface MainActivitySnapshot {
   /** The memories the open subject read or wrote, loaded beside its quota. */
   sessionMemories: SessionMemoriesPayload | null
   filters: SessionFilters
-  remoteHosts: readonly RemoteHost[]
-  remoteHostsLoaded: boolean
   /** A newer shell target must reveal the compact detail pane, even for the same session. */
   detailRevealRevision: number
 }
@@ -133,11 +127,13 @@ export class MainActivitySession {
   onSessionInventoryInvalidated?: () => void
   private restoringNavigation = false
 
+  /** Restore filters and detail. Explicit empty selection cancels late default selection. */
   restoreNavigation(
     filters: SessionFilters,
     subject: SessionSubject | null,
     origin: SurfaceOrigin = "automatic",
     reportFilterSelection = false,
+    clearDefaultSelection = false,
   ): void {
     this.restoringNavigation = true
     try {
@@ -148,22 +144,7 @@ export class MainActivitySession {
       let action: SessionFilterAction | undefined
       let agent: string | undefined
       if (reportFilterSelection) {
-        if (
-          next.source?.kind === "selected" &&
-          JSON.stringify(next.source) !== JSON.stringify(previous.source)
-        ) {
-          action =
-            next.source.remote === "all"
-              ? "source_remote_all_added"
-              : next.source.remote.length > 0
-                ? "source_remote_host_added"
-                : "source_local_added"
-        } else if (
-          (next.source ?? { kind: "all" }).kind === "all" &&
-          next.agents.length === 0 &&
-          next.result === "all" &&
-          next.spend === "all"
-        ) {
+        if (next.agents.length === 0 && next.result === "all" && next.spend === "all") {
           action = "cleared_all"
         } else if (added.length > 0) {
           action = "agent_added"
@@ -183,10 +164,7 @@ export class MainActivitySession {
         (!this.snapshot.subject || sessionKey(subject) !== sessionKey(this.snapshot.subject))
       )
         this.open(subject, [], origin)
-      else if (
-        !subject &&
-        (this.snapshot.subject || (reportFilterSelection && next.source?.kind === "selected"))
-      )
+      else if (!subject && (this.snapshot.subject || clearDefaultSelection))
         this.clearSelection()
     } finally {
       this.restoringNavigation = false
@@ -211,8 +189,6 @@ export class MainActivitySession {
     sessionQuota: null,
     sessionMemories: null,
     filters: parseSessionFilters(DEFAULT_SETTINGS.sessionFilter),
-    remoteHosts: [],
-    remoteHostsLoaded: false,
     detailRevealRevision: 0,
   }
   private listeners = new Set<() => void>()
@@ -369,14 +345,6 @@ export class MainActivitySession {
             })
         }),
       )
-      const consumeRemoteHosts = () => {
-        if (generation !== this.generation) return
-        const next = remoteHosts.getSnapshot()
-        this.update({ remoteHosts: next.hosts, remoteHostsLoaded: next.loaded })
-        if (this.initialized) this.reconcileRemoteSource()
-      }
-      this.stops.push(remoteHosts.subscribe(consumeRemoteHosts))
-      consumeRemoteHosts()
     }
     if (generation !== this.generation) return
     const settingsVersion = this.settingsVersion
@@ -492,15 +460,6 @@ export class MainActivitySession {
     return withRegistryActivity(liveSessions.getSnapshot(), entries)
   }
 
-  private reconcileRemoteSource(): void {
-    if (!this.snapshot.remoteHostsLoaded) return
-    const source = reconcileSessionSource(
-      this.snapshot.filters.source ?? { kind: "all" },
-      this.snapshot.remoteHosts.map((host) => host.id),
-    )
-    this.changeFilters({ ...this.snapshot.filters, source }, undefined, undefined, "automatic")
-  }
-
   private applySettings(settings: AppSettings): void {
     const previous = this.snapshot.settings
     const next = this.settingsWrite
@@ -517,7 +476,6 @@ export class MainActivitySession {
       filters,
     })
     if (filterChanged && !this.restoringNavigation) this.onNavigation?.("automatic")
-    this.reconcileRemoteSource()
     if (
       settings.activityWindowDays !== previous.activityWindowDays ||
       settings.disabledAgents.join() !== previous.disabledAgents.join()
@@ -958,104 +916,6 @@ export class MainActivitySession {
 
   resetAgents = (): void => {
     this.changeFilters({ ...this.snapshot.filters, agents: [] }, "agents_all")
-  }
-
-  resetSources = (): void => {
-    this.changeFilters({ ...this.snapshot.filters, source: { kind: "all" } }, "source_all")
-  }
-
-  toggleLocalSource = (): void => {
-    const { filters, remoteHosts } = this.snapshot
-    const source =
-      (filters.source ?? { kind: "all" }).kind === "all"
-        ? { kind: "selected" as const, includeLocal: true, remote: [] as string[] }
-        : {
-            ...(filters.source as Extract<SessionSourceFilter, { kind: "selected" }>),
-            includeLocal: !(
-              filters.source as Extract<SessionSourceFilter, { kind: "selected" }>
-            ).includeLocal,
-          }
-    this.changeFilters(
-      {
-        ...filters,
-        source: normalizeSessionSource(
-          source,
-          remoteHosts.map((host) => host.id),
-        ),
-      },
-      source.kind === "selected" && source.includeLocal
-        ? "source_local_added"
-        : "source_local_removed",
-    )
-  }
-
-  toggleRemoteSource = (): void => {
-    const { filters, remoteHosts } = this.snapshot
-    const source = filters.source ?? { kind: "all" }
-    const next =
-      source.kind === "all" || source.remote !== "all"
-        ? {
-            kind: "selected" as const,
-            includeLocal: source.kind === "selected" && source.includeLocal,
-            remote: "all" as const,
-          }
-        : {
-            kind: "selected" as const,
-            includeLocal: source.includeLocal,
-            remote: [] as string[],
-          }
-    this.changeFilters(
-      {
-        ...filters,
-        source: normalizeSessionSource(
-          next,
-          remoteHosts.map((host) => host.id),
-        ),
-      },
-      next.remote === "all" ? "source_remote_all_added" : "source_remote_all_removed",
-    )
-  }
-
-  toggleRemoteHost = (hostId: string): void => {
-    const { filters, remoteHosts } = this.snapshot
-    if (!remoteHosts.some((host) => host.id === hostId)) return
-    const known = remoteHosts.map((host) => host.id)
-    const source = filters.source ?? { kind: "all" }
-    const selected =
-      source.kind === "selected" ? (source.remote === "all" ? known : source.remote) : []
-    const remote = selected.includes(hostId)
-      ? selected.filter((id) => id !== hostId)
-      : [...selected, hostId]
-    this.changeFilters(
-      {
-        ...filters,
-        source: normalizeSessionSource(
-          {
-            kind: "selected",
-            includeLocal: source.kind === "selected" && source.includeLocal,
-            remote,
-          },
-          known,
-        ),
-      },
-      selected.includes(hostId) ? "source_remote_host_removed" : "source_remote_host_added",
-    )
-  }
-
-  clearRemoteSources = (): void => {
-    const { filters, remoteHosts } = this.snapshot
-    const source = filters.source ?? { kind: "all" }
-    if (source.kind === "all") return
-    this.changeFilters(
-      {
-        ...filters,
-        source: normalizeSessionSource(
-          { kind: "selected", includeLocal: source.includeLocal, remote: [] },
-          remoteHosts.map((host) => host.id),
-        ),
-      },
-      "source_remote_all_removed",
-    )
   }
 
   setResultFilter = (result: SessionResultFilter): void => {

@@ -26,7 +26,6 @@ sources:
   - src/components/burn-checks/burn-check-summary.css
   - src/views/main-window/overview/overview.css
   - src/views/main-window/quota/quota.css
-  - src/views/main-window/overview/stepSettings/remote-hosts.css
   - src/views/main-window/overview/stepSettings/agent-settings.css
   - src/onboarding/demo/runtime.css
   - src/onboarding/demo/theme-fixes.css
@@ -1098,42 +1097,6 @@ Notes for what isn't expressible as a token:
   unchanged, beneath maintenance controls; keep startup testing as an explicit next step.
   Label raw troubleshooting output Diagnostic within Technical details. Show no success for
   failed operations, and discard feedback when the underlying runtime status changes.
-- **Remote hosts in Settings** — keep the folder-access warning above all settings
-  sections when access is needed. Place Remote hosts first among the Sources sections,
-  before Scanning and Coding agents. Keep the introductory description inside the card, above
-  Sync frequency in the first block. Follow with host rows, then a compact
-  footer with Add host. Explain offline availability in the introductory description.
-  Sync frequency stays a searchable Settings row without a second section heading;
-  its description reads “Enabled hosts sync automatically while Antiburn is running.”
-  Each host has the shared Settings toggle at the trailing edge to disable all
-  syncing for that host. Preserve cached sessions and disable Sync now and Retry.
-  Discard pending scans and fence active scans from further cache commits; an SSH
-  request already in flight may settle. Replace the last-sync text with “Sync off” in disabled host metadata;
-  retain the last-sync time in its tooltip.
-  Align each host's 14px monitor with its display name. Put its SSH alias (when
-  different from its display name) in a muted, 16px-high badge using the `CountPill`
-  treatment: `surface-tertiary/40`, tertiary ink, mono caption text, and no border.
-  Constrain the badge to its metadata column, truncate long aliases, and expose the
-  full alias on hover.
-  Keep the monitor neutral. Use the existing failure message and Retry action to
-  signal problems; do not add a connected indicator to the normal state.
-  Keep the session link and last-sync text on the same wrapping metadata line,
-  center-aligned with a middle dot only between the count and sync status, and no
-  success icon. Leave `space-sm` between the alias badge and session link, with no
-  separator. Keep the other metadata gaps at `space-xs`. Use `text-label`
-  with a quiet underline for the count link; it opens Sessions filtered to that host. Keep half of `space-xs`
-  between the name and metadata. Place Sync now/Syncing…/Retry, the overflow button,
-  and the unlabelled shared switch in one strip with equal `space-md` gaps. Center
-  this strip vertically against the complete two-line host identity. The switch
-  retains a host-specific accessible name and a tooltip explaining pause behavior.
-  Align the sync dropdown to the card’s trailing content edge, above the host switches.
-  Below 520px card width, place the action strip below the full-width metadata;
-  below 360px, place the dropdown below its labels. Source chips show the host name,
-  “N hosts”, or “Remote”. Put failures on a separate status line and retain
-  last-good metadata. Expand remote action hit areas vertically by half of `space-xs`
-  without overlapping adjacent actions. Editor primary actions reserve their
-  longest label's intrinsic width across checking, ready, and saving states;
-  Cancel stays in the same position and renders once.
 - **Window chrome** — a window that hides its native title bar owns the drag strip and the matching
   top clearance in the webview; a window that keeps native decorations must not reserve that space.
   Keep that decision in the window's own layout, not in the shared primitives.
@@ -1407,10 +1370,6 @@ open across choices. Unselected zero-count options stay visible at 50% opacity b
 and each All option stay enabled even with zero matches, so users can remove or reset filters. Agent menu rows pair vendor marks with visible names, accessible menu labels, and
 typeahead text. Vendor marks use 14px in menu rows. Active chips use 12px vendor marks centered in a 14px box to balance their visual weight against the 14px check-result marks. Agent chips show only the mark and remove icon; the whole chip provides its vendor-name tooltip. Failed and Passed menu
 rows and active chips reuse the shared 14px Burn Check marks and colors. Active facet labels use primary `text-label` ink; remove icons retain their secondary hierarchy. Active pills describe selected constraints and omit counts, including from their accessible removal labels. Contextual match counts remain in the menu; the header badge retains the full time-range total. Active chips use the quieter `surface-card` fill at rest and `surface-secondary` on hover in both themes.
-The Source group keeps All sources and Local labels directly after their checkboxes. Only Remote adds a 12px Monitor mark; host rows keep their checkbox and text label without repeating the mark. Host row content starts 32px from the menu edge (`space-2xl` plus `space-sm`), 24px farther in than its Remote parent, so the hosts read as children without leaving a blank icon column on local choices.
-Remote session cards show a bare 12px Monitor in tertiary ink beside the model.
-Center the icon within the model line box while text retains baseline alignment;
-its tooltip and accessible name identify the host.
 Status marks sit 8px from their chip labels; the label or vendor mark sits 4px from its remove icon.
 The minimum-spend option reads “$1 or more” in the menu and “≥ $1” in the pill; its accessible name remains “$1 or more”.
 The menu selection checkmark remains separate. High cost keeps
@@ -2161,3 +2120,8 @@ An explicit global pause remains in effect after folder changes. Read and upload
 failures use a red inline alert with an icon and a recovery action.
 
 The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding, and an 18px reserved status line to match the prototype. Auth handoff has the prototype footer separator; Learn more keeps its approved plain footer. Identity uses a circular 64px image and a 24px green badge with a 3px paper border and contrasting action ink.
+
+## Session sources
+
+Sessions has agent, check-result, spend and date facets. SSH hosts, source filters,
+host badges, and host navigation controls are absent. WSL origin labels remain.

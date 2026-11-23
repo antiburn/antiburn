@@ -720,6 +720,48 @@ fn remote_path_guard_normalizes_drive_and_unc_prefixes() {
     }
 }
 
+#[test]
+fn remote_cache_guard_allows_local_targets_without_creating_absent_storage() {
+    let directory = tempfile::tempdir().unwrap();
+    let local_file = directory.path().join("session.jsonl");
+    std::fs::write(&local_file, "{}\n").unwrap();
+    let absent_cache = directory.path().join("remote-sessions");
+    for target in [local_file.as_path(), directory.path()] {
+        let target = std::fs::canonicalize(target).unwrap();
+        assert!(reject_remote_cache_target(&target, &absent_cache).is_ok());
+    }
+    assert!(!absent_cache.exists());
+}
+
+#[test]
+fn remote_cache_guard_rejects_saved_targets_and_other_storage_errors() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("remote-sessions");
+    std::fs::create_dir(&cache).unwrap();
+    let saved_file = cache.join("session.jsonl");
+    std::fs::write(&saved_file, "{}\n").unwrap();
+    let saved_file = std::fs::canonicalize(saved_file).unwrap();
+    assert!(reject_remote_cache_target(&saved_file, &cache).is_err());
+    let local = std::fs::canonicalize(directory.path()).unwrap();
+    assert!(reject_remote_cache_target(&local, &cache).is_ok());
+    assert!(reject_remote_cache_target(&local, Path::new("invalid\0cache")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn remote_cache_guard_resolves_storage_symlinks() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("remote-sessions");
+    std::fs::create_dir(&cache).unwrap();
+    let alias = directory.path().join("alias");
+    std::os::unix::fs::symlink(&cache, &alias).unwrap();
+    let saved_file = cache.join("session.jsonl");
+    std::fs::write(&saved_file, "{}\n").unwrap();
+    let target = std::fs::canonicalize(alias.join("session.jsonl")).unwrap();
+    assert!(reject_remote_cache_target(&target, &cache).is_err());
+    assert!(reject_remote_cache_target(&target, &alias).is_err());
+}
+
 fn evidence_row(
     status: crate::store::EvidenceStatus,
     evidence: Option<SessionEvidence>,

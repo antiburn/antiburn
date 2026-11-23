@@ -1,8 +1,41 @@
-import { fireEvent, render, screen } from "@testing-library/react"
-import { expect, it, vi } from "vitest"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { beforeEach, expect, it, vi } from "vitest"
 
 import { DEFAULT_SETTINGS } from "../../lib/ipc"
+import type * as Ipc from "../../lib/ipc"
 import { PrivacyPane } from "./PrivacyPane"
+
+const mocks = vi.hoisted(() => ({ confirm: vi.fn(), clearLocalIndex: vi.fn() }))
+vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: mocks.confirm, save: vi.fn() }))
+vi.mock("../../lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof Ipc>()),
+  clearLocalIndex: mocks.clearLocalIndex,
+}))
+
+beforeEach(() => {
+  mocks.confirm.mockReset()
+  mocks.clearLocalIndex.mockReset().mockResolvedValue(2)
+})
+
+it.each([false, true])(
+  "explains local data removal before clear-index approval=%s",
+  async (approved) => {
+    mocks.confirm.mockResolvedValue(approved)
+    const { container } = render(
+      <PrivacyPane settings={DEFAULT_SETTINGS} loaded update={vi.fn()} info={null} />,
+    )
+    expect(container).toHaveTextContent(
+      "Preferences, scan folders, and repository choices are kept",
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Clear index…" }))
+    await waitFor(() => expect(mocks.confirm).toHaveBeenCalledOnce())
+    const [message] = mocks.confirm.mock.calls[0] as [string]
+    expect(message).toContain("Original transcript files are unchanged")
+    expect(message).toContain("Available local transcripts can be rediscovered on a later scan")
+    expect(message).not.toMatch(/SSH/i)
+    await waitFor(() => expect(mocks.clearLocalIndex).toHaveBeenCalledTimes(approved ? 1 : 0))
+  },
+)
 
 it("explains selected provider routing without changing saved settings", () => {
   const update = vi.fn()

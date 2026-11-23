@@ -5,8 +5,9 @@ companion around the local [`antiburn-local`](../../crates/antiburn-local) engin
 
 The app finds coding-agent sessions on this machine, analyzes them with the
 local engine, and shows activity, session findings, and API-equivalent cost
-estimates. The Sessions step settings can sync supported sessions from configured Linux
-SSH hosts to a private local cache; see [remote sessions](../../docs/remote-sessions.md).
+estimates. SSH collection is retired. Upgrade cleanup removes saved SSH sessions
+and local copies; local and WSL sessions and remote originals are unchanged. See
+[remote sessions](../../docs/remote-sessions.md).
 The session index stays on this device. Local session discovery and analysis need
 no Antiburn account, server, or backend.
 

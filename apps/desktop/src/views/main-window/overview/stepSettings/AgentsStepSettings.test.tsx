@@ -6,7 +6,7 @@ import type { AgentsStepSettings as AgentsStepSettingsComponent } from "./Agents
 
 /**
  * The Agents step now holds only the Coding agents section: scanning,
- * folders, repositories, and remote hosts moved to the Sessions step and
+ * folders and repositories moved to the Sessions step and
  * keep their coverage in `SessionsStepSettings.test.tsx`.
  */
 

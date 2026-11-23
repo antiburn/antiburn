@@ -23,8 +23,8 @@ import type { AppSettingsController } from "../../../settings/useAppSettings"
 /**
  * The Sessions step's source sections: Monitoring, Scanning, Scan folders,
  * and Repositories. `SessionsStepSettings` owns the one `SourcesSession`
- * that Scan folders and Repositories read from, and renders these sections
- * between its own Activity and Remote hosts sections.
+ * that Scan folders and Repositories read from. It renders these sections
+ * below Activity.
  */
 
 /** The "Keep looking for new sessions" row. */

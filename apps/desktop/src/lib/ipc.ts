@@ -501,13 +501,6 @@ export type SessionFilterAction =
   | "spend_notable"
   | "spend_material"
   | "spend_all"
-  | "source_all"
-  | "source_local_added"
-  | "source_local_removed"
-  | "source_remote_all_added"
-  | "source_remote_all_removed"
-  | "source_remote_host_added"
-  | "source_remote_host_removed"
   | "cleared_all"
 
 function isNativePeekInteraction(interaction: Interaction): boolean {

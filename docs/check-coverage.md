@@ -1055,22 +1055,12 @@ source inventory and coverage matrix above.
 
 ## Evidence Boundaries
 
-Remote session copies retain the accepted Claude Code or Codex transcript
-contract; they do not acquire broader coverage by arriving over SSH. A
-per-session finding requires sufficient accepted copied evidence. Missing
-companions and historical configuration remain unavailable or partial, never
-clean. This computer's configuration and provider account do not enrich remote
-evidence. Bounded discovery does not establish a complete remote inventory.
-Rejected or incomplete exports keep the previous cached generation; a partial
-host scan does not establish fresh evidence for the rejected sessions. Skipping
-expired listing candidates does not prove a complete companion roster; Codex
-exports still require bounded origin discovery for older linked children.
-Remote sessions do not contribute to the local global-check report,
-Overview, quota attribution, or live HUD. Local path actions, Auto Fix, and
-remediation/watch enrollment reject remote origins at the backend boundary.
-The product and remediation matrices below describe native supported contexts;
-they do not grant remote editing or verification. See
-[remote sessions](remote-sessions.md) for the supported host and agent limits.
+SSH collection is retired. Startup cleanup removes saved SSH sessions and their
+local evidence, so cached SSH copies no longer provide reachable check evidence.
+Native and WSL session evidence is unchanged. Remote origins cannot authorize
+local path actions, Auto Fix, or remediation and verification watches. The
+product and remediation matrices below describe their supported contexts. See
+[remote sessions](remote-sessions.md) for cleanup boundaries.
 
 Lifecycle provider sweeps use same-turn published provider/model evidence and
 keep the harness and inferred model vendor separate from the recorded route.
