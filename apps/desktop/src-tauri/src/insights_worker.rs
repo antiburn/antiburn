@@ -969,6 +969,50 @@ struct WorkProgress<'a> {
     authorities: Arc<tokio::sync::Mutex<Option<crate::remediation::PublicationAuthorityCache>>>,
 }
 
+/// Remove the claimed session's superseded rows before its pass starts.
+///
+/// Publication deletes every superseded row in one transaction. This keeps
+/// that transaction short. It renews the lease during a long removal and
+/// returns false when the claim is lost.
+async fn clear_claim_leftovers(
+    store: &Store,
+    claim: &EvidenceClaim,
+    clock: &(dyn Fn() -> i64 + Send + Sync),
+) -> anyhow::Result<bool> {
+    let mut renewed = tokio::time::Instant::now();
+    loop {
+        let task_store = store.clone();
+        let key = claim.key.clone();
+        let batch =
+            tokio::task::spawn_blocking(move || task_store.clear_leftover_batch(&key)).await?;
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(error) => {
+                // The rows are only a cost, so the pass can still run.
+                ::tracing::warn!(event = "claim_leftover_rows_failed", error = %error);
+                return Ok(true);
+            }
+        };
+        if !batch.more {
+            return Ok(true);
+        }
+        if renewed.elapsed() >= lease_renew_interval() {
+            renewed = tokio::time::Instant::now();
+            let task_store = store.clone();
+            let task_claim = claim.clone();
+            let now = clock();
+            let held = tokio::task::spawn_blocking(move || {
+                task_store.renew_evidence_lease(&task_claim, now, LEASE_SECS)
+            })
+            .await??;
+            if !held {
+                return Ok(false);
+            }
+        }
+        tokio::time::sleep(crate::store::LEFTOVER_BATCH_PAUSE).await;
+    }
+}
+
 async fn process_next_with_progress(
     store: &Store,
     clock: &(dyn Fn() -> i64 + Send + Sync),
@@ -1001,6 +1045,18 @@ async fn process_next_with_progress(
         apply_outcome_blocking(store, &claim, pass, clock(), apply_outcome).await?;
         return Ok(true);
     };
+    if !clear_claim_leftovers(store, &claim, clock).await? {
+        return settle_failed_claim(
+            store,
+            &claim,
+            clock(),
+            "worker-claim-lost",
+            false,
+            announce,
+            progress.published,
+        )
+        .await;
+    }
     let signal = PassSignal::new();
     // Construct the runner inside the panic boundary as well as polling it.
     let pass =

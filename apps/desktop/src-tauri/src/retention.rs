@@ -17,10 +17,12 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     tauri::async_runtime::spawn(async move {
         run_blocking(&app, cleanup).await;
         tokio::time::sleep(STORAGE_UPKEEP_DELAY).await;
+        run_blocking(&app, clear_leftover_rows).await;
         run_blocking(&app, maintain_storage).await;
         loop {
             tokio::time::sleep(CLEANUP_INTERVAL).await;
             run_blocking(&app, cleanup).await;
+            run_blocking(&app, clear_leftover_rows).await;
             run_blocking(&app, maintain_storage).await;
         }
     })
@@ -31,6 +33,19 @@ async fn run_blocking(app: &AppHandle, work: fn(&AppHandle)) {
     let app = app.clone();
     if let Err(error) = tauri::async_runtime::spawn_blocking(move || work(&app)).await {
         tracing::warn!(event = "retention_task_failed", error = %error);
+    }
+}
+
+/// Runs before the vacuum so the vacuum can return the freed space.
+fn clear_leftover_rows(app: &AppHandle) {
+    let started = std::time::Instant::now();
+    match app.state::<Store>().clear_leftover_rows() {
+        Ok(removed) => tracing::info!(
+            event = "leftover_rows_cleared",
+            removed,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+        ),
+        Err(error) => tracing::warn!(event = "leftover_rows_failed", error = %error),
     }
 }
 

@@ -614,6 +614,95 @@ fn a_capability_free_source_publishes_as_unsupported() {
     );
 }
 
+/// Rows of superseded passes go before the pass starts, so publication does
+/// not delete them in one long transaction.
+#[tokio::test]
+async fn a_claim_clears_superseded_rows_before_its_pass_starts() {
+    let store = Arc::new(store());
+    store
+        .upsert_sessions(&[record("leftovers")], &crate::agents::evidence_cohort())
+        .unwrap();
+    let key = SessionKey::new("native", "claude-code", "leftovers");
+    {
+        let connection = store.lock();
+        for fence in 1..=3 {
+            for turn in 0..2_000 {
+                connection
+                    .execute(
+                        "INSERT INTO turn (
+                            environment_key, agent, session_id, claim_fence, thread_id,
+                            turn_index, scope, role, source_key, input_tokens,
+                            cache_read_tokens, cache_write_tokens, output_tokens,
+                            is_compaction_boundary
+                         ) VALUES ('native', 'claude-code', 'leftovers', ?1, 't', ?2,
+                            'main', 'user', 's', 0, 0, 0, 0, 0)",
+                        rusqlite::params![-fence, turn],
+                    )
+                    .unwrap();
+            }
+        }
+    }
+    let seen = Arc::new(AtomicI64::new(-1));
+    let pass_seen = Arc::clone(&seen);
+    let pass_store = Arc::clone(&store);
+    let runner = move |_: &SessionRecord, _: PassSignal, _: i64| {
+        let rows: i64 = pass_store
+            .lock()
+            .query_row("SELECT COUNT(*) FROM turn", [], |row| row.get(0))
+            .unwrap();
+        pass_seen.store(rows, Ordering::SeqCst);
+        Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
+    };
+
+    assert!(
+        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
+            .await
+            .unwrap()
+    );
+    assert_eq!(seen.load(Ordering::SeqCst), 0);
+    assert!(store.evidence(&key).unwrap().is_some());
+}
+
+/// A claim that expires during the removal does not start its pass.
+#[tokio::test]
+async fn a_claim_lost_during_the_removal_stops_it() {
+    let store = store();
+    store
+        .upsert_sessions(&[record("removal-lost")], &crate::agents::evidence_cohort())
+        .unwrap();
+    let claim = store
+        .claim_next_evidence(&["claude-code"], 100, 60)
+        .unwrap()
+        .unwrap();
+    {
+        let connection = store.lock();
+        for turn in 0..20_000 {
+            connection
+                .execute(
+                    "INSERT INTO turn (
+                        environment_key, agent, session_id, claim_fence, thread_id,
+                        turn_index, scope, role, source_key, input_tokens,
+                            cache_read_tokens, cache_write_tokens, output_tokens,
+                            is_compaction_boundary
+                     ) VALUES ('native', 'claude-code', 'removal-lost', -1, 't', ?1,
+                        'main', 'user', 's', 0, 0, 0, 0, 0)",
+                    [turn],
+                )
+                .unwrap();
+        }
+    }
+    let replacement = store
+        .claim_next_evidence(&["claude-code"], 200, 60)
+        .unwrap()
+        .unwrap();
+    assert!(replacement.claim_fence > claim.claim_fence);
+    assert!(
+        !clear_claim_leftovers(&store, &claim, &|| 200)
+            .await
+            .unwrap()
+    );
+}
+
 /// A generic session must complete through the normal terminal path.
 #[tokio::test]
 async fn a_generic_agent_session_completes_terminally_through_process_next() {
