@@ -105,7 +105,6 @@ dependencies = [
  "antiburn-local",
  "antiburn-main-window",
  "antiburn-nudge",
- "antiburn-remote",
  "antiburn-sound",
  "antiburn-trace",
  "anyhow",
@@ -293,19 +292,6 @@ dependencies = [
  "window-vibrancy",
  "windows",
  "zbus 6.2.0",
-]
-
-[[package]]
-name = "antiburn-remote"
-version = "0.11.2"
-dependencies = [
- "antiburn-local",
- "anyhow",
- "libc",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tokio",
 ]
 
 [[package]]

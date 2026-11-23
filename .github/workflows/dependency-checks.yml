@@ -63,7 +63,7 @@ jobs:
       # Each manifest gets one cargo deny call, so cargo deny resolves its
       # dependency graph once, and every manifest gets the same checks. Each
       # call runs in the manifest directory, so cargo deny finds the deny.toml
-      # there. The remote helper has no deny.toml and uses the engine's.
+      # there. Other crates can select a shared policy explicitly.
       - name: Check dependency bans and licenses${{ inputs.advisories && ', and advisories' || '' }}
         env:
           ADVISORIES: ${{ inputs.advisories }}
@@ -81,7 +81,6 @@ jobs:
           }
           deny crates/antiburn-local
           deny crates/antiburn-checks-store --config ../antiburn-local/deny.toml
-          deny crates/antiburn-remote --config ../antiburn-local/deny.toml
           deny crates/antiburn-cloud-capture --config ../antiburn-local/deny.toml --features cloud
           if [[ "$DESKTOP" == "true" ]]; then
             deny apps/desktop/src-tauri

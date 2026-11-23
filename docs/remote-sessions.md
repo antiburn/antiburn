@@ -1,9 +1,9 @@
 # Remote sessions
 
-Antiburn Desktop has retired SSH session collection. The app no longer
-connects to SSH hosts, downloads session copies, or shows the remote host
-settings and source filter. The release workflow still builds and packages
-the Linux helper while its release tooling remains in place.
+SSH session collection has been retired. Antiburn no longer connects to SSH
+hosts, discovers remote sessions, or downloads copies. Remote host settings,
+host counts, source filtering, and helper downloads are no longer part of the
+app or release process. Previously published release assets are unchanged.
 
 ## Upgrade cleanup
 

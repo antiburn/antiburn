@@ -2,8 +2,8 @@
 // check runner both read this list, so a workspace has one definition.
 //
 // Order matters: the runner checks the workspaces of a job in this order.
-// The engine comes before the remote helper, and the shell comes first in the
-// desktop group, so the largest build fills the shared target directory early.
+// The shell comes first in the desktop group, so the largest build fills
+// the shared target directory early.
 //
 // - `dependsOn`: path dependencies. A change selects every dependent workspace.
 // - `linuxOnly`: the runner skips the workspace on other hosts.
@@ -26,13 +26,6 @@ export const WORKSPACES = [
     doctests: true,
   },
   {
-    id: "remote",
-    directory: "crates/antiburn-remote",
-    group: "engine",
-    dependsOn: ["engine"],
-    linuxOnly: true,
-  },
-  {
     id: "shell",
     directory: "apps/desktop/src-tauri",
     group: "desktop",
@@ -42,7 +35,6 @@ export const WORKSPACES = [
       "cli-runtime",
       "cloud-capture",
       "engine",
-      "remote",
       "nudge",
       "hud",
       "main-window",

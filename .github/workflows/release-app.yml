@@ -936,13 +936,6 @@ jobs:
           path: release-artifacts
           if-no-files-found: error
 
-  remote-helper:
-    name: Package Linux remote helpers
-    needs: [verify, trusted-main-ci]
-    uses: ./.github/workflows/build-remote-helper.yml
-    with:
-      version: ${{ github.event_name == 'workflow_dispatch' && needs.verify.outputs.version || '' }}
-
   # Advisories change without a code change, so the release checks them
   # again. The builds run at the same time. Assemble waits for both checks,
   # so nothing is hashed, attested or uploaded before they pass.
@@ -960,7 +953,7 @@ jobs:
 
   assemble:
     name: Assemble release assets
-    needs: [verify, sbom, build, remote-helper, dependency-checks, installer-tests]
+    needs: [verify, sbom, build, dependency-checks, installer-tests]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -983,12 +976,6 @@ jobs:
         with:
           name: release-notes
           path: notes
-
-      - name: Download the remote helpers
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: remote-helper-*
-          path: incoming/remote-helpers
 
       - name: Download the inventories
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -1051,8 +1038,6 @@ jobs:
           require_count '*.cdx.json' 3
           require_count 'install.sh' 1
           require_count 'install.ps1' 1
-          require_count "antiburn-remote-${VERSION}-x86_64-unknown-linux-musl.tar.gz" 1
-          require_count "antiburn-remote-${VERSION}-aarch64-unknown-linux-musl.tar.gz" 1
 
           platforms=$(jq -s 'add' "${manifests[@]}")
           jq -n \
