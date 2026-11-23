@@ -351,6 +351,172 @@ mod tests {
     use super::*;
     use crate::store::SessionRecord;
 
+    fn retry_fixture(agent: &str) -> SessionRecord {
+        SessionRecord {
+            key: SessionKey::new("native", agent, "retry-fixture"),
+            source_kind: "file".into(),
+            source_label: "/synthetic/retry-fixture.jsonl".into(),
+            wsl_distro: None,
+            title: None,
+            title_source: None,
+            cwd: None,
+            surface: "cli".into(),
+            updated_at_epoch: Some(100),
+            activity_cursor: "original".into(),
+            activity_source: "mtime".into(),
+            subagent_count: 0,
+            fork_parent_session_id: None,
+            source_fingerprint: Some("original".into()),
+        }
+    }
+
+    #[test]
+    fn retry_storm_discovery_and_restart_preserve_the_deadline_for_each_agent() {
+        let mut violations = Vec::new();
+        for agent in crate::agents::evidence_cohort() {
+            let state = tempfile::tempdir().unwrap();
+            let store = Store::open(state.path()).unwrap();
+            let mut record = retry_fixture(agent);
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            let claim = store
+                .claim_next_evidence(&[agent], 100, 60)
+                .unwrap()
+                .unwrap();
+            assert!(
+                store
+                    .fail_evidence(
+                        &claim,
+                        EvidenceFailure::Retry {
+                            next_attempt_at_epoch: 400,
+                            counts_as_attempt: true,
+                        },
+                        crate::insights_worker::EVIDENCE_ERROR_SOURCE_CHANGED
+                    )
+                    .unwrap()
+            );
+            store.request_drilldown_evidence(&record.key).unwrap();
+            record.source_fingerprint = Some("new".into());
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            record.activity_cursor = "new".into();
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            drop(store);
+
+            let store = Store::open(state.path()).unwrap();
+            store
+                .reconcile_evidence_revisions(&[agent], crate::analysis::projection_revisions())
+                .unwrap();
+            let row = store.evidence(&record.key).unwrap().unwrap();
+            let early = store
+                .claim_next_evidence(&[agent], 399, 60)
+                .unwrap()
+                .is_some();
+            if row.retry_count != 1 || row.next_attempt_at_epoch != Some(400) || early {
+                violations.push(agent);
+                continue;
+            }
+            let current = store
+                .claim_next_evidence(&[agent], 400, 60)
+                .unwrap()
+                .unwrap();
+            assert!(
+                current.source_generation > claim.source_generation,
+                "{agent}"
+            );
+        }
+        assert!(
+            violations.is_empty(),
+            "automatic discovery cleared the retry for {violations:?}"
+        );
+    }
+
+    #[test]
+    fn retry_storm_discovery_defers_a_replacement_claim_for_each_agent() {
+        let mut violations = Vec::new();
+        for agent in crate::agents::evidence_cohort() {
+            let state = tempfile::tempdir().unwrap();
+            let store = Store::open(state.path()).unwrap();
+            let mut record = retry_fixture(agent);
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            let now = crate::retention::unix_now();
+            let old = store
+                .claim_next_evidence(&[agent], now, 60)
+                .unwrap()
+                .unwrap();
+            record.source_fingerprint = Some("new".into());
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            assert!(
+                !store
+                    .fail_evidence(
+                        &old,
+                        EvidenceFailure::Retry {
+                            next_attempt_at_epoch: now + 3,
+                            counts_as_attempt: true,
+                        },
+                        crate::insights_worker::EVIDENCE_ERROR_SOURCE_CHANGED
+                    )
+                    .unwrap()
+            );
+            let row = store.evidence(&record.key).unwrap().unwrap();
+            if row.next_attempt_at_epoch.is_none_or(|due| due < now + 30)
+                || store
+                    .claim_next_evidence(&[agent], now + 29, 60)
+                    .unwrap()
+                    .is_some()
+            {
+                violations.push(agent);
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "superseded claims were immediately eligible for {violations:?}"
+        );
+    }
+
+    #[test]
+    fn retry_storm_stale_records_cannot_revive_missing_sources_for_any_agent() {
+        let mut violations = Vec::new();
+        for agent in crate::agents::evidence_cohort() {
+            let state = tempfile::tempdir().unwrap();
+            let store = Store::open(state.path()).unwrap();
+            let mut record = retry_fixture(agent);
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            let claim = store
+                .claim_next_evidence(&[agent], 100, 60)
+                .unwrap()
+                .unwrap();
+            assert!(
+                store
+                    .fail_evidence(
+                        &claim,
+                        EvidenceFailure::Failed {
+                            revisions: crate::analysis::projection_revisions(),
+                        },
+                        crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING
+                    )
+                    .unwrap()
+            );
+            store.request_drilldown_evidence(&record.key).unwrap();
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            record.activity_cursor = "cached cursor".into();
+            record.source_fingerprint = Some("cached fingerprint".into());
+            store.upsert_sessions(&[record.clone()], &[agent]).unwrap();
+            store
+                .reconcile_evidence_revisions(&[agent], crate::analysis::projection_revisions())
+                .unwrap();
+            if store
+                .claim_next_evidence(&[agent], 1000, 60)
+                .unwrap()
+                .is_some()
+            {
+                violations.push(agent);
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "missing sources were reclaimed for {violations:?}"
+        );
+    }
+
     #[test]
     fn evidence_claims_use_three_recent_turns_then_the_oldest_ticket() {
         let state = tempfile::tempdir().unwrap();

@@ -173,6 +173,16 @@ impl Store {
         record: &SessionRecord,
         evidence_agents: &[&str],
     ) -> Result<SessionCommitOutcome> {
+        self.upsert_discovered_session_if_current(guard, record, evidence_agents, false)
+    }
+
+    pub(crate) fn upsert_discovered_session_if_current(
+        &self,
+        guard: &SessionWriteGuard,
+        record: &SessionRecord,
+        evidence_agents: &[&str],
+        source_confirmed: bool,
+    ) -> Result<SessionCommitOutcome> {
         let mut connection = self.lock();
         if guard.key != record.key || guard.source_label != record.source_label {
             return Ok(SessionCommitOutcome::Rejected(
@@ -186,6 +196,7 @@ impl Store {
             &mut connection,
             std::slice::from_ref(record),
             evidence_agents,
+            source_confirmed,
         )?;
         if let Some(physical_source) = &guard.physical_source {
             self.session_write_state

@@ -103,8 +103,20 @@ mod admission_tests {
                 .complete_source_fingerprint(&current, "duplicate-strict", 2000)
                 .unwrap()
         );
+        let due = store
+            .evidence(&record.key)
+            .unwrap()
+            .unwrap()
+            .next_attempt_at_epoch
+            .unwrap();
+        assert!(
+            store
+                .claim_next_evidence(&["opencode"], due - 1, 60)
+                .unwrap()
+                .is_none()
+        );
         let next = store
-            .claim_next_evidence(&["opencode"], 2000, 60)
+            .claim_next_evidence(&["opencode"], due, 60)
             .unwrap()
             .unwrap();
         assert!(next.source_generation > claim.source_generation);
@@ -266,31 +278,22 @@ pub(super) fn upsert_sessions_locked(
     connection: &mut Connection,
     records: &[SessionRecord],
     evidence_agents: &[&str],
+    source_confirmed: bool,
 ) -> Result<SessionUpsertResult> {
     let tx = connection.transaction()?;
     let mut incarnations = Vec::with_capacity(records.len());
+    let now = crate::retention::unix_now();
     for record in records {
-        let source_returned = tx.query_row(
-            "SELECT EXISTS (
-                 SELECT 1 FROM session_evidence
-                  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-                    AND status = 'failed' AND last_error = 'source-missing'
-             )",
-            params![
-                record.key.environment_key,
-                record.key.agent,
-                record.key.session_id
-            ],
-            |row| row.get::<_, i64>(0),
-        )? != 0;
         let upserted = upsert_session_in(&tx, record)?;
         let generation_increased = upserted
             .previous_generation
             .is_none_or(|previous| upserted.source_generation > previous);
-        let evidence_marked_pending = evidence_agents.contains(&record.key.agent.as_str())
-            && (generation_increased || upserted.activity_cursor_changed || source_returned);
-        if evidence_marked_pending {
-            mark_evidence_pending_in(&tx, &record.key)?;
+        if evidence_agents.contains(&record.key.agent.as_str())
+            && (generation_increased
+                || upserted.activity_cursor_changed
+                || (source_confirmed && evidence_source_missing_in(&tx, &record.key)?))
+        {
+            enroll_evidence_after_source_update_in(&tx, &record.key, now, source_confirmed)?;
         }
         incarnations.push((record.key.clone(), upserted.incarnation));
     }
@@ -554,6 +557,63 @@ pub(super) fn replace_relations_in(
     Ok(())
 }
 
+pub(super) fn evidence_source_missing_in(
+    connection: &Connection,
+    key: &SessionKey,
+) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS (
+             SELECT 1 FROM session_evidence
+              WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
+                AND status = 'failed' AND last_error = ?4
+         )",
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            crate::insights_worker::EVIDENCE_ERROR_SOURCE_MISSING,
+        ],
+        |row| row.get(0),
+    )?)
+}
+
+pub(super) fn enroll_evidence_after_source_update_in(
+    connection: &Connection,
+    key: &SessionKey,
+    now: i64,
+    source_confirmed: bool,
+) -> Result<()> {
+    use crate::insights_worker::{
+        BACKOFF_BASE_SECS, EVIDENCE_ERROR_SOURCE_CHANGED, EVIDENCE_ERROR_SOURCE_MISSING,
+    };
+    connection.execute(
+        "INSERT INTO session_evidence (environment_key, agent, session_id)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(environment_key, agent, session_id) DO UPDATE SET
+             status = 'pending',
+             last_error = CASE
+                 WHEN status = 'processing' OR last_error = ?4 THEN ?4 ELSE NULL END,
+             next_attempt_at_epoch = CASE
+                 WHEN status = 'processing' THEN ?5
+                 WHEN last_error = ?4 THEN next_attempt_at_epoch ELSE NULL END,
+             retry_count = CASE WHEN last_error = ?4 THEN retry_count ELSE 0 END,
+             claimed_at_epoch = NULL,
+             lease_expires_at_epoch = NULL
+         WHERE ?6 OR status <> 'failed' OR last_error IS NOT ?7",
+        params![
+            key.environment_key,
+            key.agent,
+            key.session_id,
+            EVIDENCE_ERROR_SOURCE_CHANGED,
+            now.saturating_add(BACKOFF_BASE_SECS),
+            source_confirmed,
+            EVIDENCE_ERROR_SOURCE_MISSING,
+        ],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
 pub(super) fn mark_evidence_pending_in(connection: &Connection, key: &SessionKey) -> Result<()> {
     connection.execute(
         "INSERT INTO session_evidence (environment_key, agent, session_id)

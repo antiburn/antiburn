@@ -260,6 +260,44 @@ fn kiro_v3_bundle_fingerprint_changes_when_the_journal_changes() {
     assert_ne!(before, fingerprint_of(&source));
 }
 
+#[tokio::test]
+async fn stale_kiro_bundle_claim_fails_before_the_adapter_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    let directory = temp
+        .path()
+        .join("sess_22222222-2222-4222-8222-222222222222");
+    std::fs::create_dir_all(&directory).unwrap();
+    let metadata = directory.join("session.json");
+    let journal = directory.join("messages.jsonl");
+    std::fs::write(&metadata, "invalid metadata").unwrap();
+    std::fs::write(&journal, "invalid journal").unwrap();
+    let source = SessionSource::File(metadata.clone());
+    let old = antiburn_local::discovery::source_version::bundle_fingerprint(
+        &source,
+        SourceFormat::KiroCliV3Bundle,
+    )
+    .unwrap();
+    std::fs::write(journal, "different invalid journal").unwrap();
+    let pass = analyze_located_for_evidence(
+        AgentKind::Kiro,
+        "22222222-2222-4222-8222-222222222222",
+        ClaimedSource {
+            path: Some(metadata),
+            fingerprint: Some(old),
+            generation: 1,
+        },
+        PassSignal::new(),
+        None,
+        None,
+        LocatedTranscripts {
+            source,
+            children: Vec::new(),
+        },
+    )
+    .await;
+    assert_eq!(pass.outcome, PassOutcome::SourceChanged);
+}
+
 #[test]
 fn cline_bundle_fingerprint_includes_database_and_child_artifacts() {
     let temp = tempfile::TempDir::new().unwrap();

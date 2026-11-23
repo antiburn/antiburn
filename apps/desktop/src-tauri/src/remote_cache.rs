@@ -73,6 +73,13 @@ fn parent_fingerprint(path: &Path) -> Result<String> {
     .fingerprint())
 }
 
+/// Requeue a verified snapshot with the fingerprint of its restored local file.
+fn confirm_restored_snapshot(store: &Store, mut record: SessionRecord) -> Result<()> {
+    record.source_fingerprint = Some(parent_fingerprint(Path::new(&record.source_label))?);
+    store.upsert_confirmed_session(&record, &crate::agents::evidence_cohort())?;
+    Ok(())
+}
+
 fn safe_cache_identity(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 200
@@ -317,6 +324,17 @@ pub async fn sync_session(
                 "Cached transcript is incomplete; remove and re-add the host to resync"
             );
             fs::remove_dir_all(&staging)?;
+            if !store.sessions_with_missing_source_for(std::slice::from_ref(&old.key))?.is_empty() {
+                let (commit_app, store, host_id, old) =
+                    (app.clone(), store.clone(), host_id.to_owned(), old.clone());
+                tokio::task::spawn_blocking(move || {
+                    crate::remote_sync::with_commit_guard(&commit_app, &host_id, scan_generation, || {
+                        confirm_restored_snapshot(&store, old)
+                    })
+                })
+                .await??;
+                crate::insights_worker::wake(app);
+            }
             return Ok(SyncResult::Unchanged);
         }
         ensure!(
@@ -357,7 +375,7 @@ pub async fn sync_session(
         };
         crate::remote_sync::with_commit_guard(app, host_id, scan_generation, || {
             fs::rename(&staging, &target)?;
-            if let Err(error) = store.upsert_sessions(&[record], &["claude-code", "codex"])
+            if let Err(error) = store.upsert_confirmed_session(&record, &crate::agents::evidence_cohort())
             {
                 if let Err(cleanup) = fs::remove_dir_all(&target) {
                     return Err(error.context(format!(
@@ -442,7 +460,7 @@ pub fn restore_fork_companions(store: &Store) -> Result<usize> {
         });
         match repair {
             Ok(true) => {
-                store.requeue_session_evidence(&record.key)?;
+                store.requeue_evidence_after_source_update(&record.key)?;
                 repaired += 1;
             }
             Ok(false) => {}
@@ -627,6 +645,9 @@ pub fn run_pass(
 mod tests {
     use super::*;
     use antiburn_remote::export::BundleFile;
+
+    #[path = "restored_snapshot_integration_tests.rs"]
+    mod restored_snapshot;
 
     fn manifest(data: &[u8]) -> BundleManifest {
         BundleManifest {

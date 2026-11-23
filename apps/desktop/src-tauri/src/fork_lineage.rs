@@ -111,7 +111,7 @@ fn claim_earlier_parent(
             );
             // `key` is the child in this relation: it just claimed
             // `candidate` as its own parent.
-            store.requeue_session_evidence(key)?;
+            store.requeue_evidence_after_source_update(key)?;
         }
         return Ok(());
     }
@@ -145,7 +145,7 @@ fn claim_later_children(
             );
             // `candidate_key` is the child in this relation: it just got
             // named a child of `key`.
-            store.requeue_session_evidence(&candidate_key)?;
+            store.requeue_evidence_after_source_update(&candidate_key)?;
         }
     }
     Ok(())

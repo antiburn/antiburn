@@ -2244,7 +2244,11 @@ fn source_refreshes_merge_separately_from_one_shot_triggers() {
     controller.request_source_refresh(AgentKind::OpenCode);
     controller.request_source_refresh(AgentKind::Claude);
     assert_eq!(
-        controller.take_source_refreshes(),
+        controller
+            .source_refreshes()
+            .take_due(tokio::time::Instant::now())
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([AgentKind::OpenCode, AgentKind::Claude])
     );
 
@@ -2255,10 +2259,108 @@ fn source_refreshes_merge_separately_from_one_shot_triggers() {
         Some(ScanTrigger::ManualRescan)
     ));
     assert_eq!(
-        controller.take_source_refreshes(),
+        controller
+            .source_refreshes()
+            .take_due(tokio::time::Instant::now())
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from([AgentKind::OpenCode]),
         "a pending full trigger cannot discard a source refresh"
     );
+}
+
+#[test]
+fn a_source_refresh_waits_for_its_vendor_deadline() {
+    let controller = ScanController::default();
+    let now = tokio::time::Instant::now();
+    controller.request_source_refresh(AgentKind::Claude);
+    assert_eq!(
+        controller
+            .source_refreshes()
+            .take_due(now)
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([AgentKind::Claude])
+    );
+    controller
+        .source_refreshes()
+        .next_allowed
+        .insert(AgentKind::Claude, now + TICK);
+    for _ in 0..10 {
+        controller.request_source_refresh(AgentKind::Claude);
+    }
+    controller.request_source_refresh(AgentKind::Codex);
+    assert_eq!(
+        controller
+            .source_refreshes()
+            .take_due(now)
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([AgentKind::Codex])
+    );
+    assert_eq!(
+        controller.source_refreshes().next_due(now),
+        Some(now + TICK)
+    );
+    assert!(
+        controller
+            .source_refreshes()
+            .take_due(now + TICK - Duration::from_secs(1))
+            .is_empty()
+    );
+    assert_eq!(
+        controller
+            .source_refreshes()
+            .take_due(now + TICK)
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([AgentKind::Claude])
+    );
+    assert_eq!(controller.source_refreshes().next_due(now + TICK), None);
+}
+
+#[test]
+fn incomplete_source_refresh_requeues_replay_keys_at_the_agent_deadline() {
+    let now = tokio::time::Instant::now();
+    let agent = AgentKind::Codex;
+    let due = now + TICK;
+    let key = SessionKey::new("native", agent.slug(), "deferred");
+    let trigger = ScanTrigger::SourceRefresh {
+        agents: vec![agent.slug()],
+        project_deferral_replays: Arc::new(HashSet::from([key.clone()])),
+    };
+    let summary = || PassSummary {
+        sessions: 0,
+        list_changed: false,
+        re_described: 0,
+        superseded_project_deferrals: None,
+    };
+    for (outcome, cancelled, expected) in [
+        (Err(anyhow::anyhow!("transient scan failure")), false, true),
+        (Ok(summary()), true, true),
+        (Ok(summary()), false, false),
+    ] {
+        let controller = ScanController::default();
+        controller
+            .source_refreshes()
+            .next_allowed
+            .insert(agent, due);
+        assert!(!retry_project_deferrals_after_pass(
+            &controller,
+            &trigger,
+            &outcome,
+            cancelled,
+        ));
+        assert!(controller.take_pending_trigger().0.is_none());
+        let mut queue = controller.source_refreshes();
+        assert!(queue.take_due(now).is_empty());
+        let expected_keys = if expected {
+            BTreeMap::from([(agent, HashSet::from([key.clone()]))])
+        } else {
+            BTreeMap::new()
+        };
+        assert_eq!(queue.take_due(due), expected_keys, "cancelled={cancelled}");
+    }
 }
 
 #[test]
@@ -2274,6 +2376,7 @@ fn source_refresh_runs_only_the_requested_agent_scope() {
     ));
     assert!(uses_history_window(&ScanTrigger::SourceRefresh {
         agents: vec!["opencode"],
+        project_deferral_replays: Arc::default(),
     }));
     assert!(!uses_history_window(&ScanTrigger::WatcherAgents {
         agents: vec!["opencode"],
@@ -2954,17 +3057,18 @@ fn assert_scheduler_source_contract(source: &str) {
         .expect("covers");
     assert!(capture < run && run < gate && gate < settle && settle < report);
 
-    // Every scheduler pass goes through the covered helper; nothing else
-    // sends a cover.
-    assert_eq!(
-        production.matches("run_covered_pass(").count(),
-        5,
-        "one definition, four call sites"
-    );
-    assert!(
-        !production.contains("run_pass(&app, None, "),
-        "the scheduler runs no uncovered pass"
-    );
+    // Complete discovery passes use the covered helper. A retry pass checks
+    // selected sessions and cannot cover anonymous agent activity.
+    assert_eq!(production.matches("run_covered_pass(").count(), 4);
+    let retry_dispatch = production
+        .split_once("if !source_refreshes.is_empty() {")
+        .unwrap()
+        .1
+        .split_once("let (full_trigger, history_dispatch)")
+        .unwrap()
+        .0;
+    assert!(retry_dispatch.contains("if try_run_pass("));
+    assert!(!retry_dispatch.contains("run_covered_pass("));
     assert_eq!(
         production.matches("report_covered(").count(),
         2,
