@@ -259,13 +259,37 @@ fn uses_history_window(trigger: &ScanTrigger) -> bool {
     )
 }
 
-fn retry_superseded_project_deferrals(
+/// Restore folder updates from the pass outcome before another scan can start.
+fn retry_project_deferrals_after_pass(
+    controller: &ScanController,
+    trigger: &ScanTrigger,
+    outcome: &anyhow::Result<PassSummary>,
+) -> bool {
+    let superseded = outcome
+        .as_ref()
+        .ok()
+        .and_then(|summary| summary.superseded_project_deferrals.as_ref());
+    if let Some(keys) = superseded {
+        retry_project_deferrals(controller, trigger, keys);
+    } else if outcome.is_err()
+        && let ScanTrigger::SourceRefresh {
+            project_deferral_replays,
+            ..
+        } = trigger
+    {
+        // The scheduler still applies the agent cooldown for an admitted pass.
+        retry_project_deferrals(controller, trigger, project_deferral_replays);
+    }
+    superseded.is_some()
+}
+
+fn retry_project_deferrals(
     controller: &ScanController,
     trigger: &ScanTrigger,
     keys: &HashSet<SessionKey>,
 ) {
     match trigger {
-        ScanTrigger::SourceRefresh { agents, .. } => {
+        ScanTrigger::SourceRefresh { agents, .. } if !keys.is_empty() => {
             let mut queue = controller.source_refreshes();
             for key in keys {
                 if agents.contains(&key.agent.as_str())
@@ -277,6 +301,7 @@ fn retry_superseded_project_deferrals(
             drop(queue);
             controller.kick.notify_one();
         }
+        ScanTrigger::SourceRefresh { .. } => {}
         ScanTrigger::HistoricalScan => controller.request(ScanTrigger::HistoricalScan),
         _ => controller.request(ScanTrigger::WatcherOverflow),
     }
@@ -1243,14 +1268,8 @@ async fn try_run_pass(
     .await;
 
     let controller = app.state::<ScanController>();
-    let superseded_project_deferrals = outcome
-        .as_ref()
-        .ok()
-        .and_then(|summary| summary.superseded_project_deferrals.as_ref());
-    let project_deferrals_superseded = superseded_project_deferrals.is_some();
-    if let Some(keys) = superseded_project_deferrals {
-        retry_superseded_project_deferrals(&controller, &trigger, keys);
-    }
+    let project_deferrals_superseded =
+        retry_project_deferrals_after_pass(&controller, &trigger, &outcome);
 
     let cancelled = controller.cancelled();
     controller.update(|status| {

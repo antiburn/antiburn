@@ -2320,6 +2320,36 @@ fn a_source_refresh_waits_for_its_vendor_deadline() {
 }
 
 #[test]
+fn failed_source_refresh_requeues_replay_keys_at_the_agent_deadline() {
+    let controller = ScanController::default();
+    let now = tokio::time::Instant::now();
+    let agent = AgentKind::Codex;
+    let due = now + TICK;
+    let key = SessionKey::new("native", agent.slug(), "deferred");
+    let trigger = ScanTrigger::SourceRefresh {
+        agents: vec![agent.slug()],
+        project_deferral_replays: Arc::new(HashSet::from([key.clone()])),
+    };
+    controller
+        .source_refreshes()
+        .next_allowed
+        .insert(agent, due);
+    let outcome = Err(anyhow::anyhow!("transient scan failure"));
+    assert!(!retry_project_deferrals_after_pass(
+        &controller,
+        &trigger,
+        &outcome
+    ));
+    assert!(controller.take_pending_trigger().0.is_none());
+    let mut queue = controller.source_refreshes();
+    assert!(queue.take_due(now).is_empty());
+    assert_eq!(
+        queue.take_due(due),
+        BTreeMap::from([(agent, HashSet::from([key]))])
+    );
+}
+
+#[test]
 fn source_refresh_runs_only_the_requested_agent_scope() {
     assert!(matches!(
         source_refresh_scope(&BTreeSet::from([AgentKind::OpenCode, AgentKind::Claude])),

@@ -177,7 +177,7 @@ async fn source_refresh_replays_a_superseded_folder_update_after_evidence_is_rea
         .source_refreshes()
         .next_allowed
         .insert(restored.agent_type, now + TICK);
-    retry_superseded_project_deferrals(
+    retry_project_deferrals(
         &controller,
         &ScanTrigger::SourceRefresh {
             agents: vec![restored.agent_type.slug()],

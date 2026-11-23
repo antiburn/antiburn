@@ -222,7 +222,7 @@ fn batch(logs: Vec<SessionLog>) -> DiscoveryBatch {
 #[test]
 fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
     let historical = ScanController::default();
-    super::super::retry_superseded_project_deferrals(
+    super::super::retry_project_deferrals(
         &historical,
         &ScanTrigger::HistoricalScan,
         &HashSet::new(),
@@ -237,7 +237,7 @@ fn superseded_project_deferrals_retry_the_scan_window_they_belong_to() {
     ));
 
     let current = ScanController::default();
-    super::super::retry_superseded_project_deferrals(&current, &ScanTrigger::Tick, &HashSet::new());
+    super::super::retry_project_deferrals(&current, &ScanTrigger::Tick, &HashSet::new());
     assert!(matches!(
         current
             .pending_trigger
