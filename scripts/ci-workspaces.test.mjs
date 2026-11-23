@@ -3,7 +3,7 @@
 // registry, so the classify job runs this file on every event.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -26,7 +26,7 @@ function repositoryFiles(...patterns) {
     encoding: "utf8",
   })
     .split("\n")
-    .filter(Boolean);
+    .filter((file) => file && existsSync(path.join(ROOT, file)));
 }
 
 /** The registry ids that the `path = "..."` entries of a manifest reach. */

@@ -35,17 +35,6 @@ const COMPONENTS = {
       { file: 'apps/desktop/src-tauri/tauri.conf.json', read: packageJsonVersion },
       { file: 'apps/desktop/src-tauri/Cargo.toml', read: cargoTomlVersion },
       { file: 'apps/desktop/src-tauri/Cargo.lock', read: cargoLockVersion('antiburn') },
-      // The remote helper ships as a release asset named for this version, and
-      // reports it from `--version` and the `hello` response. A reader who
-      // downloads a helper identifies the release it came from. The desktop
-      // lockfile appears twice because it records both crates.
-      { file: 'crates/antiburn-remote/Cargo.toml', read: cargoTomlVersion },
-      { file: 'crates/antiburn-remote/Cargo.lock', read: cargoLockVersion('antiburn-remote') },
-      {
-        file: 'apps/desktop/src-tauri/Cargo.lock',
-        label: 'apps/desktop/src-tauri/Cargo.lock (antiburn-remote)',
-        read: cargoLockVersion('antiburn-remote'),
-      },
     ],
   },
   engine: {
@@ -130,7 +119,6 @@ function main() {
   let disagreed = false;
   for (const source of component.sources) {
     const full = path.join(ROOT, source.file);
-    // A lockfile that records two of the checked crates is read once per crate.
     const shown = source.label ?? source.file;
     let found;
     try {

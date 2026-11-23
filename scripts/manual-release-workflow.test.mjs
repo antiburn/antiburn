@@ -15,18 +15,13 @@ function readWorkflow(name) {
 
 const workflow = readWorkflow("release-app.yml");
 
-test("manual builds use the complete desktop matrix and remote helpers", () => {
+test("manual builds use the complete desktop matrix", () => {
   assert.equal(workflow.on.workflow_dispatch.inputs.version.required, true);
   assert.equal(workflow.jobs.build.strategy.matrix.include.length, 6);
-  assert.equal(
-    workflow.jobs["remote-helper"].uses,
-    "./.github/workflows/build-remote-helper.yml",
-  );
   assert.deepEqual(workflow.jobs.assemble.needs, [
     "verify",
     "sbom",
     "build",
-    "remote-helper",
     "dependency-checks",
     "installer-tests",
   ]);
@@ -90,7 +85,6 @@ test("tag builds retain the engine source release gate", () => {
   );
   assert.equal(gate.if, "github.event_name == 'push'");
   assert.ok(workflow.jobs.build.needs.includes("trusted-main-ci"));
-  assert.ok(workflow.jobs["remote-helper"].needs.includes("trusted-main-ci"));
 });
 
 test("engine releases skip only the desktop dependency checks", () => {
@@ -126,19 +120,6 @@ test("engine releases skip only the desktop dependency checks", () => {
     advisories: true,
     desktop: false,
   });
-});
-
-test("release builds test the remote helper; main CI leaves it to the engine job", () => {
-  const helper = readWorkflow("build-remote-helper.yml");
-  const ci = readWorkflow("ci.yml");
-  assert.equal(helper.on.workflow_call.inputs.test.default, true);
-  assert.ok(
-    helper.jobs.build.steps.some(
-      (step) => step.if === "inputs.test" && step.run === "cargo test --locked",
-    ),
-  );
-  assert.notEqual(workflow.jobs["remote-helper"].with?.test, false);
-  assert.equal(ci.jobs["remote-helper"].with.test, false);
 });
 
 test("CI validates Burn Check definitions when their docs change", () => {

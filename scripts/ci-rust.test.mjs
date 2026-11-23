@@ -25,7 +25,7 @@ test("runs workspaces in the registry order, whatever the input order", () => {
   const order = [...new Set(plan.steps.map((step) => step.workspace))];
   assert.deepEqual(order, ALL_IDS);
   assert.equal(order[0], "checks");
-  assert.equal(order[3], "shell");
+  assert.equal(order[2], "shell");
   assert.deepEqual(plan.skipped, []);
 });
 
@@ -105,7 +105,7 @@ test("checks capture defaults separately and enables cloud for Clippy and Nextes
 
 test("uses the per-workspace commands and directories", () => {
   const plan = planRustChecks({
-    workspaces: "engine,remote,shell,nudge,tray-icon",
+    workspaces: "engine,shell,nudge,tray-icon",
     platform: "linux",
   });
   const byLabel = Object.fromEntries(
@@ -128,13 +128,6 @@ test("uses the per-workspace commands and directories", () => {
     "--tests",
   ]);
   assert.equal(byLabel["engine: tests"].cwd, "crates/antiburn-local");
-  assert.deepEqual(byLabel["remote: tests"].args, [
-    "nextest",
-    "run",
-    "--locked",
-    "--no-tests=pass",
-  ]);
-  assert.equal(byLabel["remote: tests"].cwd, "crates/antiburn-remote");
   assert.deepEqual(byLabel["shell: clippy (analytics)"].args, [
     "clippy",
     "--all-targets",
@@ -270,26 +263,6 @@ test("adds a shell Clippy pass without analytics only on request", () => {
     platform: "linux",
   });
   assert.deepEqual(labels(otherWorkspace), ["hud: clippy", "hud: tests"]);
-});
-
-test("runs the remote helper only on Linux hosts", () => {
-  for (const platform of ["darwin", "win32"]) {
-    const plan = planRustChecks({ workspaces: "engine,remote", platform });
-    assert.deepEqual(
-      [...new Set(plan.steps.map((step) => step.workspace))],
-      ["engine"],
-    );
-    assert.equal(plan.skipped.length, 1);
-    assert.equal(plan.skipped[0].workspace, "remote");
-  }
-  const linux = planRustChecks({
-    workspaces: "engine,remote",
-    platform: "linux",
-  });
-  assert.deepEqual(
-    [...new Set(linux.steps.map((step) => step.workspace))],
-    ["engine", "remote"],
-  );
 });
 
 test("spawns cargo.exe on Windows and cargo elsewhere", () => {
