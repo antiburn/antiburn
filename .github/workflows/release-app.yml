@@ -338,8 +338,7 @@ jobs:
             artifact: linux-x64
             arch_label: x64
             updater_platform: linux-x86_64-appimage
-            linuxdeploy_asset_id: "313839329"
-            linuxdeploy_sha256: "c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
+            linuxdeploy_sha256: "36a2d7e274d12e1050d0e9ecfe11d339ed54720b2bec464c286d53f8b07f5c62"
           # The same glibc-floor reasoning: ubuntu-24.04-arm pins the ARM64
           # floor at glibc 2.39.
           - name: Linux ARM64
@@ -349,8 +348,7 @@ jobs:
             artifact: linux-arm64
             arch_label: aarch64
             updater_platform: linux-aarch64-appimage
-            linuxdeploy_asset_id: "313839294"
-            linuxdeploy_sha256: "620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
+            linuxdeploy_sha256: "556ab80baa98e600aa80f0dcedfb70bca0e1ce7e9f147fb345be3fcc3e91b2b1"
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -657,27 +655,33 @@ jobs:
           test -f apps/desktop/src-tauri/icons/icon.icns
           test -f apps/desktop/src-tauri/icons/icon.ico
 
-      # Use retained linuxdeploy release 1-alpha-20251107-1, not moving continuous assets.
-      # The asset id and hash are per-architecture matrix values; the cache
-      # file name must match what tauri-bundler looks for on this host, and
-      # `uname -m` gives that same architecture label.
+      # Preload the versioned cache entry that Tauri uses. Review the asset,
+      # cache name, and checksum pins when the Tauri CLI version changes.
       - name: Install the pinned Linux AppImage bundler
         if: runner.os == 'Linux'
         shell: bash
         env:
-          LINUXDEPLOY_ASSET_ID: ${{ matrix.linuxdeploy_asset_id }}
+          TARGET: ${{ matrix.target }}
           LINUXDEPLOY_SHA256: ${{ matrix.linuxdeploy_sha256 }}
         run: |
           set -euo pipefail
+          tauri_version=$(node -p 'require("./apps/desktop/node_modules/@tauri-apps/cli/package.json").version')
+          if [[ "$tauri_version" != 2.12.4 ]]; then
+            echo "::error::Review the linuxdeploy pins for Tauri CLI $tauri_version."
+            exit 1
+          fi
+          arch="${TARGET%%-*}"
+          release=linuxdeploy-07333c6
           tools="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
-          destination="${tools}/linuxdeploy-$(uname -m).AppImage"
+          destination="$tools/$release-$arch.AppImage"
           mkdir -p "$tools"
+          download=$(mktemp)
+          trap 'rm -f "$download"' EXIT
           curl --fail --location --retry 3 \
-            --header 'Accept: application/octet-stream' \
-            "https://api.github.com/repos/linuxdeploy/linuxdeploy/releases/assets/${LINUXDEPLOY_ASSET_ID}" \
-            --output "$destination"
-          echo "${LINUXDEPLOY_SHA256}  ${destination}" | sha256sum --check --strict
-          chmod +x "$destination"
+            "https://github.com/tauri-apps/binary-releases/releases/download/$release/linuxdeploy-$arch.AppImage" \
+            --output "$download"
+          printf '%s  %s\n' "$LINUXDEPLOY_SHA256" "$download" | sha256sum --check --strict
+          install -m 0755 "$download" "$destination"
 
       - name: Build native CLI payload
         shell: bash
@@ -697,7 +701,14 @@ jobs:
         shell: pwsh
         run: ./scripts/windows-signing.ps1 -FilePath apps/desktop/src-tauri/cli-payload/antiburn-cli.exe
 
-      - name: Seal signed CLI manifest
+      # linuxdeploy adds $ORIGIN to ELF files under usr/lib. Set it before
+      # the manifest records the CLI hash.
+      - name: Prepare Linux CLI for AppImage bundling
+        if: runner.os == 'Linux'
+        shell: bash
+        run: patchelf --set-rpath '$ORIGIN' apps/desktop/src-tauri/cli-payload/antiburn-cli
+
+      - name: Seal CLI manifest
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
@@ -758,8 +769,7 @@ jobs:
               --features distribution,analytics --target "$TARGET" --bundles "$BUNDLES" --config src-tauri/tauri.sidecar.conf.json
           fi
 
-      # Host graphics drivers must use the host Wayland client ABI.
-      - name: Verify the Linux AppImage graphics boundary
+      - name: Verify the Linux AppImage
         if: runner.os == 'Linux'
         shell: bash
         env:
@@ -772,7 +782,7 @@ jobs:
             echo "::error::Expected one AppImage to verify, found ${#images[@]}."
             exit 1
           fi
-          node scripts/verify-linux-appimage.mjs "${images[0]}"
+          node scripts/verify-linux-appimage.mjs "${images[0]}" "$TARGET"
 
       # Signing that is not verified is a claim, not a fact.
       - name: Verify the macOS signature and notarization ticket
