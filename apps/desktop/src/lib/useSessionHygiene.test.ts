@@ -1,11 +1,15 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import type { SessionHygienePayload } from "./insightsIpc"
+import { getSessionHygiene, type SessionHygienePayload } from "./insightsIpc"
 import type * as Ipc from "./ipc"
 import type * as InsightsIpc from "./insightsIpc"
 import type { LocalSessionIdentity } from "./types/session"
-import { sessionHygieneFor, useSessionHygiene } from "./useSessionHygiene"
+import {
+  sessionHygieneFor,
+  useSessionHygiene,
+  useSessionHygieneResource,
+} from "./useSessionHygiene"
 
 const ipcMocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -141,6 +145,29 @@ afterEach(() => {
 })
 
 describe("useSessionHygiene", () => {
+  it("shares a targeted recovery with subscribers and ignores an older background reply", async () => {
+    let finishBackground!: (value: SessionHygienePayload[]) => void
+    ipcMocks.invoke
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishBackground = resolve
+        }),
+      )
+      .mockResolvedValueOnce([payload("finding")])
+    const { result } = renderHook(() => useSessionHygieneResource([FIRST]))
+    await waitFor(() => expect(ipcMocks.invoke).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      expect(
+        await result.current.resolve([FIRST], new AbortController().signal, () => [FIRST]),
+      ).toBe(true)
+    })
+    expect(sessionHygieneFor(result.current.snapshot, FIRST).badges[0]?.status).toBe("finding")
+
+    await act(async () => finishBackground([payload("clean")]))
+    expect(sessionHygieneFor(result.current.snapshot, FIRST).badges[0]?.status).toBe("finding")
+  })
+
   it("loads multiple sessions through one IPC request", async () => {
     ipcMocks.invoke.mockResolvedValueOnce([payload("finding"), payload("clean")])
 
@@ -158,12 +185,105 @@ describe("useSessionHygiene", () => {
     expect(ipcMocks.onSessionUpdated).toHaveBeenCalledTimes(1)
   })
 
-  it("refreshes only the session named by an analysis-facet update", async () => {
+  it("keeps resolved hygiene when more sessions are appended", async () => {
+    ipcMocks.invoke
+      .mockResolvedValueOnce([payload("finding")])
+      .mockReturnValueOnce(new Promise(() => {}))
+    const { result, rerender } = renderHook(({ sessions }) => useSessionHygiene(sessions), {
+      initialProps: { sessions: [FIRST] },
+    })
+    await waitFor(() =>
+      expect(sessionHygieneFor(result.current, FIRST).badges[0]?.status).toBe("finding"),
+    )
+
+    rerender({ sessions: [FIRST, SECOND] })
+
+    await waitFor(() => expect(ipcMocks.invoke).toHaveBeenCalledTimes(2))
+    expect(ipcMocks.invoke).toHaveBeenLastCalledWith("get_session_hygiene", {
+      sessions: [SECOND],
+    })
+    expect(result.current.size).toBe(1)
+    expect(sessionHygieneFor(result.current, FIRST).badges[0]?.status).toBe("finding")
+  })
+
+  it("keeps completed chunks and retries only missing badges when the inventory grows", async () => {
+    const sessions = Array.from({ length: 501 }, (_, index) => ({
+      ...FIRST,
+      sessionId: `synthetic-${index}`,
+    }))
+    const unread = sessions[500]!
+    ipcMocks.invoke
+      .mockResolvedValueOnce(Array.from({ length: 500 }, () => payload("finding")))
+      .mockRejectedValueOnce(new Error("Unavailable"))
+      .mockResolvedValueOnce([payload("clean"), payload("clean")])
+    const { result, rerender } = renderHook(({ requested }) => useSessionHygiene(requested), {
+      initialProps: { requested: sessions },
+    })
+    await waitFor(() => expect(result.current.size).toBe(501))
+    expect(sessionHygieneFor(result.current, sessions[0]!).badges[0]?.status).toBe("finding")
+    expect(sessionHygieneFor(result.current, unread).evidenceState).toBe("failed")
+    expect(ipcMocks.invoke).toHaveBeenCalledTimes(2)
+
+    rerender({ requested: [...sessions, SECOND] })
+
+    await waitFor(() =>
+      expect(sessionHygieneFor(result.current, unread).evidenceState).toBe("ready"),
+    )
+    expect(ipcMocks.invoke).toHaveBeenLastCalledWith("get_session_hygiene", {
+      sessions: [unread, SECOND],
+    })
+    expect(sessionHygieneFor(result.current, sessions[0]!).badges[0]?.status).toBe("finding")
+  })
+
+  it("stops obsolete chunks when an append replaces a subscription", async () => {
+    const sessions = Array.from({ length: 501 }, (_, index) => ({
+      ...FIRST,
+      sessionId: `synthetic-${index}`,
+    }))
+    let finishOldChunk!: (rows: SessionHygienePayload[]) => void
+    ipcMocks.invoke.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishOldChunk = resolve
+      }),
+    )
+    ipcMocks.invoke.mockReturnValueOnce(new Promise(() => {}))
+    const { rerender } = renderHook(({ requested }) => useSessionHygiene(requested), {
+      initialProps: { requested: sessions },
+    })
+    await waitFor(() => expect(ipcMocks.invoke).toHaveBeenCalledTimes(1))
+    rerender({ requested: [...sessions, SECOND] })
+    await waitFor(() => expect(ipcMocks.invoke).toHaveBeenCalledTimes(2))
+
+    await act(async () => finishOldChunk(Array(500).fill(payload("finding"))))
+
+    expect(ipcMocks.invoke).toHaveBeenCalledTimes(2)
+  })
+
+  it("discards a complete final hygiene chunk that arrives after cancellation", async () => {
+    let finish!: (rows: SessionHygienePayload[]) => void
+    ipcMocks.invoke.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve
+      }),
+    )
+    const controller = new AbortController()
+    const pending = getSessionHygiene([FIRST], controller.signal)
+    controller.abort()
+    finish([payload("finding")])
+    await expect(pending).resolves.toBeNull()
+    expect(ipcMocks.invoke).toHaveBeenCalledOnce()
+  })
+
+  it("uses the analysis update to refresh one session after a summary-only report change", async () => {
     ipcMocks.invoke
       .mockResolvedValueOnce([payload("clean"), payload("clean")])
       .mockResolvedValueOnce([payload("finding")])
     const { result } = renderHook(() => useSessionHygiene([FIRST, SECOND]))
     await waitFor(() => expect(ipcMocks.onSessionUpdated).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(result.current.size).toBe(2))
+
+    await act(async () => ipcMocks.onChecksReportChanged.mock.calls[0]?.[0]("summaryOnly"))
+    expect(ipcMocks.invoke).toHaveBeenCalledTimes(1)
 
     const onUpdate = ipcMocks.onSessionUpdated.mock.calls[0]?.[0]
     await act(async () => {
@@ -190,7 +310,7 @@ describe("useSessionHygiene", () => {
     ])
     const { result } = renderHook(() => useSessionHygiene([FIRST]))
     await waitFor(() => expect(ipcMocks.onChecksReportChanged).toHaveBeenCalledTimes(1))
-    await act(async () => ipcMocks.onChecksReportChanged.mock.calls[0]?.[0]())
+    await act(async () => ipcMocks.onChecksReportChanged.mock.calls[0]?.[0](null))
     await waitFor(() => expect(sessionHygieneFor(result.current, FIRST).badges).toHaveLength(7))
   })
 
@@ -238,7 +358,11 @@ describe("useSessionHygiene", () => {
     const onIndexChanged = ipcMocks.onSessionIndexChanged.mock.calls[0]?.[0]
     act(() => {
       onIndexChanged({ seq: 2, cause: "scan_pass" })
+    })
+    expect(ipcMocks.invoke).toHaveBeenCalledTimes(1)
+    act(() => {
       onIndexChanged({ seq: 3, cause: "invalidated" })
+      onIndexChanged({ seq: 4, cause: "resync" })
     })
     expect(ipcMocks.invoke).toHaveBeenCalledTimes(2)
 

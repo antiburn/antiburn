@@ -349,7 +349,20 @@ pub struct Store {
     state_dir: PathBuf,
 }
 
-fn recent_sessions_sql(origin_filter: &str, exclusion_filter: &str) -> String {
+const ACTIVITY_AGENTS_SQL: &str = "
+    WITH RECURSIVE agents(agent) AS (
+        SELECT min(agent) FROM session
+        UNION ALL
+        SELECT (SELECT min(agent) FROM session WHERE agent > agents.agent)
+        FROM agents WHERE agents.agent IS NOT NULL
+    )
+    SELECT agent FROM agents WHERE agent IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM session
+           WHERE session.agent = agents.agent AND COALESCE(updated_at_epoch, 0) >= ?1
+      )";
+
+fn recent_sessions_sql(origin_filter: &str, exclusion_filter: &str, continuation: &str) -> String {
     format!(
         "SELECT environment_key, agent, session_id, source_kind,
                 source_label, wsl_distro, title, title_source, cwd, surface, updated_at_epoch,
@@ -362,8 +375,8 @@ fn recent_sessions_sql(origin_filter: &str, exclusion_filter: &str) -> String {
                    LIMIT 1),
                 s.source_fingerprint
            FROM session s
-          WHERE COALESCE(updated_at_epoch, 0) >= :since_epoch{origin_filter}{exclusion_filter}
-          ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC
+          WHERE COALESCE(updated_at_epoch, 0) >= :since_epoch{origin_filter}{exclusion_filter}{continuation}
+          ORDER BY COALESCE(updated_at_epoch, 0) DESC, session_id DESC, environment_key DESC, agent DESC
           LIMIT :limit"
     )
 }
@@ -1508,7 +1521,7 @@ impl Store {
         limit: usize,
         excluded_agents: &DisabledAgents,
     ) -> Result<Vec<SessionRecord>> {
-        self.recent_sessions_with_origin(since_epoch, limit, excluded_agents, false)
+        self.recent_sessions_with_origin(since_epoch, limit, excluded_agents, false, None)
     }
 
     /// Filter local origins before the row limit so remote rows cannot hide them.
@@ -1518,7 +1531,140 @@ impl Store {
         limit: usize,
         excluded_agents: &DisabledAgents,
     ) -> Result<Vec<SessionRecord>> {
-        self.recent_sessions_with_origin(since_epoch, limit, excluded_agents, true)
+        self.recent_sessions_with_origin(since_epoch, limit, excluded_agents, true, None)
+    }
+
+    /// List the agents with sessions in the activity window without loading summaries.
+    /// Seek past each distinct agent instead of scanning its session rows.
+    pub(crate) fn activity_agents(
+        &self,
+        since_epoch: i64,
+        excluded_agents: &DisabledAgents,
+    ) -> Result<Vec<String>> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(ACTIVITY_AGENTS_SQL)?;
+        let rows = statement.query_map([since_epoch], |row| row.get::<_, String>(0))?;
+        let excluded = excluded_agents.slugs();
+        let mut agents = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        agents.retain(|agent| !excluded.contains(agent));
+        agents.sort_unstable();
+        Ok(agents)
+    }
+
+    /// Count indexed sessions in the visible date range without reading their summaries.
+    pub(crate) fn activity_session_count(
+        &self,
+        since_epoch: i64,
+        through_epoch: i64,
+        excluded_agents: &DisabledAgents,
+    ) -> Result<u64> {
+        let excluded = serde_json::to_string(excluded_agents.slugs())?;
+        Ok(self.lock().query_row(
+            "SELECT COUNT(*) FROM session
+             WHERE COALESCE(updated_at_epoch, 0) BETWEEN ?1 AND ?2
+               AND agent NOT IN (SELECT value FROM json_each(?3))",
+            params![since_epoch, through_epoch, excluded],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Start observing summary changes before reading a new stream head.
+    /// A staged interval leaves the active interval intact if the refresh fails.
+    pub(crate) fn start_activity_tracking(
+        &self,
+        excluded: &DisabledAgents,
+        staged: bool,
+    ) -> Result<()> {
+        let connection = self.lock();
+        connection.execute_batch(include_str!("activity_changes.sql"))?;
+        connection.execute(
+            "INSERT OR REPLACE INTO activity_stream_changes VALUES (?1, ?2, -1)",
+            params![staged, serde_json::to_string(excluded.slugs())?],
+        )?;
+        Ok(())
+    }
+
+    /// Promote the interval for a fresh head after all its summaries are ready.
+    pub(crate) fn publish_activity_tracking(&self) -> Result<()> {
+        let mut connection = self.lock();
+        let tx = connection.transaction()?;
+        tx.execute("DELETE FROM activity_stream_changes WHERE slot = 0", [])?;
+        tx.execute(
+            "UPDATE activity_stream_changes SET slot = 0 WHERE slot = 1",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Stop collecting changes when the main window closes its stream.
+    pub(crate) fn stop_activity_tracking(&self) -> Result<()> {
+        self.lock()
+            .execute("DELETE FROM activity_stream_changes", [])?;
+        Ok(())
+    }
+
+    /// Check if a summary write touched the loaded range since the head was read.
+    pub(crate) fn activity_range_changed(&self, oldest_epoch: i64) -> Result<bool> {
+        Ok(self.lock().query_row(
+            "SELECT newest_epoch >= ?1 FROM activity_stream_changes WHERE slot = 0",
+            [oldest_epoch],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Identify the repository labels observed by the current activity stream.
+    pub(crate) fn activity_repository_revision(&self) -> Result<i64> {
+        Ok(self.lock().query_row(
+            "SELECT revision FROM activity_repository_revision",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Read the sequence of the last allocated session incarnation.
+    pub(crate) fn activity_membership_sequence(&self) -> Result<i64> {
+        Ok(self.lock().query_row(
+            "SELECT value FROM session_incarnation_seq WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Find admissions inside the retained range that a head refresh cannot surface.
+    /// Equal timestamps are included so a tie cannot hide a new identity.
+    pub(crate) fn activity_has_admissions(
+        &self,
+        after_sequence: i64,
+        oldest_epoch: i64,
+        newest_epoch: i64,
+        excluded: &DisabledAgents,
+    ) -> Result<bool> {
+        let connection = self.lock();
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT agent FROM session
+             WHERE COALESCE(updated_at_epoch, 0) BETWEEN ?1 AND ?2 AND incarnation > ?3",
+        )?;
+        let mut rows = statement.query(params![oldest_epoch, newest_epoch, after_sequence])?;
+        while let Some(row) = rows.next()? {
+            let agent: String = row.get(0)?;
+            if !excluded.slugs().contains(&agent) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Read a bounded batch for the activity stream in strict recency order.
+    /// Keep the continuation on the native side and advance it only after delivery.
+    pub(crate) fn stream_recent_sessions(
+        &self,
+        since_epoch: i64,
+        limit: usize,
+        excluded_agents: &DisabledAgents,
+        after: Option<&ActiveCursor>,
+    ) -> Result<Vec<SessionRecord>> {
+        self.recent_sessions_with_origin(since_epoch, limit, excluded_agents, false, after)
     }
 
     fn recent_sessions_with_origin(
@@ -1527,6 +1673,7 @@ impl Store {
         limit: usize,
         excluded_agents: &DisabledAgents,
         local_only: bool,
+        after: Option<&ActiveCursor>,
     ) -> Result<Vec<SessionRecord>> {
         let excluded = excluded_agents.slugs();
         let origin_filter = if local_only {
@@ -1543,7 +1690,14 @@ impl Store {
             format!(" AND agent NOT IN ({})", exclusion_placeholders.join(", "))
         };
         let connection = self.lock();
-        let sql = recent_sessions_sql(origin_filter, &exclusion_filter);
+        let continuation = if after.is_some() {
+            " AND COALESCE(updated_at_epoch, 0) <= :epoch
+              AND (COALESCE(updated_at_epoch, 0) < :epoch
+                   OR (session_id, environment_key, agent) < (:id, :environment, :agent))"
+        } else {
+            ""
+        };
+        let sql = recent_sessions_sql(origin_filter, &exclusion_filter, continuation);
         let mut statement = connection.prepare(&sql)?;
         let limit = limit as i64;
         let mut bindings = named_params![":since_epoch": since_epoch, ":limit": limit].to_vec();
@@ -1553,6 +1707,14 @@ impl Store {
                 .zip(excluded)
                 .map(|(name, agent)| (name.as_str(), agent as &dyn rusqlite::ToSql)),
         );
+        if let Some(after) = after {
+            bindings.extend(named_params![
+                ":epoch": after.epoch,
+                ":id": after.session_id,
+                ":environment": after.environment_key,
+                ":agent": after.agent,
+            ]);
+        }
         let rows = statement.query_map(bindings.as_slice(), session_from_row)?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }

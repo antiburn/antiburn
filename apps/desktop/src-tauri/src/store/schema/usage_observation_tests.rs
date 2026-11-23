@@ -30,7 +30,10 @@ fn usage_rows(connection: &Connection) -> Vec<(String, bool, Option<String>)> {
 #[test]
 fn fresh_usage_schema_bounds_observations_without_candidate_ownership() {
     let store = Store::open_in_memory(std::path::Path::new("usage-schema")).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 94);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        crate::store::schema::MIGRATIONS.len() as i64
+    );
     let connection = store.lock();
     assert_eq!(
         connection
@@ -85,7 +88,10 @@ fn v91_upgrade_and_reopen_keep_raw_legacy_rows_null_and_settings_unchanged() {
     drop(connection);
     for _ in 0..2 {
         let store = Store::open(directory.path()).unwrap();
-        assert_eq!(store.schema_version().unwrap(), 94);
+        assert_eq!(
+            store.schema_version().unwrap(),
+            crate::store::schema::MIGRATIONS.len() as i64
+        );
         let connection = store.lock();
         assert_eq!(
             usage_rows(&connection),
@@ -145,7 +151,10 @@ fn dropped_usage_migration_transaction_rolls_back_column_rows_and_version() {
     );
     let directory = tempfile::tempdir().unwrap();
     let store = Store::from_connection(connection, directory.path().to_path_buf()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 94);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        crate::store::schema::MIGRATIONS.len() as i64
+    );
     assert_eq!(usage_rows(&store.lock()).len(), 2);
 }
 
@@ -214,7 +223,10 @@ fn production_usage_migration_rolls_back_when_version_write_fails() {
     drop(connection);
 
     let store = Store::open(directory.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 94);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        crate::store::schema::MIGRATIONS.len() as i64
+    );
     assert!(
         usage_rows(&store.lock())
             .iter()

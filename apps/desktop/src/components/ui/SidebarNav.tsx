@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react"
 import { Fragment, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react"
 
 import { cn } from "../../lib/cn"
+import { Tooltip } from "../presentation/Tooltip"
 import { CountPill } from "./CountPill"
 
 /** A nested row under a top-level `SidebarNavItem`, one level deep. A child
@@ -13,6 +14,8 @@ type SidebarNavChildItem = {
   /** Shown right-aligned as a muted count pill, e.g. a filtered session count. */
   count?: number
   status?: string
+  /** Explains the status on hover and keyboard focus. */
+  statusDescription?: string
   transitionName?: string
   /** Draw a hairline above this row to set it apart from the group before it. */
   separatorBefore?: boolean
@@ -28,6 +31,8 @@ export type SidebarNavItem = {
   /** Shown right-aligned as a muted count pill, e.g. a filtered session count. */
   count?: number
   status?: string
+  /** Explains the status on hover and keyboard focus. */
+  statusDescription?: string
   transitionName?: string
   /** Draw a hairline above this row to set it apart from the group before it. */
   separatorBefore?: boolean
@@ -247,7 +252,7 @@ function SidebarNavRow({
   const Icon = item.icon
   const controls = ("controls" in item && item.controls) || `${item.id}-panel`
   const disabled = "disabled" in item && item.disabled === true
-  return (
+  const button = (
     <button
       ref={(node) => {
         if (node) rowRefs.current.set(item.id, node)
@@ -264,8 +269,7 @@ function SidebarNavRow({
       // present. This keeps the name stable and free of the count digits,
       // which the row already shows as visible text.
       aria-label={item.count !== undefined || item.status ? item.label : undefined}
-      aria-description={item.status}
-      title={item.status}
+      aria-description={item.statusDescription ?? item.status}
       style={{ viewTransitionName: item.transitionName }}
       tabIndex={tabStop ? 0 : -1}
       onClick={() => {
@@ -294,5 +298,12 @@ function SidebarNavRow({
         item.count !== undefined && <CountPill count={item.count} className="ml-auto" />
       )}
     </button>
+  )
+  return item.statusDescription ? (
+    <Tooltip label={item.statusDescription} side="right">
+      {button}
+    </Tooltip>
+  ) : (
+    button
   )
 }

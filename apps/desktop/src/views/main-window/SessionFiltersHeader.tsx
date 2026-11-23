@@ -25,6 +25,12 @@ import { observeMenuPointerExit } from "../../components/ui/menuPointerDismissal
 export interface SessionFiltersHeaderProps {
   filters: SessionFilters
   counts: SessionFilterCounts
+  /** Indexed sessions in the date range before the viewer applies collection filters. */
+  sessionTotal?: number | null
+  /** True while the stream can supply more rows for these counts. */
+  hasMoreSessions?: boolean
+  /** True while loaded sessions still need results for the selected filter. */
+  awaitingResultFilter?: boolean
   agents: string[]
   onToggleAgent: (agent: string) => void
   onResetAgents: () => void
@@ -115,12 +121,14 @@ function FilterRadioGroup<T extends SessionResultFilter | SessionSpendFilter>({
   value,
   options,
   counts,
+  hasMoreSessions,
   onChange,
 }: {
   label: string
   value: T
   options: ReadonlyArray<FilterOption<T>>
   counts: Record<T, number>
+  hasMoreSessions: boolean
   onChange: (value: T) => void
 }) {
   return (
@@ -136,7 +144,10 @@ function FilterRadioGroup<T extends SessionResultFilter | SessionSpendFilter>({
               key={option.value}
               value={option.value}
               disabled={
-                counts[option.value] === 0 && option.value !== value && option.value !== "all"
+                !hasMoreSessions &&
+                counts[option.value] === 0 &&
+                option.value !== value &&
+                option.value !== "all"
               }
               textValue={option.accessibleLabel ?? option.label}
               aria-label={`${option.accessibleLabel ?? option.label}${option.description ? `, ${option.description}` : ""}, ${sessionCountLabel(counts[option.value])}`}
@@ -217,6 +228,9 @@ function FilterChip({
 export function SessionFiltersHeader({
   filters,
   counts,
+  sessionTotal = null,
+  hasMoreSessions = false,
+  awaitingResultFilter = false,
   agents,
   onToggleAgent,
   onResetAgents,
@@ -250,6 +264,9 @@ export function SessionFiltersHeader({
     },
     [filterButtonRef],
   )
+  const highCostExplanation = hasMoreSessions
+    ? "Based on loaded sessions: 3× the median session cost, with a $2 minimum."
+    : HIGH_COST_EXPLANATION
   const highCostDescription =
     highCostThresholdUsd === undefined
       ? undefined
@@ -260,7 +277,7 @@ export function SessionFiltersHeader({
       value: "notable",
       label: "High cost",
       description: highCostDescription,
-      tooltip: HIGH_COST_EXPLANATION,
+      tooltip: highCostExplanation,
     },
     { value: "material", label: "$1 or more" },
   ]
@@ -292,7 +309,7 @@ export function SessionFiltersHeader({
             accessibleLabel: filters.spend === "notable" ? "High cost" : "$1 or more",
             tooltip:
               filters.spend === "notable"
-                ? [highCostDescription, HIGH_COST_EXPLANATION].filter(Boolean).join(". ")
+                ? [highCostDescription, highCostExplanation].filter(Boolean).join(". ")
                 : undefined,
             remove: () => onSpendChange("all"),
           },
@@ -313,25 +330,60 @@ export function SessionFiltersHeader({
     if (event.detail === 0) restoreFocus(focusTarget)
   }
 
+  const hasFilters =
+    filters.agents.length > 0 || filters.result !== "all" || filters.spend !== "all"
+  const totalIsPartial = sessionTotal === null && hasMoreSessions
+  const displayTotal = sessionTotal ?? counts.all
+  const matchesArePartial = hasMoreSessions || awaitingResultFilter
+  const matchLabel = sessionCountLabel(counts.matching)
+
   return (
     <CollectionHeader
       title="Sessions"
       dragRegion={isMacOS()}
       summary={
         <>
-          <CountPill count={counts.all} size="regular" aria-hidden="true" />
-          <span className="sr-only" aria-live="polite" aria-atomic="true">
-            {`${counts.all} total sessions, ${counts.matching} matching`}
-          </span>
-          {chips.length > 0 ? (
-            <span
-              className="whitespace-nowrap type-caption text-label-secondary tabular-nums"
-              aria-hidden="true"
-            >
-              <span className="me-2 text-label-tertiary">·</span>
-              Showing {counts.matching}
+          <Tooltip
+            label={
+              totalIsPartial
+                ? "Sessions loaded so far, before list filters."
+                : "All sessions in the selected date range, before list filters."
+            }
+          >
+            <span tabIndex={0} className="inline-flex shrink-0 rounded-full">
+              <CountPill count={displayTotal} size="regular" aria-hidden="true" />
+              <span className="sr-only">
+                {totalIsPartial
+                  ? `${displayTotal} sessions loaded`
+                  : `${displayTotal} sessions in selected date range`}
+              </span>
             </span>
-          ) : null}
+          </Tooltip>
+          {hasFilters && (
+            <Tooltip
+              label={
+                matchesArePartial
+                  ? "Matches among loaded sessions. The count can change as more sessions load or checks finish."
+                  : "Sessions in the selected date range that match all active filters."
+              }
+            >
+              <span
+                tabIndex={0}
+                className="whitespace-nowrap rounded-control type-caption tabular-nums text-label-secondary"
+              >
+                <span className="me-2 text-label-tertiary" aria-hidden="true">
+                  ·
+                </span>
+                <span aria-hidden="true">Showing {counts.matching}</span>
+                <span className="sr-only">
+                  {matchesArePartial ? `${matchLabel} among loaded sessions` : matchLabel}
+                </span>
+              </span>
+            </Tooltip>
+          )}
+          <span className="sr-only" aria-live="polite" aria-atomic="true">
+            {`${counts.all} ${hasMoreSessions ? "loaded" : "total"} sessions, ${counts.matching} matching`}
+          </span>
         </>
       }
       actions={
@@ -428,7 +480,9 @@ export function SessionFiltersHeader({
                       <DropdownMenu.CheckboxItem
                         key={agent}
                         checked={filters.agents.includes(agent)}
-                        disabled={count === 0 && !filters.agents.includes(agent)}
+                        disabled={
+                          !hasMoreSessions && count === 0 && !filters.agents.includes(agent)
+                        }
                         className="ui-menu-item"
                         textValue={label}
                         aria-label={`${label}, ${sessionCountLabel(count)}`}
@@ -449,6 +503,7 @@ export function SessionFiltersHeader({
                   value={filters.result}
                   options={RESULT_OPTIONS}
                   counts={counts.result}
+                  hasMoreSessions={hasMoreSessions}
                   onChange={onResultChange}
                 />
                 <DropdownMenu.Separator className="ui-menu-separator" />
@@ -457,6 +512,7 @@ export function SessionFiltersHeader({
                   value={filters.spend}
                   options={spendOptions}
                   counts={counts.spend}
+                  hasMoreSessions={hasMoreSessions}
                   onChange={onSpendChange}
                 />
                 {chips.length > 0 ? (

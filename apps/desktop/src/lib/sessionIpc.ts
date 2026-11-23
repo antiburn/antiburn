@@ -168,6 +168,119 @@ export async function listRecentSessions(windowDays?: number): Promise<ActivityE
   })
 }
 
+export interface SessionActivityBatch {
+  entries: ActivityEntryPayload[]
+  exhausted: boolean
+  agents?: string[] | null
+  /** Indexed sessions in the selected date range. Supplied by the head reads. */
+  total?: number | null
+  reset?: boolean
+  /** The native stream already completed this refresh sequence. */
+  replayedRefresh?: boolean
+  /** Next native read after a reset discards an unacknowledged append. */
+  nextReadSequence?: number
+}
+
+/** One demand-driven native stream. Call one operation at a time. */
+export interface SessionActivityStream {
+  read(): Promise<SessionActivityBatch>
+  refresh(reconcile?: boolean): Promise<SessionActivityBatch>
+  close(): void
+}
+
+/** A session stream command has no reply after its allowed attempts. */
+export class SessionActivityTimeout extends Error {}
+
+/** Create a stream that opens on first demand. The shell owns the scan position. */
+export function openSessionActivityStream(windowDays: number): SessionActivityStream {
+  const id = globalThis.crypto.getRandomValues(new Uint32Array(4)).join("-")
+  let opened = false
+  let closed = false
+  let readSequence = 0
+  let refreshSequence = 0
+  let cancelRead: (() => void) | undefined
+
+  function close() {
+    if (closed) return
+    closed = true
+    cancelRead?.()
+    if (isTauri())
+      void invoke("session_activity_stream", { request: { kind: "close", id } }).catch(() => {})
+  }
+
+  async function request(
+    operation: { kind: "read" } | { kind: "refresh"; reconcile: boolean },
+  ): Promise<SessionActivityBatch> {
+    if (closed || cancelRead) throw new Error("Session activity stream is unavailable")
+    if (!isTauri()) return { entries: [], exhausted: true, agents: [] }
+
+    const continuation = opened && operation.kind === "read"
+    const nativeRequest = !opened
+      ? { kind: "open", id, windowDays }
+      : continuation
+        ? { kind: "read", id, sequence: readSequence }
+        : { ...operation, id, sequence: refreshSequence }
+    const interruption = new Promise<never>((_, reject) => {
+      cancelRead = () => reject(new Error("Session activity stream is closed"))
+    })
+    async function readAttempt() {
+      if (closed) throw new Error("Session activity stream is closed")
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          invoke<SessionActivityBatch>("session_activity_stream", { request: nativeRequest }),
+          interruption,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new SessionActivityTimeout("Session activity read timed out")),
+              15_000,
+            )
+          }),
+        ])
+      } finally {
+        clearTimeout(timer)
+      }
+    }
+    try {
+      const batch = await readAttempt().catch(async (error: unknown) => {
+        if (closed || !continuation) throw error
+        // Reuse the sequence so a retry cannot advance the cursor twice.
+        let retryTimer: ReturnType<typeof setTimeout> | undefined
+        try {
+          await Promise.race([
+            new Promise<void>((resolve) => {
+              retryTimer = setTimeout(resolve, 250)
+            }),
+            interruption,
+          ])
+        } finally {
+          clearTimeout(retryTimer)
+        }
+        return readAttempt()
+      })
+      opened = true
+      if (continuation) readSequence += 1
+      if (nativeRequest.kind === "refresh") {
+        refreshSequence += 1
+        if (batch.nextReadSequence !== undefined) readSequence = batch.nextReadSequence
+      }
+      return batch
+    } catch (error) {
+      // An open has no established position to preserve.
+      if (nativeRequest.kind === "open" && error instanceof SessionActivityTimeout) close()
+      throw error
+    } finally {
+      cancelRead = undefined
+    }
+  }
+
+  return {
+    read: () => request({ kind: "read" }),
+    refresh: (reconcile = false) => request({ kind: "refresh", reconcile }),
+    close,
+  }
+}
+
 /** Local and WSL rows for Overview, filtered before the backend row limit. */
 export async function listOverviewSessions(
   windowDays?: number,

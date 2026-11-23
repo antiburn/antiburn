@@ -130,6 +130,7 @@ macro_rules! with_app_commands {
             commands::list_burn_check_targets => "list_burn_check_targets",
             commands::list_burn_check_snoozes => "list_burn_check_snoozes",
             commands::list_recent_sessions => "list_recent_sessions",
+            commands::session_stream::session_activity_stream => "session_activity_stream",
             commands::list_repositories => "list_repositories",
             installed_checks::directories::list_installed_check_directories => "list_installed_check_directories",
             commands::list_scan_roots => "list_scan_roots",

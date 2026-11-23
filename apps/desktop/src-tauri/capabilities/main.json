@@ -60,6 +60,7 @@
     "allow-remove-agent-memory-index-line",
     "allow-get-session-memories",
     "allow-list-recent-sessions",
+    "allow-session-activity-stream",
     "allow-list-repositories",
     "allow-list-scan-roots",
     "allow-list-burn-check-targets",

@@ -19,7 +19,7 @@ import {
   type MainViewId,
 } from "../lib/navigation/mainViews"
 import { useGlobalKeydown } from "../lib/useGlobalKeydown"
-import { sessionHygieneIdentities, useSessionHygiene } from "../lib/useSessionHygiene"
+import { sessionHygieneIdentities, useSessionHygieneResource } from "../lib/useSessionHygiene"
 import { MainActivityView } from "./main-window/MainActivityView"
 import { MainActivitySession } from "./main-window/MainActivitySession"
 import { BurnChecksView } from "./main-window/BurnChecksView"
@@ -101,12 +101,18 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
   // Keep the shared Sessions list live for main-window navigation and hygiene.
   // Detail analysis remains pane-scoped.
   const activity = useSyncExternalStore(
-    sections ? neverSubscribe : activitySession.subscribeList,
+    sections
+      ? neverSubscribe
+      : navigation.selected === "agents"
+        ? activitySession.subscribeLocalEntries
+        : activitySession.subscribeList,
     activitySession.getSnapshot,
     activitySession.getSnapshot,
   )
   // Use the full list so facet selection does not change the hygiene request key.
-  const hygieneBySession = useSessionHygiene(sessionHygieneIdentities(activity.entries ?? []))
+  const sessionHygiene = useSessionHygieneResource(
+    sessionHygieneIdentities(activity.entries ?? []),
+  )
   const usage = useSyncExternalStore(
     sections ? neverSubscribe : overviewSession.subscribe,
     overviewSession.getSnapshot,
@@ -119,6 +125,8 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         <AgentsView
           active={active}
           entries={activity.localEntries ?? []}
+          recentSessionsError={activity.localEntriesError}
+          onRetryRecentSessions={activitySession.retryLocalEntries}
           onSettings={() => void openSettings("agents")}
           onSessions={(agent) =>
             navigationSession.navigate({
@@ -167,7 +175,7 @@ export function MainWindowView({ sections }: { sections?: readonly MainWindowSec
         <MainActivityView
           active={active}
           session={activitySession}
-          hygieneBySession={hygieneBySession}
+          sessionHygiene={sessionHygiene}
           onOpenRangeSettings={() => void openSettings("sessions", "recentDays")}
           onOpenQuota={(target) => {
             quotaSession.open(

@@ -269,7 +269,12 @@ function subscribeSnoozedBurnChecks(listener: () => void): () => void {
 export function useSnoozedBurnChecks(): SnoozedBurnChecksState {
   return useSyncExternalStore(
     subscribeSnoozedBurnChecks,
-    () => snapshot,
+    getSnoozedBurnChecksSnapshot,
     () => serverSnapshot,
   )
+}
+
+/** Read the current snooze state for actions that continue after a render. */
+export function getSnoozedBurnChecksSnapshot(): SnoozedBurnChecksState {
+  return snapshot
 }

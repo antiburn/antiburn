@@ -200,7 +200,10 @@ INSERT INTO burn_check_runtime_definition_state VALUES (1, 1, 0);
         let store =
             Store::from_connection(connection, Path::new("/tmp/version-81-collision").into())
                 .unwrap();
-        assert_eq!(store.schema_version().unwrap(), 94);
+        assert_eq!(
+            store.schema_version().unwrap(),
+            crate::store::schema::MIGRATIONS.len() as i64
+        );
         store.migrate().unwrap();
         let connection = store.lock();
         let initialized: i64 = connection

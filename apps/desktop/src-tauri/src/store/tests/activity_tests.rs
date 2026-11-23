@@ -626,3 +626,199 @@ fn sessions_with_missing_source_returns_only_that_failure_reason() {
     let ids: Vec<_> = missing.iter().map(|key| key.session_id.as_str()).collect();
     assert_eq!(ids, vec!["returned"]);
 }
+
+#[test]
+fn activity_stream_walks_past_the_list_cap_with_identical_recency_and_ids() {
+    let store = store();
+    let mut records: Vec<_> = (0..551)
+        .map(|index| {
+            let mut record = session("shared", 5_000);
+            record.key.environment_key = format!("wsl:distro-{index:03}");
+            record.wsl_distro = Some(format!("distro-{index:03}"));
+            record.source_label = format!("/stream/{index:03}.jsonl");
+            record
+        })
+        .collect();
+    records.push(session("outside", 100));
+    store
+        .upsert_sessions(&records, &crate::agents::evidence_cohort())
+        .unwrap();
+
+    let mut position = None;
+    let mut keys = Vec::new();
+    for expected in [50; 11].into_iter().chain([1, 0]) {
+        let rows = store
+            .stream_recent_sessions(1_000, 50, &DisabledAgents::default(), position.as_ref())
+            .unwrap();
+        assert_eq!(rows.len(), expected);
+        keys.extend(rows.iter().map(|row| row.key.environment_key.clone()));
+        position = rows.last().map(|row| ActiveCursor {
+            epoch: row.updated_at_epoch.unwrap(),
+            session_id: row.key.session_id.clone(),
+            environment_key: row.key.environment_key.clone(),
+            agent: row.key.agent.clone(),
+        });
+    }
+    assert_eq!(
+        keys,
+        (0..551)
+            .rev()
+            .map(|index| format!("wsl:distro-{index:03}"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn activity_inventory_uses_agent_index_seeks() {
+    let store = store();
+    let connection = store.lock();
+    let mut statement = connection
+        .prepare(&format!("EXPLAIN QUERY PLAN {ACTIVITY_AGENTS_SQL}"))
+        .unwrap();
+    let plan: Vec<String> = statement
+        .query_map([1_000], |row| row.get(3))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        plan.iter()
+            .filter(|step| step.contains("SEARCH session USING")
+                && step.contains("session_agent_activity"))
+            .count(),
+        3,
+        "{plan:?}",
+    );
+}
+
+#[test]
+fn activity_total_counts_only_sessions_in_range_for_enabled_agents() {
+    let store = store();
+    let mut disabled = session("disabled", 3_000);
+    disabled.key.agent = "codex".into();
+    store
+        .upsert_sessions(
+            &[
+                session("older", 999),
+                session("first", 1_000),
+                session("last", 4_000),
+                session("future", 4_001),
+                disabled,
+            ],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .activity_session_count(1_000, 4_000, &DisabledAgents::default())
+            .unwrap(),
+        3,
+    );
+    assert_eq!(
+        store
+            .activity_session_count(1_000, 4_000, &DisabledAgents::parse("codex"))
+            .unwrap(),
+        2,
+    );
+}
+
+#[test]
+fn activity_inventory_and_admissions_respect_range_and_disabled_agents() {
+    let store = store();
+    let mut older = session("older-codex", 3_000);
+    older.key.agent = "codex".into();
+    store
+        .upsert_sessions(&[session("newest", 6_000), older], &[])
+        .unwrap();
+    let watermark = store.activity_membership_sequence().unwrap();
+    let disabled = DisabledAgents::parse("codex");
+    assert_eq!(
+        store
+            .activity_agents(1_000, &DisabledAgents::default())
+            .unwrap(),
+        ["claude-code", "codex"]
+    );
+    assert_eq!(
+        store.activity_agents(4_000, &disabled).unwrap(),
+        ["claude-code"]
+    );
+
+    let mut excluded = session("disabled-admission", 3_000);
+    excluded.key.agent = "codex".into();
+    store
+        .upsert_sessions(&[excluded, session("outside", 500)], &[])
+        .unwrap();
+    assert!(
+        !store
+            .activity_has_admissions(watermark, 1_000, 4_000, &disabled)
+            .unwrap()
+    );
+    store
+        .upsert_sessions(&[session("inside", 4_000)], &[])
+        .unwrap();
+    assert!(
+        store
+            .activity_has_admissions(watermark, 1_000, 4_000, &disabled)
+            .unwrap()
+    );
+}
+
+#[test]
+fn activity_tracking_ignores_bookkeeping_and_out_of_range_changes() {
+    let store = store();
+    let mut row = session("existing", 500);
+    store
+        .upsert_sessions(std::slice::from_ref(&row), &[])
+        .unwrap();
+    let watermark = store.activity_membership_sequence().unwrap();
+    store
+        .start_activity_tracking(&DisabledAgents::default(), false)
+        .unwrap();
+
+    store
+        .lock()
+        .execute("UPDATE session SET last_seen_at = '2026-01-01'", [])
+        .unwrap();
+    store
+        .upsert_sessions(&[session("older", 600)], &[])
+        .unwrap();
+    assert!(!store.activity_range_changed(1_000).unwrap());
+
+    row.updated_at_epoch = Some(3_000);
+    store
+        .upsert_sessions(std::slice::from_ref(&row), &[])
+        .unwrap();
+    assert!(store.activity_range_changed(1_000).unwrap());
+    assert_eq!(store.activity_membership_sequence().unwrap(), watermark + 1);
+
+    store
+        .start_activity_tracking(&DisabledAgents::default(), true)
+        .unwrap();
+    assert!(store.activity_range_changed(1_000).unwrap());
+    store.publish_activity_tracking().unwrap();
+    assert!(!store.activity_range_changed(1_000).unwrap());
+}
+
+#[test]
+fn activity_repository_revision_tracks_label_changes_across_refreshes() {
+    let store = store();
+    let excluded = DisabledAgents::default();
+    store.start_activity_tracking(&excluded, false).unwrap();
+    let revision = store.activity_repository_revision().unwrap();
+    let write = |sql| store.lock().execute(sql, []).unwrap();
+
+    write(
+        "INSERT INTO repository (key, repo_name, full_name, status, repo_root, last_seen_at)
+         VALUES ('example', 'example', 'org/example', 'accessible', '/example', '2026-01-01')",
+    );
+    assert_eq!(store.activity_repository_revision().unwrap(), revision + 1);
+    write("UPDATE repository SET session_count = 5, last_seen_at = '2026-01-02'");
+    assert_eq!(store.activity_repository_revision().unwrap(), revision + 1);
+
+    store.start_activity_tracking(&excluded, true).unwrap();
+    store.publish_activity_tracking().unwrap();
+    assert_eq!(store.activity_repository_revision().unwrap(), revision + 1);
+    write("UPDATE repository SET repo_name = 'renamed'");
+    assert_eq!(store.activity_repository_revision().unwrap(), revision + 2);
+    write("DELETE FROM repository");
+    assert_eq!(store.activity_repository_revision().unwrap(), revision + 3);
+}

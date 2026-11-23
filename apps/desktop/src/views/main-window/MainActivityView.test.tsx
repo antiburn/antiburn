@@ -1,14 +1,21 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
+import { useSyncExternalStore } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type * as IpcModule from "../../lib/ipc"
 import type * as SubjectModule from "../../lib/sessionSubject"
 import * as SnoozedBurnChecks from "../../lib/snoozedBurnChecks"
+import * as InsightsIpc from "../../lib/insightsIpc"
 import type { SessionHygienePayload } from "../../lib/insightsIpc"
 import { type ActivityEntryPayload, DEFAULT_SETTINGS } from "../../lib/ipc"
 import { localSessionKey } from "../../lib/presentation/localIdentity"
 import { serializeSessionFilters, type SessionFilters } from "../../lib/sessionFilters"
-import type { SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
+import {
+  sessionHygieneIdentities,
+  useSessionHygieneResource,
+  type SessionHygieneResource,
+  type SessionHygieneSnapshot,
+} from "../../lib/useSessionHygiene"
 import { MainActivitySession } from "./MainActivitySession"
 import type { SessionListEntry } from "../../components/session/SessionList"
 import { MainActivityView } from "./MainActivityView"
@@ -17,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   setSettings: vi.fn(),
   listRecentSessions: vi.fn(),
+  openSessionActivityStream: vi.fn(),
   getMainWindowVisible: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
@@ -48,8 +56,23 @@ vi.mock("../../lib/sessionSubject", async (importOriginal) => ({
   loadSessionAnalysis: mocks.loadSessionAnalysis,
 }))
 vi.mock("../popover/SessionPane", () => ({
-  SessionPane: ({ subject }: { subject: { sessionId: string } }) => (
-    <p>Detail: {subject.sessionId}</p>
+  SessionPane: ({
+    subject,
+    onPrev,
+    onNext,
+  }: {
+    subject: { sessionId: string }
+    onPrev?: () => void
+    onNext?: () => void
+  }) => (
+    <p
+      onKeyDown={(event) => {
+        if (event.key === "ArrowRight") onNext?.()
+        if (event.key === "ArrowLeft") onPrev?.()
+      }}
+    >
+      Detail: {subject.sessionId}
+    </p>
   ),
 }))
 
@@ -78,6 +101,16 @@ function entry(id: string, extra: Partial<ActivityEntryPayload> = {}): ActivityE
   } as ActivityEntryPayload
 }
 
+function batchEndingAt(current: ActivityEntryPayload): ActivityEntryPayload[] {
+  const yesterday = daysAgo(1)
+  return [
+    ...Array.from({ length: 49 }, (_, index) =>
+      entry(`newer-${index}`, { timestamp: yesterday }),
+    ),
+    current,
+  ]
+}
+
 function hygieneFor(
   pairs: Array<[ActivityEntryPayload, SessionHygienePayload]>,
 ): SessionHygieneSnapshot {
@@ -100,6 +133,10 @@ let sessions: MainActivitySession[]
 beforeEach(() => {
   vi.clearAllMocks()
   sessions = []
+  mocks.openSessionActivityStream.mockImplementation((days: number) => ({
+    read: async () => ({ entries: await mocks.listRecentSessions(days), exhausted: true }),
+    close: () => {},
+  }))
   mocks.getSettings.mockResolvedValue(DEFAULT_SETTINGS)
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
@@ -110,24 +147,97 @@ beforeEach(() => {
   onOpenRangeSettings.mockClear()
 })
 
-afterEach(() => sessions.forEach((session) => session.dispose()))
+afterEach(() => {
+  sessions.forEach((session) => session.dispose())
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+})
 
-function renderActivity(hygieneBySession: SessionHygieneSnapshot = new Map()) {
+function fixedHygiene(snapshot: SessionHygieneSnapshot) {
+  return {
+    snapshot,
+    getSnapshot: () => snapshot,
+    resolve: vi.fn().mockResolvedValue(false),
+  }
+}
+
+function renderActivity(
+  hygieneBySession: SessionHygieneSnapshot = new Map(),
+  hygiene: SessionHygieneResource = fixedHygiene(hygieneBySession),
+) {
   const session = new MainActivitySession()
   sessions.push(session)
   const utils = render(
     <MainActivityView
       active
       session={session}
-      hygieneBySession={hygieneBySession}
+      sessionHygiene={hygiene}
       onOpenRangeSettings={onOpenRangeSettings}
     />,
   )
   return { session, ...utils }
 }
 
+function renderActivityWithHygiene() {
+  const session = new MainActivitySession()
+  sessions.push(session)
+  function Activity() {
+    const snapshot = useSyncExternalStore(session.subscribeList, session.getSnapshot)
+    const hygiene = useSessionHygieneResource(sessionHygieneIdentities(snapshot.entries ?? []))
+    return <MainActivityView active session={session} sessionHygiene={hygiene} />
+  }
+  return { session, ...render(<Activity />) }
+}
+
 async function ready(session: MainActivitySession) {
   await vi.waitFor(() => expect(session.getSnapshot().entries).not.toBeNull())
+}
+
+function mockPendingCompactAppend(loadedMatch = false) {
+  vi.stubGlobal("innerWidth", 550)
+  const first = batchEndingAt(entry("current"))
+  const matched = entry("matched", { timestamp: daysAgo(3) })
+  if (loadedMatch) first[0] = matched
+  type Batch = { entries: ActivityEntryPayload[]; exhausted: boolean }
+  let finishBatch!: (value: Batch) => void
+  let rejectBatch!: (reason: Error) => void
+  const pendingBatch = new Promise<Batch>((resolve, reject) => {
+    finishBatch = resolve
+    rejectBatch = reject
+  })
+  const read = vi
+    .fn()
+    .mockResolvedValueOnce({ entries: first, exhausted: false })
+    .mockReturnValueOnce(pendingBatch)
+  mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+
+  return { first, matched, read, finishBatch, rejectBatch }
+}
+
+async function startCompactAppend(
+  session: MainActivitySession,
+  read: ReturnType<typeof vi.fn>,
+  dismiss = true,
+) {
+  act(() => {
+    session.selectEntry(
+      session.getSnapshot().entries!.find((row) => row.sessionId === "current")!,
+    )
+    session.revealDetail()
+  })
+  fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+  if (dismiss) fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }))
+}
+
+async function reopenDuringAppend(session: MainActivitySession) {
+  act(() => session.revealDetail())
+  fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+  expect(
+    await screen.findByText("Loading more sessions…", {
+      selector: "[data-detail-pane] [role=status]",
+    }),
+  ).toBeVisible()
 }
 
 describe("MainActivityView", () => {
@@ -194,6 +304,78 @@ describe("MainActivityView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Change time range" }))
     expect(onOpenRangeSettings).toHaveBeenCalledOnce()
   })
+
+  it("can clear filters from the header while no loaded rows match and older rows remain", async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [entry("one")], exhausted: false })
+      .mockReturnValue(new Promise(() => {}))
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "failing" })
+    const { session } = renderActivity()
+    await ready(session)
+    await screen.findByText("1 loaded sessions, 0 matching")
+    expect(screen.queryByText("No matching sessions")).toBeNull()
+    expect(read).toHaveBeenCalledOnce()
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Filters" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    })
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Clear filters" }))
+    expect(await screen.findByText("one")).toBeVisible()
+  })
+
+  it.each(["processing", "stale"] as const)(
+    "shows the filtered empty state after %s check evidence settles",
+    async (evidenceState) => {
+      const one = entry("one")
+      const excluded = entry("excluded", { agent: "codex" })
+      const incomplete: SessionHygienePayload = {
+        badges: [],
+        evidenceState,
+        unusedResources: null,
+      }
+      mocks.getSettings.mockResolvedValue({
+        ...DEFAULT_SETTINGS,
+        sessionFilter: serializeSessionFilters({
+          agents: [one.agent],
+          result: "failing",
+          spend: "all",
+        }),
+      })
+      mocks.listRecentSessions.mockResolvedValue([one, excluded])
+      const { session, rerender } = renderActivity(
+        hygieneFor([
+          [one, incomplete],
+          [excluded, incomplete],
+        ]),
+      )
+      await ready(session)
+
+      const note = "Some sessions still need check results."
+      expect(screen.getByText(note)).toBeVisible()
+      expect(screen.getByRole("button", { name: "Clear filters" })).toBeVisible()
+      expect(screen.queryByText("No matching sessions")).toBeNull()
+      expect(screen.getByText("0 matching sessions among loaded sessions")).toBeInTheDocument()
+
+      rerender(
+        <MainActivityView
+          active
+          session={session}
+          sessionHygiene={fixedHygiene(
+            hygieneFor([
+              [one, cleanHygiene],
+              [excluded, incomplete],
+            ]),
+          )}
+        />,
+      )
+      expect(screen.queryByText(note)).toBeNull()
+      expect(screen.getAllByText("No matching sessions")).toHaveLength(2)
+    },
+  )
 
   it("does not show an empty filtered result before snoozes are ready", async () => {
     const hook = vi
@@ -266,6 +448,684 @@ describe("MainActivityView", () => {
     expect(screen.getByText("Detail: open-session")).toBeVisible()
   })
 
+  it("loads another batch from keyboard detail navigation and selects the next passing session", async () => {
+    const current = entry("current")
+    const first = batchEndingAt(current)
+    const rejected = entry("rejected", { timestamp: daysAgo(3) })
+    const matched = entry("matched", { timestamp: daysAgo(4) })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: first, exhausted: false })
+      .mockResolvedValueOnce({ entries: [rejected, matched], exhausted: true })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+    const hygiene = vi
+      .spyOn(InsightsIpc, "getSessionHygiene")
+      .mockImplementation(async (rows) =>
+        rows.map((row) =>
+          row.sessionId === "rejected" ? { ...cleanHygiene, badges: [] } : cleanHygiene,
+        ),
+      )
+    const { session } = renderActivityWithHygiene()
+    await ready(session)
+    await screen.findByText("50 loaded sessions, 50 matching")
+    act(() => session.selectEntry(session.getSnapshot().entries!.at(-1)!))
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(await screen.findByText("Detail: matched")).toBeVisible()
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(
+      hygiene.mock.calls.some(([rows]) => rows.some((row) => row.sessionId === "matched")),
+    ).toBe(true)
+    hygiene.mockRestore()
+  })
+
+  it("checks a closer predecessor before choosing a previous match for a linked session", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    const farther = entry("farther", { timestamp: daysAgo(1) })
+    const nearer = entry("nearer", { timestamp: daysAgo(2) })
+    const linked = entry("linked", { timestamp: daysAgo(3) })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: batchEndingAt(farther), exhausted: false })
+      .mockResolvedValueOnce({ entries: [nearer, linked], exhausted: true })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+    vi.spyOn(InsightsIpc, "getSessionHygiene").mockImplementation(async (rows) => {
+      if (rows.some((row) => row.sessionId === "linked")) return new Promise(() => {})
+      return rows.map(() => cleanHygiene)
+    })
+    const { session } = renderActivityWithHygiene()
+    await ready(session)
+    await screen.findByText("50 loaded sessions, 50 matching")
+    act(() => {
+      session.openRelated({ agent: linked.agent, sessionId: "linked" })
+      session.revealDetail()
+    })
+    fireEvent.keyDown(await screen.findByText("Detail: linked"), { key: "ArrowLeft" })
+    expect(await screen.findByText("Detail: nearer")).toBeVisible()
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it("checks nearer rows before jumping to a known loaded match, including after a badge is evicted", async () => {
+    const current = entry("current", { timestamp: daysAgo(1) })
+    const nearer = entry("nearer", { timestamp: daysAgo(2) })
+    const middle = entry("middle", { timestamp: daysAgo(3) })
+    const farther = entry("farther", { timestamp: daysAgo(4) })
+    const noMatch: SessionHygienePayload = { ...cleanHygiene, badges: [] }
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    mocks.listRecentSessions.mockResolvedValue([current, nearer, middle, farther])
+    const initial = hygieneFor([
+      [current, cleanHygiene],
+      [middle, noMatch],
+      [farther, cleanHygiene],
+    ])
+    let badges = initial
+    const resolve = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        badges = hygieneFor([
+          [nearer, { ...noMatch, evidenceState: "failed" }],
+          [farther, cleanHygiene],
+        ])
+        return true
+      })
+      .mockImplementationOnce(async () => {
+        badges = hygieneFor([
+          [middle, noMatch],
+          [farther, cleanHygiene],
+        ])
+        return true
+      })
+      .mockImplementationOnce(async () => {
+        badges = hygieneFor([
+          [nearer, cleanHygiene],
+          [middle, noMatch],
+          [farther, cleanHygiene],
+        ])
+        return true
+      })
+    const { session } = renderActivity(initial, {
+      snapshot: initial,
+      getSnapshot: () => badges,
+      resolve,
+    })
+    await ready(session)
+    act(() => session.selectEntry(session.getSnapshot().entries![0]!))
+
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(await screen.findByText("Detail: nearer")).toBeVisible()
+    expect(
+      resolve.mock.calls.map(([identities]) =>
+        identities.map((row: { sessionId: string }) => row.sessionId),
+      ),
+    ).toEqual([["nearer"], ["middle"], ["nearer"]])
+  })
+
+  it.each([
+    { evidenceState: "pending", cachedPassing: false },
+    { evidenceState: "processing", cachedPassing: false },
+    { evidenceState: "stale", cachedPassing: false },
+    { evidenceState: "stale", cachedPassing: true },
+  ] as const)(
+    "keeps the current detail while the nearest result is unresolved (%j)",
+    async ({ evidenceState, cachedPassing }) => {
+      const current = entry("current", { timestamp: daysAgo(1) })
+      const nearer = entry("nearer", { timestamp: daysAgo(2) })
+      const farther = entry("farther", { timestamp: daysAgo(3) })
+      mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+      mocks.listRecentSessions.mockResolvedValue([current, nearer, farther])
+      const initial = hygieneFor([
+        [current, cleanHygiene],
+        [
+          nearer,
+          { ...cleanHygiene, evidenceState, badges: cachedPassing ? cleanHygiene.badges : [] },
+        ],
+        [farther, cleanHygiene],
+      ])
+      let badges = initial
+      const resolve = vi
+        .fn<SessionHygieneResource["resolve"]>()
+        .mockResolvedValueOnce(true)
+        .mockImplementationOnce(async () => {
+          badges = hygieneFor([
+            [current, cleanHygiene],
+            [nearer, cleanHygiene],
+            [farther, cleanHygiene],
+          ])
+          return true
+        })
+      const { session } = renderActivity(initial, {
+        snapshot: initial,
+        getSnapshot: () => badges,
+        resolve,
+      })
+      await ready(session)
+      act(() => session.selectEntry(session.getSnapshot().entries![0]!))
+
+      fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+      expect(
+        await screen.findByText("Check results are still pending. Press Right Arrow to retry."),
+      ).toBeVisible()
+      expect(session.getSnapshot().subject?.sessionId).toBe("current")
+      expect(resolve.mock.calls.map(([rows]) => rows.map((row) => row.sessionId))).toEqual([
+        ["nearer"],
+      ])
+
+      fireEvent.keyDown(screen.getByText("Detail: current"), { key: "ArrowRight" })
+      expect(await screen.findByText("Detail: nearer")).toBeVisible()
+    },
+  )
+
+  it("releases an adjacent request when the selected session changes during its append", async () => {
+    const { first, matched, read, finishBatch } = mockPendingCompactAppend()
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const { session } = renderActivity(hygieneFor(first.map((row) => [row, cleanHygiene])))
+    await ready(session)
+    await startCompactAppend(session, read, false)
+
+    act(() => session.selectEntry(session.getSnapshot().entries![1]!))
+    const newSubject = session.getSnapshot().subject!.sessionId
+    const previous = session.getSnapshot().entries![0]!.sessionId
+    fireEvent.keyDown(await screen.findByText(`Detail: ${newSubject}`), { key: "ArrowLeft" })
+    expect(await screen.findByText(`Detail: ${previous}`)).toBeVisible()
+    await act(async () => finishBatch({ entries: [matched], exhausted: true }))
+    expect(session.getSnapshot().subject?.sessionId).toBe(previous)
+    expect(session.getSnapshot().entries?.some((row) => row.sessionId === "matched")).toBe(true)
+  })
+
+  it("opens the previous loaded match after compact detail reopens during a forward append", async () => {
+    const { first, matched, read, finishBatch } = mockPendingCompactAppend()
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const { session } = renderActivity(hygieneFor(first.map((row) => [row, cleanHygiene])))
+    await ready(session)
+    await startCompactAppend(session, read)
+
+    act(() => session.revealDetail())
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowLeft" })
+    const previous = first.at(-2)!.sessionId
+    expect(await screen.findByText(`Detail: ${previous}`)).toBeVisible()
+    expect(session.getSnapshot().loadingMoreSessions).toBe(true)
+
+    await act(async () => finishBatch({ entries: [matched], exhausted: true }))
+    expect(session.getSnapshot().subject?.sessionId).toBe(previous)
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it("uses current snoozes to choose a match after an append", async () => {
+    const { first, matched, read, finishBatch } = mockPendingCompactAppend()
+    const farther = entry("farther", { timestamp: daysAgo(4) })
+    const secondFailure: SessionHygienePayload = {
+      ...cleanHygiene,
+      badges: [{ id: "sessionOverdepth", status: "finding", notAssessedReason: null }],
+    }
+    const firstFailure: SessionHygienePayload = {
+      ...cleanHygiene,
+      badges: [{ id: "obsoleteModel", status: "finding", notAssessedReason: null }],
+    }
+    const snoozes = vi.spyOn(SnoozedBurnChecks, "getSnoozedBurnChecksSnapshot")
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "failing" })
+    const { session } = renderActivity(
+      hygieneFor([
+        ...first.map((row): [ActivityEntryPayload, SessionHygienePayload] => [
+          row,
+          firstFailure,
+        ]),
+        [matched, firstFailure],
+        [farther, secondFailure],
+      ]),
+    )
+    await ready(session)
+    await startCompactAppend(session, read, false)
+    snoozes.mockReturnValue({
+      status: "ready",
+      records: [{ detector: "oldModelUsage", scope: "check", until: null }],
+    })
+    await act(async () => finishBatch({ entries: [matched, farther], exhausted: true }))
+    expect(await screen.findByText("Detail: farther")).toBeVisible()
+  })
+
+  it("keeps the current detail if snoozes become unavailable during a check read", async () => {
+    const current = entry("current", { timestamp: daysAgo(1) })
+    const nearer = entry("nearer", { timestamp: daysAgo(2) })
+    const farther = entry("farther", { timestamp: daysAgo(3) })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    mocks.listRecentSessions.mockResolvedValue([current, nearer, farther])
+    let snoozes: SnoozedBurnChecks.SnoozedBurnChecksState = { status: "ready", records: [] }
+    vi.spyOn(SnoozedBurnChecks, "useSnoozedBurnChecks").mockImplementation(() => snoozes)
+    vi.spyOn(SnoozedBurnChecks, "getSnoozedBurnChecksSnapshot").mockImplementation(
+      () => snoozes,
+    )
+    let badges = hygieneFor([
+      [current, cleanHygiene],
+      [farther, cleanHygiene],
+    ])
+    let finish!: (resolved: boolean) => void
+    const resolve = vi.fn().mockReturnValue(
+      new Promise<boolean>((done) => {
+        finish = done
+      }),
+    )
+    const hygiene = { snapshot: badges, getSnapshot: () => badges, resolve }
+    const { session, rerender, unmount } = renderActivity(badges, hygiene)
+    await ready(session)
+    act(() => session.selectEntry(session.getSnapshot().entries![0]!))
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(resolve).toHaveBeenCalledOnce()
+
+    snoozes = { status: "error", records: [] }
+    badges = hygieneFor([
+      [current, cleanHygiene],
+      [nearer, cleanHygiene],
+      [farther, cleanHygiene],
+    ])
+    await act(async () => finish(true))
+    expect(session.getSnapshot().subject?.sessionId).toBe("current")
+    expect(
+      screen.getByText("Sessions are unavailable.", {
+        selector: "[data-detail-pane] [role=status]",
+      }),
+    ).toBeVisible()
+
+    snoozes = { status: "ready", records: [] }
+    rerender(
+      <MainActivityView
+        active
+        session={session}
+        sessionHygiene={{ ...hygiene, snapshot: badges }}
+      />,
+    )
+    fireEvent.keyDown(screen.getByText("Detail: current"), { key: "ArrowRight" })
+    expect(await screen.findByText("Detail: nearer")).toBeVisible()
+    unmount()
+  })
+
+  it("does not search older batches from a subagent detail", async () => {
+    const { read } = mockPendingCompactAppend()
+    const { session } = renderActivity()
+    await ready(session)
+    act(() => {
+      session.openRelated({
+        agent: "claude-code",
+        sessionId: "subagent",
+        subagent: { parentSessionId: "current", subagentId: "subagent" },
+      })
+      session.revealDetail()
+    })
+    const detail = await screen.findByText("Detail: subagent")
+    expect(session.getSnapshot().hasMoreSessions).toBe(true)
+    expect(screen.queryByText(/Arrow to find this session/)).toBeNull()
+    fireEvent.keyDown(detail, { key: "ArrowLeft" })
+    fireEvent.keyDown(detail, { key: "ArrowRight" })
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it("keeps Right Arrow enabled after locating a filtered-out linked session", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    const current = entry("current", { agent: "codex" })
+    const linked = entry("linked", { timestamp: daysAgo(3) })
+    const nonMatch = entry("non-match", { timestamp: daysAgo(4) })
+    const match = entry("match", { agent: "codex", timestamp: daysAgo(5) })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({
+        entries: batchEndingAt(current).map((row) => ({ ...row, agent: "codex" })),
+        exhausted: false,
+      })
+      .mockResolvedValueOnce({ entries: [linked, nonMatch], exhausted: false })
+      .mockResolvedValueOnce({ entries: [match], exhausted: true })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+    const { session } = renderActivity()
+    await ready(session)
+    act(() => {
+      session.toggleAgent("codex")
+      session.openRelated({ agent: linked.agent, sessionId: "linked" })
+      session.revealDetail()
+    })
+    fireEvent.keyDown(await screen.findByText("Detail: linked"), { key: "ArrowRight" })
+    expect(await screen.findByText(/No matches in this batch/)).toBeVisible()
+    fireEvent.keyDown(screen.getByText("Detail: linked"), { key: "ArrowRight" })
+    expect(await screen.findByText("Detail: match")).toBeVisible()
+    expect(read).toHaveBeenCalledTimes(3)
+  })
+
+  it("reads an unchecked loaded successor before requesting another batch", async () => {
+    const { first, matched, read } = mockPendingCompactAppend(true)
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const initial = hygieneFor(first.slice(1).map((row) => [row, cleanHygiene]))
+    let badges = initial
+    const resolve = vi.fn<SessionHygieneResource["resolve"]>().mockImplementation(async () => {
+      badges = hygieneFor(first.map((row) => [row, cleanHygiene]))
+      return true
+    })
+    const { session } = renderActivity(initial, {
+      snapshot: initial,
+      getSnapshot: () => badges,
+      resolve,
+    })
+    await ready(session)
+    act(() => {
+      session.selectEntry(
+        session.getSnapshot().entries!.find((row) => row.sessionId === "current")!,
+      )
+      session.revealDetail()
+    })
+
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(read).toHaveBeenCalledOnce()
+    expect(resolve.mock.calls.map(([rows]) => rows.map((row) => row.sessionId))).toEqual([
+      [matched.sessionId],
+    ])
+    expect(await screen.findByText("Detail: matched")).toBeVisible()
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it("opens a newly matching loaded successor while the original compact append is pending", async () => {
+    const { first, matched, read, finishBatch } = mockPendingCompactAppend(true)
+    const older = entry("older", { timestamp: daysAgo(4) })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const initial = hygieneFor(
+      first.map((row) => [
+        row,
+        row === matched ? { ...cleanHygiene, badges: [] } : cleanHygiene,
+      ]),
+    )
+    let badges = initial
+    const { session } = renderActivity(initial, {
+      ...fixedHygiene(initial),
+      getSnapshot: () => badges,
+    })
+    await ready(session)
+    await startCompactAppend(session, read)
+
+    badges = hygieneFor(first.map((row) => [row, cleanHygiene]))
+    act(() => session.revealDetail())
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(await screen.findByText("Detail: matched")).toBeVisible()
+    expect(session.getSnapshot().loadingMoreSessions).toBe(true)
+    expect(read).toHaveBeenCalledTimes(2)
+
+    await act(async () => finishBatch({ entries: [older], exhausted: true }))
+    expect(session.getSnapshot().subject?.sessionId).toBe("matched")
+    expect(session.getSnapshot().entries?.some((row) => row.sessionId === "older")).toBe(true)
+  })
+
+  it("reopens and retries checks after the final batch, then updates the filtered list", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    const current = entry("current")
+    const first = batchEndingAt(current)
+    const matched = entry("matched", { timestamp: daysAgo(3) })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: first, exhausted: false })
+      .mockResolvedValueOnce({ entries: [matched], exhausted: true })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+    let checksAvailable = false
+    vi.spyOn(InsightsIpc, "getSessionHygiene").mockImplementation(async (rows) => {
+      if (!checksAvailable && rows.some((row) => row.sessionId === "matched"))
+        throw new Error("Check read failed")
+      return rows.map(() => cleanHygiene)
+    })
+    const { session } = renderActivityWithHygiene()
+    await ready(session)
+    await screen.findByText("50 loaded sessions, 50 matching")
+    act(() => {
+      session.selectEntry(session.getSnapshot().entries!.at(-1)!)
+      session.revealDetail()
+    })
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(await screen.findByText(/Could not load checks for more sessions/)).toBeVisible()
+    expect(session.getSnapshot().hasMoreSessions).toBe(false)
+    fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }))
+    checksAvailable = true
+    act(() => session.revealDetail())
+    expect(await screen.findByText(/Press Right Arrow to resume/)).toBeVisible()
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(await screen.findByText("Detail: matched")).toBeVisible()
+    expect(screen.queryByText("This item is outside the current list.")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }))
+    expect(await screen.findByText("51 total sessions, 51 matching")).toBeVisible()
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it.each([
+    { exhausted: true, reopenBeforeAppend: false },
+    { exhausted: false, reopenBeforeAppend: false },
+    { exhausted: false, reopenBeforeAppend: true },
+  ])(
+    "resumes loaded checks after compact detail closes during an append (%j)",
+    async ({ exhausted, reopenBeforeAppend }) => {
+      const { matched, read, finishBatch } = mockPendingCompactAppend()
+      read.mockRejectedValueOnce(new Error("Next batch read failed"))
+      mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+      let checksAvailable = false
+      const failedCheck = vi.fn()
+      vi.spyOn(InsightsIpc, "getSessionHygiene").mockImplementation(async (rows) => {
+        if (!checksAvailable && rows.some((row) => row.sessionId === "matched")) {
+          failedCheck()
+          throw new Error("Check read failed")
+        }
+        return rows.map(() => cleanHygiene)
+      })
+      const { session } = renderActivityWithHygiene()
+      await screen.findByText("50 loaded sessions, 50 matching")
+      await startCompactAppend(session, read)
+      if (reopenBeforeAppend) await reopenDuringAppend(session)
+      await act(async () => finishBatch({ entries: [matched], exhausted }))
+      await vi.waitFor(() => expect(failedCheck).toHaveBeenCalled())
+      expect(session.getSnapshot().hasMoreSessions).toBe(!exhausted)
+      expect(session.getSnapshot().subject?.sessionId).toBe("current")
+
+      if (reopenBeforeAppend) {
+        expect(await screen.findByText(/Could not load checks for more sessions/)).toBeVisible()
+      } else {
+        act(() => session.revealDetail())
+        expect(await screen.findByText(/Press Right Arrow to resume/)).toBeVisible()
+      }
+      checksAvailable = true
+      fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+      expect(await screen.findByText("Detail: matched")).toBeVisible()
+      expect(screen.queryByText("This item is outside the current list.")).toBeNull()
+      expect(read).toHaveBeenCalledTimes(2)
+    },
+  )
+
+  it.each([
+    { loadedMatch: false, reopen: false },
+    { loadedMatch: true, reopen: false },
+    { loadedMatch: false, reopen: true },
+    { loadedMatch: true, reopen: true },
+  ])(
+    "checks loaded matches and handles append failure in compact detail (%j)",
+    async ({ loadedMatch, reopen }) => {
+      const { first, matched, read, rejectBatch } = mockPendingCompactAppend(loadedMatch)
+      read.mockResolvedValueOnce({ entries: [matched], exhausted: true })
+      mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+      const initial = hygieneFor(
+        first.map((row) => [
+          row,
+          row === matched ? { ...cleanHygiene, badges: [] } : cleanHygiene,
+        ]),
+      )
+      let badges = initial
+      const resolve = vi.fn().mockImplementation(async () => {
+        badges = hygieneFor([...first, matched].map((row) => [row, cleanHygiene]))
+        return true
+      })
+      const { session } = renderActivity(initial, {
+        snapshot: initial,
+        getSnapshot: () => badges,
+        resolve,
+      })
+      await screen.findByText(`50 loaded sessions, ${loadedMatch ? 49 : 50} matching`)
+      await startCompactAppend(session, read, reopen)
+      if (reopen) await reopenDuringAppend(session)
+
+      if (loadedMatch) badges = hygieneFor(first.map((row) => [row, cleanHygiene]))
+      await act(async () => rejectBatch(new Error("Original append failed")))
+      expect(session.getSnapshot().loadMoreSessionsError).toBe(true)
+      expect(read).toHaveBeenCalledTimes(2)
+      const loadError = "Could not load more sessions. Press Right Arrow to retry."
+      if (loadedMatch) {
+        expect(await screen.findByText("Detail: matched")).toBeVisible()
+        expect(screen.queryByText(loadError)).toBeNull()
+        expect(read).toHaveBeenCalledTimes(2)
+      } else {
+        expect(await screen.findByText(loadError)).toBeVisible()
+        fireEvent.keyDown(screen.getByText("Detail: current"), { key: "ArrowRight" })
+        expect(await screen.findByText("Detail: matched")).toBeVisible()
+        expect(read).toHaveBeenCalledTimes(3)
+      }
+    },
+  )
+
+  it("still appends after a retry confirms an unresolved loaded successor does not match", async () => {
+    const { first, matched, read, finishBatch } = mockPendingCompactAppend(true)
+    const older = entry("older", { timestamp: daysAgo(4) })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const initial = hygieneFor(
+      first.map((row) => [
+        row,
+        row === matched
+          ? { ...cleanHygiene, evidenceState: "pending", badges: [] }
+          : cleanHygiene,
+      ]),
+    )
+    let badges = initial
+    const resolve = vi
+      .fn<SessionHygieneResource["resolve"]>()
+      .mockResolvedValueOnce(true)
+      .mockImplementationOnce(async () => {
+        badges = hygieneFor(
+          [...first, older].map((row) => [
+            row,
+            row === matched ? { ...cleanHygiene, badges: [] } : cleanHygiene,
+          ]),
+        )
+        return true
+      })
+    const { session } = renderActivity(initial, {
+      snapshot: initial,
+      getSnapshot: () => badges,
+      resolve,
+    })
+    await ready(session)
+    act(() => {
+      session.selectEntry(
+        session.getSnapshot().entries!.find((row) => row.sessionId === "current")!,
+      )
+      session.revealDetail()
+    })
+
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    await screen.findByText("Check results are still pending. Press Right Arrow to retry.")
+    expect(read).toHaveBeenCalledOnce()
+
+    fireEvent.keyDown(screen.getByText("Detail: current"), { key: "ArrowRight" })
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+    await act(async () => finishBatch({ entries: [older], exhausted: true }))
+    expect(await screen.findByText("Detail: older")).toBeVisible()
+  })
+
+  it("retries a failed append on the first Right Arrow after compact detail reopens", async () => {
+    const { first, matched, read, rejectBatch } = mockPendingCompactAppend()
+    read.mockResolvedValueOnce({ entries: [matched], exhausted: true })
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const { session } = renderActivity(
+      hygieneFor([...first, matched].map((row) => [row, cleanHygiene])),
+    )
+    await ready(session)
+    await startCompactAppend(session, read)
+    await act(async () => rejectBatch(new Error("Original append failed")))
+    expect(session.getSnapshot().loadMoreSessionsError).toBe(true)
+    expect(read).toHaveBeenCalledTimes(2)
+
+    act(() => session.revealDetail())
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    expect(await screen.findByText("Detail: matched")).toBeVisible()
+    expect(read).toHaveBeenCalledTimes(3)
+  })
+
+  it("keeps the selected session when compact detail closes during an append", async () => {
+    const { first, matched, read, finishBatch } = mockPendingCompactAppend()
+    const { session } = renderActivity()
+    await ready(session)
+    await startCompactAppend(session, read)
+    await act(async () => finishBatch({ entries: [matched], exhausted: true }))
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual(
+      [...first, matched].map((row) => row.sessionId),
+    )
+    expect(session.getSnapshot().subject?.sessionId).toBe("current")
+    expect(screen.queryByText("Detail: matched")).toBeNull()
+  })
+
+  it("waits for the compact list to be visible before searching from zero matches", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    const current = entry("current")
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [current], exhausted: false })
+      .mockReturnValue(new Promise(() => {}))
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+    const { session, rerender } = renderActivity()
+    await ready(session)
+    act(() => {
+      session.selectEntry(session.getSnapshot().entries![0]!)
+      session.revealDetail()
+    })
+    expect(await screen.findByText("Detail: current")).toBeVisible()
+    const hygiene = fixedHygiene(hygieneFor([[current, { ...cleanHygiene, badges: [] }]]))
+    rerender(<MainActivityView active session={session} sessionHygiene={hygiene} />)
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+    expect(read).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }))
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+  })
+
+  it("uses badges from a matching batch that arrives during keyboard continuation", async () => {
+    const current = entry("current")
+    const first = batchEndingAt(current)
+    const rejected = entry("rejected", { timestamp: daysAgo(3) })
+    const matched = entry("matched", { timestamp: daysAgo(4) })
+    const excludedBadge = { ...cleanHygiene, badges: [] }
+    mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "passing" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: first, exhausted: false })
+      .mockResolvedValueOnce({ entries: [rejected], exhausted: false })
+      .mockResolvedValueOnce({ entries: [matched], exhausted: true })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close: vi.fn() })
+    let finishChecks!: (value: SessionHygienePayload[]) => void
+    const pendingChecks = new Promise<SessionHygienePayload[]>((resolve) => {
+      finishChecks = resolve
+    })
+    const hygiene = vi
+      .spyOn(InsightsIpc, "getSessionHygiene")
+      .mockImplementation(async (rows) => {
+        if (rows.length === 1 && rows[0]?.sessionId === "rejected") return pendingChecks
+        return rows.map((row) => (row.sessionId === "rejected" ? excludedBadge : cleanHygiene))
+      })
+    const { session } = renderActivityWithHygiene()
+    await screen.findByText("50 loaded sessions, 50 matching")
+    act(() => session.selectEntry(session.getSnapshot().entries!.at(-1)!))
+    fireEvent.keyDown(await screen.findByText("Detail: current"), { key: "ArrowRight" })
+    await vi.waitFor(() =>
+      expect(
+        hygiene.mock.calls.filter(([rows]) => rows[0]?.sessionId === "rejected").length,
+      ).toBeGreaterThanOrEqual(2),
+    )
+    await act(async () => {
+      await session.loadMoreSessions()
+    })
+    await screen.findByText("52 total sessions, 51 matching")
+    await act(async () => finishChecks([excludedBadge]))
+    expect(await screen.findByText("Detail: matched")).toBeVisible()
+    expect(screen.queryByText("No more matching sessions.")).toBeNull()
+  })
+
   it("opens the shared time range from the header", async () => {
     const { session } = renderActivity()
     await ready(session)
@@ -296,7 +1156,11 @@ describe("MainActivityView calendar scope", () => {
     vi.spyOn(session, "subscribe").mockImplementation(() => () => {})
     vi.spyOn(session, "getSnapshot").mockImplementation(() => snapshot)
     const view = render(
-      <MainActivityView active session={session} hygieneBySession={hygieneForRows(entries)} />,
+      <MainActivityView
+        active
+        session={session}
+        sessionHygiene={fixedHygiene(hygieneForRows(entries))}
+      />,
     )
     return {
       session,
@@ -306,7 +1170,7 @@ describe("MainActivityView calendar scope", () => {
           <MainActivityView
             active
             session={session}
-            hygieneBySession={hygieneForRows(snapshot.entries)}
+            sessionHygiene={fixedHygiene(hygieneForRows(snapshot.entries))}
           />,
         )
       },

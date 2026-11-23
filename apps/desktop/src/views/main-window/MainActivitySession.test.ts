@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { MainActivitySession, orderedActivityEntries } from "./MainActivitySession"
 import {
   DEFAULT_SETTINGS,
+  SessionActivityTimeout,
   type ActivityEntryPayload,
   type SessionAnalysisPayload,
   type SessionUpdatedPayload,
@@ -20,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   setSettings: vi.fn(),
   listRecentSessions: vi.fn(),
+  openSessionActivityStream: vi.fn(),
   listOverviewSessions: vi.fn().mockResolvedValue([]),
   getMainWindowVisible: vi.fn(),
   existingMainWindowSessionTargets: vi.fn(),
@@ -123,6 +125,10 @@ async function ready(session: MainActivitySession) {
 }
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.openSessionActivityStream.mockImplementation((days: number) => ({
+    read: async () => ({ entries: await mocks.listRecentSessions(days), exhausted: true }),
+    close: () => {},
+  }))
   mocks.listOverviewSessions.mockResolvedValue([])
   mocks.events.clear()
   mocks.stops.length = 0
@@ -146,6 +152,429 @@ beforeEach(() => {
 afterEach(() => sessions.forEach((session) => session.dispose()))
 
 describe("MainActivitySession", () => {
+  it("publishes the first stream batch independently and retries demand without losing rows", async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [entry("first")], exhausted: false })
+      .mockRejectedValueOnce(new Error("Unavailable"))
+      .mockResolvedValueOnce({ entries: [entry("first"), entry("older")], exhausted: true })
+    const close = vi.fn()
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, close })
+    const { session, stop } = start()
+    await ready(session)
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual(["first"])
+    expect(session.getSnapshot().localEntries).toBeNull()
+    expect(mocks.listOverviewSessions).not.toHaveBeenCalled()
+    expect(read).toHaveBeenCalledTimes(1)
+
+    await Promise.all([session.loadMoreSessions(), session.loadMoreSessions()])
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().loadMoreSessionsError).toBe(true)
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual(["first"])
+
+    await session.loadMoreSessions()
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+      "first",
+      "older",
+    ])
+    expect(session.getSnapshot().hasMoreSessions).toBe(false)
+    await session.loadMoreSessions()
+    expect(read).toHaveBeenCalledTimes(3)
+    stop()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it("fetches the local projection only while it has a consumer", async () => {
+    const pending = deferred<IpcModule.ActivityEntryPayload[]>()
+    mocks.listOverviewSessions
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce([entry("current-local")])
+    const { session } = startList()
+    await ready(session)
+    expect(mocks.listOverviewSessions).not.toHaveBeenCalled()
+
+    const stopLocal = session.subscribeLocalEntries(() => {})
+    expect(mocks.listOverviewSessions).toHaveBeenCalledOnce()
+    stopLocal()
+    pending.resolve([entry("stale-local")])
+    mocks.events.get("index")!({ seq: 1, cause: "scan_pass" })
+    await vi.waitFor(() => expect(mocks.openSessionActivityStream).toHaveBeenCalledTimes(2))
+    expect(mocks.listOverviewSessions).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().localEntries).toBeNull()
+
+    const stopReopened = session.subscribeLocalEntries(() => {})
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().localEntries?.[0]?.sessionId).toBe("current-local"),
+    )
+    stopReopened()
+  })
+
+  it.each([false, true])(
+    "refreshes the exact total when a live row enters the range (already loaded: %s)",
+    async (alreadyLoaded) => {
+      const now = new Date()
+      mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, activityWindowDays: 1 })
+      const outside = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23)
+      const first = entry("first", { timestamp: now.toISOString() })
+      const tail = entry("tail", { timestamp: outside.toISOString() })
+      const moved = entry("moved", { timestamp: now.toISOString() })
+      const read = vi
+        .fn()
+        .mockResolvedValueOnce({ entries: [first], exhausted: false, total: 1 })
+        .mockResolvedValueOnce({
+          entries: alreadyLoaded
+            ? [{ ...moved, timestamp: outside.toISOString() }, tail]
+            : [tail],
+          exhausted: false,
+        })
+      const refresh = vi.fn().mockResolvedValue({
+        entries: [moved, first],
+        exhausted: false,
+        total: 2,
+      })
+      mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close: vi.fn() })
+      const { session } = start()
+      await ready(session)
+      await session.loadMoreSessions()
+      expect(session.getSnapshot().sessionTotal).toBe(1)
+
+      mocks.events.get("update")!(update(moved))
+
+      await vi.waitFor(() => expect(session.getSnapshot().sessionTotal).toBe(2))
+      expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual(
+        expect.arrayContaining(["first", "moved", "tail"]),
+      )
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(refresh).toHaveBeenCalledOnce()
+      expect(mocks.listOverviewSessions).not.toHaveBeenCalled()
+    },
+  )
+
+  it("keeps a failed append retryable when the current stream refreshes its head", async () => {
+    const first = entry("first")
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [first], exhausted: false })
+      .mockRejectedValueOnce(new Error("Append failed"))
+      .mockResolvedValueOnce({ entries: [entry("older")], exhausted: true })
+    const refresh = vi.fn().mockResolvedValue({ entries: [first], exhausted: true })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close: vi.fn() })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+    session.refreshList()
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+    expect(session.getSnapshot()).toMatchObject({
+      hasMoreSessions: true,
+      loadMoreSessionsError: true,
+    })
+    await session.loadMoreSessions()
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+      "first",
+      "older",
+    ])
+    expect(session.getSnapshot().hasMoreSessions).toBe(false)
+  })
+
+  it("refreshes the total when an append finishes after midnight", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] })
+    vi.setSystemTime(new Date(2026, 10, 23, 23, 59, 50))
+    const first = entry("first", { timestamp: new Date().toISOString() })
+    const older = entry("older", { timestamp: new Date(2026, 10, 22).toISOString() })
+    const pending = deferred<IpcModule.SessionActivityBatch>()
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [first], exhausted: false, total: 102 })
+      .mockReturnValueOnce(pending.promise)
+    const refresh = vi
+      .fn()
+      .mockResolvedValue({ entries: [first], exhausted: false, total: 100 })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close: vi.fn() })
+    const { session, stop } = start()
+    try {
+      await ready(session)
+      expect(session.getSnapshot().sessionTotal).toBe(102)
+      const append = session.loadMoreSessions()
+      expect(read).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(12_000)
+      pending.resolve({ entries: [older], exhausted: false })
+      await append
+      expect(session.getSnapshot().sessionTotal).toBe(102)
+
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(session.getSnapshot().sessionTotal).toBe(100)
+      expect(refresh).toHaveBeenCalledOnce()
+      expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+        "first",
+        "older",
+      ])
+    } finally {
+      stop()
+      vi.useRealTimers()
+    }
+  })
+
+  it("refreshes only the head and keeps the loaded history", async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [entry("first")], exhausted: false })
+      .mockResolvedValueOnce({ entries: [entry("older")], exhausted: false })
+    const refresh = vi.fn().mockResolvedValue({
+      entries: [entry("first", { title: "Refreshed" })],
+      exhausted: false,
+      agents: ["codex", "claude-code"],
+    })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close: vi.fn() })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+    mocks.events.get("index")!({ seq: 9, cause: "scan_pass" })
+    await vi.waitFor(() => expect(session.getSnapshot().entries?.[0]?.title).toBe("Refreshed"))
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+      "first",
+      "older",
+    ])
+    expect(session.getSnapshot().availableAgents).toEqual(["codex", "claude-code"])
+    expect(session.getSnapshot().hasMoreSessions).toBe(true)
+    expect(mocks.openSessionActivityStream).toHaveBeenCalledOnce()
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(refresh).toHaveBeenCalledOnce()
+  })
+
+  it("retries a timed-out head refresh before appending without discarding loaded history", async () => {
+    const first = entry("first")
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [first], exhausted: false })
+      .mockResolvedValueOnce({ entries: [entry("second")], exhausted: false })
+      .mockResolvedValueOnce({ entries: [entry("third")], exhausted: true })
+    const refresh = vi
+      .fn()
+      .mockRejectedValueOnce(new SessionActivityTimeout("Refresh timed out"))
+      .mockResolvedValueOnce({ entries: [first], exhausted: false })
+    const close = vi.fn()
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+    session.refreshList()
+    await vi.waitFor(() => expect(session.getSnapshot().listError).toBe(true))
+    await session.loadMoreSessions()
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+      "first",
+      "second",
+      "third",
+    ])
+    expect(session.getSnapshot().listError).toBe(false)
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it("includes an unloaded session that moves into an in-flight append", async () => {
+    const pending = deferred<IpcModule.SessionActivityBatch>()
+    const first = entry("first", { timestamp: "2026-01-01T03:00:00Z" })
+    const tail = entry("tail", { timestamp: "2026-01-01T02:00:00Z" })
+    const moved = entry("moved", { timestamp: "2026-01-01T01:30:00Z" })
+    const nextTail = entry("next-tail", { timestamp: "2026-01-01T01:00:00Z" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [first], exhausted: false })
+      .mockResolvedValueOnce({ entries: [tail], exhausted: false })
+      .mockReturnValueOnce(pending.promise)
+    const refresh = vi.fn().mockResolvedValue({ entries: [first], exhausted: false })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close: vi.fn() })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+    const append = session.loadMoreSessions()
+    mocks.events.get("update")!(update(moved, { metadata: true }))
+    pending.resolve({ entries: [nextTail], exhausted: false })
+    await append
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toContain("moved")
+  })
+
+  it("keeps live edits to an unseen row across a failed append and its manual retry", async () => {
+    const first = entry("first", { timestamp: "2026-01-01T03:00:00Z" })
+    const old = entry("older", { title: "Old title", timestamp: "2026-01-01T02:00:00Z" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [first], exhausted: false })
+      .mockRejectedValueOnce(new Error("Append failed"))
+      .mockResolvedValueOnce({ entries: [old], exhausted: true })
+    const refresh = vi.fn().mockResolvedValue({ entries: [first], exhausted: false })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close: vi.fn() })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+    expect(session.getSnapshot().loadMoreSessionsError).toBe(true)
+
+    mocks.events.get("update")!(update({ ...old, title: "New title" }, { title: true }))
+    await session.loadMoreSessions()
+    expect(session.getSnapshot().entries?.find((row) => row.sessionId === "older")?.title).toBe(
+      "New title",
+    )
+    expect(mocks.openSessionActivityStream).toHaveBeenCalledOnce()
+  })
+
+  it("reads a fresh head before publishing after replaying a timed-out reset", async () => {
+    const first = entry("first", { timestamp: "2026-01-01T03:00:00Z" })
+    const older = entry("older", { timestamp: "2026-01-01T02:00:00Z" })
+    const admitted = entry("admitted", { timestamp: "2026-01-01T04:00:00Z" })
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [first], exhausted: false })
+      .mockResolvedValueOnce({ entries: [older], exhausted: false })
+    const replay = deferred<IpcModule.SessionActivityBatch>()
+    const refresh = vi
+      .fn()
+      .mockRejectedValueOnce(new SessionActivityTimeout("Refresh timed out"))
+      .mockReturnValueOnce(replay.promise)
+    const close = vi.fn()
+    const fresh = deferred<IpcModule.SessionActivityBatch>()
+    mocks.openSessionActivityStream
+      .mockReturnValueOnce({ read, refresh, close })
+      .mockReturnValueOnce({ read: () => fresh.promise, close: vi.fn() })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+    session.refreshList()
+    await vi.waitFor(() => expect(session.getSnapshot().listError).toBe(true))
+
+    mocks.events.get("update")!(update(admitted, { metadata: true }))
+    session.refreshList()
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2))
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toContain("admitted")
+    replay.resolve({ entries: [first], exhausted: false, reset: true, replayedRefresh: true })
+    await vi.waitFor(() => expect(mocks.openSessionActivityStream).toHaveBeenCalledTimes(2))
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toContain("admitted")
+    expect(close).toHaveBeenCalledOnce()
+
+    fresh.resolve({ entries: [admitted, first], exhausted: false })
+    await vi.waitFor(() => expect(session.getSnapshot().listError).toBe(false))
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+      "admitted",
+      "first",
+    ])
+  })
+
+  it("refreshes the head after replaying an ordinary refresh without dropping appended history", async () => {
+    const first = entry("first", { title: "Original title" })
+    const older = entry("older")
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [first], exhausted: false })
+      .mockResolvedValueOnce({ entries: [older], exhausted: true })
+    const fresh = deferred<IpcModule.SessionActivityBatch>()
+    const refresh = vi
+      .fn()
+      .mockResolvedValueOnce({
+        entries: [{ ...first, title: "Replayed title" }],
+        exhausted: false,
+        replayedRefresh: true,
+      })
+      .mockReturnValueOnce(fresh.promise)
+    const close = vi.fn()
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+
+    session.refreshList()
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2))
+    expect(session.getSnapshot().entries?.find((row) => row.sessionId === "first")?.title).toBe(
+      "Original title",
+    )
+    fresh.resolve({ entries: [{ ...first, title: "Fresh title" }], exhausted: true })
+    await vi.waitFor(() =>
+      expect(
+        session.getSnapshot().entries?.find((row) => row.sessionId === "first")?.title,
+      ).toBe("Fresh title"),
+    )
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+      "first",
+      "older",
+    ])
+    expect(close).not.toHaveBeenCalled()
+  })
+
+  it("reconciles retained rows after a hidden window missed a session update", async () => {
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [entry("first")], exhausted: false })
+      .mockResolvedValueOnce({ entries: [entry("older")], exhausted: false })
+      .mockResolvedValueOnce({ entries: [entry("moved")], exhausted: true })
+    const refresh = vi.fn().mockResolvedValue({
+      entries: [entry("first")],
+      exhausted: false,
+      reset: true,
+    })
+    mocks.openSessionActivityStream.mockReturnValueOnce({ read, refresh, close: vi.fn() })
+    const { session } = start()
+    await ready(session)
+    await session.loadMoreSessions()
+    mocks.events.get("visibility")!(false)
+    mocks.events.get("update")!(update(entry("moved"), { metadata: true }))
+    mocks.events.get("visibility")!(true)
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual(["first"]),
+    )
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(true)
+
+    await session.loadMoreSessions()
+    expect(session.getSnapshot().entries?.map((row) => row.sessionId)).toEqual([
+      "first",
+      "moved",
+    ])
+  })
+
+  it.each([
+    { activityWindowDays: DEFAULT_SETTINGS.activityWindowDays === 1 ? 7 : 1 },
+    { disabledAgents: ["claude"] },
+  ])("discards an append when session settings change to %j", async (scope) => {
+    const obsolete = deferred<IpcModule.SessionActivityBatch>()
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [entry("first")], exhausted: false })
+      .mockReturnValueOnce(obsolete.promise)
+    const close = vi.fn()
+    const replacement = vi.fn().mockRejectedValueOnce(new Error("Unavailable"))
+    mocks.openSessionActivityStream
+      .mockReturnValueOnce({ read, close })
+      .mockReturnValueOnce({ read: replacement, close: vi.fn() })
+    const { session } = start()
+    await ready(session)
+    const append = session.loadMoreSessions()
+    expect(read).toHaveBeenCalledTimes(2)
+
+    mocks.events.get("settings")!({ ...DEFAULT_SETTINGS, ...scope })
+    expect(close).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().entries).toBeNull()
+    expect(session.getSnapshot().hasMoreSessions).toBe(false)
+    obsolete.resolve({ entries: [entry("previous-scope")], exhausted: false })
+    await append
+    await vi.waitFor(() => expect(session.getSnapshot().listError).toBe(true))
+    expect(session.getSnapshot().entries).toBeNull()
+  })
+
+  it("reports and retries a local list failure independently of the stream", async () => {
+    mocks.listOverviewSessions
+      .mockRejectedValueOnce(new Error("Read failed"))
+      .mockResolvedValueOnce([entry("local")])
+    const { session } = start()
+    const stopLocal = session.subscribeLocalEntries(() => {})
+    await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().localEntriesError).toBe(true))
+    expect(session.getSnapshot().listError).toBe(false)
+    session.retryLocalEntries()
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().localEntries?.[0]?.sessionId).toBe("local"),
+    )
+    expect(session.getSnapshot().localEntriesError).toBe(false)
+    expect(mocks.openSessionActivityStream).toHaveBeenCalledOnce()
+    stopLocal()
+  })
+
   it("keeps the real Overview local across crowded remote refreshes and visibility changes", async () => {
     const now = Date.now()
     const remoteRows = Array.from({ length: 500 }, (_, i) =>
@@ -209,6 +638,7 @@ describe("MainActivitySession", () => {
         (overview.getSnapshot().recentSessions ?? []).map((row) => row.sessionId ?? ""),
       )
     })
+    const stopLocal = activity.subscribeLocalEntries(() => undefined)
     try {
       await vi.waitFor(() =>
         expect(overview.getSnapshot().recentSessions?.map((row) => row.sessionId)).toEqual([
@@ -270,6 +700,7 @@ describe("MainActivitySession", () => {
         stopSessions()
       }
     } finally {
+      stopLocal()
       stopOverview()
       overview.dispose()
     }
@@ -1502,16 +1933,24 @@ describe("MainActivitySession incremental cost classification", () => {
 
 describe("MainActivitySession event ordering", () => {
   it("keeps a newer entry event when an older list response arrives", async () => {
+    const pending = deferred<IpcModule.SessionActivityBatch>()
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ entries: [entry("one")], exhausted: false })
+      .mockReturnValueOnce(pending.promise)
+    mocks.openSessionActivityStream.mockReturnValue({ read, close: vi.fn() })
     const { session } = start()
     await ready(session)
-    const pending = deferred<ActivityEntryPayload[]>()
-    mocks.listRecentSessions.mockReturnValueOnce(pending.promise)
     session.refreshList()
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
     mocks.events.get("update")!(update(entry("one", { title: "New title" }), { title: true }))
-    pending.resolve([entry("one", { title: "Old title" })])
-    await Promise.resolve()
-    await Promise.resolve()
+    pending.resolve({
+      entries: [entry("one", { title: "Old title" }), entry("new")],
+      exhausted: false,
+    })
+    await vi.waitFor(() => expect(session.getSnapshot().entries).toHaveLength(2))
     expect(session.getSnapshot().entries![0]!.title).toBe("New title")
+    expect(session.getSnapshot().hasMoreSessions).toBe(true)
   })
 
   it("discards analysis superseded by invalidation before publishing its replacement", async () => {

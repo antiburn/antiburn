@@ -1701,10 +1701,19 @@ async fn a_missing_source_stops_being_claimed_through_the_worker() {
         Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
     };
 
-    process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
-        .await
-        .unwrap();
+    let announced = Mutex::new(Vec::new());
+    process_next(
+        &store,
+        &|| 100,
+        &runner,
+        &|key| announced.lock().unwrap().push(key.clone()),
+        &|_, _| {},
+        &|| {},
+    )
+    .await
+    .unwrap();
     let key = SessionKey::new("native", "claude-code", "worker-missing");
+    assert_eq!(*announced.lock().unwrap(), vec![key.clone()]);
     let row = store.evidence(&key).unwrap().unwrap();
     assert_eq!(row.status, EvidenceStatus::Failed);
     assert!(
@@ -1730,19 +1739,21 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
             as PassFuture
     };
     let key = SessionKey::new("native", "claude-code", "worker-unreadable");
+    let announced = Mutex::new(Vec::new());
 
     for attempt in 0..=MAX_EVIDENCE_ATTEMPTS {
         process_next(
             &store,
             &|| clock.load(Ordering::SeqCst),
             &runner,
-            &|_| {},
+            &|key| announced.lock().unwrap().push(key.clone()),
             &|_, _| {},
             &|| {},
         )
         .await
         .unwrap();
         let row = store.evidence(&key).unwrap().unwrap();
+        assert_eq!(announced.lock().unwrap().pop(), Some(key.clone()));
         if attempt == MAX_EVIDENCE_ATTEMPTS {
             assert_eq!(row.status, EvidenceStatus::Failed);
             assert_eq!(row.next_attempt_at_epoch, None);

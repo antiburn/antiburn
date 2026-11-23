@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react"
-import type { ReactNode } from "react"
+import type { ReactNode, Ref } from "react"
 
 import { cn } from "../../lib/cn"
 
@@ -19,6 +19,7 @@ export function PushButton({
   trailingIcon: TrailingIcon,
   variant = "secondary",
   disabled = false,
+  ref,
   ariaLabel,
   id,
   className = "",
@@ -29,6 +30,7 @@ export function PushButton({
   trailingIcon?: LucideIcon
   variant?: PushButtonVariant
   disabled?: boolean
+  ref?: Ref<HTMLButtonElement>
   /** Only needed when the visible label isn't a sufficient accessible name. */
   ariaLabel?: string
   /** For a caller that has to find this button again — a pane returning focus
@@ -50,6 +52,7 @@ export function PushButton({
       id={id}
       aria-label={ariaLabel}
       disabled={disabled}
+      ref={ref}
       onClick={onClick}
       autoFocus={autoFocus}
       className={cn(

@@ -140,6 +140,7 @@ const activityMocks = vi.hoisted(() => {
       activityMocks.listSubscriptions += 1
       return this.subscribe(listener)
     }
+    subscribeLocalEntries = vi.fn(this.subscribe)
     setEntries(entries: SessionListEntry[] | null) {
       this.snapshot = { ...this.snapshot, entries }
       this.notify()
@@ -499,8 +500,10 @@ describe("MainWindowView", () => {
 
   it("opens the Agents page and its settings action", async () => {
     render(<MainWindowView />)
+    expect(activitySession().subscribeLocalEntries).not.toHaveBeenCalled()
     await openView("Agents")
     expect(screen.getByRole("tabpanel", { name: "Agents" })).toBeVisible()
+    expect(activitySession().subscribeLocalEntries).toHaveBeenCalledOnce()
     fireEvent.click(screen.getByRole("button", { name: "Agent settings" }))
     expect(openSettingsWindow).toHaveBeenCalledExactlyOnceWith("agents")
   })
