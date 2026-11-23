@@ -1625,6 +1625,67 @@ describe("OverlayWindow", () => {
     }
   })
 
+  it("offers Hide on right-click and turns the HUD off", async () => {
+    localStorage.setItem("antiburn.showFloatingHud", "1")
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+    expect(screen.queryByRole("button", { name: "Hide HUD" })).toBeNull()
+
+    const defaultMenu = fireEvent.contextMenu(panel(container))
+
+    expect(defaultMenu).toBe(false)
+    const hide = screen.getByRole("button", { name: "Hide HUD" })
+    expect(hide.parentElement).toHaveClass("min-h-6")
+    fireEvent.mouseDown(hide)
+    fireEvent.click(hide)
+
+    expect(localStorage.getItem("antiburn.showFloatingHud")).toBe("0")
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("hide_overlay_window"))
+  })
+
+  it("takes the Hide offer back when the pointer leaves", async () => {
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+
+    fireEvent.contextMenu(panel(container))
+    expect(screen.getByRole("button", { name: "Hide HUD" })).toBeInTheDocument()
+
+    fireEvent.mouseLeave(frame(container))
+
+    expect(screen.queryByRole("button", { name: "Hide HUD" })).toBeNull()
+    expect(invoke).not.toHaveBeenCalledWith("hide_overlay_window")
+  })
+
+  it("takes the Hide offer back on a click outside the button", async () => {
+    const { container } = render(<OverlayWindow />)
+    await waitFor(() => expect(getLiveUsage).toHaveBeenCalled())
+
+    fireEvent.contextMenu(panel(container))
+    fireEvent.mouseDown(panel(container), { button: 0, screenX: 700, screenY: 100 })
+
+    expect(screen.queryByRole("button", { name: "Hide HUD" })).toBeNull()
+    expect(invoke).not.toHaveBeenCalledWith("tear_off_overlay")
+  })
+
+  it("brings the hover detail back after a click takes Hide away", async () => {
+    vi.useFakeTimers()
+    try {
+      const { container } = render(<OverlayWindow />)
+      await advance(0)
+      fireEvent.mouseEnter(frame(container))
+      fireEvent.contextMenu(panel(container))
+      await advance(400)
+      expect(showHudDetail).not.toHaveBeenCalled()
+
+      fireEvent.mouseDown(panel(container), { button: 0, screenX: 700, screenY: 100 })
+      await advance(400)
+
+      expect(showHudDetail).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it.skip("closes the visible detail window with the HUD", async () => {
     vi.useFakeTimers()
     try {

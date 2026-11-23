@@ -1,6 +1,31 @@
 use super::*;
-use auth::{Credential, Session, TokenRequest, Tokens, Transport, Vault, WorkspaceKind};
+use auth::{
+    AccountSession, Credential, EligibleWorkspace, Session, TokenRequest, Tokens, Transport, Vault,
+    WorkspaceKind,
+};
 use std::sync::{Arc, atomic::AtomicBool};
+
+#[test]
+fn cloud_reports_browser_return_before_exchanging_the_code() {
+    let mut fixture = Fixture::new();
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    let mut returned = false;
+    complete_browser_return(
+        &mut fixture.engine,
+        &attempt,
+        auth::Callback::Code("synthetic-code".into()),
+        101,
+        || true,
+        |engine| {
+            assert!(engine.status == AuthStatus::Returned);
+            assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 0);
+            returned = true;
+        },
+    );
+    assert!(returned);
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+}
 
 #[test]
 fn cloud_source_preferences_keep_legacy_shapes_and_reject_unknown_providers() {
@@ -127,7 +152,7 @@ fn config() -> Config {
     Config::parse("https://api.example", "https://api.example").unwrap()
 }
 
-/// Supply synthetic desktop-grant authority without reading credentials or user content.
+/// Supply a synthetic device grant without reading credentials or user content.
 pub(super) fn session() -> Session {
     Session {
         user: auth::User {
@@ -156,19 +181,31 @@ struct FakeTransport {
     fail_before_send: AtomicBool,
     fail_revoke: AtomicBool,
     fail_session: AtomicBool,
+    invitation_supported: AtomicBool,
     generation: Option<Arc<AtomicU64>>,
     on_exchange: Option<Arc<dyn Fn() + Send + Sync>>,
     on_session: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_invitation_probe: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_revoke: Option<Arc<dyn Fn() + Send + Sync>>,
     returned_session: Mutex<Option<Session>>,
+    returned_workspaces: Mutex<Option<Vec<Workspace>>>,
     revocations: AtomicU64,
     revoked: Mutex<Vec<String>>,
     token_grant: Mutex<Option<String>>,
+    token_scope: Mutex<Option<&'static str>>,
     token_expires_in: Mutex<Option<u64>>,
     fail_revoke_for: Mutex<Option<String>>,
     seen: Mutex<Vec<String>>,
 }
 
 impl Transport for Arc<FakeTransport> {
+    fn supports_invitations(&self, _: &Config) -> bool {
+        if let Some(action) = &self.on_invitation_probe {
+            action();
+        }
+        self.invitation_supported.load(Ordering::Acquire)
+    }
+
     fn exchange(&self, _: &Config, request: &TokenRequest<'_>) -> Result<Tokens, Failure> {
         if let Some(action) = &self.on_exchange {
             action();
@@ -199,14 +236,19 @@ impl Transport for Arc<FakeTransport> {
                 .clone()
                 .unwrap_or_else(|| session().grant_id),
             user_id: session().user.id,
-            workspace_id: session().workspace.id,
+            legacy_workspace_claim: false,
             grant_expires_at: "1970-01-01T02:46:40Z".into(),
-            scope: auth::SCOPE.into(),
+            scope: self
+                .token_scope
+                .lock()
+                .unwrap()
+                .unwrap_or(auth::CAPTURE_SCOPE)
+                .into(),
             resource: config().resource,
             iss: config().issuer,
         })
     }
-    fn session(&self, _: &Config, _: &str) -> Result<Session, Failure> {
+    fn session(&self, _: &Config, _: &str) -> Result<AccountSession, Failure> {
         if let Some(action) = &self.on_session {
             action();
         }
@@ -221,11 +263,15 @@ impl Transport for Arc<FakeTransport> {
             .lock()
             .unwrap()
             .clone()
-            .unwrap_or_else(session))
+            .unwrap_or_else(session)
+            .into())
     }
     fn revoke(&self, _: &Config, refresh: &str) -> Result<(), Failure> {
         self.revocations.fetch_add(1, Ordering::AcqRel);
         self.revoked.lock().unwrap().push(refresh.to_owned());
+        if let Some(action) = &self.on_revoke {
+            action();
+        }
         if self.fail_revoke.load(Ordering::Acquire)
             || self.fail_revoke_for.lock().unwrap().as_deref() == Some(refresh)
         {
@@ -233,6 +279,91 @@ impl Transport for Arc<FakeTransport> {
         }
         Ok(())
     }
+    fn workspaces(&self, _: &Config, _: &str) -> Result<Vec<EligibleWorkspace>, Failure> {
+        Ok(self
+            .returned_workspaces
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| vec![session().workspace])
+            .into_iter()
+            .map(|workspace| EligibleWorkspace {
+                membership_generation: (workspace.kind == WorkspaceKind::Team)
+                    .then(|| "synthetic-membership".into()),
+                workspace,
+            })
+            .collect())
+    }
+}
+
+#[test]
+fn cloud_lost_team_callback_resets_locally_without_blocking_personal() {
+    let mut fixture = Fixture::new();
+    let account = session().user.id;
+    let team = Workspace {
+        id: "synthetic-team".into(),
+        name: "Example Team".into(),
+        kind: WorkspaceKind::Team,
+    };
+    let mut scoped = fixture
+        .engine
+        .workspace_engine("synthetic".into(), account.clone(), team.clone())
+        .unwrap();
+    scoped.vault = Box::new(Arc::new(MemoryVault::default()));
+    scoped
+        .state
+        .lock()
+        .unwrap()
+        .replace(state::Phase::Pending, state::Cleanup::None)
+        .unwrap();
+    assert!(matches!(scoped.begin(now(), 1), Err(Failure::Unavailable)));
+    drop(scoped);
+
+    let mut restarted = fixture
+        .engine
+        .workspace_engine("synthetic".into(), account.clone(), team.clone())
+        .unwrap();
+    restarted.vault = Box::new(Arc::new(MemoryVault::default()));
+    restarted.reset_local().unwrap();
+    assert!(
+        fixture
+            .engine
+            .workspace_cleanup_unconfirmed(&account, &team.id)
+            .unwrap()
+    );
+    assert!(restarted.cleanup.prior_unconfirmed());
+    assert!(matches!(
+        restarted.begin(now(), 2),
+        Err(Failure::Unavailable)
+    ));
+    fixture.sign_in();
+    assert_eq!(
+        fixture.engine.session().unwrap().workspace.kind,
+        WorkspaceKind::Personal
+    );
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn cloud_personal_slot_rejects_a_verified_team_workspace() {
+    let mut fixture = Fixture::new();
+    let mut team = session().workspace;
+    team.kind = WorkspaceKind::Team;
+    *fixture.transport.returned_workspaces.lock().unwrap() = Some(vec![team]);
+    let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+    assert_eq!(
+        fixture.engine.callback(
+            &attempt,
+            auth::Callback::Code("synthetic-code".into()),
+            101,
+            || true,
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.session().is_none());
+    assert!(fixture.vault.read().unwrap().unwrap().session.is_none());
+    fixture.engine.wait_remote_logout();
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
 }
 
 fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTransport>) -> Engine {
@@ -243,6 +374,153 @@ fn engine(directory: &Path, vault: Arc<MemoryVault>, transport: Arc<FakeTranspor
         state::StateStore::new(directory),
     )
     .with_clock(|| 100)
+}
+
+#[test]
+fn invitation_refresh_failure_requires_reauthentication_without_dispatch() {
+    let mut fixture = Fixture::new();
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(100));
+    let engine_clock = clock.clone();
+    fixture.engine = engine(
+        fixture.directory.path(),
+        fixture.vault.clone(),
+        fixture.transport.clone(),
+    )
+    .with_clock(move || engine_clock.load(Ordering::Acquire));
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
+    let account = session().user.id;
+    fixture
+        .transport
+        .fail_exchange
+        .store(true, Ordering::Release);
+    clock.store(150, Ordering::Release);
+    assert_eq!(
+        fixture.engine.with_invitation_access::<()>(
+            &account,
+            || true,
+            |_, _, _| panic!("request sent")
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(!fixture.engine.invitations_enabled());
+}
+
+#[test]
+fn invitation_bearer_rejection_only_invalidates_the_current_account() {
+    let mut fixture = Fixture::new();
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    let account = session().user.id;
+    let current = std::cell::Cell::new(true);
+    for error in [Failure::Rejected, Failure::Unavailable, Failure::Offline] {
+        assert_eq!(
+            fixture
+                .engine
+                .with_invitation_access(&account, || true, |_, _, _| Err::<(), _>(error)),
+            Err(error)
+        );
+        assert!(fixture.engine.status == AuthStatus::SignedIn);
+        assert!(fixture.engine.invitations_enabled());
+    }
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &account,
+            || current.get(),
+            |_, _, _| {
+                current.set(false);
+                Err::<(), _>(Failure::ReauthRequired)
+            }
+        ),
+        Err(Failure::Cancelled)
+    );
+    assert!(fixture.engine.status == AuthStatus::SignedIn);
+    assert!(fixture.engine.invitations_enabled());
+    let record = || fixture.engine.state.lock().unwrap().read().unwrap();
+    assert!(record().phase == state::Phase::Active);
+    let epoch = record().epoch;
+    let proof = fixture.vault.read().unwrap().unwrap().refresh_token;
+
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &account,
+            || true,
+            |_, _, _| Err::<(), _>(Failure::ReauthRequired)
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(fixture.engine.session().is_none());
+    assert!(!fixture.engine.invitations_enabled());
+    let record = fixture.engine.state.lock().unwrap().read().unwrap();
+    assert!(record.phase == state::Phase::ReauthRequired);
+    assert_eq!(record.epoch, epoch);
+    assert!(record.cleanup.blocks_connection());
+    assert_eq!(fixture.vault.read().unwrap().unwrap().refresh_token, proof);
+
+    fixture.restart();
+    fixture.engine.refresh(101, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::ReauthRequired);
+    assert!(fixture.engine.session().is_none());
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    fixture.transport.fail_revoke.store(true, Ordering::Release);
+    let logout = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(!fixture.engine.cleanup.blocks_connection());
+    assert!(fixture.vault.read().unwrap().is_none());
+    assert!(!logout.send(&fixture.transport));
+    assert_eq!(*fixture.transport.revoked.lock().unwrap(), [proof]);
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
+}
+
+#[test]
+fn invitation_reauth_storage_failure_stays_closed_until_sign_out() {
+    let mut fixture = Fixture::new();
+    fixture
+        .transport
+        .invitation_supported
+        .store(true, Ordering::Release);
+    fixture.sign_in();
+    let path = fixture.directory.path().join("cloud-auth-state-v2");
+    let active = std::fs::read(&path).unwrap();
+    assert_eq!(
+        fixture.engine.with_invitation_access(
+            &session().user.id,
+            || true,
+            |_, _, _| {
+                std::fs::write(&path, b"{torn").unwrap();
+                Err::<(), _>(Failure::ReauthRequired)
+            }
+        ),
+        Err(Failure::ReauthRequired)
+    );
+    std::fs::write(path, active).unwrap();
+    assert!(fixture.engine.cleanup.blocks_connection());
+    assert_eq!(
+        fixture.engine.refresh(101, || true),
+        Err(Failure::ReauthRequired)
+    );
+    assert!(fixture.engine.session().is_none());
+    assert!(matches!(
+        fixture.engine.begin(101, 1),
+        Err(Failure::Unavailable)
+    ));
+    assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 1);
+    fixture.engine.sign_out().unwrap();
+    fixture.sign_in();
+    assert!(fixture.engine.invitations_enabled());
 }
 
 struct Fixture {
@@ -350,11 +628,11 @@ fn cloud_configuration_pins_public_routes_and_rejects_noncanonical_inputs() {
     assert_eq!(config().resource, "https://api.example");
     assert_eq!(
         config().authorization.as_str(),
-        "https://api.example/desktop/authorize"
+        "https://api.example/devices/authorize/account"
     );
     assert_eq!(
         config().session.as_str(),
-        "https://api.example/v1/desktop/session"
+        "https://api.example/v1/devices/session"
     );
     for origin in [
         "http://api.example",
@@ -381,7 +659,7 @@ fn cloud_authorize_uses_only_first_party_fields_and_literal_ephemeral_loopback()
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(url.origin().ascii_serialization(), "https://api.example");
     assert_eq!(fields.len(), 5);
-    assert_eq!(fields["device_name"], auth::DEVICE_NAME);
+    assert!(fields["device_name"] == auth::device_name());
     assert_eq!(fields["code_challenge_method"], "S256");
     let callback = url::Url::parse(&fields["redirect_uri"]).unwrap();
     assert_eq!(callback.host_str(), Some("127.0.0.1"));
@@ -462,6 +740,43 @@ fn cloud_browser_prelaunch_abort_requires_a_native_missing_launcher_error() {
 }
 
 #[test]
+fn cloud_browser_does_not_open_after_invalidation_during_invitation_probe() {
+    for account_changed in [false, true] {
+        let mut fixture = Fixture::new();
+        let attempt_generation = Arc::new(AtomicU64::new(1));
+        let account_generation = Arc::new(AtomicU64::new(0));
+        let invalidated = if account_changed {
+            account_generation.clone()
+        } else {
+            attempt_generation.clone()
+        };
+        fixture.engine.transport = Arc::new(Arc::new(FakeTransport {
+            on_invitation_probe: Some(Arc::new(move || {
+                invalidated.fetch_add(1, Ordering::AcqRel);
+            })),
+            ..FakeTransport::default()
+        }));
+        let (_, listener, attempt) = fixture.engine.begin(100, 1).unwrap();
+        assert!(
+            !launch_account_browser(
+                &mut fixture.engine,
+                &attempt,
+                || attempt_generation.load(Ordering::Acquire) == 1
+                    && account_generation.load(Ordering::Acquire) == 0,
+                || panic!("invalidated sign-in must not open the browser"),
+            )
+            .unwrap()
+        );
+        drop(listener);
+        assert!(fixture.engine.status == AuthStatus::Cancelled);
+        assert!(fixture.engine.attempt.is_none());
+        assert!(!fixture.engine.cleanup.blocks_connection());
+        fixture.restart();
+        assert!(fixture.engine.begin(101, 3).is_ok());
+    }
+}
+
+#[test]
 fn cloud_browser_prelaunch_abort_allows_retry_and_preserves_prior_warnings() {
     for prior_warning in [false, true] {
         let mut fixture = Fixture::new();
@@ -510,7 +825,7 @@ fn cloud_browser_prelaunch_abort_allows_retry_and_preserves_prior_warnings() {
 fn cloud_cancel_during_session_request_never_saves_credentials() {
     let mut fixture = Fixture::new();
     let generation = Arc::new(AtomicU64::new(0));
-    fixture.engine.transport = Box::new(Arc::new(FakeTransport {
+    fixture.engine.transport = Arc::new(Arc::new(FakeTransport {
         generation: Some(generation.clone()),
         ..FakeTransport::default()
     }));
@@ -525,7 +840,7 @@ fn cloud_cancel_during_session_request_never_saves_credentials() {
         Err(Failure::Cancelled)
     );
     assert!(fixture.engine.session().is_none());
-    assert!(fixture.vault.read().unwrap().is_none());
+    assert!(fixture.vault.read().unwrap().unwrap().session.is_none());
     fixture.restart();
     assert!(fixture.engine.refresh(102, || true).is_ok());
 }
@@ -537,24 +852,18 @@ fn cloud_restart_does_not_restore_an_ephemeral_listener() {
     drop(listener);
     fixture.restart();
     fixture.engine.refresh(101, || true).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
+    assert!(fixture.engine.status == AuthStatus::Cancelled);
+    assert!(fixture.engine.cleanup.prior_unconfirmed());
     assert!(fixture.engine.session().is_none());
 }
 
 #[test]
-fn cloud_abandoned_browser_approval_needs_explicit_reset_without_losing_its_warning() {
+fn cloud_abandoned_browser_approval_allows_reconnect_without_losing_its_warning() {
     let mut fixture = Fixture::new();
     let (_, _listener, _) = fixture.engine.begin(100, 0).unwrap();
     fixture.engine.cancel(1).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
-    assert!(matches!(
-        fixture.engine.begin(101, 1),
-        Err(Failure::Unavailable)
-    ));
-    fixture.engine.reset_local().unwrap();
-    fixture.engine.begin(102, 2).unwrap();
+    assert!(fixture.engine.status == AuthStatus::Cancelled);
+    fixture.engine.begin(101, 1).unwrap();
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
 }
 
@@ -564,26 +873,17 @@ fn cloud_expired_or_replaced_browser_attempt_does_not_claim_remote_revocation() 
         let mut fixture = Fixture::new();
         let (_, _listener, _) = fixture.engine.begin(100, 0).unwrap();
         if replaced {
-            assert!(matches!(
-                fixture.engine.begin(101, 1),
-                Err(Failure::ReauthRequired)
-            ));
+            fixture.engine.begin(101, 1).unwrap();
         } else {
             fixture.engine.refresh(700, || true).unwrap();
         }
-        assert!(
-            fixture.engine.cleanup
-                == state::Cleanup::Revoke {
-                    prior_unconfirmed: false
-                }
-        );
-        assert!(fixture.engine.local_reset_available);
+        assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
         assert!(fixture.engine.session().is_none());
     }
 }
 
 #[test]
-fn cloud_browser_denial_does_not_need_reset_but_native_pending_logout_does() {
+fn cloud_browser_denial_is_confirmed_but_native_pending_logout_is_not() {
     let mut fixture = Fixture::new();
     let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
     fixture
@@ -593,8 +893,8 @@ fn cloud_browser_denial_does_not_need_reset_but_native_pending_logout_does() {
     assert!(fixture.engine.cleanup == state::Cleanup::None);
     fixture.engine.begin(102, 1).unwrap();
     fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
 }
 
 #[test]
@@ -646,7 +946,7 @@ fn cloud_expired_exchange_session_or_vault_work_never_installs_access() {
                 fail_revoke: AtomicBool::new(true),
                 ..FakeTransport::default()
             });
-            fixture.engine.transport = Box::new(fixture.transport.clone());
+            fixture.engine.transport = Arc::new(fixture.transport.clone());
             fixture.vault = Arc::new(MemoryVault {
                 value: Mutex::new(fixture.vault.read().unwrap()),
                 on_credential_write: (stage == "vault").then(|| expire.clone()),
@@ -716,7 +1016,7 @@ fn cloud_vault_work_cannot_outlast_session_or_fixed_grant_deadlines() {
             fail_revoke: AtomicBool::new(true),
             ..FakeTransport::default()
         });
-        fixture.engine.transport = Box::new(fixture.transport.clone());
+        fixture.engine.transport = Arc::new(fixture.transport.clone());
         fixture.vault = Arc::new(MemoryVault {
             on_credential_write: Some(Arc::new(move || {
                 clock.store(expires_at, Ordering::Release);
@@ -762,7 +1062,7 @@ fn cloud_cached_session_hides_expired_token_session_and_grant_authority() {
             returned_session: Mutex::new(Some(authority)),
             ..FakeTransport::default()
         });
-        fixture.engine.transport = Box::new(fixture.transport.clone());
+        fixture.engine.transport = Arc::new(fixture.transport.clone());
         let (_, _listener, attempt) = fixture.engine.begin(started_at - 1, 0).unwrap();
         fixture
             .engine
@@ -862,7 +1162,7 @@ fn cloud_unsent_refresh_does_not_reopen_a_cancelled_generation() {
             })),
             ..FakeTransport::default()
         });
-        fixture.engine.transport = Box::new(transport.clone());
+        fixture.engine.transport = Arc::new(transport.clone());
         let checks = AtomicU64::new(0);
         assert_eq!(
             fixture.engine.refresh(200, || {
@@ -926,7 +1226,88 @@ fn cloud_refresh_uses_the_grant_deadline_not_the_previous_access_deadline() {
 }
 
 #[test]
-fn cloud_rejected_refresh_keeps_both_grant_proofs_and_requires_original_revocation() {
+fn cloud_sign_in_rejects_mismatched_or_unsupported_scopes() {
+    use auth::{CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE};
+
+    for (token_scope, session_scope) in [
+        (CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE),
+        (CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE),
+        ("capture:write sessions:list", "capture:write sessions:list"),
+        (
+            "sessions:list sessions:read capture:write",
+            "sessions:list sessions:read capture:write",
+        ),
+    ] {
+        let mut fixture = Fixture::new();
+        *fixture.transport.token_scope.lock().unwrap() = Some(token_scope);
+        *fixture.transport.returned_session.lock().unwrap() = Some(Session {
+            scope: session_scope.into(),
+            ..session()
+        });
+        let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
+        assert_eq!(
+            fixture.engine.callback(
+                &attempt,
+                auth::Callback::Code("synthetic-code".into()),
+                101,
+                || true
+            ),
+            Err(Failure::ReauthRequired),
+            "{token_scope:?} vs {session_scope:?}",
+        );
+        assert!(fixture.engine.session().is_none());
+        assert!(fixture.vault.read().unwrap().unwrap().session.is_none());
+        fixture.engine.wait_remote_logout();
+        assert_eq!(
+            *fixture.transport.revoked.lock().unwrap(),
+            ["synthetic-refresh-0"]
+        );
+    }
+}
+
+#[test]
+fn cloud_refresh_after_restart_requires_the_original_scope() {
+    use auth::{CAPTURE_AND_SESSION_SCOPE, CAPTURE_SCOPE};
+
+    for initial in [CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE] {
+        for returned in [CAPTURE_SCOPE, CAPTURE_AND_SESSION_SCOPE] {
+            let mut fixture = Fixture::new();
+            *fixture.transport.token_scope.lock().unwrap() = Some(initial);
+            *fixture.transport.returned_session.lock().unwrap() = Some(Session {
+                scope: initial.into(),
+                ..session()
+            });
+            fixture.sign_in();
+            assert_eq!(fixture.engine.session().unwrap().scope, initial);
+
+            *fixture.transport.token_scope.lock().unwrap() = Some(returned);
+            *fixture.transport.returned_session.lock().unwrap() = Some(Session {
+                scope: returned.into(),
+                ..session()
+            });
+            fixture.restart();
+            let result = fixture.engine.refresh(200, || true);
+            if initial == returned {
+                result.unwrap();
+                assert_eq!(fixture.engine.session().unwrap().scope, initial);
+                assert!(fixture.transport.revoked.lock().unwrap().is_empty());
+            } else {
+                assert_eq!(result, Err(Failure::ReauthRequired));
+                assert!(fixture.engine.session().is_none());
+                assert!(fixture.vault.read().unwrap().unwrap().session.is_none());
+                fixture.engine.wait_remote_logout();
+                assert_eq!(
+                    *fixture.transport.revoked.lock().unwrap(),
+                    ["synthetic-refresh-0", "synthetic-refresh-1"]
+                );
+            }
+            assert_eq!(fixture.transport.calls.load(Ordering::Acquire), 2);
+        }
+    }
+}
+
+#[test]
+fn cloud_rejected_refresh_keeps_both_grant_proofs_until_explicit_local_sign_out() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
     *fixture.transport.token_grant.lock().unwrap() = Some("another-grant".into());
@@ -939,19 +1320,15 @@ fn cloud_rejected_refresh_keeps_both_grant_proofs_and_requires_original_revocati
     assert_eq!(cleanup.refresh_token, "synthetic-refresh-0");
     assert_eq!(cleanup.cleanup_refresh_tokens, ["synthetic-refresh-1"]);
     assert!(cleanup.session.is_none());
+    fixture.engine.wait_remote_logout();
     fixture.restart();
-    fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.cleanup.blocks_connection());
-    assert!(fixture.vault.read().unwrap().is_some());
-    *fixture.transport.fail_revoke_for.lock().unwrap() = None;
-    fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.cleanup == state::Cleanup::None);
+    let proof = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(!proof.send(fixture.engine.transport.as_ref()));
+    assert!(fixture.engine.remote_logout_unconfirmed());
     assert!(fixture.vault.read().unwrap().is_none());
     assert_eq!(
         *fixture.transport.revoked.lock().unwrap(),
         [
-            "synthetic-refresh-0",
-            "synthetic-refresh-1",
             "synthetic-refresh-0",
             "synthetic-refresh-1",
             "synthetic-refresh-0",
@@ -1005,7 +1382,7 @@ fn cloud_state_write_failure_still_retains_both_cleanup_proofs() {
         })),
         ..FakeTransport::default()
     });
-    fixture.engine.transport = Box::new(transport);
+    fixture.engine.transport = Arc::new(transport);
     let result = fixture.engine.refresh(200, || true);
     std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(result, Err(Failure::CredentialFailed));
@@ -1016,7 +1393,8 @@ fn cloud_state_write_failure_still_retains_both_cleanup_proofs() {
     fixture.restart();
     fixture.engine.refresh(201, || true).unwrap();
     assert!(fixture.engine.session().is_none());
-    fixture.engine.sign_out().unwrap();
+    let proof = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(proof.send(fixture.engine.transport.as_ref()));
     assert_eq!(
         *fixture.transport.revoked.lock().unwrap(),
         ["synthetic-refresh-0", "synthetic-refresh-1",]
@@ -1036,7 +1414,7 @@ fn cloud_stale_browser_cancel_does_not_abandon_a_newer_attempt() {
     fixture.engine.refresh(101, || true).unwrap();
     assert!(fixture.engine.status == AuthStatus::Waiting);
     fixture.engine.cancel(3).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    assert!(fixture.engine.status == AuthStatus::Cancelled);
 }
 
 #[test]
@@ -1079,20 +1457,82 @@ fn cloud_logout_marker_blocks_restart_when_remote_revocation_is_unconfirmed() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
     fixture.transport.fail_revoke.store(true, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
+    let proof = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
     assert!(fixture.engine.session().is_none());
+    assert!(fixture.vault.read().unwrap().is_none());
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+    fixture.engine.try_remote_logout(proof).unwrap();
+    fixture.engine.wait_remote_logout();
     fixture.restart();
     fixture.engine.refresh(102, || true).unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.session().is_none());
-    fixture
-        .transport
-        .fail_revoke
-        .store(false, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.remote_logout_unconfirmed());
+    assert!(fixture.engine.session().is_none());
+    fixture.engine.begin(103, 1).unwrap();
+}
+
+#[test]
+fn cloud_confirmed_remote_logout_leaves_no_warning_after_restart() {
+    let mut fixture = Fixture::new();
+    fixture.sign_in();
+    let proof = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+    fixture.engine.try_remote_logout(proof).unwrap();
+    fixture.engine.wait_remote_logout();
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
+    fixture.restart();
+    fixture.engine.refresh(102, || true).unwrap();
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+}
+
+#[test]
+fn cloud_reconnect_does_not_wait_for_remote_logout_and_skips_an_occupied_slot() {
+    use std::{sync::mpsc, time::Duration};
+    let mut fixture = Fixture::new();
+    let (started, running) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let released = Mutex::new(released);
+    fixture.transport = Arc::new(FakeTransport {
+        on_revoke: Some(Arc::new(move || {
+            started.send(()).unwrap();
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        })),
+        ..FakeTransport::default()
+    });
+    fixture.engine.transport = Arc::new(fixture.transport.clone());
+    fixture.sign_in();
+    let old = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(fixture.engine.session().is_none());
     assert!(fixture.vault.read().unwrap().is_none());
+    assert!(fixture.engine.try_remote_logout(old).is_some());
+    running.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(!fixture.engine.remote_logout_unconfirmed());
+
+    fixture.sign_in();
+    assert!(fixture.engine.session().is_some());
+    let other = fixture.engine.sign_out().unwrap().unwrap();
+    assert!(fixture.engine.try_remote_logout(other).is_none());
+    assert!(fixture.engine.remote_logout_unconfirmed());
+    fixture.sign_in();
+    assert!(fixture.engine.session().is_some());
+    release.send(()).unwrap();
+    fixture.engine.wait_remote_logout();
+    assert!(fixture.engine.remote_logout_unconfirmed());
+    assert_eq!(
+        *fixture.transport.revoked.lock().unwrap(),
+        ["synthetic-refresh-0"]
+    );
+    assert!(fixture.engine.session().is_some());
+    assert_eq!(
+        fixture.vault.read().unwrap().unwrap().refresh_token,
+        "synthetic-refresh-2"
+    );
 }
 
 #[test]
@@ -1100,13 +1540,15 @@ fn cloud_logout_keyring_delete_failure_cannot_restore_an_account() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
     fixture.vault.fail_write.store(true, Ordering::Release);
-    assert_eq!(fixture.engine.sign_out(), Err(Failure::CredentialFailed));
+    assert!(fixture.engine.sign_out().unwrap().is_some());
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
+    assert!(fixture.engine.cleanup.blocks_connection());
     fixture.vault.fail_write.store(false, Ordering::Release);
     fixture.restart();
     fixture.engine.refresh(200, || true).unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
     assert!(fixture.engine.session().is_none());
-    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 1);
+    assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 0);
     fixture.engine.sign_out().unwrap();
     assert!(fixture.engine.status == AuthStatus::SignedOut);
 }
@@ -1115,7 +1557,10 @@ fn cloud_logout_keyring_delete_failure_cannot_restore_an_account() {
 fn cloud_lifetime_owner_rejects_a_second_writer_until_restart() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
-    assert_eq!(fixture.reopen().sign_out(), Err(Failure::Unavailable));
+    assert_eq!(
+        fixture.reopen().sign_out().err(),
+        Some(Failure::Unavailable)
+    );
     assert!(fixture.engine.session().is_some());
     fixture.restart();
     fixture.engine.sign_out().unwrap();
@@ -1179,6 +1624,8 @@ fn cloud_lock_serializes_separate_processes() {
 #[test]
 fn cloud_snapshot_does_not_include_native_secrets() {
     let value = Snapshot {
+        invitation_enabled: false,
+        invitation_result_unconfirmed: true,
         auth_enabled: true,
         capture_enabled: true,
         sync_enabled: false,
@@ -1196,6 +1643,7 @@ fn cloud_snapshot_does_not_include_native_secrets() {
         draft: Draft::default(),
     };
     let encoded = serde_json::to_string(&value).unwrap();
+    assert!(encoded.contains(r#""invitationResultUnconfirmed":true"#));
     for field in [
         "access_token",
         "refresh_token",
@@ -1261,7 +1709,7 @@ fn cloud_browser_cancellation_during_established_refresh_does_not_revoke_the_acc
         })),
         ..FakeTransport::default()
     });
-    fixture.engine.transport = Box::new(transport.clone());
+    fixture.engine.transport = Arc::new(transport.clone());
     fixture
         .engine
         .refresh(200, || account_generation.load(Ordering::Acquire) == 0)
@@ -1454,7 +1902,7 @@ fn cloud_process_cleanup_child() {
 }
 
 #[test]
-fn cloud_restart_finishes_deletion_after_confirmed_revocation_and_a_process_exit() {
+fn cloud_restart_finishes_local_deletion_after_a_process_exit() {
     let directory = tempfile::tempdir().unwrap();
     let (mut engine, _) = process_engine(directory.path(), 0);
     let (_, _listener, attempt) = engine.begin(100, 0).unwrap();
@@ -1481,13 +1929,13 @@ fn cloud_restart_finishes_deletion_after_confirmed_revocation_and_a_process_exit
     let (mut engine, transport) = process_engine(directory.path(), 2);
     engine.refresh(200, || true).unwrap();
     assert!(engine.status == AuthStatus::SignedOut);
-    assert!(engine.cleanup == state::Cleanup::None);
+    assert!(!engine.remote_logout_unconfirmed());
     assert_eq!(transport.revocations.load(Ordering::Acquire), 0);
     engine.begin(201, 1).unwrap();
 }
 
 #[test]
-fn cloud_corrupt_state_with_no_credential_needs_explicit_reset_and_keeps_its_warning() {
+fn cloud_sign_out_repairs_corrupt_state_without_losing_the_warning() {
     let mut fixture = Fixture::new();
     let (_, _listener, attempt) = fixture.engine.begin(100, 0).unwrap();
     std::fs::write(
@@ -1498,14 +1946,8 @@ fn cloud_corrupt_state_with_no_credential_needs_explicit_reset_and_keeps_its_war
     let retry = fixture.directory.path().join("synthetic-retry.bin");
     std::fs::write(&retry, b"unchanged synthetic compressed retry bytes").unwrap();
     fixture.engine.sign_out().unwrap();
-    assert!(fixture.engine.status == AuthStatus::RevocationUnconfirmed);
-    assert!(fixture.engine.local_reset_available);
+    assert!(fixture.engine.status == AuthStatus::SignedOut);
     assert_eq!(fixture.transport.revocations.load(Ordering::Acquire), 0);
-    assert!(matches!(
-        fixture.engine.begin(101, 1),
-        Err(Failure::Unavailable)
-    ));
-    fixture.engine.reset_local().unwrap();
     assert!(fixture.engine.cleanup == state::Cleanup::RemoteUnconfirmed);
     assert_eq!(
         fixture
@@ -1533,8 +1975,18 @@ fn cloud_corrupt_state_with_no_credential_needs_explicit_reset_and_keeps_its_war
 fn cloud_local_reset_does_not_discard_a_recoverable_refresh_credential() {
     let mut fixture = Fixture::new();
     fixture.sign_in();
-    fixture.transport.fail_revoke.store(true, Ordering::Release);
-    fixture.engine.sign_out().unwrap();
+    fixture
+        .engine
+        .state
+        .lock()
+        .unwrap()
+        .replace(
+            state::Phase::SignedOut,
+            state::Cleanup::Revoke {
+                prior_unconfirmed: false,
+            },
+        )
+        .unwrap();
     assert_eq!(fixture.engine.reset_local(), Err(Failure::Unavailable));
     assert!(fixture.vault.read().unwrap().is_some());
 }
@@ -1544,7 +1996,6 @@ fn cloud_corrupt_state_cannot_clear_an_earlier_connection_warning() {
     let mut fixture = Fixture::new();
     fixture.engine.begin(100, 0).unwrap();
     fixture.engine.cancel(1).unwrap();
-    fixture.engine.reset_local().unwrap();
     fixture.sign_in();
     std::fs::write(
         fixture.directory.path().join("cloud-auth-state-v2"),

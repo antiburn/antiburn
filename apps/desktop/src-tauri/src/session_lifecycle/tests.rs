@@ -2354,10 +2354,10 @@ fn retention_reports_a_broad_purge_with_a_revision() {
         .split_whitespace()
         .collect::<String>();
     let commit = cleanup
-        .find("let(removed,revision)=worker_app.state::<Store>().apply_session_retention(")
+        .find("letresult=app.state::<Store>().apply_session_retention(")
         .expect("the retention worker retains the committed revision");
     let report = cleanup
-        .find("note_removed(&worker_app,removed,revision);")
+        .find("Ok((removed,revision))=>note_removed(app,removed,revision)")
         .expect("the retention worker reports the committed revision");
     assert!(
         commit < report,

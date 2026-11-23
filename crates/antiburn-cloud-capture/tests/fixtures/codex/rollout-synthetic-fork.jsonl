@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-01T00:00:00Z","type":"session_meta","payload":{"id":"synthetic-fork","cwd":"/synthetic/work/fork","cli_version":"0.999.0","forked_from_id":"synthetic-parent","source":"cli"}}
+{"timestamp":"2026-09-01T00:00:00Z","type":"session_meta","payload":{"id":"synthetic-parent","cwd":"/synthetic/work/parent","cli_version":"0.998.0","forked_from_id":"synthetic-grandparent","source":"cli"}}
+{"timestamp":"2026-09-01T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Synthetic fixture message."}]}}
+{"timestamp":"2026-09-01T00:00:02Z","type":"synthetic_unknown","payload":{"keep":[1,null,false]}}

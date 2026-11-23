@@ -7,17 +7,46 @@ use tauri::{AppHandle, Manager};
 use crate::store::{Revision, Store};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Storage upkeep holds the writer lock. The delay keeps it away from launch.
+const STORAGE_UPKEEP_DELAY: Duration = Duration::from_secs(10 * 60);
 
-/// Start cleanup at launch and repeat it once per day.
+/// Start cleanup at launch and repeat it once per day. Storage upkeep
+/// starts after [`STORAGE_UPKEEP_DELAY`] and also repeats once per day.
 pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        cleanup(app.clone()).await;
+        run_blocking(&app, cleanup).await;
+        tokio::time::sleep(STORAGE_UPKEEP_DELAY).await;
+        run_blocking(&app, maintain_storage).await;
         loop {
             tokio::time::sleep(CLEANUP_INTERVAL).await;
-            cleanup(app.clone()).await;
+            run_blocking(&app, cleanup).await;
+            run_blocking(&app, maintain_storage).await;
         }
     })
+}
+
+/// Run SQLite work on a blocking worker, never on the async runtime.
+async fn run_blocking(app: &AppHandle, work: fn(&AppHandle)) {
+    let app = app.clone();
+    if let Err(error) = tauri::async_runtime::spawn_blocking(move || work(&app)).await {
+        tracing::warn!(event = "retention_task_failed", error = %error);
+    }
+}
+
+fn maintain_storage(app: &AppHandle) {
+    let store = app.state::<Store>();
+    match store.maintain_storage(crate::store::VacuumThreshold::default()) {
+        Ok(upkeep) => tracing::info!(
+            event = "storage_upkeep",
+            vacuumed = upkeep.vacuumed,
+            wal_truncated = upkeep.wal_truncated,
+            file_bytes_before = upkeep.file_bytes_before,
+            free_bytes_before = upkeep.free_bytes_before,
+            file_bytes_after = upkeep.file_bytes_after,
+        ),
+        Err(error) => tracing::warn!(event = "storage_upkeep_failed", error = %error),
+    }
 }
 
 /// Notify views and refresh derived repository counts after session removal.
@@ -42,20 +71,11 @@ pub fn note_removed(app: &AppHandle, removed: usize, revision: Revision) {
     );
 }
 
-async fn cleanup(app: AppHandle) {
-    let worker_app = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let (removed, revision) = worker_app
-            .state::<Store>()
-            .apply_session_retention(unix_now())?;
-        note_removed(&worker_app, removed, revision);
-        Ok::<_, anyhow::Error>(())
-    })
-    .await;
+fn cleanup(app: &AppHandle) {
+    let result = app.state::<Store>().apply_session_retention(unix_now());
     match result {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => tracing::warn!(event = "session_retention_failed", error = %error),
-        Err(error) => tracing::warn!(event = "session_retention_worker_failed", error = %error),
+        Ok((removed, revision)) => note_removed(app, removed, revision),
+        Err(error) => tracing::warn!(event = "session_retention_failed", error = %error),
     }
 }
 

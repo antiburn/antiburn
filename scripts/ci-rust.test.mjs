@@ -52,6 +52,21 @@ test("omits fmt without the flag", () => {
   assert.ok(plan.steps.every((step) => step.step !== "fmt"));
 });
 
+test("runs CLI Clippy and Nextest with and without Cloud", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const plan = planRustChecks({ workspaces: "cli", platform });
+    assert.deepEqual(
+      plan.steps.map(({ args }) => [args[0], args.includes("cloud")]),
+      [
+        ["clippy", false],
+        ["nextest", false],
+        ["clippy", true],
+        ["nextest", true],
+      ],
+    );
+  }
+});
+
 test("checks capture defaults separately and enables cloud for Clippy and Nextest", () => {
   for (const platform of ["linux", "darwin", "win32"]) {
     const plan = planRustChecks({ workspaces: "cloud-capture", platform });

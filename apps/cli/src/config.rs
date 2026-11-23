@@ -9,6 +9,13 @@ use serde::Deserialize;
 const DEFAULT_APP_IDENTIFIER: &str = "ai.antiburn.desktop";
 const DEFAULT_DATABASE_FILENAME: &str = "antiburn.sqlite3";
 const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_SEARCH_LIMIT: u16 = 20;
+pub(crate) const MAX_SEARCH_LIMIT: u16 = 100;
+const DEFAULT_LOCAL_SEARCH_TIMEOUT_MS: u64 = 2_000;
+const MAX_LOCAL_SEARCH_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES: i32 = 64 * 1024;
+const MIN_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES: i32 = 4 * 1024;
+const MAX_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES: i32 = 1024 * 1024;
 const DEFAULT_PRICE_OUTLIER_MAX_SESSIONS: usize = 16;
 const DEFAULT_PRICE_OUTLIER_MAX_AGE_HOURS: u64 = 72;
 const DEFAULT_PRICE_OUTLIER_MINIMUM_PRICED_SESSIONS: usize = 8;
@@ -30,10 +37,17 @@ pub struct Config {
     pub app_identifier: String,
     pub database_filename: String,
     pub busy_timeout: Duration,
+    pub search_limit: u16,
+    /// Time budget for SQLite work in local session search.
+    pub local_search_timeout: Duration,
+    /// Maximum size of a SQLite string, blob, or row in local session search.
+    pub local_search_sqlite_length_limit_bytes: i32,
     pub state_file: Option<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub pricing_snapshot_path: Option<PathBuf>,
     pub price_outlier: PriceOutlierConfig,
+    #[cfg(feature = "cloud")]
+    pub cloud: Option<CloudConfig>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -43,10 +57,54 @@ struct ConfigOverrides {
     app_identifier: Option<String>,
     database_filename: Option<String>,
     busy_timeout_ms: Option<u64>,
+    search_limit: Option<u16>,
+    local_search_timeout_ms: Option<u64>,
+    local_search_sqlite_length_limit_bytes: Option<i32>,
     state_file: Option<PathBuf>,
     log_file: Option<PathBuf>,
     pricing_snapshot_path: Option<PathBuf>,
     price_outlier: Option<PriceOutlierOverrides>,
+    #[cfg(feature = "cloud")]
+    cloud: Option<CloudConfig>,
+}
+
+/// Select a workspace and request limits. The active device supplies the service and access.
+#[cfg(feature = "cloud")]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CloudConfig {
+    pub workspace_id: Option<uuid::Uuid>,
+    pub connect_timeout_secs: u64,
+    pub request_timeout_secs: u64,
+}
+
+#[cfg(feature = "cloud")]
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            workspace_id: None,
+            connect_timeout_secs: 5,
+            request_timeout_secs: 15,
+        }
+    }
+}
+
+#[cfg(feature = "cloud")]
+impl CloudConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.workspace_id.is_some_and(|id| id.is_nil()) {
+            return Err("cloud.workspace_id must not be nil".into());
+        }
+        for (field, value) in [
+            ("cloud.connect_timeout_secs", self.connect_timeout_secs),
+            ("cloud.request_timeout_secs", self.request_timeout_secs),
+        ] {
+            if !(1..=300).contains(&value) {
+                return Err(format!("{field} must be between 1 and 300"));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -81,7 +139,12 @@ impl Config {
         };
 
         let overrides: ConfigOverrides = serde_json::from_str(&contents).map_err(|error| {
-            format!("invalid CLI config file {}: {error}", config_path.display())
+            format!(
+                "invalid CLI config file {} at line {}, column {}",
+                config_path.display(),
+                error.line(),
+                error.column()
+            )
         })?;
         Self::from_overrides(overrides)
     }
@@ -92,9 +155,14 @@ impl Config {
             app_identifier: DEFAULT_APP_IDENTIFIER.to_owned(),
             database_filename: DEFAULT_DATABASE_FILENAME.to_owned(),
             busy_timeout: Duration::from_millis(DEFAULT_BUSY_TIMEOUT_MS),
+            search_limit: DEFAULT_SEARCH_LIMIT,
+            local_search_timeout: Duration::from_millis(DEFAULT_LOCAL_SEARCH_TIMEOUT_MS),
+            local_search_sqlite_length_limit_bytes: DEFAULT_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES,
             state_file: None,
             log_file: None,
             pricing_snapshot_path: None,
+            #[cfg(feature = "cloud")]
+            cloud: None,
             price_outlier: PriceOutlierConfig {
                 max_sessions: DEFAULT_PRICE_OUTLIER_MAX_SESSIONS,
                 max_age_hours: DEFAULT_PRICE_OUTLIER_MAX_AGE_HOURS,
@@ -107,6 +175,13 @@ impl Config {
 
     fn from_overrides(overrides: ConfigOverrides) -> Result<Self, String> {
         let mut config = Self::defaults();
+        #[cfg(feature = "cloud")]
+        {
+            if let Some(cloud) = &overrides.cloud {
+                cloud.validate()?;
+            }
+            config.cloud = overrides.cloud;
+        }
         config.data_root = overrides.data_root;
         if let Some(app_identifier) = overrides.app_identifier {
             validate_path_component("app_identifier", &app_identifier)?;
@@ -118,6 +193,35 @@ impl Config {
         }
         if let Some(busy_timeout_ms) = overrides.busy_timeout_ms {
             config.busy_timeout = Duration::from_millis(busy_timeout_ms);
+        }
+        if let Some(search_limit) = overrides.search_limit {
+            if !(1..=MAX_SEARCH_LIMIT).contains(&search_limit) {
+                return Err(format!(
+                    "search_limit must be between 1 and {MAX_SEARCH_LIMIT}"
+                ));
+            }
+            config.search_limit = search_limit;
+        }
+        if let Some(value) = overrides.local_search_timeout_ms {
+            if !(1..=MAX_LOCAL_SEARCH_TIMEOUT_MS).contains(&value) {
+                return Err(format!(
+                    "local_search_timeout_ms must be between 1 and {MAX_LOCAL_SEARCH_TIMEOUT_MS}"
+                ));
+            }
+            config.local_search_timeout = Duration::from_millis(value);
+        }
+        if let Some(value) = overrides.local_search_sqlite_length_limit_bytes {
+            if !(MIN_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES
+                ..=MAX_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES)
+                .contains(&value)
+            {
+                return Err(format!(
+                    "local_search_sqlite_length_limit_bytes must be between \
+                     {MIN_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES} and \
+                     {MAX_LOCAL_SEARCH_SQLITE_LENGTH_LIMIT_BYTES}"
+                ));
+            }
+            config.local_search_sqlite_length_limit_bytes = value;
         }
         config.state_file = overrides.state_file;
         config.log_file = overrides.log_file;
@@ -317,6 +421,41 @@ mod tests {
             let path = temp.path().join("cli.json");
             fs::write(&path, contents).unwrap();
             assert!(Config::load(Some(path)).await.is_err());
+        }
+    }
+
+    #[test]
+    fn local_search_settings_use_existing_defaults_and_accept_bounds() {
+        let defaults = Config::defaults();
+        assert_eq!(defaults.local_search_timeout.as_millis(), 2_000);
+        assert_eq!(defaults.local_search_sqlite_length_limit_bytes, 65_536);
+
+        for (timeout_ms, length_limit_bytes) in [(1, 4_096), (30_000, 1_048_576)] {
+            let overrides = serde_json::from_value(serde_json::json!({
+                "local_search_timeout_ms": timeout_ms,
+                "local_search_sqlite_length_limit_bytes": length_limit_bytes
+            }))
+            .unwrap();
+            let config = Config::from_overrides(overrides).unwrap();
+            assert_eq!(config.local_search_timeout.as_millis(), timeout_ms);
+            assert_eq!(
+                config.local_search_sqlite_length_limit_bytes,
+                length_limit_bytes
+            );
+        }
+    }
+
+    #[test]
+    fn local_search_settings_reject_values_outside_bounds() {
+        for (field, value) in [
+            ("local_search_timeout_ms", 0),
+            ("local_search_timeout_ms", 30_001),
+            ("local_search_sqlite_length_limit_bytes", 4_095),
+            ("local_search_sqlite_length_limit_bytes", 1_048_577),
+        ] {
+            let overrides = serde_json::from_value(serde_json::json!({ (field): value })).unwrap();
+            let error = Config::from_overrides(overrides).unwrap_err();
+            assert!(error.starts_with(field), "{error}");
         }
     }
 }

@@ -29,6 +29,8 @@ pub(crate) fn stream_spec(
                 "native_companion",
                 "claude-agent-meta-json",
             ),
+            CaptureSourceKind::CodexJsonl => ("transcript", "native_transcript", "codex-jsonl"),
+            CaptureSourceKind::PiJsonl => ("transcript", "native_transcript", "pi-jsonl"),
             CaptureSourceKind::OpenCodeSqliteV2 => {
                 ("native-rows", "native_rows", "antiburn-sqlite-native")
             }
@@ -56,9 +58,16 @@ pub(crate) fn validate_manifest(manifest: &CaptureManifest, limits: &Limits) -> 
     {
         return Err(Error::CorruptSpool);
     }
-    let kind = match manifest.streams[0].stream_id.as_str() {
-        "transcript" => CaptureSourceKind::ClaudeJsonl,
-        "native-rows" if manifest.streams.len() == 2 => CaptureSourceKind::OpenCodeSqliteV2,
+    let first = &manifest.streams[0];
+    let kind = match (
+        first.stream_id.as_str(),
+        first.schema.as_str(),
+        manifest.streams.len(),
+    ) {
+        ("transcript", "claude-jsonl", _) => CaptureSourceKind::ClaudeJsonl,
+        ("transcript", "codex-jsonl", 2) => CaptureSourceKind::CodexJsonl,
+        ("transcript", "pi-jsonl", 2) => CaptureSourceKind::PiJsonl,
+        ("native-rows", "antiburn-sqlite-native", 2) => CaptureSourceKind::OpenCodeSqliteV2,
         _ => return Err(Error::CorruptSpool),
     };
     let mut total = 0u64;
@@ -76,9 +85,7 @@ pub(crate) fn validate_manifest(manifest: &CaptureManifest, limits: &Limits) -> 
             || !valid_hash(&stream.expanded_sha256)
             || stream.chunks.len() > 128
             || (index + 1 == manifest.streams.len() && stream.expanded_bytes == 0)
-            || (kind == CaptureSourceKind::OpenCodeSqliteV2
-                && index == 0
-                && stream.expanded_bytes == 0)
+            || (kind != CaptureSourceKind::ClaudeJsonl && index == 0 && stream.expanded_bytes == 0)
         {
             return Err(Error::CorruptSpool);
         }

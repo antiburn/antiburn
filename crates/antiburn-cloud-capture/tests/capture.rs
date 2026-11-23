@@ -149,6 +149,43 @@ fn project_admission_captures_full_session_when_owned_cwd_changes() {
 }
 
 #[test]
+fn workspace_routing_refuses_a_new_cwd_even_when_the_original_folder_still_matches() {
+    let temp = temporary();
+    let project = temp.path().join("project");
+    let outside = temp.path().join("outside");
+    let source = temp.path().join("provider-storage");
+    for path in [&project, &outside, &source] {
+        fs::create_dir(path).unwrap();
+    }
+    let path = source.join("selected.jsonl");
+    let first = serde_json::json!({"sessionId": "selected", "cwd": project});
+    fs::write(&path, format!("{first}\n")).unwrap();
+    let limits = Limits::default();
+    let candidate = reopen_claude(&source, "selected", None, &limits).unwrap();
+    let (admitted, paths) = ProjectSelection::new(vec![project.clone()])
+        .unwrap()
+        .admit_for_routing(&candidate, &limits)
+        .unwrap()
+        .unwrap();
+    assert_eq!(paths, vec![project]);
+    let second = serde_json::json!({"sessionId": "selected", "cwd": outside});
+    fs::write(&path, format!("{first}\n{second}\n")).unwrap();
+
+    let mut transport = FakeTransport::default();
+    let mut spool = spool(&temp);
+    assert!(matches!(
+        spool.capture(
+            identity(admitted.source_id(), "changed-workspace-routing"),
+            &admitted,
+            MetadataSections::new(),
+            &mut transport,
+        ),
+        Err(Error::SourceChanged)
+    ));
+    assert!(transport.uploaded.is_empty());
+}
+
+#[test]
 fn project_admission_rechecks_frozen_root_policy_not_one_cwd() {
     let temp = temporary();
     let project = temp.path().join("project");

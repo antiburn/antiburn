@@ -4,7 +4,7 @@ Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.co
 Standard public builds keep Cloud disabled. This contract covers opt-in
 Cloud-enabled development builds, not production availability.
 
-Development builds use a browser-approved desktop connection, not a general
+Development builds use a browser-approved device connection, not a general
 OAuth or OpenID Connect service. Builds without the `cloud` feature include no Cloud commands,
 capabilities, callback scheme, account controls, or Cloud onboarding step. Local
 sessions and Checks do not need Cloud.
@@ -22,11 +22,12 @@ a host-supplied `Transport`. These packages contain native source streams and
 capture metadata, not serialized local evidence, cost estimates, or Check results.
 See the [capture contract](capture.md) for source fidelity and transport rules.
 
-On supported Unix platforms, the desktop can capture and upload supported native
-sessions after separate, account-bound ongoing content consent. A desktop scheduler
-owns this work independently of the onboarding or Settings renderer. Project
-discovery alone does not start it. Legacy saved-request commands remain
-discovery-only and do not enable ongoing uploads.
+On supported Unix platforms, Desktop can capture and upload supported native
+sessions after you enable upload for a folder. Enabling a folder is the upload
+decision. There is no second content prompt. Workspace sign-in and browser
+approval are separate and do not enable folders. A desktop scheduler runs
+independently of onboarding or Settings. Discovery and legacy saved requests
+do not start it.
 
 Local analysis needs no Cloud account or content consent. Model-based Burn Checks
 use their own configured connection and **Run checks** setting. They can send
@@ -64,9 +65,9 @@ also permit canonical loopback HTTP service origins. A custom release build
 that explicitly enables debug assertions uses the same debug behavior.
 
 Standard release builds keep Cloud disabled. Manually enabling `cloud` without
-debug assertions requires both HTTPS origins; it adds no implicit configuration.
-Route URLs still include the slash before the path. The resource origin owns
-the desktop API routes. Use an approved development service only.
+debug assertions defaults both origins to `https://api.antiburn.com` when
+neither variable is set. Set both variables to override that default with
+canonical HTTPS origins. The resource origin owns the device API routes.
 
 The explicit feature command also works for a debug build:
 
@@ -75,10 +76,9 @@ cd apps/desktop
 pnpm tauri dev --features cloud --config src-tauri/tauri.debug.conf.json
 ```
 
-A manual Cloud build does not permit production use. System-browser and OS
-credential-storage acceptance remain separate from synthetic checks. Capture and
-upload also require current service capabilities and explicit ongoing content
-consent; a build feature or successful sign-in is not permission.
+Enabling Cloud does not grant access. The service still controls sign-in.
+Capture and upload require the current service capabilities and explicit
+ongoing content consent.
 
 ## Browser approval
 
@@ -100,37 +100,97 @@ An OS missing-launcher error before browser handoff clears only that attempt and
 permits retry. Other opener errors do not prove that handoff failed.
 Browser approval can create a connection before the callback arrives. Canceling,
 replacing, or losing that callback therefore preserves unconfirmed revocation.
-Without a refresh credential, Settings requires an explicit local reset before
-reconnecting and keeps the warning. An explicit browser denial does not need this
-reset.
+Without a refresh credential, Settings offers a local reset for that exact
+workspace. Reset permits a new connection but keeps the warning about remote
+revocation. An unresolved team approval does not block Personal sign-in. An
+explicit browser denial does not need a reset.
 
 The browser must name the workspace, permitted action, and device before the user
-approves the connection. The approved scope covers this first-party desktop
-client only. It does not grant general API-client or third-party authorization.
-Token responses bind opaque credentials to a grant, user, personal workspace,
-fixed grant deadline, `capture:write`, resource, and issuer. The flat session
-response supplies those same bindings, nullable display name, workspace name,
-device display label, and access deadline. Deadlines use RFC 3339 strings.
-Desktop validation compares the token and session bindings before saving a
-refresh credential. A changed grant, account, destination, or fixed deadline
-cannot restore the saved connection.
+approves the connection. The approved scope covers the first-party device
+connection only. It does not grant general API-client or third-party authorization.
+Token responses bind opaque credentials to an account grant, user,
+fixed grant deadline, scope, resource, and issuer. The session
+response supplies those same bindings, a nullable display name,
+the device label, and the access deadline. Deadlines use RFC 3339 strings.
+Desktop accepts only these exact scope strings:
 
-Desktop authentication requests use the configured API origin:
+- New approvals use `capture:write sessions:list sessions:read`. This scope
+  permits capture and authorizes search and reads for sessions the signed-in
+  user can access. The service still checks the user's current access. Desktop
+  capture uses only the capture permission.
+- `capture:write` permits capture only. Older account grants keep this scope
+  when refreshed.
 
-| Request                   | Desktop proof                                                                                                |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `GET /desktop/authorize`  | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
-| `POST /v1/desktop/token`  | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}`  |
-| `GET /v1/desktop/session` | Access bearer                                                                                                |
-| `POST /v1/desktop/logout` | JSON `{refresh_token}`                                                                                       |
+Desktop requires the token and session bindings to match before it saves a
+refresh credential. A changed grant, account, scope, or fixed deadline
+cannot restore the saved connection. To receive the broader scope on an older
+connection, sign in again instead of refreshing the old grant.
 
-Token, session, and logout requests send no cookies or Origin header. Token and
-logout proof does not use a bearer header. Desktop requests do not follow
-redirects or retry automatically.
+Device authentication requests use the configured API origin:
+
+| Request                          | Proof                                                                                                       |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `GET /devices/authorize/account` | `redirect_uri`, `state`, `code_challenge`, `code_challenge_method=S256`, and the display label `device_name` |
+| `POST /v1/devices/token`         | JSON `{grant_type:"authorization_code",code,code_verifier}` or `{grant_type:"refresh_token",refresh_token}` |
+| `GET /v1/devices/session`        | Access bearer                                                                                              |
+| `GET /v1/captures/destinations`  | Access bearer                                                                                              |
+| `POST /v1/devices/logout`        | JSON `{refresh_token}`                                                                                     |
+
+Desktop uses the short OS hostname as `device_name`. It omits the domain suffix
+and falls back to `Antiburn Desktop` if the name is unavailable or unsuitable.
+The label is sent when starting browser approval and is saved for that
+connection. A rename does not change labels on existing connections.
+
+Token, session, workspace list, and logout requests send no cookies or Origin
+header. Token and logout proof does not use a bearer header. Desktop requests do
+not follow redirects or retry automatically.
+
+The workspace list returns `{workspaces:[{workspace_id,name,type,membership_generation}]}`.
+Each `workspace_id` is a UUID string and `type` is `personal` or `team`.
+`membership_generation` is an opaque string for Team and `null` for Personal.
+Desktop verifies that the list includes the signed-in account's Personal
+workspace. With multiple eligible workspaces, the user chooses a destination
+for each folder. With only Personal available, Desktop shows a folder switch.
+
+One account approval covers Personal and current or future Teams where the
+account can upload. Approval does not turn on uploads or approve a folder. Each
+capture names its exact workspace and sends the saved membership generation for
+Team or `null` for Personal. A missing or stale Team permission does not fall
+back to Personal. An old workspace grant does not become an account grant.
+Sign in again to use the account flow. Old refresh proof can only sign out the
+grant it belongs to.
 
 ## Credential and logout safety
 
-Opaque access tokens stay in desktop process memory for at most 15 minutes. Only the OS keyring stores rotating refresh
+### Read sessions from the CLI
+
+On macOS and Linux, a Cloud-enabled CLI can reuse an active, read-capable
+device connection from a running Antiburn Desktop app. The app owns sign-in
+and refresh. It gives the CLI short-lived access proof over a private local
+socket that checks the OS user. It does not write the access proof to a file or
+give the CLI the refresh credential. This does not isolate processes that run
+as the same OS user.
+
+The CLI starts with the Personal workspace. It can request another workspace
+by ID. The service checks current workspace and session permissions on every
+search and document read. It uses the workspace session API, not a device-only
+or CLI-only endpoint. A connection approved only for upload cannot serve
+CLI reads. Open Antiburn Desktop and approve a new connection to enable reads
+where the service offers them.
+
+| Request | Device scope | Page fields the CLI uses |
+| --- | --- | --- |
+| `GET /v1/workspaces/{workspace_id}/sessions` with `q` and `page[size]` | `sessions:list` | `items`, `page.next_cursor` |
+| `GET /v1/workspaces/{workspace_id}/sessions/{session_id}/document` with optional `page[after]` | `sessions:read` | `workspace_id`, `session_id`, `revision`, `stale`, `messages`, `page.next_cursor` |
+
+Send the access token as `Authorization: Bearer <token>`. A cursor continues
+the same document revision; it does not grant access. The service checks
+permission again when the CLI reads the next page.
+
+### Device credentials
+
+Opaque access tokens expire after at most 15 minutes. The app and CLI keep
+them in memory. Only the OS keyring stores rotating refresh
 tokens. There is no plaintext or database fallback. The connection has a fixed
 one-year deadline. Refresh does not extend that deadline.
 
@@ -148,8 +208,8 @@ credential cleanup.
 
 Loopback accept, read, write, cancellation polling, and expiry use Tokio async I/O
 outside the controller mutex and blocking-work permit. The existing HTTP transport
-remains synchronous with a 15-second timeout per request, only inside admitted
-blocking work. This does not make the whole authentication engine asynchronous.
+remains synchronous with a 15-second timeout per request. Normal requests use
+admitted blocking work. Best-effort logout uses a separate blocking worker.
 
 A process-wide mutex serializes credential operations. One lifetime OS lock owns
 the vault namespace. A second process cannot write credentials until that owner
@@ -163,14 +223,13 @@ uncertain response, process exit, invalid response, keyring failure, or failed
 session verification must not retry the predecessor. A non-timeout connection
 setup failure proves that no HTTP proof was sent; only that result can restore
 retry eligibility for the current account generation. Successful rotation needs
-the same grant ID, account, workspace, resource, scope, issuer, and fixed deadline.
+the same grant ID, account, resource, scope, issuer, and fixed deadline.
 Generation checks before and after storage prevent late results from restoring a
 cancelled account.
 Rejected refresh responses save the original and returned proofs for logout
-before updating local state. These cleanup credentials cannot restore an
-authenticated session. Cleanup requires confirmation for both proofs. A failed
-secure-storage write keeps an unconfirmed warning and attempts to revoke the
-returned proof.
+before updating local state. These cleanup credentials cannot restore a
+session. Best-effort logout can try both proofs without waiting on the main
+Cloud worker. A failed secure-storage write keeps an unconfirmed warning.
 Decoded responses retain bounded logout proof even when token bounds or authority
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
@@ -178,25 +237,26 @@ of a newer connection cannot prove that an older connection was revoked.
 Settings keeps the connection action available after onboarding. Desktop sign-out
 first flushes a new signed-out generation. Browser cancellation changes only the
 pending browser-attempt generation; it does not cancel an established connection
-or its refresh. Sign-out revokes only this client's current
-grant, not every connection on the account. A failed remote response stays visible
-as unconfirmed revocation. The client durably records confirmed remote revocation
-before deleting its keyring credential. A restart can therefore finish local
-deletion without requiring that deleted credential or repeating remote logout.
-A deletion failure remains visible, and the closed marker blocks login
-restoration. Cleanup-only keyring records cannot restore an authenticated session.
-Only a synchronous HTTP 204 confirms remote logout. HTTP 202 does not.
+or its refresh. Desktop closes local access and tries to remove the keyring
+credential before returning from sign-out. It does not wait for Cloud to revoke
+the old grant. A deletion failure leaves the closed marker in place and allows
+Desktop to retry local deletion. Reconnect can proceed once local cleanup
+finishes.
+
+At most one detached logout runs at a time for the account and old Team slots.
+An occupied slot skips the new attempt. Desktop does not queue it for later.
+The worker sends old proofs only to their original service and cannot change
+credentials or account state. Desktop records a warning if an attempt fails or
+is skipped. A confirmed logout does not add a warning or clear an older one.
+Close old connections in Cloud settings if Desktop reports this warning.
 Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
 when authority changes.
 
-When remote revocation is unknown and no refresh credential remains, Settings
-offers an explicit local reset. The confirmation states that this does not revoke
-the old connection. Reset permits a new connection but preserves an
-unconfirmed-revocation warning, including after reconnect and restart. The user
-can revoke the old connection in browser Settings. Reset does not remove retry
-bytes or accept late browser callbacks.
+Settings still offers local reset for older cleanup records with no refresh
+credential. A reset does not revoke the old connection, remove retry bytes, or
+accept late browser callbacks.
 
 Callback URLs, codes, tokens, PKCE material, and raw provider errors do not enter
 renderer events, logs, or analytics. Identity and folder paths do not enter
@@ -205,17 +265,39 @@ retarget saved capture bytes.
 
 ## Destination and content consent
 
-Only the currently verified account and personal destination can enable sync.
-Unknown membership or an explicit team destination blocks it; the desktop does
-not silently replace a team with personal. Consent also stays bound to the
-configured service origin. Account, destination, or service changes cannot
-retarget saved captures.
+Only a verified account grant and current permission for the chosen workspace
+can enable sync. Folder approval stays bound to the account, workspace, issuer,
+and resource. Team policies also save the membership generation. If the saved
+proof is missing or no longer current, Desktop holds uploads for those folders.
+Once Desktop verifies the current membership for the same Team, Settings lists
+the exact saved folders. **Save** approves that list and any folders you chose
+for the same Team in one update. It checks the current policy revision and
+validates the new choices. It does not unlock old jobs, change their saved bytes,
+or resume a paused device.
 
-Sign-in, source access, folder toggles, and the legacy local **Upload sessions**
-preference do not grant upload consent. Clicking **Start syncing** confirms
-full-content upload for the current selection. The folder screen's short subtitle
-states the scope; no separate consent checkbox or footer notice is required. `desktop-project-sync-v1`
-binds the account, personal destination, exact provider sources, and approved
+If a session matches enabled folders in more than one workspace, Desktop
+uploads the full session independently to each matching workspace where consent
+and membership are current. Each upload has its own destination and capture ID.
+An unavailable workspace does not block another eligible destination. Existing
+jobs keep their original destination, capture ID, and retry conditions.
+
+An older capture with no saved issuer cannot retry. An explicit **Save** can
+replace folder consent that has no issuer with the current verified scope.
+Desktop does not add an issuer to old captures. Eligible sessions can use new
+capture IDs. Desktop keeps the old spool bytes and counts them toward its
+storage limit. It also keeps accepted receipts and deletion markers for the
+same resource, account, and workspace.
+
+Sign-in, source access, and the legacy local **Upload sessions** preference do
+not grant upload consent. Use **Start syncing** during onboarding or **Save**
+in Settings to approve selected folders. Onboarding can approve folders for
+more than one workspace in one action. Desktop saves each workspace separately
+and checks whether it saved the exact folders. A failed route stays selected for
+retry. Settings saves one workspace at a time.
+To change a saved folder's destination, turn off the old rule, then
+approve the folder for the new destination. This does not move sessions already
+in Cloud. The new rule may upload older local sessions. `desktop-project-sync-v1`
+binds the account, workspace, exact provider sources, and approved
 project/worktree paths, with full content and ongoing sync enabled and external
 attachments disabled. It covers existing sessions and new sessions in those
 approved folder trees while uploads remain enabled.
@@ -229,31 +311,34 @@ and model-based Checks.
 
 Changing the account, destination, provider source, or selected path membership
 invalidates any pending approval for an earlier selection. Count-only updates do
-not change consent. Settings saves folder opt-outs immediately and confirms
-additions before saving them.
+not change consent.
 
 ### Project suggestions and worktrees
 
 The project list uses cached local session metadata from all discovered agents.
 It can show projects for agents that cannot upload. Counts describe local or
-provider-source discovery, not accepted Cloud sessions. Only qualified Claude and OpenCode
-V2 sources can produce upload jobs; a suggested project or checked row does not
+provider-source discovery, not accepted Cloud sessions. Only qualified Claude,
+OpenCode V2, Codex, and Pi sources can produce upload jobs; a suggested project
+or checked row does not
 add support for another provider.
 
-New onboarding project choices default to selected in renderer memory. Loading a page or
-toggling an onboarding row does not save ongoing consent or switch uploads on. Existing
-explicit choices and saved opt-outs take precedence over a new default.
+With one eligible workspace, new onboarding choices start selected. With
+multiple workspaces, new choices start off. Loading the page or changing an
+onboarding row does not save consent or turn on uploads. Existing choices and
+saved opt-outs take precedence.
 **Start syncing** approves only the currently loaded selected groups and their
 exact current path members. **Load more folders** does not approve unseen groups.
 Until confirmation, an existing saved policy stays unchanged.
 
-After initial consent, Settings switches show saved project permission rather
-than draft defaults. Turning a group off removes its approved bindings immediately.
-Turning it on requires the Settings confirmation dialog for its full sessions and
-current worktrees. The command checks the exact policy revision and group membership,
-then changes only that group. Other groups, unseen pages, and the global pause remain
-unchanged. The last group can be turned off without deleting saved captures.
-There is no Update button. Onboarding keeps its draft-and-Start flow without a dialog.
+After initial consent, Settings shows the saved folder rules. Turning off a
+group removes its approved paths immediately. Adding a folder does not grant
+permission until you select **Save**. Save approves full sessions and current
+worktrees for the selected groups. The first Save checks current source and
+recorded folder evidence, just like later additions. Changes check the current
+policy revision and do not change other groups, unseen pages, or the device
+pause. Turning off the last group does not delete saved captures.
+If a saved folder no longer appears in discovery, its exact saved row still
+lets you turn it off without access to the original source.
 
 Confirmation saves the complete `projectChoices` map, including exclusions,
 atomically with the upload policy. Status returns the same map for reopen.
@@ -307,12 +392,12 @@ schemas, and exceeded bounds do not become a complete empty listing or permissio
 to upload an excluded source. Restore access or retry discovery in Settings.
 Setup failures do not hide account cleanup controls.
 
-Before enabling sync or making a new capture, the desktop host checks current
-upload capabilities. The desktop source profile is at most 128 MiB per Claude
-transcript or expanded OpenCode native-row stream, and can be lower under the
-service's advertised total limit. Companion and metadata space remain included
-in the capture budget. Missing, disabled, or incompatible capabilities block new
-capture; the host does not clip source or fall back to guessed limits.
+Before enabling sync or making a capture, Desktop reads
+`GET /v1/captures/capabilities`. It sends only formats in the response: `ClaudeJsonl`,
+`OpenCodeSqliteV2`, `CodexJsonl`, or `PiJsonl`. The source limit is at most 128 MiB
+per transcript or expanded OpenCode native-row stream. A lower advertised limit
+can apply. Missing support blocks new capture without truncating or dropping
+saved bytes.
 
 ### Background sync and saved bytes
 
@@ -322,8 +407,8 @@ uploads are pending. Closing onboarding stops renderer observation, not the
 saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
-Settings → Sessions shows the account, personal destination, upload switch,
-folder choices, and one short upload state without internal dividers. The normal view omits transfer counters.
+Settings → Sessions shows the account, verified workspace count, device upload
+switch, folder choices, and upload status. The normal view omits transfer counters.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
 uploads run or the policy is paused.
@@ -334,20 +419,52 @@ current folder policy retain their bytes but do not count as current upload fail
 counters and progress are unknown or last-known values, not current results. The desktop
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
 values must match the current account, destination, and service.
-**Upload sessions** pauses or resumes the confirmed policy. For saved-upload errors,
-**Retry** retries permitted saved work without expanding the selection.
+**Upload sessions to Antiburn Cloud** pauses or resumes uploads to every
+destination on this device. With no approved folders, the switch opens folder
+setup instead. The switch does not change folder approval or start a retry.
+Folder changes while the device is paused do not resume uploads. On upgrade,
+an old workspace pause starts the device switch off. The old workspace pause
+stays in force until that workspace is reviewed, because it can also mean the
+saved source choices changed. **Save** can clear a source hold after Desktop
+checks the selected folders and verifies that all kept source bindings are still
+allowed. Restore access or remove folders with unavailable sources before saving.
+**Retry saved uploads** is separate. It does not
+resume the device switch, clear a source-change pause, or expand the selection.
+It retries only the displayed workspace and saved folder rules. If those rules
+change in another window, reload them before retrying.
+**Backfill sessions** asks Desktop to offer all available sessions in
+the named workspace's saved folders again, including unchanged sessions it
+previously uploaded. Cloud can reuse content for the same source. Desktop keeps
+deletion markers, existing jobs and bytes, and upload retry delays. Backfill
+does not turn on uploads, save draft choices, or retry failed jobs. Starting a
+scan does not confirm any uploads. Only an explicit backfill re-offers unchanged
+sessions; normal sync still skips them.
+Backfill starts at the first retained source key and scans in bounded pages.
+The desktop activity date range does not limit this scan. It cannot recover
+history the coding tool removed, use files outside approved source roots, or
+read sources that exceed the provider limits. Settings shows when the scan is
+active. The scan can finish before Cloud accepts every upload.
+If Desktop restarts before the scan finishes, request backfill again.
 `recoveryRequiredCount` identifies missing or incomplete local captures that
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings
 shows a local-recovery message without a Retry button that cannot fix them.
-Pause stops admission of further sensitive work and saves the paused
-state. It does not delete spools, undo requests already sent, or delete remote
-content. Sign-out and account changes also stop unauthorized work without
-retargeting or deleting saved captures.
+Pause stops new capture and upload work and saves the device setting across
+restarts. It does not sign out, discard retry bytes, undo requests already sent,
+or delete remote content. Sign-out and account changes also stop unauthorized
+work without retargeting or deleting saved captures.
 Signing in again to the same account and workspace resumes eligible saved uploads
 automatically. A new sign-in clears conflict cooldowns but preserves capacity
 and offline backoff. It does not replace the capture, change its destination,
 expand folder consent, or resume a paused policy.
+
+During background sync, an HTTP 403 from the capture API means Cloud denied
+uploads to that workspace. Desktop keeps the account signed in and does not
+pause other destinations. After each denial, Desktop waits 60 to 300 seconds
+before the next automatic capture request for that destination. A new sign-in
+or **Retry saved uploads** clears that wait. An HTTP 401 instead invalidates
+the cached access token. A denial does not grant permission to repeat an
+incomplete reservation or read source again.
 
 Temporary request failures and HTTP 429 capacity rejections defer the current
 upload until its retry deadline. Valid `Retry-After` hints use a 1 to 300 second
@@ -364,14 +481,22 @@ Initial registration, part, and finalization conflicts first try renewal of the 
 manifest hash, and plan. Only a successful renewal permits one replay of the
 original request. This recovers idle expiry without reading source again or changing
 capture identity. Server authority, absolute expiry, writer, and cleanup fences still
-apply. Earlier fenced post-reservation uploads receive a bounded automatic recheck;
-persistent conflicts wait at least 60 seconds between attempts. Empty interrupted
+apply. Desktop probes a saved upload at most three times after repeated
+conflicts, with at least 60 seconds between probes. A successful step, a new
+sign-in, an app restart, or explicit Retry resets that limit. Empty interrupted
 captures do not gain permission to read source through this recovery path.
 
 After sign-in, process restart, or explicit Retry, the scheduler checks saved
 finalization status. If integrity is still pending, it can replay the exact
 saved finalization once. This can restart stopped processing without new source
-reads or a new capture. Polling alone does not resubmit finalization.
+reads or a new capture. If both status and renewal conflict, Desktop can replay
+the exact saved finalization once for a capture with saved finalization intent.
+Temporary finalization failures use the service's retry delay and a separate
+three-attempt limit. During backfill, Desktop gives discovery a turn between
+pending integrity checks even if the next poll is already due. A failed Team
+membership lookup keeps the current scan position
+and retry limits but does not let the device upload until it verifies access.
+It keeps the saved bytes until the service confirms integrity acceptance.
 
 Time expiry is recoverable, including after a weekend offline. The service
 rechecks current authority and the saved request before renewing storage work.
@@ -379,7 +504,8 @@ Expired incomplete parts can require transfer again from the same local bytes.
 This never grants permission to read source again, change the capture, or
 overwrite a newer publication. Deletion and cancellation remain final.
 
-Capture API requests use the configured resource origin and desktop-held credentials.
+Capture API requests use `/v1/captures` on the configured resource origin
+and use credentials held by Desktop.
 Saved gzip bodies go only to validated, short-lived upload locations supplied
 for the bound request. Those body uploads carry no API bearer or cookies.
 Upload locations never enter saved state, renderer status, or diagnostics.
@@ -395,11 +521,18 @@ Jobs bind the approved tree used for admission, not unrelated folders in the
 same provider store. Removing an unrelated folder does not fence the job.
 Retry can replace only a present, verified empty capture that has no reservation.
 The desktop saves that recovery decision before removing the empty entry.
+The scheduler can finish the saved decision after a crash without reading source.
 Missing entries cannot start recovery or authorize recapture. They can only
 finish a previously saved empty-recovery decision. Partial captures and
 post-reservation interruptions keep their IDs and bytes; they are not replaced
 with newer source. Missing or unreadable saved state is not permission to discard
 retry files.
+
+Older jobs with no saved issuer cannot resume. They keep their IDs and spool
+files but do not use active job slots. Approve the folder again with the current
+issuer to allow a new capture. A job with a different known issuer can resume
+only under its original binding. It still holds its slot and blocks a second
+job for the same source. Retained files still count against local spool limits.
 
 HTTP 202, a successful upload request, transfer receipts, progress counters, and
 an operation ID do not prove full integrity acceptance. Automatic spool release
@@ -466,6 +599,8 @@ General Cloud tests remain enabled in every test profile. These mocks do not
 prove a live service connection.
 
 Run desktop Rust formatting, Clippy, and focused Nextest checks with `--features cloud`.
+Run `cargo nextest run --release --features cloud -E 'test(cloud_auth)'` in
+`apps/desktop/src-tauri` after building the frontend to check release origins.
 Also check the ordinary build with `--no-default-features`. Frontend checks cover
 Cloud stores, consent, ordinary-build entry-point exclusion, and searchable
 Settings controls. System-browser and OS-keyring acceptance on each supported

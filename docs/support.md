@@ -273,6 +273,14 @@ older saved sessions and analysis. Deleting a transcript from disk does not imme
 antiburn derived from it; that data follows the selected retention period unless the
 session or local index is deleted first. The agents' own files are never touched.
 
+**The local store gives unused space back.** Removed data leaves free space inside the
+database file. About 10 minutes after launch, and then once a day, antiburn compacts
+the file when at least 256 MB and a quarter of it is free. It also tries to empty the
+database's write log; if an open read blocks this, the next run tries again. A large
+write or a long read can make the write log grow for a time; after each reset, SQLite
+trims it back to 64 MB or less. Compaction pauses local writes for a few seconds on a
+large store.
+
 **Discovery and the checks report share one current window.** Every recurring pass —
 launch, the periodic tick, a watcher burst, a settings change, an explicit rescan —
 discovers sessions last active within 30 days, the same window the checks report
@@ -360,7 +368,8 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   Official release builds start with it on, including during the first run. The switch
   is in Settings → Privacy. The event schema has thirty-one fields and
   no others: the constant `desktop`; a random per-message id used to discard
-  duplicate deliveries; a random installation identifier replaced every 30 days;
+  duplicate deliveries; a random installation identifier that persists across
+  restarts and upgrades without scheduled replacement;
   a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
   a short label naming a surface, Settings pane, provider, setting, agent
@@ -385,12 +394,15 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   the app version; and the operating system. The payload has no
   field able to carry anything else. The analytics-session identifier changes
   after 30 minutes without a user-oriented analytics event, when the app restarts,
-  or when the installation identifier rotates.
+  or when a new installation identifier is created.
   Its generator is memory-only, but each queued event stores the value on disk
   until that event is sent or removed. Background events do not extend its
-  inactivity timeout. It does not measure a user visit or time spent. Because each event is
-  timestamped and the installation identifier lasts up to 30 days, the events
-  do show roughly when events were captured within that window; they do not show
+  inactivity timeout. A background-only session has no inactivity timeout; its ID
+  changes with the first user-oriented event or another reset.
+  It does not measure a user visit or time spent. Because each event is
+  timestamped and the installation identifier persists, the events
+  do show roughly when events were captured and can group an installation's
+  activity over months or years; they do not show
   the content or identity of what the app was used on. Resource ranges can
   reveal coarse app work intensity and local data volume.
   [analytics.md](analytics.md) is the complete account: every field,

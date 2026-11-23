@@ -12,10 +12,12 @@ import { CloudOnboarding, CloudProjectFolders } from "./CloudOnboarding"
 import { localToolsFixture } from "./__tests__/cloudProjectFixtures"
 
 const analytics = vi.hoisted(() => ({ action: vi.fn(), view: vi.fn() }))
+const invitationRequest = vi.hoisted(() => vi.fn())
 vi.mock("../lib/onboardingAnalytics", () => ({
   noteCloudAction: analytics.action,
   noteCloudScreenViewed: analytics.view,
 }))
+vi.mock("./cloudInvitationPort", () => ({ desktopInvitationPort: invitationRequest }))
 
 function fixture(patch: Partial<CloudSnapshot> = {}) {
   let notify: (next: CloudSnapshot) => void = () => {}
@@ -246,11 +248,84 @@ it("cancels only the pending browser attempt before local completion", async () 
   port.cancelSync = vi.fn()
   const done = vi.fn()
   render(<CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={done} />)
+  expect(await screen.findByText(/Waiting for browser approval/)).toBeVisible()
+  expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeEnabled()
   fireEvent.click(await screen.findByRole("button", { name: "Continue locally" }))
   await waitFor(() => expect(done).toHaveBeenCalledOnce())
   expect(port.cancel).toHaveBeenCalledOnce()
   expect(port.cancelSync).not.toHaveBeenCalled()
   expect(port.prepareSync).not.toHaveBeenCalled()
+})
+
+it("waits for sign-in verification after the browser returns", async () => {
+  const { port } = fixture({ status: "returned", identity: null, destination: null })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  expect(await screen.findByText("Browser step complete. Checking your sign-in…")).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
+})
+
+it("requires sign-out and keeps the invitation warning through a new sign-in", async () => {
+  const { port, emit } = fixture({
+    invitationEnabled: true,
+    draft: { screen: "identity", folders: [] },
+  })
+  const signedOut: CloudSnapshot = {
+    ...emptyCloudSnapshot,
+    authEnabled: true,
+    status: "signed_out",
+    invitationResultUnconfirmed: true,
+  }
+  port.signOut = vi.fn(async () => signedOut)
+  port.begin = vi.fn(async () => ({ ...signedOut, status: "waiting" as const }))
+  port.cancel = vi.fn()
+  invitationRequest.mockResolvedValueOnce({
+    kind: "attempt",
+    id: "old-attempt",
+    join: true,
+    state: "ready",
+    workspace_id: null,
+  })
+  invitationRequest.mockImplementationOnce(async () => {
+    emit({ ...signedOut, status: "reauth_required", revocationPending: true })
+    return { kind: "reauth_required", uncertain: true }
+  })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+  fireEvent.click(await screen.findByRole("button", { name: "Join workspace" }))
+  const warning = /Check your Cloud workspaces before trying again/
+  expect(await screen.findByText(warning)).toBeVisible()
+  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
+  expect(screen.getByText("Sign out on this device before you sign in again.")).toBeVisible()
+  fireEvent.click(screen.getByRole("button", { name: "Sign out" }))
+  fireEvent.click(await screen.findByRole("button", { name: "Sign in with GitHub" }))
+  expect(await screen.findByRole("button", { name: "Cancel sign-in" })).toBeEnabled()
+  expect(screen.getByText(warning)).toBeVisible()
+  expect(port.signOut).toHaveBeenCalledOnce()
+  expect(port.begin).toHaveBeenCalledOnce()
+  expect(port.cancel).not.toHaveBeenCalled()
+
+  invitationRequest.mockClear()
+  invitationRequest.mockResolvedValueOnce({
+    kind: "list",
+    listing: { state: "checked", invitations: [] },
+  })
+  act(() =>
+    emit({
+      status: "signed_in",
+      identity: { id: "synthetic", login: "Example" },
+      invitationEnabled: true,
+    }),
+  )
+  expect(await screen.findByRole("heading", { name: "You’re signed in" })).toBeVisible()
+  expect(screen.getByText(warning)).toBeVisible()
+  await waitFor(() =>
+    expect(invitationRequest).toHaveBeenCalledExactlyOnceWith("synthetic", { action: "list" }),
+  )
 })
 
 it("offers explicit OpenCode database selection and stored-content consent without upload", async () => {
@@ -319,7 +394,7 @@ it("keeps one existing-style row and selection control per project group", () =>
   expect(screen.queryByText(/database|Claude source|OpenCode/i)).not.toBeInTheDocument()
   expect(screen.getByText("/Example/Studio")).toHaveAttribute("title", projectGroups[0]!.path)
   fireEvent.click(screen.getByRole("switch", { name: "Sync Studio: /Example/Studio" }))
-  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false)
+  expect(select).toHaveBeenCalledExactlyOnceWith("studio", false, undefined)
 })
 
 it("preserves an explicit group opt-out while new groups show selected without a write", () => {

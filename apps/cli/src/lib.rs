@@ -1,8 +1,14 @@
 pub mod checks;
 pub mod cli;
+#[cfg(feature = "cloud")]
+mod cloud;
+#[cfg(feature = "cloud")]
+mod cloud_identity;
 mod config;
 mod delivery;
 mod logging;
+pub mod search;
+mod sessions;
 
 use crate::cli::Command;
 
@@ -50,10 +56,12 @@ pub enum Response {
     Capabilities(Capabilities),
     Checks(checks::PendingChecks),
     Delivery(delivery::DeliveryResponse),
+    Sessions(sessions::SessionOutput),
 }
 
 impl Response {
-    pub async fn write_json<W: tokio::io::AsyncWrite + Unpin>(
+    /// Write the command response. Checks and capabilities always use JSON.
+    pub async fn write<W: tokio::io::AsyncWrite + Unpin>(
         self,
         writer: &mut W,
     ) -> Result<(), String> {
@@ -61,12 +69,7 @@ impl Response {
 
         match self {
             Self::Checks(pending) => pending.write_json(writer).await,
-            Self::Capabilities(response) => {
-                let mut output = serde_json::to_vec(&response).map_err(|e| e.to_string())?;
-                output.push(b'\n');
-                writer.write_all(&output).await.map_err(|e| e.to_string())?;
-                writer.flush().await.map_err(|e| e.to_string())
-            }
+            Self::Capabilities(response) => write_response(writer, &response).await,
             Self::Delivery(response) => {
                 let mut output = serde_json::to_vec(&response)
                     .map_err(|error| format!("could not serialize delivery response: {error}"))?;
@@ -80,8 +83,31 @@ impl Response {
                     .await
                     .map_err(|error| format!("could not flush delivery response: {error}"))
             }
+            Self::Sessions(response) => response.write(writer).await,
         }
     }
+}
+
+async fn write_response(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    response: &impl serde::Serialize,
+) -> Result<(), String> {
+    let mut output = serde_json::to_vec(response).map_err(|error| error.to_string())?;
+    output.push(b'\n');
+    write_output(writer, &output).await
+}
+
+async fn write_output(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    output: &[u8],
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    writer
+        .write_all(output)
+        .await
+        .map_err(|error| error.to_string())?;
+    writer.flush().await.map_err(|error| error.to_string())
 }
 
 pub async fn run(cli: cli::Cli) -> Result<Response, CliError> {
@@ -94,25 +120,35 @@ pub async fn run_with_tracing(cli: cli::Cli) -> Result<Response, CliError> {
 
 async fn run_command(cli: cli::Cli, tracing: bool) -> Result<Response, CliError> {
     let cli::Cli { config, command } = cli;
-    if matches!(command, Command::Capabilities { .. }) {
-        return Ok(Response::Capabilities(Capabilities {
-            version: env!("CARGO_PKG_VERSION"),
-            delivery_protocols: ["delivery-v1"],
-        }));
-    }
-    let Command::Checks {
-        session_id,
-        delivery_v1,
-        consumer,
-        ack,
-    } = command
-    else {
-        unreachable!()
+    let (session_id, delivery_v1, consumer, ack) = match command {
+        Command::Capabilities { .. } => {
+            return Ok(Response::Capabilities(Capabilities {
+                version: env!("CARGO_PKG_VERSION"),
+                delivery_protocols: ["delivery-v1"],
+            }));
+        }
+        Command::Search(args) => {
+            return sessions::search(args, load_config(config).await?)
+                .await
+                .map(Response::Sessions)
+                .map_err(CliError::runtime);
+        }
+        Command::Get(args) => {
+            validate_id(&args.session_id).map_err(CliError::usage)?;
+            return sessions::get(args, load_config(config).await?)
+                .await
+                .map(Response::Sessions)
+                .map_err(CliError::runtime);
+        }
+        Command::Checks {
+            session_id,
+            delivery_v1,
+            consumer,
+            ack,
+        } => (session_id, delivery_v1, consumer, ack),
     };
     validate_id(&session_id).map_err(CliError::usage)?;
-    let config = config::Config::load(config)
-        .await
-        .map_err(CliError::runtime)?;
+    let config = load_config(config).await?;
 
     if tracing {
         let tracing = config
@@ -143,6 +179,10 @@ async fn run_command(cli: cli::Cli, tracing: bool) -> Result<Response, CliError>
     );
 
     Ok(Response::Checks(response))
+}
+
+async fn load_config(path: Option<std::path::PathBuf>) -> Result<config::Config, CliError> {
+    config::Config::load(path).await.map_err(CliError::runtime)
 }
 
 fn validate_id(value: &str) -> Result<(), String> {

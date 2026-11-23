@@ -59,6 +59,33 @@ pub(crate) fn runtime_for_test(
         .map_err(|e| e.to_string())
 }
 
+/// Run on the CLI worker. Release skill writes hold the same lock as staging.
+fn reconcile(app: &tauri::AppHandle, startup: bool) -> Result<CliInstallState, String> {
+    let installation = installation(app)?;
+    #[cfg(target_os = "macos")]
+    {
+        use crate::local_tools::release_skill;
+        if release_skill::enabled(app) {
+            return Ok(match installation.reconcile_for_binding(startup) {
+                Ok((_lock, runtime)) => {
+                    release_skill::install(app, &runtime);
+                    CliInstallState {
+                        runtime: Some(runtime),
+                        diagnostic: None,
+                    }
+                }
+                Err(error) => installation.state(Some(error.to_string())),
+            });
+        }
+    }
+    let result = if startup {
+        installation.reconcile_at_startup()
+    } else {
+        installation.reconcile()
+    };
+    Ok(installation.state(result.err().map(|error| error.to_string())))
+}
+
 pub fn start(app: &tauri::AppHandle) {
     app.manage(Mutex::new(RuntimeDigestCache::default()));
     if !automatic_installation(
@@ -71,14 +98,10 @@ pub fn start(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let worker_app = app.clone();
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            let i = installation(&worker_app)?;
-            let diagnostic = i.reconcile_at_startup().err().map(|e| e.to_string());
-            Ok(i.state(diagnostic))
-        })
-        .await
-        .map_err(|e| e.to_string())
-        .and_then(|result| result);
+        let result = tauri::async_runtime::spawn_blocking(move || reconcile(&worker_app, true))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|result| result);
         let result = complete(result, healthy, |succeeded| {
             analytics::record_cli_operation(&app, CliOperation::Startup, succeeded)
         });
@@ -145,9 +168,7 @@ pub async fn test_cli_installation(app: tauri::AppHandle) -> Result<CliRuntime, 
 pub async fn repair_cli_installation(app: tauri::AppHandle) -> Result<CliInstallState, String> {
     let worker_app = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let i = installation(&worker_app)?;
-        let diagnostic = i.reconcile().err().map(|e| e.to_string());
-        let state = i.state(diagnostic);
+        let state = reconcile(&worker_app, false)?;
         let _ = worker_app.emit_to("settings", "cli-install:state", &state);
         crate::local_tools::request_setup(&worker_app);
         Ok(state)

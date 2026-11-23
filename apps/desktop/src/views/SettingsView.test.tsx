@@ -844,17 +844,29 @@ describe("SettingsView", () => {
     // read here as missing copy.
     const open = (name: string) => fireEvent.click(screen.getByRole("button", { name }))
 
-    // Both identifiers, and the concession that a 30-day id plus a timestamp
-    // on every event reveals something. All three claims share one row, so
-    // all three are asserted from it.
+    // Keep persistent identity and session timeout disclosures together.
     open("The two identifiers")
-    expect(screen.getByText(/replaced every 30 days/i)).toBeInTheDocument()
+    expect(screen.getByText(/kept across restarts and upgrades/i)).toBeInTheDocument()
+    expect(screen.getByText(/months or years/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        /switching analytics off deletes the id and anything still queued, so switching back on starts a new id/i,
+      ),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/background events do not extend that timeout/i),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(/a background-only session has no inactivity timeout/i),
+    ).toBeInTheDocument()
     expect(screen.getByText(/roughly when analytics events were captured/i)).toBeInTheDocument()
     expect(
       screen.getByText(/each event waiting to be sent keeps a copy on disk/i),
     ).toBeInTheDocument()
-    expect(screen.getByText(/after 30 minutes without an analytics event/i)).toBeInTheDocument()
-    expect(screen.getByText(/when the installation id rotates/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/after 30 minutes without a user-oriented analytics event/i),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/when a new installation id is created/i)).toBeInTheDocument()
     expect(screen.getByText(/does not measure a visit or time spent/i)).toBeInTheDocument()
     open("How the starting default works")
     expect(

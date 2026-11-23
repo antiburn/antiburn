@@ -444,7 +444,7 @@ describe("SessionsStepSettings Cloud preference", () => {
     render(<SessionsStepSettings />)
     const learnMore = await screen.findByRole("button", { name: "Learn more" })
     await waitFor(() => expect(learnMore).toBeEnabled())
-    const toggle = screen.getByRole("switch", { name: "Upload sessions" })
+    const toggle = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
     expect(toggle).toHaveAttribute("aria-disabled", "true")
     expect(toggle).not.toBeChecked()
     expect(
@@ -474,7 +474,7 @@ describe("SessionsStepSettings Cloud preference", () => {
       cloud_sign_out: { ...emptyCloudSnapshot, authEnabled: true, status: "signed_out" },
     })
     render(<SessionsStepSettings />)
-    const signIn = await screen.findByRole("button", { name: "Sign in" })
+    const signIn = await screen.findByRole("button", { name: "Sign in with GitHub" })
     expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
     expect(screen.getByText("Not signed in")).toBeVisible()
     expect(screen.queryByText("You’re signed out on this device.")).not.toBeInTheDocument()

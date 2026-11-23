@@ -71,14 +71,13 @@ impl ProjectEvidence {
     /// Return the full streamed Claude transcript digest, when available.
     ///
     /// This local cache value is not a capture fingerprint, authorization, or a
-    /// freshness check. OpenCode returns `None`: this lookup never reads or hashes
-    /// the whole database. The host owns cache keys, invalidation, and eviction.
+    /// freshness check. Other sources return `None` because their lookups do
+    /// not hash the full source. The host owns cache keys and eviction.
     pub fn source_digest(&self) -> Option<&str> {
         self.source_digest.as_deref()
     }
 
-    /// Build evidence from the directory recorded by the Unix OpenCode reader.
-    #[cfg(unix)]
+    /// Build evidence from a provider's proved recorded directory.
     pub(crate) fn recorded(path: &str) -> Self {
         Self {
             paths: if valid_project_path(path) {
@@ -91,8 +90,7 @@ impl ProjectEvidence {
         }
     }
 
-    /// Keep a completed OpenCode lookup without an owned directory unapproved.
-    #[cfg(unix)]
+    /// Keep a completed header or row lookup without an owned directory unapproved.
     pub(crate) fn unknown() -> Self {
         Self {
             paths: Vec::new(),
@@ -114,6 +112,7 @@ impl ProjectEvidence {
 #[derive(Clone, Debug)]
 pub struct ProjectSelection {
     folders: Vec<PathBuf>,
+    frozen_paths: Option<Vec<PathBuf>>,
 }
 
 impl ProjectSelection {
@@ -128,7 +127,10 @@ impl ProjectSelection {
         for folder in &folders {
             verify_project_directory(folder)?;
         }
-        Ok(Self { folders })
+        Ok(Self {
+            folders,
+            frozen_paths: None,
+        })
     }
 
     /// Match any owned recorded CWD against selected folder trees.
@@ -136,7 +138,12 @@ impl ProjectSelection {
     /// Unknown or deleted CWDs do not match. Inaccessible or aliased paths return
     /// an error, not permission. Directory checks read no file content.
     pub fn matches(&self, evidence: &ProjectEvidence) -> Result<bool> {
-        if !evidence.complete {
+        if !evidence.complete
+            || self
+                .frozen_paths
+                .as_ref()
+                .is_some_and(|paths| paths != &evidence.paths)
+        {
             return Ok(false);
         }
         for path in &evidence.paths {
@@ -168,14 +175,41 @@ impl ProjectSelection {
             return Ok(None);
         }
         let evidence = candidate.project_evidence_with_limits(limits)?;
-        if !self.matches(&evidence)? {
+        self.admit_verified(candidate, &evidence)
+    }
+
+    /// Freeze every recorded CWD for workspace routing, including unselected paths.
+    /// Capture refuses changed evidence, so the host can use these paths on resume
+    /// without reopening the original source.
+    pub fn admit_for_routing(
+        &self,
+        candidate: &Candidate,
+        limits: &Limits,
+    ) -> Result<Option<(Candidate, Vec<PathBuf>)>> {
+        if self.folders.is_empty() {
+            return Ok(None);
+        }
+        let evidence = candidate.project_evidence_with_limits(limits)?;
+        let mut selection = self.clone();
+        selection.frozen_paths = Some(evidence.paths.clone());
+        Ok(selection
+            .admit_verified(candidate, &evidence)?
+            .map(|candidate| (candidate, evidence.paths)))
+    }
+
+    fn admit_verified(
+        &self,
+        candidate: &Candidate,
+        evidence: &ProjectEvidence,
+    ) -> Result<Option<Candidate>> {
+        if !self.matches(evidence)? {
             return Ok(None);
         }
         let mut candidate = candidate.clone();
         candidate.project_paths = Vec::new();
-        for path in evidence.paths {
-            if self.matches_path(&path)? {
-                candidate.project_paths.push(path);
+        for path in &evidence.paths {
+            if self.matches_path(path)? {
+                candidate.project_paths.push(path.clone());
             }
         }
         candidate.project_selection = Some(self.clone());
@@ -229,7 +263,8 @@ impl Candidate {
     /// its admitted handle, retaining only bounded records and CWD paths. These
     /// reads can include session content. Only source-owned top-level `cwd` proves
     /// a path. Encoded directory names, tool paths, and lineage grant nothing.
-    /// OpenCode reads only bounded schema and this session's `directory` cell.
+    /// Codex and Pi use the bounded first header. OpenCode reads only
+    /// bounded schema and this session's `directory` cell.
     ///
     /// This synchronous scan does not reserve, spool, upload, or grant ongoing
     /// upload consent. Run it on a bounded blocking worker. The host owns bounded
@@ -248,6 +283,12 @@ impl Candidate {
         limits.validate()?;
         match &self.source {
             CandidateSource::Claude(source) => scan_claude(source, limits),
+            CandidateSource::Codex(source) => {
+                source.project_evidence(limits, crate::codex::project_evidence)
+            }
+            CandidateSource::Pi(source) => {
+                source.project_evidence(limits, crate::pi::project_evidence)
+            }
             #[cfg(unix)]
             CandidateSource::OpenCode(source) => source.project_evidence(limits),
         }

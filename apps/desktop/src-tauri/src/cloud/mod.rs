@@ -6,10 +6,14 @@
 
 mod auth;
 mod capture;
+#[cfg(unix)]
+mod device_broker;
 mod engine;
+mod file_sources;
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod http_tests;
+pub(crate) mod invitations;
 mod loopback;
 pub(crate) mod projects;
 mod state;
@@ -18,6 +22,7 @@ pub(crate) mod sync;
 mod tests;
 mod upload;
 mod work;
+pub(crate) mod workspace_grants;
 
 use crate::store::cloud_capture::SourceKind;
 use auth::{Config, Failure, HttpTransport, Identity, KeyringVault, Workspace};
@@ -35,7 +40,7 @@ use tauri_plugin_opener::OpenerExt;
 use work::{BlockingWork, Priority};
 
 /// Closed renderer-safe authentication outcomes, not permission to capture content.
-#[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthStatus {
     #[default]
@@ -115,11 +120,13 @@ pub struct DestinationBinding {
 }
 
 impl DestinationBinding {
+    fn matches_grant(&self, session: &auth::Session) -> bool {
+        self.account_id == session.user.id && self.destination_id == session.workspace.id
+    }
+
     /// Reject a changed account, destination, or explicit team without fallback.
     fn matches(&self, session: &auth::Session) -> bool {
-        self.account_id == session.user.id
-            && self.destination_id == session.workspace.id
-            && session.workspace.kind == auth::WorkspaceKind::Personal
+        self.matches_grant(session) && session.workspace.kind == auth::WorkspaceKind::Personal
     }
 }
 
@@ -134,6 +141,8 @@ fn existing_folder_choices() -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     auth_enabled: bool,
+    invitation_enabled: bool,
+    invitation_result_unconfirmed: bool,
     capture_enabled: bool,
     sync_enabled: bool,
     status: AuthStatus,
@@ -156,11 +165,13 @@ pub(crate) struct Controller {
     blocking: BlockingWork,
     setup_ready: AtomicBool,
     engine: Mutex<Engine>,
+    workspace_cleanup_failed: AtomicBool,
     capture: Mutex<capture::Host>,
     sync: sync::Scheduler,
     project_cache: Mutex<projects::Cache>,
     attempt_generation: AtomicU64,
     account_generation: AtomicU64,
+    invitations: Mutex<Option<invitations::Pending>>,
     recorded_status: Mutex<AuthStatus>,
 }
 
@@ -235,12 +246,27 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     let sync_enabled = session
         .filter(|_| setup_error.is_none())
         .is_some_and(|session| {
-            match app.state::<crate::store::Store>().cloud_sync_policy(
-                &session.user.id,
-                &session.workspace.id,
-                &session.resource,
-            ) {
-                Ok(policy) => policy.is_some_and(|policy| !policy.paused),
+            let store = app.state::<crate::store::Store>();
+            let result = (|| {
+                if !app
+                    .state::<Controller>()
+                    .sync
+                    .device_upload_enabled(&store)?
+                {
+                    return Ok(false);
+                }
+                store
+                    .cloud_sync_policy_for_origins(
+                        &session.user.id,
+                        &session.workspace.id,
+                        &session.resource,
+                        &session.iss,
+                    )
+                    .map(|policy| policy.is_some_and(|policy| !policy.paused))
+                    .map_err(|_| "Could not read Cloud sync consent.".to_owned())
+            })();
+            match result {
+                Ok(enabled) => enabled,
                 Err(_) => {
                     setup_error = Some("Could not read Cloud sync consent.".into());
                     false
@@ -252,6 +278,21 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
     let current = current();
     let session = session.filter(|_| current && engine.session().is_some());
+    let team_cleanup_unconfirmed = app
+        .state::<Controller>()
+        .setup_ready
+        .load(Ordering::Acquire)
+        && engine.config.as_ref().is_some_and(|config| {
+            app.state::<crate::store::Store>()
+                .cloud_workspace_slots(&config.issuer, &config.resource)
+                .map_or(true, |slots| {
+                    slots.iter().any(|(account, workspace)| {
+                        engine
+                            .workspace_cleanup_unconfirmed(account, workspace)
+                            .unwrap_or(true)
+                    })
+                })
+        });
     let pending_sync = pending_sync.filter(|_| current && session.is_some());
     if !current || session.is_none() {
         draft = Draft::default();
@@ -259,6 +300,8 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
     }
     Snapshot {
         auth_enabled: engine.config.is_some(),
+        invitation_enabled: session.is_some() && engine.invitations_enabled(),
+        invitation_result_unconfirmed: engine.invitation_result_unconfirmed,
         capture_enabled: cfg!(unix) && session.is_some() && setup_error.is_none(),
         sync_enabled: sync_enabled && current && session.is_some(),
         status: if !current {
@@ -279,7 +322,12 @@ fn snapshot(app: &tauri::AppHandle, engine: &Engine) -> Snapshot {
         revocation_pending: matches!(engine.cleanup, state::Cleanup::Revoke { .. }),
         local_cleanup_pending: matches!(engine.cleanup, state::Cleanup::DeleteCredential { .. }),
         local_reset_available: engine.local_reset_available,
-        remote_revocation_unconfirmed: engine.cleanup.prior_unconfirmed(),
+        remote_revocation_unconfirmed: team_cleanup_unconfirmed
+            || app
+                .state::<Controller>()
+                .workspace_cleanup_failed
+                .load(Ordering::Acquire)
+            || engine.remote_logout_unconfirmed(),
         setup_error,
         pending_sync,
         draft,
@@ -338,27 +386,54 @@ pub fn initialize(
     app.add_capability(include_str!("../../cloud-capabilities/account.json"))?;
     #[cfg(debug_assertions)]
     app.add_capability(include_str!("../../cloud-capabilities/dev.json"))?;
+    let logout_app = app.clone();
     app.manage(Controller {
         blocking: BlockingWork::default(),
         setup_ready: AtomicBool::new(false),
         capture: Mutex::new(capture::Host::new(directory)),
         sync: sync::Scheduler::default(),
         project_cache: Mutex::new(projects::Cache::default()),
-        engine: Mutex::new(Engine::new(
-            Config::from_build(),
-            Box::new(KeyringVault::new(
-                app.config().identifier.clone(),
-                directory,
-            )),
-            Box::new(HttpTransport),
-            state::StateStore::new(directory),
-        )),
+        engine: Mutex::new(
+            Engine::new(
+                Config::from_build(),
+                Box::new(KeyringVault::new(
+                    app.config().identifier.clone(),
+                    directory,
+                )),
+                Box::new(HttpTransport),
+                state::StateStore::new(directory),
+            )
+            .with_remote_logout_notification(move || {
+                notify_remote_logout_failure(logout_app.clone())
+            }),
+        ),
+        workspace_cleanup_failed: AtomicBool::new(false),
         attempt_generation: AtomicU64::new(0),
         account_generation: AtomicU64::new(0),
+        invitations: Mutex::new(None),
         recorded_status: Mutex::new(AuthStatus::Idle),
     });
+    #[cfg(unix)]
+    device_broker::start(app.clone(), directory.to_path_buf());
     sync::start(app.clone());
     Ok(())
+}
+
+/// Publish the durable warning with whichever account is current, without refreshing it.
+fn notify_remote_logout_failure(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let work = app.state::<Controller>().blocking.clone();
+        let _ = work
+            .run(Priority::Cleanup, move || {
+                let controller = app.state::<Controller>();
+                let engine = controller
+                    .engine
+                    .lock()
+                    .map_err(|_| "Cloud is unavailable.")?;
+                Ok(emit_snapshot(&app, snapshot(&app, &engine)))
+            })
+            .await;
+    });
 }
 
 /// Refresh native authority and notify all account surfaces, including when a
@@ -381,7 +456,37 @@ pub async fn cloud_status(app: tauri::AppHandle) -> Result<Snapshot, String> {
         }) {
             engine.status = error.into();
         }
+        engine.check_invitation_support();
         Ok(emit_snapshot(&app, snapshot(&app, &engine)))
+    })
+    .await
+}
+
+/// Read current workspace choices without creating a grant or changing consent.
+/// A missing service route fails closed.
+#[tauri::command]
+pub async fn cloud_workspaces(
+    app: tauri::AppHandle,
+    binding: DestinationBinding,
+) -> Result<Vec<Workspace>, String> {
+    let controller = app.state::<Controller>();
+    let generation = controller.account_generation.load(Ordering::Acquire);
+    let work = controller.blocking.clone();
+    work.run(Priority::Normal, move || {
+        let controller = app.state::<Controller>();
+        let current = || controller.account_generation.load(Ordering::Acquire) == generation;
+        let mut engine = controller
+            .engine
+            .lock()
+            .map_err(|_| "Cloud is unavailable.")?;
+        if !current() || engine.generation != generation {
+            return Err("Cloud account changed.".into());
+        }
+        let result = engine.eligible_workspaces(&binding, &current);
+        emit_snapshot(&app, snapshot(&app, &engine));
+        result
+            .map(|items| items.into_iter().map(|item| item.workspace).collect())
+            .map_err(|_| "Could not verify Cloud workspaces.".into())
     })
     .await
 }
@@ -438,14 +543,34 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                 return Ok(publish(&app, &engine));
             }
         };
-        if let Err(error) = app.opener().open_url(url, None::<&str>) {
-            if browser_launch_did_not_start(&error) {
-                engine.abort_browser_launch(&attempt)
-            } else {
-                engine.cancel(generation)
-            }
-            .map_err(|_| "Could not cancel Cloud sign-in.")?;
-            engine.status = AuthStatus::BrowserFailed;
+        // A replacement sign-in cannot inherit a pending invitation or queued
+        // account work from the previous connection, even for the same user.
+        let next_account_generation = account_generation + 1;
+        if controller
+            .account_generation
+            .compare_exchange(
+                account_generation,
+                next_account_generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Ok(snapshot(&app, &engine));
+        }
+        let account_generation = next_account_generation;
+        engine.generation = account_generation;
+        if !launch_account_browser(
+            &mut engine,
+            &attempt,
+            || {
+                controller.attempt_generation.load(Ordering::Acquire) == generation
+                    && controller.account_generation.load(Ordering::Acquire) == account_generation
+            },
+            || app.opener().open_url(url, None::<&str>),
+        )
+        .map_err(|_| "Could not cancel Cloud sign-in.")?
+        {
             return Ok(publish(&app, &engine));
         }
         engine.status = AuthStatus::Waiting;
@@ -479,9 +604,16 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
                         return Ok(());
                     }
                     if let Some(callback) = callback {
-                        if let Err(error) = engine.callback(&attempt, callback, now(), current) {
-                            engine.status = error.into();
-                        }
+                        complete_browser_return(
+                            &mut engine,
+                            &attempt,
+                            callback,
+                            now(),
+                            current,
+                            |engine| {
+                                publish(&callback_app, engine);
+                            },
+                        );
                     } else {
                         if let Err(error) = engine.cancel(generation) {
                             engine.status = error.into();
@@ -508,6 +640,52 @@ pub async fn cloud_begin(app: tauri::AppHandle) -> Result<Snapshot, String> {
     .await
 }
 
+/// Report a validated browser return before the token exchange can block.
+fn complete_browser_return(
+    engine: &mut Engine,
+    attempt: &auth::Attempt,
+    callback: auth::Callback,
+    returned_at: i64,
+    current: impl Fn() -> bool,
+    notify_returned: impl FnOnce(&Engine),
+) {
+    if !current() {
+        return;
+    }
+    if matches!(callback, auth::Callback::Code(_)) {
+        engine.status = AuthStatus::Returned;
+        notify_returned(engine);
+    }
+    if let Err(error) = engine.callback(attempt, callback, returned_at, current) {
+        engine.status = error.into();
+    }
+}
+
+/// A capability probe can finish after cancel or sign-out starts. If the
+/// opener has not run, close this pending attempt without a revocation warning.
+fn launch_account_browser(
+    engine: &mut Engine,
+    attempt: &auth::Attempt,
+    current: impl FnOnce() -> bool,
+    open: impl FnOnce() -> Result<(), tauri_plugin_opener::Error>,
+) -> Result<bool, Failure> {
+    if !current() {
+        engine.abort_browser_launch(attempt)?;
+        engine.status = AuthStatus::Cancelled;
+        return Ok(false);
+    }
+    if let Err(error) = open() {
+        if browser_launch_did_not_start(&error) {
+            engine.abort_browser_launch(attempt)?;
+        } else {
+            engine.cancel(attempt.generation)?;
+        }
+        engine.status = AuthStatus::BrowserFailed;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 /// A native missing-launcher error proves no handoff. Launcher exit failures and
 /// other errors can follow browser launch, so they must retain remote uncertainty.
 fn browser_launch_did_not_start(error: &tauri_plugin_opener::Error) -> bool {
@@ -526,8 +704,8 @@ pub fn invalidate_pending(app: &tauri::AppHandle) {
     }
 }
 
-/// Cancel a browser attempt with cleanup priority, retaining uncertain approval
-/// for explicit recovery. Established auth and saved source requests survive.
+/// Cancel a browser attempt with cleanup priority. A lost approval leaves a
+/// warning but does not block reconnect. Established auth and requests survive.
 #[tauri::command]
 pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
     let generation = app
@@ -554,7 +732,8 @@ pub async fn cloud_cancel(app: tauri::AppHandle) -> Result<Snapshot, String> {
 }
 
 /// Fence account/browser work before waiting for cleanup admission. Desktop state
-/// closes access before revocation and secure deletion; source bytes stay intact.
+/// closes access and removes saved local proof without waiting for Cloud.
+/// Source bytes stay intact.
 #[tauri::command]
 pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
     invalidate_pending(&app);
@@ -576,9 +755,19 @@ pub async fn cloud_sign_out(app: tauri::AppHandle) -> Result<Snapshot, String> {
         ) {
             return Ok(snapshot(&app, &engine));
         }
-        if let Err(error) = engine.sign_out() {
-            engine.status = error.into();
+        match engine.sign_out() {
+            Ok(Some(proof)) => {
+                engine.try_remote_logout(proof);
+            }
+            Ok(None) => {}
+            Err(error) => engine.status = error.into(),
         }
+        let store = app.state::<crate::store::Store>();
+        let workspace_cleanup_failed = ensure_cloud_setup(&controller.setup_ready, &store).is_err()
+            || workspace_grants::close(&store, &app.config().identifier, &engine).is_err();
+        controller
+            .workspace_cleanup_failed
+            .store(workspace_cleanup_failed, Ordering::Release);
         engine.generation = generation;
         Ok(publish(&app, &engine))
     })
@@ -659,7 +848,12 @@ pub async fn cloud_save_draft(
         }
         if capture::selected_roots(&previous.folders) != capture::selected_roots(&value.folders)
             && let Some(policy) = store
-                .cloud_sync_policy(&session.user.id, &session.workspace.id, &session.resource)
+                .cloud_sync_policy_for_origins(
+                    &session.user.id,
+                    &session.workspace.id,
+                    &session.resource,
+                    &session.iss,
+                )
                 .map_err(|_| "Could not read Cloud sync consent.")?
         {
             controller.sync.generation.fetch_add(1, Ordering::AcqRel);

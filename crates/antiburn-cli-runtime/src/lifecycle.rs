@@ -395,6 +395,8 @@ fn atomic_bytes(
             super::macos::copy_attributes(source, &file)?;
         }
         file.sync_all()?;
+        #[cfg(target_os = "macos")]
+        validate_owned_file(&temp)?;
         #[cfg(windows)]
         super::windows::check_owned(&temp, &file.metadata()?)?;
         // Windows replacement opens the staging file without sharing.
@@ -411,10 +413,15 @@ fn atomic_bytes(
             fs::rename(&temp, path)
                 .context("CLI replacement deferred; destination may be locked")?;
         } else {
-            fs::hard_link(&temp, path).context(
-                "CLI destination appeared during publication or does not support native links",
-            )?;
-            fs::remove_file(&temp)?;
+            #[cfg(target_os = "macos")]
+            super::macos::rename_exclusive(&temp, path)?;
+            #[cfg(not(target_os = "macos"))]
+            {
+                fs::hard_link(&temp, path).context(
+                    "CLI destination appeared during publication or does not support native links",
+                )?;
+                fs::remove_file(&temp)?;
+            }
         }
         sync_dir(parent)?;
         Ok(())
@@ -431,14 +438,14 @@ fn sync_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn retry_startup(
-    mut operation: impl FnMut() -> Result<()>,
+fn retry_startup<T>(
+    mut operation: impl FnMut() -> Result<T>,
     timeout: std::time::Duration,
-) -> Result<()> {
+) -> Result<T> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match operation() {
-            Ok(()) => return Ok(()),
+            Ok(value) => return Ok(value),
             Err(error) => {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 let busy = matches!(
@@ -659,6 +666,25 @@ impl Installation {
 
     pub fn reconcile(&self) -> Result<()> {
         let _lock = self.lock()?;
+        self.reconcile_locked()
+    }
+
+    /// Stage and validate the runtime under one lock. Keep the returned lock
+    /// alive until any files that bind this runtime have been published.
+    pub fn reconcile_for_binding(&self, startup: bool) -> Result<(File, CliRuntime)> {
+        let stage = || {
+            let lock = self.lock()?;
+            self.reconcile_locked()?;
+            Ok((lock, self.runtime(&self.receipt()?)?))
+        };
+        if startup {
+            retry_startup(stage, std::time::Duration::from_secs(5))
+        } else {
+            stage()
+        }
+    }
+
+    fn reconcile_locked(&self) -> Result<()> {
         let mut r = self.receipt()?;
         let obsolete = r.previous.clone();
         let m: Manifest = serde_json::from_slice(
@@ -785,6 +811,29 @@ impl Installation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn first_receipt_publication_keeps_one_name_and_preserves_collisions() {
+        use std::os::unix::fs::MetadataExt;
+
+        let f = Fixture::new();
+        f.i.reconcile_at_startup().unwrap();
+        let path = f.i.root.join("receipt.json");
+        let bytes = fs::read(&path).unwrap();
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.nlink(), 1);
+        assert!(atomic_bytes(&path, b"collision", false, None, false).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&path).unwrap().ino(), metadata.ino());
+        assert!(fs::read_dir(&f.i.root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".cli-stage-")
+        }));
+    }
 
     struct Fixture {
         _temp: tempfile::TempDir,

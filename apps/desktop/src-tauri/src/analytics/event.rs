@@ -384,12 +384,11 @@ pub struct Event {
     /// Per-event UUID. The collector's deduplication key, which is what makes
     /// re-delivering a batch after a failed flush safe.
     pub message_id: String,
-    /// The rotating installation identifier. Random, not derived from any
-    /// machine fact, and replaced every [`super::IDENTITY_LIFETIME_DAYS`].
+    /// The persistent random installation identifier, with no scheduled expiry.
     ///
-    /// The contract's own client keeps this stable and shares it with device
-    /// telemetry so rows join across surfaces. antiburn rotates it instead to
-    /// prevent a long-term history from joining across rotation periods.
+    /// This identifier does not use machine facts. It groups events from one
+    /// installation across restarts and upgrades. Opt-out removes the local
+    /// identifier; re-enable creates a fresh identifier.
     pub anonymous_id: String,
     /// The run identifier the contract requires on every track call.
     ///
@@ -400,8 +399,10 @@ pub struct Event {
     /// when the process exits, and is replaced after
     /// [`super::SESSION_TIMEOUT`] of inactivity. The generator cannot continue
     /// into another run. It rolls after 30 minutes without a user-oriented event;
-    /// background telemetry does not refresh that timeout. Queued event payloads
-    /// include the captured value until delivery or withdrawal. The rotating
+    /// background telemetry does not refresh that timeout. Background-only
+    /// sessions have no inactivity timeout. The first user-oriented event starts
+    /// a new session. Queued event payloads
+    /// include the captured value until delivery or withdrawal. The persistent
     /// [`Event::anonymous_id`] remains the longest-lived generator state here.
     pub session_id: String,
     /// Event name, in antiburn's own namespace.

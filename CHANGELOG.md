@@ -26,6 +26,24 @@ CI changes, and documentation that no user acts on stay out — see
   cleanup removes previously synced SSH sessions and their local cached copies.
   Local and WSL sessions, preferences, and remote originals are unchanged.
 
+## [0.11.2] - 2026-11-19
+
+### Changed
+
+- Analytics installation IDs no longer change every 30 days. Your current ID
+  and queued events are kept on upgrade, so analytics can group activity from
+  one installation over longer periods. Turning analytics off still deletes
+  the local ID and unsent events; turning it back on starts a new ID.
+
+### Fixed
+
+- On Linux, onboarding examples load instead of showing “The example could not
+  load. You can continue.”
+- Reclaim unused local database space and keep its write-ahead log from
+  growing indefinitely.
+- Decode numeric model answers and saved savings correctly when precise JSON
+  number handling is enabled.
+
 ## [0.11.1] - 2026-11-16
 
 ### Changed

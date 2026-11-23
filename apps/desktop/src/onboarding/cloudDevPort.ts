@@ -108,6 +108,7 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
             },
           ],
         }))
+  let devicePreference: boolean | undefined
   let ongoing: CloudOngoingStatus = {
     storageKnown: completion,
     status: completion ? "ready" : "consent_required",
@@ -115,6 +116,7 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
     destinationId: "cloud-dev-personal",
     consentVersion: completion ? "desktop-project-sync-v1" : null,
     policyRevision: "preview-policy",
+    deviceUploadEnabled: completion,
     paused: false,
     selectedSources: completion
       ? groups.flatMap((group) =>
@@ -201,20 +203,22 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
       },
       enable: async (consent) => {
         clear()
+        const enabled = devicePreference ?? true
         ongoing = {
           ...ongoing,
           storageKnown: true,
-          status: "ready",
+          status: enabled ? "ready" : "paused",
+          deviceUploadEnabled: enabled,
           consentVersion: consent.version,
           selectedSources: consent.selectedSources,
           projects: consent.projects,
           projectChoices: consent.projectChoices,
-          paused: false,
+          paused: !enabled,
         }
-        value = { ...value, syncEnabled: true }
+        value = { ...value, syncEnabled: enabled }
         publish()
         publishSync()
-        ongoingProgress()
+        if (enabled) ongoingProgress()
         return ongoing
       },
       setProject: async ({ groupId, selected, projects }) => {
@@ -228,16 +232,23 @@ export function createCloudDevPort(scenario: CloudDevScenario): CloudPort {
         publishSync()
         return ongoing
       },
-      pause: async () => {
+      setEnabled: async (enabled) => {
         clear()
-        ongoing = { ...ongoing, status: "paused", paused: true }
-        value = { ...value, syncEnabled: false }
+        devicePreference = enabled
+        ongoing = {
+          ...ongoing,
+          deviceUploadEnabled: enabled,
+          status: !ongoing.consentVersion ? "consent_required" : enabled ? "ready" : "paused",
+          paused: !!ongoing.consentVersion && !enabled,
+        }
+        value = { ...value, syncEnabled: enabled && !!ongoing.consentVersion }
         publish()
         publishSync()
+        if (value.syncEnabled) ongoingProgress()
         return ongoing
       },
       retry: async () => {
-        if (!ongoing.consentVersion) throw new Error("Confirm Cloud sync first.")
+        if (!value.syncEnabled) throw new Error("Enable uploads before retrying.")
         ongoing = { ...ongoing, status: "ready", paused: false }
         value = { ...value, syncEnabled: true }
         publish()

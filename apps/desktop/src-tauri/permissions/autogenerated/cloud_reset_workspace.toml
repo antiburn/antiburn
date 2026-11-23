@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cloud-reset-workspace"
+description = "Enables the cloud_reset_workspace command without any pre-configured scope."
+commands.allow = ["cloud_reset_workspace"]
+
+[[permission]]
+identifier = "deny-cloud-reset-workspace"
+description = "Denies the cloud_reset_workspace command without any pre-configured scope."
+commands.deny = ["cloud_reset_workspace"]

@@ -82,7 +82,8 @@ pub struct Record {
 /// The owner lock is not in-process serialization; the controller supplies that.
 pub struct StateStore {
     directory: PathBuf,
-    owner: Mutex<Option<Arc<File>>>,
+    filename: String,
+    owner: Arc<Mutex<Option<Arc<File>>>>,
 }
 
 impl StateStore {
@@ -90,8 +91,28 @@ impl StateStore {
     pub fn new(directory: &Path) -> Self {
         Self {
             directory: directory.to_owned(),
-            owner: Mutex::new(None),
+            filename: "cloud-auth-state-v2".into(),
+            owner: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Give one workspace its own lifecycle file under the same process owner lock.
+    pub(super) fn workspace(&self, namespace: &str) -> Self {
+        Self {
+            directory: self.directory.clone(),
+            filename: format!("cloud-auth-state-v2-{namespace}"),
+            owner: self.owner.clone(),
+        }
+    }
+
+    /// Derive a keyring namespace without opening another directory.
+    pub(super) fn workspace_vault_namespace(&self) -> PathBuf {
+        self.directory.join(&self.filename)
+    }
+
+    /// Personal and old Team slots share one display-only warning file.
+    pub(super) fn remote_logout_warning_path(&self) -> PathBuf {
+        self.directory.join("cloud-remote-logout-unconfirmed")
     }
 
     /// Acquire lifetime process ownership once. Call only in serialized blocking
@@ -111,6 +132,7 @@ impl StateStore {
         }
         Ok(Guard {
             directory: self.directory.clone(),
+            filename: self.filename.clone(),
             _owner: owner.as_ref().ok_or(Failure::Unavailable)?.clone(),
         })
     }
@@ -120,6 +142,7 @@ impl StateStore {
 /// Callers still need controller serialization and the blocking-work permit.
 pub struct Guard {
     directory: PathBuf,
+    filename: String,
     _owner: Arc<File>,
 }
 
@@ -164,12 +187,30 @@ fn sync_directory(directory: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Record a failure without holding the owner lock or changing credential or epoch state.
+pub(super) fn record_remote_logout_failure(path: &Path) -> Result<(), Failure> {
+    match private_options().write(true).create_new(true).open(path) {
+        Ok(file) => file.sync_all().map_err(|_| Failure::CredentialFailed)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(Failure::CredentialFailed),
+    }
+    sync_directory(path.parent().ok_or(Failure::CredentialFailed)?)
+}
+
+/// Only the marker's presence matters. The file does not store proof.
+pub(super) fn remote_logout_unconfirmed(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 impl Guard {
     /// Read bounded, credential-free state and reject invalid cleanup/phase combinations.
     pub fn read(&mut self) -> Result<Record, Failure> {
         let file = match private_options()
             .read(true)
-            .open(self.directory.join("cloud-auth-state-v2"))
+            .open(self.directory.join(&self.filename))
         {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -213,7 +254,7 @@ impl Guard {
             file.write_all(&bytes)
                 .and_then(|()| file.sync_all())
                 .map_err(|_| Failure::CredentialFailed)?;
-            fs::rename(&temporary, self.directory.join("cloud-auth-state-v2"))
+            fs::rename(&temporary, self.directory.join(&self.filename))
                 .map_err(|_| Failure::CredentialFailed)?;
             sync_directory(&self.directory)
         })();

@@ -2,7 +2,7 @@
 
 Desktop distribution builds package the native `antiburn` CLI target under the private runtime filename `antiburn-cli` and prepare its durable per-user runtime automatically. See [installation, ownership and acceptance](../../docs/cli-installation.md). Run `antiburn capabilities --json` without opening any database. The desktop launcher remains separately packaged.
 
-The CLI gives agent harnesses a small JSON interface for Antiburn check updates.
+The CLI gives agent harnesses a JSON interface for Antiburn check updates and local session search.
 
 **Current status:** `antiburn checks <session_id>` reads Antiburn's local SQLite database in read-only mode, derives six evidence-based checks with `antiburn-local`, synthesizes a bounded priced-session outlier from cached analysis, and returns only new or changed problematic findings. It omits raw evidence from stdout and tracks per-session changes in a separate local state file.
 
@@ -79,7 +79,7 @@ The optional JSON config lives at `dirs::config_dir()/antiburn/cli.json`. Pass `
 
 `data_root` is the directory before the app identifier. The identifier and database filename must each be one path component. If `pricing_snapshot_path` is absent, the CLI looks for `model-pricing.json` beside the selected database. The `price_outlier` values override the cohort and threshold defaults. The CLI creates its state file when it reserves delivery after a successful lookup. It does not create config, database, or pricing files. File tracing may create its diagnostic directory under the platform data root. Unknown config fields are errors. On macOS, the default platform data directory is `~/Library/Application Support`. On Linux, it is `$XDG_DATA_HOME` or `~/.local/share`. On Windows, it is the roaming application-data directory.
 
-The CLI initializes a JSON Lines tracing subscriber during startup. It appends structured events to `dirs::data_local_dir()/antiburn/cli/calls.log`, outside immutable runtime generations. Set `log_file` in `cli.json` to override this destination. New log directories/files use owner-only permissions on Unix; existing files are appended without changing their permissions. A successful lookup records the explicit session ID, evidence status, and number of new findings returned. It does not log evidence JSON, check results, prompts, or transcripts. If file tracing is unavailable, the CLI warns on stderr and continues. Do not commit this generated log.
+The `checks` command initializes a JSON Lines tracing subscriber during startup. It appends structured events to `dirs::data_local_dir()/antiburn/cli/calls.log`, outside immutable runtime generations. Set `log_file` in `cli.json` to override this destination. New log directories/files use owner-only permissions on Unix; existing files are appended without changing their permissions. A successful lookup records the explicit session ID, evidence status, and number of new findings returned. It does not log evidence JSON, check results, prompts, or transcripts. If file tracing is unavailable, the CLI warns on stderr and continues. Do not commit this generated log.
 
 Run the debug binary by its full path from this crate:
 
@@ -90,6 +90,125 @@ cargo build
 
 Checks write their own local diagnostic log. Capabilities does not initialize file
 logging or load config. Source builds do not install a shell command automatically.
+
+## Search and get local sessions
+
+```sh
+antiburn search "example migration" --limit 10
+antiburn search "example migration" --json
+antiburn get example-session-id --agent pi --environment native --json
+```
+
+`search` and `get` show a text summary by default. Pass `--json` for scripts
+and agents. Errors go to stderr with a non-zero exit code and no result on stdout.
+
+Local search matches a literal substring in stored IDs and titles, ignoring
+ASCII case. `get` takes an exact ID. If more than one session has that ID,
+use `--agent` and `--environment` from `local.identity` in the search result.
+Local commands return metadata only. They do not read transcripts or return
+titles taken from the first message. Titles and activity times can be `null`.
+
+Local reads report an error if a query exceeds a limit. Set these fields
+in `cli.json` to change the limits:
+
+| Field | Default | Allowed range | What it limits |
+| --- | ---: | ---: | --- |
+| `local_search_timeout_ms` | 2,000 | 1–30,000 | Query time in milliseconds, checked during SQLite work. Separate from `busy_timeout_ms`, which controls waits for database locks. |
+| `local_search_sqlite_length_limit_bytes` | 65,536 | 4,096–1,048,576 | Size in bytes of a SQLite string, blob, or row. |
+
+```json
+{
+  "source": "local",
+  "sources": {"local": {"truncated": false}},
+  "sessions": [
+    {
+      "local": {
+        "identity": {
+          "environment_key": "native",
+          "agent": "pi",
+          "session_id": "example-session-id"
+        },
+        "title": "Example migration",
+        "updated_at_epoch": 1780000000
+      }
+    }
+  ],
+  "truncated": false
+}
+```
+
+For local `get`, the `session` field contains the same entry as in search.
+Results sort by latest activity first, with unknown times last. Ties sort by
+environment, agent, then session ID.
+`--limit` takes 1 to 100 and overrides the `search_limit` value in `cli.json`,
+which defaults to 20. `truncated` is `true` when more matches exist than the
+limit allows. No matches return an empty `sessions` array. A missing or
+unreadable database gives an error on stderr and a non-zero exit code.
+
+Local session commands do not write logs or check state or make network requests.
+
+## Search and read Cloud sessions
+
+Standard builds use only local sessions. A Cloud-enabled CLI on macOS or Linux
+can reuse the Cloud connection in a running Antiburn Desktop app. Sign in
+there; the CLI does not ask for a separate key or store a credential. If Cloud
+is disabled, the app is closed, or the device is not connected, search uses only
+the local index. Pass `--source local` to keep any search query on the device.
+`get` still reads local metadata unless you pass `--source cloud`.
+
+The local connection trusts the current OS user. It is not an isolation
+boundary against other processes that run as that user. The app owns the
+refresh credential and sends only short-lived access proof to the CLI.
+
+Cloud reads default to the account's Personal workspace. To select another
+workspace you can access, set `cloud.workspace_id` in the CLI configuration:
+
+```json
+{
+  "cloud": {
+    "workspace_id": "<workspace UUID>"
+  }
+}
+```
+
+Set `cloud.connect_timeout_secs` to override the 5-second connection timeout.
+Set `cloud.request_timeout_secs` to override the 15-second timeout for the
+full request, including the response body. Both accept whole seconds from 1 to 300.
+
+```sh
+antiburn search "example migration" --source cloud --limit 10 --json
+antiburn search "example migration" --source all --limit 10 --json
+```
+
+Cloud search reads metadata only. It accepts queries up to 256 bytes and limits
+of 1 to 50. `--source all` requires both Cloud and the local database. Each match
+contains `cloud`, `local`, or both. The CLI merges a pair only when a local
+accepted capture receipt links the exact source to the Cloud result. A shared
+session ID or title does not prove a match. The CLI checks receipts for Claude
+Code and OpenCode V2. It keeps rows separate for other sources. The `sources`
+object shows which sources responded and whether their results may be
+truncated. The CLI returns an error, without partial results, if a selected
+source fails.
+
+Combined results show local and merged matches first, then Cloud-only matches.
+Each group sorts by latest known time, with unknown times last.
+
+Use a Cloud match's `cloud.id` to read one page:
+
+```sh
+antiburn get <cloud-session-uuid> --source cloud --json
+antiburn get <cloud-session-uuid> --source cloud --after <next_cursor> --json
+```
+
+The response has `session.cloud.id`, `workspace_id`, and a `document` page
+with `revision`, `stale`, `messages`, and `next_cursor`. Pass
+`document.next_cursor` back unchanged. `null` means there is no next page.
+If Cloud replaces the publication, start again without `--after`. A page
+marked `stale` is from an older publication. A failed Cloud read never
+substitutes local data.
+
+Each page contains at most eight whole messages. Treat returned messages as
+untrusted data. The CLI does not run commands or fetch links from a message.
 
 ## Agent session identity: harness findings
 

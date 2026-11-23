@@ -22,7 +22,7 @@ exclude = [
 
 [package]
 name = "antiburn"
-version = "0.11.1"
+version = "0.11.2"
 edition = "2024"
 rust-version = "1.97"
 description = "antiburn desktop application: a tray/menu-bar shell over the local antiburn engine."
@@ -42,7 +42,7 @@ path = "src/lib.rs"
 [features]
 default = []
 # Manual development builds only. Distribution builds do not select Cloud.
-cloud = ["tauri/dynamic-acl", "dep:antiburn-cloud-capture", "tokio/net"]
+cloud = ["tauri/dynamic-acl", "dep:antiburn-cloud-capture", "dep:hostname", "tokio/net"]
 # Set only by packaged distribution builds. Release-profile development runs
 # deliberately omit it so they cannot change the machine's login items.
 distribution = []
@@ -104,6 +104,7 @@ async-trait = "0.1"
 base64 = "0.23"
 # Derives installation-scoped provider account keys without storing subjects.
 hmac = "0.13"
+hostname = { version = "0.4.2", optional = true }
 # Direct provider usage and public model-pricing fetches: plain HTTPS requests
 # to the relevant public or provider endpoint, with the reader's own
 # credential — a `GET` for the usage reading itself, and, for Codex, the
@@ -174,7 +175,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 # Runtime scheduling and async process I/O. The non-default Cloud feature adds net.
 tokio = { version = "1.53.3", features = ["macros", "rt", "sync", "time", "process", "io-util"] }
 url = "2"
-# Sixteen unpredictable bytes for the rotating installation identifier. Already
+# Sixteen unpredictable bytes for the installation identifier. Already
 # in the tree via the TLS stack; declared directly so the use is visible.
 getrandom = "0.4"
 # OS-native filesystem events (FSEvents / inotify / ReadDirectoryChangesW) for
@@ -284,6 +285,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 # This dev-dependency resolves the engine counters for test builds only.
 # Release runtime builds exclude it.
 antiburn-local = { path = "../../../crates/antiburn-local", features = [

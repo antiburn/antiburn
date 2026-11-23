@@ -1,7 +1,7 @@
 import { CloudSession, cloudUploadStatusUnknown } from "../../../../onboarding/CloudSession"
 import { CloudAccount } from "../../../settings/CloudAccount"
 import { confirm } from "@tauri-apps/plugin-dialog"
-import { useCallback, useState, useSyncExternalStore } from "react"
+import { useCallback, useId, useState, useSyncExternalStore } from "react"
 
 import { pluralize } from "../../../../lib/presentation/text"
 import { FolderPermissionNotice } from "../../../../components/repositories/FolderPermissionNotice"
@@ -158,8 +158,21 @@ export function SessionsStepSettings() {
     cloudSession.getSnapshot,
   )
   const cloudUnavailable = !cloud.cloud.authEnabled || !cloud.cloud.captureEnabled
-  const cloudConsent = cloud.ongoing?.consentVersion === "desktop-project-sync-v1"
+  const cloudFolderRowId = useId()
+  const canSetUpCloud =
+    cloudSession.projectSyncSupported &&
+    cloud.cloud.status === "signed_in" &&
+    cloud.cloud.destination?.kind === "personal"
+  const hasSavedFolders = [cloud.ongoing, ...Object.values(cloud.teamStatuses ?? {})].some(
+    (policy) =>
+      policy?.consentVersion === "desktop-project-sync-v1" && policy.projects.length > 0,
+  )
+  const deviceUploadsEnabled = cloud.deviceUploadEnabled === true
   const cloudStorageUnknown = cloudUploadStatusUnknown(cloud.ongoing)
+  const uploadControlUnavailable =
+    cloudStorageUnknown ||
+    cloudUnavailable ||
+    (hasSavedFolders ? cloud.deviceUploadEnabled === undefined : !canSetUpCloud)
   const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [session] = useState(() => new SourcesSession())
   const { repositories, scanRoots, permissions, scanning } = useSyncExternalStore(
@@ -197,43 +210,42 @@ export function SessionsStepSettings() {
       {info?.cloudEnabled && (
         <SectionGroup title="Antiburn Cloud">
           <Card divided={false}>
-            <CloudAccount session={cloudSession} value={cloud}>
+            <CloudAccount session={cloudSession} value={cloud} folderRowId={cloudFolderRowId}>
               <SettingsToggleRow
                 searchId="cloudUpload"
-                checked={
-                  (!cloudUnavailable || cloudStorageUnknown) &&
-                  cloudConsent &&
-                  !cloud.ongoing?.paused
+                description={
+                  !hasSavedFolders && canSetUpCloud
+                    ? "Choose folders and confirm before uploading."
+                    : hasSavedFolders && !deviceUploadsEnabled && !uploadControlUnavailable
+                      ? "Uploads are paused on this device."
+                      : undefined
                 }
-                disabled={
-                  !loaded ||
-                  !cloud.loaded ||
-                  cloud.busy ||
-                  cloudStorageUnknown ||
-                  cloudUnavailable ||
-                  !cloudConsent
-                }
+                checked={hasSavedFolders && deviceUploadsEnabled}
+                disabled={!loaded || !cloud.loaded || cloud.busy || uploadControlUnavailable}
                 dimmed={cloudUnavailable}
                 disabledTooltip={
                   !cloud.loaded
                     ? "Checking Cloud availability…"
                     : cloudStorageUnknown
-                      ? "Check disk space and file permissions, then retry saved uploads."
+                      ? "Check disk space and file permissions, then check saved uploads."
                       : cloudUnavailable
                         ? "Uploads are unavailable in this build. You can turn this on when Antiburn Cloud becomes available."
-                        : !cloudConsent
-                          ? "Choose projects and confirm full-content sync below."
+                        : !hasSavedFolders && !canSetUpCloud
+                          ? "Sign in to set up uploads."
                           : undefined
                 }
                 onChange={(next) => {
-                  if (
-                    loaded &&
-                    cloud.loaded &&
-                    !cloudUnavailable &&
-                    !cloudStorageUnknown &&
-                    cloudConsent
-                  ) {
-                    void cloudSession.controlSync(!next)
+                  if (loaded && cloud.loaded && !uploadControlUnavailable) {
+                    if (hasSavedFolders) {
+                      void cloudSession.controlSync(!next)
+                    } else if (next && canSetUpCloud) {
+                      const row = document.getElementById(cloudFolderRowId)
+                      const firstChoice = row?.querySelector<HTMLElement>(
+                        "select:not(:disabled), button[role=switch]:not(:disabled)",
+                      )
+                      const focusTarget = firstChoice ?? row
+                      focusTarget?.focus()
+                    }
                   }
                 }}
               />

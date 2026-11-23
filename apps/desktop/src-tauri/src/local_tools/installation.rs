@@ -14,8 +14,7 @@ use crate::cli_install::CliRuntime;
 use super::{DEBUG_IDENTIFIER, Reason};
 
 const OWNER: &str = "antiburn-debug-local-tools-v1";
-const SKILL: &str = include_str!("../../../../cli/skills/antiburn/SKILL.md");
-const COMMAND: &str = "antiburn checks <session_id>";
+pub(super) const SKILL: &str = include_str!("../../../../cli/skills/antiburn/SKILL.md");
 
 type Result<T> = std::result::Result<T, Reason>;
 
@@ -27,14 +26,14 @@ pub(super) struct Installation {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FileReceipt {
-    active: Option<Vec<u8>>,
-    pending: Option<Vec<u8>>,
+pub(super) struct FileReceipt {
+    pub(super) active: Option<Vec<u8>>,
+    pub(super) pending: Option<Vec<u8>>,
 }
 
 impl FileReceipt {
     /// Keep installed write-ahead bytes authorized through an interrupted upgrade.
-    fn prepare_replacement(&mut self, current: Option<&[u8]>, proposed: Vec<u8>) {
+    pub(super) fn prepare_replacement(&mut self, current: Option<&[u8]>, proposed: Vec<u8>) {
         if current.is_some() && current == self.pending.as_deref() {
             self.active = current.map(<[u8]>::to_vec);
         }
@@ -108,18 +107,14 @@ impl Installation {
     }
 
     fn skill(&self, runtime: &CliRuntime) -> Result<Vec<u8>> {
-        if SKILL.matches(COMMAND).count() != 1 || SKILL.matches("name: antiburn\n").count() != 1 {
+        if !SKILL.starts_with("---\nname: antiburn\n") {
             return Err(Reason::SetupUnavailable);
         }
-        let command = format!(
-            "{} --config {} checks <session_id>",
-            quote(&runtime.executable)?,
-            quote(&self.tools().join("config.json"))?,
-        );
-        Ok(SKILL
-            .replacen("name: antiburn\n", "name: antiburn-debug\n", 1)
-            .replacen(COMMAND, &command, 1)
-            .into_bytes())
+        render_skill(
+            &SKILL.replacen("name: antiburn\n", "name: antiburn-debug\n", 1),
+            &runtime.executable,
+            Some(&self.tools().join("config.json")),
+        )
     }
 
     fn receipt(&self) -> Result<Option<(Receipt, Vec<u8>)>> {
@@ -263,7 +258,7 @@ fn profile_environment(
     Ok(env)
 }
 
-fn check_owned(current: Option<&[u8]>, receipt: &FileReceipt) -> Result<()> {
+pub(super) fn check_owned(current: Option<&[u8]>, receipt: &FileReceipt) -> Result<()> {
     if current == receipt.active.as_deref()
         || receipt
             .pending
@@ -276,7 +271,7 @@ fn check_owned(current: Option<&[u8]>, receipt: &FileReceipt) -> Result<()> {
     }
 }
 
-fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
+pub(super) fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     let parent = path.parent().ok_or(Reason::SetupUnavailable)?;
     match fs::symlink_metadata(parent) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -292,7 +287,7 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-fn ensure_directory(path: &Path) -> Result<()> {
+pub(super) fn ensure_directory(path: &Path) -> Result<()> {
     if present(path)? {
         checked_directory(path)
     } else {
@@ -302,12 +297,12 @@ fn ensure_directory(path: &Path) -> Result<()> {
     }
 }
 
-fn checked_directory(path: &Path) -> Result<()> {
+pub(super) fn checked_directory(path: &Path) -> Result<()> {
     transaction::checked_directory(path).map_err(|_| Reason::ProfileUnavailable)?;
     antiburn_cli_runtime::validate_directory_ancestors(path).map_err(|_| Reason::ProfileUnavailable)
 }
 
-fn present(path: &Path) -> Result<bool> {
+pub(super) fn present(path: &Path) -> Result<bool> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -315,7 +310,11 @@ fn present(path: &Path) -> Result<bool> {
     }
 }
 
-fn save(path: &Path, receipt: &Receipt, previous: &mut Option<Vec<u8>>) -> Result<()> {
+pub(super) fn save(
+    path: &Path,
+    receipt: &impl Serialize,
+    previous: &mut Option<Vec<u8>>,
+) -> Result<()> {
     let bytes = serde_json::to_vec(receipt).map_err(|_| Reason::SetupUnavailable)?;
     if previous.as_deref() != Some(bytes.as_slice()) {
         publish(path, previous.as_deref(), &bytes)?;
@@ -325,7 +324,7 @@ fn save(path: &Path, receipt: &Receipt, previous: &mut Option<Vec<u8>>) -> Resul
 }
 
 /// Recheck directory and existing-file policy immediately before atomic publication.
-fn publish(path: &Path, expected: Option<&[u8]>, proposed: &[u8]) -> Result<()> {
+pub(super) fn publish(path: &Path, expected: Option<&[u8]>, proposed: &[u8]) -> Result<()> {
     checked_directory(path.parent().ok_or(Reason::SetupUnavailable)?)?;
     if present(path)? {
         antiburn_cli_runtime::validate_owned_file(path).map_err(|_| Reason::OwnedFileChanged)?;
@@ -333,13 +332,50 @@ fn publish(path: &Path, expected: Option<&[u8]>, proposed: &[u8]) -> Result<()> 
     transaction::publish(path, expected, proposed).map_err(|_| Reason::SetupUnavailable)
 }
 
+/// Bind each command in a fenced `sh` block. Put one `antiburn` command per
+/// line. Keep executable paths out of inline Markdown and reject multiline
+/// paths so they cannot close the fence.
+pub(super) fn render_skill(
+    source: &str,
+    executable: &Path,
+    config: Option<&Path>,
+) -> Result<Vec<u8>> {
+    let mut command = quote(executable)?;
+    if let Some(config) = config {
+        command.push_str(" --config ");
+        command.push_str(&quote(config)?);
+    }
+    let mut rendered = String::with_capacity(source.len());
+    let mut shell = false;
+    let mut bound = false;
+    for line in source.split_inclusive('\n') {
+        match (shell, line.trim_end_matches('\n')) {
+            (false, "```sh") => shell = true,
+            (true, "```") => shell = false,
+            (true, "") => (),
+            (true, _) => {
+                let args = line
+                    .strip_prefix("antiburn ")
+                    .ok_or(Reason::SetupUnavailable)?;
+                rendered.push_str(&command);
+                rendered.push(' ');
+                rendered.push_str(args);
+                bound = true;
+                continue;
+            }
+            (false, _) => (),
+        }
+        rendered.push_str(line);
+    }
+    if shell || !bound {
+        return Err(Reason::SetupUnavailable);
+    }
+    Ok(rendered.into_bytes())
+}
+
 fn quote(path: &Path) -> Result<String> {
     let value = path.to_str().ok_or(Reason::SetupUnavailable)?;
-    if !path.is_absolute()
-        || value.len() > 8192
-        || value.chars().any(char::is_control)
-        || value.contains('`')
-    {
+    if !path.is_absolute() || value.len() > 8192 || value.chars().any(char::is_control) {
         return Err(Reason::SetupUnavailable);
     }
     Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))

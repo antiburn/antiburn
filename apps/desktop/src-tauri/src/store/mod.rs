@@ -40,6 +40,8 @@ pub(crate) mod memories;
 pub(crate) mod native_tool_results;
 pub use native_tool_results::{ToolResultBatch, ToolResultPublishOptions};
 pub(crate) mod burn_checks;
+mod maintenance;
+pub use maintenance::VacuumThreshold;
 pub mod model;
 mod onboarding;
 mod project_deferrals;
@@ -609,6 +611,12 @@ impl Store {
         // the documented companion: a crash can lose the last commit, which for
         // a rebuildable cache is cheaper than an fsync per transaction.
         connection.pragma_update(None, "journal_mode", "WAL").ok();
+        // Without a limit, the WAL file stays at its largest size forever.
+        connection.pragma_update(
+            None,
+            "journal_size_limit",
+            maintenance::WAL_SIZE_LIMIT_BYTES,
+        )?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
         connection.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
@@ -1271,10 +1279,13 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
-    /// Whether a durable opt-out event still waits for its final flush.
+    /// Whether withdrawal needs local cleanup or a final delivery pass.
+    ///
+    /// The settings marker survives delivery of the final opt-out event.
     pub fn analytics_opt_out_pending(&self) -> Result<bool> {
         Ok(self.lock().query_row(
-            "SELECT EXISTS(SELECT 1 FROM analytics_event WHERE name = 'antiburn.analytics_opted_out')",
+            "SELECT EXISTS(SELECT 1 FROM analytics_event WHERE name = 'antiburn.analytics_opted_out')
+             OR EXISTS(SELECT 1 FROM setting WHERE key = 'analytics_withdrawal_pending')",
             [],
             |row| row.get::<_, bool>(0),
         )?)
@@ -1350,7 +1361,7 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
-    /// Mint or rotate the installation identifier.
+    /// Store the installation identifier and its creation time.
     pub fn set_analytics_identity(&self, install_id: &str) -> Result<()> {
         self.set_analytics_identity_with_time(install_id, &now_rfc3339())
     }
@@ -1378,14 +1389,38 @@ impl Store {
     ///
     /// Both halves matter. Leaving the queue would send, on a later opt-in,
     /// events the reader withdrew consent for; leaving the identity would let
-    /// a later opt-in be joined to the earlier one, which is the whole thing
-    /// the rotation exists to prevent.
+    /// a later opt-in reuse the identity that the reader withdrew.
     pub fn clear_analytics(&self) -> Result<()> {
         let mut connection = self.lock();
+        Self::mark_analytics_withdrawal_in(&connection)?;
         let tx = connection.transaction()?;
-        tx.execute("DELETE FROM analytics_event", [])?;
-        tx.execute("DELETE FROM analytics_identity", [])?;
+        Self::clear_analytics_in(&tx)?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Keep withdrawal pending until both analytics tables are cleared.
+    ///
+    /// Call this before cleanup or within the transaction that disables analytics.
+    pub(crate) fn mark_analytics_withdrawal_in(connection: &rusqlite::Connection) -> Result<()> {
+        connection.execute(
+            "INSERT INTO setting (key, value) VALUES ('analytics_withdrawal_pending', 'true')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Clear withdrawn data before the same transaction enables analytics.
+    ///
+    /// A delete error must roll back the settings change and retain the marker.
+    pub(crate) fn clear_analytics_in(transaction: &rusqlite::Transaction<'_>) -> Result<()> {
+        transaction.execute("DELETE FROM analytics_event", [])?;
+        transaction.execute("DELETE FROM analytics_identity", [])?;
+        transaction.execute(
+            "DELETE FROM setting WHERE key = 'analytics_withdrawal_pending'",
+            [],
+        )?;
         Ok(())
     }
 

@@ -12,6 +12,7 @@ import { cn } from "../../lib/cn"
 export function Row({
   label,
   description,
+  descriptionId,
   trailing,
   dimmed,
   children,
@@ -23,6 +24,8 @@ export function Row({
   // `exactOptionalPropertyTypes` a wrapper such as `ToggleRow` cannot pass its
   // own optional value through unless the target accepts an explicit undefined.
   description?: string | undefined
+  /** Bind the description to the trailing control when it explains that control. */
+  descriptionId?: string | undefined
   trailing?: ReactNode
   dimmed?: boolean | undefined
   /** Extra full-width content rendered below the description, e.g. a slider track. */
@@ -40,7 +43,10 @@ export function Row({
       <p className="type-body min-w-0 text-pretty text-label">{label}</p>
       <div className="ui-settings-row-control min-w-0">{trailing}</div>
       {description && (
-        <p className="type-footnote col-span-2 mt-0.5 w-full text-pretty text-label-secondary">
+        <p
+          id={descriptionId}
+          className="type-footnote col-span-2 mt-0.5 w-full text-pretty text-label-secondary"
+        >
           {description}
         </p>
       )}

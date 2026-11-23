@@ -5,7 +5,10 @@
   "windows": ["main", "settings", "onboarding"],
   "permissions": [
     "allow-cloud-status",
+    "allow-cloud-workspaces",
+    "allow-cloud-reset-workspace",
     "allow-cloud-begin",
+    "allow-cloud-invitations",
     "allow-cloud-cancel",
     "allow-cloud-sign-out",
     "allow-cloud-reset-local",
@@ -19,8 +22,10 @@
     "allow-cloud-sync-projects",
     "allow-cloud-sync-status",
     "allow-cloud-enable-sync",
+    "allow-cloud-reapprove-team-sync",
     "allow-cloud-set-sync-project",
-    "allow-cloud-pause-sync",
-    "allow-cloud-retry-sync"
+    "allow-cloud-set-sync-enabled",
+    "allow-cloud-retry-sync",
+    "allow-cloud-backfill-sync"
   ]
 }

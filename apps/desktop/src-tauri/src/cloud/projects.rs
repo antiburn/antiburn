@@ -387,22 +387,23 @@ fn merge_sources(
     ))
 }
 
-fn group_id(environment: &str, path: &str) -> String {
+pub(super) fn group_id(environment: &str, path: &str) -> String {
     use base64::Engine as _;
     use sha2::{Digest, Sha256};
     let bytes = serde_json::to_vec(&(environment, path)).expect("string tuple serialization");
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(bytes))
 }
 
-/// Add only current group folders on supported roots with recorded session metadata.
-pub(super) fn confirm_group_projects(
+/// Confirm the selected folders against current source choices and group evidence.
+/// Return the allowed roots so a caller can check bindings held after source changes.
+pub(super) fn confirm_project_choices(
     store: &Store,
     cache: &mut Cache,
     binding: &DestinationBinding,
-    id: &str,
+    choices: &BTreeMap<String, bool>,
     projects: &BTreeSet<ProjectSelection>,
     current: &dyn Fn() -> bool,
-) -> Result<(), String> {
+) -> Result<Vec<SourceSelection>, String> {
     let saved = store
         .cloud_draft(&binding.account_id, &binding.destination_id)
         .map_err(|_| "Could not read saved provider sources.")?
@@ -410,12 +411,13 @@ pub(super) fn confirm_group_projects(
         .transpose()
         .map_err(|_| "Could not read saved provider sources.")?
         .unwrap_or_default();
-    let (known, _) = known_sources(
+    let (mut known, _) = known_sources(
         store,
         antiburn_local::discovery::agents::opencode::native_database_paths(),
     )?;
+    known.extend(super::file_sources::roots());
     let (roots, _) = merge_sources(known, &saved.folders)?;
-    let mut by_source = BTreeMap::<&SourceSelection, BTreeSet<String>>::new();
+    let mut by_source = BTreeMap::<&SourceSelection, (BTreeSet<String>, BTreeSet<String>)>::new();
     let mut contexts = BTreeMap::new();
     for project in projects {
         let root = roots
@@ -427,20 +429,20 @@ pub(super) fn confirm_group_projects(
         let member = contexts
             .entry(&project.project_path)
             .or_insert_with(|| context("native", &project.project_path));
+        let group = group_id("native", &member.main);
         if !member.complete
-            || group_id("native", &member.main) != id
+            || choices.get(&group) != Some(&true)
             || !member.folders.contains(&project.project_path)
         {
             return Err("The project folders changed. Reload projects and confirm again.".into());
         }
-        by_source
-            .entry(root)
-            .or_default()
-            .insert(project.project_path.clone());
+        let (paths, groups) = by_source.entry(root).or_default();
+        paths.insert(project.project_path.clone());
+        groups.insert(group);
     }
     let mut remaining = 512;
     cache.begin_scan();
-    for (root, folders) in by_source {
+    for (root, (folders, mut groups)) in by_source {
         let ids = if root.source_kind == SourceKind::OpenCodeSqliteV2 {
             let paths = folders.iter().cloned().collect::<Vec<_>>();
             store
@@ -450,7 +452,6 @@ pub(super) fn confirm_group_projects(
             Vec::new()
         };
         let candidates = project_candidates(root, &ids, &mut remaining, current)?;
-        let mut qualified = false;
         for candidate in candidates {
             if !current() {
                 return Err("Cloud account or upload controls changed.".into());
@@ -462,21 +463,24 @@ pub(super) fn confirm_group_projects(
                 &candidate,
                 &sync::metadata_limits(),
             )? && evidence.scan_complete()
-                && evidence.project_paths().iter().any(|path| {
-                    path.to_str().is_some_and(|path| {
-                        group_id("native", &cache.context("native", path).main) == id
-                    })
-                })
             {
-                qualified = true;
-                break;
+                for path in evidence
+                    .project_paths()
+                    .iter()
+                    .filter_map(|path| path.to_str())
+                {
+                    groups.remove(&group_id("native", &cache.context("native", path).main));
+                }
+                if groups.is_empty() {
+                    break;
+                }
             }
         }
-        if !qualified {
+        if !groups.is_empty() {
             return Err("Could not confirm a supported session for this project. Reload projects and try again.".into());
         }
     }
-    Ok(())
+    Ok(roots)
 }
 
 /// Find grants for the group even when current provider discovery cannot list them.
@@ -723,13 +727,7 @@ fn discover_projects(
                         Suggestion {
                             environment: "native".into(),
                             cwd: project.to_owned(),
-                            agents: vec![
-                                match root.source_kind {
-                                    SourceKind::ClaudeJsonl => "claude-code",
-                                    SourceKind::OpenCodeSqliteV2 => "opencode",
-                                }
-                                .into(),
-                            ],
+                            agents: vec![root.source_kind.upload_names().0.into()],
                             session_count: 0,
                         },
                     );
@@ -779,7 +777,7 @@ fn discover_projects(
 }
 
 /// Page cached suggestions without saving initial ON rows or changing consent.
-/// Provider-specific capture remains limited to qualified Claude and OpenCode V2.
+/// Only native exporter evidence can qualify a folder for capture.
 #[tauri::command]
 pub(crate) async fn cloud_project_groups(
     app: tauri::AppHandle,
@@ -816,16 +814,18 @@ pub(crate) async fn cloud_project_groups(
             .project_cache
             .lock()
             .map_err(|_| "Project discovery is unavailable.")?;
+        let (mut known, partial) = known_sources(
+            &store,
+            antiburn_local::discovery::agents::opencode::native_database_paths(),
+        )?;
+        known.extend(super::file_sources::roots());
         discover_projects(
             &store,
             &mut cache,
             &engine,
             &binding,
             after.as_ref(),
-            known_sources(
-                &store,
-                antiburn_local::discovery::agents::opencode::native_database_paths(),
-            )?,
+            (known, partial),
             &current,
         )
     })

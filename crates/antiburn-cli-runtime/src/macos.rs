@@ -2,7 +2,27 @@ use std::ffi::{CString, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
+
+/// Move a staged sibling into place without replacing an existing entry.
+pub fn rename_exclusive(stage: &Path, destination: &Path) -> Result<()> {
+    let stage = CString::new(stage.as_os_str().as_bytes())?;
+    let destination = CString::new(destination.as_os_str().as_bytes())?;
+    if unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            stage.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("Cannot publish new CLI destination without replacing an existing entry");
+    }
+    Ok(())
+}
 
 unsafe extern "C" {
     fn acl_get_file(path: *const c_char, acl_type: c_int) -> *mut c_void;

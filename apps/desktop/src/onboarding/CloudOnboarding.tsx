@@ -11,15 +11,28 @@ import {
   UserRound,
 } from "lucide-react"
 import appIcon from "../assets/app-icon.png"
-import { cloudSourceKey, cloudSourceKind, desktopCloudPort, type CloudPort } from "../lib/cloud"
+import {
+  cloudSourceKey,
+  cloudSourceKind,
+  cloudSourceLabel,
+  desktopCloudPort,
+  type CloudPort,
+} from "../lib/cloud"
 import { noteCloudAction } from "../lib/onboardingAnalytics"
 import {
   CloudSession,
+  cloudGithubSignInLabel,
   cloudStatusMessage,
   cloudOngoingStatusMessage,
   cloudUploadStatusUnknown,
 } from "./CloudSession"
-import { CloudProjectFolders } from "./CloudOnboardingFolders"
+import { CloudProjectFolders, cloudWorkspaceLabel } from "./CloudOnboardingFolders"
+import { CloudInvitations } from "./CloudInvitations"
+import {
+  cloudAccountCleanupPending,
+  cloudInvitationResultWarning,
+  cloudSignOutBeforeSignIn,
+} from "./cloudSessionState"
 import "./onboarding.css"
 import "./cloud.css"
 
@@ -66,21 +79,104 @@ export function CloudOnboarding({
   const grouped = !!(port ?? desktopCloudPort).ongoing
   const projects = value.projects
   const waiting = value.cloud.authEnabled && ["waiting", "opening"].includes(value.cloud.status)
+  const checkingSignIn = value.cloud.authEnabled && value.cloud.status === "returned"
+  const cleanupPending = cloudAccountCleanupPending(value.cloud)
+  const invitationWarning = value.cloud.invitationResultUnconfirmed && (
+    <p className="type-footnote text-onboarding-muted" role="status">
+      {cloudInvitationResultWarning}
+    </p>
+  )
   const accepted = "operationId" in value.sync
   const captureEnabled = !grouped && value.cloud.captureEnabled === true
   const captureSaved = value.sync.status === "upload_unavailable"
+  const ongoing = value.lastTeamSync ?? value.ongoing
   const syncReady = grouped
-    ? value.ongoing?.storageKnown === true &&
-      ["ready", "syncing"].includes(value.ongoing.status)
+    ? ongoing?.storageKnown === true && ["ready", "syncing"].includes(ongoing.status)
     : ["accepted", "syncing"].includes(value.sync.status)
   const syncing = grouped
-    ? syncReady &&
-      (value.ongoing?.status === "syncing" || (value.ongoing?.queuedCount ?? 0) > 0)
+    ? syncReady && (ongoing?.status === "syncing" || (ongoing?.queuedCount ?? 0) > 0)
     : syncReady
   const syncUncertain = ["ambiguous", "failed", "cancelled"].includes(value.sync.status)
+  const destination = value.cloud.destination
+  const personalDestination = destination?.kind === "personal" ? destination : undefined
+  const workspaces = projects?.workspaces ?? (personalDestination ? [personalDestination] : [])
+  const hasWorkspaceChoice = workspaces.length > 1
+  const savedTeamPolicies = Object.values(value.teamStatuses ?? {})
+  const skipImplicitSelection =
+    !hasWorkspaceChoice &&
+    (value.ongoing?.consentVersion === "desktop-project-sync-v1" ||
+      savedTeamPolicies.length > 0)
+  const folderChoices = skipImplicitSelection
+    ? Object.fromEntries(
+        projects?.groups.map(({ id }) => [
+          id,
+          !!projects.choices[id] && !!projects.targets?.[id],
+        ]) ?? [],
+      )
+    : projects?.choices
+  const savedDestinations = new Map<string, string>()
+  for (const group of projects?.groups ?? []) {
+    if (personalDestination && session.projectHasSavedPermission(group.id)) {
+      savedDestinations.set(group.id, cloudWorkspaceLabel(personalDestination))
+      continue
+    }
+    const policy = savedTeamPolicies.find((team) =>
+      session.projectHasSavedPermission(group.id, team),
+    )
+    if (policy) {
+      const team = workspaces.find((workspace) => workspace.id === policy.destinationId)
+      savedDestinations.set(group.id, team ? cloudWorkspaceLabel(team) : "Team workspace")
+    }
+  }
+  const selectedProjects = projects?.groups.filter(
+    (group) =>
+      group.captureSupported &&
+      !savedDestinations.has(group.id) &&
+      (folderChoices?.[group.id] ?? !hasWorkspaceChoice),
+  )
   const selectedFolders = grouped
-    ? (projects?.groups.filter((group) => projects.choices[group.id] ?? true).length ?? 0)
+    ? (selectedProjects?.length ?? 0)
     : value.cloud.draft.folders.filter((folder) => folder.selected).length
+  const needsWorkspaceChoice =
+    hasWorkspaceChoice && selectedProjects?.some((group) => !projects?.targets?.[group.id])
+  const selectedWorkspaceIds = [
+    ...new Set(
+      selectedProjects?.flatMap((group) => {
+        const target =
+          projects?.targets?.[group.id] ??
+          (hasWorkspaceChoice ? undefined : personalDestination?.id)
+        return target ? [target] : []
+      }),
+    ),
+  ]
+  const workspaceLabels = selectedWorkspaceIds.map((id) => {
+    const workspace = workspaces.find((candidate) => candidate.id === id)
+    return workspace ? cloudWorkspaceLabel(workspace) : "Selected workspace unavailable"
+  })
+  const workspaceUnavailable = selectedWorkspaceIds.some(
+    (id) => !workspaces.some((workspace) => workspace.id === id),
+  )
+  const workspaceConflict = selectedWorkspaceIds.length > 1
+  const workspaceSummary =
+    projects?.error || !personalDestination
+      ? "Workspace availability could not be confirmed"
+      : !projects?.loaded
+        ? "Checking workspace destinations…"
+        : needsWorkspaceChoice
+          ? "Choose a sync destination"
+          : workspaceLabels.length
+            ? `Sync ${workspaceConflict ? "destinations" : "destination"}: ${workspaceLabels.join(" · ")}`
+            : hasWorkspaceChoice
+              ? "No sync destination selected"
+              : `Available destination: ${cloudWorkspaceLabel(personalDestination)}`
+  const workspaceNote = workspaceUnavailable
+    ? "A selected workspace can’t receive uploads. Choose another destination or Don't sync."
+    : needsWorkspaceChoice
+      ? "Choose a workspace or Don't sync for each marked folder before starting."
+      : hasWorkspaceChoice
+        ? "Each folder uploads only to its selected workspace."
+        : null
+  const showWorkspaceNote = grouped && projects?.loaded && !projects.loading && !projects.error
   const folderMessage =
     error ??
     value.error ??
@@ -173,12 +269,12 @@ export function CloudOnboarding({
             <img className="cloud-app-icon" src={appIcon} alt="" />
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               {value.cloud.authEnabled
-                ? "Sign in to antiburn cloud"
+                ? "Sign in to Antiburn Cloud"
                 : "Antiburn Cloud is coming soon"}
             </h1>
             <p className="type-onboarding-body text-onboarding-muted">
               {value.cloud.authEnabled
-                ? "Approve this desktop connection in your browser."
+                ? "Use GitHub in your browser to approve this device. Signing in doesn’t start uploads."
                 : "Learn about bringing your session insights together across devices."}
             </p>
             {waiting ? (
@@ -187,9 +283,19 @@ export function CloudOnboarding({
                 disabled={disabled}
                 onClick={() => void session.cancel()}
               >
-                Cancel
+                Cancel sign-in
               </button>
-            ) : (
+            ) : cleanupPending ? (
+              !value.cloud.localResetAvailable && (
+                <button
+                  className="onboarding-secondary"
+                  disabled={disabled || !value.loaded}
+                  onClick={() => void session.signOut()}
+                >
+                  {value.cloud.localCleanupPending ? "Finish signing out" : "Sign out"}
+                </button>
+              )
+            ) : !checkingSignIn ? (
               <button
                 className={
                   value.cloud.authEnabled ? "onboarding-primary" : "onboarding-secondary"
@@ -203,22 +309,22 @@ export function CloudOnboarding({
                     : session.retry())
                 }
               >
-                {value.cloud.authEnabled ? "Connect in browser" : "Learn more"}
+                {value.cloud.authEnabled ? cloudGithubSignInLabel : "Learn more"}
                 <ArrowUpRight size={16} aria-hidden />
               </button>
-            )}
+            ) : null}
             <p className="cloud-status type-footnote" role="status">
               {value.loaded
-                ? value.cloud.authEnabled || value.cloud.status === "browser_failed"
-                  ? cloudStatusMessage(value.cloud.status)
-                  : ""
+                ? cleanupPending
+                  ? value.cloud.localResetAvailable
+                    ? "Open Cloud in Settings to reset sign-in on this device."
+                    : cloudSignOutBeforeSignIn
+                  : value.cloud.authEnabled || value.cloud.status === "browser_failed"
+                    ? cloudStatusMessage(value.cloud.status)
+                    : ""
                 : "Checking Cloud availability…"}
             </p>
-            {value.cloud.authEnabled && (
-              <p className="type-footnote text-onboarding-muted">
-                You’ll return here when you’re signed in.
-              </p>
-            )}
+            {invitationWarning}
           </div>
         </section>
       ) : value.screen === "identity" ? (
@@ -237,6 +343,19 @@ export function CloudOnboarding({
             <h1 className="type-onboarding-title" tabIndex={-1} ref={focusHeading}>
               You’re signed in
             </h1>
+            {invitationWarning}
+            {value.cloud.invitationEnabled && !value.cloud.setupError && (
+              <p className="type-onboarding-body text-onboarding-muted">
+                Set up folder sync now or continue locally. Signing in does not start uploads.
+              </p>
+            )}
+            {visible && value.cloud.invitationEnabled && value.cloud.identity && (
+              <CloudInvitations
+                accountId={value.cloud.identity.id}
+                onJoined={session.load}
+                hideEmpty
+              />
+            )}
             {value.cloud.setupError && (
               <>
                 <p className="type-callout text-onboarding-muted" role="status">
@@ -288,23 +407,50 @@ export function CloudOnboarding({
             <span id="cloud-sync-selection">
               {selectedFolders} {selectedFolders === 1 ? "folder" : "folders"} selected
             </span>
-            {value.cloud.identity && value.cloud.destination && (
+            {(grouped || (value.cloud.identity && destination)) && (
               <span
                 id="cloud-sync-destination"
-                className="rounded-control bg-surface-card px-2 py-1 type-footnote"
+                className="min-w-0 wrap-anywhere rounded-control bg-surface-card px-2 py-1 type-footnote"
+                aria-live="polite"
               >
-                {value.cloud.destination.name} · {value.cloud.identity.login}
+                {grouped ? workspaceSummary : destination?.name}
+                {value.cloud.identity && ` · ${value.cloud.identity.login}`}
               </span>
             )}
           </div>
+          {showWorkspaceNote && workspaceNote && (
+            <p
+              id="cloud-workspace-note"
+              className="type-callout text-onboarding-muted"
+              role="status"
+            >
+              {workspaceNote}
+            </p>
+          )}
           {grouped ? (
             projects && (projects.groups.length > 0 || projectListComplete) ? (
               <CloudProjectFolders
                 groups={projects.groups}
-                choices={projects.choices}
-                disabled={disabled || projects.loading}
+                choices={folderChoices ?? {}}
+                disabled={
+                  disabled ||
+                  projects.loading ||
+                  !!projects.error ||
+                  !!value.cloud.setupError ||
+                  !personalDestination
+                }
                 homeDirectory={value.homeDirectory}
-                onSelect={session.selectProject}
+                workspaces={workspaces}
+                destinationId={personalDestination?.id}
+                targets={projects.targets}
+                savedDestinations={savedDestinations}
+                onSelect={(id, selected, workspace) =>
+                  session.selectProject(
+                    id,
+                    selected,
+                    selected ? (workspace ?? personalDestination?.id) : undefined,
+                  )
+                }
               />
             ) : (
               <div className="cloud-folder-list min-h-0! max-h-none! flex-1">
@@ -328,8 +474,7 @@ export function CloudOnboarding({
                           {folder.path.split(/[\\/]/).filter(Boolean).at(-1) ?? folder.path}
                         </strong>
                         <small className="type-callout text-onboarding-muted">
-                          {captureEnabled &&
-                            `${cloudSourceKind(folder) === "opencode_sqlite_v2" ? "OpenCode V2" : "Claude"}: `}
+                          {captureEnabled && `${cloudSourceLabel(folder)}: `}
                           {folder.path}
                         </small>
                       </span>
@@ -413,6 +558,11 @@ export function CloudOnboarding({
               )}
             </div>
           )}
+          {grouped && value.sync.status === "starting" && (
+            <p className="type-callout text-onboarding-muted" role="status">
+              Confirming folder sync…
+            </p>
+          )}
         </section>
       ) : (
         <>
@@ -490,7 +640,9 @@ export function CloudOnboarding({
           </section>
         </>
       )}
-      <footer className="onboarding-footer cloud-footer">
+      <footer
+        className={`onboarding-footer cloud-footer${value.screen === "identity" && value.cloud.invitationEnabled ? " flex!" : ""}`}
+      >
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           {value.screen === "complete" ? (
             <div className="cloud-outcomes" role="group" aria-label="Setup status">
@@ -501,14 +653,14 @@ export function CloudOnboarding({
                 />
                 <strong className="type-headline">
                   {grouped
-                    ? value.ongoing && cloudUploadStatusUnknown(value.ongoing)
-                      ? cloudOngoingStatusMessage(value.ongoing)
+                    ? ongoing && cloudUploadStatusUnknown(ongoing)
+                      ? cloudOngoingStatusMessage(ongoing)
                       : value.sync.status === "starting"
                         ? "Starting background sync"
                         : value.sync.status === "ambiguous"
                           ? "Cloud sync not confirmed"
-                          : value.ongoing
-                            ? cloudOngoingStatusMessage(value.ongoing)
+                          : ongoing
+                            ? cloudOngoingStatusMessage(ongoing)
                             : "Cloud sync not confirmed"
                     : captureEnabled
                       ? "Upload unavailable"
@@ -600,6 +752,17 @@ export function CloudOnboarding({
                 Continue locally
               </button>
             )}
+            {value.screen === "identity" &&
+              value.cloud.invitationEnabled &&
+              !value.cloud.setupError && (
+                <button
+                  className="onboarding-primary"
+                  disabled={disabled}
+                  onClick={() => void session.go("folders")}
+                >
+                  Continue Cloud setup
+                </button>
+              )}
             {value.screen === "folders" && (
               <>
                 <button
@@ -619,13 +782,20 @@ export function CloudOnboarding({
                         cloudUploadStatusUnknown(value.ongoing) ||
                         projects.loading ||
                         !!projects.error ||
-                        !projects.groups.some(
-                          (group) =>
-                            group.captureSupported && (projects.choices[group.id] ?? true),
-                        )
+                        needsWorkspaceChoice ||
+                        workspaceUnavailable ||
+                        selectedFolders === 0
                       : !value.cloud.draft.folders.some((folder) => folder.selected))
                   }
-                  aria-describedby="cloud-sync-description cloud-sync-selection cloud-sync-destination"
+                  aria-describedby={[
+                    "cloud-sync-description",
+                    "cloud-sync-selection",
+                    (grouped || (value.cloud.identity && destination)) &&
+                      "cloud-sync-destination",
+                    showWorkspaceNote && workspaceNote && "cloud-workspace-note",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   onClick={() => void session.startSync(value)}
                 >
                   {captureEnabled ? "Save capture request" : "Start syncing"}

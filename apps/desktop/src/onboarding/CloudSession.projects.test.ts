@@ -368,7 +368,7 @@ it("keeps a newer desktop status instead of a stale pause reply", async () => {
   try {
     await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
     let finish!: (value: ReturnType<typeof ongoingStatus>) => void
-    ongoing.pause.mockImplementationOnce(
+    ongoing.setEnabled.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finish = resolve
@@ -385,10 +385,8 @@ it("keeps a newer desktop status instead of a stale pause reply", async () => {
     finish(ongoingStatus({ status: "paused", paused: true }))
     await pending
     expect(session.getSnapshot().ongoing?.status).toBe("offline")
-    expect(ongoing.pause).toHaveBeenCalledWith({
-      accountId: "synthetic-account",
-      destinationId: "synthetic-personal",
-    })
+    expect(ongoing.setEnabled).toHaveBeenCalledWith(false)
+    expect(ongoing.retry).not.toHaveBeenCalled()
   } finally {
     stop()
   }
@@ -475,11 +473,18 @@ it("does not resume legacy saved requests or let them replace ongoing preparatio
     const pending = session.startSync()
     emit({ pendingSync: legacy })
     expect(session.getSnapshot()).toMatchObject({
-      screen: "complete",
+      screen: "folders",
       sync: { status: "starting" },
     })
-    finish(ongoingStatus({ status: "ready", consentVersion: "desktop-project-sync-v1" }))
+    finish(
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projects: projectGroup().projects,
+      }),
+    )
     await pending
+    expect(session.getSnapshot().screen).toBe("complete")
   } finally {
     stop()
   }

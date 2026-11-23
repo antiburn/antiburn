@@ -142,6 +142,15 @@ export function cloudProjectFixture(): {
         projectChoices: consent.projectChoices,
       }),
     ),
+    confirmTeamFolders: vi.fn<NonNullable<CloudOngoingPort["confirmTeamFolders"]>>(
+      async ({ destinationId }) =>
+        ongoingStatus({
+          status: "ready",
+          destinationId,
+          consentVersion: "desktop-project-sync-v1",
+          policyRevision: "renewed-policy",
+        }),
+    ),
     setProject: vi.fn<CloudOngoingPort["setProject"]>(async (change) =>
       ongoingStatus({
         status: "ready",
@@ -150,21 +159,26 @@ export function cloudProjectFixture(): {
         projects: change.selected ? change.projects : [],
       }),
     ),
-    pause: vi.fn<CloudOngoingPort["pause"]>(async () =>
+    setEnabled: vi.fn<CloudOngoingPort["setEnabled"]>(async (enabled) =>
       ongoingStatus({
-        status: "paused",
-        paused: true,
+        status: enabled ? "ready" : "paused",
+        deviceUploadEnabled: enabled,
+        paused: !enabled,
         consentVersion: "desktop-project-sync-v1",
       }),
     ),
     retry: vi.fn<CloudOngoingPort["retry"]>(async () =>
       ongoingStatus({ status: "ready", consentVersion: "desktop-project-sync-v1" }),
     ),
+    backfill: vi.fn<NonNullable<CloudOngoingPort["backfill"]>>(async () =>
+      ongoingStatus({ backfillInProgress: true }),
+    ),
   }
   const localTools = localToolsFixture()
   const port: CloudPort = {
     ...desktopCloudPort,
     ongoing,
+    workspaces: vi.fn(async () => null),
     read: vi.fn(async () => value),
     watch: vi.fn(async (listener) => {
       changed = listener

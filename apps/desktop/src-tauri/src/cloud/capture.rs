@@ -177,6 +177,9 @@ impl Host {
                     .map_err(|_| "Could not list the selected Claude session folder.")?,
                 SourceKind::OpenCodeSqliteV2 => discover_opencode(Path::new(&root.path), &limits)
                     .map_err(|_| "Could not list the selected OpenCode V2 database. Check its access and supported schema.")?,
+                SourceKind::CodexJsonl | SourceKind::PiJsonl => {
+                    return Err("Use project sync for this session provider.".into());
+                }
             };
             if candidates.len() > remaining {
                 return Err("Choose fewer session sources.".into());
@@ -192,11 +195,12 @@ impl Host {
                 if SourceKind::from(candidate.source_kind()) != root.source_kind {
                     return Err("The selected source provider changed.".into());
                 }
-                let base = match root.source_kind {
-                    SourceKind::ClaudeJsonl => Path::new(&root.path),
-                    SourceKind::OpenCodeSqliteV2 => Path::new(&root.path)
+                let base = if root.source_kind.is_directory() {
+                    Path::new(&root.path)
+                } else {
+                    Path::new(&root.path)
                         .parent()
-                        .ok_or("Choose an absolute database path.")?,
+                        .ok_or("Choose an absolute database path.")?
                 };
                 let relative_path = candidate
                     .source_path()
@@ -288,12 +292,16 @@ pub fn validate_selection(
     }
     for root in &roots {
         let path = Path::new(&root.path);
+        if root.source_kind.is_codex_or_pi() {
+            return Err("Use project sync for this session provider.".into());
+        }
         if !path.is_absolute()
             || root.path.len() > 4096
             || root.path.chars().any(char::is_control)
-            || match root.source_kind {
-                SourceKind::ClaudeJsonl => !path.is_dir(),
-                SourceKind::OpenCodeSqliteV2 => !path.is_file(),
+            || if root.source_kind.is_directory() {
+                !path.is_dir()
+            } else {
+                !path.is_file()
             }
         {
             return Err(
