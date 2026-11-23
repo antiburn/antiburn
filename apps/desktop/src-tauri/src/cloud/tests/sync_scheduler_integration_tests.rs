@@ -912,6 +912,7 @@ fn codex_and_pi_scheduler_requires_folder_consent_and_advertised_formats() {
         ids.iter()
             .any(|id| id.source_id.ends_with(&format!("/pi/{pi_id}")))
     );
+    drop(ids);
     assert_eq!(
         fixture
             .store
@@ -920,6 +921,26 @@ fn codex_and_pi_scheduler_requires_folder_consent_and_advertised_formats() {
             .0,
         2
     );
+    let malformed_id = "deadbeef-1234-1234-1234-123456789abc";
+    for malformed in [
+        codex_day.join(format!("rollout-2026-11-19T12-00-00-{malformed_id}.jsonl")),
+        pi_folder.join(format!("2026-11-19T12-00-00Z_{malformed_id}.jsonl")),
+    ] {
+        fs::write(&malformed, b"{\"type\":\n").unwrap();
+        fixture.schedule_backfill();
+        let mut observed = Vec::new();
+        for _ in 0..10 {
+            fixture.runner.next_integrity_poll = None;
+            fixture.turn_published(&mut observed);
+        }
+        let result = observed.last().unwrap();
+        assert!(!result.backfill_in_progress);
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["uploadProgress"],
+            serde_json::json!({ "uploaded": 2, "total": null })
+        );
+        fs::remove_file(malformed).unwrap();
+    }
 }
 
 impl Fixture {
@@ -1119,6 +1140,13 @@ impl Fixture {
                 || true,
             )
             .unwrap();
+    }
+
+    fn schedule_backfill(&mut self) {
+        let session = self.engine.session().unwrap();
+        self.runner.observe_retry_grant(session);
+        self.runner
+            .schedule_backfill(&self.policy, &session.grant_id);
     }
 
     /// Select only the final synthetic OpenCode ID; earlier IDs stay unapproved.
@@ -2863,7 +2891,7 @@ fn cloud_scheduler_allows_backfill_between_integrity_polls_even_when_the_deadlin
     assert!(!before.is_empty());
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
     write_source(&fixture.root, &fixture.project, "another", "synthetic");
-    fixture.runner.schedule_backfill(&fixture.policy);
+    fixture.schedule_backfill();
     assert!(fixture.runner.next_integrity_poll.unwrap() > Instant::now());
     fixture.runner.next_integrity_poll = Some(Instant::now() - Duration::from_secs(1));
     fixture.turn();
@@ -3202,12 +3230,85 @@ fn cloud_scheduler_generic_conflict_and_offline_reserve_do_not_suppress_sources(
 #[test]
 fn cloud_scheduler_backfill_stops_when_upload_capabilities_are_unavailable() {
     let mut fixture = Fixture::new(CAPS_MISSING, 0);
-    fixture.runner.schedule_backfill(&fixture.policy);
+    fixture.schedule_backfill();
     let mut observed = Vec::new();
     fixture.turn_published(&mut observed);
     assert_eq!(observed[0].status, State::UploadUnavailable);
     assert!(!observed[0].backfill_in_progress);
+    assert_eq!(
+        serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
+        serde_json::json!({ "uploaded": 0, "total": null })
+    );
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn cloud_scheduler_backfill_keeps_total_unknown_with_incomplete_project_evidence() {
+    let mut fixture = Fixture::new(READY, 0);
+    fixture.accept_first();
+    let outside = fixture.root.clone();
+    write_source(
+        &fixture.root,
+        &outside,
+        "partial",
+        "outside the saved folder",
+    );
+    fs::OpenOptions::new()
+        .append(true)
+        .open(fixture.root.join("partial.jsonl"))
+        .unwrap()
+        .write_all(b"{\"type\":\n")
+        .unwrap();
+    fixture.schedule_backfill();
+
+    let mut observed = Vec::new();
+    for _ in 0..10 {
+        fixture.runner.next_integrity_poll = None;
+        fixture.turn_published(&mut observed);
+    }
+    let result = observed.last().unwrap();
+    assert!(!result.backfill_in_progress);
+    assert_eq!(
+        serde_json::to_value(result).unwrap()["uploadProgress"],
+        serde_json::json!({ "uploaded": 1, "total": null })
+    );
+}
+
+#[test]
+fn cloud_scheduler_backfill_tracks_the_requested_grant_and_retry_keeps_progress() {
+    let mut fixture = Fixture::new(READY, 0);
+    fixture.accept_first();
+    fixture.schedule_backfill();
+    let old_status = status(
+        &fixture.store,
+        &mut fixture.host,
+        &fixture.engine,
+        State::Ready,
+    )
+    .unwrap();
+    fixture.sign_in_again();
+    let grant_id = fixture.engine.session().unwrap().grant_id.clone();
+    assert!(
+        fixture
+            .runner
+            .backfill_status(old_status.clone(), Some(&grant_id))
+            .upload_progress
+            .is_none()
+    );
+
+    fixture.schedule_backfill();
+    let mut observed = Vec::new();
+    fixture.turn_published(&mut observed);
+    let progress = observed[0].upload_progress.clone();
+    assert!(progress.is_some());
+    assert_eq!(
+        fixture
+            .runner
+            .retry_status(&BTreeSet::new(), &grant_id, |_| Ok(old_status))
+            .unwrap()
+            .upload_progress,
+        progress
+    );
 }
 
 #[test]
@@ -3268,19 +3369,43 @@ fn cloud_scheduler_backfill_reoffers_accepted_sources_but_respects_pause_and_del
         after: Some("zzzz".into()),
     });
     fixture.runner.next_reconcile = Some(Instant::now() + Duration::from_secs(60));
-    fixture.runner.schedule_backfill(&fixture.policy);
+    fixture.schedule_backfill();
     assert!(fixture.runner.discovery_cursor.is_none());
     assert!(fixture.runner.next_reconcile.is_none());
     fixture.turn();
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
     fixture.store.set_cloud_device_upload_enabled(true).unwrap();
-    fixture.turn();
-    fixture.runner.schedule_backfill(&fixture.policy);
+    let mut observed = Vec::new();
+    fixture.turn_published(&mut observed);
+    assert!(observed[0].backfill_in_progress);
+    assert_eq!(
+        serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
+        serde_json::json!({ "uploaded": 1, "total": null })
+    );
+    fixture.schedule_backfill();
     for _ in 0..10 {
         fixture.turn();
     }
     fixture.runner.next_reconcile = None;
-    fixture.turn();
+    observed.clear();
+    fixture.turn_published(&mut observed);
+    assert!(!observed[0].backfill_in_progress);
+    assert_eq!(
+        serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
+        serde_json::json!({ "uploaded": 2, "total": 2 })
+    );
+    let mut changed_policy = observed.remove(0);
+    changed_policy.policy_revision = Some("other-revision".into());
+    assert!(
+        fixture
+            .runner
+            .backfill_status(
+                changed_policy,
+                Some(&fixture.engine.session().unwrap().grant_id),
+            )
+            .upload_progress
+            .is_none()
+    );
     let reservations = fixture.service.reserve_identities.lock().unwrap();
     assert_eq!(reservations.len(), 4);
     assert_eq!(reservations[2].source_id, reservations[1].source_id);
@@ -3793,7 +3918,7 @@ fn cloud_scheduler_quarantined_partial_capture_keeps_its_identity_and_blocks_rec
     fixture.host = capture::Host::new(&base);
     fixture.store = Store::open(&base).unwrap();
     fixture.runner = Runner::default();
-    fixture.runner.schedule_backfill(&fixture.policy);
+    fixture.schedule_backfill();
     assert!(
         retry_saved_jobs(
             &fixture.store,

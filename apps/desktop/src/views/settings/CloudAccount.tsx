@@ -45,6 +45,77 @@ const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
   storage_unavailable: "Could not read saved uploads.",
 }
 const localRecoveryError = "Some sessions need local recovery. Saved data is kept."
+const sessionCountFormat = new Intl.NumberFormat()
+const uploadPercentFormat = new Intl.NumberFormat(undefined, { style: "percent" })
+
+/** Announce scan results and completion without reading each upload. */
+function backfillAnnouncement(
+  name: string,
+  progress: NonNullable<CloudOngoingStatus["uploadProgress"]>,
+) {
+  const { uploaded, total } = progress
+  if (total === null) return `${name}: Session total unavailable.`
+  if (total === 0) return `${name}: No sessions found for backfill.`
+  const count = `${sessionCountFormat.format(total)} ${total === 1 ? "session" : "sessions"}`
+  return uploaded === total
+    ? `${name}: Backfill complete. ${count} uploaded.`
+    : `${name}: Scan complete. ${count} found.`
+}
+
+/** Show counts without claiming a percentage until discovery has a nonzero total. */
+function BackfillUploadProgress({
+  name,
+  progress: { uploaded, total },
+  scanning,
+}: {
+  name: string
+  progress: NonNullable<CloudOngoingStatus["uploadProgress"]>
+  scanning: boolean
+}) {
+  if (total === 0) return <p>No sessions found for backfill.</p>
+
+  const count = sessionCountFormat.format(uploaded)
+  if (total === null) {
+    return (
+      <p className="tabular-nums">
+        {count} {uploaded === 1 ? "session" : "sessions"} uploaded
+        {!scanning && ". Session total unavailable."}
+      </p>
+    )
+  }
+
+  const fraction = uploaded / total
+  const rounded = Math.round(fraction * 100)
+  const percent =
+    uploaded > 0 && rounded === 0
+      ? `<${uploadPercentFormat.format(0.01)}`
+      : uploaded < total && rounded === 100
+        ? `>${uploadPercentFormat.format(0.99)}`
+        : uploadPercentFormat.format(fraction)
+  const summary = `${count} of ${sessionCountFormat.format(total)} ${total === 1 ? "session" : "sessions"} uploaded`
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 tabular-nums">
+        <span>{summary}</span>
+        <span className="font-medium text-label">{percent}</span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={`Session upload progress for ${name}`}
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={uploaded}
+        aria-valuetext={`${summary} (${percent})`}
+        className="ui-progress"
+      >
+        <div
+          className="ui-progress-indicator motion-reduce:transition-none"
+          style={{ width: `${fraction * 100}%` }}
+        />
+      </div>
+    </div>
+  )
+}
 
 /** Give a short warning and its optional action room to wrap independently. */
 function UploadWarning({
@@ -969,51 +1040,78 @@ function CloudProjectsAccount({
               </p>
             )}
           {backfillDestinations.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex max-w-sm flex-col gap-3">
               {backfillDestinations.map(([id, name, teamId, destinationPolicy]) => {
-                const active =
-                  startingBackfill === id || !!destinationPolicy?.backfillInProgress
-                if (draftFolders.length && !active) return null
+                const current =
+                  value.deviceUploadEnabled !== false &&
+                  destinationPolicy?.storageKnown === true
+                const scanning = current && destinationPolicy?.backfillInProgress === true
+                const waiting = startingBackfill === id && !scanning && current
+                const active = waiting || scanning
+                const showButton = !draftFolders.length || active
+                const progress = current && !waiting ? destinationPolicy?.uploadProgress : null
+                if (!showButton && !progress) return null
                 const disabled =
                   value.busy || starting || active || !canBackfillUploads(value, teamId)
                 const label =
                   teamId || hasTeamFolders ? `Backfill sessions to ${name}` : undefined
                 return (
-                  <div key={id} className="min-w-0 max-w-full">
-                    {backfillDestinations.length > 1 && (
-                      <p className="mb-1 wrap-anywhere">{name}</p>
+                  <div key={id} className="flex min-w-0 flex-col gap-1.5">
+                    {(label || !showButton) && (
+                      <p className="font-medium text-label wrap-anywhere">{name}</p>
                     )}
-                    <div className="flex items-center gap-x-2">
-                      <button
-                        type="button"
-                        className="ui-push-button h-auto! min-h-8 max-w-full shrink-0 text-left wrap-anywhere aria-disabled:opacity-60"
-                        aria-label={label}
-                        aria-disabled={disabled || undefined}
-                        aria-busy={active || undefined}
-                        aria-description="Send all available sessions in saved folders again, including sessions previously uploaded."
-                        onClick={async () => {
-                          if (disabled) return
-                          setStartingBackfill(id)
-                          try {
-                            await session.backfillSync(value, teamId)
-                          } finally {
-                            setStartingBackfill(undefined)
-                          }
-                        }}
-                      >
-                        Backfill sessions
-                      </button>
+                    <div
+                      className={
+                        showButton ? "flex flex-wrap items-center gap-x-2 gap-y-1" : "sr-only"
+                      }
+                    >
+                      {showButton && (
+                        <button
+                          type="button"
+                          className="ui-push-button h-auto! min-h-8 max-w-full shrink-0 text-left wrap-anywhere aria-disabled:opacity-60"
+                          aria-label={label}
+                          aria-disabled={disabled || undefined}
+                          aria-busy={active || undefined}
+                          aria-description="Send all available sessions in saved folders again, including sessions previously uploaded."
+                          onClick={async () => {
+                            if (disabled) return
+                            setStartingBackfill(id)
+                            try {
+                              await session.backfillSync(value, teamId)
+                            } finally {
+                              setStartingBackfill(undefined)
+                            }
+                          }}
+                        >
+                          Backfill sessions
+                        </button>
+                      )}
                       <span
-                        aria-hidden="true"
-                        className={`flex min-w-0 items-center gap-1 wrap-anywhere ${active ? "" : "invisible"}`}
+                        role="status"
+                        className={active ? "flex items-center gap-1" : "sr-only"}
                       >
-                        <LoaderCircle size={13} className="shrink-0 motion-safe:animate-spin" />
-                        Scanning…
-                      </span>
-                      <span role="status" className="sr-only">
-                        {active ? `Backfill in progress${label ? ` for ${name}` : ""}.` : ""}
+                        {active ? (
+                          <>
+                            <LoaderCircle
+                              size={13}
+                              className="shrink-0 motion-safe:animate-spin"
+                              aria-hidden="true"
+                            />
+                            {label && <span className="sr-only">{name}: </span>}
+                            {waiting ? "Waiting for backfill to start…" : "Scanning folders…"}
+                          </>
+                        ) : (
+                          progress && backfillAnnouncement(name, progress)
+                        )}
                       </span>
                     </div>
+                    {progress && (
+                      <BackfillUploadProgress
+                        name={name}
+                        progress={progress}
+                        scanning={scanning}
+                      />
+                    )}
                   </div>
                 )
               })}

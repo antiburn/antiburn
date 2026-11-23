@@ -912,16 +912,21 @@ it("requests a backfill for the saved revision without retrying or changing uplo
     projectChoices: { studio: true },
   })
   ongoing.status.mockResolvedValue(saved)
-  vi.mocked(ongoing.backfill!).mockResolvedValue({ ...saved, backfillInProgress: true })
+  let finishBackfill!: (status: typeof saved) => void
+  vi.mocked(ongoing.backfill!).mockImplementationOnce(
+    () => new Promise((resolve) => (finishBackfill = resolve)),
+  )
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   const button = await screen.findByRole("button", { name: "Backfill sessions" })
   fireEvent.click(button)
 
-  await waitFor(() => expect(button).toHaveAttribute("aria-busy", "true"))
+  expect(button).toHaveAttribute("aria-busy", "true")
+  expect(screen.getByText("Waiting for backfill to start…")).toHaveAttribute("role", "status")
+  await act(async () => finishBackfill({ ...saved, backfillInProgress: true }))
   await waitFor(() => expect(session.getSnapshot().busy).toBe(false))
   expect(button).toHaveAttribute("aria-disabled", "true")
-  expect(screen.getByText("Backfill in progress.")).toHaveAttribute("role", "status")
+  expect(screen.getByText("Scanning folders…")).toHaveAttribute("role", "status")
   act(() => emitSync({ ...saved, backfillInProgress: false }))
   expect(button).not.toHaveAttribute("aria-disabled")
   expect(ongoing.backfill).toHaveBeenCalledExactlyOnceWith(
@@ -939,7 +944,7 @@ it("requests a backfill for the saved revision without retrying or changing uplo
   expect(screen.queryByRole("button", { name: "Backfill sessions" })).toBeNull()
 })
 
-it("shows visible workspace names next to identical Backfill sessions labels", async () => {
+it("shows each workspace's own session upload percentage beside its backfill control", async () => {
   const { port, ongoing } = cloudProjectFixture()
   port.workspaces = vi.fn(async () => [
     { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
@@ -951,11 +956,18 @@ it("shows visible workspace names next to identical Backfill sessions labels", a
     deviceUploadEnabled: true,
     projects: projectGroup().projects,
     projectChoices: { studio: true },
+    acceptedCount: 100,
+    uploadProgress: { uploaded: 3, total: 4 },
   })
   ongoing.status.mockResolvedValue({
     ...saved,
     teamStatuses: [
-      { ...saved, destinationId: "synthetic-team", workspaceName: "Example Team" },
+      {
+        ...saved,
+        destinationId: "synthetic-team",
+        workspaceName: "Example Team",
+        uploadProgress: { uploaded: 2, total: 8 },
+      },
     ],
   })
   render(<Account session={new CloudSession(port, false, true)} />)
@@ -967,6 +979,84 @@ it("shows visible workspace names next to identical Backfill sessions labels", a
   ).toHaveTextContent(/^Backfill sessions$/)
   expect(screen.getByText("Personal", { selector: "p" })).toBeVisible()
   expect(screen.getByText("Example Team", { selector: "p" })).toBeVisible()
+  const personal = screen.getByRole("progressbar", {
+    name: "Session upload progress for Personal",
+  })
+  expect(personal).toHaveAttribute("aria-valuenow", "3")
+  expect(personal).toHaveAttribute("aria-valuemax", "4")
+  expect(personal).toHaveAttribute("aria-valuetext", "3 of 4 sessions uploaded (75%)")
+  expect(screen.getByText("3 of 4 sessions uploaded")).toBeVisible()
+  expect(screen.getByText("75%")).toBeVisible()
+  const team = screen.getByRole("progressbar", {
+    name: "Session upload progress for Example Team",
+  })
+  expect(team).toHaveAttribute("aria-valuenow", "2")
+  expect(team).toHaveAttribute("aria-valuemax", "8")
+  expect(team).toHaveAttribute("aria-valuetext", "2 of 8 sessions uploaded (25%)")
+  expect(screen.getByText("25%")).toBeVisible()
+})
+
+it("shows accepted sessions without a percentage until the scan has a nonzero total", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+    projectChoices: { studio: true },
+  })
+  ongoing.status.mockResolvedValue(saved)
+  render(<Account session={new CloudSession(port, false, true)} />)
+  await screen.findByRole("button", { name: "Backfill sessions" })
+
+  act(() =>
+    emitSync({
+      ...saved,
+      backfillInProgress: true,
+      uploadProgress: { uploaded: 1, total: null },
+    }),
+  )
+  const status = screen.getByText("Scanning folders…")
+  expect(status).toBeVisible()
+  expect(status).toHaveAttribute("role", "status")
+  expect(screen.getByText("1 session uploaded")).toBeVisible()
+  expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+
+  act(() => emitSync({ ...saved, uploadProgress: { uploaded: 2, total: null } }))
+  expect(status).toHaveTextContent("Personal: Session total unavailable.")
+  expect(screen.getByText("2 sessions uploaded. Session total unavailable.")).toBeVisible()
+  expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+
+  act(() => emitSync({ ...saved, uploadProgress: { uploaded: 0, total: 0 } }))
+  expect(screen.getByText("No sessions found for backfill.", { selector: "p" })).toBeVisible()
+  expect(status).toHaveTextContent("Personal: No sessions found for backfill.")
+  expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+  expect(screen.queryByText(/%$/)).not.toBeInTheDocument()
+
+  const count = new Intl.NumberFormat().format(1000)
+  act(() => emitSync({ ...saved, uploadProgress: { uploaded: 998, total: 1000 } }))
+  expect(status).toHaveTextContent(`Personal: Scan complete. ${count} sessions found.`)
+  const statusText = status.firstChild
+  act(() => emitSync({ ...saved, uploadProgress: { uploaded: 999, total: 1000 } }))
+  expect(status.firstChild).toBe(statusText)
+  expect(status).toHaveTextContent(`Personal: Scan complete. ${count} sessions found.`)
+  expect(screen.getByText(">99%")).toBeVisible()
+  expect(screen.queryByText("100%")).not.toBeInTheDocument()
+
+  act(() => emitSync({ ...saved, uploadProgress: { uploaded: 1000, total: 1000 } }))
+  expect(status).toHaveTextContent(`Personal: Backfill complete. ${count} sessions uploaded.`)
+  expect(screen.getByText("100%")).toBeVisible()
+
+  act(() =>
+    emitSync({
+      ...saved,
+      status: "storage_unavailable",
+      storageKnown: false,
+      uploadProgress: { uploaded: 1000, total: 1000 },
+    }),
+  )
+  expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
+  expect(screen.queryByText("100%")).not.toBeInTheDocument()
 })
 
 it("hides cached totals and progress after saved upload storage becomes unknown", async () => {

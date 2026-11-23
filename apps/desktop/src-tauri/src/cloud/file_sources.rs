@@ -104,30 +104,49 @@ fn open(kind: SourceKind, path: &Path, id: &str, limits: &Limits) -> Result<Cand
     }
 }
 
-/// Find one page of fresh candidates. Skip malformed or in-progress files so
-/// one bad header cannot hide another session. Recheck headers during capture.
+/// One provider page. Unknown project membership prevents a complete count.
+pub(super) struct Page {
+    pub(super) candidates: Vec<Candidate>,
+    pub(super) next_cursor: Option<String>,
+    pub(super) partial: bool,
+}
+
+/// Keep healthy candidates when another file cannot be opened or has a bad header.
+/// Report the gap because the unreadable session may belong to a saved folder.
 pub(super) fn discover_page(
     kind: SourceKind,
     root: &Path,
     after: Option<&str>,
     limits: &Limits,
-) -> Result<(Vec<Candidate>, Option<String>), Error> {
+) -> Result<Page, Error> {
     let mut candidates = Vec::new();
     let mut cursor = None;
+    let mut partial = false;
     for (id, path) in paths(kind, root, limits)?.into_iter().rev() {
         if after.is_some_and(|after| id.as_str() >= after) {
             continue;
         }
-        let Some(path) = path else { continue };
-        if let Ok(candidate) = open(kind, &path, &id, limits) {
+        if let Some(path) = path
+            && let Ok(candidate) = open(kind, &path, &id, limits)
+        {
             if candidates.len() == limits.discovery_sessions {
-                return Ok((candidates, cursor));
+                return Ok(Page {
+                    candidates,
+                    next_cursor: cursor,
+                    partial,
+                });
             }
             candidates.push(candidate);
             cursor = Some(id);
+        } else {
+            partial = true;
         }
     }
-    Ok((candidates, None))
+    Ok(Page {
+        candidates,
+        next_cursor: None,
+        partial,
+    })
 }
 
 /// Reopen the exact native ID after a proved pre-capture capacity refusal.
