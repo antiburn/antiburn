@@ -116,6 +116,13 @@ export class CloudSession {
   private requestId: string | null = null
   private preparedRequestId: string | null = null
   private syncInFlight = false
+  private syncControlOperation:
+    | {
+        generation: number
+        pending: number
+        pauseRequested: boolean
+      }
+    | undefined
   private consentRevision = 0
   private readonly port: CloudPort
   private readonly analytics: boolean
@@ -337,7 +344,7 @@ export class CloudSession {
    */
   load = async () => {
     const generation = this.generation
-    this.publish({ busy: true, error: null })
+    this.publish({ busy: true, canPauseBackfill: false, error: null })
     void this.loadLocalTools()
     try {
       if (!this.stop) {
@@ -818,7 +825,8 @@ export class CloudSession {
     }
   }
   /** Pause or resume uploads on this device without retrying interrupted work. */
-  controlSync = (paused: boolean) => this.changeSyncControl((port) => port.setEnabled(!paused))
+  controlSync = (paused: boolean) =>
+    this.changeSyncControl((port) => port.setEnabled(!paused), { pause: paused })
 
   /** Renew the exact saved Team selection and add the explicit same-Team draft. */
   private async confirmTeamFolders(context: CloudViewSnapshot, destinationId: string) {
@@ -906,10 +914,9 @@ export class CloudSession {
     const target = retryTarget(context, this.snapshot, this.projectBinding(true), destinationId)
     const policy = this.snapshot.teamStatuses?.[destinationId]
     if (target && policy && !this.syncInFlight)
-      await this.changeSyncControl(
-        (port) => port.retry(target.binding, target.revision),
-        policy,
-      )
+      await this.changeSyncControl((port) => port.retry(target.binding, target.revision), {
+        team: policy,
+      })
   }
 
   /** Ask desktop to scan the exact saved policy shown in Settings. */
@@ -917,33 +924,56 @@ export class CloudSession {
     const backfill = this.port.ongoing?.backfill
     const target = backfillTarget(context, this.snapshot, this.projectBinding(true), teamId)
     if (!backfill || !target || this.syncInFlight) return false
-    return this.changeSyncControl(
-      () => backfill(target.binding, target.revision),
-      target.team,
-      () =>
+    return this.changeSyncControl(() => backfill(target.binding, target.revision), {
+      team: target.team,
+      backfillCurrent: () =>
         matchesUploadPolicy(
           uploadPolicy(this.snapshot, teamId),
           target.binding,
           target.revision,
         ),
-    )
+    })
   }
 
+  /** Pause fences desktop uploads before it waits for admission. Keep other
+   * changes blocked until both calls settle, and ignore the canceled backfill reply.
+   */
   private async changeSyncControl(
     action: (port: NonNullable<CloudPort["ongoing"]>) => Promise<CloudOngoingStatus | void>,
-    team?: CloudOngoingStatus,
-    backfillCurrent?: () => boolean,
+    {
+      team,
+      backfillCurrent,
+      pause,
+    }: {
+      team?: CloudOngoingStatus | undefined
+      backfillCurrent?: () => boolean
+      pause?: boolean
+    } = {},
   ) {
     const port = this.port.ongoing
-    if (!this.active || !port || this.snapshot.busy) return false
     const generation = this.generation
+    const pending = this.syncControlOperation
+    const pausingBackfill =
+      pause && this.snapshot.canPauseBackfill && pending?.generation === generation
+        ? pending
+        : undefined
+    if (
+      !this.active ||
+      !port ||
+      ((this.snapshot.busy || pending?.generation === generation) && !pausingBackfill)
+    )
+      return false
+    const operation = pausingBackfill ?? { generation, pending: 0, pauseRequested: false }
+    this.syncControlOperation = operation
+    operation.pending++
+    if (pausingBackfill) operation.pauseRequested = true
     const revision = this.ongoingRevision
     const current = () =>
       this.active &&
       generation === this.generation &&
-      (!backfillCurrent || backfillCurrent()) &&
+      (!backfillCurrent || (!operation.pauseRequested && backfillCurrent())) &&
       (!team || team.accountId === this.projectBinding(true)?.accountId)
-    this.publish({ busy: true, uploadActionError: null })
+    this.publish({ busy: true, canPauseBackfill: !!backfillCurrent, uploadActionError: null })
     try {
       const status = await action(port)
       if (
@@ -965,7 +995,12 @@ export class CloudSession {
         })
       return false
     } finally {
-      if (this.active && generation === this.generation) this.publish({ busy: false })
+      operation.pending--
+      if (!operation.pending && this.syncControlOperation === operation) {
+        this.syncControlOperation = undefined
+        if (this.active && generation === this.generation)
+          this.publish({ busy: false, canPauseBackfill: false })
+      }
     }
   }
   /** Serialize surface actions and reject replies superseded by desktop events. */

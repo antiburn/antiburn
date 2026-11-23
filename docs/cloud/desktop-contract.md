@@ -439,12 +439,22 @@ deletion markers, existing jobs and bytes, and upload retry delays. Backfill
 does not turn on uploads, save draft choices, or retry failed jobs. Starting a
 scan does not confirm any uploads. Only an explicit backfill re-offers unchanged
 sessions; normal sync still skips them.
+Desktop lets one backfill request wait for its current Cloud work to finish.
+If another request is already waiting, wait for it to start before requesting a
+second scan. Before scheduling, Desktop checks the account, upload controls, and
+saved folder policy again.
 Backfill starts at the first retained source key and scans in bounded pages.
 The desktop activity date range does not limit this scan. It cannot recover
 history the coding tool removed, use files outside approved source roots, or
 read sources that exceed the provider limits. Settings shows when the scan is
 active. The scan can finish before Cloud accepts every upload.
 If Desktop restarts before the scan finishes, request backfill again.
+Each destination can report `uploadProgress` for its last explicit backfill in
+the current Desktop run and sign-in. `uploaded` counts Cloud acceptance for
+source versions found in that scan. `total` counts sources that match the saved
+folders and are not marked as deleted. `total` is null while the scan runs. It
+stays null if discovery misses sources or reaches the progress counter limit.
+Settings does not show a percentage without a known nonzero total.
 `recoveryRequiredCount` identifies missing or incomplete local captures that
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings

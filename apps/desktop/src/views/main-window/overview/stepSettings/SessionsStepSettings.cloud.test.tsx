@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { emptyCloudSnapshot, type CloudOngoingStatus } from "../../../../lib/cloud"
 import { DEFAULT_SETTINGS } from "../../../../lib/ipc"
@@ -197,6 +197,67 @@ it("does not turn an old true upload preference into ongoing content consent", a
   ).toBe(false)
   expect(screen.getByRole("switch", { name: "Include folders without Git" })).not.toBeChecked()
 })
+
+it.each(["pause", "backfill"])(
+  "keeps pause available during backfill when %s settles first",
+  async (first) => {
+    const saved = ongoingStatus({
+      status: "ready",
+      deviceUploadEnabled: true,
+      consentVersion: "desktop-project-sync-v1",
+      projects: projectGroup().projects,
+      projectChoices: { studio: true },
+    })
+    mockCloud(true, false, saved)
+    const invokeCloud = invoke.getMockImplementation()!
+    let finishBackfill!: () => void
+    let finishPause!: () => void
+    invoke.mockImplementation((...args) => {
+      const [command, options] = args
+      if (command === "cloud_backfill_sync")
+        return new Promise((resolve, reject) => {
+          finishBackfill = () =>
+            first === "pause"
+              ? resolve({ ...saved, backfillInProgress: true })
+              : reject(new Error("Cloud account changed. Saved work is kept."))
+        })
+      if (command === "cloud_set_sync_enabled" && options?.enabled === false)
+        return new Promise((resolve) => {
+          finishPause = () => resolve(invokeCloud(...args))
+        })
+      return invokeCloud(...args)
+    })
+
+    render(<SessionsStepSettings />)
+    const backfill = await screen.findByRole("button", { name: "Backfill sessions" })
+    const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
+    const folder = screen.getByRole("switch", { name: "Sync Studio: /Example/Studio" })
+    fireEvent.click(backfill)
+    expect(screen.getByText("Waiting for backfill to start…")).toBeVisible()
+    expect(upload).toBeChecked()
+    expect(upload).toBeEnabled()
+    expect(folder).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeDisabled()
+
+    fireEvent.click(upload)
+    expect(invoke).toHaveBeenCalledWith("cloud_set_sync_enabled", { enabled: false })
+    expect(upload).toBeDisabled()
+    const [finishFirst, finishLast] =
+      first === "pause" ? [finishPause, finishBackfill] : [finishBackfill, finishPause]
+    await act(async () => finishFirst())
+    expect(upload).toBeDisabled()
+    expect(folder).toBeDisabled()
+    await act(async () => finishLast())
+
+    expect(upload).not.toBeChecked()
+    expect(upload).toBeEnabled()
+    expect(folder).toBeChecked()
+    expect(folder).toBeEnabled()
+    expect(screen.queryByText("Scanning folders…")).not.toBeInTheDocument()
+    expect(screen.queryByText("Could not start backfill. Try again.")).not.toBeInTheDocument()
+    expect(screen.getByText("Uploads are paused on this device.")).toBeVisible()
+  },
+)
 
 it("pauses and resumes Team uploads without requiring Personal folders", async () => {
   mockCloud(false, false, {

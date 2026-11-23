@@ -127,7 +127,7 @@ fn cloud_scheduler_backfill_starts_over_and_retains_its_own_page_position() {
         Some("session-1023")
     );
 
-    runner.schedule_backfill(&policy);
+    runner.schedule_backfill(&policy, "test-grant");
     for (first, count) in [
         ("session-0000", 512),
         ("session-0512", 512),
@@ -190,14 +190,14 @@ fn cloud_scheduler_pages_multiple_claude_roots_without_discarding_earlier_select
         });
     }
     let mut cache = super::super::projects::Cache::default();
-    let (first, cursor, blocked) =
+    let (first, cursor, coverage) =
         discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
     assert_eq!(first.len(), 512);
-    assert!(!blocked);
-    let (second, cursor, blocked) =
+    assert!(!coverage.blocked && !coverage.partial);
+    let (second, cursor, coverage) =
         discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
     assert_eq!(second.len(), 88);
-    assert!(!blocked);
+    assert!(!coverage.blocked && !coverage.partial);
     assert!(cursor.is_none());
     let ids: BTreeSet<_> = first
         .iter()
@@ -214,19 +214,19 @@ fn cloud_scheduler_content_observation_errors_do_not_discard_healthy_pages() {
     connection.execute("INSERT INTO session_message VALUES ('broken','session-0001','user',1,?1)",
         [r#"{"files":[{"uri":"media:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#]).unwrap();
     let mut cache = super::super::projects::Cache::default();
-    let (first, cursor, blocked) =
+    let (first, cursor, coverage) =
         discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
-    assert!(blocked);
+    assert!(coverage.blocked);
     assert_eq!(first.len(), 511);
     assert_eq!(first[0].candidate.native_session_id(), "session-0000");
     assert_eq!(first[1].candidate.native_session_id(), "session-0002");
-    let (second, cursor, blocked) =
+    let (second, cursor, coverage) =
         discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
-    assert!(!blocked);
+    assert!(!coverage.blocked && !coverage.partial);
     assert_eq!(second.len(), 512);
-    let (last, cursor, blocked) =
+    let (last, cursor, coverage) =
         discover_policy_page(&policy, &|| true, &mut cache, &cursor.unwrap()).unwrap();
-    assert!(!blocked);
+    assert!(!coverage.blocked && !coverage.partial);
     assert!(cursor.is_none());
     assert_eq!(last.len(), 1);
 }

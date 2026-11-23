@@ -302,7 +302,11 @@ export function cloudFixture(name: string): CloudPort {
     ongoing: {
       watch: async (listener) => {
         const finish = () => {
-          ongoing = { ...ongoing, backfillInProgress: false }
+          ongoing = {
+            ...ongoing,
+            backfillInProgress: false,
+            ...(name === "settings-attention" && { uploadProgress: { uploaded: 3, total: 8 } }),
+          }
           listener(ongoing)
         }
         const event = "cloud-fixture:finish-backfill"
@@ -420,7 +424,13 @@ export function cloudFixture(name: string): CloudPort {
         return ongoing
       },
       backfill: async () => {
-        ongoing = { ...ongoing, backfillInProgress: true }
+        ongoing = {
+          ...ongoing,
+          backfillInProgress: true,
+          ...(name === "settings-attention" && {
+            uploadProgress: { uploaded: 2, total: null },
+          }),
+        }
         return ongoing
       },
     },

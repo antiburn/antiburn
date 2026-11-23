@@ -7,11 +7,12 @@ use tokio::sync::Semaphore;
 /// Safe renderer error for work that has not started and can be retried.
 pub(super) const BUSY: &str = "Cloud is busy. Try again.";
 
-/// Normal work fails fast. Reads that follow an event can wait briefly for
-/// admission. Cleanup waits for the permit without a deadline.
+/// Normal work fails fast. Reads that follow an event can wait briefly.
+/// Cleanup and one explicit backfill request can wait for admission.
 pub(super) enum Priority {
     Normal,
     Read(Duration),
+    Backfill,
     Cleanup,
 }
 
@@ -20,12 +21,14 @@ pub(super) enum Priority {
 #[derive(Clone)]
 pub(super) struct BlockingWork {
     admission: Arc<Semaphore>,
+    backfill_waiter: Arc<Semaphore>,
 }
 
 impl Default for BlockingWork {
     fn default() -> Self {
         Self {
             admission: Arc::new(Semaphore::new(1)),
+            backfill_waiter: Arc::new(Semaphore::new(1)),
         }
     }
 }
@@ -57,6 +60,17 @@ impl BlockingWork {
                 }
                 permit
             }
+            Priority::Backfill => {
+                let _waiter = self
+                    .backfill_waiter
+                    .try_acquire()
+                    .map_err(|_| BUSY.to_owned())?;
+                self.admission
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "Cloud is unavailable.".to_owned())?
+            }
             Priority::Cleanup => self
                 .admission
                 .clone()
@@ -72,6 +86,10 @@ impl BlockingWork {
         .map_err(|_| "Cloud is unavailable.".to_owned())?
     }
 }
+
+#[cfg(test)]
+#[path = "tests/work_backfill_tests.rs"]
+mod backfill_tests;
 
 #[cfg(test)]
 mod tests {

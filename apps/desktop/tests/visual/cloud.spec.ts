@@ -674,14 +674,22 @@ for (const theme of ["light", "dark"] as const) {
     await backfill.press("Enter")
     await expect(backfill).toBeDisabled()
     await expect(backfill).toHaveAttribute("aria-busy", "true")
-    await expect(page.getByText("Scanning…", { exact: true })).toBeVisible()
+    await expect(page.getByText("Scanning folders…", { exact: true })).toBeVisible()
     expect(await backfill.boundingBox()).toEqual(idle)
+    await expect(page.getByText("2 sessions uploaded", { exact: true })).toBeVisible()
+    await expect(page.getByRole("progressbar")).toHaveCount(0)
     await expect(page.getByText(/uploaded ·|Transferred/)).toHaveCount(0)
     await capture(page, `cloud-account-${theme}-blocked`)
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-backfill")))
     await expect(backfill).toBeEnabled()
-    await expect(page.getByText("Scanning…", { exact: true })).not.toBeVisible()
+    await expect(page.getByText("Scanning folders…", { exact: true })).not.toBeVisible()
     expect(await backfill.boundingBox()).toEqual(idle)
+    await expect(page.getByRole("progressbar")).toHaveAttribute(
+      "aria-valuetext",
+      "3 of 8 sessions uploaded (38%)",
+    )
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+    await capture(page, `cloud-account-${theme}-backfill-progress`)
     await page.getByRole("button", { name: "Sign out", exact: true }).click()
     await expect(
       page.getByRole("button", { name: "Sign in with GitHub", exact: true }),

@@ -173,6 +173,8 @@ export function SessionsStepSettings() {
     cloudStorageUnknown ||
     cloudUnavailable ||
     (hasSavedFolders ? cloud.deviceUploadEnabled === undefined : !canSetUpCloud)
+  const uploadControlBusy =
+    cloud.busy && !(cloud.canPauseBackfill && hasSavedFolders && deviceUploadsEnabled)
   const info = useSyncExternalStore(appInfoStore.subscribe, appInfoStore.getSnapshot)
   const [session] = useState(() => new SourcesSession())
   const { repositories, scanRoots, permissions, scanning } = useSyncExternalStore(
@@ -221,7 +223,9 @@ export function SessionsStepSettings() {
                       : undefined
                 }
                 checked={hasSavedFolders && deviceUploadsEnabled}
-                disabled={!loaded || !cloud.loaded || cloud.busy || uploadControlUnavailable}
+                disabled={
+                  !loaded || !cloud.loaded || uploadControlBusy || uploadControlUnavailable
+                }
                 dimmed={cloudUnavailable}
                 disabledTooltip={
                   !cloud.loaded
@@ -235,7 +239,12 @@ export function SessionsStepSettings() {
                           : undefined
                 }
                 onChange={(next) => {
-                  if (loaded && cloud.loaded && !uploadControlUnavailable) {
+                  if (
+                    loaded &&
+                    cloud.loaded &&
+                    !uploadControlBusy &&
+                    !uploadControlUnavailable
+                  ) {
                     if (hasSavedFolders) {
                       void cloudSession.controlSync(!next)
                     } else if (next && canSetUpCloud) {

@@ -36,6 +36,8 @@ export interface CloudViewSnapshot {
   /** A failed status read or subscription cannot establish current tool readiness. */
   localToolsError: boolean
   busy: boolean
+  /** Pause is the only Cloud change allowed while the backfill request waits. */
+  canPauseBackfill?: boolean
   error: string | null
   /** Settings upload changes report errors with the folder controls, not sign-in. */
   uploadActionError?: string | null

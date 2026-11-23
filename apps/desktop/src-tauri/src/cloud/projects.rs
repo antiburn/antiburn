@@ -596,7 +596,7 @@ fn project_candidates(
             }
         }
     }
-    let (page, _) = sync::discover_root_page(root.source_kind, &root.path, None, *remaining)?;
+    let page = sync::discover_root_page(root.source_kind, &root.path, None, *remaining)?.candidates;
     *remaining -= page.len();
     let mut seen: BTreeSet<String> = candidates
         .iter()

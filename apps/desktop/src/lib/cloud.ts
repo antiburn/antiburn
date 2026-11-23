@@ -269,8 +269,12 @@ export interface CloudOngoingStatus {
   folderConfirmationRequired?: boolean
   /** Desktop found saved work that the user can retry for this exact destination. */
   retryAvailable?: boolean
-  /** Desktop is scanning the workspace's saved folders. */
+  /** Desktop has a backfill scan pending for this policy. */
   backfillInProgress?: boolean
+  /** Cloud acceptance for sources found by the last explicit backfill for this policy.
+   * The total is null until the scan finishes, or if discovery could not count every source.
+   */
+  uploadProgress?: { uploaded: number; total: number | null }
   /** Local recovery and remote warning are independent of saved upload consent. */
   localResetAvailable?: boolean
   remoteRevocationUnconfirmed?: boolean
