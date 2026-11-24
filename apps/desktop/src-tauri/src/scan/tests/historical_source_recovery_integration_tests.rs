@@ -95,3 +95,97 @@ async fn watcher_recovers_a_restored_historical_source_after_a_current_window_sc
         );
     }
 }
+
+/// Feed only finite discovery results so the owner receives no watcher hints.
+async fn scan_without_watcher(
+    store: &Store,
+    home: &std::path::Path,
+    cutoff: Option<i64>,
+    logs: Vec<SessionLog>,
+) -> Described {
+    let mut scan_policy = policy(store, home, None);
+    scan_policy.cutoff = cutoff;
+    let mut admission = writer(store);
+    let (sender, finite) = mpsc::channel(1);
+    let (_live_sender, live) = mpsc::channel(1);
+    sender.send(batch(logs)).await.unwrap();
+    drop(sender);
+    let result = run(finite, live, None, &scan_policy, &mut admission).await;
+    admission.finish().unwrap();
+    result
+}
+
+#[tokio::test]
+async fn history_indexes_older_sessions_and_reconciliation_indexes_missed_sources() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let store = Store::open_in_memory(home).unwrap();
+    let now = unix_now();
+    let cutoff = Some(now - CURRENT_WINDOW_SECS);
+    let recent = fixture_log(home, "11111111-1111-4111-8111-111111111111");
+    let mut older = fixture_log(home, "22222222-2222-4222-8222-222222222222");
+    let older_activity = now - 45 * 86_400;
+    older.updated_at = Some(older_activity);
+    let SessionSource::File(path) = &older.source else {
+        unreachable!()
+    };
+    let mut event: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    event["timestamp"] = time::OffsetDateTime::from_unix_timestamp(older_activity)
+        .unwrap()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap()
+        .into();
+    std::fs::write(path, format!("{event}\n")).unwrap();
+
+    let current =
+        scan_without_watcher(&store, home, cutoff, vec![recent.clone(), older.clone()]).await;
+    assert_eq!(current.records.len(), 1);
+    assert_eq!(current.records[0].source_label, recent.source_label());
+
+    let historical =
+        scan_without_watcher(&store, home, None, vec![recent.clone(), older.clone()]).await;
+    assert_eq!(historical.records.len(), 2);
+    assert!(historical.records.iter().any(|row| {
+        row.source_label == older.source_label() && row.updated_at_epoch == Some(older_activity)
+    }));
+
+    let agent = AgentKind::Claude.slug();
+    for _ in 0..2 {
+        let claim = store
+            .claim_next_evidence(&[agent], now, 60)
+            .unwrap()
+            .unwrap();
+        store
+            .fail_evidence(
+                &claim,
+                crate::store::EvidenceFailure::Failed {
+                    revisions: crate::analysis::projection_revisions(),
+                },
+                "synthetic_terminal_error",
+            )
+            .unwrap();
+    }
+
+    let missed = fixture_log(home, "33333333-3333-4333-8333-333333333333");
+    let periodic =
+        scan_without_watcher(&store, home, cutoff, vec![recent, older, missed.clone()]).await;
+    assert_eq!(periodic.records.len(), 2);
+    let missed_row = periodic
+        .records
+        .iter()
+        .find(|row| row.source_label == missed.source_label())
+        .unwrap();
+    assert_eq!(periodic.changed, vec![missed_row.key.clone()]);
+    let claim = store
+        .claim_next_evidence(&[agent], now + 1, 60)
+        .unwrap()
+        .unwrap();
+    assert_eq!(claim.key, missed_row.key);
+    assert!(
+        store
+            .claim_next_evidence(&[agent], now + 1, 60)
+            .unwrap()
+            .is_none()
+    );
+}

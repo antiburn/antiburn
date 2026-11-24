@@ -68,6 +68,7 @@ struct RunningWork {
     generation: u64,
     lane: DispatchLane,
     origin: WorkOrigin,
+    live: bool,
 }
 
 pub(super) struct ScanQueue<T> {
@@ -77,6 +78,7 @@ pub(super) struct ScanQueue<T> {
     next_generation: u64,
     next_ticket: u64,
     shared_running: usize,
+    pass_limit: usize,
 }
 
 impl<T> Default for ScanQueue<T> {
@@ -88,6 +90,7 @@ impl<T> Default for ScanQueue<T> {
             next_generation: 0,
             next_ticket: 0,
             shared_running: 0,
+            pass_limit: TOTAL_SLOTS,
         }
     }
 }
@@ -95,6 +98,14 @@ impl<T> Default for ScanQueue<T> {
 impl<T> ScanQueue<T> {
     pub(super) fn new() -> Self {
         Self::default()
+    }
+
+    /// Limit preparation for finite discovery results. Keep live and recovery work eligible.
+    pub(super) fn with_pass_limit(pass_limit: usize) -> Self {
+        Self {
+            pass_limit,
+            ..Self::default()
+        }
     }
 
     /// Each dirty hint creates a generation, including equal or older activity.
@@ -151,11 +162,19 @@ impl<T> ScanQueue<T> {
             DispatchLane::ReservedLive
         };
         let fair = lane == DispatchLane::Shared && self.turns.is_fair_turn();
+        let pass_capacity = self
+            .running
+            .values()
+            .filter(|work| work.origin == WorkOrigin::Pass && !work.live)
+            .count()
+            < self.pass_limit;
         let key = self
             .pending
             .iter()
             .filter(|(key, work)| {
-                !self.running.contains_key(*key) && (lane == DispatchLane::Shared || work.live)
+                !self.running.contains_key(*key)
+                    && (lane == DispatchLane::Shared || work.live)
+                    && (work.origin != WorkOrigin::Pass || work.live || pass_capacity)
             })
             .min_by(|(left_key, left), (right_key, right)| {
                 if fair {
@@ -177,6 +196,7 @@ impl<T> ScanQueue<T> {
                 generation: work.generation,
                 lane,
                 origin: work.origin,
+                live: work.live,
             },
         );
         if lane == DispatchLane::Shared {
@@ -258,6 +278,49 @@ mod tests {
 
     fn release(queue: &mut ScanQueue<usize>, dispatch: &Dispatch<usize>) {
         assert!(queue.release(&dispatch.work.key, dispatch.work.generation));
+    }
+
+    #[test]
+    fn limited_pass_allows_live_work_and_resumes_when_a_slot_releases() {
+        let now = Instant::now();
+        let mut queue = ScanQueue::with_pass_limit(2);
+        for key in ["first", "second", "third", "fourth"] {
+            queue.enqueue(input(key, Some(1), now));
+        }
+
+        let first = queue.dispatch().unwrap();
+        let second = queue.dispatch().unwrap();
+        assert!(queue.dispatch().is_none());
+
+        let mut live = input("live", Some(2), now);
+        live.origin = WorkOrigin::Live;
+        live.live = true;
+        queue.enqueue(live);
+        let live = queue.dispatch().unwrap();
+        assert_eq!(live.work.origin, WorkOrigin::Live);
+        assert!(queue.dispatch().is_none());
+
+        let mut live_hint = input("third", Some(3), now);
+        live_hint.origin = WorkOrigin::Live;
+        live_hint.live = true;
+        queue.enqueue(live_hint);
+        let coalesced = queue.dispatch().unwrap();
+        assert_eq!(coalesced.work.key, "third");
+        assert_eq!(coalesced.work.origin, WorkOrigin::Pass);
+        assert!(coalesced.work.live);
+        assert!(queue.dispatch().is_none());
+
+        assert!(!queue.release(&first.work.key, first.work.generation + 1));
+        assert!(queue.dispatch().is_none());
+        release(&mut queue, &first);
+        let next_pass = queue.dispatch().unwrap();
+        assert_eq!(next_pass.work.origin, WorkOrigin::Pass);
+        assert!(!next_pass.work.live);
+        release(&mut queue, &second);
+        release(&mut queue, &next_pass);
+        release(&mut queue, &coalesced);
+        release(&mut queue, &live);
+        assert!(queue.is_empty());
     }
 
     #[test]

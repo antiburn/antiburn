@@ -82,6 +82,7 @@ pub(super) struct PreparationPolicy<'a> {
     pub(super) store: &'a Store,
     pub(super) repository: &'a RepositoryPolicySnapshot,
     pub(super) include_non_repo_folders: bool,
+    pub(super) non_repository_cwds: Option<&'a NonRepositoryCwds>,
 }
 
 /// Prepare one candidate under the caller's fixed cutoff and policy snapshot.
@@ -132,6 +133,7 @@ pub(super) async fn prepare_description(
             store: &store,
             repository: &repository,
             include_non_repo_folders,
+            non_repository_cwds: None,
         },
         None,
     )
@@ -271,6 +273,9 @@ async fn admit_record(
         policy.include_non_repo_folders,
         &git_access,
         &path_access,
+        policy
+            .non_repository_cwds
+            .filter(|_| record.key.environment_key == "native"),
     )
     .await;
     let root = match admission {
@@ -511,6 +516,34 @@ mod tests {
         assert_eq!(*reused, previous);
     }
 
+    #[tokio::test]
+    async fn cached_git_miss_still_checks_access_and_expires_after_the_pass() {
+        let fixture = Fixture::new();
+        let cwd = fixture.cwd.to_str().unwrap();
+        let DescribeOutcome::Session(record) =
+            describe_one(fixture.log.clone(), &fixture.home(), None).await
+        else {
+            panic!("fixture must describe a session");
+        };
+        let allow = |_: &Path| ProjectAccessDecision::Allowed;
+        let deny = |_: &Path| ProjectAccessDecision::DeferredUncertain;
+        let cwds = NonRepositoryCwds::default();
+
+        let admission =
+            guarded_repo_admission(&record, cwd, true, &allow, &allow, Some(&cwds)).await;
+        assert!(matches!(admission, RepoAdmission::Folder));
+        assert!(cwds.lock().unwrap().contains(&fixture.cwd));
+        let blocked = guarded_repo_admission(&record, cwd, true, &deny, &allow, Some(&cwds)).await;
+        assert!(matches!(blocked, RepoAdmission::DeferredProject(_, _)));
+
+        git_command(&fixture.cwd, &["init", "-q"]);
+        let next_pass = NonRepositoryCwds::default();
+        let admission =
+            guarded_repo_admission(&record, cwd, true, &allow, &allow, Some(&next_pass)).await;
+        assert!(matches!(admission, RepoAdmission::Repository(_)));
+        assert!(next_pass.lock().unwrap().is_empty());
+    }
+
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn claude_cwd_inference_retries_with_the_current_folder_grant() {
@@ -577,6 +610,7 @@ mod tests {
                 store: &store,
                 repository: &snapshot,
                 include_non_repo_folders: false,
+                non_repository_cwds: None,
             },
             &mut GateCounts::default(),
         )
@@ -602,6 +636,7 @@ mod tests {
                 store: &store,
                 repository: &snapshot,
                 include_non_repo_folders: false,
+                non_repository_cwds: None,
             },
             &mut GateCounts::default(),
         )
