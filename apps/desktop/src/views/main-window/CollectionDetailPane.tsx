@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type ReactNode, type KeyboardEvent } from "react"
+import { useCallback, useId, useRef, useState, type ReactNode, type KeyboardEvent } from "react"
 
 import { ScrollPane } from "../../components/ui/ScrollPane"
 import { useViewportWidth } from "../../lib/viewport"
@@ -26,6 +26,8 @@ interface CollectionDetailPaneProps<T extends CollectionItem> {
   renderDetail: (item: T) => ReactNode
   /** Report the committed detail selection, or null while concealed. */
   onDetailPresentation?: (item: T | null) => void
+  /** End detail presentation on unmount. Pass the owning controller's stable callback. */
+  onDetailUnmount?: () => void
   selection?: T | null
   /** Use null while the feature can still load the selected item. */
   outsideSelectionMessage?: string | null
@@ -48,6 +50,7 @@ export function CollectionDetailPane<T extends CollectionItem>({
   detailEmptyContent,
   renderDetail,
   onDetailPresentation,
+  onDetailUnmount,
   renderCollection,
   selection: controlledSelection,
   outsideSelectionMessage = "This item is outside the current list.",
@@ -68,6 +71,18 @@ export function CollectionDetailPane<T extends CollectionItem>({
   const selection = controlledSelection === undefined ? localSelection : controlledSelection
   const selected = items.find((item) => item.id === selection?.id) ?? selection
   const selectedId = selected?.id ?? null
+  const bindLifetime = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node || !onDetailUnmount) return
+      return () => {
+        // React can replay refs while the element stays mounted.
+        queueMicrotask(() => {
+          if (!node.isConnected) onDetailUnmount()
+        })
+      }
+    },
+    [onDetailUnmount],
+  )
   const select = (item: T) => {
     if (onSelectionChange) onSelectionChange(item)
     else setSelection(item)
@@ -90,7 +105,11 @@ export function CollectionDetailPane<T extends CollectionItem>({
   }
 
   return (
-    <div className="main-window-collection-detail" data-single-pane={compact || undefined}>
+    <div
+      className="main-window-collection-detail"
+      data-single-pane={compact || undefined}
+      ref={bindLifetime}
+    >
       <section
         ref={(node) => {
           if (!node || (compact && showDetail) || !restoreCollectionFocus.current) return

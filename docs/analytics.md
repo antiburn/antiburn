@@ -656,6 +656,8 @@ the operator deletes them. See the [privacy policy](privacy-policy.md).
 The visit ID is generated at a popover click or when main-window detail becomes
 visible. An accepted popover open carries the click's ID into the resulting
 visit. The ID changes when you switch sessions or reopen a concealed detail.
+Turning analytics off ends the current visit. Turning it back on starts a new
+visit if detail is visible.
 The app keeps the active association in memory. Captured events follow the
 same queue and retention rules as other analytics. Main-window detail readiness
 can include this ID on `antiburn.surface_state_observed`.

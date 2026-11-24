@@ -119,6 +119,7 @@ export class MainWindowNavigationSession {
     }
     activity.onDeleted = (subject) => this.pruneSubject(subject)
     activity.onSessionInventoryInvalidated = () => this.requestDeletedSubjectReconciliation()
+    activity.beforeWindowVisible = () => this.peek(this.generation)
   }
 
   getSnapshot = (): MainWindowNavigationSnapshot => this.snapshot

@@ -473,6 +473,7 @@ export function MainActivityView({
       detailEmptyMessage="Select a session to view its details."
       detailEmptyContent={<SessionEmptyDetail />}
       detailOwnsViewport
+      onDetailUnmount={session.concealDetail}
       onDetailPresentation={(item) => {
         if (!item || !active || !state.active) {
           session.presentDetail(null)

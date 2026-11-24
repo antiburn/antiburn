@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   openSessionActivityStream: vi.fn(),
   listOverviewSessions: vi.fn().mockResolvedValue([]),
   getMainWindowVisible: vi.fn(),
+  peekMainWindowNavigationTarget: vi.fn(),
   existingMainWindowSessionTargets: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     ...actual,
     ...mocks,
     onMainWindowVisibilityChanged: subscribe("visibility"),
+    onMainWindowNavigationTarget: subscribe("navigationTarget"),
     onSettingsChanged: subscribe("settings"),
     onSessionIndexChanged: subscribe("index"),
     onSessionUpdated: subscribe("update"),
@@ -137,6 +139,7 @@ beforeEach(() => {
   mocks.getSettings.mockResolvedValue(DEFAULT_SETTINGS)
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
+  mocks.peekMainWindowNavigationTarget.mockReset().mockResolvedValue(null)
   mocks.existingMainWindowSessionTargets.mockImplementation(async (targets) => targets)
   const now = Date.now()
   mocks.listRecentSessions.mockResolvedValue([
@@ -1086,6 +1089,82 @@ describe("MainActivitySession", () => {
     ])
     expect(payloads.filter(({ kind }) => kind === "sessionDetailInteraction")).toEqual([
       expect.objectContaining({ visit, action: "limits_expanded" }),
+    ])
+  })
+
+  it("waits for a pending popover target when window visibility arrives first", async () => {
+    vi.stubGlobal("__ANTIBURN_WINDOW_GENERATION__", 7)
+    const { session } = start()
+    const navigation = new MainWindowNavigationSession(session)
+    const stop = navigation.subscribe(() => {})
+    try {
+      await ready(session)
+      commitDetail(session)
+      mocks.events.get("visibility")!(false)
+      mocks.noteInteraction.mockClear()
+      const visit = "44444444-4444-4444-8444-444444444444"
+      const target = { agent: "codex", sessionId: "target", wslDistro: null }
+      const request = {
+        revision: 1,
+        destination: { section: "activity", target },
+        sessionEntry: "popover",
+        sessionVisit: visit,
+      }
+      const pending = deferred<typeof request>()
+      mocks.peekMainWindowNavigationTarget.mockReturnValueOnce(pending.promise)
+      mocks.events.get("visibility")!(true)
+      commitDetail(session)
+      expect(mocks.noteInteraction).not.toHaveBeenCalled()
+
+      pending.resolve(request)
+      await vi.waitFor(() => expect(session.getSnapshot().active).toBe(true))
+      expect(session.getSnapshot().subject).toEqual(target)
+      commitDetail(session)
+      mocks.events.get("navigationTarget")!(request)
+      commitDetail(session)
+      expect(
+        mocks.noteInteraction.mock.calls
+          .map(([event]) => event)
+          .filter(({ kind }) => kind === "sessionDetailViewed"),
+      ).toEqual([
+        expect.objectContaining({
+          visit,
+          context: expect.objectContaining({ entryRoute: "popover" }),
+        }),
+      ])
+    } finally {
+      stop()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("retires the visible visit and any pending visit ID across consent changes", async () => {
+    const { session } = start()
+    await ready(session)
+    const key = commitDetail(session)
+    const pendingId = "44444444-4444-4444-8444-444444444444"
+    const subject = session.getSnapshot().subject!
+    const settings = mocks.events.get("settings")!
+
+    settings({ ...DEFAULT_SETTINGS, analyticsEnabled: false })
+    session.restoreNavigation(parseSessionFilters("all"), subject, "user", false, false, {
+      route: "popover",
+      visit: pendingId,
+    })
+    commitDetail(session)
+    session.noteDetailAction(key, { kind: "sessionDetailTabSelected", tab: "tools" })
+    settings(DEFAULT_SETTINGS)
+    commitDetail(session)
+    session.noteDetailAction(key, { kind: "sessionDetailTabSelected", tab: "cost" })
+
+    const events = mocks.noteInteraction.mock.calls.map(([event]) => event)
+    const views = events.filter(({ kind }) => kind === "sessionDetailViewed")
+    expect(views).toHaveLength(2)
+    expect(views[1].visit).toEqual(expect.any(String))
+    expect(views[1].visit).not.toBe(views[0].visit)
+    expect(views[1].visit).not.toBe(pendingId)
+    expect(events.filter(({ kind }) => kind === "sessionDetailTabSelected")).toEqual([
+      expect.objectContaining({ tab: "cost", visit: views[1].visit }),
     ])
   })
 

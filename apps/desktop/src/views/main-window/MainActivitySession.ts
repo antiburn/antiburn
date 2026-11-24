@@ -151,6 +151,8 @@ export class MainActivitySession {
   onNavigation?: (origin: SurfaceOrigin) => void
   onDeleted?: (subject: SessionSubject) => void
   onSessionInventoryInvalidated?: () => void
+  /** Apply pending native navigation before a newly visible detail can report a visit. */
+  beforeWindowVisible?: () => Promise<void>
   private restoringNavigation = false
 
   /** Restore filters and detail. Explicit empty selection cancels late default selection. */
@@ -302,9 +304,14 @@ export class MainActivitySession {
 
   /** Commit the subject shown by the detail slot and synchronize its visible visit. */
   presentDetail(key: string | null, context?: SessionContext): void {
-    if (!key || !context || !this.snapshot.active || !this.snapshot.subject) {
-      this.visit = null
-      this.syncExposure()
+    if (
+      !key ||
+      !context ||
+      !this.snapshot.active ||
+      !this.snapshot.subject ||
+      !this.snapshot.settings.analyticsEnabled
+    ) {
+      this.concealDetail()
       return
     }
     if (key !== sessionKey(this.snapshot.subject)) return
@@ -332,6 +339,12 @@ export class MainActivitySession {
       })
     }
     this.syncExposure(true)
+  }
+
+  /** End the visit when its committed detail pane is removed or concealed. */
+  concealDetail = (): void => {
+    this.visit = null
+    this.exposure.conceal("session_detail")
   }
 
   /** Record an explicit action only for the detail visit that owns the control. */
@@ -424,14 +437,22 @@ export class MainActivitySession {
   private async start(): Promise<void> {
     const generation = ++this.generation
     let visibilityRevision = 0
+    const applyVisibility = (visible: boolean, revision: number) => {
+      const commit = () => {
+        if (generation !== this.generation || revision !== visibilityRevision) return
+        this.visible = visible
+        this.syncActive()
+      }
+      if (visible && !this.visible && this.beforeWindowVisible)
+        void this.beforeWindowVisible().then(commit, commit)
+      else commit()
+    }
     await Promise.all([
       this.listen(
         generation,
         onMainWindowVisibilityChanged((visible) => {
           if (generation !== this.generation) return
-          visibilityRevision += 1
-          this.visible = visible
-          this.syncActive()
+          applyVisibility(visible, ++visibilityRevision)
         }),
       ),
       this.listen(
@@ -500,7 +521,7 @@ export class MainActivitySession {
     ])
     if (generation !== this.generation) return
     if (settingsVersion === this.settingsVersion) this.applySettings(settings)
-    if (revision === visibilityRevision) this.visible = visible
+    if (revision === visibilityRevision) applyVisibility(visible, revision)
     this.initialized = true
     this.syncActive()
   }
@@ -631,6 +652,10 @@ export class MainActivitySession {
     const scopeChanged =
       next.activityWindowDays !== previous.activityWindowDays ||
       next.disabledAgents.join() !== previous.disabledAgents.join()
+    if (next.analyticsEnabled !== previous.analyticsEnabled) {
+      this.pendingVisit = null
+      this.concealDetail()
+    }
     if (scopeChanged) {
       this.closeActivityStream()
       this.sessionTotalDay = null
