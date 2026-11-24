@@ -36,7 +36,7 @@ export function CloudProjectFolderSummary({
     : syncFound !== undefined
       ? folderSessionsFoundLabel(syncFound)
       : group.sessionCount == null
-        ? "Count unavailable"
+        ? "Calculating count.."
         : `${group.sessionCount} ${group.sessionCount === 1 ? "session" : "sessions"}`
   const worktreeLabel =
     !group.discoveryStale && group.groupingComplete !== false && group.worktreeCount > 0
