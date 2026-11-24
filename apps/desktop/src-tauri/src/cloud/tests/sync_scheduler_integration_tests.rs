@@ -4157,6 +4157,7 @@ fn cloud_scheduler_backfill_only_offers_new_and_changed_sources() {
     fixture.runner.discovery_cursor = Some(DiscoveryCursor {
         root: 0,
         after: Some("zzzz".into()),
+        ..DiscoveryCursor::default()
     });
     fixture.runner.next_reconcile = Some(Instant::now() + Duration::from_secs(60));
     fixture.schedule_backfill();

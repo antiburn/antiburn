@@ -50,6 +50,7 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
             project_path: selected.to_str().unwrap().into(),
         }],
         project_choices: BTreeMap::new(),
+        repository_rules: Vec::new(),
         paused: false,
     };
     (directory, policy, selected, outside)
@@ -294,6 +295,71 @@ fn cloud_sync_allowlist_uses_recorded_cwd_and_descendants_not_tool_paths_or_work
             .all(|source| policy.allows(&source.scope, &source.project))
     );
     assert!(discover_policy(&policy, &|| false).unwrap().is_empty());
+}
+
+#[test]
+fn repository_approval_captures_a_matching_clone_and_rechecks_its_origin() {
+    use crate::store::cloud_capture::sync::RepositoryRule;
+    let (_directory, mut policy, anchor, checkout) = fixture();
+    let git = |path: &Path, args: &[&str]| {
+        let status = tauri::async_runtime::block_on(async {
+            tokio::process::Command::new("git")
+                .current_dir(path)
+                .args(args)
+                .status()
+                .await
+        })
+        .expect("run Git in the synthetic checkout");
+        assert!(status.success());
+    };
+    git(&checkout, &["init", "--quiet"]);
+    git(
+        &checkout,
+        &[
+            "config",
+            "--local",
+            "remote.origin.url",
+            "git@github.com:Example/Project.git",
+        ],
+    );
+    policy.projects.clear();
+    policy.repository_rules.push(RepositoryRule {
+        origin: "github.com/Example/Project".into(),
+        anchor_path: anchor.to_str().unwrap().into(),
+        scopes: BTreeSet::from(["scope".into()]),
+    });
+    let root = Path::new(&policy.roots[0].path);
+    write_session(root, "matching", &checkout, &anchor.join("file"));
+    write_session(root, "plain", &anchor, &checkout.join("file"));
+    let matches = discover_policy(&policy, &|| true).unwrap();
+    assert_eq!(matches.len(), 1);
+    let selection = &matches[0];
+    assert_eq!(selection.candidate.native_session_id(), "matching");
+    let origin = selection.repository_origin.as_ref().unwrap();
+    assert!(repository_capture::recheck_repository_project(
+        &policy,
+        &selection.scope,
+        origin,
+        &selection.project,
+        std::slice::from_ref(&checkout)
+    ));
+    git(
+        &checkout,
+        &[
+            "config",
+            "--local",
+            "remote.origin.url",
+            "https://github.com/Example/Other.git",
+        ],
+    );
+    assert!(!repository_capture::recheck_repository_project(
+        &policy,
+        &selection.scope,
+        origin,
+        &selection.project,
+        &[checkout]
+    ));
+    assert!(discover_policy(&policy, &|| true).unwrap().is_empty());
 }
 
 #[test]

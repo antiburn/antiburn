@@ -102,11 +102,65 @@ function exactProjectKey(project: CloudProjectSelection) {
   return JSON.stringify([project.sourceKind, project.sourcePath, project.projectPath])
 }
 
-/** Confirm the exact provider sources and project paths for one saved route. */
+type FolderRouteBinding = CloudProjectSelection & { repositoryGroupId?: string }
+
+/** Associate requested anchors with repository IDs for receipt checks only. */
+export function expectedFolderRoute(
+  groups: DesktopCloudProjectGroup[],
+  projects: CloudProjectSelection[],
+  selectedGroups?: readonly CloudProjectGroup[],
+): FolderRouteBinding[] {
+  const selectedIds = selectedGroups && new Set(selectedGroups.map(({ id }) => id))
+  const groupsByProject = new Map<string, Set<string | undefined>>()
+  for (const group of groups) {
+    if (selectedIds && !selectedIds.has(group.id)) continue
+    for (const project of group.projects) {
+      const key = exactProjectKey(project)
+      const ids = groupsByProject.get(key) ?? new Set<string | undefined>()
+      ids.add(group.repositoryWide ? group.id : undefined)
+      groupsByProject.set(key, ids)
+    }
+  }
+  return projects.flatMap((project) => {
+    const ids = groupsByProject.get(exactProjectKey(project)) ?? [undefined]
+    return Array.from(ids, (repositoryGroupId) =>
+      repositoryGroupId ? { ...project, repositoryGroupId } : project,
+    )
+  })
+}
+
+/** Read only the provider bindings native saved for this repository ID. */
+export function savedRepositoryProjects(policy: CloudOngoingStatus, id: string) {
+  if (!policy.repositoryGroupIds?.includes(id)) return []
+  return policy.repositoryFolders?.find(({ groupId }) => groupId === id)?.projects ?? []
+}
+
+type SavedProjectBindings = Pick<
+  CloudOngoingStatus,
+  "projects" | "exactProjects" | "repositoryGroupIds"
+>
+
+/** Without repository rules, old replies contain only exact projects. */
+export function savedExactProjects(policy: SavedProjectBindings) {
+  return policy.exactProjects ?? policy.projects
+}
+
+/** Keep all exact and repository source bindings when renewing the saved Team policy. */
+export function savedFolderRoute(policy: CloudOngoingStatus | undefined): FolderRouteBinding[] {
+  if (!policy) return []
+  return [
+    ...savedExactProjects(policy),
+    ...(policy.repositoryFolders ?? []).flatMap(({ groupId, projects }) =>
+      projects.map((project) => ({ ...project, repositoryGroupId: groupId })),
+    ),
+  ]
+}
+
+/** Confirm the saved source bindings and any repository scopes for one route. */
 export function folderRouteConfirmed(
   status: CloudOngoingStatus | null | undefined,
   binding: CloudDestinationBinding,
-  selected: CloudProjectSelection[],
+  selected: FolderRouteBinding[],
 ) {
   if (
     status?.accountId !== binding.accountId ||
@@ -116,8 +170,16 @@ export function folderRouteConfirmed(
     !selected.length
   )
     return false
-  const saved = new Set(status.projects.map(exactProjectKey))
-  return selected.every((project) => saved.has(exactProjectKey(project)))
+  const saved = new Set(savedExactProjects(status).map(exactProjectKey))
+  return selected.every(({ repositoryGroupId, ...project }) =>
+    repositoryGroupId
+      ? savedRepositoryProjects(status, repositoryGroupId).some(
+          (anchor) =>
+            anchor.sourceKind === project.sourceKind &&
+            anchor.sourcePath === project.sourcePath,
+        )
+      : saved.has(exactProjectKey(project)),
+  )
 }
 
 /** Verify that the observed policy still matches the completed native write. */
@@ -125,7 +187,7 @@ export function confirmsSavedWrite(
   current: CloudOngoingStatus | null | undefined,
   reply: CloudOngoingStatus,
   binding: CloudDestinationBinding,
-  projects: CloudProjectSelection[],
+  projects: FolderRouteBinding[],
 ) {
   return (
     !!reply.policyRevision &&
@@ -603,10 +665,16 @@ export function projectSelectionKey(
 ) {
   return JSON.stringify([
     cloudProjectSelectionKey(groups, choices),
+    repositoryGroupIds(groups.filter((group) => choices[group.id] ?? true)).sort(),
     selections,
     Object.entries(targets).sort(),
     (workspaces ?? []).map((workspace) => [workspace.id, workspace.kind]).sort(),
   ])
+}
+
+/** Get the repository IDs in the displayed selection. */
+function repositoryGroupIds(groups: readonly CloudProjectGroup[]) {
+  return groups.filter((group) => group.repositoryWide).map(({ id }) => id)
 }
 
 /** Fence one Settings confirmation even while its group is excluded from Start. */
@@ -619,43 +687,48 @@ export function projectConfirmationKey(
     group.environment,
     group.path,
     group.groupingComplete,
+    group.repositoryWide === true,
     [...group.folderPaths].sort(),
     selections.map(exactProjectKey).sort(),
   ])
 }
 
-/** Keep exact saved Personal bindings eligible for source recovery. */
+/** Keep only saved Personal bindings eligible for source recovery. */
 export function reviewableProjectSelections(
   selections: CloudProjectSelection[],
   policy: CloudOngoingStatus | null | undefined,
+  repositoryGroupId?: string,
 ) {
+  if (!policy) return []
+  const saved = repositoryGroupId
+    ? savedRepositoryProjects(policy, repositoryGroupId)
+    : savedExactProjects(policy)
   return selections.filter((project) =>
-    policy?.projects.some(
-      (saved) =>
-        saved.sourceKind === project.sourceKind &&
-        saved.sourcePath === project.sourcePath &&
-        saved.projectPath === project.projectPath,
+    saved.some(
+      (binding) =>
+        binding.sourceKind === project.sourceKind &&
+        binding.sourcePath === project.sourcePath &&
+        (repositoryGroupId || binding.projectPath === project.projectPath),
     ),
   )
 }
 
-/** Match saved grants by directory boundary, never by partial folder name. */
+/** Match repository grants by ID and exact folder grants by directory boundary. */
 export function hasSavedProjectPermission(
   group: DesktopCloudProjectGroup | undefined,
-  policy: Pick<CloudOngoingStatus, "projects"> | null | undefined,
+  policy: SavedProjectBindings | null | undefined,
   exact: boolean,
 ) {
-  return (
-    group?.environment === "native" &&
-    !!policy?.projects.some((project) =>
-      [group.path, ...group.folderPaths].some(
-        (path) =>
-          path === project.projectPath ||
-          (!exact &&
-            (path.startsWith(`${project.projectPath.replace(/\/+$/, "")}/`) ||
-              project.projectPath.startsWith(`${path.replace(/\/+$/, "")}/`))),
-      ),
-    )
+  if (group?.environment !== "native" || !policy) return false
+  if (group.repositoryWide) return policy.repositoryGroupIds?.includes(group.id) === true
+  return savedExactProjects(policy).some((project) =>
+    [group.path, ...group.folderPaths].some(
+      (path) =>
+        path === project.projectPath ||
+        (!exact &&
+          (path.startsWith(`${project.projectPath.replace(/\/+$/, "")}/`) ||
+            project.projectPath.startsWith(`${path.replace(/\/+$/, "")}/`))),
+    ),
   )
 }
 
@@ -688,6 +761,7 @@ export function projectViewGroups(
       memberPaths: group.folderPaths,
       worktreeCount: group.worktreeCount,
       groupingComplete: group.groupingComplete,
+      ...(group.repositoryWide && { repositoryWide: true }),
       discoveryStale: group.discoveryStale ?? false,
       sessionCount: group.discoveryStale
         ? null

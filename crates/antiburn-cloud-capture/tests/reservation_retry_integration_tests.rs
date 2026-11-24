@@ -13,11 +13,23 @@ struct Reservation {
     refusal: Option<TransportError>,
     identities: Vec<CaptureIdentity>,
     generation: Option<String>,
+    deny_authority_at: Option<PathBuf>,
 }
 
 impl Transport for Reservation {
     fn expected_file_generation(&self) -> Option<&str> {
         self.generation.as_deref()
+    }
+
+    fn check_source_authority(&self) -> Result<(), TransportError> {
+        let Some(path) = &self.deny_authority_at else {
+            return Ok(());
+        };
+        let saved: QueueEntry = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved.state, CaptureState::Preparing);
+        assert_eq!(saved.reservation_id.as_deref(), Some("reservation"));
+        assert!(saved.manifest.is_none());
+        Err(TransportError::Unauthorized)
     }
 
     fn reserve(&mut self, identity: &CaptureIdentity, _: u64) -> Result<String, TransportError> {
@@ -29,7 +41,7 @@ impl Transport for Reservation {
     }
 
     fn negotiate(&mut self, _: &str, _: &CaptureManifest) -> Result<UploadPlan, TransportError> {
-        Err(TransportError::Rejected)
+        panic!("capture must not send a manifest")
     }
 
     fn status(
@@ -38,7 +50,7 @@ impl Transport for Reservation {
         _: &CaptureManifest,
         _: &UploadPlan,
     ) -> Result<ServerStatus, TransportError> {
-        Err(TransportError::Rejected)
+        panic!("capture must not request upload status")
     }
 
     fn upload_part(
@@ -50,7 +62,7 @@ impl Transport for Reservation {
         _: &Chunk,
         _: &mut dyn Read,
     ) -> Result<(), TransportError> {
-        Err(TransportError::Rejected)
+        panic!("capture must not send chunk bytes")
     }
 
     fn complete(
@@ -59,7 +71,7 @@ impl Transport for Reservation {
         _: &CaptureManifest,
         _: &UploadPlan,
     ) -> Result<(), TransportError> {
-        Err(TransportError::Rejected)
+        panic!("capture must not complete an upload")
     }
 }
 
@@ -117,6 +129,7 @@ impl Fixture {
                 refusal,
                 identities: Vec::new(),
                 generation: None,
+                deny_authority_at: None,
             },
             _directory: directory,
         }
@@ -145,6 +158,32 @@ impl Fixture {
             .join(&self.identity.capture_id)
             .join("record.json")
     }
+}
+
+#[test]
+fn source_authority_refusal_keeps_the_reservation_without_spooling_content() {
+    let mut fixture = Fixture::new(None);
+    let record = fixture.record();
+    fixture.transport.deny_authority_at = Some(record.clone());
+
+    assert!(matches!(
+        fixture.capture(),
+        Err(Error::Transport(TransportError::Unauthorized))
+    ));
+    assert_eq!(fixture.transport.identities, vec![fixture.identity.clone()]);
+    let entries = fixture.spool.entries().unwrap();
+    let [entry] = entries.as_slice() else {
+        panic!("expected one saved reservation");
+    };
+    assert_eq!(entry.identity, fixture.identity);
+    assert_eq!(entry.state, CaptureState::Preparing);
+    assert_eq!(entry.reservation_id.as_deref(), Some("reservation"));
+    assert!(entry.manifest.is_none());
+    let files: Vec<_> = fs::read_dir(record.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(files, [record]);
 }
 
 #[test]

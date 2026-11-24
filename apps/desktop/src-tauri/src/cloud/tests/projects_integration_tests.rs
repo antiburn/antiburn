@@ -344,7 +344,7 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
             &|| true,
         )
         .unwrap_err(),
-        "The project folders changed. Reload projects and confirm again."
+        PROJECT_DISCOVERY_INCOMPLETE
     );
 
     let bare = root.join("bare.git");
@@ -371,6 +371,262 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
     assert_eq!(grouped.main, bare.to_str().unwrap());
     assert_eq!(grouped.folders, [bare_linked.to_str().unwrap()]);
     assert!(grouped.complete);
+}
+
+fn run_test_git(checkout: &Path, args: &[&str]) {
+    assert!(
+        std::process::Command::new("git")
+            .current_dir(checkout)
+            .args(args)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[test]
+fn expired_origin_budget_keeps_plain_folders_but_does_not_group_unproved_git() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let plain = root.join("plain");
+    let checkout = root.join("checkout");
+    fs::create_dir(&plain).unwrap();
+    fs::create_dir(&checkout).unwrap();
+    run_test_git(&checkout, &["init", "--quiet"]);
+
+    let checkout = checkout.to_str().unwrap();
+    let mut cache = Cache::default();
+    let checked = cache.context("native", checkout, &mut RequestOrigins::default());
+    assert!(checked.complete);
+    assert!(checked.origin.is_none());
+
+    let plain = plain.to_str().unwrap();
+    let mut origins = RequestOrigins::default();
+    assert!(matches!(origins.get(plain), ProjectOrigin::Plain));
+    origins.deadline = tokio::time::Instant::now();
+    assert!(matches!(origins.get(checkout), ProjectOrigin::Incomplete));
+    let skipped = cache.context("native", checkout, &mut origins);
+    assert!(skipped.inspection_incomplete);
+    assert!(!skipped.complete);
+    assert!(skipped.folders.is_empty());
+
+    assert!(matches!(origins.get(plain), ProjectOrigin::Plain));
+    let checked = cache.context("native", plain, &mut origins);
+    assert!(checked.complete);
+    assert!(!checked.inspection_incomplete);
+    assert_eq!(checked.folders, [plain]);
+    let mut expired = RequestOrigins {
+        deadline: tokio::time::Instant::now(),
+        ..RequestOrigins::default()
+    };
+    assert!(matches!(expired.get(plain), ProjectOrigin::Incomplete));
+}
+
+#[test]
+fn origin_group_uses_one_observed_checkout_per_source_and_requires_explicit_choice() {
+    let mut fixture = Fixture::new();
+    let base = fixture.directory.path().canonicalize().unwrap();
+    let main = base.join("main");
+    let linked = base.join("linked");
+    let unobserved = base.join("unobserved");
+    let separate = base.join("separate");
+    for (checkout, remote) in [
+        (&main, "git@github.com:team/project.git"),
+        (&separate, "https://github.com/team/project"),
+    ] {
+        fs::create_dir(checkout).unwrap();
+        run_test_git(checkout, &["init", "--quiet"]);
+        run_test_git(checkout, &["remote", "add", "origin", remote]);
+    }
+    run_test_git(
+        &main,
+        &[
+            "-c",
+            "user.name=Synthetic",
+            "-c",
+            "user.email=synthetic@example.test",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+    );
+    for checkout in [&linked, &unobserved] {
+        run_test_git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                checkout.to_str().unwrap(),
+            ],
+        );
+    }
+    let nested = linked.join("src");
+    fs::create_dir(&nested).unwrap();
+    let second = SourceSelection {
+        source_kind: fixture.source.source_kind,
+        path: base.join("second.db").to_str().unwrap().into(),
+    };
+    fs::copy(&fixture.source.path, &second.path).unwrap();
+    for (source, cwd) in [(&fixture.source, &nested), (&second, &separate)] {
+        rusqlite::Connection::open(&source.path)
+            .unwrap()
+            .execute(
+                "UPDATE session_v2 SET directory=?1",
+                [cwd.to_str().unwrap()],
+            )
+            .unwrap();
+    }
+    let binding = fixture.binding();
+    fixture
+        .store
+        .save_cloud_draft(
+            &binding.account_id,
+            &binding.destination_id,
+            &serde_json::to_string(&Draft {
+                folders: [&fixture.source, &second]
+                    .into_iter()
+                    .map(|source| Folder {
+                        source_kind: source.source_kind,
+                        path: source.path.clone(),
+                        selected: true,
+                        ..Folder::default()
+                    })
+                    .collect(),
+                ..Draft::default()
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    for (id, agent, cwd) in [
+        ("local", "opencode", &nested),
+        ("other", "codex", &separate),
+    ] {
+        fixture
+            .store
+            .lock()
+            .execute(
+                "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,cwd,
+                     first_seen_at,last_seen_at,updated_at_epoch)
+                 VALUES('native',?1,?2,'providerDb',?2,?3,'synthetic','synthetic',1)",
+                [agent, id, cwd.to_str().unwrap()],
+            )
+            .unwrap();
+    }
+
+    let discovery = fixture.discover(Vec::new());
+    assert_eq!(discovery.groups.len(), 1);
+    let group = &discovery.groups[0];
+    let origin = "github.com/team/project";
+    let linked = linked.to_str().unwrap();
+    let separate = separate.to_str().unwrap();
+    assert_eq!(group.id, repository_group_id(origin));
+    assert_ne!(group.id, group_id("native", linked));
+    assert!(group.path == linked || group.path == separate);
+    assert_eq!(group.folder_paths, [linked, separate]);
+    assert_eq!(group.worktree_count, 0);
+    assert_eq!(group.repository_wide, Some(true));
+    assert_eq!(group.agents, ["codex", "opencode"]);
+    assert_eq!(group.session_count, 2);
+    assert!(group.capture_session_count >= 2);
+    assert!(group.capture_supported);
+    assert_eq!(group.projects.len(), 2);
+    for (source, anchor) in [(&fixture.source, linked), (&second, separate)] {
+        assert!(group.projects.iter().any(|project| {
+            project.source_path == source.path && project.project_path == anchor
+        }));
+    }
+
+    let choices = BTreeMap::from([(group.id.clone(), true)]);
+    let projects: BTreeSet<_> = group.projects.iter().cloned().collect();
+    let (_, confirmed) = confirm_project_choices_with_origins(
+        &fixture.store,
+        &mut fixture.cache,
+        &binding,
+        &choices,
+        &projects,
+        &|| true,
+    )
+    .unwrap();
+    assert_eq!(
+        confirmed,
+        [
+            (linked.into(), origin.into()),
+            (separate.into(), origin.into())
+        ]
+        .into()
+    );
+    let legacy_project = group
+        .projects
+        .iter()
+        .find(|project| project.project_path == linked)
+        .unwrap()
+        .clone();
+    let (_, confirmed) = confirm_project_choices_with_origins(
+        &fixture.store,
+        &mut fixture.cache,
+        &binding,
+        &[(group_id("native", main.to_str().unwrap()), true)].into(),
+        &[legacy_project.clone()].into(),
+        &|| true,
+    )
+    .unwrap();
+    assert!(confirmed.is_empty());
+
+    for path in [nested.as_path(), &unobserved, Path::new(separate)] {
+        let mismatched = ProjectSelection {
+            project_path: path.to_str().unwrap().into(),
+            ..legacy_project.clone()
+        };
+        assert!(
+            confirm_project_choices_with_origins(
+                &fixture.store,
+                &mut fixture.cache,
+                &binding,
+                &choices,
+                &[mismatched].into(),
+                &|| true,
+            )
+            .is_err()
+        );
+    }
+    run_test_git(
+        &main,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:team/changed.git",
+        ],
+    );
+    let rediscovered = fixture.discover(Vec::new());
+    let paths = rediscovered
+        .groups
+        .iter()
+        .map(|group| (group.id.clone(), group.path.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        paths,
+        [
+            (repository_group_id("github.com/team/changed"), linked),
+            (repository_group_id(origin), separate),
+        ]
+        .into()
+    );
+    assert!(
+        confirm_project_choices_with_origins(
+            &fixture.store,
+            &mut fixture.cache,
+            &binding,
+            &choices,
+            &projects,
+            &|| true,
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -562,6 +818,7 @@ impl Fixture {
                 Context {
                     main: project.clone(),
                     folders: vec![project.clone()],
+                    origin: None,
                     complete: true,
                     inspection_incomplete: false,
                 },

@@ -2139,6 +2139,8 @@ approval and **Sync now** after approval. A failure can change the action in
 place to **Try again**, **Review folders**, or **Check Cloud**. Do not add a
 second button for the same step. Show an upload switch only when it can pause
 or resume uploads.
+Keep repository approval in the same folder picker. Use one short scope note
+for pending Git choices. Do not add separate worktree or migration controls.
 The folder list shows existing directories. Keep exact saved rules that are
 not in that list removable under **Manage other saved folders**.
 With Personal only, folder switches reflect saved permission. Turning a saved

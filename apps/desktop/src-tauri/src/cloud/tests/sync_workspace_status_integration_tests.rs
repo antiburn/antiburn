@@ -148,11 +148,33 @@ fn cloud_move_checks_the_saved_source_revision_after_removal() {
         policy_revision: removed.revision.clone(),
     };
     let session = personal();
-    assert!(verify_project_move(&store, &session, PERSONAL, &expected, &moved).is_ok());
-    assert!(verify_project_move(&store, &session, TEAM, &expected, &moved).is_err());
+    assert!(
+        verify_project_move(
+            &store,
+            &session,
+            PERSONAL,
+            &expected,
+            &moved,
+            &BTreeMap::new()
+        )
+        .is_ok()
+    );
+    assert!(
+        verify_project_move(&store, &session, TEAM, &expected, &moved, &BTreeMap::new()).is_err()
+    );
     let mut wrong_origin = session.clone();
     wrong_origin.iss = "https://other-issuer.example".into();
-    assert!(verify_project_move(&store, &wrong_origin, PERSONAL, &expected, &moved).is_err());
+    assert!(
+        verify_project_move(
+            &store,
+            &wrong_origin,
+            PERSONAL,
+            &expected,
+            &moved,
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
 
     // A second window restores the source before the target write.
     let restored = store
@@ -170,9 +192,29 @@ fn cloud_move_checks_the_saved_source_revision_after_removal() {
             || true,
         )
         .unwrap();
-    assert!(verify_project_move(&store, &session, PERSONAL, &expected, &moved).is_err());
+    assert!(
+        verify_project_move(
+            &store,
+            &session,
+            PERSONAL,
+            &expected,
+            &moved,
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
     expected.policy_revision = restored.revision;
-    assert!(verify_project_move(&store, &session, PERSONAL, &expected, &moved).is_err());
+    assert!(
+        verify_project_move(
+            &store,
+            &session,
+            PERSONAL,
+            &expected,
+            &moved,
+            &BTreeMap::new()
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -194,14 +236,45 @@ fn cloud_move_create_rejects_a_target_policy_saved_by_another_window() {
     let session = personal();
     let target_id = "new-team";
     assert!(
-        verify_project_move_to_new_policy(&store, &session, target_id, &expected, &moved).is_ok()
+        verify_project_move_to_new_policy(
+            &store,
+            &session,
+            target_id,
+            &expected,
+            &moved,
+            &BTreeMap::new()
+        )
+        .is_ok()
+    );
+    let origins = BTreeMap::from([(FIRST.into(), "github.com/example/repository".into())]);
+    assert!(
+        verify_project_move_to_new_policy(&store, &session, target_id, &expected, &moved, &origins)
+            .is_err()
     );
 
     let target = policy_with_paths(&store, ACCOUNT, target_id, RESOURCE, ISSUER, &[SECOND]);
 
-    assert!(verify_project_move(&store, &session, target_id, &expected, &moved).is_ok());
     assert!(
-        verify_project_move_to_new_policy(&store, &session, target_id, &expected, &moved).is_err()
+        verify_project_move(
+            &store,
+            &session,
+            target_id,
+            &expected,
+            &moved,
+            &BTreeMap::new()
+        )
+        .is_ok()
+    );
+    assert!(
+        verify_project_move_to_new_policy(
+            &store,
+            &session,
+            target_id,
+            &expected,
+            &moved,
+            &BTreeMap::new()
+        )
+        .is_err()
     );
     assert_eq!(
         store
@@ -245,7 +318,17 @@ fn cloud_move_rejects_an_overlapping_grant_in_another_saved_workspace() {
         ISSUER,
         &["/Example/Saved Folder Other"],
     );
-    assert!(verify_project_move(&store, &session, target, &expected, added.clone()).is_ok());
+    assert!(
+        verify_project_move(
+            &store,
+            &session,
+            target,
+            &expected,
+            added.clone(),
+            &BTreeMap::new()
+        )
+        .is_ok()
+    );
     policy_with_paths(
         &store,
         ACCOUNT,
@@ -254,7 +337,9 @@ fn cloud_move_rejects_an_overlapping_grant_in_another_saved_workspace() {
         ISSUER,
         &["/Example/Saved Folder/child"],
     );
-    assert!(verify_project_move(&store, &session, target, &expected, added).is_err());
+    assert!(
+        verify_project_move(&store, &session, target, &expected, added, &BTreeMap::new()).is_err()
+    );
 }
 
 #[test]
@@ -465,6 +550,7 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
     let cursor = DiscoveryCursor {
         root: 0,
         after: Some("kept-page".into()),
+        ..DiscoveryCursor::default()
     };
     let mut runners = BTreeMap::from([(
         key.clone(),

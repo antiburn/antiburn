@@ -722,13 +722,19 @@ function CloudProjectsAccount({
     uploadPolicy(snapshot, from === personalId ? undefined : from)
   const moveSourceChanged =
     !!move && moveSourcePolicy(value, move.from)?.policyRevision !== move.sourceRevision
-  const showsSavedTeamFolder = (
+  const showsSavedFolder = (
     group: CloudProjectGroup,
     policy: CloudOngoingStatus,
-    path: string,
-  ) =>
-    (group.path === path || group.memberPaths.includes(path)) &&
-    session.projectHasSavedPermission(group.id, policy, true)
+    folder: NonNullable<CloudOngoingStatus["savedFolders"]>[number],
+  ) => {
+    const repository = policy.repositoryGroupIds?.includes(folder.groupId)
+    return (
+      (repository || group.repositoryWide
+        ? group.id === folder.groupId
+        : group.path === folder.path || group.memberPaths.includes(folder.path)) &&
+      session.projectHasSavedPermission(group.id, policy, true)
+    )
+  }
   const teamName = (id: string, policy: CloudOngoingStatus) =>
     projects?.workspaces?.find((workspace) => workspace.id === id)?.name ??
     policy.workspaceName ??
@@ -780,18 +786,14 @@ function CloudProjectsAccount({
       .filter(
         (folder) =>
           policy.status === "reauth_required" ||
-          !visibleGroups?.some((group) => showsSavedTeamFolder(group, policy, folder.path)),
+          !visibleGroups?.some((group) => showsSavedFolder(group, policy, folder)),
       )
       .map((folder) => ({ ...folder, team, policy })),
   )
-  const exactPersonalFolders = (policy?.savedFolders ?? []).filter(
-    ({ path }) =>
-      !visibleGroups?.some(
-        (group) =>
-          (path === group.path || group.memberPaths.includes(path)) &&
-          session.projectHasSavedPermission(group.id, undefined, true),
-      ),
-  )
+  const exactPersonalFolders =
+    policy?.savedFolders?.filter(
+      (folder) => !visibleGroups?.some((group) => showsSavedFolder(group, policy, folder)),
+    ) ?? []
   const coldFolderLoad =
     (waitingForFolders || (!projects?.loaded && projects?.loading && !projects.error)) &&
     !visibleGroups?.length &&
@@ -1023,7 +1025,7 @@ function CloudProjectsAccount({
         role="group"
         aria-label="Cloud folders"
         className="@container relative border-t border-separator"
-        description="Uploads include full sessions from approved folders and worktrees. Worktrees outside approved folders need approval."
+        description={`Uploads include full sessions from approved folders.${draftFolders.some((group) => group.repositoryWide) || (move?.to && moveGroup?.repositoryWide) ? " Matching Git checkouts are included." : ""}`}
       >
         {!coldFolderLoad && projects?.loading && !projects.retrying && (
           <span role="status" className="absolute end-4 top-3 text-label-secondary">
@@ -1041,7 +1043,7 @@ function CloudProjectsAccount({
                     !team.savedFolders ||
                     (team.status !== "reauth_required" &&
                       team.savedFolders.some((folder) =>
-                        showsSavedTeamFolder(group, team, folder.path),
+                        showsSavedFolder(group, team, folder),
                       )),
                 )
                 const savedPersonal = session.projectHasSavedPermission(

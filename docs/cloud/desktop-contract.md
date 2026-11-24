@@ -305,10 +305,10 @@ select **Sync now**. Desktop removes the old rule before it approves the new one
 This does not move sessions already in Cloud. The new rule may upload older local
 sessions. If Desktop confirms the removal but cannot save the new rule, the old
 rule stays off. Choose a workspace to start syncing the folder again.
-`desktop-project-sync-v1` binds the account, workspace, exact provider sources, and approved
-project/worktree paths, with full content and ongoing sync enabled and external
-attachments disabled. It covers existing sessions and new sessions in those
-approved folder trees while uploads remain enabled.
+`desktop-project-sync-v1` binds the account, workspace, exact provider
+sources, and approved folders or repositories. It enables full content and
+ongoing sync, but not external attachments. It covers existing and new
+sessions that match those rules while uploads remain enabled.
 
 Full native content includes messages, private thinking, tool calls and results,
 and session metadata. It can contain secrets or private file text. OpenCode V2
@@ -323,6 +323,21 @@ not change consent.
 
 ### Project suggestions and worktrees
 
+On macOS and Linux, approval for a Git checkout with a supported fetch
+`origin` covers other local checkouts and linked worktrees with the same
+origin. Desktop compares the host and full repository path. Standard HTTPS
+and SSH forms can match on supported hosting services. Desktop does not
+match a fork through its `upstream` remote.
+This is a local Git configuration check, not proof of remote ownership.
+
+Desktop keeps one rule per repository in each workspace. The rule uses only
+its approved provider sources. A non-Git folder or a checkout without a
+supported origin keeps exact-folder approval. Desktop can upgrade a legacy
+rule when the saved path is still the exact root of a verified checkout.
+The upgrade uses its current origin because the old rule did not store one.
+Desktop keeps the exact rule if an old exclusion or another workspace could
+conflict. The upgrade does not resume uploads or override a source exclusion.
+
 The project list uses cached local session metadata from all discovered agents.
 It can show projects for agents that cannot upload. Counts describe local or
 provider-source discovery, not accepted Cloud sessions. Only qualified Claude,
@@ -333,14 +348,14 @@ With one eligible workspace, new onboarding choices start selected. With
 multiple workspaces, new choices start off. Loading the page or changing an
 onboarding row does not save consent or turn on uploads. Existing choices and
 saved opt-outs take precedence.
-**Start syncing** approves only the currently loaded selected groups and their
-exact current path members. **Load more folders** does not approve unseen groups.
+**Start syncing** approves only the selected groups. **Load more folders**
+does not approve unseen groups.
 Until confirmation, an existing saved policy stays unchanged.
 
 After initial consent, Settings shows the saved folder rules. Turning off a
-group removes its approved paths immediately. Adding a folder does not grant
+group removes its folder or repository rule immediately. Adding a folder does not grant
 permission until you select **Sync now**. Folder approval covers full sessions
-and current worktrees for the selected groups. First-time approval checks
+for the selected folders and matching Git checkouts. First-time approval checks
 current source and recorded folder evidence, just like later additions.
 Changes check the current policy revision and do not change other groups,
 unseen pages, or the device pause. Turning off the last group does not delete
@@ -352,18 +367,14 @@ list. You do not need access to the original source to turn the rule off.
 Confirmation saves the complete `projectChoices` map, including exclusions,
 atomically with the upload policy. Status returns the same map for reopen.
 These group choices are UI preferences, separate from provider-file preferences.
-Only the policy's approved `projects` grant upload permission. Older policies
+Only the policy's folder and repository rules grant upload permission. Older policies
 without a choice map load an empty map; the UI requires review before changing
 their selection.
 
-For local paths, current local Git metadata groups a repository and its
-registered, existing worktrees under the parent repository. This is a
-present-day display association,
-not historical session ownership or upload permission. Approval includes the
-exact current worktree paths in the selected group, including paths outside the
-main repository. A new worktree outside the already approved folder trees needs
-confirmation. Git association alone cannot add it to a saved policy. Foreign
-environment paths are not probed as local directories.
+Matching Git checkouts share one row. Desktop verifies the nearest checkout
+for a recorded directory. It does not need a list of every worktree to apply
+the saved repository rule. Foreign environment paths are not probed as local
+directories.
 
 Recorded project and working-directory (CWD) evidence controls session eligibility.
 Any proved source-owned CWD inside an approved folder or its descendants can match.

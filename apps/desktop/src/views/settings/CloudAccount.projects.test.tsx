@@ -109,6 +109,54 @@ it("keeps the exact saved path manageable when project discovery fails", async (
   )
 })
 
+it("uses the saved repository ID across checkouts and revokes that ID on request", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const anchor = projectGroup().projects[0]!
+  const path = "/Example/new/Studio"
+  const group = projectGroup({
+    id: "repo-studio",
+    path,
+    folderPaths: [path],
+    worktreeCount: 0,
+    repositoryWide: true,
+    projects: [{ ...anchor, projectPath: path }],
+  })
+  ongoing.groups.mockResolvedValue({
+    groups: [group],
+    sourceRoots: [{ sourceKind: anchor.sourceKind, path: anchor.sourcePath }],
+    nextCursor: null,
+    partial: false,
+  })
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      status: "ready",
+      consentVersion: "desktop-project-sync-v1",
+      projects: [anchor],
+      exactProjects: [],
+      repositoryGroupIds: [group.id],
+      repositoryFolders: [{ groupId: group.id, projects: [anchor] }],
+      savedFolders: [{ groupId: group.id, path: anchor.projectPath }],
+    }),
+  )
+  render(<Account session={new CloudSession(port, false, true)} />)
+
+  const control = await screen.findByRole("switch", { name: `Sync Studio: ${path}` })
+  expect(control).toBeChecked()
+  expect(screen.queryByText(/Matching Git checkouts are included/)).not.toBeInTheDocument()
+  expect(screen.queryByText("Manage other saved folders")).not.toBeInTheDocument()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+  fireEvent.click(control)
+  await waitFor(() =>
+    expect(ongoing.setProject).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ groupId: group.id, selected: false, projects: [] }),
+    ),
+  )
+  await waitFor(() =>
+    expect(screen.getByRole("switch", { name: `Sync Studio: ${path}` })).not.toBeChecked(),
+  )
+})
+
 it.each([
   ["Could not verify Cloud workspaces.", "Still checking Cloud workspaces.", 3],
   ["Cloud workspace sign-in required.", "Sign in again to check Cloud workspaces.", 1],

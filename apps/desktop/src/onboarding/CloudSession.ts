@@ -42,6 +42,7 @@ import {
   cloudUploadStatusUnknown,
   confirmationContextKey,
   confirmsSavedWrite,
+  expectedFolderRoute,
   folderRouteConfirmed,
   folderSaveError,
   hasSavedProjectPermission,
@@ -56,6 +57,7 @@ import {
   projectViewGroups,
   retryTarget,
   reviewableProjectSelections,
+  savedFolderRoute,
   selectedFoldersKey,
   selectedProjects,
   supportedProjectSelections,
@@ -675,12 +677,10 @@ export class CloudSession {
     })
   }
 
-  /** Keep saved local grants visible when discovery loses a folder. Show grants
-   * above or inside a group by directory boundary, never by a partial name.
-   */
+  /** Match saved repository IDs or exact folder grants, without comparing origin URLs. */
   projectHasSavedPermission = (
     id: string,
-    policy: Pick<CloudOngoingStatus, "projects"> | null | undefined = this.snapshot.ongoing,
+    policy: CloudOngoingStatus | null | undefined = this.snapshot.ongoing,
     exact = false,
   ) => {
     return hasSavedProjectPermission(
@@ -699,7 +699,7 @@ export class CloudSession {
     )
   }
 
-  /** Source recovery may recheck only an exact, already saved Personal binding. */
+  /** Source recovery may recheck only an already saved Personal binding. */
   projectHasReviewableSource = (id: string) => {
     const group = this.projectPages?.groups.find((item) => item.id === id)
     return !!group && this.reviewableProjectSelections(group, this.snapshot.ongoing).length > 0
@@ -709,7 +709,11 @@ export class CloudSession {
     group: DesktopCloudProjectGroup,
     policy: CloudOngoingStatus | null | undefined,
   ) {
-    return reviewableProjectSelections(this.supportedProjectSelections(group), policy)
+    return reviewableProjectSelections(
+      this.supportedProjectSelections(group),
+      policy,
+      group.repositoryWide ? group.id : undefined,
+    )
   }
 
   /** Save the explicit Settings folder choice without a second prompt. */
@@ -788,7 +792,12 @@ export class CloudSession {
       )
         this.receiveOngoing(status)
       if (reviewSavedSource && this.active && generation === this.generation)
-        return confirmsSavedWrite(policyOf(this.snapshot), status, binding, projects)
+        return confirmsSavedWrite(
+          policyOf(this.snapshot),
+          status,
+          binding,
+          expectedFolderRoute(group ? [group] : [], projects),
+        )
     } catch {
       if (
         this.active &&
@@ -845,6 +854,7 @@ export class CloudSession {
     )
       return
     const additions: Record<string, CloudProjectSelection[]> = {}
+    const expected = savedFolderRoute(context.teamStatuses?.[destinationId])
     for (const [id, target] of Object.entries(this.projectTargets)) {
       const group = this.projectPages?.groups.find((item) => item.id === id)
       if (
@@ -860,12 +870,9 @@ export class CloudSession {
         return
       additions[id] = this.supportedProjectSelections(group)
       if (!additions[id].length) return
+      expected.push(...expectedFolderRoute([group], additions[id]))
     }
     const addedGroups = Object.keys(additions)
-    const expected = [
-      ...(context.teamStatuses?.[destinationId]?.projects ?? []),
-      ...Object.values(additions).flat(),
-    ]
     const draft = this.projectChoices
     const generation = this.generation
     const stillBound = () =>
@@ -1425,6 +1432,7 @@ export class CloudSession {
           (await this.addPendingProjects(port, target, groups, stillBound, settings)) === true
       } else {
         const draft = this.projectChoices
+        const expected = expectedFolderRoute(this.projectPages?.groups ?? [], selected, groups)
         const choices = explicitOnly
           ? Object.fromEntries(groups.map(({ id }) => [id, true]))
           : Object.fromEntries(
@@ -1450,7 +1458,7 @@ export class CloudSession {
           this.projectPolicy(destinationId),
           status,
           target,
-          selected,
+          expected,
         )
       }
       if (stillBound() && this.snapshot.sync === starting)
@@ -1496,7 +1504,7 @@ export class CloudSession {
     const failed: {
       target: CloudDestinationBinding
       name: string
-      selected: CloudProjectSelection[]
+      expected: ReturnType<typeof expectedFolderRoute>
     }[] = []
     this.syncInFlight = true
     const starting: SyncResult = { status: "starting" }
@@ -1516,6 +1524,8 @@ export class CloudSession {
           this.projectPages?.sources ?? [],
           choices,
         )
+        const expected = expectedFolderRoute(this.projectPages?.groups ?? [], selected, groups)
+        const confirmed = () => folderRouteConfirmed(this.projectPolicy(id), target, expected)
         try {
           if (
             !isCurrentProjectFolderRoute(this.snapshot, route, destinationFor, (id) =>
@@ -1537,20 +1547,19 @@ export class CloudSession {
             if (!current()) return
             const observed = this.projectPolicy(id)
             if (observed === policy) this.receiveOngoing(status)
-            if (folderRouteConfirmed(this.projectPolicy(id), target, selected))
+            if (confirmed())
               this.clearCommittedChoices(
                 singleWorkspaceChoices ? Object.keys(singleWorkspaceChoices) : ids,
                 draft,
               )
           }
           if (!current()) return
-          if (!folderRouteConfirmed(this.projectPolicy(id), target, selected))
-            throw new Error("Cloud did not confirm these folders.")
+          if (!confirmed()) throw new Error("Cloud did not confirm these folders.")
           if (id !== binding.destinationId)
             this.publish({ lastTeamSync: this.projectPolicy(id) ?? null })
         } catch {
           if (!current()) return
-          failed.push({ target, name: workspace?.name ?? "Personal", selected })
+          failed.push({ target, name: workspace?.name ?? "Personal", expected })
         }
       }
       if (!current()) return
@@ -1564,8 +1573,8 @@ export class CloudSession {
         )
           void this.loadProjects()
         const remaining = failed.filter(
-          ({ target, selected }) =>
-            !folderRouteConfirmed(this.projectPolicy(target.destinationId), target, selected),
+          ({ target, expected }) =>
+            !folderRouteConfirmed(this.projectPolicy(target.destinationId), target, expected),
         )
         if (remaining.length) {
           this.publish({
@@ -1626,7 +1635,7 @@ export class CloudSession {
         this.projectPolicy(binding.destinationId),
         status,
         binding,
-        selected,
+        expectedFolderRoute([member], selected),
       )
       if (verify && !confirmed) throw new Error("Cloud did not confirm this folder.")
       this.clearCommittedChoices([group.id], draft)

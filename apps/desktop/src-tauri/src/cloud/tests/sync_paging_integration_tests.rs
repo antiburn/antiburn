@@ -50,6 +50,7 @@ fn fixture() -> (tempfile::TempDir, Policy, PathBuf, PathBuf) {
             project_path: project.to_str().unwrap().into(),
         }],
         project_choices: BTreeMap::new(),
+        repository_rules: Vec::new(),
         paused: false,
     };
     (directory, policy, project, outside)

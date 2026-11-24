@@ -16,6 +16,8 @@ mod http_tests;
 pub(crate) mod invitations;
 mod loopback;
 pub(crate) mod projects;
+mod repository_checkout;
+pub(crate) mod repository_origin;
 mod state;
 pub(crate) mod sync;
 #[cfg(test)]

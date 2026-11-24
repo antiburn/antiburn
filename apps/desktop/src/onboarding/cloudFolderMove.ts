@@ -15,6 +15,8 @@ import {
   matchesUploadPolicy,
   projectBinding,
   projectConfirmationKey,
+  savedExactProjects,
+  savedRepositoryProjects,
   selectedProjects,
   supportedProjectSelections,
   uploadPolicy,
@@ -114,9 +116,13 @@ export function createFolderMove(session: FolderMoveSession) {
     const source = { ...anchor, destinationId: from }
     const target = to ? { ...anchor, destinationId: to } : null
     const projects = selectedProjects([group], sources, { [id]: true })
-    const expectedRemovals = sourcePolicy?.projects.filter((project) =>
-      hasSavedProjectPermission(group, { projects: [project] }, true),
-    )
+    const expectedRemovals =
+      sourcePolicy &&
+      (group.repositoryWide
+        ? savedRepositoryProjects(sourcePolicy, id)
+        : savedExactProjects(sourcePolicy).filter((project) =>
+            hasSavedProjectPermission(group, { projects: [project] }, true),
+          ))
     const hasOtherGrant = (view: CloudViewSnapshot) => hasGrant(view, group, from)
     const sourceCurrent = () => policyKey(policyOf(from)) === policyKey(sourcePolicy)
     const targetCurrent = () => !to || policyKey(policyOf(to)) === targetKey
@@ -162,11 +168,8 @@ export function createFolderMove(session: FolderMoveSession) {
     }
 
     let removal: "not_started" | "pending_reply" | "replied" | "confirmed" = "not_started"
-    const keptProjects = sourcePolicy.projects.filter(
-      (project) => !expectedRemovals.includes(project),
-    )
     const confirmedRemoval = (status: CloudOngoingStatus | null | undefined) =>
-      removalConfirmed(status, source, sourceRevision, group, keptProjects)
+      removalConfirmed(status, sourcePolicy, source, sourceRevision, group, expectedRemovals)
     const confirmedTarget = (status: CloudOngoingStatus | null | undefined) =>
       !!target &&
       !!status?.policyRevision &&
@@ -404,13 +407,27 @@ function hasGrant(view: CloudViewSnapshot, group: DesktopCloudProjectGroup, exce
   )
 }
 
-/** Require matching provider and path bindings. Changed or overlapping rules need review. */
+/** Confirm a repository by ID. Exact folder moves require the same provider and path pairs. */
 function policyMatchesGroup(
   policy: CloudOngoingStatus,
   group: DesktopCloudProjectGroup,
   projects: CloudProjectSelection[],
 ) {
-  const matching = policy.projects.filter((project) =>
+  if (group.repositoryWide) {
+    const saved = savedRepositoryProjects(policy, group.id)
+    return (
+      projects.length > 0 &&
+      saved.length === projects.length &&
+      projects.every((project) =>
+        saved.some(
+          (anchor) =>
+            anchor.sourceKind === project.sourceKind &&
+            anchor.sourcePath === project.sourcePath,
+        ),
+      )
+    )
+  }
+  const matching = savedExactProjects(policy).filter((project) =>
     hasSavedProjectPermission(group, { projects: [project] }, false),
   )
   return (
@@ -446,14 +463,28 @@ function sameSelection(a: CloudProjectSelection, b: CloudProjectSelection) {
   )
 }
 
+/** Compare complete provider bindings without relying on array order. */
+function sameSelections(a: CloudProjectSelection[], b: CloudProjectSelection[]) {
+  return (
+    a.length === b.length && a.every((item) => b.some((other) => sameSelection(item, other)))
+  )
+}
+
 /** A Team removal receipt includes saved rules even when upload counters are unavailable. */
 function removalConfirmed(
   policy: CloudOngoingStatus | null | undefined,
+  previous: CloudOngoingStatus,
   binding: CloudDestinationBinding,
   previousRevision: string,
   group: DesktopCloudProjectGroup,
-  keptProjects: CloudProjectSelection[],
+  removed: CloudProjectSelection[],
 ) {
+  const keptProjects = savedExactProjects(previous).filter(
+    (project) => group.repositoryWide || !removed.includes(project),
+  )
+  const keptRepositories = (previous.repositoryGroupIds ?? []).filter(
+    (id) => !group.repositoryWide || id !== group.id,
+  )
   return (
     !!policy?.policyRevision &&
     policy.policyRevision !== previousRevision &&
@@ -461,7 +492,15 @@ function removalConfirmed(
     policy.consentVersion === "desktop-project-sync-v1" &&
     policy.projectChoices?.[group.id] === false &&
     !hasSavedProjectPermission(group, policy, false) &&
-    policy.projects.length === keptProjects.length &&
-    keptProjects.every((kept) => policy.projects.some((saved) => sameSelection(kept, saved)))
+    (policy.repositoryGroupIds?.length ?? 0) === keptRepositories.length &&
+    keptRepositories.every(
+      (id) =>
+        policy.repositoryGroupIds?.includes(id) &&
+        sameSelections(
+          savedRepositoryProjects(previous, id),
+          savedRepositoryProjects(policy, id),
+        ),
+    ) &&
+    sameSelections(keptProjects, savedExactProjects(policy))
   )
 }

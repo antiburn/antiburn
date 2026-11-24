@@ -280,6 +280,7 @@ pub(super) struct HttpTransport<'a> {
     resource_origin: String,
     membership_generation: Option<String>,
     expected_file_generation: Option<&'a str>,
+    source_authority: Option<&'a dyn Fn() -> bool>,
     pub failure: Option<Failure>,
     pub retry_after: Option<Duration>,
     /// Status and renewal both refused the exact frozen binding with a conflict.
@@ -305,6 +306,7 @@ impl<'a> HttpTransport<'a> {
             resource_origin: resource_origin.into(),
             membership_generation: None,
             expected_file_generation: None,
+            source_authority: None,
             failure: None,
             retry_after: None,
             status_renewal_conflict: false,
@@ -322,6 +324,12 @@ impl<'a> HttpTransport<'a> {
         self.expected_file_generation = observation
             .starts_with(antiburn_cloud_capture::FILE_GENERATION_PREFIX)
             .then_some(observation);
+        self
+    }
+
+    /// Recheck a live repository rule before the spool reads full content.
+    pub(super) fn with_source_authority(mut self, check: &'a dyn Fn() -> bool) -> Self {
+        self.source_authority = Some(check);
         self
     }
 
@@ -608,6 +616,13 @@ fn signed_request(
 }
 
 impl Transport for HttpTransport<'_> {
+    fn check_source_authority(&self) -> Result<(), TransportError> {
+        if !(self.current)() || self.source_authority.is_some_and(|check| !check()) {
+            return Err(TransportError::Rejected);
+        }
+        Ok(())
+    }
+
     fn expected_file_generation(&self) -> Option<&str> {
         self.expected_file_generation
     }
@@ -687,6 +702,7 @@ impl Transport for HttpTransport<'_> {
         )?;
         let part: Part = self.decode(response)?;
         let (url, headers) = signed_request(part, chunk)?;
+        self.check_source_authority()?;
         let mut bytes = Vec::with_capacity(chunk.compressed_bytes as usize);
         body.take(chunk.compressed_bytes + 1)
             .read_to_end(&mut bytes)

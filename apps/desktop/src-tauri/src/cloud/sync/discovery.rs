@@ -1,5 +1,6 @@
 //! Bounded session discovery and source version checks for Cloud sync.
 
+use super::repository_capture::{LookupDeferred, RepositoryLookups};
 use crate::{
     cloud::{file_sources, projects},
     store::cloud_capture::{
@@ -8,10 +9,10 @@ use crate::{
     },
 };
 use antiburn_cloud_capture::{
-    Candidate, Limits, discover_claude, discover_claude_page, discover_opencode,
+    Candidate, Limits, ProjectSelection, discover_claude, discover_claude_page, discover_opencode,
     discover_opencode_page,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One admitted candidate with only native recorded project evidence.
 pub(super) struct Selection {
@@ -19,6 +20,7 @@ pub(super) struct Selection {
     pub(super) scope: String,
     pub(super) project: String,
     pub(super) observation: String,
+    pub(super) repository_origin: Option<String>,
 }
 
 /// Memory-only position in the current policy's source sweep. A restart repeats
@@ -27,6 +29,27 @@ pub(super) struct Selection {
 pub(super) struct DiscoveryCursor {
     pub(super) root: usize,
     pub(super) after: Option<String>,
+    pub(super) repository_lookup: Option<RepositoryLookupCursor>,
+}
+
+/// Resume a large CWD list without repeating checks that did not grant
+/// permission. Restart if the evidence changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RepositoryLookupCursor {
+    source_id: String,
+    paths: Vec<PathBuf>,
+    next_path: usize,
+}
+
+impl RepositoryLookupCursor {
+    /// Return the first unchecked path for the same candidate and path list.
+    fn start(&self, source_id: &str, paths: &[PathBuf]) -> usize {
+        if self.source_id == source_id && self.paths == paths {
+            self.next_path
+        } else {
+            0
+        }
+    }
 }
 
 /// Inspect only admitted native source candidates. Project matching uses directory components;
@@ -66,6 +89,7 @@ pub(super) fn discover_policy_page(
     cursor: &DiscoveryCursor,
 ) -> Result<(Vec<Selection>, Option<DiscoveryCursor>, DiscoveryCoverage), String> {
     cache.begin_scan();
+    let mut repository_lookups = RepositoryLookups::default();
     let mut selected = Vec::new();
     let mut discovered = 0usize;
     let mut coverage = DiscoveryCoverage::default();
@@ -79,28 +103,35 @@ pub(super) fn discover_policy_page(
                 continue;
             }
             let folder = Path::new(&binding.project_path).to_owned();
-            if antiburn_cloud_capture::ProjectSelection::new(vec![folder.clone()]).is_ok() {
+            if ProjectSelection::new(vec![folder.clone()]).is_ok() {
                 verified_folders.push(folder);
             } else {
                 coverage.blocked = true;
             }
         }
-        if verified_folders.is_empty() {
+        let has_repository_rules = policy
+            .repository_rules
+            .iter()
+            .any(|rule| policy.allows_repository(&root.source_scope_id, &rule.origin));
+        if verified_folders.is_empty() && !has_repository_rules {
             // Report a missing saved root without listing its unapproved sessions.
             coverage.blocked |= Path::new(&root.path).symlink_metadata().is_err();
             continue;
         }
-        let Ok(projects) = antiburn_cloud_capture::ProjectSelection::new(verified_folders.clone())
-        else {
+        let Ok(projects) = ProjectSelection::new(verified_folders.clone()) else {
             coverage.blocked = true;
             continue;
         };
+        let mut last_visited_key = (index == cursor.root)
+            .then(|| cursor.after.clone())
+            .flatten();
+        let pending_lookup = (index == cursor.root)
+            .then_some(cursor.repository_lookup.as_ref())
+            .flatten();
         let page = discover_root_page(
             root.source_kind,
             &root.path,
-            (index == cursor.root)
-                .then_some(cursor.after.as_deref())
-                .flatten(),
+            last_visited_key.as_deref(),
             512usize.saturating_sub(discovered),
         );
         let page = match page {
@@ -117,7 +148,6 @@ pub(super) fn discover_policy_page(
         };
         coverage.partial |= page.partial;
         discovered += page.visited;
-        let mut last_claude_key = None;
         for candidate in page.candidates {
             if !current() {
                 return Err("Cloud account changed.".into());
@@ -143,14 +173,15 @@ pub(super) fn discover_policy_page(
                     selected,
                     Some(DiscoveryCursor {
                         root: index,
-                        after: last_claude_key,
+                        after: last_visited_key,
+                        repository_lookup: pending_lookup
+                            .filter(|pending| pending.source_id == candidate.source_id())
+                            .cloned(),
                     }),
                     coverage,
                 ));
             }
-            if root.source_kind == SourceKind::ClaudeJsonl {
-                last_claude_key = Some(candidate.source_id().to_owned());
-            }
+            let previous_key = last_visited_key.replace(provider_cursor_key(&candidate).into());
             let Ok(Some(evidence)) = evidence else {
                 coverage.blocked = true;
                 continue;
@@ -166,37 +197,87 @@ pub(super) fn discover_policy_page(
                 coverage.blocked = true;
                 continue;
             }
-            match projects.matches(&evidence) {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(_) => {
-                    coverage.blocked = true;
-                    continue;
-                }
-            }
-            let Some(project) = evidence
-                .project_paths()
-                .iter()
-                .find(|path| {
-                    verified_folders
-                        .iter()
-                        .any(|folder| path.starts_with(folder))
-                        && antiburn_cloud_capture::ProjectSelection::new(vec![(*path).clone()])
-                            .is_ok()
-                })
-                .map(|path| path.as_path())
-                .and_then(Path::to_str)
-            else {
-                coverage.blocked = true;
-                continue;
-            };
+            let (project, repository_origin, repository_projects) =
+                match projects.matches(&evidence) {
+                    Ok(true) => {
+                        let Some(project) = evidence
+                            .project_paths()
+                            .iter()
+                            .find(|path| {
+                                verified_folders
+                                    .iter()
+                                    .any(|folder| path.starts_with(folder))
+                                    && ProjectSelection::new(vec![(*path).clone()]).is_ok()
+                            })
+                            .and_then(|path| path.to_str())
+                        else {
+                            coverage.blocked = true;
+                            continue;
+                        };
+                        if !policy.allows(&root.source_scope_id, project) {
+                            continue;
+                        }
+                        (project, None, None)
+                    }
+                    Ok(false) if has_repository_rules && evidence.scan_complete() => {
+                        let paths = evidence.project_paths();
+                        let start = pending_lookup
+                            .map_or(0, |pending| pending.start(candidate.source_id(), paths));
+                        let mut matched = None;
+                        for (path_index, path) in paths.iter().enumerate().skip(start) {
+                            if !current() {
+                                return Err("Cloud upload controls changed.".into());
+                            }
+                            match repository_lookups.origin(path) {
+                                Ok(Some(origin))
+                                    if policy.allows_repository(&root.source_scope_id, &origin) =>
+                                {
+                                    matched = Some((path, origin));
+                                    break;
+                                }
+                                Ok(_) => {}
+                                Err(LookupDeferred) => {
+                                    return Ok((
+                                        selected,
+                                        Some(DiscoveryCursor {
+                                            root: index,
+                                            after: previous_key,
+                                            repository_lookup: Some(RepositoryLookupCursor {
+                                                source_id: candidate.source_id().into(),
+                                                paths: paths.to_vec(),
+                                                next_path: path_index,
+                                            }),
+                                        }),
+                                        coverage,
+                                    ));
+                                }
+                            }
+                        }
+                        let Some((path, origin)) = matched else {
+                            continue;
+                        };
+                        let (Some(project), Ok(projects)) =
+                            (path.to_str(), ProjectSelection::new(vec![path.clone()]))
+                        else {
+                            coverage.blocked = true;
+                            continue;
+                        };
+                        (project, Some(origin), Some(projects))
+                    }
+                    Ok(false) => continue,
+                    Err(_) => {
+                        coverage.blocked = true;
+                        continue;
+                    }
+                };
             if !current() {
                 return Err("Cloud upload controls changed.".into());
             }
-            if !policy.allows(&root.source_scope_id, project) {
-                continue;
-            }
-            let observation = match candidate_observation(&candidate, &evidence, &projects) {
+            let observation = match candidate_observation(
+                &candidate,
+                &evidence,
+                repository_projects.as_ref().unwrap_or(&projects),
+            ) {
                 Ok(observation) => observation,
                 Err(_) => {
                     coverage.blocked = true;
@@ -210,6 +291,7 @@ pub(super) fn discover_policy_page(
                 scope: root.source_scope_id.clone(),
                 project: project.to_owned(),
                 observation,
+                repository_origin,
             });
         }
         if !current() {
@@ -221,6 +303,7 @@ pub(super) fn discover_policy_page(
                 Some(DiscoveryCursor {
                     root: index,
                     after: Some(after),
+                    repository_lookup: None,
                 }),
                 coverage,
             ));
@@ -231,12 +314,45 @@ pub(super) fn discover_policy_page(
                 Some(DiscoveryCursor {
                     root: index + 1,
                     after: None,
+                    repository_lookup: None,
                 }),
                 coverage,
             ));
         }
     }
     Ok((selected, None, coverage))
+}
+
+/// Return the provider's exclusive pagination key for a completed candidate.
+/// Claude includes the child filename in its key. Other providers page by ID.
+fn provider_cursor_key(candidate: &Candidate) -> &str {
+    match candidate.source_kind() {
+        antiburn_cloud_capture::CaptureSourceKind::ClaudeJsonl => candidate.source_id(),
+        _ => candidate.native_session_id(),
+    }
+}
+
+#[cfg(test)]
+mod repository_paging_tests {
+    use super::*;
+
+    #[test]
+    fn repository_lookup_resumes_only_with_unchanged_recorded_paths() {
+        let paths = vec![PathBuf::from("/first"), PathBuf::from("/second")];
+        let pending = RepositoryLookupCursor {
+            source_id: "session-a".into(),
+            paths: paths.clone(),
+            next_path: 1,
+        };
+
+        assert_eq!(pending.start("session-a", &paths), 1);
+        assert_eq!(pending.start("session-b", &paths), 0);
+        assert_eq!(pending.start("session-a", &paths[1..]), 0);
+        assert_eq!(
+            pending.start("session-a", &[PathBuf::from("/new"), paths[1].clone()]),
+            0
+        );
+    }
 }
 
 /// Both flags prevent a complete count. Only `blocked` changes upload status.

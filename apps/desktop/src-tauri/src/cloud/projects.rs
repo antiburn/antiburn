@@ -3,7 +3,11 @@
 //! must obtain fresh recorded-CWD admission under separate saved consent.
 
 use super::{
-    Controller, DestinationBinding, Draft, Folder, engine::Engine, ensure_cloud_setup, now, sync,
+    Controller, DestinationBinding, Draft, Folder,
+    engine::Engine,
+    ensure_cloud_setup, now,
+    repository_checkout::{CheckoutOrigin, CheckoutOriginCache},
+    sync,
     work::Priority,
 };
 use crate::store::{
@@ -26,7 +30,10 @@ use std::{
 use tauri::Manager;
 
 const CACHE_BYTES: usize = 4 * 1024 * 1024;
-const CONFIRMATION_CONTEXT_ENTRIES: usize = 512;
+const REQUEST_CONTEXT_ENTRIES: usize = 512;
+const PROJECT_ORIGIN_LOOKUP_BUDGET: Duration = Duration::from_secs(2);
+const PROJECT_DISCOVERY_INCOMPLETE: &str =
+    "Project discovery is incomplete. Restore access or choose fewer sources and retry.";
 const PROJECT_SCAN_CANDIDATES: usize = 4096;
 const PROJECT_SCAN_PAGE_CANDIDATES: usize = 512;
 const CLAUDE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
@@ -168,7 +175,24 @@ impl Cache {
         }
     }
 
-    fn context(&mut self, environment: &str, cwd: &str) -> Context {
+    fn context(&mut self, environment: &str, cwd: &str, origins: &mut RequestOrigins) -> Context {
+        if environment == "native" {
+            match origins.get(cwd) {
+                ProjectOrigin::Repository(checkout, origin) => {
+                    return Context {
+                        main: checkout.clone(),
+                        folders: vec![checkout],
+                        origin: Some(origin),
+                        complete: true,
+                        inspection_incomplete: false,
+                    };
+                }
+                ProjectOrigin::Plain => return Context::plain(cwd),
+                ProjectOrigin::Unavailable => return Context::unavailable(cwd, false),
+                ProjectOrigin::Incomplete => return Context::unavailable(cwd, true),
+                ProjectOrigin::ExactGit => {}
+            }
+        }
         let key = (environment.to_owned(), cwd.to_owned());
         if let Some((observed, context)) = self.contexts.get(&key)
             && observed.elapsed() < Duration::from_secs(if context.complete { 60 } else { 1 })
@@ -192,8 +216,8 @@ impl Cache {
     }
 }
 
-/// One project and its currently verified local worktree folders. Initial
-/// selected state belongs to the renderer and is not stored by discovery.
+/// An exact folder group or a repository group with local anchor folders.
+/// Discovery does not store selected state.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Group {
@@ -203,6 +227,9 @@ pub(crate) struct Group {
     label: String,
     folder_paths: Vec<String>,
     worktree_count: u32,
+    /// Repository groups list observed anchors, not every checkout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repository_wide: Option<bool>,
     agents: Vec<String>,
     session_count: u64,
     capture_session_count: u32,
@@ -219,8 +246,7 @@ pub(crate) struct Discovery {
     groups: Vec<Group>,
     source_roots: Vec<SourceSelection>,
     next_cursor: Option<Cursor>,
-    /// An inspection failed or exceeded a supported source/selection bound.
-    /// Normal provider pages and per-request scan budgets do not set this flag.
+    /// An inspection failed or exceeded a supported source, selection, or origin bound.
     partial: bool,
 }
 
@@ -228,8 +254,38 @@ pub(crate) struct Discovery {
 struct Context {
     main: String,
     folders: Vec<String>,
+    origin: Option<String>,
     complete: bool,
     inspection_incomplete: bool,
+}
+
+impl Context {
+    fn plain(path: &str) -> Self {
+        Self {
+            main: path.into(),
+            folders: vec![path.into()],
+            origin: None,
+            complete: true,
+            inspection_incomplete: false,
+        }
+    }
+
+    fn unavailable(path: &str, inspection_incomplete: bool) -> Self {
+        Self {
+            main: path.into(),
+            folders: Vec::new(),
+            origin: None,
+            complete: false,
+            inspection_incomplete,
+        }
+    }
+
+    fn group_key(&self, environment: &str) -> (String, bool, String) {
+        match &self.origin {
+            Some(origin) => (environment.into(), true, origin.clone()),
+            None => (environment.into(), false, self.main.clone()),
+        }
+    }
 }
 
 /// Use fresh Git proof for each confirmation. A complete context proves each
@@ -243,12 +299,12 @@ impl ConfirmationContexts {
             return Rc::clone(saved);
         }
         let checked = Rc::new(context("native", path));
-        if self.0.len() < CONFIRMATION_CONTEXT_ENTRIES {
+        if self.0.len() < REQUEST_CONTEXT_ENTRIES {
             self.0.insert(path.into(), Rc::clone(&checked));
         }
         if checked.complete {
             for folder in &checked.folders {
-                if self.0.len() == CONFIRMATION_CONTEXT_ENTRIES {
+                if self.0.len() == REQUEST_CONTEXT_ENTRIES {
                     break;
                 }
                 self.0
@@ -360,6 +416,16 @@ fn existing_project_path(path: &str) -> std::io::Result<Option<&Path>> {
     }
 }
 
+/// An unreadable marker also prevents the path from qualifying as plain.
+fn has_git_marker(path: &Path) -> bool {
+    path.ancestors().any(|ancestor| {
+        !matches!(
+            ancestor.join(".git").symlink_metadata(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    })
+}
+
 /// Parse Git's porcelain records, then check the registered checkouts on disk.
 /// Old Git can put raw newlines in paths. Parsed paths alone do not prove membership.
 fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> Option<Context> {
@@ -413,6 +479,7 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
         return Some(Context {
             main: current.clone(),
             folders: vec![current],
+            origin: None,
             complete: false,
             inspection_incomplete: true,
         });
@@ -426,6 +493,7 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
     Some(Context {
         main: main.into(),
         folders,
+        origin: None,
         complete,
         inspection_incomplete: !complete,
     })
@@ -443,19 +511,10 @@ fn context(environment: &str, cwd: &str) -> Context {
 }
 
 fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context {
-    let unavailable = || Context {
-        main: cwd.into(),
-        folders: Vec::new(),
-        complete: false,
-        inspection_incomplete: false,
-    };
-    let inspection_failed = || Context {
-        inspection_incomplete: true,
-        ..unavailable()
-    };
+    let inspection_failed = || Context::unavailable(cwd, true);
     let path = match path {
         Ok(Some(path)) => path,
-        Ok(None) => return unavailable(),
+        Ok(None) => return Context::unavailable(cwd, false),
         Err(_) => return inspection_failed(),
     };
     use antiburn_local::platform::git;
@@ -503,20 +562,10 @@ fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context 
             }
             Ok(None) => {
                 // Git can report no repository when a .git marker is damaged.
-                if path.ancestors().any(|ancestor| {
-                    !matches!(
-                        ancestor.join(".git").symlink_metadata(),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound
-                    )
-                }) {
+                if has_git_marker(path) {
                     return inspection_failed();
                 }
-                Context {
-                    main: cwd.into(),
-                    folders: vec![cwd.into()],
-                    complete: true,
-                    inspection_incomplete: false,
-                }
+                Context::plain(cwd)
             }
             Err(_) => inspection_failed(),
         }
@@ -659,8 +708,114 @@ pub(super) fn group_id(environment: &str, path: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(bytes))
 }
 
-/// Confirm the selected folders against current source choices and group evidence.
-/// Return the allowed roots so a caller can check bindings held after source changes.
+/// Identify an origin group without changing legacy path-based IDs.
+pub(super) fn repository_group_id(origin: &str) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    // A prefix that is not a JSON array separates this domain from path IDs.
+    let mut hash = Sha256::new();
+    hash.update(b"antiburn-repository-origin-v1\0");
+    hash.update(origin.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash.finalize())
+}
+
+#[derive(Clone)]
+enum ProjectOrigin {
+    Repository(String, String),
+    ExactGit,
+    Plain,
+    Unavailable,
+    Incomplete,
+}
+
+struct RequestOrigins {
+    checkouts: CheckoutOriginCache,
+    paths: BTreeMap<String, ProjectOrigin>,
+    deadline: tokio::time::Instant,
+}
+
+impl Default for RequestOrigins {
+    fn default() -> Self {
+        Self {
+            checkouts: CheckoutOriginCache::default(),
+            paths: BTreeMap::new(),
+            deadline: tokio::time::Instant::now() + PROJECT_ORIGIN_LOOKUP_BUDGET,
+        }
+    }
+}
+
+impl RequestOrigins {
+    /// Use one deadline for all Git lookups in this request. Reuse completed
+    /// proof for the same path, but never treat skipped Git as an exact folder.
+    fn get(&mut self, path: &str) -> ProjectOrigin {
+        if cfg!(not(unix)) {
+            return ProjectOrigin::ExactGit;
+        }
+        if let Some(saved) = self.paths.get(path) {
+            return saved.clone();
+        }
+        let checked = if tokio::time::Instant::now() < self.deadline {
+            tauri::async_runtime::block_on(async {
+                if tokio::time::Instant::now() >= self.deadline {
+                    return None;
+                }
+                tokio::time::timeout_at(self.deadline, self.checkouts.lookup(Path::new(path)))
+                    .await
+                    .ok()
+            })
+        } else {
+            None
+        };
+        let checked = match checked {
+            Some(CheckoutOrigin::Plain) => ProjectOrigin::Plain,
+            Some(CheckoutOrigin::Verified { origin: None, .. }) => ProjectOrigin::ExactGit,
+            Some(CheckoutOrigin::Verified {
+                checkout,
+                origin: Some(origin),
+            }) => checkout
+                .to_str()
+                .map_or(ProjectOrigin::Incomplete, |checkout| {
+                    ProjectOrigin::Repository(checkout.into(), origin.as_label().into())
+                }),
+            None => ProjectOrigin::Incomplete,
+            Some(CheckoutOrigin::UnverifiedGit) if tokio::time::Instant::now() >= self.deadline => {
+                ProjectOrigin::Incomplete
+            }
+            Some(CheckoutOrigin::UnverifiedGit) => tauri::async_runtime::block_on(async {
+                let path = Path::new(path);
+                let probe =
+                    tokio::time::timeout_at(self.deadline, tokio::fs::canonicalize(path)).await;
+                match probe {
+                    Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        ProjectOrigin::Unavailable
+                    }
+                    Ok(Ok(canonical)) if canonical != path => ProjectOrigin::Unavailable,
+                    _ => ProjectOrigin::Incomplete,
+                }
+            }),
+        };
+        if self.paths.len() < REQUEST_CONTEXT_ENTRIES {
+            self.paths.insert(path.into(), checked.clone());
+        }
+        checked
+    }
+}
+
+#[derive(Default)]
+struct ConfirmationTargets {
+    paths: BTreeSet<String>,
+    exact_groups: BTreeSet<String>,
+    repository_anchors: BTreeMap<String, String>,
+}
+
+impl ConfirmationTargets {
+    fn is_confirmed(&self) -> bool {
+        self.exact_groups.is_empty() && self.repository_anchors.is_empty()
+    }
+}
+
+/// Confirm choices for a caller that only needs the allowed source roots.
+#[cfg(test)]
 pub(super) fn confirm_project_choices(
     store: &Store,
     cache: &mut Cache,
@@ -669,6 +824,20 @@ pub(super) fn confirm_project_choices(
     projects: &BTreeSet<ProjectSelection>,
     current: &dyn Fn() -> bool,
 ) -> Result<Vec<SourceSelection>, String> {
+    confirm_project_choices_with_origins(store, cache, binding, choices, projects, current)
+        .map(|(roots, _)| roots)
+}
+
+/// Confirm each source and group against current session evidence. Return the
+/// allowed sources and the exact checkout roots explicitly approved by origin.
+pub(super) fn confirm_project_choices_with_origins(
+    store: &Store,
+    cache: &mut Cache,
+    binding: &DestinationBinding,
+    choices: &BTreeMap<String, bool>,
+    projects: &BTreeSet<ProjectSelection>,
+    current: &dyn Fn() -> bool,
+) -> Result<(Vec<SourceSelection>, BTreeMap<String, String>), String> {
     let saved = store
         .cloud_draft(&binding.account_id, &binding.destination_id)
         .map_err(|_| "Could not read saved provider sources.")?
@@ -682,26 +851,54 @@ pub(super) fn confirm_project_choices(
     )?;
     known.extend(super::file_sources::roots().0);
     let (roots, _) = merge_sources(known, &saved.folders)?;
-    let mut by_source = BTreeMap::<&SourceSelection, (BTreeSet<String>, BTreeSet<String>)>::new();
+    let mut by_source = BTreeMap::<&SourceSelection, ConfirmationTargets>::new();
     let mut contexts = ConfirmationContexts::default();
+    let mut origins = RequestOrigins::default();
+    let mut approved_origins = BTreeMap::new();
     for project in projects {
+        if !current() {
+            return Err("Cloud account or upload controls changed.".into());
+        }
         let root = roots
             .iter()
             .find(|root| {
                 root.source_kind == project.source_kind && root.path == project.source_path
             })
             .ok_or("A session source changed. Reload projects and confirm again.")?;
-        let member = contexts.get(&project.project_path);
-        let group = group_id("native", &member.main);
-        if !member.complete
-            || choices.get(&group) != Some(&true)
-            || !member.folders.contains(&project.project_path)
-        {
+        let targets = by_source.entry(root).or_default();
+        targets.paths.insert(project.project_path.clone());
+        let group = match origins.get(&project.project_path) {
+            ProjectOrigin::Repository(checkout, origin)
+                if checkout == project.project_path
+                    && choices.get(&repository_group_id(&origin)) == Some(&true) =>
+            {
+                targets
+                    .repository_anchors
+                    .insert(checkout.clone(), origin.clone());
+                approved_origins.insert(checkout, origin);
+                continue;
+            }
+            ProjectOrigin::Repository(..) | ProjectOrigin::ExactGit => {
+                let member = contexts.get(&project.project_path);
+                if !member.complete || !member.folders.contains(&project.project_path) {
+                    return Err(
+                        "The project folders changed. Reload projects and confirm again.".into(),
+                    );
+                }
+                group_id("native", &member.main)
+            }
+            ProjectOrigin::Plain => group_id("native", &project.project_path),
+            ProjectOrigin::Unavailable => {
+                return Err(
+                    "The project folders changed. Reload projects and confirm again.".into(),
+                );
+            }
+            ProjectOrigin::Incomplete => return Err(PROJECT_DISCOVERY_INCOMPLETE.into()),
+        };
+        if choices.get(&group) != Some(&true) {
             return Err("The project folders changed. Reload projects and confirm again.".into());
         }
-        let (paths, groups) = by_source.entry(root).or_default();
-        paths.insert(project.project_path.clone());
-        groups.insert(group);
+        targets.exact_groups.insert(group);
     }
     cache.begin_scan();
     let (selected_roots, mut targets): (Vec<_>, Vec<_>) = by_source.into_iter().unzip();
@@ -709,9 +906,9 @@ pub(super) fn confirm_project_choices(
     let mut partial = vec![false; selected_roots.len()];
     while let Some((index, listing)) = scans.next(
         current,
-        |index| !targets[index].1.is_empty(),
+        |index| !targets[index].is_confirmed(),
         |index| {
-            let paths = targets[index].0.iter().cloned().collect::<Vec<_>>();
+            let paths = targets[index].paths.iter().cloned().collect::<Vec<_>>();
             store
                 .cloud_opencode_session_ids(&paths, PROJECT_SCAN_PAGE_CANDIDATES)
                 .map(Cow::Owned)
@@ -719,7 +916,7 @@ pub(super) fn confirm_project_choices(
         },
     ) {
         let root = selected_roots[index];
-        let groups = &mut targets[index].1;
+        let target = &mut targets[index];
         let listing = listing?;
         partial[index] |= listing.partial;
         for candidate in listing.candidates {
@@ -744,27 +941,50 @@ pub(super) fn confirm_project_choices(
                 .iter()
                 .filter_map(|path| path.to_str())
             {
-                let member = contexts.get(path);
-                if member.complete {
-                    groups.remove(&group_id("native", &member.main));
-                } else {
-                    partial[index] |= member.inspection_incomplete;
+                let proof = origins.get(path);
+                if let ProjectOrigin::Repository(checkout, origin) = &proof
+                    && target.repository_anchors.get(checkout) == Some(origin)
+                {
+                    target.repository_anchors.remove(checkout);
+                }
+                if matches!(proof, ProjectOrigin::Incomplete) {
+                    partial[index] = true;
+                } else if !target.exact_groups.is_empty() {
+                    match proof {
+                        ProjectOrigin::Plain => {
+                            target.exact_groups.remove(&group_id("native", path));
+                        }
+                        ProjectOrigin::ExactGit | ProjectOrigin::Repository(..) => {
+                            let member = contexts.get(path);
+                            if member.complete {
+                                target
+                                    .exact_groups
+                                    .remove(&group_id("native", &member.main));
+                            } else {
+                                partial[index] |= member.inspection_incomplete;
+                            }
+                        }
+                        ProjectOrigin::Unavailable | ProjectOrigin::Incomplete => {}
+                    }
+                }
+                if target.is_confirmed() {
+                    break;
                 }
             }
-            if groups.is_empty() {
+            if target.is_confirmed() {
                 break;
             }
         }
     }
-    for (index, (_, groups)) in targets.into_iter().enumerate() {
-        if !groups.is_empty() {
+    for (index, target) in targets.into_iter().enumerate() {
+        if !target.is_confirmed() {
             if partial[index] || scans.root_incomplete(index) {
-                return Err("Project discovery is incomplete. Restore access or choose fewer sources and retry.".into());
+                return Err(PROJECT_DISCOVERY_INCOMPLETE.into());
             }
             return Err("Could not confirm a supported session for this project. Reload projects and try again.".into());
         }
     }
-    Ok(roots)
+    Ok((roots, approved_origins))
 }
 
 /// Find grants for the group even when current provider discovery cannot list them.
@@ -816,29 +1036,34 @@ pub(super) fn group_projects_to_remove(
 }
 
 fn add_suggestion(
-    groups: &mut BTreeMap<(String, String), Group>,
+    groups: &mut BTreeMap<(String, bool, String), Group>,
     suggestion: Suggestion,
     context: &Context,
 ) {
-    let key = (suggestion.environment.clone(), context.main.clone());
-    let group = groups.entry(key).or_insert_with(|| Group {
-        id: group_id(&suggestion.environment, &context.main),
-        environment: suggestion.environment.clone(),
-        path: context.main.clone(),
-        label: Path::new(&context.main)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(&context.main)
-            .into(),
-        worktree_count: context.folders.len().saturating_sub(1) as u32,
-        folder_paths: context.folders.clone(),
-        agents: Vec::new(),
-        session_count: 0,
-        capture_session_count: 0,
-        capture_supported: false,
-        grouping_complete: context.complete,
-        projects: Vec::new(),
-    });
+    let group = groups
+        .entry(context.group_key(&suggestion.environment))
+        .or_insert_with(|| Group {
+            id: context.origin.as_deref().map_or_else(
+                || group_id(&suggestion.environment, &context.main),
+                repository_group_id,
+            ),
+            environment: suggestion.environment.clone(),
+            path: context.main.clone(),
+            label: Path::new(&context.main)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&context.main)
+                .into(),
+            worktree_count: context.folders.len().saturating_sub(1) as u32,
+            repository_wide: context.origin.as_ref().map(|_| true),
+            folder_paths: context.folders.clone(),
+            agents: Vec::new(),
+            session_count: 0,
+            capture_session_count: 0,
+            capture_supported: false,
+            grouping_complete: context.complete,
+            projects: Vec::new(),
+        });
     group.session_count += suggestion.session_count;
     group.agents.extend(suggestion.agents);
     group.agents.sort();
@@ -1062,12 +1287,13 @@ fn discover_projects(
         )
         .map_err(|_| "Could not read cached session identities.")?;
     let mut groups = BTreeMap::new();
+    let mut origins = RequestOrigins::default();
     cache.begin_scan();
     for suggestion in suggestions {
         if !current() {
             return Err("Cloud account changed.".into());
         }
-        let context = cache.context(&suggestion.environment, &suggestion.cwd);
+        let context = cache.context(&suggestion.environment, &suggestion.cwd, &mut origins);
         partial |= context.inspection_incomplete;
         if suggestion.environment == "native" && !context.complete && !context.inspection_incomplete
         {
@@ -1075,6 +1301,11 @@ fn discover_projects(
         }
         add_suggestion(&mut groups, suggestion, &context);
     }
+    let mut folder_path_bytes = groups
+        .values()
+        .flat_map(|group| &group.folder_paths)
+        .map(String::len)
+        .sum::<usize>();
     let mut qualified = vec![false; roots.len()];
     let mut project_choices = 0usize;
     let mut scans = ProjectScans::new(roots.iter().collect());
@@ -1120,26 +1351,22 @@ fn discover_projects(
                     partial = true;
                     continue;
                 };
-                let context = cache.context("native", project);
+                let context = cache.context("native", project, &mut origins);
                 partial |= context.inspection_incomplete;
                 if !context.complete && !context.inspection_incomplete {
                     continue;
                 }
-                if !groups.contains_key(&("native".into(), context.main.clone())) {
+                let key = context.group_key("native");
+                if !groups.contains_key(&key) {
                     if after.is_some() {
                         continue;
                     }
-                    if groups.len() >= 256
-                        || groups
-                            .values()
-                            .map(|group| group.folder_paths.iter().map(String::len).sum::<usize>())
-                            .sum::<usize>()
-                            + context.folders.iter().map(String::len).sum::<usize>()
-                            > 4 * 1024 * 1024
-                    {
+                    let added_bytes = context.folders.iter().map(String::len).sum::<usize>();
+                    if groups.len() >= 256 || folder_path_bytes + added_bytes > CACHE_BYTES {
                         partial = true;
                         continue;
                     }
+                    folder_path_bytes += added_bytes;
                     add_suggestion(
                         &mut groups,
                         Suggestion {
@@ -1151,7 +1378,7 @@ fn discover_projects(
                         &context,
                     );
                 }
-                if let Some(group) = groups.get_mut(&("native".into(), context.main)) {
+                if let Some(group) = groups.get_mut(&key) {
                     if matched.insert(group.id.clone()) {
                         group.capture_session_count += 1;
                     }
@@ -1163,11 +1390,17 @@ fn discover_projects(
                         continue;
                     }
                     group.capture_supported = true;
-                    for folder in &group.folder_paths {
+                    let (folders, repository) = if context.origin.is_some() {
+                        (&context.folders, true)
+                    } else {
+                        (&group.folder_paths, false)
+                    };
+                    let mut added_anchor = None;
+                    for folder in folders {
                         if group.projects.iter().any(|project| {
                             project.source_kind == root.source_kind
                                 && project.source_path == root.path
-                                && project.project_path == *folder
+                                && (repository || project.project_path == *folder)
                         }) {
                             continue;
                         }
@@ -1176,12 +1409,25 @@ fn discover_projects(
                             group.capture_supported = false;
                             continue;
                         }
+                        if repository && !group.folder_paths.contains(folder) {
+                            if folder_path_bytes + folder.len() > CACHE_BYTES {
+                                partial = true;
+                                group.capture_supported = false;
+                                continue;
+                            }
+                            folder_path_bytes += folder.len();
+                            added_anchor = Some(folder.clone());
+                        }
                         group.projects.push(ProjectSelection {
                             source_kind: root.source_kind,
                             source_path: root.path.clone(),
                             project_path: folder.clone(),
                         });
                         project_choices += 1;
+                    }
+                    if let Some(anchor) = added_anchor {
+                        group.folder_paths.push(anchor);
+                        group.folder_paths.sort();
                     }
                     group.projects.sort();
                     group.projects.dedup();

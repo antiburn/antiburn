@@ -54,6 +54,8 @@ export interface CloudProjectGroup {
   memberPaths: readonly string[]
   sessionCount: number | null
   worktreeCount: number
+  /** Approval covers checkouts of the same Git repository. */
+  repositoryWide?: boolean
   /** False when Desktop could not verify the full set of worktree paths. */
   groupingComplete?: boolean
   /** This row was outside the refreshed page chain. It cannot add permission. */
@@ -159,6 +161,8 @@ export interface DesktopCloudProjectGroup {
   captureSessionCount: number
   captureSupported: boolean
   groupingComplete: boolean
+  /** Desktop verified a Git origin for this stable group ID. */
+  repositoryWide?: boolean
   /** Renderer-only marker for cached rows outside the current page chain. */
   discoveryStale?: boolean
   projects: CloudProjectSelection[]
@@ -189,14 +193,18 @@ export function mergeCloudProjectGroups(
       groups.set(group.id, group)
       continue
     }
-    const projects = new Map(
-      [...existing.projects, ...group.projects].map((project) => [
-        JSON.stringify(project),
-        project,
-      ]),
-    )
+    const projectKey = (project: CloudProjectSelection) =>
+      group.repositoryWide
+        ? JSON.stringify([project.sourceKind, project.sourcePath])
+        : JSON.stringify(project)
+    const projects = new Map(existing.projects.map((project) => [projectKey(project), project]))
+    for (const project of group.projects) {
+      const key = projectKey(project)
+      if (!projects.has(key)) projects.set(key, project)
+    }
     groups.set(group.id, {
       ...group,
+      ...(group.repositoryWide && { path: existing.path, label: existing.label }),
       folderPaths: [...new Set([...existing.folderPaths, ...group.folderPaths])].sort(),
       agents: [...new Set([...existing.agents, ...group.agents])].sort(),
       sessionCount: existing.sessionCount + group.sessionCount,
@@ -225,7 +233,7 @@ export function cloudProjectChoices(
     }),
   )
 }
-/** Separate consent for existing and future sessions under exact source/path bindings. */
+/** Consent for existing and future sessions in approved folders or Git repositories. */
 export interface CloudOngoingConsent extends CloudDestinationBinding {
   version: "desktop-project-sync-v1"
   selectedSources: CloudSourceSelection[]
@@ -315,6 +323,12 @@ export interface CloudOngoingStatus {
   paused: boolean
   selectedSources: CloudSourceSelection[]
   projects: CloudProjectSelection[]
+  /** Exact folder bindings without repository display anchors. Older replies use projects. */
+  exactProjects?: CloudProjectSelection[]
+  /** Confirmed repository group IDs. Project paths for these rules are display anchors. */
+  repositoryGroupIds?: string[]
+  /** Saved provider bindings for each repository group. */
+  repositoryFolders?: { groupId: string; projects: CloudProjectSelection[] }[]
   /** Confirmed account-bound choices. Older status replies can omit this metadata;
    * an existing policy without it requires review instead of selecting unknown groups.
    */

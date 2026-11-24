@@ -43,6 +43,11 @@ mod folder_move;
 #[path = "git_checkout.rs"]
 mod git_checkout;
 mod project_directories;
+mod repository_capture;
+mod repository_policy;
+use repository_policy::{
+    has_folders, revoke_repository, saved_folders, saved_team_folder_id, team_policy_status,
+};
 
 use backfill_progress::{BackfillProgress, SourceProblem, UploadProgress};
 #[cfg(all(test, unix))]
@@ -175,6 +180,12 @@ pub(crate) struct Status {
     workspace_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     saved_folders: Option<Vec<SavedFolder>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    repository_group_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    repository_folders: Vec<repository_policy::RepositoryFolder>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exact_projects: Option<Vec<ProjectSelection>>,
     /// Current Team eligibility is verified, but saved folder consent is stale.
     folder_confirmation_required: bool,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
@@ -288,6 +299,7 @@ struct Runner {
     state: State,
     last_status: Option<Status>,
     last_status_origin: Option<String>,
+    repository_migration: Option<(String, Instant)>,
 }
 
 struct RetryGrant {
@@ -479,7 +491,7 @@ fn turn_team_workspace(
         .lock()
         .map_err(|_| "Cloud sync is unavailable.")?;
     if !policies.iter().any(|policy| {
-        policy.membership_generation.is_some() && !policy.paused && !policy.projects.is_empty()
+        policy.membership_generation.is_some() && !policy.paused && has_folders(policy)
     }) {
         runners.clear();
         return Ok(());
@@ -565,7 +577,7 @@ fn verified_team_turns<'a>(
         .iter()
         .filter(|policy| {
             !policy.paused
-                && !policy.projects.is_empty()
+                && has_folders(policy)
                 && eligible.is_ok_and(|entries| team_has_proof(policy, entries))
         })
         .collect::<Vec<_>>();
@@ -582,7 +594,7 @@ fn verified_team_turns<'a>(
         if let Some(policy) = policies.iter().find(|policy| &policy.destination_id == id) {
             if let Err(error) = eligible
                 && !policy.paused
-                && !policy.projects.is_empty()
+                && has_folders(policy)
                 && runner.team.as_ref().is_some_and(|(team, generation)| {
                     team == id && Some(generation) == policy.membership_generation.as_ref()
                 })
@@ -631,74 +643,6 @@ fn team_lookup_failed(policy: &Policy, live: Option<Status>, error: auth::Failur
     status
 }
 
-fn saved_team_folder_id(path: &str) -> String {
-    format!(
-        "saved-{}",
-        super::projects::group_id("saved-team-folder", path)
-    )
-}
-
-/// Name exact saved paths so Settings can revoke a rule without rediscovery.
-fn saved_folders(policy: &Policy) -> Vec<SavedFolder> {
-    policy
-        .projects
-        .iter()
-        .map(|project| &project.project_path)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|path| SavedFolder {
-            group_id: saved_team_folder_id(path),
-            path: path.clone(),
-        })
-        .collect()
-}
-
-/// Restore the local permission even when no current Team proof exists. Show
-/// confirmation only with fresh eligibility for the exact Team.
-fn team_policy_status(
-    policy: &Policy,
-    live: Option<Status>,
-    eligible: Option<&[auth::EligibleWorkspace]>,
-) -> Status {
-    let generation = eligible
-        .into_iter()
-        .flatten()
-        .find(|entry| {
-            entry.workspace.id == policy.destination_id
-                && entry.workspace.kind == auth::WorkspaceKind::Team
-        })
-        .and_then(|entry| entry.membership_generation.as_deref());
-    let folder_confirmation_required = !policy.projects.is_empty()
-        && generation.is_some_and(|generation| policy.needs_team_membership(generation));
-    let mut status = live
-        .filter(|value| {
-            !folder_confirmation_required
-                && value.account_id.as_deref() == Some(&policy.account_id)
-                && value.destination_id.as_deref() == Some(&policy.destination_id)
-                && value.policy_revision.as_deref() == Some(&policy.revision)
-        })
-        .unwrap_or(Status {
-            status: State::ReauthRequired,
-            ..Status::default()
-        });
-    status.account_id = Some(policy.account_id.clone());
-    status.destination_id = Some(policy.destination_id.clone());
-    status.consent_version = Some(policy.consent_version.clone());
-    status.policy_revision = Some(policy.revision.clone());
-    status.workspace_name = policy.workspace_name.clone();
-    status.team_statuses.clear();
-    status.folder_confirmation_required = folder_confirmation_required;
-    status.saved_folders = Some(saved_folders(policy));
-    status.paused = policy.paused;
-    status.source_confirmation_required = policy.paused;
-    status.projects = policy.projects.clone();
-    status.project_choices = policy.project_choices.clone();
-    if policy.paused || !eligible.is_some_and(|entries| team_has_proof(policy, entries)) {
-        status.automatic_recovery_count = None;
-    }
-    status
-}
-
 /// Read saved Team consent and recovery for the unexpired Personal principal.
 /// Explicit status reads can check eligibility. No provider files are read.
 fn saved_team_statuses(
@@ -722,7 +666,7 @@ fn saved_team_statuses(
         )
         .map_err(|_| "Could not read saved team consent.")?;
     let eligible = current
-        .filter(|_| policies.iter().any(|policy| !policy.projects.is_empty()))
+        .filter(|_| policies.iter().any(has_folders))
         .map(|current| {
             let binding = DestinationBinding {
                 account_id: anchor.user.id.clone(),
@@ -1328,6 +1272,12 @@ impl Runner {
             self.candidates.clear();
             return Ok(());
         }
+        let policy = repository_policy::try_migration(
+            store,
+            policy,
+            &mut self.repository_migration,
+            current,
+        );
         if policy.paused || !current() {
             self.state = State::Paused;
             self.candidates.clear();
@@ -1492,6 +1442,22 @@ impl Runner {
             let Some(job) = jobs.iter().find(|job| job.identity == entry.identity) else {
                 return Err("Saved capture binding is unavailable.".into());
             };
+            if entry.state == CaptureState::Queued
+                && !repository_capture::saved_job_origin_current(job)
+            {
+                store
+                    .set_cloud_sync_job_state(job, JobState::Fenced)
+                    .map_err(|_| "Could not save the changed repository state.")?;
+                self.retry_deadlines.insert(
+                    job.identity.capture_id.clone(),
+                    (
+                        now_instant + ROUTE_DENIAL_RETRY_DELAY,
+                        upload::Failure::Unavailable,
+                    ),
+                );
+                self.state = State::Fenced;
+                return Ok(());
+            }
             let origin = job
                 .resource_origin
                 .as_deref()
@@ -1548,8 +1514,10 @@ impl Runner {
                 self.unsupported_saved_uploads
                     .remove(&job.identity.capture_id);
             }
+            let source_authority = || repository_capture::saved_job_origin_current(job);
             let mut transport =
                 upload::HttpTransport::new(engine, account_current, current, origin, None)
+                    .with_source_authority(&source_authority)
                     .with_membership_generation(job.membership_generation.as_deref());
             let started = Instant::now();
             let mut result = host.spool()?.resume_step(&entry.identity, &mut transport);
@@ -1833,6 +1801,7 @@ impl Runner {
                         candidate,
                         scope: job.source_scope_id.clone(),
                         project: job.project_path.clone(),
+                        repository_origin: job.repository_origin.clone(),
                         observation: job.observation_key.clone(),
                     });
                 }
@@ -2000,6 +1969,8 @@ impl Runner {
             host.configure_limits(limits.clone())?;
             let folders = if let Some(job) = waiting {
                 exact_project_directories(job.project_folders.iter().map(String::as_str))
+            } else if selection.repository_origin.is_some() {
+                vec![Path::new(&selection.project).to_owned()]
             } else {
                 exact_project_directories(
                     policy
@@ -2100,6 +2071,24 @@ impl Runner {
                 self.observe_backfill_problem(candidate.source_id(), Some(SourceProblem::Blocked));
                 continue;
             }
+            if let Some(origin) = &selection.repository_origin
+                && !repository_capture::recheck_repository_project(
+                    &policy,
+                    &selection.scope,
+                    origin,
+                    &selection.project,
+                    &recorded_paths,
+                )
+            {
+                if let Some(job) = waiting {
+                    store
+                        .set_cloud_sync_job_state(job, JobState::Interrupted)
+                        .map_err(|_| "Could not save the changed capture project state.")?;
+                }
+                self.discovery_blocked = true;
+                self.observe_backfill_problem(candidate.source_id(), Some(SourceProblem::Blocked));
+                continue;
+            }
             let recorded_paths = recorded_paths
                 .iter()
                 .map(|path| path.to_str().map(str::to_owned))
@@ -2126,16 +2115,26 @@ impl Runner {
             let mut job = if let Some(job) = saved {
                 job.clone()
             } else {
-                let Some(job) = store
-                    .enqueue_cloud_sync_with_paths(
+                let queued = match &selection.repository_origin {
+                    Some(origin) => store.enqueue_cloud_sync_for_repository(
+                        &policy,
+                        &selection.scope,
+                        &selection.project,
+                        selection.candidate.source_id(),
+                        &selection.observation,
+                        (origin, &recorded_paths),
+                    ),
+                    None => store.enqueue_cloud_sync_with_paths(
                         &policy,
                         &selection.scope,
                         &selection.project,
                         selection.candidate.source_id(),
                         &selection.observation,
                         Some(&recorded_paths),
-                    )
-                    .map_err(|_| "Could not save a capture job. Saved bytes are kept.")?
+                    ),
+                };
+                let Some(job) =
+                    queued.map_err(|_| "Could not save a capture job. Saved bytes are kept.")?
                 else {
                     continue;
                 };
@@ -2228,6 +2227,7 @@ impl Runner {
                 return Ok(());
             }
             let source = upload::Source::from_candidate(&candidate);
+            let source_authority = || repository_capture::saved_job_origin_current(&job);
             let mut transport = upload::HttpTransport::new(
                 engine,
                 account_current,
@@ -2238,6 +2238,7 @@ impl Runner {
                 Some(source),
             )
             .with_membership_generation(job.membership_generation.as_deref())
+            .with_source_authority(&source_authority)
             .with_expected_file_generation(&job.observation_key);
             let result = if retry_reservation {
                 host.spool()?.retry_reservation(
@@ -2741,7 +2742,7 @@ fn status_for_destination(
     status.retry_available = !retryable.is_empty();
     status.consent_version = Some(policy.consent_version.clone());
     status.policy_revision = Some(policy.revision.clone());
-    status.projects = policy.projects.clone();
+    repository_policy::apply_folder_status(&mut status, &policy);
     status.project_choices = policy.project_choices.clone();
     if team.is_none() {
         (status.accepted_count, status.suppressed_count) = store
@@ -3090,7 +3091,7 @@ pub(crate) async fn cloud_enable_sync(
                     destination_id: session.workspace.id.clone(),
                 })
                 .ok_or("The selected workspace connection changed.")?;
-            super::projects::confirm_project_choices(
+            let (_, repository_anchors) = super::projects::confirm_project_choices_with_origins(
                 &store,
                 &mut *controller
                     .project_cache
@@ -3144,6 +3145,7 @@ pub(crate) async fn cloud_enable_sync(
                     &binding.destination_id,
                     move_from,
                     &consent.projects,
+                    &repository_anchors,
                 )?;
             }
             controller
@@ -3161,7 +3163,7 @@ pub(crate) async fn cloud_enable_sync(
                 .filter(|session| session.user.id == consent.account_id && account_current())
                 .ok_or("The selected workspace connection changed.")?;
             let saved = store
-                .save_cloud_sync_policy_for_membership(
+                .save_cloud_sync_policy_with_repositories(
                     (
                         &consent.account_id,
                         &consent.destination_id,
@@ -3173,6 +3175,7 @@ pub(crate) async fn cloud_enable_sync(
                     &roots,
                     &consent.projects,
                     &consent.project_choices,
+                    &repository_anchors,
                     || {
                         account_current()
                             && controller.sync.generation.load(Ordering::Acquire)
@@ -3295,13 +3298,14 @@ pub(crate) async fn cloud_reapprove_team_sync(
                 .ok_or("The selected workspace connection changed.")?;
             let store = app.state::<Store>();
             ensure_cloud_setup(&controller.setup_ready, &store)?;
+            let mut repository_anchors = BTreeMap::new();
             if !projects.is_empty() {
                 validate_project_directories(projects.iter())?;
                 let anchor = DestinationBinding {
                     account_id: session.user.id.clone(),
                     destination_id: session.workspace.id.clone(),
                 };
-                super::projects::confirm_project_choices(
+                (_, repository_anchors) = super::projects::confirm_project_choices_with_origins(
                     &store,
                     &mut *controller
                         .project_cache
@@ -3335,7 +3339,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
                     .configure_limits(capabilities.limits)?;
             }
             let saved = store
-                .renew_cloud_team_sync_policy(
+                .renew_cloud_team_sync_policy_with_repositories(
                     (
                         &account_id,
                         &destination_id,
@@ -3345,7 +3349,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
                     ),
                     &expected_policy_revision,
                     &confirmed_paths,
-                    (!projects.is_empty()).then_some((&projects, &choices)),
+                    (!projects.is_empty()).then_some((&projects, &choices, &repository_anchors)),
                     || {
                         current()
                             && engine
@@ -3387,9 +3391,9 @@ pub(crate) async fn cloud_reapprove_team_sync(
 #[tauri::command]
 pub(crate) async fn cloud_set_sync_project(
     app: tauri::AppHandle,
-    change: ProjectChange,
+    mut change: ProjectChange,
 ) -> Result<Status, String> {
-    use super::projects::confirm_project_choices;
+    use super::projects::confirm_project_choices_with_origins;
     use crate::store::cloud_capture::sync::valid_project_path;
 
     if change.projects.len() > MAX_SYNC_PROJECT_BINDINGS
@@ -3527,7 +3531,7 @@ pub(crate) async fn cloud_set_sync_project(
             let membership_generation = team.as_ref().map(|(generation, _)| generation.as_str());
             let reapprove = membership_generation
                 .is_some_and(|generation| policy.needs_team_membership(generation));
-            if reapprove && !policy.projects.is_empty() {
+             if reapprove && has_folders(&policy) {
                 return Err("Confirm the saved Team folders before adding more.".into());
             }
             if !current() {
@@ -3537,10 +3541,12 @@ pub(crate) async fn cloud_set_sync_project(
                 .capture
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?;
-            let (projects, fence, clear_source_hold) = if change.selected {
-                let projects: BTreeSet<_> = change.projects.into_iter().collect();
+             let mut repository_anchors = BTreeMap::new();
+             let remove_repository = !change.selected && policy.repository_rule_for_group(&change.group_id).is_some();
+             let (projects, fence, clear_source_hold) = if change.selected {
+                let projects: BTreeSet<_> = std::mem::take(&mut change.projects).into_iter().collect();
                 validate_project_directories(projects.iter())?;
-                let allowed_roots = confirm_project_choices(
+                 let (allowed_roots, verified_anchors) = confirm_project_choices_with_origins(
                     &store,
                     &mut *controller
                         .project_cache
@@ -3550,7 +3556,8 @@ pub(crate) async fn cloud_set_sync_project(
                     &[(change.group_id.clone(), true)].into(),
                     &projects,
                     &current,
-                )?;
+                 )?;
+                 repository_anchors = verified_anchors;
                 let clear_source_hold = policy.paused
                     && policy.roots.iter().all(|root| {
                         allowed_roots.iter().any(|allowed| {
@@ -3582,7 +3589,7 @@ pub(crate) async fn cloud_set_sync_project(
                         .session()
                         .filter(|active| active.same_grant(&session))
                         .ok_or("The selected workspace connection changed.")?;
-                    verify_project_move(&store, active, &binding.destination_id, move_from, &projects)?;
+                     verify_project_move(&store, active, &binding.destination_id, move_from, &projects, &repository_anchors)?;
                 }
                 controller
                     .sync
@@ -3597,7 +3604,7 @@ pub(crate) async fn cloud_set_sync_project(
                 (projects, content_generation + 1, clear_source_hold)
             } else {
                 (
-                    project_removals(&policy, &change)?,
+                     if remove_repository { BTreeSet::new() } else { project_removals(&policy, &change)? },
                     content_generation,
                     false,
                 )
@@ -3609,7 +3616,9 @@ pub(crate) async fn cloud_set_sync_project(
                         .session()
                         .is_some_and(|session| anchor.matches(session))
             };
-            let saved = if let Some((generation, name)) = team.as_ref().filter(|_| reapprove) {
+             let saved = if remove_repository {
+                 revoke_repository(&store, &policy, &change, &can_commit)
+             } else if let Some((generation, name)) = team.as_ref().filter(|_| reapprove) {
                 let roots = projects
                     .iter()
                     .map(|project| SourceSelection {
@@ -3620,7 +3629,7 @@ pub(crate) async fn cloud_set_sync_project(
                     .into_iter()
                     .collect::<Vec<_>>();
                 let projects = projects.into_iter().collect::<Vec<_>>();
-                store.reapprove_cloud_sync_policy_for_membership(
+                 store.reapprove_cloud_sync_policy_with_repositories(
                     &policy,
                     (
                         &binding.account_id,
@@ -3630,16 +3639,16 @@ pub(crate) async fn cloud_set_sync_project(
                         Some((generation, name)),
                     ),
                     &roots,
-                    &projects,
+                     (&projects, &repository_anchors),
                     &[(change.group_id, true)].into(),
                     can_commit,
                 )
             } else {
-                store.set_cloud_sync_project(
+                 store.set_cloud_sync_project_with_repositories(
                     &policy,
                     &change.group_id,
                     change.selected,
-                    &projects,
+                     (&projects, &repository_anchors),
                     clear_source_hold,
                     can_commit,
                 )
@@ -3725,6 +3734,11 @@ fn disable_team_folder(
         || !current()
     {
         return Err("Reload the saved team folder and try turning it off again.".into());
+    }
+    if policy.repository_rule_for_group(&change.group_id).is_some() {
+        return revoke_repository(store, policy, change, current).map_err(|_| {
+            "Could not turn off team folder uploads. Reload folders and try again.".into()
+        });
     }
     let removals = project_removals(policy, change)?;
     store
@@ -3898,7 +3912,7 @@ async fn change_saved_upload_work(
             if policy.paused {
                 return Err("Confirm the changed Cloud folders first.".into());
             }
-            if action == SyncWork::Backfill && policy.projects.is_empty() {
+            if action == SyncWork::Backfill && !has_folders(&policy) {
                 return Err("Save folders before starting backfill.".into());
             }
             let team = if binding.matches(&session) {

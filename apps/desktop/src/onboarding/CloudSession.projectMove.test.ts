@@ -128,6 +128,84 @@ it("creates only the new workspace policy after removal", async () => {
   }
 })
 
+it("moves only the repository when an exact rule shares its saved anchor", async () => {
+  const { session, ongoing, emitSync, stop } = await savedProjectFixture()
+  try {
+    const anchor = group.projects[0]!
+    const exact = { ...anchor, sourcePath: "/Example/another/source" }
+    const checkout = "/Example/new/Studio"
+    const project = { ...anchor, projectPath: checkout }
+    const id = "repo-studio"
+    ongoing.groups.mockResolvedValue({
+      groups: [
+        projectGroup({
+          id,
+          path: checkout,
+          folderPaths: [checkout],
+          projects: [project],
+          repositoryWide: true,
+        }),
+      ],
+      sourceRoots: [{ sourceKind: anchor.sourceKind, path: anchor.sourcePath }],
+      nextCursor: null,
+      partial: false,
+    })
+    await session.loadProjects()
+    emitSync({
+      ...policy(personal, "repo-before", true),
+      projects: [anchor, exact],
+      exactProjects: [exact],
+      projectChoices: { [id]: true },
+      savedFolders: [{ groupId: id, path: anchor.projectPath }],
+      repositoryGroupIds: [id],
+      repositoryFolders: [{ groupId: id, projects: [anchor] }],
+    })
+    ongoing.setProject
+      .mockResolvedValueOnce({
+        ...policy(personal, "repo-removed", false),
+        projectChoices: { [id]: false },
+        projects: [exact],
+        exactProjects: [exact],
+      })
+      .mockResolvedValueOnce({
+        ...policy(team, "repo-added", true),
+        projects: [project],
+        projectChoices: { [id]: true },
+        savedFolders: [{ groupId: id, path: checkout }],
+        repositoryGroupIds: [id],
+        repositoryFolders: [{ groupId: id, projects: [project] }],
+        exactProjects: [],
+      })
+
+    await session.moveSavedProject(session.getSnapshot(), id, personal, team)
+
+    expect(ongoing.setProject).toHaveBeenCalledTimes(2)
+    expect(ongoing.setProject.mock.calls[0]?.[0]).toEqual({
+      accountId: "synthetic-account",
+      destinationId: personal,
+      groupId: id,
+      selected: false,
+      projects: [],
+      folderPaths: [checkout],
+      expectedPolicyRevision: "repo-before",
+      expectedRemovals: [anchor],
+    })
+    expect(ongoing.setProject).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        groupId: id,
+        destinationId: team,
+        selected: true,
+        projects: [project],
+        moveFrom: { destinationId: personal, policyRevision: "repo-removed" },
+      }),
+    )
+    expect(session.getSnapshot().uploadActionError).toBeNull()
+    expect(session.getSnapshot().ongoing?.exactProjects).toEqual([exact])
+  } finally {
+    stop()
+  }
+})
+
 it("only removes the old grant when the user chooses not to sync", async () => {
   const { session, ongoing, emitSync, stop } = await savedProjectFixture()
   try {

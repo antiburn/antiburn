@@ -19,6 +19,7 @@ it("uses Start as explicit grouped consent without saving row defaults", async (
     await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" }),
   ).toBeChecked()
   expect(screen.getByText("1 worktree")).toBeVisible()
+  expect(screen.queryByText(/Matching Git checkouts are included/)).not.toBeInTheDocument()
   expect(screen.queryByText("/Example/claude/projects/studio")).not.toBeInTheDocument()
   const start = screen.getByRole("button", { name: "Start syncing" })
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
@@ -41,6 +42,51 @@ it("uses Start as explicit grouped consent without saving row defaults", async (
   expect(screen.queryByRole("button", { name: /Retry|Remove/ })).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole("button", { name: "Done" }))
   expect(done).toHaveBeenCalledOnce()
+})
+
+it("shows the repository scope and recognizes the saved group at a new checkout", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const path = "/Example/new/Studio"
+  const anchor = projectGroup().projects[0]!
+  const group = projectGroup({
+    id: "repo-studio",
+    path,
+    folderPaths: [path],
+    worktreeCount: 0,
+    repositoryWide: true,
+    projects: [{ ...anchor, projectPath: path }],
+  })
+  ongoing.groups.mockResolvedValue({
+    groups: [group],
+    sourceRoots: [{ sourceKind: anchor.sourceKind, path: anchor.sourcePath }],
+    nextCursor: null,
+    partial: false,
+  })
+  render(
+    <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
+  )
+
+  expect(await screen.findByText(/Matching Git checkouts are included/)).toBeVisible()
+  expect(screen.getByRole("switch", { name: `Sync Studio: ${path}` })).toBeChecked()
+  act(() =>
+    emitSync(
+      ongoingStatus({
+        status: "ready",
+        consentVersion: "desktop-project-sync-v1",
+        projects: [anchor],
+        exactProjects: [],
+        repositoryGroupIds: [group.id],
+        repositoryFolders: [{ groupId: group.id, projects: [anchor] }],
+        savedFolders: [{ groupId: group.id, path: anchor.projectPath }],
+      }),
+    ),
+  )
+  expect(screen.getByText(/Sync is already set up for Personal workspace/)).toBeVisible()
+  expect(screen.queryByText(/Matching Git checkouts are included/)).not.toBeInTheDocument()
+  expect(screen.queryByRole("switch", { name: `Sync Studio: ${path}` })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
 })
 
 it("requires a folder destination and distinguishes Personal from a Team with the same name", async () => {

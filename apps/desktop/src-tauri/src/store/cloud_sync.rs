@@ -9,6 +9,7 @@ use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path},
@@ -37,11 +38,26 @@ type PolicyBinding<'a> = (
     Option<(&'a str, &'a str)>,
 );
 
+/// Confirmed project bindings, group choices, and verified repository anchors.
+pub(crate) type TeamPolicyAdditions<'a> = (
+    &'a BTreeSet<ProjectSelection>,
+    &'a BTreeMap<String, bool>,
+    &'a BTreeMap<String, String>,
+);
+
 enum PolicyWrite<'a> {
     Create(&'a dyn Fn() -> bool),
     Reapprove(&'a Policy, &'a dyn Fn() -> bool),
     #[cfg(test)]
     ReplaceFixture,
+}
+
+enum JobRouting<'a> {
+    ExactFolder(Option<&'a [String]>),
+    Repository {
+        origin: &'a str,
+        recorded_paths: &'a [String],
+    },
 }
 
 /// Keep a missing preference distinct from OFF for first folder approval.
@@ -76,6 +92,26 @@ pub(crate) struct ProjectSelection {
     pub source_kind: SourceKind,
     pub source_path: String,
     pub project_path: String,
+}
+
+/// Repository consent for the listed source scopes. The anchor is display data.
+/// Only native checkout proof can identify a matching origin.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RepositoryRule {
+    pub origin: String,
+    pub anchor_path: String,
+    pub scopes: BTreeSet<String>,
+}
+
+/// Identify a repository group independently of its display anchor and scopes.
+pub(crate) fn repository_group_id(origin: &str) -> String {
+    let bytes = serde_json::to_vec(&("repository-origin-v1", origin))
+        .expect("repository identity serialization");
+    let mut hash = Sha256::new();
+    hash.update(b"antiburn:");
+    hash.update(bytes);
+    URL_SAFE_NO_PAD.encode(hash.finalize())
 }
 
 /// Check the exact bindings and distinct paths without normalizing path aliases.
@@ -131,6 +167,8 @@ pub(crate) struct Policy {
     pub revision: String,
     pub roots: Vec<RootScope>,
     pub projects: Vec<ProjectSelection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repository_rules: Vec<RepositoryRule>,
     /// Confirmed UI group choices, including exclusions. These are not permissions.
     #[serde(default)]
     pub project_choices: BTreeMap<String, bool>,
@@ -177,6 +215,44 @@ impl Policy {
                             && Path::new(project).starts_with(&selected.project_path)
                     })
             })
+    }
+
+    /// Match a verified origin only within a saved provider source scope.
+    /// The caller must verify the checkout and current account authority.
+    pub(crate) fn allows_repository(&self, scope: &str, origin: &str) -> bool {
+        self.has_membership_authority()
+            && self.resource_origin.is_some()
+            && self.roots.iter().any(|root| root.source_scope_id == scope)
+            && self
+                .repository_rules
+                .iter()
+                .any(|rule| rule.origin == origin && rule.scopes.contains(scope))
+    }
+
+    /// Find a saved repository rule without reading the checkout.
+    pub(crate) fn repository_rule_for_group(&self, group_id: &str) -> Option<&RepositoryRule> {
+        self.repository_rules
+            .iter()
+            .find(|rule| repository_group_id(&rule.origin) == group_id)
+    }
+
+    /// List exact folders and repository anchors for status and confirmation.
+    /// Do not use this list to authorize capture by path.
+    pub(crate) fn projects_for_display(&self) -> Vec<ProjectSelection> {
+        let mut projects = self.projects.clone();
+        projects.extend(self.repository_rules.iter().flat_map(|rule| {
+            self.roots
+                .iter()
+                .filter(|root| rule.scopes.contains(&root.source_scope_id))
+                .map(|root| ProjectSelection {
+                    source_kind: root.source_kind,
+                    source_path: root.path.clone(),
+                    project_path: rule.anchor_path.clone(),
+                })
+        }));
+        projects.sort();
+        projects.dedup();
+        projects
     }
 }
 
@@ -227,6 +303,9 @@ pub(crate) struct Job {
     pub project_path: String,
     #[serde(default)]
     pub project_folders: Vec<String>,
+    /// Verified origin used for repository admission. Exact-folder jobs omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_origin: Option<String>,
     /// Exact source CWD evidence used to check a saved capture's source, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recorded_project_paths: Option<Vec<String>>,
@@ -261,11 +340,16 @@ impl Job {
     /// policy fences the whole capture instead of removing part of its content.
     pub(crate) fn allowed(&self, policy: &Policy) -> bool {
         self.matches_membership(policy)
-            && policy.allows(&self.source_scope_id, &self.project_path)
-            && self
-                .project_folders
-                .iter()
-                .all(|folder| policy.allows(&self.source_scope_id, folder))
+            && match &self.repository_origin {
+                Some(origin) => policy.allows_repository(&self.source_scope_id, origin),
+                None => {
+                    policy.allows(&self.source_scope_id, &self.project_path)
+                        && self
+                            .project_folders
+                            .iter()
+                            .all(|folder| policy.allows(&self.source_scope_id, folder))
+                }
+            }
     }
 
     /// Reject changed scope, owner, and project bindings before spool access.
@@ -299,6 +383,11 @@ impl Job {
                     .project_folders
                     .iter()
                     .all(|path| valid_project_path(path))
+                && self.repository_origin.as_deref().is_none_or(|origin| {
+                    valid_repository_origin_label(origin)
+                        && self.project_folders.is_empty()
+                        && self.recorded_project_paths.is_some()
+                })
                 && self.recorded_project_paths.as_ref().is_none_or(|paths| {
                     !paths.is_empty()
                         && paths.len() <= 256
@@ -348,6 +437,100 @@ fn valid_resource_origin(value: &str) -> bool {
                 && url.fragment().is_none()
                 && url.origin().ascii_serialization() == value
         })
+}
+
+/// Bound and validate native repository approvals against the saved source roots.
+fn check_repository_rules(rules: &[RepositoryRule], roots: &[RootScope]) -> Result<()> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        rules.len() <= MAX_SYNC_PROJECT_PATHS,
+        "Cloud repository rules exceed the policy limit"
+    );
+    ensure!(
+        rules.windows(2).all(|pair| pair[0].origin < pair[1].origin),
+        "Cloud repository origins must be unique and sorted"
+    );
+    let scopes: BTreeSet<_> = roots
+        .iter()
+        .filter(|root| valid_project_path(&root.path) && safe_id(&root.source_scope_id))
+        .map(|root| root.source_scope_id.as_str())
+        .collect();
+    ensure!(
+        rules.iter().all(|rule| {
+            valid_repository_origin_label(&rule.origin)
+                && valid_project_path(&rule.anchor_path)
+                && !rule.scopes.is_empty()
+                && rule.scopes.len() <= MAX_SYNC_SOURCE_ROOTS
+                && rule
+                    .scopes
+                    .iter()
+                    .all(|scope| scopes.contains(scope.as_str()))
+        }),
+        "Choose verified Cloud repositories and saved source scopes"
+    );
+    Ok(())
+}
+
+/// Check the shared limits without treating repository anchors as exact grants.
+fn check_policy_projects(policy: &Policy) -> Result<()> {
+    check_repository_rules(&policy.repository_rules, &policy.roots)?;
+    let displayed = policy.projects_for_display();
+    let expected_bindings = policy.projects.len()
+        + policy
+            .repository_rules
+            .iter()
+            .map(|rule| rule.scopes.len())
+            .sum::<usize>();
+    ensure!(
+        displayed.len() == expected_bindings,
+        "Cloud repository anchors must not replace saved exact folders"
+    );
+    check_project_binding_limits(displayed.iter())
+}
+
+/// Resolve checked anchor paths to the source scopes allocated in this transaction.
+fn add_cloud_repository_anchors<'a>(
+    policy: &mut Policy,
+    projects: impl Iterator<Item = &'a ProjectSelection> + Clone,
+    anchors: &BTreeMap<String, String>,
+) -> Result<()> {
+    for (anchor_path, origin) in anchors {
+        let scopes = projects
+            .clone()
+            .filter(|project| project.project_path == *anchor_path)
+            .map(|project| {
+                policy
+                    .roots
+                    .iter()
+                    .find(|root| {
+                        root.source_kind == project.source_kind && root.path == project.source_path
+                    })
+                    .map(|root| root.source_scope_id.clone())
+                    .ok_or_else(|| anyhow::anyhow!("Cloud repository scope is missing"))
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        ensure!(
+            !scopes.is_empty(),
+            "Cloud repository anchor is not selected"
+        );
+        match policy
+            .repository_rules
+            .binary_search_by(|rule| rule.origin.cmp(origin))
+        {
+            Ok(index) => policy.repository_rules[index].scopes.extend(scopes),
+            Err(index) => policy.repository_rules.insert(
+                index,
+                RepositoryRule {
+                    origin: origin.clone(),
+                    anchor_path: anchor_path.clone(),
+                    scopes,
+                },
+            ),
+        }
+    }
+    Ok(())
 }
 
 /// Validate a historical recorded path without opening any project files.
@@ -433,9 +616,30 @@ fn saved_policy(
             policy.account_id == account && policy.destination_id == destination,
             "Cloud policy binding changed"
         );
+        check_repository_rules(&policy.repository_rules, &policy.roots)?;
         Ok(policy)
     })
     .transpose()
+}
+
+/// Refresh the revision only when a confirmed policy change affects saved state.
+fn write_cloud_policy_change(
+    connection: &Connection,
+    previous: &Policy,
+    saved: &mut Policy,
+) -> Result<()> {
+    if *saved != *previous {
+        saved.revision = random_id()?;
+        connection.execute(
+            "UPDATE cloud_sync_policy SET record_json=?3 WHERE account_id=?1 AND destination_id=?2",
+            params![
+                saved.account_id,
+                saved.destination_id,
+                encode(saved, 524_288)?
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn source_in(
@@ -498,6 +702,41 @@ fn job_in(connection: &Connection, capture_id: &str) -> Result<Option<Job>> {
     .transpose()
 }
 
+/// Load active jobs for one destination without opening a second transaction.
+fn active_cloud_sync_jobs(
+    connection: &Connection,
+    account: &str,
+    destination: &str,
+    resource_origin: &str,
+) -> Result<Vec<Job>> {
+    let mut statement = connection.prepare(
+        "SELECT record_json FROM cloud_sync_job WHERE account_id=?1 AND destination_id=?2
+         AND json_extract(record_json, '$.resource_origin')=?3
+         AND json_extract(record_json, '$.issuer_origin') IS NOT NULL
+         AND json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned')
+         ORDER BY rowid LIMIT 129",
+    )?;
+    let mut jobs = Vec::new();
+    for raw in statement.query_map(params![account, destination, resource_origin], |row| {
+        row.get::<_, String>(0)
+    })? {
+        let job: Job = serde_json::from_str(&raw?)?;
+        job.validate()?;
+        ensure!(
+            job.identity.account_id == account && job.identity.destination_id == destination,
+            "Cloud job binding changed"
+        );
+        if !job.state.terminal() {
+            ensure!(
+                jobs.len() < MAX_ACTIVE_JOBS,
+                "Cloud queue exceeds its limit"
+            );
+            jobs.push(job);
+        }
+    }
+    Ok(jobs)
+}
+
 /// Keep source identity at the resource destination. A new issuer or grant
 /// requires fresh consent but must not bypass prior acceptance or suppression.
 fn source_scope(
@@ -547,22 +786,40 @@ fn source_scope(
     })
 }
 
+/// Add confirmed folders and repository anchors after allocating their scopes.
 fn append_cloud_projects(
     transaction: &Transaction<'_>,
     policy: &mut Policy,
     origin: &str,
     projects: &BTreeSet<ProjectSelection>,
+    repository_anchors: &BTreeMap<String, String>,
 ) -> Result<()> {
+    check_project_binding_limits(projects.iter())?;
     ensure!(
         projects
             .iter()
             .all(|project| valid_project_path(&project.project_path)),
         "Choose recorded Cloud projects"
     );
-    policy.projects.extend(projects.iter().cloned());
+    append_cloud_roots(transaction, policy, origin, projects)?;
+    policy.projects.extend(
+        projects
+            .iter()
+            .filter(|project| !repository_anchors.contains_key(&project.project_path))
+            .cloned(),
+    );
     policy.projects.sort();
     policy.projects.dedup();
-    check_project_binding_limits(policy.projects.iter())?;
+    add_cloud_repository_anchors(policy, projects.iter(), repository_anchors)?;
+    check_policy_projects(policy)
+}
+
+fn append_cloud_roots(
+    transaction: &Transaction<'_>,
+    policy: &mut Policy,
+    origin: &str,
+    projects: &BTreeSet<ProjectSelection>,
+) -> Result<()> {
     let roots: BTreeSet<_> = projects
         .iter()
         .map(|project| SourceSelection {
@@ -699,6 +956,7 @@ impl Store {
                         .is_none_or(valid_membership_generation)
                     && policy.team_grant_id.as_deref().is_none_or(safe_id)
                     && policy.roots.len() <= MAX_SYNC_SOURCE_ROOTS
+                    && check_repository_rules(&policy.repository_rules, &policy.roots).is_ok()
                     && check_project_binding_limits(policy.projects.iter()).is_ok()
                     && policy
                         .projects
@@ -746,6 +1004,7 @@ impl Store {
     /// Create a policy for explicitly confirmed folders. The caller verifies
     /// current authority and passes the exact Team generation and workspace name.
     /// An existing row must never be replaced by a new approval.
+    #[cfg(test)]
     pub(crate) fn save_cloud_sync_policy_for_membership(
         &self,
         binding: PolicyBinding<'_>,
@@ -754,10 +1013,31 @@ impl Store {
         project_choices: &BTreeMap<String, bool>,
         current: impl Fn() -> bool,
     ) -> Result<Policy> {
-        self.write_cloud_sync_policy(
+        self.save_cloud_sync_policy_with_repositories(
             binding,
             roots,
             projects,
+            project_choices,
+            &BTreeMap::new(),
+            current,
+        )
+    }
+
+    /// Save the selected exact folders and verified repository anchors together.
+    /// An anchor becomes a repository rule, not an exact-folder grant.
+    pub(crate) fn save_cloud_sync_policy_with_repositories(
+        &self,
+        binding: PolicyBinding<'_>,
+        roots: &[SourceSelection],
+        projects: &[ProjectSelection],
+        project_choices: &BTreeMap<String, bool>,
+        repository_anchors: &BTreeMap<String, String>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        self.write_cloud_sync_policy(
+            binding,
+            roots,
+            (projects, repository_anchors),
             project_choices,
             PolicyWrite::Create(&current),
         )
@@ -767,6 +1047,7 @@ impl Store {
     /// exact old Team policy. The new membership must be current at commit.
     /// Old jobs, bytes, and service deletion markers stay under their old bindings.
     /// The `current` check runs under the store lock. It must not call the store.
+    #[cfg(test)]
     pub(crate) fn reapprove_cloud_sync_policy_for_membership(
         &self,
         previous: &Policy,
@@ -776,10 +1057,31 @@ impl Store {
         project_choices: &BTreeMap<String, bool>,
         current: impl Fn() -> bool,
     ) -> Result<Policy> {
+        self.reapprove_cloud_sync_policy_with_repositories(
+            previous,
+            binding,
+            roots,
+            (projects, &BTreeMap::new()),
+            project_choices,
+            current,
+        )
+    }
+
+    /// Approve new exact folders and repository anchors after all prior Team
+    /// grants have been turned off. Keep saved jobs bound to the old generation.
+    pub(crate) fn reapprove_cloud_sync_policy_with_repositories(
+        &self,
+        previous: &Policy,
+        binding: PolicyBinding<'_>,
+        roots: &[SourceSelection],
+        projects_and_repositories: (&[ProjectSelection], &BTreeMap<String, String>),
+        project_choices: &BTreeMap<String, bool>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
         self.write_cloud_sync_policy(
             binding,
             roots,
-            projects,
+            projects_and_repositories,
             project_choices,
             PolicyWrite::Reapprove(previous, &current),
         )
@@ -788,12 +1090,34 @@ impl Store {
     /// Renew the exact saved Team folders with current membership proof. Add
     /// only the validated new selections. Keep the pause, old scopes and jobs.
     /// The caller verifies the Team and checks current local authority at commit.
+    #[cfg(test)]
     pub(crate) fn renew_cloud_team_sync_policy(
         &self,
         binding: PolicyBinding<'_>,
         expected_revision: &str,
         confirmed_paths: &BTreeSet<String>,
         additions: Option<(&BTreeSet<ProjectSelection>, &BTreeMap<String, bool>)>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        let no_repository_anchors = BTreeMap::new();
+        self.renew_cloud_team_sync_policy_with_repositories(
+            binding,
+            expected_revision,
+            confirmed_paths,
+            additions.map(|(projects, choices)| (projects, choices, &no_repository_anchors)),
+            current,
+        )
+    }
+
+    /// Renew reviewed exact folders and repository rules in one transaction.
+    /// `confirmed_paths` includes the saved display anchors, even if they are
+    /// missing on disk. Only new repository grants need fresh checkout proof.
+    pub(crate) fn renew_cloud_team_sync_policy_with_repositories(
+        &self,
+        binding: PolicyBinding<'_>,
+        expected_revision: &str,
+        confirmed_paths: &BTreeSet<String>,
+        additions: Option<TeamPolicyAdditions<'_>>,
         current: impl Fn() -> bool,
     ) -> Result<Policy> {
         let (account, destination, resource, issuer, team) = binding;
@@ -804,6 +1128,7 @@ impl Store {
         let transaction = connection.transaction()?;
         let mut policy = saved_policy(&transaction, account, destination)?
             .ok_or_else(|| anyhow::anyhow!("No saved Team folders"))?;
+        let reviewed_projects = policy.projects_for_display();
         ensure!(
             policy.consent_version == ONGOING_CONSENT_VERSION
                 && policy.revision == expected_revision
@@ -814,13 +1139,11 @@ impl Store {
                 && policy.needs_team_membership(generation)
                 && !confirmed_paths.is_empty()
                 && policy.roots.len() <= MAX_SYNC_SOURCE_ROOTS
-                && check_project_binding_limits(policy.projects.iter()).is_ok()
-                && policy
-                    .projects
+                && check_policy_projects(&policy).is_ok()
+                && reviewed_projects
                     .iter()
                     .all(|project| valid_project_path(&project.project_path))
-                && policy
-                    .projects
+                && reviewed_projects
                     .iter()
                     .map(|project| &project.project_path)
                     .collect::<BTreeSet<_>>()
@@ -830,8 +1153,14 @@ impl Store {
         policy.team_grant_id = None;
         policy.membership_generation = Some(generation.to_owned());
         policy.workspace_name = Some(name.to_owned());
-        if let Some((projects, choices)) = additions {
-            append_cloud_projects(&transaction, &mut policy, resource, projects)?;
+        if let Some((projects, choices, repository_anchors)) = additions {
+            append_cloud_projects(
+                &transaction,
+                &mut policy,
+                resource,
+                projects,
+                repository_anchors,
+            )?;
             policy.project_choices.extend(choices.clone());
         }
         policy.revision = random_id()?;
@@ -856,7 +1185,7 @@ impl Store {
         self.write_cloud_sync_policy(
             binding,
             roots,
-            projects,
+            (projects, &BTreeMap::new()),
             project_choices,
             PolicyWrite::ReplaceFixture,
         )
@@ -866,10 +1195,11 @@ impl Store {
         &self,
         binding: PolicyBinding<'_>,
         roots: &[SourceSelection],
-        projects: &[ProjectSelection],
+        projects_and_repositories: (&[ProjectSelection], &BTreeMap<String, String>),
         project_choices: &BTreeMap<String, bool>,
         write: PolicyWrite<'_>,
     ) -> Result<Policy> {
+        let (projects, repository_anchors) = projects_and_repositories;
         let (account, destination, resource_origin, issuer_origin, team) = binding;
         ensure!(
             valid_resource_origin(resource_origin)
@@ -918,6 +1248,7 @@ impl Store {
                 previous.is_team()
                     && previous.consent_version == ONGOING_CONSENT_VERSION
                     && previous.projects.is_empty()
+                    && previous.repository_rules.is_empty()
                     && previous.resource_origin.as_deref() == Some(resource_origin)
                     && previous.issuer_origin.as_deref() == Some(issuer_origin)
                     && team
@@ -944,7 +1275,7 @@ impl Store {
             PolicyWrite::ReplaceFixture => (team.map(|(grant, _)| grant.to_owned()), None),
             _ => (None, team.map(|(generation, _)| generation.to_owned())),
         };
-        let policy = Policy {
+        let mut policy = Policy {
             account_id: account.into(),
             destination_id: destination.into(),
             resource_origin: Some(resource_origin.into()),
@@ -955,10 +1286,17 @@ impl Store {
             consent_version: ONGOING_CONSENT_VERSION.into(),
             revision: random_id()?,
             roots: scoped,
-            projects: projects.to_vec(),
+            projects: projects
+                .iter()
+                .filter(|project| !repository_anchors.contains_key(&project.project_path))
+                .cloned()
+                .collect(),
+            repository_rules: Vec::new(),
             project_choices: project_choices.clone(),
             paused: false,
         };
+        add_cloud_repository_anchors(&mut policy, projects.iter(), repository_anchors)?;
+        check_policy_projects(&policy)?;
         transaction.execute(
             "INSERT INTO cloud_sync_policy VALUES (?1, ?2, ?3)
              ON CONFLICT(account_id, destination_id) DO UPDATE SET record_json=excluded.record_json",
@@ -981,6 +1319,190 @@ impl Store {
         Ok(policy)
     }
 
+    /// Replace folder and repository grants without changing source scopes, pause,
+    /// choices, or jobs. The caller verifies repository and source evidence.
+    /// Do not fence an active exact-folder job through this conversion. The user
+    /// can still revoke exact consent through the folder control.
+    /// The account check runs under the store lock and must not call the store.
+    pub(crate) fn replace_cloud_repository_rules(
+        &self,
+        policy: &Policy,
+        rules: Vec<RepositoryRule>,
+        projects: Vec<ProjectSelection>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        let resource = policy
+            .resource_origin
+            .as_deref()
+            .filter(|origin| valid_resource_origin(origin))
+            .ok_or_else(|| anyhow::anyhow!("Cloud service origin is invalid"))?;
+        ensure!(
+            policy.consent_version == ONGOING_CONSENT_VERSION
+                && policy.has_membership_authority()
+                && policy
+                    .issuer_origin
+                    .as_deref()
+                    .is_some_and(valid_resource_origin),
+            "Cloud consent is required"
+        );
+        ensure!(
+            !projects.is_empty() || !rules.is_empty(),
+            "Choose Cloud projects or repositories"
+        );
+        ensure!(
+            policy.roots.len() <= MAX_SYNC_SOURCE_ROOTS,
+            "Cloud source roots exceed the policy limit"
+        );
+        check_project_binding_limits(projects.iter())?;
+        ensure!(
+            projects.windows(2).all(|pair| pair[0] < pair[1]),
+            "Cloud projects must be unique and sorted"
+        );
+        ensure!(
+            projects.iter().all(|project| {
+                valid_project_path(&project.project_path)
+                    && policy.roots.iter().any(|root| {
+                        root.source_kind == project.source_kind
+                            && root.path == project.source_path
+                            && valid_project_path(&root.path)
+                            && safe_id(&root.source_scope_id)
+                    })
+            }),
+            "Choose recorded Cloud projects"
+        );
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        ensure!(
+            saved_policy(&transaction, &policy.account_id, &policy.destination_id)?.as_ref()
+                == Some(policy),
+            "Cloud policy changed"
+        );
+        let mut saved = policy.clone();
+        saved.projects = projects;
+        saved.repository_rules = rules;
+        check_policy_projects(&saved)?;
+        let new_origins: BTreeSet<_> = saved
+            .repository_rules
+            .iter()
+            .filter(|rule| {
+                !policy
+                    .repository_rules
+                    .iter()
+                    .any(|old| old.origin == rule.origin && rule.scopes.is_subset(&old.scopes))
+            })
+            .map(|rule| &rule.origin)
+            .collect();
+        if !new_origins.is_empty() {
+            ensure!(
+                policy.project_choices.values().all(|selected| *selected),
+                "Cloud folder exclusions need review"
+            );
+            let mut other = transaction.prepare(
+                "SELECT record_json FROM cloud_sync_policy WHERE account_id = ?1 AND destination_id != ?2",
+            )?;
+            let rows = other
+                .query_map(params![policy.account_id, policy.destination_id], |row| {
+                    row.get::<_, String>(0)
+                })?;
+            for row in rows {
+                let other: Policy = serde_json::from_str(&row?)?;
+                if other.resource_origin != policy.resource_origin
+                    || other.issuer_origin != policy.issuer_origin
+                {
+                    continue;
+                }
+                ensure!(
+                    other.projects.is_empty()
+                        && !other
+                            .repository_rules
+                            .iter()
+                            .any(|rule| new_origins.contains(&rule.origin)),
+                    "Cloud repository approval conflicts with another workspace"
+                );
+            }
+        }
+        if saved.projects != policy.projects {
+            ensure!(
+                active_cloud_sync_jobs(
+                    &transaction,
+                    &policy.account_id,
+                    &policy.destination_id,
+                    resource,
+                )?
+                .iter()
+                .all(|job| job.repository_origin.is_some()
+                    || !job.allowed(policy)
+                    || job.allowed(&saved)),
+                "Cloud exact folders still authorize saved uploads"
+            );
+        }
+        write_cloud_policy_change(&transaction, policy, &mut saved)?;
+        ensure!(current(), "Cloud account or upload controls changed");
+        transaction.commit()?;
+        Ok(saved)
+    }
+
+    /// Convert exact approved checkout roots after explicit repository approval.
+    /// The caller verifies the anchors and current authority. The replacement
+    /// rejects the conversion if it would fence an active exact-folder job.
+    pub(crate) fn migrate_cloud_repository_anchors(
+        &self,
+        policy: &Policy,
+        anchors: &BTreeMap<String, String>,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        let mut migrated = policy.clone();
+        add_cloud_repository_anchors(&mut migrated, policy.projects.iter(), anchors)?;
+        migrated
+            .projects
+            .retain(|project| !anchors.contains_key(&project.project_path));
+        self.replace_cloud_repository_rules(
+            policy,
+            migrated.repository_rules,
+            migrated.projects,
+            current,
+        )
+    }
+
+    /// Remove one repository grant by stable group ID. This does not need current
+    /// Team membership or checkout access. The caller checks the current account.
+    pub(crate) fn revoke_cloud_repository(
+        &self,
+        policy: &Policy,
+        group_id: &str,
+        origin: &str,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        let rule = policy
+            .repository_rule_for_group(group_id)
+            .filter(|rule| rule.origin == origin)
+            .ok_or_else(|| anyhow::anyhow!("Cloud repository selection changed"))?;
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        ensure!(
+            saved_policy(&transaction, &policy.account_id, &policy.destination_id)?.as_ref()
+                == Some(policy),
+            "Cloud policy changed"
+        );
+        let mut saved = policy.clone();
+        saved.repository_rules.retain(|rule| rule.origin != origin);
+        saved.roots.retain(|root| {
+            !rule.scopes.contains(&root.source_scope_id)
+                || saved.projects.iter().any(|project| {
+                    root.source_kind == project.source_kind && root.path == project.source_path
+                })
+                || saved
+                    .repository_rules
+                    .iter()
+                    .any(|rule| rule.scopes.contains(&root.source_scope_id))
+        });
+        saved.project_choices.insert(group_id.to_owned(), false);
+        write_cloud_policy_change(&transaction, policy, &mut saved)?;
+        ensure!(current(), "Cloud account or upload controls changed");
+        transaction.commit()?;
+        Ok(saved)
+    }
+
     /// Apply a checked group change to the exact current policy in one transaction.
     /// The caller checks group membership and admits any new source before this call.
     /// An OFF change can only remove grants. The scope table retains IDs for re-enable.
@@ -993,6 +1515,36 @@ impl Store {
         clear_source_hold: bool,
         current: impl Fn() -> bool,
     ) -> Result<Policy> {
+        self.set_cloud_sync_project_with_repositories(
+            policy,
+            group_id,
+            selected,
+            (projects, &BTreeMap::new()),
+            clear_source_hold,
+            current,
+        )
+    }
+
+    /// Add exact folders or one verified repository group. Resolve all new
+    /// source scopes before committing the group choice and its grants.
+    pub(crate) fn set_cloud_sync_project_with_repositories(
+        &self,
+        policy: &Policy,
+        group_id: &str,
+        selected: bool,
+        projects_and_repositories: (&BTreeSet<ProjectSelection>, &BTreeMap<String, String>),
+        clear_source_hold: bool,
+        current: impl Fn() -> bool,
+    ) -> Result<Policy> {
+        let (projects, repository_anchors) = projects_and_repositories;
+        ensure!(
+            repository_anchors.is_empty()
+                || (selected
+                    && repository_anchors
+                        .values()
+                        .all(|origin| repository_group_id(origin) == group_id)),
+            "Cloud repository selection changed"
+        );
         let origin = policy
             .resource_origin
             .as_deref()
@@ -1024,7 +1576,13 @@ impl Store {
                 policy.has_membership_authority() && !projects.is_empty(),
                 "Choose recorded Cloud projects"
             );
-            append_cloud_projects(&transaction, &mut saved, origin, projects)?;
+            append_cloud_projects(
+                &transaction,
+                &mut saved,
+                origin,
+                projects,
+                repository_anchors,
+            )?;
             if clear_source_hold {
                 saved.paused = false;
             }
@@ -1034,17 +1592,16 @@ impl Store {
                 let binds_root = |project: &ProjectSelection| {
                     project.source_kind == root.source_kind && project.source_path == root.path
                 };
-                !projects.iter().any(binds_root) || saved.projects.iter().any(binds_root)
+                !projects.iter().any(binds_root)
+                    || saved.projects.iter().any(binds_root)
+                    || saved
+                        .repository_rules
+                        .iter()
+                        .any(|rule| rule.scopes.contains(&root.source_scope_id))
             });
         }
         saved.project_choices.insert(group_id.to_owned(), selected);
-        if saved != *policy {
-            saved.revision = random_id()?;
-            transaction.execute(
-                "UPDATE cloud_sync_policy SET record_json=?3 WHERE account_id=?1 AND destination_id=?2",
-                params![saved.account_id, saved.destination_id, encode(&saved, 524_288)?],
-            )?;
-        }
+        write_cloud_policy_change(&transaction, policy, &mut saved)?;
         ensure!(current(), "Cloud account or upload controls changed");
         transaction.commit()?;
         Ok(saved)
@@ -1100,33 +1657,7 @@ impl Store {
         destination: &str,
         resource_origin: &str,
     ) -> Result<Vec<Job>> {
-        let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT record_json FROM cloud_sync_job WHERE account_id=?1 AND destination_id=?2
-             AND json_extract(record_json, '$.resource_origin')=?3
-             AND json_extract(record_json, '$.issuer_origin') IS NOT NULL
-             AND json_extract(record_json, '$.state') NOT IN ('accepted', 'suppressed', 'abandoned')
-             ORDER BY rowid LIMIT 129",
-        )?;
-        let mut jobs = Vec::new();
-        for raw in statement.query_map(params![account, destination, resource_origin], |row| {
-            row.get::<_, String>(0)
-        })? {
-            let job: Job = serde_json::from_str(&raw?)?;
-            job.validate()?;
-            ensure!(
-                job.identity.account_id == account && job.identity.destination_id == destination,
-                "Cloud job binding changed"
-            );
-            if !job.state.terminal() {
-                ensure!(
-                    jobs.len() < MAX_ACTIVE_JOBS,
-                    "Cloud queue exceeds its limit"
-                );
-                jobs.push(job);
-            }
-        }
-        Ok(jobs)
+        active_cloud_sync_jobs(&self.lock(), account, destination, resource_origin)
     }
 
     /// Keep the accepted fingerprint or service suppression after restart.
@@ -1185,10 +1716,66 @@ impl Store {
         observation_key: &str,
         recorded_project_paths: Option<&[String]>,
     ) -> Result<Option<Job>> {
+        self.enqueue_cloud_sync_job(
+            policy,
+            source_scope_id,
+            project_path,
+            source_id,
+            observation_key,
+            JobRouting::ExactFolder(recorded_project_paths),
+        )
+    }
+
+    /// Freeze the verified origin and recorded CWDs for a repository-authorized
+    /// job. The caller proves the origin from the recorded paths before admission.
+    pub(crate) fn enqueue_cloud_sync_for_repository(
+        &self,
+        policy: &Policy,
+        source_scope_id: &str,
+        project_path: &str,
+        source_id: &str,
+        observation_key: &str,
+        repository: (&str, &[String]),
+    ) -> Result<Option<Job>> {
+        self.enqueue_cloud_sync_job(
+            policy,
+            source_scope_id,
+            project_path,
+            source_id,
+            observation_key,
+            JobRouting::Repository {
+                origin: repository.0,
+                recorded_paths: repository.1,
+            },
+        )
+    }
+
+    fn enqueue_cloud_sync_job(
+        &self,
+        policy: &Policy,
+        source_scope_id: &str,
+        project_path: &str,
+        source_id: &str,
+        observation_key: &str,
+        routing: JobRouting<'_>,
+    ) -> Result<Option<Job>> {
+        let (repository_origin, recorded_project_paths, allowed) = match routing {
+            JobRouting::ExactFolder(paths) => {
+                (None, paths, policy.allows(source_scope_id, project_path))
+            }
+            JobRouting::Repository {
+                origin,
+                recorded_paths,
+            } => (
+                Some(origin),
+                Some(recorded_paths),
+                policy.allows_repository(source_scope_id, origin),
+            ),
+        };
         ensure!(
             !policy.paused
                 && policy.consent_version == ONGOING_CONSENT_VERSION
-                && policy.allows(source_scope_id, project_path)
+                && allowed
                 && policy
                     .resource_origin
                     .as_deref()
@@ -1280,19 +1867,24 @@ impl Store {
             membership_generation: policy.membership_generation.clone(),
             source_scope_id: source_scope_id.into(),
             project_path: project_path.into(),
-            project_folders: policy
-                .projects
-                .iter()
-                .filter(|project| {
-                    Path::new(project_path).starts_with(&project.project_path)
-                        && policy.roots.iter().any(|root| {
-                            root.source_scope_id == source_scope_id
-                                && root.source_kind == project.source_kind
-                                && root.path == project.source_path
-                        })
-                })
-                .map(|project| project.project_path.clone())
-                .collect(),
+            project_folders: if repository_origin.is_some() {
+                Vec::new()
+            } else {
+                policy
+                    .projects
+                    .iter()
+                    .filter(|project| {
+                        Path::new(project_path).starts_with(&project.project_path)
+                            && policy.roots.iter().any(|root| {
+                                root.source_scope_id == source_scope_id
+                                    && root.source_kind == project.source_kind
+                                    && root.path == project.source_path
+                            })
+                    })
+                    .map(|project| project.project_path.clone())
+                    .collect()
+            },
+            repository_origin: repository_origin.map(str::to_owned),
             recorded_project_paths: recorded_project_paths.map(<[String]>::to_vec),
             observation_key: observation_key.into(),
             state: JobState::Pending,
@@ -1579,3 +2171,4 @@ impl Store {
         Ok((accepted, suppressed))
     }
 }
+use crate::cloud::repository_origin::valid_repository_origin_label;

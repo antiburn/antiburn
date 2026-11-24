@@ -408,7 +408,7 @@ export function CloudOnboarding({
           </h1>
           <p id="cloud-sync-description" className="type-onboarding-body text-onboarding-muted">
             {grouped
-              ? "Sync full sessions from selected folders and the worktrees Desktop found."
+              ? `Sync full sessions from approved folders.${selectedProjects?.some((group) => group.repositoryWide) ? " Matching Git checkouts are included." : ""}`
               : captureEnabled
                 ? "Choose the folders where Claude saves sessions, or choose an OpenCode V2 database."
                 : "Choose folders to sync their existing and future coding sessions across your devices."}

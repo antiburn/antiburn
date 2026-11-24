@@ -674,6 +674,12 @@ pub trait Transport {
         None
     }
 
+    /// Recheck host-owned source permission after reservation and before reading
+    /// full content. A refusal keeps the saved reservation for normal recovery.
+    fn check_source_authority(&self) -> std::result::Result<(), TransportError> {
+        Ok(())
+    }
+
     /// Reserve the fixed identity before full desktop capture reads source content.
     ///
     /// A separate, authorized local project-evidence scan can read bounded native
