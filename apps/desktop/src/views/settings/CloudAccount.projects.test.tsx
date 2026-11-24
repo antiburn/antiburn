@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { useSyncExternalStore } from "react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { CloudSession } from "../../onboarding/CloudSession"
@@ -33,6 +33,163 @@ function Account({ session }: { session: CloudSession }) {
   )
   return <CloudAccount session={session} value={value} />
 }
+
+it("waits for cold grouping, then reuses the grouped rows during reopen and refresh", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const group = projectGroup()
+  const page = {
+    groups: [group],
+    sourceRoots: [{ sourceKind: "claude_jsonl" as const, path: group.projects[0]!.sourcePath }],
+    nextCursor: null,
+    partial: false,
+  }
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      status: "ready",
+      consentVersion: "desktop-project-sync-v1",
+      projects: group.projects,
+      savedFolders: group.folderPaths.map((path) => ({ groupId: `saved-${path}`, path })),
+    }),
+  )
+  let finish!: (value: typeof page) => void
+  const deferPage = () => new Promise<typeof page>((resolve) => (finish = resolve))
+  ongoing.groups.mockImplementation(deferPage)
+  const cold = render(<Account session={new CloudSession(port, false, true)} />)
+  await screen.findByText("Loading folders…")
+  await waitFor(() => expect(ongoing.groups).toHaveBeenCalledOnce())
+  expect(screen.queryByRole("switch")).not.toBeInTheDocument()
+  await act(async () => finish(page))
+  expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  expect(screen.getAllByRole("switch")).toHaveLength(1)
+  cold.unmount()
+
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const control = await screen.findByRole("switch", { name: /Sync Studio/ })
+  await waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
+  expect(control).toBeEnabled()
+  control.focus()
+  await act(async () => finish(page))
+  expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBe(control)
+  expect(control).toHaveFocus()
+  expect(screen.getAllByRole("switch")).toHaveLength(1)
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+})
+
+it("keeps the exact saved path manageable when project discovery fails", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const path = "/Example/worktrees/studio-fix"
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      status: "ready",
+      consentVersion: "desktop-project-sync-v1",
+      projects: projectGroup().projects.filter(({ projectPath }) => projectPath === path),
+      savedFolders: [{ groupId: "saved-path", path }],
+    }),
+  )
+  ongoing.groups.mockRejectedValue(new Error("Synthetic discovery unavailable"))
+  render(<Account session={new CloudSession(port, false, true)} />)
+  expect(await screen.findByText(/Still checking session folders/)).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(ongoing.groups).toHaveBeenCalledTimes(3)
+  const control = screen.getByRole("switch", { name: `Sync ${path} to Personal` })
+  expect(control).toBeChecked()
+  fireEvent.click(control)
+  await waitFor(() =>
+    expect(ongoing.setProject).toHaveBeenCalledWith(
+      expect.objectContaining({ groupId: "saved-path", selected: false, folderPaths: [path] }),
+    ),
+  )
+})
+
+it.each([
+  ["Could not verify Cloud workspaces.", "Still checking Cloud workspaces.", 3],
+  ["Cloud workspace sign-in required.", "Sign in again to check Cloud workspaces.", 1],
+  [
+    "Cloud workspace access denied.",
+    "You do not have access to the selected Cloud workspace.",
+    1,
+  ],
+])(
+  "reports workspace lookup failure without local file advice: %s",
+  async (failure, message, reads) => {
+    const { port, ongoing } = cloudProjectFixture()
+    const workspaces = vi.fn().mockRejectedValue(failure)
+    port.workspaces = workspaces
+    render(<Account session={new CloudSession(port, false, true)} />)
+    expect(await screen.findByText(message)).toBeVisible()
+    expect(screen.queryByText(/can access your session files/)).not.toBeInTheDocument()
+    expect(workspaces).toHaveBeenCalledTimes(reads)
+    expect(ongoing.groups).not.toHaveBeenCalled()
+  },
+)
+
+it("shows workspace receipt progress and actual queue counts separately", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const personal = ongoingStatus({
+    status: "syncing",
+    consentVersion: "desktop-project-sync-v1",
+    projects: projectGroup().projects,
+    uploadProgress: { uploaded: 6, total: 96, blocked: 4, unsupported: 1 },
+    queuedCount: 3,
+  })
+  const team = {
+    ...personal,
+    destinationId: "synthetic-team",
+    workspaceName: "Example Team",
+    uploadProgress: { uploaded: 2, total: null, scanIncomplete: true },
+    queuedCount: 1,
+  }
+  ongoing.status.mockResolvedValue({ ...personal, teamStatuses: [team] })
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const statuses = await screen.findByRole("region", { name: "Cloud sync status" })
+  const personalStatus = within(statuses).getByRole("group", { name: "Personal sync status" })
+  const teamStatus = await within(statuses).findByRole("group", {
+    name: "Example Team sync status",
+  })
+  expect(personalStatus).toHaveTextContent("6 of 96 accepted · 3 queued")
+  expect(personalStatus).toHaveTextContent("4 blocked in backfill · 1 unsupported in backfill")
+  expect(personalStatus).not.toHaveTextContent("90 queued")
+  expect(teamStatus).toHaveTextContent("2 accepted · 1 queued · Backfill scan incomplete")
+
+  act(() => emitSync({ ...team, storageKnown: false, status: "storage_unavailable" }))
+  expect(teamStatus).toHaveTextContent("Checking saved uploads…")
+  expect(teamStatus).not.toHaveTextContent("2 accepted")
+  expect(personalStatus).toHaveTextContent("6 of 96 accepted · 3 queued")
+})
+
+it("offers manual upload retry only after Desktop stops automatic verification", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const policy = ongoingStatus({
+    status: "fenced",
+    consentVersion: "desktop-project-sync-v1",
+    projects: projectGroup().projects,
+    deviceUploadEnabled: true,
+    queuedCount: 1,
+    automaticRecoveryCount: 1,
+  })
+  ongoing.status.mockResolvedValue(policy)
+  render(<Account session={new CloudSession(port, false, true)} />)
+  expect(
+    await screen.findByText("Checking saved uploads automatically. Saved files are kept."),
+  ).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Retry saved uploads" })).not.toBeInTheDocument()
+  expect(screen.queryByText(/accepted/)).not.toBeInTheDocument()
+
+  act(() =>
+    emitSync({
+      ...policy,
+      queuedCount: 0,
+      automaticRecoveryCount: 0,
+      fencedCount: 1,
+      retryAvailable: true,
+    }),
+  )
+  expect(screen.queryByText(/Checking saved uploads automatically/)).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Retry saved uploads" })).toBeEnabled()
+  expect(ongoing.retry).not.toHaveBeenCalled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
 
 it("shows the verified workspace count instead of the Personal grant name", async () => {
   const { port } = cloudProjectFixture()
@@ -435,7 +592,7 @@ it("can confirm verified saved Team folders even if folder discovery fails", asy
   )
   ongoing.groups.mockRejectedValue(new Error("Synthetic discovery failure"))
   render(<Account session={new CloudSession(port, false, true)} />)
-  expect(await screen.findByText("Could not load folders.")).toBeVisible()
+  expect(await screen.findByText(/Still checking session folders/)).toBeVisible()
   const confirm = screen.getByRole("button", { name: "Save" })
   expect(confirm).toBeEnabled()
   expect(screen.getByText("Save the listed Team folders.")).toBeVisible()
@@ -634,7 +791,7 @@ it.each([false, true])(
       await waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
       expect(screen.getByRole("switch", { name: /Sync Studio/ })).not.toBeChecked()
     } else {
-      expect(await screen.findByText("Could not load folders.")).toBeVisible()
+      expect(await screen.findByText(/Still checking session folders/)).toBeVisible()
     }
     const toggle = await screen.findByRole("switch", { name: `Sync ${path} to Example Team` })
     expect(toggle).toBeChecked()
@@ -843,6 +1000,52 @@ it("keeps source access reachable for an unqualified group beside a qualified gr
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
+it("saves the verified folders while a later page is retrying", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const group = projectGroup()
+  ongoing.groups.mockRejectedValue(new Error("Page unavailable")).mockResolvedValueOnce({
+    groups: [group],
+    sourceRoots: [{ sourceKind: "claude_jsonl", path: group.projects[0]!.sourcePath }],
+    nextCursor: { environment: "native", cwd: "/Example/Next" },
+    partial: true,
+  })
+  render(<Account session={new CloudSession(port, false, true)} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Load more folders" }))
+  expect(await screen.findByText("Still checking for more folders.")).toBeVisible()
+  const save = screen.getByRole("button", { name: "Save" })
+  expect(save).toBeEnabled()
+  fireEvent.click(save)
+  await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
+  expect(ongoing.enable).toHaveBeenCalledWith(
+    expect.objectContaining({ projects: group.projects }),
+  )
+  expect(screen.queryByText("Still checking for more folders.")).not.toBeInTheDocument()
+})
+
+it("accepts Save while a later page is in flight without racing the native read", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const group = projectGroup()
+  let finish!: (error: Error) => void
+  ongoing.groups
+    .mockResolvedValueOnce({
+      groups: [group],
+      sourceRoots: [{ sourceKind: "claude_jsonl", path: group.projects[0]!.sourcePath }],
+      nextCursor: { environment: "native", cwd: "/Example/Next" },
+      partial: true,
+    })
+    .mockImplementationOnce(() => new Promise((_, reject) => (finish = reject)))
+  render(<Account session={new CloudSession(port, false, true)} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Load more folders" }))
+  expect(await screen.findByText("Loading more folders…")).toBeVisible()
+  const save = screen.getByRole("button", { name: "Save" })
+  expect(save).toBeEnabled()
+  fireEvent.click(save)
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  await act(async () => finish(new Error("Page unavailable")))
+  await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
+  expect(ongoing.groups).toHaveBeenCalledTimes(2)
+})
+
 it("retries only the saved desktop policy when a new external worktree awaits confirmation", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
   const session = new CloudSession(port, false, true)
@@ -984,15 +1187,15 @@ it("shows each workspace's own session upload percentage beside its backfill con
   })
   expect(personal).toHaveAttribute("aria-valuenow", "3")
   expect(personal).toHaveAttribute("aria-valuemax", "4")
-  expect(personal).toHaveAttribute("aria-valuetext", "3 of 4 sessions uploaded (75%)")
-  expect(screen.getByText("3 of 4 sessions uploaded")).toBeVisible()
+  expect(personal).toHaveAttribute("aria-valuetext", "3 of 4 sessions accepted (75%)")
+  expect(screen.getByText("3 of 4 sessions accepted")).toBeVisible()
   expect(screen.getByText("75%")).toBeVisible()
   const team = screen.getByRole("progressbar", {
     name: "Session upload progress for Example Team",
   })
   expect(team).toHaveAttribute("aria-valuenow", "2")
   expect(team).toHaveAttribute("aria-valuemax", "8")
-  expect(team).toHaveAttribute("aria-valuetext", "2 of 8 sessions uploaded (25%)")
+  expect(team).toHaveAttribute("aria-valuetext", "2 of 8 sessions accepted (25%)")
   expect(screen.getByText("25%")).toBeVisible()
 })
 
@@ -1019,12 +1222,12 @@ it("shows accepted sessions without a percentage until the scan has a nonzero to
   const status = screen.getByText("Scanning folders…")
   expect(status).toBeVisible()
   expect(status).toHaveAttribute("role", "status")
-  expect(screen.getByText("1 session uploaded")).toBeVisible()
+  expect(screen.getByText("1 session accepted")).toBeVisible()
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 2, total: null } }))
   expect(status).toHaveTextContent("Personal: Session total unavailable.")
-  expect(screen.getByText("2 sessions uploaded. Session total unavailable.")).toBeVisible()
+  expect(screen.getByText("2 sessions accepted. Session total unavailable.")).toBeVisible()
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 0, total: 0 } }))
@@ -1044,7 +1247,7 @@ it("shows accepted sessions without a percentage until the scan has a nonzero to
   expect(screen.queryByText("100%")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 1000, total: 1000 } }))
-  expect(status).toHaveTextContent(`Personal: Backfill complete. ${count} sessions uploaded.`)
+  expect(status).toHaveTextContent(`Personal: Backfill complete. ${count} sessions accepted.`)
   expect(screen.getByText("100%")).toBeVisible()
 
   act(() =>
@@ -1082,21 +1285,23 @@ it("hides cached totals and progress after saved upload storage becomes unknown"
   act(() => emitSync(healthy))
   expect(session.getSnapshot().ongoing?.acceptedCount).toBe(7)
   expect(screen.queryByText(/7 uploaded|Transferred/)).not.toBeInTheDocument()
-  act(() => emitSync({ ...healthy, status: "storage_unavailable", storageKnown: false }))
-  expect(screen.getByText("Could not read saved uploads.")).toBeVisible()
+  const unavailable = {
+    ...healthy,
+    status: "storage_unavailable" as const,
+    storageKnown: false,
+  }
+  ongoing.status.mockResolvedValueOnce(unavailable).mockResolvedValue(healthy)
+  act(() => emitSync(unavailable))
+  expect(screen.getByText("Checking saved uploads…")).toBeVisible()
   expect(screen.queryByText(/7 uploaded|0 uploaded|Transferred/)).not.toBeInTheDocument()
   expect(screen.queryByText("Background sync enabled")).not.toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Check saved uploads" })).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Check saved uploads" })).not.toBeInTheDocument()
   expect(
     screen.queryByRole("button", { name: "Update sync selection" }),
   ).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
   expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeVisible()
-  ongoing.status.mockResolvedValue(healthy)
-  fireEvent.click(screen.getByRole("button", { name: "Check saved uploads" }))
-  await waitFor(() =>
-    expect(screen.queryByText("Could not read saved uploads.")).not.toBeInTheDocument(),
-  )
+  await waitFor(() => expect(session.getSnapshot().ongoing?.storageKnown).toBe(true))
   expect(session.getSnapshot().ongoing?.acceptedCount).toBe(7)
   expect(ongoing.retry).not.toHaveBeenCalled()
 })
@@ -1183,16 +1388,16 @@ it("keeps cached exclusions during a failed read and leaves new groups unapprove
   expect(studio).not.toBeChecked()
   expect(screen.queryByText("No session folders found.")).not.toBeInTheDocument()
   await act(async () => {
+    ongoing.groups.mockResolvedValueOnce({ ...page, groups: [...page.groups, tools] })
     fail(new Error("Synthetic read failure"))
     await pending
   })
-  expect(screen.getByText("Could not update folders.")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   expect(studio).not.toBeChecked()
   expect(
     screen.queryByRole("button", { name: "Choose Claude session folders…" }),
   ).not.toBeInTheDocument()
-  ongoing.groups.mockResolvedValueOnce({ ...page, groups: [...page.groups, tools] })
-  fireEvent.click(screen.getByRole("button", { name: "Retry folder list" }))
+  expect(screen.queryByRole("button", { name: "Retry folder list" })).not.toBeInTheDocument()
   expect(await screen.findByRole("switch", { name: /Sync Tools/ })).not.toBeChecked()
   expect(studio).not.toBeChecked()
   expect(screen.getByRole("switch", { name: /Sync Website/ })).toBeChecked()
@@ -1215,16 +1420,16 @@ it("does not turn an initial folder read failure into an empty list", async () =
       recoveryRequiredCount: 1,
     }),
   )
-  ongoing.groups.mockRejectedValueOnce(new Error("Synthetic read failure"))
+  ongoing.groups.mockRejectedValue(new Error("Synthetic read failure"))
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  expect(await screen.findByText("Could not load folders.")).toBeVisible()
+  expect(await screen.findByText(/Still checking session folders/)).toBeVisible()
   expect(screen.queryByText("No session folders found.")).not.toBeInTheDocument()
   expect(
     screen.queryByRole("button", { name: "Choose Claude session folders…" }),
   ).not.toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Retry folder list" })).toBeEnabled()
-  expect(screen.queryByText(/Some sessions need local recovery/)).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Retry folder list" })).not.toBeInTheDocument()
+  expect(screen.getByText(/Some sessions need local recovery/)).toBeVisible()
   expect(screen.queryByRole("button", { name: "Retry saved uploads" })).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
@@ -1237,16 +1442,6 @@ it("retries an incomplete empty folder listing without saving upload permission"
     nextCursor: null,
     partial: true,
   })
-  const session = new CloudSession(port, false, true)
-  render(<Account session={session} />)
-  const retry = await screen.findByRole("button", { name: "Retry folder list" })
-  expect(screen.getByRole("alert")).toHaveTextContent("Could not finish loading folders.")
-  expect(screen.queryByText("No session folders found.")).not.toBeInTheDocument()
-  expect(screen.queryByRole("button", { name: "Load more folders" })).not.toBeInTheDocument()
-  expect(
-    screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
-  ).not.toBeInTheDocument()
-  expect(ongoing.groups).toHaveBeenCalledOnce()
   let finish!: (page: Awaited<ReturnType<typeof ongoing.groups>>) => void
   ongoing.groups.mockImplementationOnce(
     () =>
@@ -1254,10 +1449,13 @@ it("retries an incomplete empty folder listing without saving upload permission"
         finish = resolve
       }),
   )
-  fireEvent.click(retry)
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
   await waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
   expect(ongoing.groups).toHaveBeenLastCalledWith(expect.anything(), null)
-  expect(retry).toBeDisabled()
+  expect(screen.getByText("Loading folders…")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(screen.queryByText(/No session folders found/)).not.toBeInTheDocument()
   await act(async () =>
     finish({
       groups: [projectGroup()],
@@ -1363,7 +1561,6 @@ it.each([
   { status: "interrupted" as const, queuedCount: 1 },
   { status: "syncing" as const, fencedCount: 1 },
   { status: "fenced" as const },
-  { status: "offline" as const },
   { status: "upload_unavailable" as const },
   { status: "route_denied" as const },
 ])("keeps upload retry for other saved-work problems: %j", async (patch) => {
@@ -1453,7 +1650,7 @@ it("focuses a folder from Settings search without changing its choice", async ()
   expect(port.save).not.toHaveBeenCalled()
 })
 
-it("offers a real account read retry instead of a coming-soon state after a failed read", async () => {
+it("retries the first account read without showing a coming-soon state", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const read = port.read
   port.read = vi
@@ -1462,12 +1659,11 @@ it("offers a real account read retry instead of a coming-soon state after a fail
     .mockImplementation(read)
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  const retry = await screen.findByRole("button", { name: "Try again" })
-  expect(screen.getByText("Could not load Cloud. Try again or continue locally.")).toBeVisible()
+  expect(await screen.findByText("Checking Cloud sign-in…")).toBeVisible()
   expect(screen.queryByText("Antiburn Cloud is coming soon")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Learn more" })).not.toBeInTheDocument()
-  fireEvent.click(retry)
   expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeVisible()
+  expect(port.read).toHaveBeenCalledTimes(2)
   expect(ongoing.groups).toHaveBeenCalledOnce()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })

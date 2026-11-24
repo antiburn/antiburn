@@ -117,12 +117,20 @@ fn cloud_http_workspace_list_uses_only_the_current_bearer() {
     assert!(request.body.is_empty());
     request.native_only();
 
-    let (config, worker) = server(404, "{}");
-    assert_eq!(
-        HttpTransport.workspaces(&config, "synthetic-access"),
-        Err(Failure::Unavailable)
-    );
-    worker.join().unwrap();
+    for (status, failure) in [
+        (400, Failure::InvalidResponse),
+        (401, Failure::ReauthRequired),
+        (403, Failure::Rejected),
+        (404, Failure::Unavailable),
+        (503, Failure::Offline),
+    ] {
+        let (config, worker) = server(status, "{}");
+        assert_eq!(
+            HttpTransport.workspaces(&config, "synthetic-access"),
+            Err(failure)
+        );
+        worker.join().unwrap();
+    }
 
     let (config, worker) = server(
         200,

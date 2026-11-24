@@ -139,6 +139,15 @@ for (const theme of ["light", "dark"] as const) {
       await openCloud(page, state, theme)
       await expect(page.getByRole("checkbox")).toHaveCount(0)
       await page.getByRole("button", { name: "Start syncing", exact: true }).click()
+      if (state === "ambiguous") {
+        await expect(page.getByText(/Could not confirm folder sync for Personal/)).toBeVisible()
+        await expect(
+          page.getByRole("button", { name: "Start syncing", exact: true }),
+        ).toBeEnabled()
+        await page.getByRole("button", { name: "Continue locally", exact: true }).click()
+        await expect(page.locator("body")).toHaveAttribute("data-completed", "true")
+        continue
+      }
       await expect(page.locator(".cloud-screen-complete")).toBeVisible()
       await expect(page.getByRole("button", { name: "Check status", exact: true })).toHaveCount(
         0,
@@ -279,7 +288,7 @@ test("grouped folders and full-content consent fit the desktop setup window", as
   await expect(page.getByText("1 worktree", { exact: true })).toBeVisible()
   await expect(page.getByRole("checkbox")).toHaveCount(0)
   await expect(
-    page.getByText("Sync full sessions from selected folders and their worktrees."),
+    page.getByText("Sync full sessions from selected folders and the worktrees Desktop found."),
   ).toBeInViewport()
   await expect(page.locator("footer p")).toHaveCount(0)
   await expect(page.locator("footer")).not.toContainText("folders selected")
@@ -350,11 +359,32 @@ test("empty Cloud Settings uses default sources without pickers or a consent for
 
 test("unreadable upload storage does not show cached totals as current", async ({ page }) => {
   await page.goto("/tests/visual/?surface=cloud&cloud=settings-storage-error&theme=light")
-  await expect(page.getByText("Could not read saved uploads.", { exact: true })).toBeVisible()
+  await expect(
+    page.getByText("Could not read saved uploads. Saved files are kept.", { exact: true }),
+  ).toBeVisible()
   await expect(page.getByText(/41 uploaded|0 uploaded|Transferred/)).toHaveCount(0)
   await expect(page.getByText("Background sync enabled", { exact: true })).toHaveCount(0)
-  await expect(page.getByRole("button", { name: "Check saved uploads" })).toBeEnabled()
+  await expect(page.getByRole("button", { name: "Check saved uploads" })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Refresh folders" })).toHaveCount(0)
+})
+
+test("folder discovery retries and saved verification stay automatic in Sessions settings", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 480, height: 780 })
+  await page.goto(
+    "/tests/visual/?surface=cloud&cloud=settings-progress&theme=light&folderDiscovery=3&savedRecovery=1",
+  )
+  await expect(page.getByText(/Still checking session folders/)).toBeVisible()
+  await expect(page.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  await expect(
+    page.getByText("Checking saved uploads automatically. Saved files are kept."),
+  ).toBeVisible()
+  await expect(page.getByRole("alert")).toHaveCount(0)
+  await expect(
+    page.getByRole("button", { name: /Retry folders|Retry folder list|Retry saved uploads/ }),
+  ).toHaveCount(0)
+  await expect(page.getByText(/accepted/i)).toHaveCount(0)
 })
 
 test("reopened Settings keeps exclusions and does not confirm newly shown groups", async ({
@@ -370,6 +400,63 @@ test("reopened Settings keeps exclusions and does not confirm newly shown groups
   await expect(page.getByRole("checkbox")).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Update sync selection" })).toHaveCount(0)
 })
+
+for (const moveFocus of [false, true]) {
+  test(`background grouping ${moveFocus ? "keeps focus outside the list" : "focuses the grouped saved switch"}`, async ({
+    page,
+  }) => {
+    await page.goto(
+      "/tests/visual/?surface=cloud&cloud=settings-progress&theme=light&folderDiscovery=3&savedFolderFocus=1",
+    )
+    const exact = page.getByRole("switch", {
+      name: "Sync /Example/worktrees/studio-menu-fix to Personal",
+    })
+    await exact.focus()
+    const other = page.getByRole("button", { name: "Sign out" })
+    if (moveFocus) await other.focus()
+    const grouped = page.getByRole("switch", { name: "Sync Studio: /Example/Studio" })
+    await expect(grouped).toBeChecked()
+    await expect(exact).toHaveCount(0)
+    await expect(moveFocus ? other : grouped).toBeFocused()
+  })
+}
+
+for (const width of [860, 480]) {
+  test(`Cloud sync status does not move focused folders or Save at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 780 })
+    await page.emulateMedia({ reducedMotion: "reduce" })
+    await page.goto("/tests/visual/?surface=cloud&cloud=settings-progress&theme=light")
+    const control = page.getByRole("switch", { name: "Sync Studio: /Example/Studio" })
+    await expect(control).toBeChecked()
+    await control.focus()
+    const row = page.locator('[data-cloud-folder="Studio"]')
+    const save = page.getByRole("button", { name: "Save", exact: true })
+    const bounds = async () =>
+      Promise.all([control.boundingBox(), row.boundingBox(), save.boundingBox()])
+    const before = await bounds()
+    await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
+    await expect(page.getByRole("group", { name: "Personal sync status" })).toContainText(
+      "6 of 96 accepted · 3 queued",
+    )
+    await expect(control).toBeFocused()
+    await expect(control).toBeChecked()
+    const after = await bounds()
+    for (const [index, box] of before.entries()) {
+      expect(box).not.toBeNull()
+      for (const metric of ["x", "y", "width", "height"] as const) {
+        expect(Math.abs(after[index]![metric] - box![metric])).toBeLessThanOrEqual(1)
+      }
+    }
+    await capture(page, `cloud-settings-sync-status-${width}`)
+    await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
+    await expect(page.getByRole("group", { name: "Personal sync status" })).not.toContainText(
+      "6 of 96 accepted",
+    )
+    await expect(control).toBeFocused()
+  })
+}
 
 for (const [size, width, scale] of [
   ["default", 760, 100],
@@ -602,7 +689,12 @@ for (const theme of ["light", "dark"] as const) {
     for (const state of ["folders-empty-partial", "folders-empty-paged"]) {
       await openCloud(page, state, theme)
       await expect(
-        page.getByText("Folder discovery is incomplete.", { exact: true }),
+        page.getByText(
+          state === "folders-empty-partial"
+            ? "Still checking session folders."
+            : "Folder discovery is incomplete.",
+          { exact: true },
+        ),
       ).toBeVisible()
       await expect(page.getByText(/No project folders found/)).toHaveCount(0)
       await expect(page.getByRole("button", { name: "Refresh folders" })).toHaveCount(0)
@@ -611,8 +703,11 @@ for (const theme of ["light", "dark"] as const) {
       await expect(page.locator("footer p")).toHaveCount(0)
       await capture(page, `${theme}-${state}`)
       if (state === "folders-empty-paged") {
-        await page.getByRole("button", { name: "Load more folders" }).click()
+        const more = page.getByRole("button", { name: "Load more folders" })
+        await more.focus()
+        await more.press("Enter")
         await expect(page.getByRole("switch")).toHaveCount(2)
+        await expect(page.getByRole("group", { name: "Cloud project folders" })).toBeFocused()
         await expect(page.getByRole("button", { name: "Start syncing" })).toBeEnabled()
       }
     }
@@ -676,7 +771,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(backfill).toHaveAttribute("aria-busy", "true")
     await expect(page.getByText("Scanning folders…", { exact: true })).toBeVisible()
     expect(await backfill.boundingBox()).toEqual(idle)
-    await expect(page.getByText("2 sessions uploaded", { exact: true })).toBeVisible()
+    await expect(page.getByText("2 sessions accepted", { exact: true })).toBeVisible()
     await expect(page.getByRole("progressbar")).toHaveCount(0)
     await expect(page.getByText(/uploaded ·|Transferred/)).toHaveCount(0)
     await capture(page, `cloud-account-${theme}-blocked`)
@@ -686,7 +781,7 @@ for (const theme of ["light", "dark"] as const) {
     expect(await backfill.boundingBox()).toEqual(idle)
     await expect(page.getByRole("progressbar")).toHaveAttribute(
       "aria-valuetext",
-      "3 of 8 sessions uploaded (38%)",
+      "3 of 8 sessions accepted (38%)",
     )
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     await capture(page, `cloud-account-${theme}-backfill-progress`)
@@ -768,7 +863,7 @@ test("unchecked upload support uses compact generic help, not an unsupported-pro
   await expect(
     page.getByText("Could not check uploads for some folders.", { exact: true }),
   ).toHaveCount(1)
-  await expect(page.getByRole("button", { name: "Refresh folders" })).toBeEnabled()
+  await expect(page.getByRole("button", { name: "Refresh folders" })).toHaveCount(0)
   await expect(page.locator("footer p")).toHaveCount(0)
   await capture(page, "light-unchecked-help")
 })

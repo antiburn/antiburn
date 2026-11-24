@@ -4,7 +4,6 @@ import {
   desktopCloudPort,
   cloudSourceKind,
   cloudProjectChoices,
-  mergeCloudProjectGroups,
   type CloudDraft,
   type CloudPort,
   type CloudScreen,
@@ -17,8 +16,6 @@ import {
   type CloudProjectSelection,
   type CloudOngoingStatus,
   type CloudDestinationBinding,
-  type CloudProjectCursor,
-  type CloudSourceSelection,
   type CloudWorkspace,
   type CloudWorkspaceRecovery,
 } from "../lib/cloud"
@@ -29,10 +26,20 @@ import {
   projectFolderRoutes,
   projectSyncConsent,
 } from "./cloudProjectRoutes"
+import { mergeProjectPage, projectPagesByPort, type ProjectPages } from "./cloudProjectPages"
+import { cloudReadScopeMessage, retryCloudRead } from "./cloudReadRetry"
+import {
+  cloudFolderReadChanged,
+  cloudFoldersLoading,
+  readCloudProjectScope,
+  savedUploadStatusBecameUnavailable,
+  shouldRecheckCloudFolders,
+} from "./cloudProjectScope"
 import {
   accountViewPatch,
   backfillTarget,
   cloudContextChange,
+  cloudProjectSourceKey,
   cloudUploadStatusUnknown,
   confirmationContextKey,
   folderRouteConfirmed,
@@ -40,7 +47,6 @@ import {
   isCloudBusy,
   legacyCaptureConsent,
   matchesUploadPolicy,
-  mergeProjectSources,
   ongoingDestination,
   projectBinding,
   projectConfirmationKey,
@@ -101,10 +107,11 @@ export class CloudSession {
   private localToolsLoading = false
   private localToolsEventGeneration = 0
   private localToolsStatusRevision = -1
-  private projectGeneration = 0
-  private desktopProjects: DesktopCloudProjectGroup[] = []
-  private projectSources: CloudSourceSelection[] = []
-  private projectCursor: CloudProjectCursor | null = null
+  private projectRead: AbortController | undefined
+  private pendingProjectPage: Promise<unknown> | undefined
+  private accountRead: AbortController | undefined
+  private projectPages: ProjectPages | undefined
+  private projectPageScope: string | undefined
   private projectChoices: CloudProjectChoices = {}
   private projectTargets: Record<string, string> = {}
   private confirmedProjectChoices: CloudProjectChoices = {}
@@ -150,6 +157,7 @@ export class CloudSession {
     if (!this.active) {
       this.active = true
       document.addEventListener("visibilitychange", this.visibility)
+      window.addEventListener("focus", this.refreshIncompleteProjects)
       void this.load()
     }
     return () => {
@@ -166,9 +174,11 @@ export class CloudSession {
         this.stopLocalTools?.()
         this.stopLocalTools = undefined
         this.localToolsLoading = false
-        this.projectGeneration++
+        this.projectRead?.abort()
+        this.accountRead?.abort()
         clearTimeout(this.timer)
         document.removeEventListener("visibilitychange", this.visibility)
+        window.removeEventListener("focus", this.refreshIncompleteProjects)
         this.viewed = null
       }
     }
@@ -177,12 +187,29 @@ export class CloudSession {
   setVisible = (visible: boolean) => {
     if (this.visible === visible) return
     this.visible = visible
+    if (!visible && this.projectRead) this.suspendProjectRead()
+    else if (visible) this.refreshIncompleteProjects()
     this.visibility()
+  }
+  private suspendProjectRead() {
+    this.projectRead?.abort()
+    const projects = this.snapshot.projects
+    if (projects?.paging) this.publish({ projects: { ...projects, paging: undefined } })
+    else if (projects?.loading)
+      this.publish({ projects: { ...projects, loading: false, retrying: true } })
+  }
+  /** Stop page retries and let any dispatched read release native admission. */
+  private async finishProjectPaging() {
+    if (this.snapshot.projects?.paging) this.suspendProjectRead()
+    await this.pendingProjectPage?.catch(() => undefined)
   }
   private visibility = () => {
     if (!this.visible || document.hidden) this.viewed = null
     this.schedule()
     this.recordView()
+  }
+  private refreshIncompleteProjects = () => {
+    if (this.visible && shouldRecheckCloudFolders(this.snapshot)) void this.loadProjects()
   }
   /** Count visible entries only, not state events or repeated renders. */
   private recordView() {
@@ -211,19 +238,20 @@ export class CloudSession {
    */
   private receive(value: CloudSnapshot) {
     this.revision++
-    const { resetProjects, contextChanged } = cloudContextChange(this.snapshot.cloud, value)
+    const { resetProjects, contextChanged, sourcesChanged } = cloudContextChange(
+      this.snapshot.cloud,
+      value,
+    )
+    const setupFailed = !!value.setupError && !this.snapshot.cloud.setupError
+    if (resetProjects || sourcesChanged || setupFailed) this.projectRead?.abort()
     if (resetProjects) {
-      this.projectGeneration++
-      this.desktopProjects = []
-      this.projectSources = []
-      this.projectCursor = null
+      if (this.snapshot.cloud.identity) projectPagesByPort.delete(this.port)
+      this.projectPages = undefined
       this.projectChoices = {}
       this.projectTargets = {}
       this.confirmedProjectChoices = {}
       this.needsChoiceReview = false
       this.projectSyncStarted = false
-    } else if (value.setupError && value.setupError !== this.snapshot.cloud.setupError) {
-      this.projectGeneration++
     }
     const patch = accountViewPatch(this.snapshot, value, {
       resetProjects,
@@ -232,6 +260,13 @@ export class CloudSession {
       projectSyncStarted: this.projectSyncStarted,
       preparedRequestId: this.preparedRequestId,
     })
+    if (!resetProjects && (sourcesChanged || setupFailed) && this.snapshot.projects)
+      patch.projects = {
+        ...this.snapshot.projects,
+        loading: false,
+        paging: undefined,
+        hasMore: sourcesChanged ? false : this.snapshot.projects.hasMore,
+      }
     if (contextChanged) {
       this.requestId = null
       this.preparedRequestId = null
@@ -349,21 +384,17 @@ export class CloudSession {
    */
   load = async () => {
     const generation = this.generation
+    this.accountRead?.abort()
+    const { signal } = (this.accountRead = new AbortController())
     this.publish({ busy: true, canPauseBackfill: false, error: null })
     void this.loadLocalTools()
     try {
       if (!this.stop) {
         const stop = await this.port.watch((value) => {
           if (this.active && generation === this.generation) {
-            const setupRecovered = !!this.snapshot.cloud.setupError && !value.setupError
+            const previous = this.snapshot.cloud
             this.receive(value)
-            if (
-              this.port.ongoing &&
-              this.projectBinding() &&
-              !this.snapshot.busy &&
-              (!this.snapshot.projects || setupRecovered)
-            )
-              void this.loadProjects()
+            if (cloudFolderReadChanged(previous, this.snapshot)) void this.loadProjects()
           }
         })
         if (!this.active || generation !== this.generation) {
@@ -405,8 +436,14 @@ export class CloudSession {
           })
       }
       const revision = this.revision
-      const value = await this.port.read()
-      if (!this.active || generation !== this.generation) return
+      const value = await (this.port.ongoing
+        ? retryCloudRead(
+            this.port.read,
+            signal,
+            (value) => value.status === "signed_in" && !value.destination,
+          )
+        : this.port.read())
+      if (signal.aborted || !this.active || generation !== this.generation) return
       const appliedRead = revision === this.revision
       if (appliedRead) this.receive(value)
       if (!this.port.ongoing && appliedRead && value.identity && value.pendingSync) {
@@ -428,7 +465,7 @@ export class CloudSession {
       this.publish({ busy: false })
       if (this.port.ongoing && this.snapshot.cloud.identity) await this.loadProjects()
     } catch (error) {
-      if (this.active && generation === this.generation)
+      if (!signal.aborted && this.active && generation === this.generation)
         this.publish({
           busy: false,
           loaded: true,
@@ -464,11 +501,13 @@ export class CloudSession {
       }
       return
     }
+    const recheck = includeTeams && savedUploadStatusBecameUnavailable(this.snapshot, status)
     if (destination === "team" && status.destinationId) {
       this.publish({
         ...device,
         ...teamStatusPatch(this.snapshot, status.destinationId, status),
       })
+      if (recheck) void this.loadProjects()
       return
     }
     if (destination !== "personal") return
@@ -479,6 +518,7 @@ export class CloudSession {
     if (cloudUploadStatusUnknown(status)) {
       this.invalidateContentConfirmation()
       this.publish({ ...device, ongoing: status })
+      if (recheck) void this.loadProjects()
       return
     }
     this.confirmedProjectChoices = status.projectChoices ?? {}
@@ -519,12 +559,16 @@ export class CloudSession {
     )
   }
   private supportedProjectSelections(group: DesktopCloudProjectGroup): CloudProjectSelection[] {
-    return supportedProjectSelections(group, this.projectSources)
+    return supportedProjectSelections(group, this.projectPages?.sources ?? [])
   }
   private selectedProjects(
     choices: CloudProjectChoices = this.snapshot.projects?.choices ?? {},
   ): CloudProjectSelection[] {
-    return selectedProjects(this.desktopProjects, this.projectSources, choices)
+    return selectedProjects(
+      this.projectPages?.groups ?? [],
+      this.projectPages?.sources ?? [],
+      choices,
+    )
   }
   private projectSelectionKey(
     groups: CloudProjectGroup[],
@@ -542,126 +586,147 @@ export class CloudSession {
   private projectConfirmationKey(group: DesktopCloudProjectGroup) {
     return projectConfirmationKey(group, this.supportedProjectSelections(group))
   }
+  /** Display account-bound folder evidence. Desktop checks additions before saving. */
+  private publishProjectGroups(
+    pages: ProjectPages,
+    workspaces: readonly CloudWorkspace[] | undefined,
+    loading: boolean,
+  ) {
+    this.projectPages = pages
+    const groups = projectViewGroups(pages.groups, pages.sources)
+    const choices = cloudProjectChoices(
+      groups,
+      this.confirmedProjectChoices,
+      this.projectChoices,
+      this.defaultProjectSelection(workspaces),
+    )
+    const selectionKey = this.projectSelectionKey(groups, choices, workspaces ?? [])
+    if (this.snapshot.projects?.selectionKey !== selectionKey)
+      this.invalidateContentConfirmation()
+    this.publish({
+      projects: {
+        groups,
+        choices,
+        workspaces,
+        targets: this.projectTargets,
+        loaded: true,
+        loading,
+        partial: pages.partial,
+        hasMore: pages.next !== null,
+        needsChoiceReview: this.needsChoiceReview,
+        error: null,
+        selectionKey,
+      },
+    })
+  }
   /** Read one bounded page without saving initial ON choices. Desktop code
    * owns source evidence and worktree grouping; failed pages never become empty success.
    */
-  loadProjects = async (more = false) => {
+  loadProjects = async (more = false, retryInBackground = true) => {
     const port = this.port.ongoing
     const binding = this.projectBinding(!more)
-    if (!port || !binding || this.snapshot.projects?.loading || (more && !this.projectCursor))
+    if (
+      !this.visible ||
+      (more &&
+        (!this.projectPages?.next ||
+          this.pendingProjectPage ||
+          this.snapshot.projects?.scopeInvalid))
+    )
       return
-    const generation = ++this.projectGeneration
-    const current = () =>
-      this.active &&
-      generation === this.projectGeneration &&
-      JSON.stringify(this.projectBinding(!more)) === JSON.stringify(binding)
+    if (!port || !binding || (this.projectRead && !this.projectRead.signal.aborted)) return
+    const read = (this.projectRead = new AbortController())
+    const { signal } = read
+    const scopeKey = JSON.stringify([binding, cloudProjectSourceKey(this.snapshot.cloud)])
+    const current = () => this.active && !signal.aborted
     const existing = this.snapshot.projects
     this.publish({
-      projects: {
-        groups: existing?.groups ?? [],
-        choices: existing?.choices ?? {},
-        workspaces: existing?.workspaces,
-        targets: existing?.targets,
-        loading: true,
-        loaded: existing?.loaded ?? false,
-        partial: existing?.partial ?? false,
-        hasMore: existing?.hasMore ?? false,
-        needsChoiceReview: this.needsChoiceReview,
-        error: null,
-        selectionKey: existing?.selectionKey ?? "",
-      },
+      projects:
+        more && existing
+          ? { ...existing, paging: "loading" }
+          : cloudFoldersLoading(existing, this.needsChoiceReview),
     })
+    const onExtendedRetry = retryInBackground
+      ? (stage: "setup" | "workspaces" | "folders") => {
+          const projects = this.snapshot.projects
+          if (current() && projects)
+            this.publish({
+              projects: more
+                ? { ...projects, paging: "retrying" }
+                : { ...projects, retrying: true, retryStage: stage },
+            })
+        }
+      : undefined
     try {
       let workspaces = existing?.workspaces
+      const cached = projectPagesByPort.get(this.port)
+      const previous =
+        this.projectPageScope === scopeKey
+          ? this.projectPages
+          : cached?.binding === scopeKey
+            ? cached.pages
+            : undefined
       if (!more) {
-        const revision = this.ongoingRevision
-        const previousTeams = this.snapshot.teamStatuses
-        const previousConnections = this.snapshot.workspaceConnections
-        const status = await port.status()
-        if (!current()) return
-        if (
-          status?.accountId === binding.accountId &&
-          status.destinationId === binding.destinationId
+        const verified = await readCloudProjectScope(
+          this.port,
+          port,
+          binding,
+          signal,
+          {
+            getSnapshot: this.getSnapshot,
+            accountRevision: () => this.revision,
+            policyRevision: () => this.ongoingRevision,
+            receiveAccount: (cloud) => this.receive(cloud),
+            receivePolicy: (status) => this.receiveOngoing(status),
+            receiveWorkspace: (recovery) => this.receiveWorkspaceRecovery(recovery),
+          },
+          onExtendedRetry,
         )
-          for (const team of status.teamStatuses ?? []) {
-            const id = team.destinationId
-            if (!id || id === binding.destinationId || team.accountId !== binding.accountId)
-              continue
-            if (previousTeams?.[id] === this.snapshot.teamStatuses?.[id])
-              this.receiveOngoing(team)
-            if (previousConnections?.[id] === this.snapshot.workspaceConnections?.[id])
-              this.receiveWorkspaceRecovery({
-                accountId: team.accountId,
-                workspaceId: id,
-                workspaceName: team.workspaceName,
-                localResetAvailable: team.localResetAvailable,
-                remoteRevocationUnconfirmed: team.remoteRevocationUnconfirmed,
-              })
-          }
-        if (status && revision === this.ongoingRevision) this.receiveOngoing(status)
-        if (this.snapshot.cloud.setupError) {
+        if (!current()) return
+        if (verified === null) {
           this.publish({ projects: { ...this.snapshot.projects!, loading: false } })
           return
         }
-        if (this.port.workspaces) {
-          workspaces = (await this.port.workspaces(binding)) ?? undefined
-          if (!current()) return
-          if (
-            workspaces &&
-            !workspaces.some(
-              ({ id, kind }) => id === binding.destinationId && kind === "personal",
-            )
-          )
-            throw new Error("The signed-in workspace is not available for selection.")
-        }
+        workspaces = verified
+        if (!existing?.loaded && previous) this.publishProjectGroups(previous, workspaces, true)
       }
-      const cursor = more ? this.projectCursor : null
-      const page = await port.groups(binding, cursor)
-      if (!current()) return
-      if (page.nextCursor && JSON.stringify(page.nextCursor) === JSON.stringify(cursor))
-        throw new Error("Project discovery repeated a page.")
-      const groups = mergeCloudProjectGroups(more ? this.desktopProjects : [], page.groups)
-      this.desktopProjects = groups
-      this.projectSources = mergeProjectSources(
-        more ? this.projectSources : [],
-        page.sourceRoots,
-      )
-      this.projectCursor = page.nextCursor
-      const viewGroups = projectViewGroups(groups, this.projectSources)
-      const choices = cloudProjectChoices(
-        viewGroups,
-        this.confirmedProjectChoices,
-        this.projectChoices,
-        this.defaultProjectSelection(workspaces),
-      )
-      const selectionKey = this.projectSelectionKey(viewGroups, choices, workspaces ?? [])
-      if (existing?.selectionKey !== selectionKey) this.invalidateContentConfirmation()
-      this.publish({
-        projects: {
-          groups: viewGroups,
-          choices,
-          workspaces,
-          targets: this.projectTargets,
-          loaded: true,
-          loading: false,
-          partial: page.partial || (more && (existing?.partial ?? false)),
-          hasMore: page.nextCursor !== null,
-          needsChoiceReview: this.needsChoiceReview,
-          error: null,
-          selectionKey,
+      const cursor = more ? (this.projectPages?.next ?? null) : null
+      const { pages } = await retryCloudRead(
+        async () => {
+          const request = port.groups(binding, cursor)
+          if (more) this.pendingProjectPage = request
+          try {
+            const page = await request
+            return {
+              pages: mergeProjectPage(previous, cursor, page),
+              incomplete: page.partial && !page.groups.length && !page.nextCursor,
+            }
+          } finally {
+            if (this.pendingProjectPage === request) this.pendingProjectPage = undefined
+          }
         },
-      })
+        signal,
+        ({ incomplete }) => incomplete,
+        onExtendedRetry && (() => onExtendedRetry("folders")),
+      )
+      if (!current()) return
+      projectPagesByPort.set(this.port, { binding: scopeKey, pages })
+      this.projectPageScope = scopeKey
+      this.publishProjectGroups(pages, workspaces, false)
     } catch (error) {
+      const scopeMessage = cloudReadScopeMessage(error)
       if (current())
         this.publish({
           projects: {
             ...this.snapshot.projects!,
             loading: false,
-            error: isCloudBusy(error)
-              ? CLOUD_BUSY_MESSAGE
-              : "Could not load project folders. Try again in Cloud Settings.",
+            retrying: false,
+            paging: undefined,
+            scopeInvalid: !!scopeMessage,
+            error: scopeMessage ?? "Could not check session folders.",
           },
         })
+    } finally {
+      if (this.projectRead === read) this.projectRead = undefined
     }
   }
   /** Extend the visible draft only after an explicit page request. */
@@ -674,7 +739,7 @@ export class CloudSession {
     if (
       !binding ||
       !projects ||
-      projects.loading ||
+      !projects.loaded ||
       this.snapshot.busy ||
       !group ||
       (selected &&
@@ -710,7 +775,7 @@ export class CloudSession {
     exact = false,
   ) => {
     return hasSavedProjectPermission(
-      this.desktopProjects.find((item) => item.id === id),
+      this.projectPages?.groups.find((item) => item.id === id),
       policy,
       exact,
     )
@@ -727,7 +792,7 @@ export class CloudSession {
 
   /** Source recovery may recheck only an exact, already saved Personal binding. */
   projectHasReviewableSource = (id: string) => {
-    const group = this.desktopProjects.find((item) => item.id === id)
+    const group = this.projectPages?.groups.find((item) => item.id === id)
     return !!group && this.reviewableProjectSelections(group, this.snapshot.ongoing).length > 0
   }
 
@@ -749,7 +814,7 @@ export class CloudSession {
     const port = this.port.ongoing
     const anchor = this.projectBinding(!selected)
     const binding = anchor && { ...anchor, destinationId: team ?? anchor.destinationId }
-    const group = this.desktopProjects.find((item) => item.id === id)
+    const group = this.projectPages?.groups.find((item) => item.id === id)
     const policyOf = (value: CloudViewSnapshot) =>
       team ? value.teamStatuses?.[team] : value.ongoing
     const policy = policyOf(this.snapshot)
@@ -765,7 +830,7 @@ export class CloudSession {
       (team && selected) ||
       this.snapshot.busy ||
       this.syncInFlight ||
-      (!team && this.snapshot.projects?.loading) ||
+      (selected && this.snapshot.projects?.loading) ||
       (selected && !!this.snapshot.projects?.error) ||
       policy?.consentVersion !== "desktop-project-sync-v1" ||
       (!team && !policy.storageKnown) ||
@@ -853,7 +918,7 @@ export class CloudSession {
       return
     const additions: Record<string, CloudProjectSelection[]> = {}
     for (const [id, target] of Object.entries(this.projectTargets)) {
-      const group = this.desktopProjects.find((item) => item.id === id)
+      const group = this.projectPages?.groups.find((item) => item.id === id)
       if (
         target !== destinationId ||
         this.hasSavedProject(id, true) ||
@@ -1049,6 +1114,7 @@ export class CloudSession {
   /** Close the account connection and let desktop code clean up old Team grants. */
   signOut = () => {
     this.invalidateContentConfirmation()
+    this.suspendProjectRead()
     return this.run("sign_out", this.port.signOut)
   }
   /** Run only after the UI's separate reset confirmation; keep the remote warning. */
@@ -1439,6 +1505,10 @@ export class CloudSession {
         sync: starting,
         [errorField]: null,
       })
+      if (projects.paging || this.pendingProjectPage) {
+        await this.finishProjectPaging()
+        if (!current()) return
+      }
       const policy = this.projectPolicy(destinationId)
       if (policy?.consentVersion === "desktop-project-sync-v1") {
         await this.addPendingProjects(port, target, groups, stillBound, settings)
@@ -1452,7 +1522,7 @@ export class CloudSession {
               ),
             )
         const status = await port.enable(
-          projectSyncConsent(target, this.projectSources, selected, {
+          projectSyncConsent(target, this.projectPages?.sources ?? [], selected, {
             ...(destinationId === binding.destinationId ? this.confirmedProjectChoices : {}),
             ...choices,
           }),
@@ -1523,6 +1593,8 @@ export class CloudSession {
     this.publish({ busy: true, error: null, sync: starting })
     if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
     try {
+      if (this.snapshot.projects?.paging || this.pendingProjectPage)
+        await this.finishProjectPaging()
       for (const route of routes) {
         if (!current()) return
         const { id, groups, workspace } = route
@@ -1530,8 +1602,8 @@ export class CloudSession {
         const ids = groups.map((group) => group.id)
         const choices = Object.fromEntries(ids.map((id) => [id, true]))
         const selected = selectedProjects(
-          this.desktopProjects.filter((group) => ids.includes(group.id)),
-          this.projectSources,
+          this.projectPages?.groups.filter((group) => ids.includes(group.id)) ?? [],
+          this.projectPages?.sources ?? [],
           choices,
         )
         try {
@@ -1547,7 +1619,7 @@ export class CloudSession {
           } else {
             const draft = this.projectChoices
             const status = await port.enable(
-              projectSyncConsent(target, this.projectSources, selected, {
+              projectSyncConsent(target, this.projectPages?.sources ?? [], selected, {
                 ...singleWorkspaceChoices,
                 ...choices,
               }),
@@ -1573,8 +1645,14 @@ export class CloudSession {
       }
       if (!current()) return
       if (failed.length) {
-        await this.loadProjects()
+        await this.loadProjects(false, false)
         if (!current()) return
+        const projects = this.snapshot.projects
+        if (
+          projects?.error === "Could not check session folders." ||
+          (projects?.partial && !projects.groups.length && !projects.hasMore)
+        )
+          void this.loadProjects()
         const remaining = failed.filter(
           ({ target, selected }) =>
             !folderRouteConfirmed(this.projectPolicy(target.destinationId), target, selected),
@@ -1609,7 +1687,7 @@ export class CloudSession {
   ) {
     for (const group of groups) {
       if (!stillBound()) return
-      const member = this.desktopProjects.find(({ id }) => id === group.id)
+      const member = this.projectPages?.groups.find(({ id }) => id === group.id)
       const policy = this.projectPolicy(binding.destinationId)
       if (
         !member ||

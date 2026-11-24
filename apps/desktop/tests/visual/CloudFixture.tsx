@@ -89,6 +89,7 @@ export function cloudFixture(name: string): CloudPort {
     },
   }
   let saveFailed = false
+  let folderReadCount = 0
   const groups: DesktopCloudProjectGroup[] =
     name === "empty" || name === "settings-empty"
       ? []
@@ -239,6 +240,12 @@ export function cloudFixture(name: string): CloudPort {
       status: "storage_unavailable",
       storageKnown: false,
     }
+  if (params.has("savedRecovery"))
+    ongoing = { ...ongoing, automaticRecoveryCount: 1, retryAvailable: false }
+  if (params.has("savedFolderFocus")) {
+    const path = groups[0]!.folderPaths[1]!
+    ongoing = { ...ongoing, savedFolders: [{ path, groupId: "saved-worktree" }] }
+  }
   if (name === "settings-reopened")
     ongoing = {
       ...ongoing,
@@ -310,10 +317,29 @@ export function cloudFixture(name: string): CloudPort {
           listener(ongoing)
         }
         const event = "cloud-fixture:finish-backfill"
+        const initialStatus = ongoing
+        const updateQueue = () => {
+          ongoing = ongoing.uploadProgress
+            ? initialStatus
+            : {
+                ...ongoing,
+                status: "syncing",
+                queuedCount: 3,
+                uploadProgress: { uploaded: 6, total: 96 },
+              }
+          listener(ongoing)
+        }
+        const queueEvent = "cloud-fixture:update-queue"
         window.addEventListener(event, finish)
-        return () => window.removeEventListener(event, finish)
+        window.addEventListener(queueEvent, updateQueue)
+        return () => {
+          window.removeEventListener(event, finish)
+          window.removeEventListener(queueEvent, updateQueue)
+        }
       },
       groups: async (_binding, after) => {
+        if (++folderReadCount <= Number(params.get("folderDiscovery") ?? 0))
+          throw new Error("Synthetic folder read failure")
         const emptyPage =
           ["folders-empty-partial", "folders-empty-paged"].includes(name) && !after
         return {

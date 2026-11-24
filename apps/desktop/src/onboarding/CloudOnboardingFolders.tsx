@@ -23,14 +23,18 @@ export function CloudProjectFolderSummary({
   /** Give the full path a wrapping line above the counts. */
   stackPath?: boolean
 }) {
-  const sessionLabel =
-    group.sessionCount == null
+  const sessionLabel = group.discoveryStale
+    ? "Folder details need refresh"
+    : group.sessionCount == null
       ? "Count unavailable"
       : `${group.sessionCount} ${group.sessionCount === 1 ? "session" : "sessions"}`
-  const worktreeLabel =
-    group.worktreeCount > 0
-      ? `${group.worktreeCount} ${group.worktreeCount === 1 ? "worktree" : "worktrees"}`
-      : null
+  const worktreeLabel = group.discoveryStale
+    ? null
+    : group.groupingComplete === false
+      ? "Worktrees not verified"
+      : group.worktreeCount > 0
+        ? `${group.worktreeCount} ${group.worktreeCount === 1 ? "worktree" : "worktrees"}`
+        : null
   return (
     <div
       id={id}
@@ -182,6 +186,7 @@ export function CloudProjectFolders({
   destinationId,
   targets,
   savedDestinations,
+  id,
   onSelect,
 }: {
   groups: readonly CloudProjectGroup[]
@@ -193,11 +198,16 @@ export function CloudProjectFolders({
   targets?: Readonly<Record<string, string>> | undefined
   /** Name the saved destination for folders outside the onboarding batch. */
   savedDestinations?: ReadonlyMap<string, string>
+  /** Focus this list when the last page removes its Load more button. */
+  id?: string
   onSelect: (projectId: string, selected: boolean, destination?: string) => void
 }) {
   return (
     <div
+      id={id}
+      tabIndex={id ? -1 : undefined}
       className="cloud-folder-list min-h-0! max-h-none! flex-1"
+      role="group"
       aria-label="Cloud project folders"
     >
       {groups.length ? (
@@ -208,6 +218,7 @@ export function CloudProjectFolders({
             !!target && !workspaces?.some((workspace) => workspace.id === target)
           const showPicker = !!destinationId && ((workspaces?.length ?? 0) > 1 || unavailable)
           const selected = choices[group.id] ?? !showPicker
+          const unverified = group.discoveryStale || group.groupingComplete === false
           const savedDestination = savedDestinations?.get(group.id)
           return (
             <div
@@ -243,8 +254,12 @@ export function CloudProjectFolders({
                   <CloudFolderSyncControl
                     label={`${showPicker ? "Sync destination for" : "Sync"} ${group.name}: ${group.path}`}
                     descriptionId={descriptionId}
-                    selected={selected && (!showPicker || group.captureSupported === true)}
-                    disabled={disabled || (showPicker && !group.captureSupported)}
+                    selected={
+                      !unverified &&
+                      selected &&
+                      (!showPicker || group.captureSupported === true)
+                    }
+                    disabled={disabled || unverified || (showPicker && !group.captureSupported)}
                     workspaces={workspaces}
                     destinationId={destinationId}
                     selectedWorkspace={target}

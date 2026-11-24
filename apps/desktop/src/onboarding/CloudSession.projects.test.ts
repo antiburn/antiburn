@@ -245,6 +245,95 @@ it("keeps exact saved choices ahead of defaults and local choices ahead of refre
   }
 })
 
+it("keeps later folder rows and their staged choices when the first page refreshes", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const later = projectGroup({ id: "later", label: "Later", path: "/Example/Later" })
+  const firstPage = {
+    groups: [projectGroup()],
+    sourceRoots: [
+      { sourceKind: "claude_jsonl" as const, path: "/Example/claude/projects/studio" },
+    ],
+    nextCursor: { environment: "native", cwd: "/Example/Studio" },
+    partial: false,
+  }
+  ongoing.groups
+    .mockResolvedValueOnce(firstPage)
+    .mockResolvedValueOnce({ ...firstPage, groups: [later], nextCursor: null })
+    .mockResolvedValueOnce(firstPage)
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    await session.loadMoreProjects()
+    session.selectProject("later", false)
+    await session.loadProjects()
+
+    expect(session.getSnapshot().projects).toMatchObject({
+      groups: [{ id: "studio", sessionCount: 12 }, { id: "later" }],
+      choices: { studio: true, later: false },
+      hasMore: false,
+    })
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("keeps disconnected rows visible without counting or approving cached members", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const studio = projectGroup()
+  const staleWorktree = "/Example/worktrees/older"
+  const olderProject = { ...studio.projects[0]!, projectPath: staleWorktree }
+  const oldStudio = projectGroup({
+    sessionCount: 15,
+    folderPaths: [...studio.folderPaths, staleWorktree],
+    projects: [...studio.projects, olderProject],
+  })
+  const later = projectGroup({
+    id: "later",
+    label: "Later",
+    path: staleWorktree,
+    folderPaths: [staleWorktree],
+    projects: [olderProject],
+  })
+  const first = {
+    groups: [studio],
+    sourceRoots: [
+      { sourceKind: "claude_jsonl" as const, path: studio.projects[0]!.sourcePath },
+    ],
+    nextCursor: { environment: "native", cwd: "/Example/Next" },
+    partial: false,
+  }
+  ongoing.groups
+    .mockResolvedValueOnce(first)
+    .mockResolvedValueOnce({ ...first, groups: [oldStudio, later], nextCursor: null })
+    .mockResolvedValueOnce({
+      ...first,
+      nextCursor: { ...first.nextCursor, cwd: "/Example/NewBoundary" },
+    })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    await session.loadMoreProjects()
+    expect(session.getSnapshot().projects?.groups[0]?.sessionCount).toBe(27)
+    await session.loadProjects()
+    expect(session.getSnapshot().projects).toMatchObject({
+      hasMore: true,
+      groups: [
+        { id: "studio", sessionCount: 12, memberPaths: studio.folderPaths },
+        { id: "later", sessionCount: null, discoveryStale: true, captureSupported: false },
+      ],
+    })
+    await session.startSync()
+    expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ projects: studio.projects }),
+    )
+  } finally {
+    stop()
+  }
+})
+
 it("starts desktop ongoing sync with exact current members and matching folders only", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups.mockResolvedValue({

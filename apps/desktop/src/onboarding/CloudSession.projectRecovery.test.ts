@@ -15,68 +15,58 @@ const discovery = {
   partial: false,
 }
 
-for (const stage of ["status", "groups"] as const) {
-  it.each(["load", "an account event"] as const)(
-    `recovers discovery after setup invalidates a pending ${stage} reply through %s`,
-    async (recovery) => {
-      const { port, ongoing, emit } = cloudProjectFixture()
-      let finish!: () => void
-      if (stage === "status") {
-        ongoing.status.mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              finish = () => resolve(ongoingStatus({ projectChoices: { studio: false } }))
-            }),
-        )
-      } else {
-        ongoing.groups.mockImplementationOnce(
-          () =>
-            new Promise((resolve) => {
-              finish = () => resolve({ ...discovery, groups: [] })
-            }),
-        )
-      }
-      const session = new CloudSession(port, false, true)
-      const stop = session.subscribe(vi.fn())
-      try {
-        await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
-        expect(session.getSnapshot().projects?.loading).toBe(true)
-        const healthy = session.getSnapshot().cloud
-        emit({ setupError: "Synthetic setup failure" })
-        expect(session.getSnapshot().projects?.loading).toBe(false)
-        await session.loadProjects()
-        expect(ongoing.groups).toHaveBeenCalledTimes(stage === "groups" ? 1 : 0)
-        if (recovery === "load") {
-          vi.mocked(port.read).mockResolvedValue(healthy)
-          await session.load()
-        } else {
-          emit({ setupError: null })
-        }
-        await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
-        expect(session.getSnapshot().projects).toMatchObject({
-          loaded: true,
-          loading: false,
-          choices: { studio: true },
-          groups: [expect.objectContaining({ id: "studio", captureSupported: true })],
-        })
-        finish()
-        await Promise.resolve()
-        expect(session.getSnapshot().projects).toMatchObject({
-          loading: false,
-          choices: { studio: true },
-          groups: [expect.objectContaining({ id: "studio" })],
-        })
-        expect(ongoing.groups).toHaveBeenCalledTimes(stage === "groups" ? 2 : 1)
-        expect(ongoing.enable).not.toHaveBeenCalled()
-        expect(port.save).not.toHaveBeenCalled()
-      } finally {
-        stop()
-      }
-    },
-  )
-}
+it.each(["status", "groups"] as const)(
+  "rechecks setup automatically and ignores the old %s reply",
+  async (stage) => {
+    const { port, ongoing, emit } = cloudProjectFixture()
+    let finish!: () => void
+    if (stage === "status") {
+      ongoing.status.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve(ongoingStatus({ projectChoices: { studio: false } }))
+          }),
+      )
+    } else {
+      ongoing.groups.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ ...discovery, groups: [] })
+          }),
+      )
+    }
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
+      expect(session.getSnapshot().projects?.loading).toBe(true)
+      const healthy = session.getSnapshot().cloud
+      vi.mocked(port.read).mockResolvedValue(healthy)
+      emit({ setupError: "Synthetic setup failure" })
+      await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+      expect(session.getSnapshot().projects).toMatchObject({
+        loaded: true,
+        loading: false,
+        choices: { studio: true },
+        groups: [expect.objectContaining({ id: "studio", captureSupported: true })],
+      })
+      finish()
+      await Promise.resolve()
+      expect(session.getSnapshot().projects).toMatchObject({
+        loading: false,
+        choices: { studio: true },
+        groups: [expect.objectContaining({ id: "studio" })],
+      })
+      expect(ongoing.groups).toHaveBeenCalledTimes(stage === "groups" ? 2 : 1)
+      expect(ongoing.enable).not.toHaveBeenCalled()
+      expect(port.save).not.toHaveBeenCalled()
+    } finally {
+      stop()
+    }
+  },
+)
 
-it("keeps cached exclusions through setup failure and a full account reload", async () => {
+it("keeps cached exclusions through a setup failure and automatic recheck", async () => {
   const { port, ongoing, emit } = cloudProjectFixture()
   ongoing.status.mockResolvedValue(ongoingStatus({ projectChoices: { studio: false } }))
   ongoing.groups.mockResolvedValue({ ...discovery, partial: true })
@@ -93,20 +83,7 @@ it("keeps cached exclusions through setup failure and a full account reload", as
     )
     const pending = session.loadProjects()
     await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
-    emit({ setupError: "Synthetic setup failure" })
-    expect(session.getSnapshot().projects).toMatchObject({
-      loading: false,
-      partial: true,
-      choices: { studio: false },
-      groups: [expect.objectContaining({ id: "studio" })],
-    })
-    await session.load()
-    expect(session.getSnapshot().busy).toBe(false)
-    expect(ongoing.groups).toHaveBeenCalledTimes(2)
-    vi.mocked(port.read).mockResolvedValue({
-      ...session.getSnapshot().cloud,
-      setupError: null,
-    })
+    vi.mocked(port.read).mockResolvedValue(session.getSnapshot().cloud)
     let finishRecovery!: () => void
     ongoing.groups.mockImplementationOnce(
       () =>
@@ -114,7 +91,7 @@ it("keeps cached exclusions through setup failure and a full account reload", as
           finishRecovery = () => resolve(discovery)
         }),
     )
-    const recovery = session.load()
+    emit({ setupError: "Synthetic setup failure" })
     await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(3))
     finish()
     await pending
@@ -125,7 +102,7 @@ it("keeps cached exclusions through setup failure and a full account reload", as
       groups: [expect.objectContaining({ id: "studio" })],
     })
     finishRecovery()
-    await recovery
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loading).toBe(false))
     expect(session.getSnapshot().projects).toMatchObject({
       loaded: true,
       loading: false,
@@ -137,6 +114,91 @@ it("keeps cached exclusions through setup failure and a full account reload", as
     expect(port.save).not.toHaveBeenCalled()
   } finally {
     stop()
+  }
+})
+
+it.each(["sign-out", "source change", "pane exit", "pane hidden"] as const)(
+  "cancels a scheduled retry on %s",
+  async (change) => {
+    const { port, ongoing, emit } = cloudProjectFixture()
+    ongoing.groups.mockRejectedValueOnce(new Error("Synthetic file read failure"))
+    vi.useFakeTimers()
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(ongoing.groups).toHaveBeenCalledOnce()
+      if (change === "sign-out") {
+        emit({ status: "signed_out", identity: null, destination: null })
+      } else if (change === "source change") {
+        emit({
+          draft: {
+            screen: "folders",
+            folders: [{ path: "/Example/OldSource", selected: false }],
+          },
+        })
+      } else if (change === "pane exit") stop()
+      else session.setVisible(false)
+      await vi.advanceTimersByTimeAsync(90_000)
+      expect(ongoing.groups).toHaveBeenCalledTimes(change === "source change" ? 2 : 1)
+      expect(session.getSnapshot().projects?.loaded ?? false).toBe(change === "source change")
+      expect(ongoing.enable).not.toHaveBeenCalled()
+    } finally {
+      if (change !== "pane exit") stop()
+      vi.useRealTimers()
+    }
+  },
+)
+
+it("keeps checking after more than two failures and caps its delay at 30 seconds", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const reads: number[] = []
+  ongoing.groups.mockImplementation(async () => {
+    reads.push(Date.now())
+    if (reads.length < 10) throw new Error("Synthetic folder read failure")
+    return discovery
+  })
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(600)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loading: true,
+      retrying: true,
+      error: null,
+    })
+    await vi.advanceTimersByTimeAsync(100_000)
+    expect(reads).toHaveLength(10)
+    expect(reads[9]! - reads[8]!).toBe(30_000)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      error: null,
+    })
+    await vi.advanceTimersByTimeAsync(100_000)
+    expect(reads).toHaveLength(10)
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("stops when Desktop rejects the exact account scope", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.groups.mockRejectedValueOnce("Cloud account changed.")
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(60_000)
+    window.dispatchEvent(new Event("focus"))
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().projects?.error).toMatch(/Cloud access changed/)
+  } finally {
+    stop()
+    vi.useRealTimers()
   }
 })
 

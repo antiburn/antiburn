@@ -355,7 +355,7 @@ it.each([
     })
     const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
     expect(upload).toHaveAttribute("aria-checked", String(enabled))
-    expect(screen.getByText("Save the listed Team folders.")).toBeVisible()
+    expect(await screen.findByText("Save the listed Team folders.")).toBeVisible()
     for (const path of folderPaths)
       expect(screen.getByRole("switch", { name: `Sync ${path} to Example Team` })).toBeChecked()
     const writes = () =>
@@ -532,13 +532,15 @@ it("keeps unreadable saved-upload state visible without extra status paragraphs"
     fencedCount: 2,
   })
   render(<SessionsStepSettings />)
-  expect(await screen.findByText("Could not read saved uploads.")).toBeVisible()
+  expect(
+    await screen.findByText("Could not read saved uploads. Saved files are kept."),
+  ).toBeVisible()
   await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
   const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
   expect(upload).toBeChecked()
   expect(upload).toHaveAttribute("aria-disabled", "true")
   expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
-  expect(screen.getByRole("button", { name: "Check saved uploads" })).toBeEnabled()
+  expect(screen.queryByRole("button", { name: "Check saved uploads" })).not.toBeInTheDocument()
   expect(screen.queryByText("Last known setting.")).not.toBeInTheDocument()
   expect(
     screen.queryByText(

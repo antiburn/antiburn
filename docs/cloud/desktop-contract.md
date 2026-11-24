@@ -151,6 +151,10 @@ Each `workspace_id` is a UUID string and `type` is `personal` or `team`.
 Desktop verifies that the list includes the signed-in account's Personal
 workspace. With multiple eligible workspaces, the user chooses a destination
 for each folder. With only Personal available, Desktop shows a folder switch.
+If workspace discovery is temporarily unavailable, Desktop retries while the
+folder pane is open. A workspace list response of `401` asks the user to sign
+in again. A `403` tells the user that access is denied. Neither response starts
+folder discovery or grants upload permission.
 
 One account approval covers Personal and current or future Teams where the
 account can upload. Approval does not turn on uploads or approve a folder. Each

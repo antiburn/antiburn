@@ -52,6 +52,12 @@ export interface CloudViewSnapshot {
     /** Explicit destination choices that have not been saved. */
     targets?: Readonly<Record<string, string>> | undefined
     loading: boolean
+    /** Discovery is still running after the initial quick attempts. */
+    retrying?: boolean
+    /** Extra pages do not invalidate the verified choices already shown. */
+    paging?: "loading" | "retrying" | undefined
+    retryStage?: "setup" | "workspaces" | "folders" | undefined
+    scopeInvalid?: boolean
     loaded: boolean
     partial: boolean
     hasMore: boolean
@@ -322,13 +328,19 @@ export function cloudContextChange(previous: CloudSnapshot, next: CloudSnapshot)
     next.destination?.kind !== previous.destination?.kind ||
     !next.identity ||
     next.status !== "signed_in"
+  const sourcesChanged = cloudProjectSourceKey(previous) !== cloudProjectSourceKey(next)
   return {
     resetProjects,
-    contextChanged:
-      resetProjects ||
-      selectedFoldersKey(next) !== selectedFoldersKey(previous) ||
-      !!next.setupError,
+    sourcesChanged,
+    contextChanged: resetProjects || sourcesChanged || !!next.setupError,
   }
+}
+
+/** Include provider opt-outs, not just the paths selected for upload. */
+export function cloudProjectSourceKey(cloud: CloudSnapshot) {
+  return JSON.stringify(
+    cloud.draft.folders.map((folder) => [cloudSourceKey(folder), folder.selected]).sort(),
+  )
 }
 
 /** Build the view update for a desktop account event. The session owns request IDs and timers. */
@@ -366,7 +378,7 @@ export function accountViewPatch(
           workspaceConnections: {},
           uploadActionError: null,
         }
-      : value.setupError && previous.projects
+      : value.setupError && !previous.cloud.setupError && previous.projects
         ? { projects: { ...previous.projects, loading: false } }
         : {}),
     screen:
@@ -460,7 +472,7 @@ export function supportedProjectSelections(
   group: DesktopCloudProjectGroup,
   sources: CloudSourceSelection[],
 ): CloudProjectSelection[] {
-  return group.captureSupported
+  return group.captureSupported && group.groupingComplete
     ? group.projects.filter(
         (project) =>
           group.folderPaths.includes(project.projectPath) &&
@@ -589,7 +601,11 @@ export function projectViewGroups(
       path: group.path,
       memberPaths: group.folderPaths,
       worktreeCount: group.worktreeCount,
-      sessionCount: Math.max(group.sessionCount, group.captureSessionCount),
+      groupingComplete: group.groupingComplete,
+      discoveryStale: group.discoveryStale ?? false,
+      sessionCount: group.discoveryStale
+        ? null
+        : Math.max(group.sessionCount, group.captureSessionCount),
       captureSupported: selections.length > 0,
       confirmationKey: projectConfirmationKey(group, selections),
     }
@@ -609,7 +625,8 @@ export function projectSyncChoices(
     Object.keys(snapshot.teamStatuses ?? {}).length > 0
   const choicesForStart = { ...snapshot.projects?.choices }
   for (const group of snapshot.projects?.groups ?? []) {
-    if (hasSavedProject(group.id) || (explicitOnly && !targets[group.id]))
+    if (group.discoveryStale) delete choicesForStart[group.id]
+    else if (hasSavedProject(group.id) || (explicitOnly && !targets[group.id]))
       choicesForStart[group.id] = false
   }
   return { choicesForStart, explicitOnly }

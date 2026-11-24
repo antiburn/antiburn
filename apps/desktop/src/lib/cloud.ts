@@ -34,7 +34,13 @@ export interface CloudWorkspace {
 /** Nested setup view, separate from the host's persisted onboarding step. */
 export type CloudScreen = "handoff" | "identity" | "folders" | "complete"
 /** Original provider source formats, not installed runtime versions. */
-export type CloudSourceKind = "claude_jsonl" | "opencode_sqlite_v2" | "codex_jsonl" | "pi_jsonl"
+export type CloudSourceKind =
+  | "claude_jsonl"
+  | "opencode_sqlite_v2"
+  | "codex_jsonl"
+  | "pi_jsonl"
+  | "cursor_cli_agent_jsonl"
+  | "cursor_ide_composer"
 /** Renderer display data from desktop project/CWD evidence, not a provider source.
  * Desktop code owns grouping, path identity, distinct-session counts, and worktree
  * membership. Include all current path members, including external worktrees and
@@ -48,6 +54,10 @@ export interface CloudProjectGroup {
   memberPaths: readonly string[]
   sessionCount: number | null
   worktreeCount: number
+  /** False when Desktop could not verify the full set of worktree paths. */
+  groupingComplete?: boolean
+  /** This row was outside the refreshed page chain. It cannot add permission. */
+  discoveryStale?: boolean
   captureSupported?: boolean
   /** Freeze this group's exact paths and source bindings, including when unchecked. */
   confirmationKey?: string
@@ -114,6 +124,8 @@ export const cloudSourceLabel = (source: CloudFolder): string =>
     opencode_sqlite_v2: "OpenCode V2",
     codex_jsonl: "Codex",
     pi_jsonl: "Pi",
+    cursor_cli_agent_jsonl: "Cursor CLI",
+    cursor_ide_composer: "Cursor IDE",
   })[cloudSourceKind(source)]
 /** Compare provider and path together without treating display counts as consent. */
 export const cloudSourceKey = (source: CloudFolder) =>
@@ -147,6 +159,8 @@ export interface DesktopCloudProjectGroup {
   captureSessionCount: number
   captureSupported: boolean
   groupingComplete: boolean
+  /** Renderer-only marker for cached rows outside the current page chain. */
+  discoveryStale?: boolean
   projects: CloudProjectSelection[]
 }
 /** Desktop keyset position. Keep execution environments separate. */
@@ -269,12 +283,20 @@ export interface CloudOngoingStatus {
   folderConfirmationRequired?: boolean
   /** Desktop found saved work that the user can retry for this exact destination. */
   retryAvailable?: boolean
+  /** Saved uploads for which Desktop has scheduled automatic recovery or verification. */
+  automaticRecoveryCount?: number
   /** Desktop has a backfill scan pending for this policy. */
   backfillInProgress?: boolean
   /** Cloud acceptance for sources found by the last explicit backfill for this policy.
    * The total is null until the scan finishes, or if discovery could not count every source.
    */
-  uploadProgress?: { uploaded: number; total: number | null }
+  uploadProgress?: {
+    uploaded: number
+    total: number | null
+    blocked?: number
+    unsupported?: number
+    scanIncomplete?: boolean
+  }
   /** Local recovery and remote warning are independent of saved upload consent. */
   localResetAvailable?: boolean
   remoteRevocationUnconfirmed?: boolean

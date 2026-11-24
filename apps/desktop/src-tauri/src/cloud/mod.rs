@@ -486,7 +486,15 @@ pub async fn cloud_workspaces(
         emit_snapshot(&app, snapshot(&app, &engine));
         result
             .map(|items| items.into_iter().map(|item| item.workspace).collect())
-            .map_err(|_| "Could not verify Cloud workspaces.".into())
+            .map_err(|failure| {
+                match failure {
+                    Failure::Cancelled => "Cloud account changed.",
+                    Failure::ReauthRequired => "Cloud workspace sign-in required.",
+                    Failure::Rejected => "Cloud workspace access denied.",
+                    _ => "Could not verify Cloud workspaces.",
+                }
+                .into()
+            })
     })
     .await
 }
