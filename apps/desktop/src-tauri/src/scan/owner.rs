@@ -74,6 +74,7 @@ struct TaskOwner {
     key: String,
     generation: u64,
     origin: WorkOrigin,
+    live: bool,
     activity: Option<i64>,
     session_key: Option<SessionKey>,
 }
@@ -587,6 +588,7 @@ async fn run_with_titles(
                     key: work.key,
                     generation: work.generation,
                     origin: work.origin,
+                    live: work.live,
                     activity: work.activity,
                     session_key: None,
                 },
@@ -813,9 +815,10 @@ async fn run_with_titles(
                             WorkOrigin::Live => Some(unix_now() - CURRENT_WINDOW_SECS),
                             WorkOrigin::Recovery => None,
                         };
+                        // A live hint can arrive after Git checks the working directory.
                         let non_repository_cwds = non_repository_cwds
                             .as_ref()
-                            .filter(|_| owner.origin == WorkOrigin::Pass)
+                            .filter(|_| owner.origin == WorkOrigin::Pass && !owner.live)
                             .cloned();
                         let include = policy.include_non_repo_folders;
                         let key = description.key.clone();
