@@ -1,6 +1,6 @@
 # Desktop Cloud capture
 
-Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/?utm_source=github&utm_medium=readme&utm_campaign=github_readme&utm_content=cloud_capture_waitlist).
 Public desktop builds keep Cloud disabled until launch.
 
 This standalone crate owns bounded capture of Claude files, Codex rollouts, Pi

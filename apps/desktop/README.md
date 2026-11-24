@@ -82,7 +82,7 @@ appear after completion unless an existing preference disables them.
 
 The introduction uses isolated example data to demonstrate Sessions, provider
 limits, the HUD, notifications, and Checks. Ordinary builds finish after Checks.
-Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/).
+Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.com/cloud/?utm_source=github&utm_medium=readme&utm_campaign=github_readme&utm_content=desktop_waitlist).
 Standard public builds keep Cloud disabled. Development requires the explicit,
 non-default Rust feature `cloud`.
 The desktop `dev` and `dev:bundle` launchers select it for debug development.

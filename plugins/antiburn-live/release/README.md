@@ -197,7 +197,7 @@ covers local builds and checks. The local `antiburn-dev` variant and other agent
 adapters are outside this public package.
 
 Published by **Antiburn**, owned by **Cadence AI (Vic) Pty Ltd**. See
-[antiburn.com/plugin](https://antiburn.com/plugin) for the current guide, the
+[antiburn.com/plugin](https://antiburn.com/plugin?utm_source=github&utm_medium=readme&utm_campaign=github_readme&utm_content=plugin_guide) for the current guide, the
 [changelog](CHANGELOG.md) for versions, and
 [GitHub issues](https://github.com/antiburn/antiburn/issues) for support. Include
 host/plugin versions and steps to reproduce; never attach credentials or private
