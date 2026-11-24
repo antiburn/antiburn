@@ -439,7 +439,10 @@ deletion markers, existing jobs and bytes, and upload retry delays. Backfill
 does not re-offer an unchanged source if its saved job reaches integrity
 acceptance during the same scan. It does not turn on uploads, save draft choices,
 or retry failed jobs. Starting a scan does not confirm any uploads. Normal sync
-still skips unchanged sessions.
+skips sessions when the accepted receipt matches their current version. After an
+upgrade, an unchanged Claude, Codex, or Pi file can be offered again if its
+receipt uses the old observation format. That receipt does not prove a match with
+`file-generation-v1`, so the re-offer can require more capture and transfer work.
 Desktop lets one backfill request wait for its current Cloud work to finish.
 If another request is already waiting, wait for it to start before requesting a
 second scan. Before scheduling, Desktop checks the account, upload controls, and
@@ -461,6 +464,9 @@ folders and are not marked as deleted. `total` is null while the scan runs. It
 stays null if discovery misses sources or reaches the progress counter limit.
 If fresh evidence proves that a source moved outside all approved folders,
 Desktop removes it from this count.
+A receipt for a different version does not count as uploaded. Desktop checks
+the source again. If the refresh cannot find it, the scan reports a gap rather
+than assuming that the source moved outside the approved folders.
 `scanIncomplete` reports known gaps in the scan. `blocked` counts discovered
 sources that could not proceed or whose captured bytes did not match the
 scanned version. `unsupported` counts discovered sources whose format Cloud
@@ -554,8 +560,8 @@ The scheduler and capture spool serialize bounded work. Pending captures keep
 their original account, destination, service, source, capture ID, compressed
 bytes, and frozen plan across restarts. Narrowing the approved folder policy
 blocks affected saved captures rather than removing part of their content.
-For Claude, Codex, and Pi, the spool checks the file generation in the saved
-job against the files it pins before reservation. A changed file cannot earn a
+For Claude, Codex, Pi, and Cursor CLI, the spool checks the file generation in
+the saved job against the files it pins before reservation. A changed file cannot earn a
 receipt for the previous version. If the spool proves it stopped before
 reservation, Desktop retires the new job or clears its verified empty
 capacity-retry entry. Desktop offers the new version on a normal scan.

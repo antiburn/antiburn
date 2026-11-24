@@ -2,7 +2,8 @@
 
 use super::headers::{HeaderLog, MAX_BUBBLES};
 use super::sqlite::{
-    PROOF_BYTES, composer_index, exact_row, indexed_workspace, proof_bytes, rowid,
+    PROOF_BYTES, WorkspaceProof, composer_index, exact_row, indexed_workspace, proof_bytes, rowid,
+    workspace_index_proof,
 };
 use super::{SOURCE_TIME, safe_id};
 use crate::directory::Directory;
@@ -179,13 +180,14 @@ impl Workspace {
         db: &Connection,
         after: Option<&str>,
         limits: &Limits,
-    ) -> Result<(Vec<String>, Option<String>)> {
+    ) -> Result<(Vec<String>, Option<String>, bool)> {
         let locator = rowid(db, "cursorDiskKV", "key", "value")?;
         let mut query = db
             .prepare(&format!(
                 "SELECT key, {locator} FROM main.cursorDiskKV
                  WHERE typeof(key) = 'text' AND key COLLATE BINARY > ?1
                    AND key COLLATE BINARY < 'composerData;' AND octet_length(key) <= 141
+                   AND instr(key, char(0)) = 0
                    AND substr(key, 14) NOT GLOB '*[^A-Za-z0-9_-]*'
                  ORDER BY key COLLATE BINARY LIMIT ?2",
             ))
@@ -219,6 +221,7 @@ impl Workspace {
             ))
             .map_err(sql_error)?;
         let mut ids = Vec::new();
+        let mut partial = false;
         let has_index = composer_index(db)?;
         for (id, row) in page {
             let matches: bool = probe
@@ -227,11 +230,21 @@ impl Workspace {
                     |row| row.get(0),
                 )
                 .map_err(sql_error)?;
-            if matches || (has_index && indexed_workspace(db, &id)?.as_deref() == Some(&self.id)) {
+            if matches {
                 ids.push(id);
+            } else if has_index {
+                match workspace_index_proof(db, &id)? {
+                    WorkspaceProof::Unambiguous(workspace)
+                        if workspace.as_deref() == Some(&self.id) =>
+                    {
+                        ids.push(id);
+                    }
+                    WorkspaceProof::Unambiguous(_) => {}
+                    WorkspaceProof::Ambiguous => partial = true,
+                }
             }
         }
-        Ok((ids, next))
+        Ok((ids, next, partial))
     }
 
     /// Read the current workspace file by its retained directory handle.
@@ -270,7 +283,7 @@ pub(super) fn discover(
     workspace: &Path,
     after: Option<&str>,
     limits: &Limits,
-) -> Result<(Vec<IdeSource>, Option<String>)> {
+) -> Result<(Vec<IdeSource>, Option<String>, bool)> {
     let deadline = Instant::now() + SOURCE_TIME;
     let workspace = Arc::new(Workspace::open(workspace)?);
     let db = workspace.database.connect(deadline)?;
@@ -279,7 +292,7 @@ pub(super) fn discover(
     let global = workspace.global.connect(deadline)?;
     let mut ids = members.local;
     ids.extend(members.focused);
-    let (global_ids, global_next) = workspace.recorded_ids(&global, after, limits)?;
+    let (global_ids, global_next, partial) = workspace.recorded_ids(&global, after, limits)?;
     ids.extend(global_ids);
     workspace.global.verify(Some(&global))?;
     let mut ids: Vec<_> = ids
@@ -303,6 +316,7 @@ pub(super) fn discover(
             })
             .collect(),
         next,
+        partial,
     ))
 }
 

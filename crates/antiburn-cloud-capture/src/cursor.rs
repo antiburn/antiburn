@@ -144,8 +144,10 @@ impl CursorSource {
 pub struct CursorIdeDiscoveryPage {
     /// Candidates in native ID order. Scope them before capture.
     pub candidates: Vec<Candidate>,
-    /// Last returned native ID if another page exists. Bind it to the same root.
+    /// Last visited native ID if another page exists. Bind it to the same root.
     pub next_cursor: Option<String>,
+    /// At least one potential composer had ambiguous index proof.
+    pub partial: bool,
 }
 
 /// One bounded page of CLI transcript candidates from one authorized project root.
@@ -155,6 +157,8 @@ pub struct CursorCliDiscoveryPage {
     pub candidates: Vec<Candidate>,
     /// Last visited native ID if another page exists. Bind it to the same root.
     pub next_cursor: Option<String>,
+    /// Native IDs visited, including entries without sidecar proof.
+    pub visited: usize,
     /// At least one potential CLI source had ambiguous or unreadable proof.
     pub partial: bool,
 }
@@ -173,13 +177,14 @@ pub fn discover_cursor_ide_page(
     if after.is_some_and(|id| !safe_id(id)) {
         return Err(Error::InvalidIdentity);
     }
-    let (sources, next_cursor) = ide::discover(workspace, after, limits)?;
+    let (sources, next_cursor, partial) = ide::discover(workspace, after, limits)?;
     Ok(CursorIdeDiscoveryPage {
         candidates: sources
             .into_iter()
             .map(|source| CursorSource(CursorProvider::Ide(source)).candidate())
             .collect(),
         next_cursor,
+        partial,
     })
 }
 
@@ -239,6 +244,7 @@ pub fn discover_cursor_cli_page(
     let mut candidates = Vec::new();
     let mut partial = false;
     let deadline = Instant::now() + SOURCE_TIME;
+    let visited = names.len();
     for id in names {
         crate::opencode::check_deadline(deadline)?;
         match root.reopen(&id, limits, deadline) {
@@ -251,6 +257,7 @@ pub fn discover_cursor_cli_page(
     Ok(CursorCliDiscoveryPage {
         candidates,
         next_cursor,
+        visited,
         partial,
     })
 }

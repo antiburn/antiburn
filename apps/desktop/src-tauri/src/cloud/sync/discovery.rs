@@ -73,6 +73,28 @@ pub(super) fn discover_policy_page(
         if !current() {
             return Err("Cloud account changed.".into());
         }
+        let mut verified_folders = Vec::new();
+        for binding in &policy.projects {
+            if binding.source_kind != root.source_kind || binding.source_path != root.path {
+                continue;
+            }
+            let folder = Path::new(&binding.project_path).to_owned();
+            if antiburn_cloud_capture::ProjectSelection::new(vec![folder.clone()]).is_ok() {
+                verified_folders.push(folder);
+            } else {
+                coverage.blocked = true;
+            }
+        }
+        if verified_folders.is_empty() {
+            // Report a missing saved root without listing its unapproved sessions.
+            coverage.blocked |= Path::new(&root.path).symlink_metadata().is_err();
+            continue;
+        }
+        let Ok(projects) = antiburn_cloud_capture::ProjectSelection::new(verified_folders.clone())
+        else {
+            coverage.blocked = true;
+            continue;
+        };
         let page = discover_root_page(
             root.source_kind,
             &root.path,
@@ -93,28 +115,8 @@ pub(super) fn discover_policy_page(
                 continue;
             }
         };
-        let mut verified_folders = Vec::new();
-        for binding in &policy.projects {
-            if binding.source_kind != root.source_kind || binding.source_path != root.path {
-                continue;
-            }
-            let folder = Path::new(&binding.project_path).to_owned();
-            if antiburn_cloud_capture::ProjectSelection::new(vec![folder.clone()]).is_ok() {
-                verified_folders.push(folder);
-            } else {
-                coverage.blocked = true;
-            }
-        }
-        if verified_folders.is_empty() {
-            continue;
-        }
-        let Ok(projects) = antiburn_cloud_capture::ProjectSelection::new(verified_folders.clone())
-        else {
-            coverage.blocked = true;
-            continue;
-        };
         coverage.partial |= page.partial;
-        discovered += page.candidates.len();
+        discovered += page.visited;
         let mut last_claude_key = None;
         for candidate in page.candidates {
             if !current() {
@@ -172,7 +174,7 @@ pub(super) fn discover_policy_page(
                     continue;
                 }
             }
-            let project = evidence
+            let Some(project) = evidence
                 .project_paths()
                 .iter()
                 .find(|path| {
@@ -184,12 +186,14 @@ pub(super) fn discover_policy_page(
                 })
                 .map(|path| path.as_path())
                 .and_then(Path::to_str)
-                .ok_or("Could not bind the recorded project.")?
-                .to_owned();
+            else {
+                coverage.blocked = true;
+                continue;
+            };
             if !current() {
                 return Err("Cloud upload controls changed.".into());
             }
-            if !policy.allows(&root.source_scope_id, &project) {
+            if !policy.allows(&root.source_scope_id, project) {
                 continue;
             }
             let observation = match candidate_observation(&candidate, &evidence, &projects) {
@@ -204,7 +208,7 @@ pub(super) fn discover_policy_page(
                     .in_source_scope(&root.source_scope_id)
                     .map_err(|_| "Could not bind a session source.")?,
                 scope: root.source_scope_id.clone(),
-                project,
+                project: project.to_owned(),
                 observation,
             });
         }
@@ -344,6 +348,7 @@ pub(in crate::cloud) fn discover_root_page(
             },
         )
         .map(|page| file_sources::Page {
+            visited: page.candidates.len(),
             candidates: page.candidates,
             next_cursor: page.next_cursor,
             partial: false,
@@ -358,6 +363,7 @@ pub(in crate::cloud) fn discover_root_page(
             },
         )
         .map(|page| file_sources::Page {
+            visited: page.candidates.len(),
             candidates: page.candidates,
             next_cursor: page.next_cursor,
             partial: false,
@@ -398,7 +404,14 @@ pub(super) fn discover_root(
         SourceKind::ClaudeJsonl => discover_claude(Path::new(path), &limits),
         SourceKind::OpenCodeSqliteV2 => discover_opencode(Path::new(path), &limits),
         SourceKind::CursorIdeComposer | SourceKind::CursorCliAgentJsonl => {
-            file_sources::discover_cursor_sources(kind, Path::new(path), &limits)
+            file_sources::discover_cursor_sources(kind, Path::new(path), &limits, &|| true)
+                .and_then(|page| {
+                    if page.partial {
+                        Err(antiburn_cloud_capture::Error::UnsupportedSource)
+                    } else {
+                        Ok(page.candidates)
+                    }
+                })
         }
         SourceKind::CodexJsonl | SourceKind::PiJsonl => {
             file_sources::discover_page(kind, Path::new(path), None, &limits).and_then(|page| {

@@ -208,6 +208,60 @@ struct Context {
     complete: bool,
 }
 
+/// Legacy worktree output can contain raw newlines in paths. Confirm the exact
+/// checkout root and its Git registration before trusting any parsed path.
+async fn legacy_worktree_common_dir(
+    environment: &antiburn_local::platform::environment::DiscoveryEnvironment,
+    checkout: &Path,
+) -> Option<PathBuf> {
+    let output = antiburn_local::platform::git::run_git_output_in_environment(
+        environment,
+        Some(checkout),
+        &[
+            "rev-parse",
+            "--show-toplevel",
+            "--git-common-dir",
+            "--git-dir",
+        ],
+        &[],
+    )
+    .await
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut lines = std::str::from_utf8(&output.stdout).ok()?.lines();
+    let (root, common, git_dir) = (lines.next()?, lines.next()?, lines.next()?);
+    if lines.next().is_some()
+        || Path::new(root) != checkout
+        || [common, git_dir]
+            .iter()
+            .any(|path| path.is_empty() || path.chars().any(char::is_control))
+    {
+        return None;
+    }
+    let common = checkout.join(common).canonicalize().ok()?;
+    let git_dir = checkout.join(git_dir).canonicalize().ok()?;
+    let dot_git = checkout.join(".git");
+    if git_dir == common {
+        return (dot_git == git_dir && dot_git.symlink_metadata().ok()?.is_dir()).then_some(common);
+    }
+    if git_dir.parent()? != common.join("worktrees") {
+        return None;
+    }
+    use tokio::io::AsyncReadExt;
+    let mut registration = String::new();
+    tokio::fs::File::open(git_dir.join("gitdir"))
+        .await
+        .ok()?
+        .take(4097)
+        .read_to_string(&mut registration)
+        .await
+        .ok()?;
+    let path = registration.strip_suffix('\n')?;
+    (!path.chars().any(char::is_control) && Path::new(path) == dot_git).then_some(common)
+}
+
 /// Use current local Git context only. Foreign environment paths are never
 /// probed through the local filesystem, even when their strings match.
 fn context(environment: &str, cwd: &str) -> Context {
@@ -232,8 +286,10 @@ fn context(environment: &str, cwd: &str) -> Context {
     tauri::async_runtime::block_on(async {
         match git::repo_root_if_any_at(path).await {
             Ok(Some(repo)) => {
-                let Ok(output) = git::run_git_output_in_environment(
-                    &antiburn_local::platform::environment::DiscoveryEnvironment::Native,
+                let environment =
+                    antiburn_local::platform::environment::DiscoveryEnvironment::Native;
+                let Ok(mut output) = git::run_git_output_in_environment(
+                    &environment,
                     Some(&repo),
                     &["worktree", "list", "--porcelain", "-z"],
                     &[],
@@ -242,6 +298,22 @@ fn context(environment: &str, cwd: &str) -> Context {
                 else {
                     return ungrouped();
                 };
+                let mut separator = '\0';
+                if output.status.code() == Some(129) {
+                    // Older Git versions do not accept `-z` for this command.
+                    let Ok(legacy) = git::run_git_output_in_environment(
+                        &environment,
+                        Some(&repo),
+                        &["worktree", "list", "--porcelain"],
+                        &[],
+                    )
+                    .await
+                    else {
+                        return ungrouped();
+                    };
+                    output = legacy;
+                    separator = '\n';
+                }
                 if !output.status.success() {
                     return ungrouped();
                 }
@@ -250,7 +322,7 @@ fn context(environment: &str, cwd: &str) -> Context {
                 };
                 // Git lists its main checkout first, even when run in a linked checkout.
                 let mut roots = list
-                    .split('\0')
+                    .split(separator)
                     .filter_map(|record| record.strip_prefix("worktree "));
                 let Some(main) = roots.next() else {
                     return ungrouped();
@@ -268,6 +340,20 @@ fn context(environment: &str, cwd: &str) -> Context {
                     })
                     .map(str::to_owned)
                     .collect();
+                if separator == '\n' {
+                    let Some(common) = legacy_worktree_common_dir(&environment, &repo).await else {
+                        return ungrouped();
+                    };
+                    for folder in &folders {
+                        if legacy_worktree_common_dir(&environment, Path::new(folder))
+                            .await
+                            .as_ref()
+                            != Some(&common)
+                        {
+                            return ungrouped();
+                        }
+                    }
+                }
                 if folders.first().is_none_or(|path| path != main)
                     || !folders
                         .iter()
@@ -455,7 +541,7 @@ pub(super) fn confirm_project_choices(
         store,
         antiburn_local::discovery::agents::opencode::native_database_paths(),
     )?;
-    known.extend(super::file_sources::roots());
+    known.extend(super::file_sources::roots().0);
     let (roots, _) = merge_sources(known, &saved.folders)?;
     let mut by_source = BTreeMap::<&SourceSelection, (BTreeSet<String>, BTreeSet<String>)>::new();
     let mut contexts = BTreeMap::new();
@@ -482,7 +568,8 @@ pub(super) fn confirm_project_choices(
     }
     let mut remaining = 512;
     cache.begin_scan();
-    for (root, (folders, mut groups)) in by_source {
+    let root_count = by_source.len();
+    for (index, (root, (folders, mut groups))) in by_source.into_iter().enumerate() {
         let ids = if root.source_kind == SourceKind::OpenCodeSqliteV2 {
             let paths = folders.iter().cloned().collect::<Vec<_>>();
             store
@@ -491,32 +578,40 @@ pub(super) fn confirm_project_choices(
         } else {
             Vec::new()
         };
-        let candidates = project_candidates(root, &ids, &mut remaining, current)?;
-        for candidate in candidates {
+        let listing = scan_project_root(root, &ids, &mut remaining, root_count - index, current)?;
+        let mut partial = listing.partial;
+        for candidate in listing.candidates {
             if !current() {
                 return Err("Cloud account or upload controls changed.".into());
             }
-            if let Some(evidence) = cache.evidence(
+            let evidence = match cache.evidence(
                 &binding.account_id,
                 &binding.destination_id,
                 root,
                 &candidate,
                 &sync::metadata_limits(),
-            )? && evidence.scan_complete()
+            ) {
+                Ok(Some(evidence)) if evidence.scan_complete() => evidence,
+                _ => {
+                    partial = true;
+                    continue;
+                }
+            };
+            for path in evidence
+                .project_paths()
+                .iter()
+                .filter_map(|path| path.to_str())
             {
-                for path in evidence
-                    .project_paths()
-                    .iter()
-                    .filter_map(|path| path.to_str())
-                {
-                    groups.remove(&group_id("native", &cache.context("native", path).main));
-                }
-                if groups.is_empty() {
-                    break;
-                }
+                groups.remove(&group_id("native", &cache.context("native", path).main));
+            }
+            if groups.is_empty() {
+                break;
             }
         }
         if !groups.is_empty() {
+            if partial {
+                return Err("Project discovery is incomplete. Restore access or choose fewer sources and retry.".into());
+            }
             return Err("Could not confirm a supported session for this project. Reload projects and try again.".into());
         }
     }
@@ -602,7 +697,23 @@ fn add_suggestion(
     group.agents.dedup();
 }
 
-/// Spend one shared discovery budget on cached ID hints and one provider page.
+/// Give every remaining root a share before spending work on this root.
+/// Reuse unused work, but charge a failed inspection its full share.
+fn scan_project_root(
+    root: &SourceSelection,
+    cached_opencode_ids: &[String],
+    remaining: &mut usize,
+    roots_left: usize,
+    current: &dyn Fn() -> bool,
+) -> Result<super::file_sources::Page, String> {
+    let mut root_remaining = *remaining / roots_left;
+    *remaining -= root_remaining;
+    let listing = project_candidates(root, cached_opencode_ids, &mut root_remaining, current)?;
+    *remaining += root_remaining;
+    Ok(listing)
+}
+
+/// Spend one root's share of the discovery budget on cached ID hints and provider pages.
 /// Reopening proves the source independently of the cached project association.
 /// A failed source proof does not select a fallback reader.
 fn project_candidates(
@@ -610,7 +721,32 @@ fn project_candidates(
     cached_opencode_ids: &[String],
     remaining: &mut usize,
     current: &dyn Fn() -> bool,
-) -> Result<Vec<antiburn_cloud_capture::Candidate>, String> {
+) -> Result<super::file_sources::Page, String> {
+    if *remaining == 0 {
+        return Ok(super::file_sources::Page {
+            candidates: Vec::new(),
+            next_cursor: None,
+            partial: true,
+            visited: 0,
+        });
+    }
+    if matches!(
+        root.source_kind,
+        SourceKind::CursorCliAgentJsonl | SourceKind::CursorIdeComposer
+    ) {
+        let page = super::file_sources::discover_cursor_sources(
+            root.source_kind,
+            Path::new(&root.path),
+            &antiburn_cloud_capture::Limits {
+                discovery_sessions: *remaining,
+                ..sync::metadata_limits()
+            },
+            current,
+        )
+        .map_err(|_| "Could not qualify the selected Cursor source.")?;
+        *remaining -= page.visited;
+        return Ok(page);
+    }
     let mut candidates = Vec::new();
     if root.source_kind == SourceKind::OpenCodeSqliteV2 {
         for id in cached_opencode_ids {
@@ -636,17 +772,19 @@ fn project_candidates(
             }
         }
     }
-    let page = sync::discover_root_page(root.source_kind, &root.path, None, *remaining)?.candidates;
-    *remaining -= page.len();
+    let mut page = sync::discover_root_page(root.source_kind, &root.path, None, *remaining)?;
+    *remaining -= page.visited;
     let mut seen: BTreeSet<String> = candidates
         .iter()
         .map(|candidate| candidate.source_id().to_owned())
         .collect();
     candidates.extend(
-        page.into_iter()
+        std::mem::take(&mut page.candidates)
+            .into_iter()
             .filter(|candidate| seen.insert(candidate.source_id().to_owned())),
     );
-    Ok(candidates)
+    page.candidates = candidates;
+    Ok(page)
 }
 
 /// Build one discovery page using only the current account's saved provider
@@ -704,7 +842,8 @@ fn discover_projects(
     let mut qualified = Vec::new();
     let mut remaining = 512usize;
     let mut project_choices = 0usize;
-    for root in roots {
+    let root_count = roots.len();
+    for (index, root) in roots.into_iter().enumerate() {
         if !current() {
             return Err("Cloud account changed.".into());
         }
@@ -712,15 +851,21 @@ fn discover_projects(
             partial = true;
             break;
         }
-        let candidates =
-            match project_candidates(&root, &cached_opencode_ids, &mut remaining, current) {
-                Ok(candidates) => candidates,
-                Err(_) => {
-                    partial = true;
-                    continue;
-                }
-            };
-        for candidate in candidates {
+        let listing = match scan_project_root(
+            &root,
+            &cached_opencode_ids,
+            &mut remaining,
+            root_count - index,
+            current,
+        ) {
+            Ok(candidates) => candidates,
+            Err(_) => {
+                partial = true;
+                continue;
+            }
+        };
+        partial |= listing.partial;
+        for candidate in listing.candidates {
             if !current() {
                 return Err("Cloud account changed.".into());
             }
@@ -859,14 +1004,15 @@ pub(crate) async fn cloud_project_groups(
             &store,
             antiburn_local::discovery::agents::opencode::native_database_paths(),
         )?;
-        known.extend(super::file_sources::roots());
+        let (file_roots, file_partial) = super::file_sources::roots();
+        known.extend(file_roots);
         discover_projects(
             &store,
             &mut cache,
             &engine,
             &binding,
             after.as_ref(),
-            (known, partial),
+            (known, partial || file_partial),
             &current,
         )
     })

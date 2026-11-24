@@ -165,18 +165,34 @@ impl BackfillProgress {
 
     /// Do not present a pre-reservation file change as a manual recovery case.
     /// Keep the source in the scan and match its fresh version on a normal page.
-    pub(super) fn refresh_changed_source(&mut self, source_id: &str) {
+    pub(super) fn refresh_changed_source(&mut self, source_id: &str) -> bool {
         if let Some(source) = self.sources.get_mut(source_id) {
             source.uploaded = false;
             source.problem = None;
             source.refresh_needed = true;
             self.record_decision("file_changed_before_reservation");
+            return true;
         }
+        false
     }
 
     /// Request a normal discovery turn for sources that changed during backfill.
     pub(super) fn needs_refresh(&self) -> bool {
         self.sources.values().any(|source| source.refresh_needed)
+    }
+
+    /// Close unresolved observations after a full refresh. Absence alone does
+    /// not prove that a source moved outside the approved folders.
+    pub(super) fn finish_refresh(&mut self) {
+        for source in self
+            .sources
+            .values_mut()
+            .filter(|source| source.refresh_needed)
+        {
+            source.refresh_needed = false;
+            source.problem = Some(SourceProblem::Blocked);
+            self.incomplete = true;
+        }
     }
 
     /// Update a source already counted in this scan. An unchanged accepted
@@ -190,13 +206,13 @@ impl BackfillProgress {
     /// Reconcile exact acceptance. A saved job can finish before the scan
     /// reaches its source. In that case do not re-offer the same version.
     /// Use the saved observation, which can differ from the job's first observation.
-    pub(super) fn observe_acceptance(&mut self, store: &Store, job: &Job) {
+    pub(super) fn observe_acceptance(&mut self, store: &Store, job: &Job) -> bool {
         if !self.matches_job(job) {
-            return;
+            return false;
         }
         let id = &job.identity.source_id;
         let Some(resource) = self.resource.as_deref() else {
-            return;
+            return false;
         };
         if !self.finished {
             if self.accepted_during_scan.len() < MAX_TRACKED_SOURCES {
@@ -206,7 +222,7 @@ impl BackfillProgress {
             }
         }
         let Some(source) = self.sources.get_mut(id) else {
-            return;
+            return false;
         };
         match store.cloud_sync_source(&self.account, &self.destination, resource, id) {
             Ok(Some(receipt)) if receipt.suppressed => {
@@ -222,10 +238,24 @@ impl BackfillProgress {
             {
                 source.uploaded = true;
                 source.problem = None;
+                source.refresh_needed = false;
                 tracing::debug!(
                     event = "cloud_backfill_receipt_outcome",
                     outcome = "matched"
                 );
+            }
+            Ok(Some(receipt))
+                if receipt.fingerprint.is_some() && receipt.observation_key.is_some() =>
+            {
+                // The new receipt does not prove which version is still on disk.
+                source.uploaded = false;
+                source.problem = None;
+                source.refresh_needed = true;
+                tracing::debug!(
+                    event = "cloud_backfill_receipt_outcome",
+                    outcome = "refresh"
+                );
+                return true;
             }
             Ok(_) => {
                 if !source.uploaded {
@@ -244,6 +274,7 @@ impl BackfillProgress {
                 );
             }
         }
+        false
     }
 
     pub(super) fn observe_suppression(&mut self, job: &Job) {

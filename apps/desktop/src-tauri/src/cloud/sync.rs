@@ -888,6 +888,24 @@ impl Runner {
         }
     }
 
+    /// Recheck a source when its accepted version differs from the scan.
+    fn observe_backfill_acceptance(&mut self, store: &Store, job: &Job) {
+        if let Some(progress) = &mut self.backfill_progress
+            && progress.observe_acceptance(store, job)
+        {
+            self.request_backfill_refresh();
+        }
+    }
+
+    /// Start a full normal refresh so an unresolved source cannot be behind its cursor.
+    /// Keep the cursor of an explicit scan until it finishes.
+    fn request_backfill_refresh(&mut self) {
+        self.next_reconcile = None;
+        if self.backfill_revision.is_none() && !self.backfill_page {
+            self.discovery_cursor = None;
+        }
+    }
+
     fn can_probe_saved_upload(&self, capture_id: &str, now: Instant) -> bool {
         self.has_saved_probe_budget(capture_id)
             && self
@@ -1213,9 +1231,7 @@ impl Runner {
                 store
                     .accept_cloud_sync(entry)
                     .map_err(|_| "Could not save accepted capture state.")?;
-                if let Some(progress) = &mut self.backfill_progress {
-                    progress.observe_acceptance(store, &job);
-                }
+                self.observe_backfill_acceptance(store, &job);
                 host.spool()?
                     .acknowledge_accepted(&entry.identity)
                     .map_err(|_| "Could not acknowledge accepted capture state.")?;
@@ -1736,9 +1752,7 @@ impl Runner {
                 store
                     .accept_cloud_sync(&step.entry)
                     .map_err(|_| "Could not save accepted capture state.")?;
-                if let Some(progress) = &mut self.backfill_progress {
-                    progress.observe_acceptance(store, job);
-                }
+                self.observe_backfill_acceptance(store, job);
                 host.spool()?
                     .acknowledge_accepted(&step.entry.identity)
                     .map_err(|_| "Could not acknowledge accepted capture state.")?;
@@ -1749,6 +1763,9 @@ impl Runner {
             && let Some(progress) = &mut self.backfill_progress
         {
             progress.observe_page(store, &self.candidates, !self.backfill_page);
+            if !self.backfill_page && self.discovery_cursor.is_none() {
+                progress.finish_refresh();
+            }
         }
         if current() {
             self.backfill_discovery_due = false;
@@ -2248,8 +2265,10 @@ impl Runner {
                     )?;
                 }
                 file_refresh_due = true;
-                if let Some(progress) = &mut self.backfill_progress {
-                    progress.refresh_changed_source(&job.identity.source_id);
+                if let Some(progress) = &mut self.backfill_progress
+                    && progress.refresh_changed_source(&job.identity.source_id)
+                {
+                    self.request_backfill_refresh();
                 }
                 tracing::debug!(
                     event = "cloud_sync_capture_decision",
@@ -2844,7 +2863,7 @@ fn selected_sources(folders: &[Folder]) -> Result<Vec<SourceSelection>, String> 
         return Err("Choose valid session sources before confirming Cloud sync.".into());
     }
     let provider_roots = if roots.iter().any(|root| root.source_kind.is_project_only()) {
-        file_sources::roots()
+        file_sources::roots().0
     } else {
         Vec::new()
     };

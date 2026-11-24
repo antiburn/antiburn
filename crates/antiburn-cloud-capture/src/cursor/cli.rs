@@ -110,8 +110,13 @@ impl CliRoot {
         let mut ids = Vec::new();
         for name in self.transcripts.source_names(limits.discovery_entries)? {
             let Ok(id) = name.into_string() else { continue };
-            if safe_id(&id) && self.transcripts.kind(&id)? == EntryKind::Directory {
-                ids.push(id);
+            if !safe_id(&id) {
+                continue;
+            }
+            match self.transcripts.kind(&id) {
+                Ok(EntryKind::Directory) => ids.push(id),
+                Ok(_) | Err(Error::Io(ErrorKind::NotFound)) => {}
+                Err(error) => return Err(error),
             }
         }
         ids.sort_unstable();
@@ -152,11 +157,16 @@ impl CliRoot {
             let Ok(name) = name.into_string() else {
                 continue;
             };
-            if self.chats.kind(&name)? != EntryKind::Directory {
-                continue;
+            match self.chats.kind(&name) {
+                Ok(EntryKind::Directory) => {}
+                Ok(_) | Err(Error::Io(ErrorKind::NotFound)) => continue,
+                Err(error) => return Err(error),
             }
-            let workspace = self.chats.source_dir(&name)?;
-            let session = match workspace.source_dir(id) {
+            let session = match self
+                .chats
+                .source_dir(&name)
+                .and_then(|workspace| workspace.source_dir(id))
+            {
                 Ok(session) => session,
                 Err(Error::Io(ErrorKind::NotFound)) => continue,
                 Err(error) => return Err(error),
@@ -182,7 +192,8 @@ impl CliRoot {
         let mut reader = file.take(maximum + 1);
         reader.read_to_end(&mut bytes)?;
         if bytes.len() as u64 > maximum {
-            return Err(Error::Limit);
+            // Only this sidecar is unsupported. Directory and time limits still fail the page.
+            return Err(Error::UnsupportedSource);
         }
         if !same_source(&before, &reader.into_inner().metadata()?) {
             return Err(Error::SourceChanged);
@@ -217,9 +228,13 @@ impl CliRoot {
             let Ok(project) = project.into_string() else {
                 continue;
             };
-            if project == self.project_key || self.projects.kind(&project)? != EntryKind::Directory
-            {
+            if project == self.project_key {
                 continue;
+            }
+            match self.projects.kind(&project) {
+                Ok(EntryKind::Directory) => {}
+                Ok(_) | Err(Error::Io(ErrorKind::NotFound)) => continue,
+                Err(error) => return Err(error),
             }
             let kind = self
                 .projects

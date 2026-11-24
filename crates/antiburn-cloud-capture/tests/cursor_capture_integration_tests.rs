@@ -329,6 +329,63 @@ fn cli_discovery_ignores_transcript_mirrors_without_same_session_sidecar() {
 }
 
 #[test]
+fn cli_oversized_sidecar_leaves_a_partial_page_and_a_healthy_continuation() {
+    let (_temporary, root, project) = test_root();
+    let (transcripts, sidecar) = cli(&root, &project);
+    let oversized = transcripts.join("oversized");
+    fs::create_dir(&oversized).unwrap();
+    fs::write(oversized.join("oversized.jsonl"), CLI_TRANSCRIPT).unwrap();
+    let oversized_sidecar = sidecar.parent().unwrap().with_file_name("oversized");
+    fs::create_dir(&oversized_sidecar).unwrap();
+    fs::write(oversized_sidecar.join("meta.json"), vec![b' '; 65_537]).unwrap();
+
+    let limits = Limits {
+        discovery_sessions: 1,
+        ..Limits::default()
+    };
+    let first = discover_cursor_cli_page(&transcripts, None, &limits).unwrap();
+    assert!(first.partial);
+    assert!(first.candidates.is_empty());
+    assert_eq!(first.visited, 1);
+    assert_eq!(first.next_cursor.as_deref(), Some("oversized"));
+    let next =
+        discover_cursor_cli_page(&transcripts, first.next_cursor.as_deref(), &limits).unwrap();
+    assert!(!next.partial);
+    assert_eq!(next.candidates[0].source_id(), "cursor/cli/synthetic-cli");
+}
+
+#[test]
+fn ide_excludes_malformed_keys_and_keeps_pages_with_ambiguous_index_proof() {
+    let (_temporary, root, project) = test_root();
+    let (workspace, _local, global) = ide(&root, &project);
+    global
+        .execute_batch(
+            "CREATE TABLE composerHeaders(composerId TEXT, workspaceId TEXT);
+             INSERT INTO composerHeaders VALUES
+               ('duplicate', 'synthetic-workspace'), ('duplicate', 'synthetic-workspace');
+             INSERT INTO cursorDiskKV VALUES ('composerData:duplicate', '{}');",
+        )
+        .unwrap();
+    global
+        .execute(
+            "INSERT INTO cursorDiskKV VALUES (?1, '{}')",
+            ["composerData:a\0invalid"],
+        )
+        .unwrap();
+    let limits = Limits {
+        discovery_sessions: 1,
+        ..Limits::default()
+    };
+    let first = discover_cursor_ide_page(&workspace, None, &limits).unwrap();
+    assert!(first.partial);
+    assert!(first.candidates.is_empty());
+    assert_eq!(first.next_cursor.as_deref(), Some("duplicate"));
+    let next = discover_cursor_ide_page(&workspace, first.next_cursor.as_deref(), &limits).unwrap();
+    assert!(!next.partial);
+    assert_eq!(next.candidates[0].source_id(), "cursor/ide/synthetic-main");
+}
+
+#[test]
 fn cli_rechecks_exact_sidecar_after_reservation_and_rejects_duplicate_owners() {
     let (_temporary, root, project) = test_root();
     let (transcripts, sidecar) = cli(&root, &project);

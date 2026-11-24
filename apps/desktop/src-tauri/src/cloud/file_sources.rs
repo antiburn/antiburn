@@ -21,9 +21,9 @@ use std::{
 
 /// Reuse local provider root selection, including supported environment overrides.
 /// An OMP root cannot be selected as Pi even if both adapters name it.
-pub(super) fn roots() -> Vec<SourceSelection> {
+pub(super) fn roots() -> (Vec<SourceSelection>, bool) {
     let Some(home) = home_dir() else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let omp = OmpExplorer
         .watch_roots(&home)
@@ -58,16 +58,21 @@ pub(super) fn roots() -> Vec<SourceSelection> {
     })
     .collect();
     #[cfg(unix)]
-    let roots = roots.into_iter().chain(cursor_roots(&home)).collect();
-    roots
+    {
+        let (cursor, partial) = cursor_roots(&home);
+        (roots.into_iter().chain(cursor).collect(), partial)
+    }
+    #[cfg(not(unix))]
+    (roots, false)
 }
 
 /// List exact Cursor storage roots without probing session bodies or decoding project paths.
 #[cfg(unix)]
-fn cursor_roots(home: &Path) -> Vec<SourceSelection> {
+fn cursor_roots(home: &Path) -> (Vec<SourceSelection>, bool) {
     let paths = DISK_CURSOR.surface_paths(home);
     let limit = Limits::default().discovery_entries;
     let mut roots = Vec::new();
+    let mut partial = false;
     for (source_kind, roots_for_kind) in [
         (SourceKind::CursorIdeComposer, paths.ide_desktop),
         (SourceKind::CursorCliAgentJsonl, paths.cli),
@@ -78,12 +83,29 @@ fn cursor_roots(home: &Path) -> Vec<SourceSelection> {
             {
                 continue;
             }
-            let Ok(children) = std::fs::read_dir(&parent) else {
-                continue;
-            };
-            for entry in children.take(limit).filter_map(std::result::Result::ok) {
-                if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let children = match std::fs::read_dir(&parent) {
+                Ok(children) => children,
+                Err(error) => {
+                    partial |= error.kind() != std::io::ErrorKind::NotFound;
                     continue;
+                }
+            };
+            for (index, entry) in children.take(limit + 1).enumerate() {
+                if index == limit {
+                    partial = true;
+                    break;
+                }
+                let Ok(entry) = entry else {
+                    partial = true;
+                    continue;
+                };
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => {}
+                    Ok(_) => continue,
+                    Err(_) => {
+                        partial = true;
+                        continue;
+                    }
                 }
                 let path = if source_kind == SourceKind::CursorCliAgentJsonl {
                     entry.path().join("agent-transcripts")
@@ -107,7 +129,7 @@ fn cursor_roots(home: &Path) -> Vec<SourceSelection> {
             }
         }
     }
-    roots
+    (roots, partial)
 }
 
 /// Return one native candidate per unambiguous filename ID, within the directory
@@ -166,6 +188,7 @@ pub(super) struct Page {
     pub(super) candidates: Vec<Candidate>,
     pub(super) next_cursor: Option<String>,
     pub(super) partial: bool,
+    pub(super) visited: usize,
 }
 
 /// Keep healthy candidates when another file cannot be opened or has a bad header.
@@ -181,9 +204,14 @@ pub(super) fn discover_page(
         SourceKind::CursorIdeComposer => {
             let page = discover_cursor_ide_page(root, after, limits)?;
             return Ok(Page {
+                visited: if page.next_cursor.is_some() {
+                    limits.discovery_sessions
+                } else {
+                    page.candidates.len()
+                },
                 candidates: page.candidates,
                 next_cursor: page.next_cursor,
-                partial: false,
+                partial: page.partial,
             });
         }
         SourceKind::CursorCliAgentJsonl => {
@@ -192,6 +220,7 @@ pub(super) fn discover_page(
                 candidates: page.candidates,
                 next_cursor: page.next_cursor,
                 partial: page.partial,
+                visited: page.visited,
             });
         }
         _ => {}
@@ -208,6 +237,7 @@ pub(super) fn discover_page(
         {
             if candidates.len() == limits.discovery_sessions {
                 return Ok(Page {
+                    visited: candidates.len(),
                     candidates,
                     next_cursor: cursor,
                     partial,
@@ -220,44 +250,54 @@ pub(super) fn discover_page(
         }
     }
     Ok(Page {
+        visited: candidates.len(),
         candidates,
         next_cursor: None,
         partial,
     })
 }
 
-/// Finish a Cursor listing only within the setup candidate and work limits.
+/// Follow Cursor continuations within setup limits. Keep candidates when the
+/// listing is incomplete, but never use a partial listing as absence evidence.
 pub(super) fn discover_cursor_sources(
     kind: SourceKind,
     root: &Path,
     limits: &Limits,
-) -> Result<Vec<Candidate>, Error> {
+    current: &dyn Fn() -> bool,
+) -> Result<Page, Error> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut candidates = Vec::new();
-    let mut after = None;
+    let mut result = Page {
+        candidates: Vec::new(),
+        next_cursor: None,
+        partial: false,
+        visited: 0,
+    };
     for _ in 0..64 {
-        if std::time::Instant::now() >= deadline || candidates.len() >= limits.discovery_sessions {
-            return Err(Error::Limit);
+        if !current() {
+            return Err(Error::SourceChanged);
+        }
+        if std::time::Instant::now() >= deadline || result.visited >= limits.discovery_sessions {
+            break;
         }
         let page = discover_page(
             kind,
             root,
-            after.as_deref(),
+            result.next_cursor.as_deref(),
             &Limits {
-                discovery_sessions: limits.discovery_sessions - candidates.len(),
+                discovery_sessions: limits.discovery_sessions - result.visited,
                 ..limits.clone()
             },
         )?;
-        if page.partial {
-            return Err(Error::UnsupportedSource);
+        result.partial |= page.partial;
+        result.visited += page.visited;
+        result.candidates.extend(page.candidates);
+        result.next_cursor = page.next_cursor;
+        if result.next_cursor.is_none() {
+            return Ok(result);
         }
-        candidates.extend(page.candidates);
-        let Some(next) = page.next_cursor else {
-            return Ok(candidates);
-        };
-        after = Some(next);
     }
-    Err(Error::Limit)
+    result.partial = true;
+    Ok(result)
 }
 
 /// Reopen the exact native ID after a proved pre-capture capacity refusal.

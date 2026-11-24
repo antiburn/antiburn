@@ -20,6 +20,8 @@ message, tool path, or inferred fork cannot grant permission.
   exact `composer.composerData` workspace row and checks bounded global composer
   metadata and the native `composerHeaders` index for a recorded workspace ID.
   It does not read bubble payload.
+  An ambiguous composer index marks the page incomplete. Other proved
+  composers and the continuation remain available.
 - `workspace.json` must record one absolute local `folder` URI without escaped
   path characters. For chunked headers, the global `composerHeaders` table
   must have exactly one row with the root's `composerId` and the directory's
@@ -90,7 +92,10 @@ Storage directory names and transcript contents do not grant permission. GUI
 transcript mirrors without same-ID CLI metadata do not qualify.
 
 Discovery pages visit at most 16 session entries and read no transcript bytes.
-Ambiguous sidecars block their candidate. Capture pins the transcript before
+Ambiguous or oversized sidecars block only their own candidate and mark the
+page incomplete. Folder discovery and Save follow continuations within a shared
+budget. Save still needs valid evidence for each selected folder group.
+Capture pins the transcript before
 reservation and checks the sidecar after reservation and again before
 publication. Every record must be a bounded LF-terminated JSON object. The
 first record must be a user record with the observed `message.content` array.

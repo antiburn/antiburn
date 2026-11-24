@@ -2190,7 +2190,7 @@ fn cloud_scheduler_accepted_opencode_observation_matches_captured_bytes_not_disc
     assert_eq!(
         serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"],
         serde_json::json!({
-            "uploaded": 0, "total": 1, "blocked": 1, "unsupported": 0,
+            "uploaded": 1, "total": 1, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
         })
     );
@@ -2206,7 +2206,6 @@ fn cloud_scheduler_accepted_opencode_observation_matches_captured_bytes_not_disc
         .unwrap()
         .unwrap();
     assert_ne!(source.observation_key.as_deref(), Some(original.as_str()));
-    fixture.runner.next_reconcile = None;
     fixture.turn();
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 1);
     connection
@@ -2215,6 +2214,56 @@ fn cloud_scheduler_accepted_opencode_observation_matches_captured_bytes_not_disc
     fixture.runner.next_reconcile = None;
     fixture.turn();
     assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
+}
+
+#[test]
+fn cloud_scheduler_closes_refresh_when_a_previously_uploaded_source_disappears() {
+    let mut fixture = Fixture::new(READY, 0);
+    let database = fixture.select_opencode(1);
+    fixture.accept_first();
+    fixture.schedule_backfill();
+    fixture.runner.next_reservation = Some(Instant::now() + Duration::from_secs(60));
+    let mut observed = Vec::new();
+    fixture.turn_published(&mut observed);
+    let before = serde_json::to_value(observed.last().unwrap()).unwrap();
+    assert_eq!(before["uploadProgress"]["uploaded"], 1);
+
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection.execute("INSERT INTO session_message VALUES ('message','session-0000','user',1,'{\"text\":\"new content\"}')", []).unwrap();
+    fixture.runner.next_reservation = None;
+    fixture.turn();
+    let identity = fixture.service.reserve_identities.lock().unwrap()[1].clone();
+    drop(connection);
+    fs::remove_file(database).unwrap();
+
+    for _ in 0..10 {
+        fixture.runner.next_integrity_poll = None;
+        fixture.turn_published(&mut observed);
+    }
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_job(&identity.capture_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Accepted
+    );
+    assert!(
+        !fixture
+            .runner
+            .backfill_progress
+            .as_ref()
+            .unwrap()
+            .needs_refresh()
+    );
+    assert_eq!(
+        serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"],
+        serde_json::json!({
+            "uploaded": 0, "total": null, "blocked": 1, "unsupported": 0,
+            "scanIncomplete": true
+        })
+    );
 }
 
 #[cfg(unix)]

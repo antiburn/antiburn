@@ -24,6 +24,20 @@ pub(super) fn composer_index(db: &Connection) -> Result<bool> {
 
 /// Read the exact composer's bounded workspace ID, never its index payload.
 pub(super) fn indexed_workspace(db: &Connection, composer: &str) -> Result<Option<String>> {
+    match workspace_index_proof(db, composer)? {
+        WorkspaceProof::Unambiguous(workspace) => Ok(workspace),
+        WorkspaceProof::Ambiguous => Err(Error::UnsupportedSource),
+    }
+}
+
+/// Separate duplicate composer records from errors that affect the full query.
+pub(super) enum WorkspaceProof {
+    Unambiguous(Option<String>),
+    Ambiguous,
+}
+
+/// Read at most two index records to detect duplicate proof for one composer.
+pub(super) fn workspace_index_proof(db: &Connection, composer: &str) -> Result<WorkspaceProof> {
     let mut query = db
         .prepare(
             "SELECT CASE WHEN typeof(workspaceId) = 'text' AND octet_length(workspaceId) <= 128
@@ -34,13 +48,15 @@ pub(super) fn indexed_workspace(db: &Connection, composer: &str) -> Result<Optio
         .map_err(sql_error)?;
     let mut rows = query.query([composer]).map_err(sql_error)?;
     let Some(row) = rows.next().map_err(sql_error)? else {
-        return Ok(None);
+        return Ok(WorkspaceProof::Unambiguous(None));
     };
     let workspace: Option<String> = row.get(0).map_err(sql_error)?;
     if rows.next().map_err(sql_error)?.is_some() {
-        return Err(Error::UnsupportedSource);
+        return Ok(WorkspaceProof::Ambiguous);
     }
-    Ok(workspace.filter(|id| crate::contract::safe_id(id)))
+    Ok(WorkspaceProof::Unambiguous(
+        workspace.filter(|id| crate::contract::safe_id(id)),
+    ))
 }
 
 /// Check table layout before reading keys or values. Return a safe row locator.
