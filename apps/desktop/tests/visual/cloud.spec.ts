@@ -388,7 +388,7 @@ for (const width of [760, 480]) {
     await page.goto(
       "/tests/visual/?surface=cloud&cloud=settings-folders&footerPreview=1&partialSettingsFolders=1",
     )
-    await expect(page.locator("body")).toHaveAttribute("data-folder-read-calls", "3")
+    await expect(page.locator("body")).toHaveAttribute("data-folder-read-calls", "1")
     await expect(settings.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
     await expect(footer.getByRole("button", { name: "Sync now" })).toBeEnabled()
     await expect(alert).toHaveCount(0)
@@ -929,12 +929,7 @@ for (const theme of ["light", "dark"] as const) {
     for (const state of ["folders-empty-partial", "folders-empty-paged"]) {
       await openCloud(page, state, theme)
       await expect(
-        page.getByText(
-          state === "folders-empty-partial"
-            ? "Still checking session folders."
-            : "Folder discovery is incomplete.",
-          { exact: true },
-        ),
+        page.getByText("Folder discovery is incomplete.", { exact: true }),
       ).toBeVisible()
       await expect(page.getByText(/No project folders found/)).toHaveCount(0)
       await expect(page.getByRole("button", { name: "Refresh folders" })).toHaveCount(0)

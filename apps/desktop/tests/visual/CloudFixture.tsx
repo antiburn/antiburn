@@ -372,6 +372,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         }
         const emptyPage =
           ["folders-empty-partial", "folders-empty-paged"].includes(name) && !after
+        const partialSettingsPage = partialSettingsFolders && folderReadCount === 1
         return {
           groups: emptyPage
             ? []
@@ -381,7 +382,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
           sourceRoots:
             emptyPage ||
             (name === "settings-missing-sources" &&
-              (!partialSettingsFolders || folderReadCount <= 3))
+              (!partialSettingsFolders || partialSettingsPage))
               ? []
               : groups.flatMap((group) =>
                   group.projects.map((project) => ({
@@ -393,9 +394,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
             name === "folders-empty-paged" && !after
               ? { environment: "native", cwd: "/Example/Next" }
               : null,
-          partial:
-            name === "folders-empty-partial" ||
-            (partialSettingsFolders && folderReadCount <= 3),
+          partial: name === "folders-empty-partial" || partialSettingsPage,
         }
       },
       status: async () => ongoingStatus(),
