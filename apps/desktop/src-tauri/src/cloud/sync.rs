@@ -1732,6 +1732,7 @@ impl Runner {
                         project: job.project_path.clone(),
                         repository_origin: job.repository_origin.clone(),
                         observation: job.observation_key.clone(),
+                        folder_group_id: None,
                     });
                 }
                 Err(_) => {

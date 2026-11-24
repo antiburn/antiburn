@@ -695,6 +695,51 @@ fn cloud_upload_separates_local_authority_loss_from_account_loss() {
 }
 
 #[test]
+fn cloud_upload_rejects_finalization_and_saved_replay_when_source_proof_is_lost() {
+    use super::super::upload::{Failure, HttpTransport};
+    use antiburn_cloud_capture::TransportError;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let directory = tempfile::tempdir().unwrap();
+    let mut engine = connected(directory.path(), &origin);
+    let mut transport = HttpTransport::new(&mut engine, &|| true, &|| true, &origin, None)
+        .with_source_authority(&|| false);
+    let manifest = CaptureManifest {
+        version: 1,
+        identity: identity(),
+        compression: "gzip".into(),
+        chunk_expanded_bytes: 3,
+        metadata_fingerprint: "a".repeat(64),
+        source_fingerprint: "b".repeat(64),
+        streams: Vec::new(),
+    };
+    let plan = UploadPlan {
+        identity: identity(),
+        manifest_sha256: "c".repeat(64),
+        plan_id: "synthetic-plan".into(),
+        chunks: Vec::new(),
+        required_transfer_bytes: 0,
+        reused_bytes: 0,
+    };
+    transport.failure = Some(Failure::Conflict);
+    assert_eq!(
+        transport.complete("reservation", &manifest, &plan),
+        Err(TransportError::Rejected)
+    );
+    assert_eq!(transport.failure, Some(Failure::Rejected));
+    assert_eq!(
+        transport.replay_saved_finalization("reservation", &manifest, &plan),
+        Err(TransportError::Rejected)
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
 fn cloud_execution_http_only_exact_reserve_error_establishes_source_suppression() {
     use super::super::upload::{Failure, HttpTransport, Source};
     let valid = serde_json::json!({

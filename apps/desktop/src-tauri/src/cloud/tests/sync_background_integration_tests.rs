@@ -41,6 +41,8 @@ fn cloud_scheduler_background_counts_acceptance_and_retains_transferred_bytes() 
     let completed = observed.last().unwrap();
     assert_eq!(background(completed)["uploaded"], 2);
     assert_eq!(background(completed)["total"], 2);
+    let group_id = &completed.saved_folders.as_ref().unwrap()[0].group_id;
+    assert_eq!(background(completed)["folderFound"][group_id], 2);
     assert_eq!(
         background(completed)["transfer"],
         serde_json::json!({ "sentBytes": total, "totalBytes": total })
@@ -151,6 +153,8 @@ fn cloud_scheduler_background_new_sweep_resets_bytes_and_preserves_explicit_resu
     }
     let explicit =
         serde_json::to_value(observed.last().unwrap()).unwrap()["uploadProgress"].clone();
+    let group_id = saved_team_folder_id(fixture.project.to_str().unwrap());
+    assert_eq!(explicit["folderFound"][&group_id], 1);
     write_source(
         &fixture.root,
         &fixture.project,
@@ -163,6 +167,7 @@ fn cloud_scheduler_background_new_sweep_resets_bytes_and_preserves_explicit_resu
     assert!(next.background_sync_in_progress);
     assert!(!next.full_sync_in_progress);
     assert_eq!(background(next)["uploaded"], 1);
+    assert_eq!(background(next)["folderFound"][&group_id], 2);
     assert_eq!(background(next)["transfer"]["sentBytes"], 0);
     assert_eq!(
         serde_json::to_value(next).unwrap()["uploadProgress"],
@@ -179,6 +184,7 @@ fn cloud_scheduler_background_new_sweep_resets_bytes_and_preserves_explicit_resu
     }
     let completed = observed.last().unwrap();
     assert_eq!(background(completed)["uploaded"], 2);
+    assert_eq!(background(completed)["folderFound"][&group_id], 2);
     assert!(!completed.background_sync_in_progress);
     assert_eq!(
         serde_json::to_value(completed).unwrap()["uploadProgress"],
@@ -264,6 +270,19 @@ fn cloud_scheduler_background_keeps_totals_unknown_when_discovery_has_gaps() {
         serde_json::Value::Null
     );
     assert!(!completed.background_sync_in_progress);
+}
+
+#[test]
+fn cloud_scheduler_background_counts_a_changed_session_once() {
+    let mut fixture = Fixture::new(READY, 0);
+    fixture.accept_first();
+    write_source(&fixture.root, &fixture.project, "session", "changed");
+    fixture.runner.next_reconcile = None;
+    fixture.turn();
+    let progress = background(&fixture.published_status());
+    let group_id = saved_team_folder_id(fixture.project.to_str().unwrap());
+    assert_eq!(progress["folderFound"][&group_id], 1);
+    assert_eq!(progress["uploaded"], 0);
 }
 
 #[test]

@@ -1,4 +1,5 @@
 import type { CloudPort, CloudProjectCursor, CloudWorkspace } from "../lib/cloud"
+import { traceEvent } from "../lib/perfTrace"
 import {
   mergeProjectPage,
   nextProjectCursor,
@@ -76,7 +77,9 @@ class CloudReadLane {
 export class CloudProjectReader {
   private read: AbortController | undefined
   private generation = 0
+  private pagesRead: Promise<void> | undefined
   private scopeRead: Promise<void> | undefined
+  private failedPendingPage: { request: Promise<void>; recheckQueued: boolean } | undefined
   private pendingPageRelease: Promise<void> | undefined
   private readonly accountLane = new CloudReadLane()
   private readonly folderLane = new CloudReadLane()
@@ -152,6 +155,7 @@ export class CloudProjectReader {
   /** Cancel retries without publishing state during account or source changes. */
   abort() {
     this.generation++
+    this.failedPendingPage = undefined
     this.read?.abort()
   }
 
@@ -223,18 +227,45 @@ export class CloudProjectReader {
     return this.load(false, true)
   }
 
+  /** Keep one focus-triggered recheck until the failed page releases the worker. */
+  queueFailedPageRecheck() {
+    const failed = this.failedPendingPage
+    if (!failed || failed.request !== this.folderLane.pending || !this.canUseChoices)
+      return false
+    if (!failed.recheckQueued) {
+      failed.recheckQueued = true
+      void Promise.all([failed.request, this.pagesRead]).then(() => {
+        if (this.failedPendingPage !== failed) return
+        this.failedPendingPage = undefined
+        const { busy, projects } = this.observer.getSnapshot()
+        if (
+          this.observer.isActive() &&
+          this.observer.isVisible() &&
+          !busy &&
+          !this.hasRead &&
+          this.canUseChoices &&
+          projects?.hasMore &&
+          projects.refreshError
+        )
+          return this.load(false, true)
+      })
+    }
+    return true
+  }
+
   /** Read bounded pages. Settings follows the remaining cursor chain. */
   load(more: boolean, retryInBackground: boolean) {
     if (this.hasRead) return Promise.resolve()
+    this.failedPendingPage = undefined
     if (!more) this.automaticCursor = undefined
     const read = this.readProjectPages(more, retryInBackground, ++this.generation)
-    if (!more) {
-      this.scopeRead = read
-      const clear = () => {
-        if (this.scopeRead === read) this.scopeRead = undefined
-      }
-      void read.then(clear, clear)
+    this.pagesRead = read
+    if (!more) this.scopeRead = read
+    const clear = () => {
+      if (this.pagesRead === read) this.pagesRead = undefined
+      if (this.scopeRead === read) this.scopeRead = undefined
     }
+    void read.then(clear, clear)
     return read
   }
 
@@ -253,6 +284,7 @@ export class CloudProjectReader {
       this.observer.isVisible()
     ) {
       if (loaded.retrySamePage) {
+        traceEvent("cloud.folder_page_deferred")
         const projects = this.observer.getSnapshot().projects!
         this.observer.publishProjects({ ...projects, refreshError: folderReadError })
         return
@@ -364,6 +396,9 @@ export class CloudProjectReader {
       const projects = observer.getSnapshot().projects!
       const keepChoices = this.canUseChoices
       const message = scopeVerified ? folderReadError : scopeReadError
+      const pendingPage = this.folderLane.pending
+      if (more && observer.automaticPaging && keepChoices && pendingPage)
+        this.failedPendingPage = { request: pendingPage, recheckQueued: false }
       observer.publishProjects({
         ...projects,
         loading: false,
@@ -485,6 +520,8 @@ export class CloudProjectReader {
         const projects = observer.getSnapshot().projects!
         const scopeInvalid = projects.scopeInvalid || !!scopeMessage
         const keepChoices = this.canUseChoices && !scopeInvalid
+        if (more && observer.automaticPaging && keepChoices)
+          traceEvent("cloud.folder_page_failed", { timedOut: signal.reason === timeoutError })
         const message = scopeVerified ? folderReadError : scopeReadError
         const hasMore = more ? this.nextCursor !== undefined : projects.hasMore
         observer.publishProjects({

@@ -47,6 +47,7 @@ fn source(progress: &mut BackfillProgress, id: &str, observation: &str, uploaded
         id.into(),
         Source {
             observation: observation.into(),
+            folder_group_id: None,
             uploaded,
             problem: None,
             refresh_needed: false,

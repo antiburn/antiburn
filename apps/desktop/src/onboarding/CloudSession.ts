@@ -227,10 +227,9 @@ export class CloudSession {
   }
   private refreshIncompleteProjects = () => {
     const { busy, projects } = this.snapshot
+    if (!this.active || !this.visible || busy) return
+    if (this.projectReader.queueFailedPageRecheck()) return
     if (
-      this.active &&
-      this.visible &&
-      !busy &&
       !this.projectReader.hasRead &&
       (this.projectReader.hasPendingAutomaticPages ||
         shouldRecheckCloudFolders(this.snapshot) ||
@@ -367,13 +366,16 @@ export class CloudSession {
   private async refresh() {
     const generation = this.generation
     const revision = this.revision
+    const previousError = this.snapshot.error
+    const current = () =>
+      this.active && generation === this.generation && revision === this.revision
     try {
       const value = await this.port.read()
-      if (this.active && generation === this.generation && revision === this.revision)
-        this.receive(value)
+      if (current()) this.receive(value)
     } catch (error) {
-      if (generation === this.generation)
+      if (current() && !this.snapshot.busy && this.snapshot.error === previousError)
         this.publish({
+          accountReadFailed: true,
           error: isCloudBusy(error) ? CLOUD_BUSY_MESSAGE : "Could not check Cloud. Try again.",
         })
     }
@@ -425,11 +427,14 @@ export class CloudSession {
     this.accountRead?.abort()
     const read = (this.accountRead = new AbortController())
     const { signal } = read
+    const currentLoad = () =>
+      this.active && generation === this.generation && this.accountRead === read
     const accountTimeout = new Error("Cloud account read timed out.")
     const timeout = setTimeout(() => read.abort(accountTimeout), 30_000)
-    this.publish({ busy: true, canPauseBackfill: false, error: null })
+    this.publish({ busy: true, canPauseBackfill: false, error: null, accountReadFailed: false })
     void this.loadLocalTools()
-    let revision = this.revision
+    let readRevision: number | undefined
+    let accountReadFinished = false
     try {
       if (!this.stop) {
         const stop = await this.port.watch((value) => {
@@ -441,7 +446,7 @@ export class CloudSession {
             if (cloudFolderReadChanged(previous, this.snapshot)) void this.loadProjects()
           }
         })
-        if (!this.active || generation !== this.generation) {
+        if (!currentLoad()) {
           stop()
           return
         }
@@ -451,7 +456,7 @@ export class CloudSession {
         const stop = await this.port.ongoing.watch((status) => {
           if (this.active && generation === this.generation) this.receiveOngoing(status, true)
         })
-        if (!this.active || generation !== this.generation) {
+        if (!currentLoad()) {
           stop()
           return
         }
@@ -461,7 +466,7 @@ export class CloudSession {
         const stop = await this.port.watchWorkspace((connection) => {
           if (this.active && generation === this.generation) this.receiveWorkspace(connection)
         })
-        if (!this.active || generation !== this.generation) {
+        if (!currentLoad()) {
           stop()
           return
         }
@@ -479,7 +484,7 @@ export class CloudSession {
               this.publish({ homeDirectory: null })
           })
       }
-      revision = this.revision
+      readRevision = this.revision
       const value = await (this.port.ongoing
         ? retryCloudRead(
             () => this.projectReader.request(this.port.read, signal),
@@ -487,9 +492,10 @@ export class CloudSession {
             (value) => value.status === "signed_in" && !value.destination,
           )
         : this.projectReader.request(this.port.read, signal))
-      if (signal.aborted || !this.active || generation !== this.generation) return
+      if (signal.aborted || !currentLoad()) return
       clearTimeout(timeout)
-      const appliedRead = revision === this.revision
+      accountReadFinished = true
+      const appliedRead = readRevision === this.revision
       if (appliedRead) this.receive(value)
       if (!this.port.ongoing && appliedRead && value.identity && value.pendingSync) {
         this.requestId = value.pendingSync.requestId
@@ -500,7 +506,7 @@ export class CloudSession {
         })
         const reconcileRevision = this.revision
         const sync = await this.port.reconcile(this.requestId)
-        if (!this.active || generation !== this.generation) return
+        if (!currentLoad()) return
         if (reconcileRevision !== this.revision) {
           this.publish({ busy: false })
           return
@@ -510,14 +516,8 @@ export class CloudSession {
       this.publish({ busy: false })
       if (this.port.ongoing && this.snapshot.cloud.identity) await this.loadProjects()
     } catch (error) {
-      if (
-        (signal.aborted && signal.reason !== accountTimeout) ||
-        this.accountRead !== read ||
-        !this.active ||
-        generation !== this.generation
-      )
-        return
-      if (this.port.ongoing && revision !== this.revision) {
+      if ((signal.aborted && signal.reason !== accountTimeout) || !currentLoad()) return
+      if (this.port.ongoing && readRevision !== undefined && readRevision !== this.revision) {
         this.publish({ busy: false })
         if (this.snapshot.cloud.status === "signed_in") await this.loadProjects()
         return
@@ -525,6 +525,7 @@ export class CloudSession {
       this.publish({
         busy: false,
         loaded: true,
+        accountReadFailed: !accountReadFinished,
         error: isCloudBusy(error)
           ? CLOUD_BUSY_MESSAGE
           : "Could not load Cloud. Try again or continue locally.",
@@ -997,7 +998,7 @@ export class CloudSession {
     if (this.snapshot.busy) return false
     if (this.analytics && action) noteCloudAction(this.snapshot.screen, action)
     const generation = this.generation
-    this.publish({ busy: true, error: null })
+    this.publish({ busy: true, error: null, accountReadFailed: false })
     const revision = this.revision
     try {
       const value = await task()
@@ -1056,7 +1057,7 @@ export class CloudSession {
       generation === this.generation &&
       this.projectBinding(true)?.accountId === binding.accountId &&
       this.projectBinding(true)?.destinationId === binding.destinationId
-    this.publish({ busy: true, error: null })
+    this.publish({ busy: true, error: null, accountReadFailed: false })
     try {
       const status = await reset(binding, workspaceId)
       if (!current()) return false
@@ -1234,6 +1235,7 @@ export class CloudSession {
       busy: false,
       sync: starting,
       error: null,
+      accountReadFailed: false,
       sourceListingNeedsRetry: false,
     })
     try {
@@ -1515,7 +1517,7 @@ export class CloudSession {
     this.syncInFlight = true
     this.projectSyncState = "pending"
     const starting: SyncResult = { status: "starting" }
-    this.publish({ busy: true, error: null, sync: starting })
+    this.publish({ busy: true, error: null, accountReadFailed: false, sync: starting })
     if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
     try {
       const read = this.projectReader.finishRead()

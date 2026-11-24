@@ -627,6 +627,83 @@ it("keeps a timed-out Settings page stopped until an explicit retry", async () =
   }
 })
 
+it.each([7_000, 30_000])(
+  "rechecks a failed Settings page after focus at %i ms and worker release",
+  async (focusTime) => {
+    const { port, ongoing } = cloudProjectFixture()
+    let finish!: (page: ProjectPage) => void
+    ongoing.groups
+      .mockResolvedValueOnce(projectPage([projectGroup()], firstCursor))
+      .mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+      .mockResolvedValueOnce(projectPage([projectGroup()], firstCursor))
+      .mockResolvedValueOnce(projectPage([projectGroup({ id: "later" })]))
+    vi.useFakeTimers()
+    const session = new CloudSession(port, false, true, "automatic")
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.advanceTimersByTimeAsync(focusTime)
+      expect(session.getSnapshot().projects).toMatchObject({
+        paging: "pending",
+        refreshError: "Could not check session folders.",
+      })
+      window.dispatchEvent(new Event("focus"))
+      window.dispatchEvent(new Event("focus"))
+      await vi.advanceTimersByTimeAsync(30_000 - focusTime)
+      expect(ongoing.groups).toHaveBeenCalledTimes(2)
+      expect(port.workspaces).toHaveBeenCalledOnce()
+
+      finish(projectPage([projectGroup({ id: "ignored" })], secondCursor))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(ongoing.groups.mock.calls.map(([, cursor]) => cursor)).toEqual([
+        null,
+        firstCursor,
+        null,
+        firstCursor,
+      ])
+      expect(session.getSnapshot().projects).toMatchObject({
+        hasMore: false,
+        paging: undefined,
+        groups: [{ id: "studio" }, { id: "later" }],
+      })
+      expect(session.getSnapshot().projects?.refreshError).toBeUndefined()
+    } finally {
+      stop()
+      vi.useRealTimers()
+    }
+  },
+)
+
+it("does not recheck a slow Settings page that succeeds after focus", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  let finish!: (page: ProjectPage) => void
+  ongoing.groups
+    .mockResolvedValueOnce(projectPage([projectGroup()], firstCursor))
+    .mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true, "automatic")
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(session.getSnapshot().projects?.refreshError).toBe(
+      "Could not check session folders.",
+    )
+    window.dispatchEvent(new Event("focus"))
+    finish(projectPage([projectGroup({ id: "later" })]))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(port.workspaces).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().projects).toMatchObject({
+      hasMore: false,
+      groups: [{ id: "studio" }, { id: "later" }],
+    })
+    expect(session.getSnapshot().projects?.refreshError).toBeUndefined()
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
 it("stops Settings paging when workspace verification denies access", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups.mockResolvedValueOnce(projectPage([projectGroup()], firstCursor))

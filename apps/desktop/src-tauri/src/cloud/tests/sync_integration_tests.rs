@@ -298,7 +298,57 @@ fn cloud_sync_allowlist_uses_recorded_cwd_and_descendants_not_tool_paths_or_work
             .iter()
             .all(|source| policy.allows(&source.scope, &source.project))
     );
+    let folders = saved_folders(&policy);
+    assert_eq!(folders.len(), 1);
+    assert!(
+        sources
+            .iter()
+            .all(|source| source.folder_group_id.as_ref() == Some(&folders[0].group_id))
+    );
     assert!(discover_policy(&policy, &|| false).unwrap().is_empty());
+}
+
+#[test]
+fn exact_folder_count_omits_a_session_that_matches_overlapping_saved_folders() {
+    let (_directory, mut policy, selected, outside) = fixture();
+    policy.projects.push(ProjectSelection {
+        project_path: selected.join("src").to_str().unwrap().into(),
+        ..policy.projects[0].clone()
+    });
+    let root = Path::new(&policy.roots[0].path);
+    write_session(
+        root,
+        "overlap",
+        &selected.join("src"),
+        &outside.join("file"),
+    );
+    let sources = discover_policy(&policy, &|| true).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].folder_group_id, None);
+}
+
+#[test]
+fn exact_folder_count_uses_distinct_saved_rule_ids_for_separate_paths() {
+    let (_directory, mut policy, main, checkout) = fixture();
+    policy.projects.push(ProjectSelection {
+        project_path: checkout.to_str().unwrap().into(),
+        ..policy.projects[0].clone()
+    });
+    let root = Path::new(&policy.roots[0].path);
+    write_session(root, "main", &main, &checkout.join("file"));
+    write_session(root, "worktree", &checkout, &main.join("file"));
+    let sources = discover_policy(&policy, &|| true).unwrap();
+    assert_eq!(sources.len(), 2);
+    let folders = saved_folders(&policy);
+    assert_eq!(folders.len(), 2);
+    assert_ne!(folders[0].group_id, folders[1].group_id);
+    for source in sources {
+        let folder = folders
+            .iter()
+            .find(|folder| folder.path == source.project)
+            .unwrap();
+        assert_eq!(source.folder_group_id.as_ref(), Some(&folder.group_id));
+    }
 }
 
 #[test]
@@ -345,6 +395,10 @@ fn repository_approval_captures_a_matching_clone_and_rechecks_its_origin() {
     assert_eq!(matches.len(), 1);
     let selection = &matches[0];
     assert_eq!(selection.candidate.native_session_id(), "matching");
+    assert_eq!(
+        selection.folder_group_id.as_ref(),
+        Some(&folders[0].group_id)
+    );
     let origin = selection.repository_origin.as_ref().unwrap();
     assert!(repository_capture::recheck_repository_project(
         &policy,

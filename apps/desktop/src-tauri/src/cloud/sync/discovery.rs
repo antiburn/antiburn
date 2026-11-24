@@ -1,6 +1,9 @@
 //! Bounded session discovery and source version checks for Cloud sync.
 
-use super::repository_capture::{LookupDeferred, OriginProof, RepositoryLookups};
+use super::{
+    repository_capture::{LookupDeferred, OriginProof, RepositoryLookups},
+    repository_policy::saved_team_folder_id,
+};
 use crate::{
     cloud::{file_sources, projects},
     store::cloud_capture::{
@@ -26,6 +29,8 @@ pub(super) struct Selection {
     pub(super) project: String,
     pub(super) observation: String,
     pub(super) repository_origin: Option<String>,
+    /// One saved folder rule proved by this discovery page. Never used for consent.
+    pub(super) folder_group_id: Option<String>,
 }
 
 /// Memory-only position in the current policy's source sweep. A restart repeats
@@ -326,6 +331,22 @@ pub(super) fn discover_policy_page_with_clock(
                     continue;
                 }
             };
+            let folder_group_id = if !evidence.scan_complete() {
+                None
+            } else if let Some(origin) = &repository_origin {
+                // Admission stops at the first matching origin. Do not inspect
+                // more checkouts to see if the session also matches another rule.
+                (evidence.project_paths().len() == 1
+                    || !policy.repository_rules.iter().any(|rule| {
+                        rule.origin != *origin && rule.scopes.contains(&root.source_scope_id)
+                    }))
+                .then(|| projects::repository_group_id(origin))
+            } else if has_repository_rules && evidence.project_paths().len() > 1 {
+                // The exact route wins without checking the other CWDs for origins.
+                None
+            } else {
+                exact_folder_group_id(&verified_folders, evidence.project_paths())
+            };
             selected.push(Selection {
                 candidate: candidate
                     .in_source_scope(&root.source_scope_id)
@@ -334,6 +355,7 @@ pub(super) fn discover_policy_page_with_clock(
                 project: project.to_owned(),
                 observation,
                 repository_origin,
+                folder_group_id,
             });
         }
         if !current() {
@@ -363,6 +385,16 @@ pub(super) fn discover_policy_page_with_clock(
         }
     }
     Ok((selected, None, coverage))
+}
+
+/// Use the saved path, not its descendant CWD. Omit overlapping saved folders.
+fn exact_folder_group_id(folders: &[PathBuf], recorded_paths: &[PathBuf]) -> Option<String> {
+    let mut matches = folders
+        .iter()
+        .filter(|folder| recorded_paths.iter().any(|path| path.starts_with(folder)));
+    let folder = matches.next()?;
+    matches.next().is_none().then_some(())?;
+    Some(saved_team_folder_id(folder.to_str()?))
 }
 
 /// Return the provider's exclusive pagination key for a completed candidate.

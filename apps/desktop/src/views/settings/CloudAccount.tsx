@@ -18,6 +18,8 @@ import {
 } from "../../onboarding/cloudProjectScope"
 import { CloudFolderList } from "./CloudFolderList"
 import {
+  currentFolderFound,
+  folderSyncFoundCount,
   idleSyncMessage,
   onlyAutomaticRecovery,
   savedUploadDisplayState,
@@ -32,6 +34,7 @@ import {
 import {
   CloudFolderSyncControl,
   CloudProjectFolderSummary,
+  folderSessionsFoundLabel,
 } from "../../onboarding/CloudOnboardingFolders"
 import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import {
@@ -84,6 +87,26 @@ function canSyncSavedFolders(value: CloudViewSnapshot) {
 function FolderUploadState({ children }: { children: ReactNode }) {
   return (
     <span className="min-w-0 type-footnote text-label-secondary wrap-anywhere">{children}</span>
+  )
+}
+
+/** Keep counts next to the folder they describe, including saved rules outside discovery. */
+function SavedFolderSummary({
+  path,
+  homeDirectory,
+  found,
+}: {
+  path: string
+  homeDirectory: string | null
+  found: number | undefined
+}) {
+  return (
+    <div className="min-w-0 flex-1 type-callout text-label wrap-anywhere">
+      <span title={path}>{cloudDisplayPath(path, homeDirectory)}</span>
+      {found !== undefined && (
+        <p className="type-footnote text-label-secondary">{folderSessionsFoundLabel(found)}</p>
+      )}
+    </div>
   )
 }
 
@@ -244,6 +267,7 @@ export function CloudAccount({
   value,
   children,
   folderRowId,
+  uploadSwitchRowId,
 }: {
   session: CloudSession
   value: CloudViewSnapshot
@@ -251,13 +275,15 @@ export function CloudAccount({
   children?: ReactNode
   /** Lets the upload control guide the user to folder setup. */
   folderRowId?: string
+  /** The row ID when the caller renders an upload switch. */
+  uploadSwitchRowId?: string | undefined
 }) {
   const [confirmReset, setConfirmReset] = useState(false)
   const [retryingSignInRead, setRetryingSignInRead] = useState(false)
   const waitingForBrowser = value.cloud.status === "opening" || value.cloud.status === "waiting"
   const checkingSignIn = value.cloud.status === "returned"
   const readFailed =
-    value.loaded && !!value.error && !value.cloud.identity && !waitingForBrowser
+    value.loaded && value.accountReadFailed && !value.cloud.identity && !waitingForBrowser
   const checkingAgain = retryingSignInRead && value.busy && !value.cloud.identity
   const checkingAccount = !value.loaded || checkingAgain
   const cleanupPending = cloudAccountCleanupPending(value.cloud)
@@ -454,7 +480,12 @@ export function CloudAccount({
           folderRowId={folderRowId}
         />
       ) : session.projectSyncSupported ? (
-        <CloudProjectsAccount session={session} value={value} folderRowId={folderRowId} />
+        <CloudProjectsAccount
+          session={session}
+          value={value}
+          folderRowId={folderRowId}
+          uploadSwitchRowId={uploadSwitchRowId}
+        />
       ) : (
         <>
           <SettingsRow
@@ -592,10 +623,12 @@ function CloudProjectsAccount({
   session,
   value,
   folderRowId,
+  uploadSwitchRowId,
 }: {
   session: CloudSession
   value: CloudViewSnapshot
   folderRowId?: string | undefined
+  uploadSwitchRowId?: string | undefined
 }) {
   const fallbackFolderRowId = useId()
   const uploadActionWarningId = useId()
@@ -676,6 +709,7 @@ function CloudProjectsAccount({
     canRetryPersonalUploads(value) &&
     showSavedUploadRetry(policy)
   const needDeviceSwitch =
+    !!uploadSwitchRowId &&
     !syncActionBusy &&
     !storageUnknown &&
     value.deviceUploadEnabled === false &&
@@ -893,6 +927,11 @@ function CloudProjectsAccount({
   const activePolicies = progressPolicies.filter(
     (policy) => value.deviceUploadEnabled === true && syncActivityReported(policy),
   )
+  const foundForSavedRule = (destinationId: string | undefined, groupId: string) => {
+    if (!destinationId || projects?.scopeInvalid) return undefined
+    const snapshot = progressPolicies.find((policy) => policy.destinationId === destinationId)
+    return snapshot && currentFolderFound(snapshot)?.[groupId]
+  }
   const unverifiedTeamWorking =
     value.deviceUploadEnabled === true &&
     !projects?.workspaces &&
@@ -923,14 +962,11 @@ function CloudProjectsAccount({
       ? currentUploadProgressMessage(activePolicies)
       : null
   const syncProgressMessage = syncWorking
-    ? [
-        ...(measuredProgress
-          ? [measuredProgress]
-          : syncActivity === syncingSessionsMessage && !unverifiedTeamWorking
-            ? savedUploadProgressMessage(activePolicies)
-            : []),
-        syncActivity,
-      ].join(" • ")
+    ? (measuredProgress ??
+      ((syncActivity === syncingSessionsMessage && !unverifiedTeamWorking
+        ? savedUploadProgressMessage(activePolicies).join(" • ")
+        : "") ||
+        syncActivity))
     : null
   const canSubmit =
     !syncWorking && (canSave || (!hasStagedChoices && canSyncSavedFolders(value)))
@@ -1002,23 +1038,13 @@ function CloudProjectsAccount({
     ? idleStatus
     : (syncProgressMessage ?? (confirmableTeams.length ? "Review saved folders" : idleStatus))
   const paging = projects?.paging
-  const folderLoadError =
-    folderError ??
-    (projects?.hasMore &&
-    !paging &&
-    !projects.loading &&
-    !projects.retrying &&
-    projects.refreshError
-      ? "Could not load all session folders."
-      : undefined)
-  const canCheckFolders =
-    !!folderLoadError && value.cloud.setupError !== cloudCaptureUnsupported
+  const canCheckFolders = !!folderError && value.cloud.setupError !== cloudCaptureUnsupported
   const focusUploadSwitch = () => {
-    const folders = document.getElementById(foldersId)
-    const switchControl = folders?.parentElement?.querySelector<HTMLElement>(
-      '[data-settings-control="cloudUpload"] [role="switch"]',
-    )
-    switchControl?.focus()
+    if (!uploadSwitchRowId) return
+    document
+      .getElementById(uploadSwitchRowId)
+      ?.querySelector<HTMLElement>('[role="switch"]')
+      ?.focus()
   }
   const runSavedSync = async () => {
     setSyncPhase("starting")
@@ -1214,6 +1240,13 @@ function CloudProjectsAccount({
                     : !savedPersonal && teams.length === 1
                       ? displayedTeams[0]?.[0]
                       : undefined
+                const folderProgress =
+                  savedDestination && !unverifiedGroup && !projects.scopeInvalid
+                    ? progressPolicies.find(
+                        ({ destinationId }) => destinationId === savedDestination,
+                      )
+                    : undefined
+                const syncFound = folderProgress && folderSyncFoundCount(group, folderProgress)
                 const pendingMove = move?.groupId === group.id ? move : undefined
                 const sourceRevision =
                   savedDestination && moveSourcePolicy(value, savedDestination)?.policyRevision
@@ -1270,6 +1303,7 @@ function CloudProjectsAccount({
                         id={descriptionId}
                         group={group}
                         homeDirectory={value.homeDirectory}
+                        syncFound={syncFound}
                         stackPath
                       />
                     </div>
@@ -1371,12 +1405,11 @@ function CloudProjectsAccount({
                       className="flex items-center gap-3 py-2"
                     >
                       <Folder size={16} className="shrink-0 text-label-secondary" aria-hidden />
-                      <span
-                        className="min-w-0 flex-1 type-callout text-label wrap-anywhere"
-                        title={path}
-                      >
-                        {cloudDisplayPath(path, value.homeDirectory)}
-                      </span>
+                      <SavedFolderSummary
+                        path={path}
+                        homeDirectory={value.homeDirectory}
+                        found={foundForSavedRule(personalId, groupId)}
+                      />
                       {hasTeamFolders && (
                         <span className="type-footnote text-label-secondary">Personal</span>
                       )}
@@ -1414,12 +1447,11 @@ function CloudProjectsAccount({
                         className="mt-0.5 shrink-0 text-label-secondary"
                         aria-hidden
                       />
-                      <span
-                        className="min-w-0 type-callout text-label wrap-anywhere"
-                        title={path}
-                      >
-                        {cloudDisplayPath(path, value.homeDirectory)}
-                      </span>
+                      <SavedFolderSummary
+                        path={path}
+                        homeDirectory={value.homeDirectory}
+                        found={foundForSavedRule(team, groupId)}
+                      />
                       <div className="col-start-2 min-w-0 @min-[30rem]:col-start-3 @min-[30rem]:justify-self-end">
                         {savedTeamControl(groupId, `Sync ${path}`, team, policy)}
                       </div>
@@ -1462,7 +1494,7 @@ function CloudProjectsAccount({
             {value.uploadActionError}
           </CloudFolderWarning>
         )}
-        {!syncPending && folderLoadError && (
+        {!syncPending && folderError && (
           <CloudFolderWarning
             id={folderWarningId}
             action={
@@ -1487,7 +1519,7 @@ function CloudProjectsAccount({
               ) : undefined
             }
           >
-            {folderLoadError}
+            {folderError}
           </CloudFolderWarning>
         )}
         {uploadError && (

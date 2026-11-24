@@ -9,12 +9,18 @@ import {
 
 const chooseWorkspace = ":choose-workspace"
 
+/** Label a scan count without implying that the scan covered the whole folder. */
+export function folderSessionsFoundLabel(count: number) {
+  return `${count} ${count === 1 ? "session" : "sessions"} found`
+}
+
 /** Show the main path and counts. Keep raw paths as selection authority. */
 export function CloudProjectFolderSummary({
   group,
   homeDirectory,
   id,
   stackPath = false,
+  syncFound,
 }: {
   group: CloudProjectGroup
   homeDirectory?: string | null | undefined
@@ -22,12 +28,16 @@ export function CloudProjectFolderSummary({
   id?: string
   /** Give the full path a wrapping line above the counts. */
   stackPath?: boolean
+  /** Use a verified sync scan count instead of the local index count. */
+  syncFound?: number | undefined
 }) {
   const sessionLabel = group.discoveryStale
     ? "Folder details need refresh"
-    : group.sessionCount == null
-      ? "Count unavailable"
-      : `${group.sessionCount} ${group.sessionCount === 1 ? "session" : "sessions"}`
+    : syncFound !== undefined
+      ? folderSessionsFoundLabel(syncFound)
+      : group.sessionCount == null
+        ? "Count unavailable"
+        : `${group.sessionCount} ${group.sessionCount === 1 ? "session" : "sessions"}`
   const worktreeLabel =
     !group.discoveryStale && group.groupingComplete !== false && group.worktreeCount > 0
       ? `${group.worktreeCount} ${group.worktreeCount === 1 ? "worktree" : "worktrees"}`

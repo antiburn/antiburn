@@ -24,6 +24,7 @@ function sessionCountLabel(count: number, combined: boolean) {
 export function uploadProgressMessage(
   policies: readonly Pick<CloudOngoingStatus, "uploadProgress">[],
   phase?: string,
+  compact = false,
 ): string | null {
   const progress = policies.flatMap(({ uploadProgress }) =>
     uploadProgress ? [uploadProgress] : [],
@@ -36,7 +37,29 @@ export function uploadProgressMessage(
   const totalKnown = progress.every((value) => value.total != null && !value.scanIncomplete)
   const total = totalKnown ? progress.reduce((sum, value) => sum + (value.total ?? 0), 0) : null
   const accepted = combined ? "complete" : "uploaded"
-  if (total === 0) {
+  const found = totalKnown
+    ? null
+    : progress.reduce(
+        (sum, value) =>
+          sum +
+          (value.scanIncomplete
+            ? (value.found ?? value.uploaded)
+            : (value.total ?? value.found ?? value.uploaded)),
+        0,
+      )
+  if (compact) {
+    const count = sessionCountFormat.format(uploaded)
+    if (total !== null && total > 0) {
+      clauses.push(`Syncing ${count} of ${sessionCountLabel(total, combined)}`)
+    } else if (
+      found !== null &&
+      (found > uploaded || (found > 0 && progress.some((value) => value.found != null)))
+    ) {
+      clauses.push(`Syncing ${count} of ${sessionCountLabel(found, combined)} found`)
+    } else if (uploaded > 0) {
+      clauses.push(`${sessionCountLabel(uploaded, combined)} ${accepted}`)
+    }
+  } else if (total === 0) {
     clauses.push("No sessions to upload")
   } else if (total !== null) {
     clauses.push(
@@ -44,33 +67,32 @@ export function uploadProgressMessage(
     )
   } else {
     clauses.push(`${sessionCountLabel(uploaded, combined)} ${accepted}`)
-    const found = progress.reduce(
-      (sum, value) =>
-        sum +
-        (value.scanIncomplete
-          ? (value.found ?? value.uploaded)
-          : (value.total ?? value.found ?? value.uploaded)),
-      0,
-    )
-    if (found > uploaded) clauses.push(`${sessionCountLabel(found, combined)} found`)
+    if (found !== null && found > uploaded)
+      clauses.push(`${sessionCountLabel(found, combined)} found`)
   }
 
   const transfers = progress.flatMap(({ transfer }) => (transfer ? [transfer] : []))
   if (transfers.length === progress.length) {
     const sentBytes = transfers.reduce((sum, value) => sum + value.sentBytes, 0)
+    if (compact) {
+      const label = clauses[0]
+      return sentBytes > 0
+        ? `${label ?? "Syncing"} (${uploadSize(sentBytes)} transferred)`
+        : (label ?? null)
+    }
     const totalBytes = transfers.every((value) => value.totalBytes !== null)
       ? transfers.reduce((sum, value) => sum + (value.totalBytes ?? 0), 0)
       : null
     if (sentBytes !== 0 || totalBytes !== 0) {
-      clauses.push(
+      const transfer =
         totalBytes === null
           ? `${uploadSize(sentBytes)} transferred`
-          : `${uploadSize(sentBytes)} of ${uploadSize(totalBytes)} transferred`,
-      )
+          : `${uploadSize(sentBytes)} of ${uploadSize(totalBytes)} transferred`
+      clauses.push(transfer)
     }
   }
   if (phase) clauses.push(phase)
-  return clauses.join(" • ")
+  return clauses.join(" • ") || null
 }
 
 /** Prefer the explicit scan when it is active. Never show its old counts as background work. */
@@ -92,7 +114,7 @@ export function currentUploadProgressMessage(activePolicies: readonly CloudOngoi
     progress.every(({ uploadProgress }) => uploadProgress?.total === 0)
   )
     return null
-  return uploadProgressMessage(progress)
+  return uploadProgressMessage(progress, undefined, true)
 }
 
 /** Describe saved work without treating the queue as a session scan. */

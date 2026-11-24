@@ -486,9 +486,7 @@ test("folder discovery retries and saved verification stay automatic in Sessions
   await expect(page.getByText("Loading folders…")).toBeVisible()
   await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-folders")))
   await expect(page.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
-  await expect(page.locator("footer").getByRole("status")).toHaveText(
-    "3 saved uploads pending • Syncing sessions",
-  )
+  await expect(page.locator("footer").getByRole("status")).toHaveText("3 saved uploads pending")
   await expect(
     page.locator("footer").getByRole("button", { name: "Syncing", exact: true }),
   ).toBeDisabled()
@@ -524,9 +522,8 @@ test("background and full sync use the same footer and cannot overlap from Setti
   const footer = page.locator("footer")
   const progress = footer.getByRole("status")
   const action = footer.getByRole("button", { name: /^(Sync now|Syncing)$/ })
-  await expect(progress).toHaveText(
-    "2 sessions uploaded • 5 sessions found • 12 MB transferred • Syncing sessions",
-  )
+  await expect(progress).toHaveText("Syncing 2 of 5 sessions found (12 MB transferred)")
+  await expect(page.getByText("5 sessions found", { exact: true })).toBeVisible()
   await expect(action).toHaveText("Syncing")
   await expect(action).toBeDisabled()
   await action.dispatchEvent("click")
@@ -540,14 +537,10 @@ test("background and full sync use the same footer and cannot overlap from Setti
   await expect(action).toHaveText("Syncing")
   await expect(action).toBeDisabled()
   await expect(page.locator("body")).toHaveAttribute("data-sync-calls", "1")
-  await expect(progress).toHaveText(
-    "1 session uploaded • 5 sessions found • 12 MB transferred • Checking folders",
-  )
+  await expect(progress).toHaveText("Syncing 1 of 5 sessions found (12 MB transferred)")
   await capture(page, "full-sync", "cloud-sync-coordination")
   await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-sync")))
-  await expect(progress).toHaveText(
-    "1 of 5 sessions uploaded • 12 MB of 85 MB transferred • Syncing sessions",
-  )
+  await expect(progress).toHaveText("Syncing 1 of 5 sessions (12 MB transferred)")
   await expect(action).toBeDisabled()
   await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-transfer")))
   await expect(action).toBeEnabled()
@@ -634,7 +627,7 @@ for (const width of [860, 480]) {
     const before = await bounds()
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
     await expect(page.locator("footer").getByRole("status")).toHaveText(
-      "6 of 96 sessions uploaded • 1 MB of 3 MB transferred • Syncing sessions",
+      "Syncing 6 of 96 sessions (1 MB transferred)",
     )
     await expect(page.getByText("3 queued")).toHaveCount(0)
     await expect(control).toBeFocused()
@@ -650,12 +643,9 @@ for (const width of [860, 480]) {
     await capture(page, `cloud-settings-sync-status-${width}`, "cloud-sync-status")
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
     await expect(
-      page.getByText(
-        "6 of 96 sessions uploaded • 1 MB of 3 MB transferred • Syncing sessions",
-        {
-          exact: true,
-        },
-      ),
+      page.getByText("Syncing 6 of 96 sessions (1 MB transferred)", {
+        exact: true,
+      }),
     ).toHaveCount(0)
     await expect(control).toBeFocused()
     await expect(control).toBeEnabled()
@@ -721,31 +711,19 @@ for (const theme of ["light", "dark"] as const) {
         await expect(status.locator("span[title]")).toHaveCSS("white-space", "normal")
         await capture(page, `${theme}-${width}-${phase}`, "cloud-sync-status")
       }
-      await busy(
-        "1 session uploaded • 5 sessions found • 12 MB transferred • Checking folders",
-        "checking-folders",
-      )
+      await busy("Syncing 1 of 5 sessions found (12 MB transferred)", "checking-folders")
       await sync.dispatchEvent("click")
       await expect(page.locator("body")).toHaveAttribute("data-sync-calls", "1")
       await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-sync")))
-      await busy(
-        "1 of 5 sessions uploaded • 12 MB of 85 MB transferred • Syncing sessions",
-        "upload",
-      )
+      await busy("Syncing 1 of 5 sessions (12 MB transferred)", "upload")
       await page.evaluate(() =>
         window.dispatchEvent(new Event("cloud-fixture:recover-transfer")),
       )
-      await busy(
-        "1 of 5 sessions uploaded • 12 MB of 85 MB transferred • Syncing sessions",
-        "recovery",
-      )
+      await busy("Syncing 1 of 5 sessions (12 MB transferred)", "recovery")
       await page.evaluate(() =>
         window.dispatchEvent(new Event("cloud-fixture:update-transfer")),
       )
-      await busy(
-        "2 of 5 sessions uploaded • 17 MB of 85 MB transferred • Syncing sessions",
-        "next-upload",
-      )
+      await busy("Syncing 2 of 5 sessions (17 MB transferred)", "next-upload")
       await expect(status).not.toContainText("2 MB of 5 MB")
       await page.evaluate(() =>
         window.dispatchEvent(new Event("cloud-fixture:finish-transfer")),

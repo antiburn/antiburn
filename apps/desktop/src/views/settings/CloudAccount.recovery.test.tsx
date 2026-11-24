@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useSyncExternalStore } from "react"
 import { expect, it, vi } from "vitest"
+import { CLOUD_BUSY_MESSAGE } from "../../lib/cloud"
 import { CloudSession } from "../../onboarding/CloudSession"
 import { cloudProjectFixture } from "../../onboarding/__tests__/cloudProjectFixtures"
 import { CloudAccount } from "./CloudAccount"
@@ -13,6 +14,26 @@ function Account({ session }: { session: CloudSession }) {
   )
   return <CloudAccount session={session} value={value} />
 }
+
+it("keeps sign-in available when opening the browser fails", async () => {
+  const { port } = cloudProjectFixture()
+  const signedOut = {
+    ...(await port.read()),
+    status: "signed_out" as const,
+    identity: null,
+    destination: null,
+  }
+  vi.mocked(port.read).mockResolvedValue(signedOut)
+  port.begin = vi.fn(async () => signedOut).mockRejectedValueOnce(new Error(CLOUD_BUSY_MESSAGE))
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const signIn = await screen.findByRole("button", { name: "Sign in with GitHub" })
+  fireEvent.click(signIn)
+  expect(await screen.findByRole("alert")).toHaveTextContent("Cloud is busy.")
+  expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument()
+  fireEvent.click(signIn)
+  expect(port.begin).toHaveBeenCalledTimes(2)
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+})
 
 it.each([
   ["read failure", "Could not check Cloud sign-in."],

@@ -260,18 +260,22 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       storageKnown: false,
     }
   if (rollingProgress) ongoing = { ...ongoing, queuedCount: 0, acceptedCount: 0 }
-  if (backgroundProgress)
+  if (backgroundProgress) {
+    const folder = { groupId: "saved-studio", path: groups[0]!.path }
     ongoing = {
       ...ongoing,
       backgroundSyncInProgress: true,
       queuedCount: 1,
+      savedFolders: [folder],
       backgroundProgress: {
         uploaded: 2,
         total: null,
         found: 5,
+        folderFound: { [folder.groupId]: 5 },
         transfer: { sentBytes: 12_000_000, totalBytes: null },
       },
     }
+  }
   if (params.has("savedRecovery"))
     ongoing = { ...ongoing, automaticRecoveryCount: 1, retryAvailable: false }
   if (params.has("savedFolderFocus")) {

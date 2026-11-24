@@ -329,6 +329,8 @@ export interface CloudOngoingStatus {
     total: number | null
     /** Sessions found so far, not a final count. */
     found?: number
+    /** Sessions attributed to an exact approved folder group during this scan. */
+    folderFound?: Readonly<Record<string, number>>
     blocked?: number
     unsupported?: number
     scanIncomplete?: boolean

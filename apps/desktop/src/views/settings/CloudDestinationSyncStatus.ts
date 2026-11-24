@@ -1,8 +1,32 @@
-import type { CloudOngoingStatus } from "../../lib/cloud"
+import type { CloudOngoingStatus, CloudProjectGroup } from "../../lib/cloud"
 import { uploadProgressMessage } from "./CloudSyncActivity"
 
 /** Activity text when Desktop cannot distinguish transfer from recovery. */
 export const syncingSessionsMessage = "Syncing sessions"
+
+/** Use the current scan during activity. Never substitute an earlier full scan. */
+export function currentFolderFound(policy: CloudOngoingStatus) {
+  if (policy.fullSyncInProgress || policy.backfillInProgress)
+    return policy.uploadProgress?.folderFound
+  if (policy.backgroundSyncInProgress) return policy.backgroundProgress?.folderFound
+  return (policy.backgroundProgress ?? policy.uploadProgress)?.folderFound
+}
+
+/** Sum rules within one verified workspace. A scan counts each source in at most one rule. */
+export function folderSyncFoundCount(group: CloudProjectGroup, policy: CloudOngoingStatus) {
+  const counts = currentFolderFound(policy)
+  if (!counts) return undefined
+  const ruleIds = new Set(
+    policy.savedFolders
+      ?.filter(({ groupId, path }) =>
+        group.repositoryWide || policy.repositoryGroupIds?.includes(groupId)
+          ? groupId === group.id
+          : path === group.path || group.memberPaths.includes(path),
+      )
+      .map(({ groupId }) => groupId),
+  )
+  return [...ruleIds].reduce((sum, id) => sum + (counts[id] ?? 0), 0) || undefined
+}
 
 const unavailableSyncStatus: Partial<Record<CloudOngoingStatus["status"], string>> = {
   offline: "Cloud offline",

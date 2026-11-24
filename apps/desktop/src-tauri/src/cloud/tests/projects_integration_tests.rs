@@ -318,6 +318,7 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
     let group = &discovery.groups[0];
     assert_eq!(group.path, main.to_str().unwrap());
     assert_eq!(group.folder_paths, expected);
+    assert_eq!(group.worktree_count, 1);
     assert!(group.capture_supported);
     assert_eq!(
         group
@@ -373,10 +374,24 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
             .unwrap()
             .success()
     );
-    let grouped = context("native", bare_linked.to_str().unwrap());
+    let bare_linked = bare_linked.to_str().unwrap();
+    let grouped = context("native", bare_linked);
     assert_eq!(grouped.main, bare.to_str().unwrap());
-    assert_eq!(grouped.folders, [bare_linked.to_str().unwrap()]);
+    assert_eq!(grouped.folders, [bare_linked]);
     assert!(grouped.complete);
+
+    rusqlite::Connection::open(&fixture.source.path)
+        .unwrap()
+        .execute("UPDATE session_v2 SET directory=?1", [bare_linked])
+        .unwrap();
+    let discovery = fixture.discover(Vec::new());
+    assert_eq!(discovery.groups.len(), 1);
+    let group = &discovery.groups[0];
+    assert_eq!(group.path, bare.to_str().unwrap());
+    assert_eq!(group.folder_paths, [bare_linked]);
+    assert_eq!(group.projects.len(), 1);
+    assert_eq!(group.projects[0].project_path, bare_linked);
+    assert_eq!(group.worktree_count, 1);
 }
 
 fn run_test_git(checkout: &Path, args: &[&str]) {

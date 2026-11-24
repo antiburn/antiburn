@@ -341,9 +341,13 @@ Desktop keeps the exact rule if an old exclusion or another workspace could
 conflict. The upgrade does not resume uploads or override a source exclusion.
 
 The project list uses cached local session metadata from all discovered agents.
-It can show projects for agents that cannot upload. Folder counts describe
-indexed local sessions, not candidates found during a bounded provider scan
-or sessions accepted by Cloud. Only qualified Claude, OpenCode V2, Codex, Pi,
+It can show projects for agents that cannot upload. By default, folder rows
+show indexed local sessions. For an approved row in one verified workspace,
+Settings can instead show `N sessions found` from sync discovery. That count
+includes only sessions assigned to the row's saved rules. It is not a total or
+a count of new uploads. A session without one verified rule does not add to a
+row. Settings does not add row counts across workspaces.
+Only qualified Claude, OpenCode V2, Codex, Pi,
 and [Cursor](cursor.md) sources can produce upload jobs.
 A suggested project or checked row does not add support for another provider.
 
@@ -356,8 +360,8 @@ does not approve unseen groups.
 Until confirmation, an existing saved policy stays unchanged.
 
 Settings reads more folder pages in the background. It keeps verified choices
-usable while later pages load. If a page fails after retries, **Check again**
-restarts discovery. Discovery does not save or expand folder approval.
+usable while later pages load or retry. A later page failure does not replace
+verified choices with an error. Discovery does not save or expand folder approval.
 
 After initial consent, Settings shows the saved folder rules. Turning off a
 group removes its folder or repository rule immediately. Adding a folder does not grant
@@ -565,34 +569,28 @@ or integrity checks can still advance. `backfillInProgress` reports explicit
 discovery only. Waiting for the next sweep does not count as work in progress.
 When present, the runtime activity flags take precedence over the general
 sync status, which can remain `syncing` after the last acceptance.
-Settings shows each available session and byte measurement independently:
-
-- A known session total reads `1 of 5 sessions uploaded`. A measured acceptance
-  count with an unknown total reads `1 session uploaded`.
-- During discovery, an optional count such as `5 sessions found` is a lower bound,
-  not a final total.
-- Cumulative transfer with a known total reads `12 MB of 85 MB transferred`.
-  A measured transfer count with an unknown total reads `12 MB transferred`.
-- Unavailable measurements are omitted. Settings does not use `?` or `+`
-  placeholders, guessed zeros, or guessed totals. It does not infer percentages
-  or time remaining from missing measurements.
-
 Session counts describe accepted source versions. Transfer counts describe
 confirmed compressed bytes, not raw network traffic or session acceptance.
 Combined workspace counts use `session uploads`, such as
-`3 of 8 session uploads complete`, because sending one local session to two
+`Syncing 3 of 8 session uploads`, because sending one local session to two
 workspaces counts as two deliveries. A combined session or byte total is known
 only when every included workspace supplies that measurement with a known total.
 A sum of known members is not a complete aggregate when another member is unknown.
 Settings does not combine an active full scan with background counters or with
 an idle workspace's earlier results.
 
-The same status shows background and explicit sync work. While an explicit scan
-discovers sessions, it can show `Checking folders`. When Desktop cannot separate
-transfer from automatic recovery, it shows `Syncing sessions` in both cases.
+The same status shows background and explicit sync work. With measurements, it
+uses a short line such as `Syncing 2 of 5 sessions (12 MB transferred)`. If the
+total is unknown, `sessions found` describes only the sessions found so far.
+If discovery has no count, Settings shows the accepted count alone when known.
+Unavailable measurements are omitted. Settings does not guess totals,
+percentages, or time remaining.
+Without measurements, an explicit scan can show `Checking folders`. Transfer
+and automatic recovery can show `Syncing sessions`.
 When idle, Settings marks retained explicit results as `Last full scan` or
-`Folder scan incomplete`. When active work has no scan measurements, Settings
-can show pending saved uploads.
+`Folder scan incomplete`. These results include the known totals for sessions
+and transferred bytes. When active work has no scan measurements, Settings can
+show pending saved uploads.
 That count is not a scan total. If exactly one pending upload has a known byte
 counter, Settings labels it `Current upload` rather than using it as an
 aggregate transfer count.

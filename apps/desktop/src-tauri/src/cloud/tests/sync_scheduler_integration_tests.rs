@@ -67,7 +67,9 @@ mod transfer_tests;
 
 fn session_progress(status: &Status) -> serde_json::Value {
     let mut progress = serde_json::to_value(status).unwrap()["uploadProgress"].clone();
-    progress.as_object_mut().unwrap().remove("transfer");
+    let progress_fields = progress.as_object_mut().unwrap();
+    progress_fields.remove("transfer");
+    progress_fields.remove("folderFound");
     progress
 }
 

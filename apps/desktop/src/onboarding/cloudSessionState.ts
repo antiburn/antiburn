@@ -39,6 +39,8 @@ export interface CloudViewSnapshot {
   /** Pause is the only Cloud change allowed while the backfill request waits. */
   canPauseBackfill?: boolean
   error: string | null
+  /** The current error came from an account read or watch, not a user action. */
+  accountReadFailed?: boolean
   /** Settings upload changes report errors with the folder controls, not sign-in. */
   uploadActionError?: string | null
   loaded: boolean
@@ -623,7 +625,10 @@ export function accountViewPatch(
           ? previous.screen
           : screen,
     loaded: true,
-    ...(previous.error === CLOUD_BUSY_MESSAGE ? { error: null } : {}),
+    accountReadFailed: false,
+    ...(previous.accountReadFailed || previous.error === CLOUD_BUSY_MESSAGE
+      ? { error: null }
+      : {}),
     ...(retryInvalidated ? { sourceListingNeedsRetry: false } : {}),
     ...(!ongoing && value.identity && value.pendingSync
       ? { sync: value.pendingSync.result }

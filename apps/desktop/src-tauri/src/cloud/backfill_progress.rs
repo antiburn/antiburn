@@ -17,6 +17,10 @@ pub(super) struct UploadProgress {
     total: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     found: Option<usize>,
+    /// Counts of distinct sources keyed by saved folder rule ID.
+    /// The scan may have gaps. Missing rules are unknown, not zero.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    folder_found: BTreeMap<String, usize>,
     blocked: usize,
     unsupported: usize,
     scan_incomplete: bool,
@@ -52,6 +56,7 @@ pub(super) struct BackfillProgress {
 
 struct Source {
     observation: String,
+    folder_group_id: Option<String>,
     uploaded: bool,
     problem: Option<SourceProblem>,
     refresh_needed: bool,
@@ -167,6 +172,7 @@ impl BackfillProgress {
                         id.to_owned(),
                         Source {
                             observation: selection.observation.clone(),
+                            folder_group_id: selection.folder_group_id.clone(),
                             uploaded,
                             problem: None,
                             refresh_needed: false,
@@ -517,11 +523,23 @@ impl BackfillProgress {
             && status.policy_revision.as_ref() == Some(&self.revision))
         .then(|| {
             let (uploaded, blocked, unsupported) = self.counts();
+            let mut folder_found = BTreeMap::new();
+            for group_id in self
+                .sources
+                .values()
+                .filter_map(|source| source.folder_group_id.as_ref())
+            {
+                *folder_found.entry(group_id).or_insert(0) += 1;
+            }
             UploadProgress {
                 uploaded,
                 total: (self.finished && !self.incomplete && !scan_active)
                     .then_some(self.sources.len()),
                 found: (scan_active && !self.sources.is_empty()).then_some(self.sources.len()),
+                folder_found: folder_found
+                    .into_iter()
+                    .map(|(id, count)| (id.clone(), count))
+                    .collect(),
                 blocked,
                 unsupported,
                 scan_incomplete: self.incomplete,

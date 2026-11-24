@@ -1097,21 +1097,20 @@ Notes for what isn't expressible as a token:
   account, switch, folder, or counter values. Keep verified account and folder
   content visible during background refreshes in the same scope. End loading
   on failure and pair the error with a supported recovery action.
-  Show known counts as `1 of 5 sessions uploaded` or `1 session uploaded` when
-  the total is unknown. An optional `5 sessions found` is a discovery lower
-  bound. Use `3 of 8 session uploads complete` across workspaces. Do not present
-  known workspace subtotals as a complete total when another member is unknown.
-  Keep session acceptance separate from confirmed compressed-byte transfer:
-  `12 MB of 85 MB transferred` or `12 MB transferred` when the byte total is
-  unknown. Omit missing measurements, `?` and `+` placeholders, and guessed
-  zeros, totals, percentages, or time remaining. Keep the current phase beside
-  known counters or alone. Show `Checking folders` during an explicit scan and
-  `Syncing sessions` when transfer and automatic recovery cannot be separated.
+  Show compact progress such as `Syncing 1 of 5 sessions (12 MB transferred)`.
+  Use `sessions found` when the denominator is a discovery lower bound.
+  Use `session uploads` across workspaces. Do not present known workspace
+  subtotals as a complete total when another member is unknown. Transfer bytes
+  are confirmed compressed bytes, not session acceptance. Omit missing
+  measurements and guessed totals, percentages, or time remaining. With no
+  counts, show `Checking folders` for discovery or `Syncing sessions` for
+  transfer or automatic recovery.
   If active work has no scan measurements, show the number of pending saved
   uploads when known. Label bytes for a single job `Current upload`.
   Mark retained explicit results `Last full scan` when sync is idle.
-  Folder counts come from the local session index, not the upload queue or
-  temporary provider discovery counts.
+  Use indexed folder counts until a verified sync scan can attribute sessions
+  to that saved row. Label sync counts `sessions found`. Keep verified choices
+  usable if later folder pages fail. Retry on return without showing an alert.
   Do not claim `Up to date` without complete, successful scan evidence.
   Keep the same footer button location and size. Show **Syncing** with native
   `disabled` while a scan, upload, or automatic recovery is active, even after
@@ -2142,10 +2141,11 @@ Desktop evidence owns
 grouping and recorded project/CWD paths, including CWD changes during a session;
 provider database paths and file paths in tool calls are not project membership.
 Desktop captures preserve the provider's native session format, such as Claude JSONL.
-New onboarding groups show as selected without saving that default. Start requires separate
-full-content confirmation for the current selected path members. A later external
-worktree does not inherit that confirmation. Counts and display order do not change
-the selection.
+New onboarding groups show as selected without saving that default. Start requires
+separate full-content confirmation for the selected groups. Exact-folder approval
+does not extend to a later worktree outside the approved folders. Repository
+approval can cover later checkouts when Desktop verifies the same Git origin.
+Counts and display order do not change the selection.
 
 Start saves confirmed group choices, including exclusions, with the desktop sync
 policy. Unconfirmed onboarding edits stay in memory. Restoring these choices never uses
@@ -2153,10 +2153,11 @@ provider-file preferences or grants access to new paths. A policy without saved
 choice history requires one review before the user updates it.
 
 Project discovery reads one bounded page at a time. "Load more folders" adds the
-next page without saving defaults. Start approves only the current shown members
-with confirmed Claude or OpenCode V2 session files. Other agents can appear as folder
-suggestions, with upload support marked unavailable. Settings uses automatic provider
-discovery without source pickers. The Upload sessions
+next page without saving defaults or granting approval. Start approves the
+selected repositories and exact folders for confirmed, supported session sources.
+For exact-folder approval, this includes only the displayed selected paths.
+Other agents can appear as folder suggestions without upload support. Settings
+uses automatic provider discovery without source pickers. The Upload sessions
 switch pauses or resumes the saved ongoing policy; the old local upload preference
 does not grant consent. Settings shows brief current failures and their recovery
 actions. Partial or paged empty discovery does not become a complete empty

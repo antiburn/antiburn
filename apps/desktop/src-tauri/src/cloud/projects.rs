@@ -1235,7 +1235,11 @@ fn add_suggestion(
                 .and_then(|name| name.to_str())
                 .unwrap_or(&context.main)
                 .into(),
-            worktree_count: context.folders.len().saturating_sub(1) as u32,
+            worktree_count: context
+                .folders
+                .iter()
+                .filter(|folder| *folder != &context.main)
+                .count() as u32,
             repository_wide: context.origin.as_ref().map(|_| true),
             folder_paths: context.folders.clone(),
             agents: Vec::new(),
@@ -1710,6 +1714,7 @@ pub(crate) async fn cloud_project_groups(
     let work = controller.project_listing.clone();
     let generation = controller.account_generation.load(Ordering::Acquire);
     let sync_generation = controller.sync.generation.load(Ordering::Acquire);
+    let later_page = after.is_some();
     work.run(Priority::Normal, move || {
         let controller = app.state::<Controller>();
         let authority = controller
@@ -1782,6 +1787,9 @@ pub(crate) async fn cloud_project_groups(
         discovery
     })
     .await
+    .inspect_err(|reason| {
+        tracing::debug!(later_page, reason = %reason, "Cloud folder page read failed");
+    })
 }
 
 #[cfg(all(test, unix))]

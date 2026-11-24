@@ -6,7 +6,11 @@ import {
   type CloudPort,
   type CloudSnapshot,
 } from "../lib/cloud"
-import { localToolsFixture, localToolsStatus } from "./__tests__/cloudProjectFixtures"
+import {
+  cloudProjectFixture,
+  localToolsFixture,
+  localToolsStatus,
+} from "./__tests__/cloudProjectFixtures"
 const analytics = vi.hoisted(() => ({ view: vi.fn(), action: vi.fn() }))
 vi.mock("../lib/onboardingAnalytics", () => ({
   noteCloudScreenViewed: analytics.view,
@@ -109,6 +113,59 @@ it("deduplicates visible entries and resumes the actual draft without phantom id
   expect(analytics.view.mock.calls).toEqual([["folders"], ["folders"]])
   stop()
   expect(stopWatch).toHaveBeenCalledOnce()
+})
+it.each(["account", "ongoing", "workspace"] as const)(
+  "stops a %s watch returned to a superseded load",
+  async (kind) => {
+    const { port, ongoing } = cloudProjectFixture()
+    let resolveFirst!: (stop: () => void) => void
+    const first = new Promise<() => void>((resolve) => {
+      resolveFirst = resolve
+    })
+    const stopFirst = vi.fn()
+    const stopCurrent = vi.fn()
+    const watch = vi.fn<() => Promise<() => void>>()
+    watch.mockReturnValueOnce(first).mockResolvedValueOnce(stopCurrent)
+    if (kind === "account") port.watch = watch
+    else if (kind === "ongoing") ongoing.watch = watch
+    else port.watchWorkspace = watch
+
+    const session = new CloudSession(port)
+    const stop = session.subscribe(vi.fn())
+    await settle()
+    expect(watch).toHaveBeenCalledOnce()
+    await session.load()
+    resolveFirst(stopFirst)
+    await settle()
+
+    expect(watch).toHaveBeenCalledTimes(2)
+    expect(stopFirst).toHaveBeenCalledOnce()
+    expect(stopCurrent).not.toHaveBeenCalled()
+    stop()
+    expect(stopCurrent).toHaveBeenCalledOnce()
+  },
+)
+it("reports a watch registration failure after an account event", async () => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  let rejectWatch!: (error: Error) => void
+  ongoing.watch.mockReturnValueOnce(
+    new Promise<() => void>((_, reject) => {
+      rejectWatch = reject
+    }),
+  )
+  const session = new CloudSession(port)
+  const stop = session.subscribe(vi.fn())
+  await settle()
+
+  emit({ status: "signed_out", identity: null, destination: null })
+  rejectWatch(new Error("Synthetic watch failure"))
+  await settle()
+
+  expect(session.getSnapshot()).toMatchObject({
+    busy: false,
+    error: "Could not load Cloud. Try again or continue locally.",
+  })
+  stop()
 })
 it("selects added folders but keeps sync disabled after real identity", async () => {
   const { port } = fixture({ ...signedIn, draft: { screen: "folders", folders: [] } })

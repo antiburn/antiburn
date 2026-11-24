@@ -51,7 +51,7 @@ describe("currentUploadProgressMessage", () => {
 
   it("shows current background counters instead of the last explicit scan", () => {
     expect(currentUploadProgressMessage([background])).toBe(
-      "2 sessions uploaded • 30 MB transferred",
+      "2 sessions uploaded (30 MB transferred)",
     )
   })
 
@@ -63,8 +63,16 @@ describe("currentUploadProgressMessage", () => {
   it("keeps explicit scan counters visible through post-scan acceptance", () => {
     const explicit = ongoingStatus({ fullSyncInProgress: true, uploadProgress: progress })
     expect(currentUploadProgressMessage([explicit, background])).toBe(
-      "1 of 5 sessions uploaded • 12 MB of 85 MB transferred",
+      "Syncing 1 of 5 sessions (12 MB transferred)",
     )
+  })
+
+  it("keeps the found count visible when every session found so far has been accepted", () => {
+    expect(
+      currentUploadProgressMessage([
+        { ...background, backgroundProgress: { uploaded: 4, found: 4, total: null } },
+      ]),
+    ).toBe("Syncing 4 of 4 sessions found")
   })
 
   it("does not show a previous full scan as progress during saved-upload recovery", () => {

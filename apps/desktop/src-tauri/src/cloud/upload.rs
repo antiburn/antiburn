@@ -327,7 +327,7 @@ impl<'a> HttpTransport<'a> {
         self
     }
 
-    /// Recheck a live repository rule before reading content and sending a PUT.
+    /// Recheck a live repository rule before reading content, sending a PUT, or finalizing.
     pub(super) fn with_source_authority(mut self, check: &'a dyn Fn() -> bool) -> Self {
         self.source_authority = Some(check);
         self
@@ -350,6 +350,16 @@ impl<'a> HttpTransport<'a> {
         route: Route,
         body: &impl Serialize,
     ) -> Result<ApiResponse, TransportError> {
+        if matches!(route, Route::Finalize)
+            && let Err(error) = self.check_source_authority()
+        {
+            self.failure = Some(if error == TransportError::Unauthorized {
+                Failure::Unauthorized
+            } else {
+                Failure::Rejected
+            });
+            return Err(error);
+        }
         match self.engine.capture_request(
             identity,
             (&self.resource_origin, self.membership_generation.as_deref()),
