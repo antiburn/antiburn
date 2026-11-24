@@ -445,6 +445,8 @@ export function CloudOnboarding({
                 choices={folderChoices ?? {}}
                 disabled={
                   disabled ||
+                  !projects.loaded ||
+                  projects.loading ||
                   !!projects.error ||
                   !!value.cloud.setupError ||
                   !personalDestination
@@ -584,7 +586,7 @@ export function CloudOnboarding({
                 {cloudDiscoveryRetryMessage(projects.retryStage)}
               </p>
             )}
-          {projects?.paging && (
+          {projects?.paging && projects.paging !== "pending" && (
             <p className="type-callout text-onboarding-muted" role="status">
               {projects.paging === "retrying"
                 ? "Still checking for more folders."

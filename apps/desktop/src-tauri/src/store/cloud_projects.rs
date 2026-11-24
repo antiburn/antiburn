@@ -7,6 +7,28 @@ use anyhow::{Result, ensure};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
+const OPENCODE_HINTS: &str = "SELECT session_id FROM session
+    WHERE environment_key='native' AND wsl_distro IS NULL
+      AND agent='opencode' AND source_kind='providerDb'
+      AND source_format='\"open_code_v2_sqlite\"'
+      AND source_label='opencode:' || session_id || ':open_code_v2_sqlite'
+      AND length(CAST(session_id AS BLOB)) BETWEEN 1 AND 128
+      AND cwd=?1
+    ORDER BY session_id COLLATE BINARY LIMIT ?2";
+const SUGGESTION_PAGE: &str =
+    "SELECT environment_key, cwd, json_group_array(DISTINCT agent), count(*)
+    FROM session
+    WHERE cwd IS NOT NULL AND cwd <> '' AND length(CAST(cwd AS BLOB)) <= 4096
+      AND (environment_key, cwd) > (?1, ?2)
+    GROUP BY environment_key, cwd
+    ORDER BY environment_key, cwd
+    LIMIT ?3";
+const CLAUDE_SOURCE_PAGE: &str = "SELECT DISTINCT source_label FROM session
+    WHERE environment_key='native' AND wsl_distro IS NULL
+      AND agent='claude-code' AND source_kind='file' AND source_label > ?1
+      AND length(CAST(source_label AS BLOB)) <= 4096
+    ORDER BY source_label LIMIT ?2";
+
 /// Keyset position across execution environments and recorded CWD suggestions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,16 +65,7 @@ impl Store {
             "Choose bounded cached project metadata"
         );
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT session_id FROM session
-             WHERE environment_key='native' AND wsl_distro IS NULL
-               AND agent='opencode' AND source_kind='providerDb'
-               AND source_format='\"open_code_v2_sqlite\"'
-               AND source_label='opencode:' || session_id || ':open_code_v2_sqlite'
-               AND length(CAST(session_id AS BLOB)) BETWEEN 1 AND 128
-               AND cwd=?1
-             ORDER BY session_id COLLATE BINARY LIMIT ?2",
-        )?;
+        let mut statement = connection.prepare(OPENCODE_HINTS)?;
         let mut ids = Vec::new();
         for (index, cwd) in cwds.iter().enumerate() {
             let remaining = limit - ids.len();
@@ -78,15 +91,7 @@ impl Store {
             (cursor.environment.as_str(), cursor.cwd.as_str())
         });
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT environment_key, cwd, json_group_array(DISTINCT agent), count(*)
-             FROM session
-             WHERE cwd IS NOT NULL AND cwd <> '' AND length(CAST(cwd AS BLOB)) <= 4096
-               AND (environment_key, cwd) > (?1, ?2)
-             GROUP BY environment_key, cwd
-             ORDER BY environment_key, cwd
-             LIMIT ?3",
-        )?;
+        let mut statement = connection.prepare(SUGGESTION_PAGE)?;
         let rows = statement.query_map(params![environment, cwd, limit as u32], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -123,13 +128,7 @@ impl Store {
     ) -> Result<Vec<String>> {
         ensure!(limit > 0 && limit <= 512, "Choose a bounded source page");
         let connection = self.lock();
-        let mut statement = connection.prepare(
-            "SELECT DISTINCT source_label FROM session
-             WHERE environment_key='native' AND wsl_distro IS NULL
-                AND agent='claude-code' AND source_kind='file' AND source_label > ?1
-               AND length(CAST(source_label AS BLOB)) <= 4096
-             ORDER BY source_label LIMIT ?2",
-        )?;
+        let mut statement = connection.prepare(CLAUDE_SOURCE_PAGE)?;
         let rows = statement.query_map(params![after, limit as u32], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
     }

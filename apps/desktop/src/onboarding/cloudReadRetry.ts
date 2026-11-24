@@ -1,5 +1,5 @@
 const retryDelays = [150, 400]
-const maxDelay = 30_000
+const extendedRetryDelays = [...retryDelays, 1000, 2000]
 
 /** Map only closed desktop errors. Never show raw command errors. */
 export function cloudReadScopeMessage(error: unknown) {
@@ -16,6 +16,12 @@ export function cloudReadScopeMessage(error: unknown) {
   }
 }
 
+/** A local listing can miss authority that a concurrent workspace check renews. */
+export function cloudReadNeedsVerifiedScope(error: unknown) {
+  const message = error instanceof Error ? error.message : error
+  return message === "Cloud account changed." || message === "Cloud workspace sign-in required."
+}
+
 /** Retry reads only. Abort the wait when the account or source scope changes. */
 export async function retryCloudRead<T>(
   read: () => Promise<T>,
@@ -23,21 +29,19 @@ export async function retryCloudRead<T>(
   retryResult: (value: T) => boolean = () => false,
   onExtendedRetry?: () => void,
 ): Promise<T> {
+  const delays = onExtendedRetry ? extendedRetryDelays : retryDelays
   for (let attempt = 0; ; attempt++) {
     signal.throwIfAborted()
-    const last = !onExtendedRetry && attempt === retryDelays.length
+    const delay = delays[attempt]
     try {
       const value = await read()
-      if (last || !retryResult(value)) return value
+      if (delay === undefined || !retryResult(value)) return value
     } catch (error) {
-      if (last || cloudReadScopeMessage(error) !== undefined) throw error
+      if (delay === undefined || cloudReadScopeMessage(error) !== undefined) throw error
     }
     signal.throwIfAborted()
     if (attempt === retryDelays.length) onExtendedRetry?.()
-    await waitForReadRetry(
-      retryDelays[attempt] ?? Math.min(maxDelay, 1000 * 2 ** (attempt - retryDelays.length)),
-      signal,
-    )
+    await waitForReadRetry(delay, signal)
   }
 }
 

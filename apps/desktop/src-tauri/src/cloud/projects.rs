@@ -3,9 +3,7 @@
 //! must obtain fresh recorded-CWD admission under separate saved consent.
 
 use super::{
-    Controller, DestinationBinding, Draft, Folder,
-    engine::Engine,
-    ensure_cloud_setup, now,
+    Controller, DestinationBinding, Draft, Folder, now,
     repository_checkout::{CheckoutOrigin, CheckoutOriginCache},
     sync,
     work::Priority,
@@ -17,6 +15,10 @@ use crate::store::{
         projects::{Cursor, Suggestion},
         sync::ProjectSelection,
     },
+};
+use antiburn_local::platform::process::{
+    BoundedOutput, BoundedOutputOptions, BoundedOutputPolicy,
+    bounded_headless_output_with_stdin_and_policy,
 };
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -32,12 +34,42 @@ use tauri::Manager;
 const CACHE_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_CONTEXT_ENTRIES: usize = 512;
 const PROJECT_ORIGIN_LOOKUP_BUDGET: Duration = Duration::from_secs(2);
+const PROJECT_LISTING_BUDGET: Duration = Duration::from_secs(3);
 const PROJECT_DISCOVERY_INCOMPLETE: &str =
     "Project discovery is incomplete. Restore access or choose fewer sources and retry.";
 const PROJECT_SCAN_CANDIDATES: usize = 4096;
 const PROJECT_SCAN_PAGE_CANDIDATES: usize = 512;
 const CLAUDE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
 const CLAUDE_FIRST_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Read-only scope copied from the current Cloud snapshot. It cannot grant consent.
+pub(super) struct ListingAuthority {
+    pub(super) binding: DestinationBinding,
+    pub(super) generation: u64,
+    pub(super) expires_at: i64,
+}
+
+impl Clone for ListingAuthority {
+    fn clone(&self) -> Self {
+        Self {
+            binding: DestinationBinding {
+                account_id: self.binding.account_id.clone(),
+                destination_id: self.binding.destination_id.clone(),
+            },
+            generation: self.generation,
+            expires_at: self.expires_at,
+        }
+    }
+}
+
+impl ListingAuthority {
+    fn matches(&self, binding: &DestinationBinding, generation: u64, checked_at: i64) -> bool {
+        self.generation == generation
+            && self.expires_at > checked_at
+            && self.binding.account_id == binding.account_id
+            && self.binding.destination_id == binding.destination_id
+    }
+}
 
 struct CachedEvidence {
     observation: String,
@@ -199,7 +231,7 @@ impl Cache {
         {
             return context.clone();
         }
-        let value = context(environment, cwd);
+        let value = context_before(environment, cwd, Some(origins.deadline));
         let bytes = value.main.len()
             + value.folders.iter().map(String::len).sum::<usize>()
             + value.folders.len() * std::mem::size_of::<String>()
@@ -320,15 +352,15 @@ impl ConfirmationContexts {
 async fn worktree_common_dir(
     environment: &antiburn_local::platform::environment::DiscoveryEnvironment,
     checkout: &Path,
+    deadline: Option<tokio::time::Instant>,
 ) -> Option<PathBuf> {
-    let output = antiburn_local::platform::git::run_git_output_in_environment(
+    let output = exact_git(
         environment,
-        Some(checkout),
+        checkout,
         &["rev-parse", "--git-common-dir"],
-        &[],
+        deadline,
     )
-    .await
-    .ok()?;
+    .await?;
     if !output.status.success() {
         return None;
     }
@@ -336,6 +368,72 @@ async fn worktree_common_dir(
         .join(git_path_record(std::str::from_utf8(&output.stdout).ok()?)?)
         .canonicalize()
         .ok()
+}
+
+/// Browse commands share the origin deadline. Approval keeps its existing Git path.
+async fn exact_git(
+    environment: &antiburn_local::platform::environment::DiscoveryEnvironment,
+    checkout: &Path,
+    args: &[&str],
+    deadline: Option<tokio::time::Instant>,
+) -> Option<BoundedOutput> {
+    let Some(deadline) = deadline else {
+        let output = antiburn_local::platform::git::run_git_output_in_environment(
+            environment,
+            Some(checkout),
+            args,
+            &[],
+        )
+        .await
+        .ok()?;
+        return Some(BoundedOutput {
+            status: output.status,
+            stdout: output.stdout,
+            truncated: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        });
+    };
+    let timeout = deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .filter(|remaining| !remaining.is_zero())?;
+    let output = bounded_headless_output_with_stdin_and_policy(
+        "git",
+        args,
+        None,
+        BoundedOutputOptions {
+            timeout,
+            max_stdout_bytes: 512 * 1024,
+            max_stderr_bytes: 4096,
+            env: &[
+                ("LC_ALL", "C"),
+                ("GIT_CONFIG_NOSYSTEM", "1"),
+                (
+                    "GIT_CONFIG_GLOBAL",
+                    if cfg!(windows) { "NUL" } else { "/dev/null" },
+                ),
+            ],
+            env_remove: &[
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_COMMON_DIR",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_CONFIG",
+                "GIT_CONFIG_COUNT",
+                "GIT_CONFIG_PARAMETERS",
+            ],
+            current_dir: Some(checkout),
+        },
+        BoundedOutputPolicy {
+            fail_on_stdout_limit: true,
+            kill_descendants_on_exit: true,
+            ..BoundedOutputPolicy::default()
+        },
+    )
+    .await
+    .ok()?;
+    (!output.truncated).then_some(output)
 }
 
 fn git_path_record(text: &str) -> Option<&Path> {
@@ -502,15 +600,24 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
 /// Use current local Git context only. Foreign environment paths are never
 /// probed through the local filesystem, even when their strings match.
 fn context(environment: &str, cwd: &str) -> Context {
-    let path = if environment == "native" {
-        existing_project_path(cwd)
-    } else {
-        Ok(None)
-    };
-    context_for_path(cwd, path)
+    context_before(environment, cwd, None)
 }
 
-fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context {
+fn context_before(environment: &str, cwd: &str, deadline: Option<tokio::time::Instant>) -> Context {
+    if environment != "native" {
+        return Context::unavailable(cwd, false);
+    }
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        return Context::unavailable(cwd, true);
+    }
+    context_for_path(cwd, existing_project_path(cwd), deadline)
+}
+
+fn context_for_path(
+    cwd: &str,
+    path: std::io::Result<Option<&Path>>,
+    deadline: Option<tokio::time::Instant>,
+) -> Context {
     let inspection_failed = || Context::unavailable(cwd, true);
     let path = match path {
         Ok(Some(path)) => path,
@@ -519,15 +626,36 @@ fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context 
     };
     use antiburn_local::platform::git;
     tauri::async_runtime::block_on(async {
-        match git::repo_root_if_any_at(path).await {
+        let environment = antiburn_local::platform::environment::DiscoveryEnvironment::Native;
+        let root = if deadline.is_some() {
+            let Some(output) = exact_git(
+                &environment,
+                path,
+                &["rev-parse", "--show-toplevel"],
+                deadline,
+            )
+            .await
+            else {
+                return inspection_failed();
+            };
+            // Only the legacy proof path may classify a path as plain using Git's stderr.
+            if !output.status.success() {
+                return inspection_failed();
+            }
+            let Ok(repo) = std::str::from_utf8(&output.stdout) else {
+                return inspection_failed();
+            };
+            Ok(Some(PathBuf::from(repo.trim())))
+        } else {
+            git::repo_root_if_any_at(path).await
+        };
+        match root {
             Ok(Some(repo)) => {
-                let environment =
-                    antiburn_local::platform::environment::DiscoveryEnvironment::Native;
-                let Ok(mut output) = git::run_git_output_in_environment(
+                let Some(mut output) = exact_git(
                     &environment,
-                    Some(&repo),
+                    &repo,
                     &["worktree", "list", "--porcelain", "-z"],
-                    &[],
+                    deadline,
                 )
                 .await
                 else {
@@ -536,11 +664,11 @@ fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context 
                 let mut separator = '\0';
                 if output.status.code() == Some(129) {
                     // Older Git versions do not accept `-z` for this command.
-                    let Ok(legacy) = git::run_git_output_in_environment(
+                    let Some(legacy) = exact_git(
                         &environment,
-                        Some(&repo),
+                        &repo,
                         &["worktree", "list", "--porcelain"],
-                        &[],
+                        deadline,
                     )
                     .await
                     else {
@@ -555,10 +683,14 @@ fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context 
                 let Ok(list) = std::str::from_utf8(&output.stdout) else {
                     return inspection_failed();
                 };
-                let Some(common) = worktree_common_dir(&environment, &repo).await else {
+                let Some(common) = worktree_common_dir(&environment, &repo, deadline).await else {
                     return inspection_failed();
                 };
-                worktree_context(list, separator, &repo, &common).unwrap_or_else(inspection_failed)
+                let checked = worktree_context(list, separator, &repo, &common);
+                if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                    return inspection_failed();
+                }
+                checked.unwrap_or_else(inspection_failed)
             }
             Ok(None) => {
                 // Git can report no repository when a .git marker is damaged.
@@ -577,11 +709,17 @@ fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context 
 fn known_sources(
     store: &Store,
     opencode_databases: impl IntoIterator<Item = PathBuf>,
+    scanning: &dyn Fn() -> bool,
 ) -> Result<(Vec<SourceSelection>, bool), String> {
     let mut roots = BTreeSet::new();
+    let mut claude_parents = BTreeSet::new();
     let mut after = String::new();
     let mut partial = false;
-    loop {
+    'claude: loop {
+        if !scanning() {
+            partial = true;
+            break;
+        }
         let paths = store
             .cloud_claude_source_paths_page(&after, 512)
             .map_err(|_| "Could not read cached session source metadata.")?;
@@ -590,6 +728,10 @@ fn known_sources(
         }
         after = paths.last().cloned().unwrap_or_default();
         for path in paths {
+            if !scanning() {
+                partial = true;
+                break 'claude;
+            }
             let path = PathBuf::from(path);
             let root = if path
                 .parent()
@@ -601,9 +743,15 @@ fn known_sources(
             } else {
                 path.parent()
             };
-            let Some(root) = root.filter(|root| root.is_dir()) else {
+            let Some(root) = root else {
                 continue;
             };
+            if claude_parents.len() >= PROJECT_SCAN_PAGE_CANDIDATES {
+                claude_parents.clear();
+            }
+            if !claude_parents.insert(root.to_path_buf()) || !root.is_dir() {
+                continue;
+            }
             if let Some(path) = root
                 .canonicalize()
                 .ok()
@@ -624,6 +772,10 @@ fn known_sources(
         }
     }
     for path in opencode_databases {
+        if !scanning() {
+            partial = true;
+            break;
+        }
         if path.is_file()
             && let Some(path) = path
                 .canonicalize()
@@ -736,15 +888,19 @@ struct RequestOrigins {
 
 impl Default for RequestOrigins {
     fn default() -> Self {
-        Self {
-            checkouts: CheckoutOriginCache::default(),
-            paths: BTreeMap::new(),
-            deadline: tokio::time::Instant::now() + PROJECT_ORIGIN_LOOKUP_BUDGET,
-        }
+        Self::before(tokio::time::Instant::now() + PROJECT_ORIGIN_LOOKUP_BUDGET)
     }
 }
 
 impl RequestOrigins {
+    fn before(deadline: tokio::time::Instant) -> Self {
+        Self {
+            checkouts: CheckoutOriginCache::default(),
+            paths: BTreeMap::new(),
+            deadline,
+        }
+    }
+
     /// Use one deadline for all Git lookups in this request. Reuse completed
     /// proof for the same path, but never treat skipped Git as an exact folder.
     fn get(&mut self, path: &str) -> ProjectOrigin {
@@ -848,6 +1004,7 @@ pub(super) fn confirm_project_choices_with_origins(
     let (mut known, _) = known_sources(
         store,
         antiburn_local::discovery::agents::opencode::native_database_paths(),
+        &|| true,
     )?;
     known.extend(super::file_sources::roots().0);
     let (roots, _) = merge_sources(known, &saved.folders)?;
@@ -1223,6 +1380,9 @@ impl ProjectRootScan {
                 Err(_) => return Err("Could not qualify the selected session source.".into()),
             }
         }
+        if !current() {
+            return Err("Cloud account changed.".into());
+        }
         let mut page = sync::discover_root_page(
             root.source_kind,
             &root.path,
@@ -1247,18 +1407,20 @@ impl ProjectRootScan {
 fn discover_projects(
     store: &Store,
     cache: &mut Cache,
-    engine: &Engine,
-    binding: &DestinationBinding,
+    authority: &ListingAuthority,
     after: Option<&Cursor>,
     known: (Vec<SourceSelection>, bool),
     current: &dyn Fn() -> bool,
+    deadline: tokio::time::Instant,
 ) -> Result<Discovery, String> {
-    let session = engine.session().ok_or("Cloud account changed.")?;
-    if !current() || !binding.matches(session) {
+    if !current() {
         return Err("Cloud account changed.".into());
     }
+    let binding = &authority.binding;
+    let within_budget = || tokio::time::Instant::now() < deadline;
+    let scanning = || current() && within_budget();
     let saved = store
-        .cloud_draft(&session.user.id, &session.workspace.id)
+        .cloud_draft(&binding.account_id, &binding.destination_id)
         .map_err(|_| "Could not read saved provider sources.")?
         .map(|raw| serde_json::from_str::<Draft>(&raw))
         .transpose()
@@ -1276,22 +1438,18 @@ fn discover_projects(
             cwd: last.cwd.clone(),
         }
     });
-    let cached_opencode_ids = store
-        .cloud_opencode_session_ids(
-            &suggestions
-                .iter()
-                .filter(|suggestion| suggestion.environment == "native")
-                .map(|suggestion| suggestion.cwd.clone())
-                .collect::<Vec<_>>(),
-            PROJECT_SCAN_PAGE_CANDIDATES,
-        )
-        .map_err(|_| "Could not read cached session identities.")?;
     let mut groups = BTreeMap::new();
-    let mut origins = RequestOrigins::default();
+    let mut origins = RequestOrigins::before(
+        deadline.min(tokio::time::Instant::now() + PROJECT_ORIGIN_LOOKUP_BUDGET),
+    );
+    let mut suggested_native_paths = Vec::new();
     cache.begin_scan();
     for suggestion in suggestions {
         if !current() {
             return Err("Cloud account changed.".into());
+        }
+        if suggestion.environment == "native" {
+            suggested_native_paths.push(suggestion.cwd.clone());
         }
         let context = cache.context(&suggestion.environment, &suggestion.cwd, &mut origins);
         partial |= context.inspection_incomplete;
@@ -1301,6 +1459,17 @@ fn discover_projects(
         }
         add_suggestion(&mut groups, suggestion, &context);
     }
+    let cached_opencode_ids = if scanning()
+        && roots
+            .iter()
+            .any(|root| root.source_kind == SourceKind::OpenCodeSqliteV2)
+    {
+        store
+            .cloud_opencode_session_ids(&suggested_native_paths, PROJECT_SCAN_PAGE_CANDIDATES)
+            .map_err(|_| "Could not read cached session identities.")?
+    } else {
+        Vec::new()
+    };
     let mut folder_path_bytes = groups
         .values()
         .flat_map(|group| &group.folder_paths)
@@ -1309,11 +1478,14 @@ fn discover_projects(
     let mut qualified = vec![false; roots.len()];
     let mut project_choices = 0usize;
     let mut scans = ProjectScans::new(roots.iter().collect());
-    while let Some((index, listing)) = scans.next(
-        current,
-        |_| true,
-        |_| Ok(Cow::Borrowed(&cached_opencode_ids)),
-    ) {
+    'providers: while scanning() {
+        let Some((index, listing)) = scans.next(
+            &scanning,
+            |_| true,
+            |_| Ok(Cow::Borrowed(&cached_opencode_ids)),
+        ) else {
+            break;
+        };
         let root = &roots[index];
         let listing = match listing {
             Ok(candidates) => candidates,
@@ -1323,9 +1495,10 @@ fn discover_projects(
             }
         };
         partial |= listing.partial;
+        qualified[index] = true;
         for candidate in listing.candidates {
-            if !current() {
-                return Err("Cloud account changed.".into());
+            if !scanning() {
+                break 'providers;
             }
             let evidence = match cache.evidence(
                 &binding.account_id,
@@ -1347,6 +1520,9 @@ fn discover_projects(
             partial |= !evidence.scan_complete();
             let mut matched = BTreeSet::new();
             for path in evidence.project_paths() {
+                if !scanning() {
+                    break 'providers;
+                }
                 let Some(project) = path.to_str() else {
                     partial = true;
                     continue;
@@ -1434,12 +1610,11 @@ fn discover_projects(
                 }
             }
         }
-        qualified[index] = true;
     }
-    if !current() || engine.session().is_none() {
+    if !current() {
         return Err("Cloud account changed.".into());
     }
-    partial |= !scans.pending.is_empty();
+    partial |= !within_budget() || !scans.pending.is_empty();
     Ok(Discovery {
         groups: groups.into_values().collect(),
         source_roots: roots
@@ -1460,51 +1635,80 @@ pub(crate) async fn cloud_project_groups(
     binding: DestinationBinding,
     after: Option<Cursor>,
 ) -> Result<Discovery, String> {
-    let work = app.state::<Controller>().blocking.clone();
+    let controller = app.state::<Controller>();
+    let work = controller.project_listing.clone();
+    let generation = controller.account_generation.load(Ordering::Acquire);
+    let sync_generation = controller.sync.generation.load(Ordering::Acquire);
     work.run(Priority::Normal, move || {
         let controller = app.state::<Controller>();
-        let generation = controller.account_generation.load(Ordering::Acquire);
-        let current = || controller.account_generation.load(Ordering::Acquire) == generation;
-        let mut engine = controller
-            .engine
+        let authority = controller
+            .project_listing_authority
             .lock()
-            .map_err(|_| "Cloud is unavailable.")?;
-        if engine.generation != generation {
+            .map_err(|_| "Cloud is unavailable.")?
+            .clone()
+            .filter(|authority| authority.matches(&binding, generation, now()))
+            .ok_or("Cloud account changed.")?;
+        let account_current = || {
+            controller.account_generation.load(Ordering::Acquire) == generation
+                && authority.expires_at > now()
+        };
+        let scope_current =
+            || controller.sync.generation.load(Ordering::Acquire) == sync_generation;
+        let current = || account_current() && scope_current();
+        if !account_current() {
             return Err("Cloud account changed.".into());
         }
-        let refreshed = engine.refresh(now(), current);
-        if let Err(error) = refreshed {
-            engine.status = error.into();
+        if !scope_current() {
+            return Err(super::work::BUSY.into());
         }
-        super::emit_snapshot(&app, super::snapshot(&app, &engine));
-        refreshed.map_err(|_| "Connect to Cloud before choosing projects.")?;
-        if !engine
-            .session()
-            .is_some_and(|session| binding.matches(session))
-        {
-            return Err("Cloud account changed.".into());
+        if !controller.setup_ready.load(Ordering::Acquire) {
+            return Err("Cloud folder settings are unavailable.".into());
         }
-        let store = app.state::<Store>();
-        ensure_cloud_setup(&controller.setup_ready, &store)?;
+        let deadline = tokio::time::Instant::now() + PROJECT_LISTING_BUDGET;
+        let scanning = || current() && tokio::time::Instant::now() < deadline;
+        let store = app
+            .state::<Store>()
+            .open_reader(Duration::from_millis(100))
+            .map_err(|_| "Could not read cached folder metadata.")?;
         let mut cache = controller
-            .project_cache
+            .project_listing_cache
             .lock()
             .map_err(|_| "Project discovery is unavailable.")?;
         let (mut known, partial) = known_sources(
             &store,
             antiburn_local::discovery::agents::opencode::native_database_paths(),
+            &scanning,
         )?;
-        let (file_roots, file_partial) = super::file_sources::roots();
+        let (file_roots, file_partial) = if scanning() {
+            super::file_sources::roots()
+        } else {
+            (Vec::new(), true)
+        };
         known.extend(file_roots);
-        discover_projects(
+        let discovery = discover_projects(
             &store,
             &mut cache,
-            &engine,
-            &binding,
+            &authority,
             after.as_ref(),
             (known, partial || file_partial),
             &current,
-        )
+            deadline,
+        );
+        let active = controller
+            .project_listing_authority
+            .lock()
+            .map_err(|_| "Cloud is unavailable.")?;
+        if !account_current()
+            || !active
+                .as_ref()
+                .is_some_and(|authority| authority.matches(&binding, generation, now()))
+        {
+            return Err("Cloud account changed.".into());
+        }
+        if !scope_current() {
+            return Err(super::work::BUSY.into());
+        }
+        discovery
     })
     .await
 }

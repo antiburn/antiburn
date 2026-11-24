@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn custom_endpoints_keep_the_transport_and_port() {
         let normal = origin("git@git.example.org:Group/Repo").unwrap();
-        let https = origin("https://me:secret@git.example.org:8443/Group/Repo.git").unwrap();
+        let https = origin("https://synthetic-user@git.example.org:8443/Group/Repo.git").unwrap();
         let ssh = origin("ssh://git@git.example.org:8443/Group/Repo").unwrap();
         assert_eq!(https.as_label(), "https://git.example.org:8443/Group/Repo");
         assert_eq!(ssh.as_label(), "ssh://git@git.example.org:8443/Group/Repo");

@@ -30,11 +30,12 @@ async function capture(page: Page, name: string) {
 
 async function expectWarningBesideSave(warning: Locator, save: Locator) {
   await expect(warning).toBeVisible()
+  await expect(warning.locator('[aria-hidden="true"] > svg')).toHaveCount(1)
   const [message, button] = await Promise.all([warning.boundingBox(), save.boundingBox()])
   if (!message || !button) throw new Error("The footer warning and Save must be visible.")
   expect(message.x + message.width).toBeLessThan(button.x)
-  expect(message.y).toBeLessThan(button.y + button.height)
-  expect(message.y + message.height).toBeGreaterThan(button.y)
+  expect(message.y).toBeCloseTo(button.y, 0)
+  expect(message.height).toBeGreaterThanOrEqual(button.height - 1)
 }
 
 for (const theme of ["light", "dark"] as const) {
@@ -296,9 +297,7 @@ test("grouped folders and full-content consent fit the desktop setup window", as
   await expect(rows.last()).toBeInViewport()
   await expect(page.getByText("1 worktree", { exact: true })).toBeVisible()
   await expect(page.getByRole("checkbox")).toHaveCount(0)
-  await expect(
-    page.getByText("Sync full sessions from selected folders and the worktrees Desktop found."),
-  ).toBeInViewport()
+  await expect(page.getByText("Sync full sessions from approved folders.")).toBeInViewport()
   await expect(page.locator("footer p")).toHaveCount(0)
   await expect(page.locator("footer")).not.toContainText("folders selected")
   await expect(page.getByRole("button", { name: "Start syncing", exact: true })).toBeEnabled()
@@ -366,6 +365,38 @@ test("empty Cloud Settings uses default sources without pickers or a consent for
   await expect(page.getByRole("button", { name: "Start syncing", exact: true })).toBeDisabled()
 })
 
+for (const width of [760, 480]) {
+  test(`Cloud Settings only offers a folder recheck when a partial list blocks use at ${width}px`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 780 })
+    const settings = page.getByRole("main", { name: "Cloud Settings preview" })
+    const footer = settings.locator("footer")
+    const retry = footer.getByRole("button", { name: "Check again" })
+
+    await page.goto(
+      "/tests/visual/?surface=cloud&cloud=settings-missing-sources&partialSettingsFolders=1",
+    )
+    const alert = footer.getByRole("alert")
+    await expect(alert).toHaveText("Could not check session folders.")
+    await expectWarningBesideSave(alert, retry)
+    await expect(retry).toHaveAccessibleDescription("Could not check session folders.")
+    await retry.press("Enter")
+    await expect(settings.getByRole("switch", { name: /Sync Studio/ })).toBeEnabled()
+    await expect(alert).toHaveCount(0)
+
+    await page.goto(
+      "/tests/visual/?surface=cloud&cloud=settings-folders&footerPreview=1&partialSettingsFolders=1",
+    )
+    await expect(page.locator("body")).toHaveAttribute("data-folder-read-calls", "3")
+    await expect(settings.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+    await expect(footer.getByRole("button", { name: "Sync now" })).toBeEnabled()
+    await expect(alert).toHaveCount(0)
+    await expect(retry).toHaveCount(0)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+  })
+}
+
 test("unreadable upload storage does not show cached totals as current", async ({ page }) => {
   await page.goto("/tests/visual/?surface=cloud&cloud=settings-storage-error&theme=light")
   await expect(
@@ -417,9 +448,11 @@ test("folder discovery retries and saved verification stay automatic in Sessions
 }) => {
   await page.setViewportSize({ width: 480, height: 780 })
   await page.goto(
-    "/tests/visual/?surface=cloud&cloud=settings-progress&theme=light&folderDiscovery=3&savedRecovery=1",
+    "/tests/visual/?surface=cloud&cloud=settings-progress&theme=light&folderDiscovery=2&deferFolders=1&savedRecovery=1",
   )
-  await expect(page.getByText(/Still checking session folders/)).toBeVisible()
+  await expect(page.locator("body")).toHaveAttribute("data-folder-read-calls", "3")
+  await expect(page.getByText("Loading folders…")).toBeVisible()
+  await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-folders")))
   await expect(page.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
   await expect(
     page.getByText("Checking saved uploads automatically. Saved files are kept."),
@@ -450,7 +483,7 @@ for (const moveFocus of [false, true]) {
     page,
   }) => {
     await page.goto(
-      "/tests/visual/?surface=cloud&cloud=settings-progress&theme=light&folderDiscovery=3&savedFolderFocus=1",
+      "/tests/visual/?surface=cloud&cloud=settings-progress&theme=light&deferFolders=1&savedFolderFocus=1",
     )
     const exact = page.getByRole("switch", {
       name: "Sync /Example/worktrees/studio-menu-fix to Personal",
@@ -463,6 +496,7 @@ for (const moveFocus of [false, true]) {
     await expect(exact).toBeFocused()
     const other = page.getByRole("button", { name: "Sign out" })
     if (moveFocus) await other.focus()
+    await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-folders")))
     const grouped = page.getByRole("switch", { name: "Sync Studio: /Example/Studio" })
     await expect(grouped).toBeChecked()
     await expect(exact).toHaveCount(0)
@@ -485,9 +519,10 @@ test("moves focus to saved folders when discovery hides the focused grouped row"
   await grouped.focus()
   await expect(grouped).toBeFocused()
   await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:recheck-folders")))
+  await expect(page.locator("body")).toHaveAttribute("data-folder-read-calls", "2")
   await expect(
     page.getByRole("group", { name: "Cloud folders" }).getByRole("status"),
-  ).toHaveText("Checking folders…")
+  ).toHaveCount(0)
   await expect(grouped).toBeFocused()
   await finishRead()
   await expect(grouped).toHaveCount(0)
@@ -649,6 +684,7 @@ for (const [size, width, scale] of [
     await expect(page.getByRole("alert")).toBeInViewport({ ratio: 1 })
     const retry = footer.getByRole("button", { name: "Try again", exact: true })
     await expectWarningBesideSave(footer.getByRole("alert"), retry)
+    await expect(retry).toHaveAccessibleDescription("Could not save folders. Try again.")
     await expect(action).toHaveCount(1)
     await expect(retry).toBeEnabled()
     await expect(retry).toBeFocused()
@@ -734,10 +770,14 @@ for (const [size, width, zoom] of [
   ["narrow", 480, 1],
   ["zoom-200", 640, 2],
 ] as const) {
-  test(`Cloud folder loading keeps Sync now in place at ${size}`, async ({ page }) => {
+  test(`Cloud folder loading and background retries keep Sync now in place at ${size}`, async ({
+    page,
+  }) => {
     await page.setViewportSize({ width, height: 320 })
     await page.emulateMedia({ reducedMotion: "reduce" })
-    await page.goto("/tests/visual/?surface=cloud&cloud=settings-folders&deferFolders=1")
+    await page.goto(
+      "/tests/visual/?surface=cloud&cloud=settings-folders&deferFolders=1&refreshFailures=3",
+    )
     if (zoom !== 1)
       await page.locator(".fixture-scale-root").evaluate((el: HTMLElement, value) => {
         el.style.zoom = String(value)
@@ -767,7 +807,11 @@ for (const [size, width, zoom] of [
     await folderSwitch.focus()
     const warm = await layout()
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:recheck-folders")))
-    await expect(folders.getByRole("status")).toHaveText("Checking folders…")
+    await expect(page.locator("body")).toHaveAttribute("data-folder-read-calls", "5")
+    await expect(folders.getByRole("status")).toHaveCount(0)
+    await expect(settings.getByText("Still checking session folders.")).toHaveCount(0)
+    await expect(settings.getByRole("alert")).toHaveCount(0)
+    await expect(save).toBeEnabled()
     await expect(folderSwitch).toBeChecked()
     await expect(folderSwitch).toBeFocused()
     expect(await layout()).toEqual(warm)

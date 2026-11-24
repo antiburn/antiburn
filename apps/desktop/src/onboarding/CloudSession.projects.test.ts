@@ -499,8 +499,99 @@ it("rejects an older rendered Start after a later page adds a group member", asy
   }
 })
 
+it("keeps existing folders and advances past an empty partial page", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const studio = projectGroup()
+  const secondCursor = { environment: "native", cwd: "/Example/Second" }
+  const thirdCursor = { environment: "native", cwd: "/Example/Third" }
+  ongoing.groups
+    .mockResolvedValueOnce({
+      groups: [studio],
+      sourceRoots: [{ sourceKind: "claude_jsonl", path: studio.projects[0]!.sourcePath }],
+      nextCursor: secondCursor,
+      partial: false,
+    })
+    .mockResolvedValueOnce({
+      groups: [],
+      sourceRoots: [],
+      nextCursor: thirdCursor,
+      partial: true,
+    })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    await session.loadMoreProjects()
+    expect(session.getSnapshot().projects).toMatchObject({
+      groups: [expect.objectContaining({ id: "studio", captureSupported: true })],
+      hasMore: true,
+      partial: true,
+    })
+    await session.loadMoreProjects()
+    expect(ongoing.groups.mock.calls.map(([, cursor]) => cursor)).toEqual([
+      null,
+      secondCursor,
+      thirdCursor,
+    ])
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("keeps Load more blocked until the timed-out native page releases the worker", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const studio = projectGroup()
+  const cursor = { environment: "native", cwd: "/Example/Next" }
+  const page = {
+    groups: [studio],
+    sourceRoots: [
+      { sourceKind: "claude_jsonl" as const, path: studio.projects[0]!.sourcePath },
+    ],
+    nextCursor: null,
+    partial: false,
+  }
+  let finish!: () => void
+  ongoing.groups
+    .mockResolvedValueOnce({ ...page, nextCursor: cursor })
+    .mockImplementationOnce(
+      () => new Promise((resolve) => (finish = () => resolve({ ...page, groups: [] }))),
+    )
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    const paging = session.loadMoreProjects()
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(session.getSnapshot().projects).toMatchObject({
+      paging: "pending",
+      loading: false,
+      loaded: true,
+      hasMore: true,
+      error: null,
+    })
+    await vi.advanceTimersByTimeAsync(23_000)
+    await paging
+    expect(session.getSnapshot().projects?.paging).toBe("pending")
+    await session.loadMoreProjects()
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+
+    finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(session.getSnapshot().projects?.paging).toBeUndefined()
+    expect(session.getSnapshot().projects?.hasMore).toBe(true)
+    await session.loadMoreProjects()
+    expect(ongoing.groups).toHaveBeenLastCalledWith(expect.anything(), cursor)
+    expect(ongoing.groups).toHaveBeenCalledTimes(3)
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
 it.each(["onboarding", "settings"] as const)(
-  "waits for a canceled page before saving folder choices in %s",
+  "saves folder choices without waiting for a canceled local page in %s",
   async (entry) => {
     const { port, ongoing } = cloudProjectFixture()
     const studio = projectGroup()
@@ -531,9 +622,11 @@ it.each(["onboarding", "settings"] as const)(
         entry === "onboarding"
           ? session.startSync()
           : session.startPendingProjects(session.getSnapshot())
-      expect(session.getSnapshot().projects?.paging).toBeUndefined()
-      await Promise.resolve()
-      expect(ongoing.enable).not.toHaveBeenCalled()
+      expect(session.getSnapshot().projects?.paging).toBe("pending")
+      await saving
+      expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ projects: studio.projects }),
+      )
 
       finishPage({
         ...firstPage,
@@ -541,10 +634,7 @@ it.each(["onboarding", "settings"] as const)(
         nextCursor: null,
       })
       await paging
-      await saving
-      expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ projects: studio.projects }),
-      )
+      expect(session.getSnapshot().projects?.paging).toBeUndefined()
       expect(session.getSnapshot().projects?.groups.map(({ id }) => id)).toEqual(["studio"])
     } finally {
       stop()

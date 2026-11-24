@@ -406,9 +406,16 @@ CWD evidence. Malformed or incomplete records can also block admission.
 OpenCode's recorded session directory does not prove a complete historical CWD list.
 See [project folder selection](capture.md#project-folder-selection) for the source rules.
 
-Listings are bounded and can report partial results. Folder discovery and
-approval inspect up to 4,096 candidates across up to 100 source roots. Each
-provider page holds at most 512 candidates. Desktop gives each root a first
+Folder listing uses a separate local worker from upload approval and sync.
+It uses the current signed-in account without refreshing the Cloud session.
+Settings can show local suggestions while it checks workspace access. A
+background refresh does not block already verified choices in the same scope.
+
+Listings can return partial results. Listing stops starting new provider
+reads after its 3-second work budget. An in-progress read can take longer.
+Folder approval checks current evidence and can inspect up to 4,096
+candidates across up to 100 source roots. Each provider page holds at most
+512 candidates. Desktop gives each root a first
 turn, then uses the remaining budget on later pages. Cursor IDE uses its full
 assigned share because it does not report how many IDs it inspected. Codex
 and Pi count each inspected ID, even when opening the file fails. These pages
@@ -422,9 +429,8 @@ not fit the remaining budget makes the result partial.
 
 A saved policy permits at most 100 source roots and 100 distinct project
 directories. It can store up to 512 exact pairs of source and project directory.
-Missing access, unsupported schemas, and exceeded bounds do not become a complete
-empty listing or permission to upload an excluded source. Restore access or retry
-discovery in Settings.
+Missing access, unsupported schemas, and exceeded bounds do not become a
+complete empty listing or permission to upload an excluded source.
 Setup failures do not hide account cleanup controls.
 
 Before enabling sync or making a capture, Desktop reads

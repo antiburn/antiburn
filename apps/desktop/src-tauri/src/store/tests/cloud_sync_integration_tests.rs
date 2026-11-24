@@ -128,7 +128,7 @@ fn cloud_repository_replacement_checks_scope_label_paths_order_and_current_polic
         }],
     ];
     for origin in [
-        "https://user:secret@git.example.org:8443/Group/Repo",
+        "https://synthetic-user@git.example.org:8443/Group/Repo",
         "https://git.example.org/Group/Repo",
         "git.example.org/Group/Repo?token=secret",
         "git.example.org/Group/../Repo",

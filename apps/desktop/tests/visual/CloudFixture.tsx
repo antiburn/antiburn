@@ -20,10 +20,11 @@ import type { LocalToolsStatus } from "../../src/lib/ipcPayloads"
 const teamName = "Example Team for Design, Documentation, and Developer Experience"
 
 /** Build preview-only account/request state; simulated success cannot establish product support. */
-export function cloudFixture(name: string): CloudPort {
+export function cloudFixture(name: string, refreshFolders?: () => void): CloudPort {
   const params = new URLSearchParams(window.location.search)
   const footerPreview = params.has("footerPreview")
   const deferFolders = params.has("deferFolders")
+  const partialSettingsFolders = params.has("partialSettingsFolders")
   const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
   const firstPersonalSaveFailure =
     name === "settings-folders" && params.has("personalSaveFailure")
@@ -96,6 +97,7 @@ export function cloudFixture(name: string): CloudPort {
   }
   let saveFailed = false
   let folderReadCount = 0
+  let refreshFailures = 0
   let folderReleasePending = false
   let folderWatcher: (() => void) | undefined
   const pendingFolderReads = new Set<() => void>()
@@ -355,8 +357,15 @@ export function cloudFixture(name: string): CloudPort {
         }
       },
       groups: async (_binding, after) => {
-        if (++folderReadCount <= Number(params.get("folderDiscovery") ?? 0))
+        folderReadCount++
+        if (deferFolders || partialSettingsFolders)
+          document.body.dataset.folderReadCalls = String(folderReadCount)
+        if (folderReadCount <= Number(params.get("folderDiscovery") ?? 0))
           throw new Error("Synthetic folder read failure")
+        if (refreshFailures > 0) {
+          refreshFailures--
+          throw new Error("Synthetic refresh failure")
+        }
         if (deferFolders) {
           if (folderReleasePending) folderReleasePending = false
           else await new Promise<void>((resolve) => pendingFolderReads.add(resolve))
@@ -370,7 +379,9 @@ export function cloudFixture(name: string): CloudPort {
               ? groups.filter(({ id }) => id !== "Studio")
               : groups,
           sourceRoots:
-            emptyPage || name === "settings-missing-sources"
+            emptyPage ||
+            (name === "settings-missing-sources" &&
+              (!partialSettingsFolders || folderReadCount <= 3))
               ? []
               : groups.flatMap((group) =>
                   group.projects.map((project) => ({
@@ -382,7 +393,9 @@ export function cloudFixture(name: string): CloudPort {
             name === "folders-empty-paged" && !after
               ? { environment: "native", cwd: "/Example/Next" }
               : null,
-          partial: name === "folders-empty-partial",
+          partial:
+            name === "folders-empty-partial" ||
+            (partialSettingsFolders && folderReadCount <= 3),
         }
       },
       status: async () => ongoingStatus(),
@@ -520,7 +533,7 @@ export function cloudFixture(name: string): CloudPort {
       },
     },
     read: async () => value,
-    watch: async (listener) => {
+    watch: async () => {
       const releaseFolders = () => {
         // Keep an early release for the next read. A remount can replace this watcher.
         if (folderWatcher !== releaseFolders) return
@@ -529,14 +542,8 @@ export function cloudFixture(name: string): CloudPort {
       }
       const recheckFolders = () => {
         hideStudio = hideGroupedFolderOnRefresh
-        value = {
-          ...value,
-          draft: {
-            ...value.draft,
-            folders: [{ path: "/Example/Sources/Studio", selected: true }],
-          },
-        }
-        listener(value)
+        refreshFailures = Number(params.get("refreshFailures") ?? 0)
+        refreshFolders?.()
       }
       if (deferFolders) {
         folderWatcher = releaseFolders
@@ -643,7 +650,14 @@ export function CloudFixture() {
 
 /** Use current Settings components with controlled IPC and synthetic transfer totals. */
 function CloudSettingsFixture({ name }: { name: string }) {
-  const [session] = useState(() => new CloudSession(cloudFixture(name), false, true))
+  const [session] = useState(() => {
+    const session = new CloudSession(
+      cloudFixture(name, () => void session.loadProjects()),
+      false,
+      true,
+    )
+    return session
+  })
   const value = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,

@@ -42,7 +42,10 @@ it.each(["status", "groups"] as const)(
       expect(session.getSnapshot().projects?.loading).toBe(true)
       const healthy = session.getSnapshot().cloud
       vi.mocked(port.read).mockResolvedValue(healthy)
+      const groupReads = ongoing.groups.mock.calls.length
       emit({ setupError: "Synthetic setup failure" })
+      expect(ongoing.groups).toHaveBeenCalledTimes(groupReads)
+      finish()
       await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
       expect(session.getSnapshot().projects).toMatchObject({
         loaded: true,
@@ -50,14 +53,7 @@ it.each(["status", "groups"] as const)(
         choices: { studio: true },
         groups: [expect.objectContaining({ id: "studio", captureSupported: true })],
       })
-      finish()
-      await Promise.resolve()
-      expect(session.getSnapshot().projects).toMatchObject({
-        loading: false,
-        choices: { studio: true },
-        groups: [expect.objectContaining({ id: "studio" })],
-      })
-      expect(ongoing.groups).toHaveBeenCalledTimes(stage === "groups" ? 2 : 1)
+      expect(ongoing.groups).toHaveBeenCalledTimes(2)
       expect(ongoing.enable).not.toHaveBeenCalled()
       expect(port.save).not.toHaveBeenCalled()
     } finally {
@@ -73,7 +69,10 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
   const session = new CloudSession(port, false, true)
   const stop = session.subscribe(vi.fn())
   try {
-    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    await vi.waitFor(() => {
+      expect(session.getSnapshot().projects?.loaded).toBe(true)
+      expect(session.getSnapshot().projects?.retrying).toBe(false)
+    })
     let finish!: () => void
     ongoing.groups.mockImplementationOnce(
       () =>
@@ -82,7 +81,7 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
         }),
     )
     const pending = session.loadProjects()
-    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(4))
+    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
     vi.mocked(port.read).mockResolvedValue(session.getSnapshot().cloud)
     let finishRecovery!: () => void
     ongoing.groups.mockImplementationOnce(
@@ -92,24 +91,26 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
         }),
     )
     emit({ setupError: "Synthetic setup failure" })
-    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(5))
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
     finish()
+    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(3))
     await pending
     expect(session.getSnapshot().projects).toMatchObject({
-      loading: true,
+      loading: false,
+      retrying: true,
       partial: true,
       choices: { studio: false },
       groups: [expect.objectContaining({ id: "studio" })],
     })
     finishRecovery()
-    await vi.waitFor(() => expect(session.getSnapshot().projects?.loading).toBe(false))
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.retrying).toBe(false))
     expect(session.getSnapshot().projects).toMatchObject({
       loaded: true,
       loading: false,
       choices: { studio: false },
       groups: [expect.objectContaining({ id: "studio" })],
     })
-    expect(ongoing.groups).toHaveBeenCalledTimes(5)
+    expect(ongoing.groups).toHaveBeenCalledTimes(3)
     expect(ongoing.enable).not.toHaveBeenCalled()
     expect(port.save).not.toHaveBeenCalled()
   } finally {
@@ -117,7 +118,7 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
   }
 })
 
-it("rechecks a partial folder result with rows without enabling uploads", async () => {
+it("accepts usable partial rows immediately and rechecks on focus", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups.mockResolvedValueOnce({ ...discovery, partial: true })
   vi.useFakeTimers()
@@ -126,9 +127,17 @@ it("rechecks a partial folder result with rows without enabling uploads", async 
   try {
     await vi.advanceTimersByTimeAsync(0)
     expect(ongoing.groups).toHaveBeenCalledOnce()
-    expect(session.getSnapshot().projects?.loading).toBe(true)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      retrying: false,
+      partial: true,
+    })
 
-    await vi.advanceTimersByTimeAsync(150)
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    window.dispatchEvent(new Event("focus"))
+    await vi.advanceTimersByTimeAsync(0)
     expect(ongoing.groups).toHaveBeenCalledTimes(2)
     expect(session.getSnapshot().projects).toMatchObject({
       loaded: true,
@@ -143,7 +152,7 @@ it("rechecks a partial folder result with rows without enabling uploads", async 
   }
 })
 
-it("keeps usable partial rows after two empty partial retries", async () => {
+it("keeps usable cached rows without retrying an empty partial refresh", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups
     .mockResolvedValue({ ...discovery, groups: [], sourceRoots: [], partial: true })
@@ -152,8 +161,10 @@ it("keeps usable partial rows after two empty partial retries", async () => {
   const session = new CloudSession(port, false, true)
   const stop = session.subscribe(vi.fn())
   try {
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(ongoing.groups).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    await session.loadProjects()
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
     expect(session.getSnapshot().projects).toMatchObject({
       loaded: true,
       loading: false,
@@ -162,6 +173,29 @@ it("keeps usable partial rows after two empty partial retries", async () => {
     })
     expect(session.getSnapshot().projects?.retrying).not.toBe(true)
     expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("rechecks an empty partial listing once and settles without another retry", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.groups.mockResolvedValue({ ...discovery, groups: [], sourceRoots: [], partial: true })
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(150)
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      partial: true,
+      groups: [],
+    })
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
   } finally {
     stop()
     vi.useRealTimers()
@@ -205,7 +239,7 @@ it("reloads folders immediately when an event clears a setup error during backof
     await vi.advanceTimersByTimeAsync(0)
     expect(ongoing.groups).toHaveBeenCalledOnce()
     emit({ setupError: "Synthetic setup failure" })
-    await vi.advanceTimersByTimeAsync(32_000)
+    await vi.advanceTimersByTimeAsync(600)
     expect(session.getSnapshot().projects?.retryStage).toBe("setup")
     expect(ongoing.groups).toHaveBeenCalledOnce()
     const reads = vi.mocked(port.read).mock.calls.length
@@ -234,7 +268,7 @@ it("cancels setup backoff when recovery arrives during an account reload", async
     await vi.advanceTimersByTimeAsync(0)
     const healthy = session.getSnapshot().cloud
     emit({ setupError: "Synthetic setup failure" })
-    await vi.advanceTimersByTimeAsync(32_000)
+    await vi.advanceTimersByTimeAsync(600)
     expect(session.getSnapshot().projects?.retryStage).toBe("setup")
 
     let finishAccountRead!: () => void
@@ -296,12 +330,12 @@ it.each(["sign-out", "source change", "pane exit", "pane hidden"] as const)(
   },
 )
 
-it("keeps checking after more than two failures and caps its delay at 30 seconds", async () => {
+it("ends automatic retries and can recover on a new check", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const reads: number[] = []
   ongoing.groups.mockImplementation(async () => {
     reads.push(Date.now())
-    if (reads.length < 10) throw new Error("Synthetic folder read failure")
+    if (reads.length <= 5) throw new Error("Synthetic folder read failure")
     return discovery
   })
   vi.useFakeTimers()
@@ -315,15 +349,21 @@ it("keeps checking after more than two failures and caps its delay at 30 seconds
       error: null,
     })
     await vi.advanceTimersByTimeAsync(100_000)
-    expect(reads).toHaveLength(10)
-    expect(reads[9]! - reads[8]!).toBe(30_000)
+    expect(reads).toHaveLength(5)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: false,
+      loading: false,
+      retrying: false,
+      error: "Could not check session folders.",
+    })
+    await session.loadProjects()
     expect(session.getSnapshot().projects).toMatchObject({
       loaded: true,
       loading: false,
       error: null,
     })
     await vi.advanceTimersByTimeAsync(100_000)
-    expect(reads).toHaveLength(10)
+    expect(reads).toHaveLength(6)
   } finally {
     stop()
     vi.useRealTimers()
@@ -332,7 +372,7 @@ it("keeps checking after more than two failures and caps its delay at 30 seconds
 
 it("stops when Desktop rejects the exact account scope", async () => {
   const { port, ongoing } = cloudProjectFixture()
-  ongoing.groups.mockRejectedValueOnce("Cloud account changed.")
+  ongoing.groups.mockRejectedValue("Cloud account changed.")
   vi.useFakeTimers()
   const session = new CloudSession(port, false, true)
   const stop = session.subscribe(vi.fn())
@@ -340,8 +380,263 @@ it("stops when Desktop rejects the exact account scope", async () => {
     await vi.advanceTimersByTimeAsync(60_000)
     window.dispatchEvent(new Event("focus"))
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(ongoing.groups).toHaveBeenCalledOnce()
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
     expect(session.getSnapshot().projects?.error).toMatch(/Cloud access changed/)
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("retries a local authority failure once after workspace verification", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  let finishWorkspaceCheck!: () => void
+  vi.mocked(port.workspaces!).mockImplementationOnce(
+    () => new Promise((resolve) => (finishWorkspaceCheck = () => resolve(null))),
+  )
+  ongoing.groups.mockRejectedValueOnce("Cloud account changed.")
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(600)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: false,
+      loading: true,
+      scopeInvalid: false,
+      error: null,
+    })
+    finishWorkspaceCheck()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      error: null,
+    })
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("ends cold folder progress after seven seconds but accepts a late valid page", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  let finish!: () => void
+  ongoing.groups.mockImplementationOnce(
+    () => new Promise((resolve) => (finish = () => resolve(discovery))),
+  )
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: false,
+      loading: false,
+      retrying: false,
+      error: "Could not check session folders.",
+    })
+    await session.startSync()
+    expect(ongoing.enable).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      retrying: false,
+      error: null,
+      choices: { studio: true },
+    })
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("reuses a pending workspace check without setting global busy", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const workspaces = vi.mocked(port.workspaces!)
+  let finish!: () => void
+  workspaces.mockImplementationOnce(
+    () => new Promise((resolve) => (finish = () => resolve(null))),
+  )
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(7_000)
+    expect(session.getSnapshot()).toMatchObject({
+      busy: false,
+      projects: { loading: false, error: "Could not check Cloud setup or workspaces." },
+    })
+    const retry = session.retryFolderScope()
+    expect(session.retryFolderScope()).toBe(retry)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(port.read).toHaveBeenCalledOnce()
+    expect(workspaces).toHaveBeenCalledOnce()
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().busy).toBe(false)
+
+    finish()
+    await retry
+    expect(session.getSnapshot()).toMatchObject({
+      busy: false,
+      projects: { loaded: true, loading: false, error: null },
+    })
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("shows local rows before verifying workspaces without selecting or saving them", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  let finishWorkspaceCheck!: (
+    workspaces: Awaited<ReturnType<NonNullable<typeof port.workspaces>>>,
+  ) => void
+  vi.mocked(port.workspaces!).mockImplementationOnce(
+    () => new Promise((resolve) => (finishWorkspaceCheck = resolve)),
+  )
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().projects).toMatchObject({
+        loaded: false,
+        loading: true,
+        choices: { studio: false },
+        groups: [expect.objectContaining({ id: "studio" })],
+      }),
+    )
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    const provisional = session.getSnapshot()
+    session.selectProject("studio", true)
+    await session.startSync(provisional)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+
+    finishWorkspaceCheck([
+      { id: "synthetic-personal", name: "Personal", kind: "personal" },
+      { id: "synthetic-team", name: "Team", kind: "team" },
+    ])
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().projects).toMatchObject({
+        loaded: true,
+        loading: false,
+        choices: { studio: false },
+      }),
+    )
+    session.selectProject("studio", true, "synthetic-personal")
+    await session.startSync(provisional)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+    await session.startSync()
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+  } finally {
+    stop()
+  }
+})
+
+it("blocks approval if a new workspace check denies access to cached rows", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    const rendered = session.getSnapshot()
+    vi.mocked(port.workspaces!).mockRejectedValueOnce("Cloud workspace access denied.")
+    await session.loadProjects()
+    expect(session.getSnapshot().projects).toMatchObject({
+      loading: false,
+      scopeInvalid: true,
+      error: "You do not have access to the selected Cloud workspace.",
+    })
+    await session.startSync(rendered)
+    await session.startSync()
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("keeps verified choices usable after a workspace refresh times out", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const workspaces = vi.mocked(port.workspaces!)
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    const rendered = session.getSnapshot()
+    workspaces.mockImplementationOnce(() => new Promise(() => {}))
+    const refresh = session.loadProjects()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await refresh
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      retrying: false,
+      scopeInvalid: false,
+      error: null,
+      refreshError: "Could not check Cloud setup or workspaces.",
+      choices: { studio: true },
+    })
+    expect(ongoing.enable).not.toHaveBeenCalled()
+
+    const save = session.startSync(rendered)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await save
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("keeps cached choices usable when a folder refresh hangs without dispatching another read", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    let finish!: (page: typeof discovery) => void
+    ongoing.groups.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+    const refresh = session.loadProjects()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      retrying: true,
+      choices: { studio: true },
+    })
+    expect(ongoing.enable).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(30_000)
+    await refresh
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      retrying: false,
+      error: null,
+      refreshError: "Could not check session folders.",
+    })
+    const recheck = session.loadProjects()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+
+    await session.startSync()
+    expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ projects: projectGroup().projects }),
+    )
+    finish({ ...discovery, groups: [] })
+    await recheck
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().projects?.groups.map(({ id }) => id)).toEqual(["studio"])
   } finally {
     stop()
     vi.useRealTimers()

@@ -172,14 +172,18 @@ function CloudFolderWarning({
   action?: ReactNode
 }) {
   return (
-    <div className="flex min-h-[var(--control-height-regular)] flex-wrap items-center gap-x-3 gap-y-1.5">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
       <p
         id={id}
         role="alert"
-        className="flex min-w-0 items-start gap-2 type-footnote text-system-red-text"
+        className="flex min-h-8 min-w-0 items-center type-footnote text-system-red-text"
       >
-        <CircleAlert size={15} className="mt-0.5 shrink-0" aria-hidden="true" />
-        <span className="min-w-0 wrap-anywhere">{children}</span>
+        <span className="flex min-w-0 items-start gap-2">
+          <span className="flex h-[1lh] shrink-0 items-center" aria-hidden="true">
+            <CircleAlert size={15} />
+          </span>
+          <span className="min-w-0 wrap-anywhere">{children}</span>
+        </span>
       </p>
       {action}
     </div>
@@ -571,6 +575,8 @@ function CloudProjectsAccount({
 }) {
   const fallbackFolderRowId = useId()
   const uploadActionWarningId = useId()
+  const folderWarningId = useId()
+  const pagingStatusId = useId()
   const foldersId = folderRowId ?? fallbackFolderRowId
   const [saveTeam, setSaveTeam] = useState<{
     accountId: string
@@ -618,25 +624,15 @@ function CloudProjectsAccount({
       </div>
     )
   }
-  const folderError = projects?.loading
-    ? null
-    : projects?.scopeInvalid
-      ? projects.error
-      : projects?.error || (projects?.loaded && projects.partial && !projects.hasMore)
-        ? projects?.groups.length
-          ? "Could not check all session folders. Previously loaded folders are still shown."
-          : "Could not check session folders."
-        : value.cloud.setupError
-          ? value.cloud.setupError === cloudCaptureUnsupported
-            ? "Uploads are unavailable on this device."
-            : "Could not read Cloud folder settings on this device."
-          : null
   const recoveryRequiredCount = policy?.recoveryRequiredCount ?? 0
   const interruptedError =
     recoveryRequiredCount > 0 ? localRecoveryError : uploadErrors.interrupted
   const uploadState = policy && savedUploadDisplayState(policy)
+  const checkingUploadStatus =
+    projects?.loading ||
+    (projects?.retrying && (!projects.retryStage || projects.retryStage === "setup"))
   const uploadError = storageUnknown
-    ? projects?.loading
+    ? checkingUploadStatus
       ? null
       : "Could not read saved uploads. Saved files are kept."
     : policy
@@ -673,6 +669,8 @@ function CloudProjectsAccount({
     projects?.loaded &&
     !projects.loading &&
     !projects.error &&
+    !projects.refreshError &&
+    !projects.scopeInvalid &&
     !projects.hasMore &&
     !projects.partial &&
     !value.cloud.setupError &&
@@ -795,12 +793,14 @@ function CloudProjectsAccount({
       (folder) => !visibleGroups?.some((group) => showsSavedFolder(group, policy, folder)),
     ) ?? []
   const coldFolderLoad =
-    (waitingForFolders || (!projects?.loaded && projects?.loading && !projects.error)) &&
+    (waitingForFolders ||
+      (projects?.loading && !projects.error) ||
+      (projects?.retrying && projects.partial && !projects.hasMore && !projects.error)) &&
     !visibleGroups?.length &&
     !exactPersonalFolders.length &&
     !exactTeamFolders.length
-  const retryingFolders = projects?.retrying && projects.loading
-  const showFolderRetryStatus = retryingFolders && !coldFolderLoad
+  const retryingFolders = projects?.retrying && projects.retryStage !== undefined
+  const showFolderRetryStatus = retryingFolders && !coldFolderLoad && !visibleGroups?.length
   const selected = (id: string) =>
     savedTeams(id).length > 0 ||
     session.projectHasSavedPermission(id, undefined, true) ||
@@ -837,6 +837,7 @@ function CloudProjectsAccount({
       !value.cloud.setupError &&
       projects?.loaded &&
       !projects.loading &&
+      !projects.scopeInvalid &&
       !projects.error &&
       !moveTargetUnavailable &&
       !moveSourceChanged
@@ -846,9 +847,9 @@ function CloudProjectsAccount({
         !value.cloud.setupError &&
         projects?.loaded &&
         !projects.loading &&
+        !projects.scopeInvalid &&
         !projects.error &&
         (startableFolder || !!savedSourceToReview))
-  const hasError = value.uploadActionError || folderError || uploadError
   const syncDestinations = [
     ...(personalId &&
     (!hasTeamFolders || !!policy?.projects.length || !!policy?.savedFolders?.length)
@@ -869,6 +870,45 @@ function CloudProjectsAccount({
   const canSubmit = scanning
     ? false
     : canSave || (!hasStagedChoices && canSyncSavedFolders(value))
+  const hasUsableFolder =
+    canSubmit ||
+    (!storageUnknown &&
+      !!policy?.policyRevision &&
+      (exactPersonalFolders.length > 0 ||
+        visibleGroups?.some((group) =>
+          session.projectHasSavedPermission(group.id, undefined, true),
+        ))) ||
+    exactTeamFolders.some(({ policy }) => !!policy.policyRevision) ||
+    visibleGroups?.some((group) =>
+      savedTeams(group.id).some(([, policy]) => !!policy.policyRevision),
+    ) ||
+    (value.cloud.captureEnabled &&
+      !storageUnknown &&
+      !value.cloud.setupError &&
+      projects?.loaded &&
+      !projects.loading &&
+      !projects.error &&
+      visibleGroups?.some((group) => !folderUploadUnavailable(group)))
+  const folderError = projects?.scopeInvalid
+    ? projects.error
+    : projects?.loading
+      ? null
+      : value.cloud.setupError
+        ? value.cloud.setupError === cloudCaptureUnsupported
+          ? "Uploads are unavailable on this device."
+          : "Could not read Cloud folder settings on this device."
+        : !hasUsableFolder && !projects?.retrying
+          ? (projects?.error ??
+            projects?.refreshError ??
+            (projects?.loaded && projects.partial && !projects.hasMore
+              ? "Could not check session folders."
+              : null))
+          : null
+  const hasError = value.uploadActionError || folderError || uploadError
+  const canCheckFolders = !!folderError && value.cloud.setupError !== cloudCaptureUnsupported
+  const paging = projects?.paging
+  const pagingUnavailable =
+    value.busy || starting || projects?.loading || !!paging || projects?.scopeInvalid
   const focusUploadSwitch = () => {
     const folders = document.getElementById(foldersId)
     const switchControl = folders?.parentElement?.querySelector<HTMLElement>(
@@ -1000,20 +1040,23 @@ function CloudProjectsAccount({
       : saveRecovery === "retry" || saveRecovery === "check"
         ? "Check Cloud"
         : "Review folders"
+  const checkFoldersInPrimary = canCheckFolders && !saveRecovery && !canSubmit
   const primaryLabel = saveRecovery
     ? saveRecoveryLabel
-    : hasSavedFolders
-      ? "Sync now"
-      : "Start syncing"
-  const primaryBlocked = !saveRecovery && !canSubmit
+    : checkFoldersInPrimary
+      ? "Check again"
+      : hasSavedFolders
+        ? "Sync now"
+        : "Start syncing"
+  const primaryBlocked = !saveRecovery && !canSubmit && !checkFoldersInPrimary
   const keepPrimaryFocusable =
     syncActionBusy || (primaryBlocked && (scanning || !!projects?.loading))
   const recoverFolderSave = async () => {
     if (saveRecoveryLabel === "Check Cloud") {
-      await session.load()
+      await session.retryFolderScope()
     } else {
       document.getElementById(foldersId)?.focus()
-      if (saveRecovery === "refresh") await session.loadProjects()
+      if (saveRecovery === "refresh") await session.retryFolderScope()
     }
     session.clearUploadActionError(value.uploadActionError)
   }
@@ -1024,14 +1067,15 @@ function CloudProjectsAccount({
         id={foldersId}
         role="group"
         aria-label="Cloud folders"
-        className="@container relative border-t border-separator"
+        className="@container border-t border-separator"
         description={`Uploads include full sessions from approved folders.${draftFolders.some((group) => group.repositoryWide) || (move?.to && moveGroup?.repositoryWide) ? " Matching Git checkouts are included." : ""}`}
       >
-        {!coldFolderLoad && projects?.loading && !projects.retrying && (
-          <span role="status" className="absolute end-4 top-3 text-label-secondary">
-            <LoaderCircle size={13} className="motion-safe:animate-spin" aria-hidden />
-            <span className="sr-only">Checking folders…</span>
-          </span>
+        {!!visibleGroups?.length && projects?.loading && !projects.scopeInvalid && (
+          <p className="mt-2 type-footnote text-label-secondary" role="status">
+            {retryingFolders
+              ? cloudDiscoveryRetryMessage(projects.retryStage)
+              : "Checking Cloud workspace access…"}
+          </p>
         )}
         <div className="grid min-h-32 @min-[30rem]:min-h-24">
           <CloudFolderList groups={visibleGroups}>
@@ -1063,6 +1107,8 @@ function CloudProjectsAccount({
                   savedDestination && moveSourcePolicy(value, savedDestination)?.policyRevision
                 const canMove =
                   !value.cloud.setupError &&
+                  !projects.loading &&
+                  !projects.scopeInvalid &&
                   (multipleWorkspaces || !!pendingMove) &&
                   !!savedDestination &&
                   !!sourceRevision &&
@@ -1092,9 +1138,14 @@ function CloudProjectsAccount({
                       : (savedPersonal && !policy?.policyRevision) ||
                           (canMove && move && !pendingMove)
                         ? "Saved"
-                        : !hasSavedControl && (value.cloud.setupError || projects.error)
-                          ? "Uploads unavailable"
-                          : null)
+                        : !hasSavedControl && projects.loading
+                          ? "Not ready"
+                          : !hasSavedControl &&
+                              (value.cloud.setupError ||
+                                projects.error ||
+                                projects.scopeInvalid)
+                            ? "Uploads unavailable"
+                            : null)
                 return (
                   <div
                     key={group.id}
@@ -1288,28 +1339,18 @@ function CloudProjectsAccount({
         {projects?.hasMore && (
           <button
             className="ui-push-button mt-3"
-            aria-disabled={
-              value.busy ||
-              starting ||
-              projects.loading ||
-              !!projects.paging ||
-              projects.scopeInvalid ||
-              undefined
-            }
+            aria-disabled={pagingUnavailable || undefined}
+            aria-busy={!!paging || undefined}
+            aria-describedby={paging ? pagingStatusId : undefined}
             onClick={(event) => {
-              if (
-                value.busy ||
-                starting ||
-                projects.loading ||
-                projects.paging ||
-                projects.scopeInvalid
-              )
-                return
+              if (pagingUnavailable) return
               void changeFolderWithFocus(
                 event.currentTarget,
                 foldersId,
                 undefined,
-                session.loadMoreProjects,
+                async () => {
+                  await session.loadMoreProjects()
+                },
               )
             }}
           >
@@ -1318,23 +1359,34 @@ function CloudProjectsAccount({
         )}
       </SettingsRow>
       <footer className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 border-t border-separator px-4 py-2">
-        <div className="flex min-h-[var(--control-height-regular)] min-w-0 flex-col gap-1.5 type-footnote text-label-secondary wrap-anywhere">
-          {showFolderRetryStatus && (
-            <p role="status">{cloudDiscoveryRetryMessage(projects.retryStage)}</p>
-          )}
-          {projects?.paging && (
-            <p role="status">
-              {projects.paging === "retrying"
-                ? "Still checking for more folders."
-                : "Loading more folders…"}
-            </p>
-          )}
+        <div className="flex min-h-8 min-w-0 flex-col justify-center gap-1.5 type-footnote text-label-secondary wrap-anywhere">
           {value.uploadActionError && (
             <CloudFolderWarning id={uploadActionWarningId}>
               {value.uploadActionError}
             </CloudFolderWarning>
           )}
-          {folderError && <CloudFolderWarning>{folderError}</CloudFolderWarning>}
+          {folderError && (
+            <CloudFolderWarning
+              id={folderWarningId}
+              action={
+                canCheckFolders && !checkFoldersInPrimary ? (
+                  <button
+                    type="button"
+                    className="ui-push-button min-h-8 aria-disabled:opacity-50"
+                    aria-describedby={folderWarningId}
+                    aria-disabled={syncActionBusy || undefined}
+                    onClick={() => {
+                      if (!syncActionBusy) void session.retryFolderScope()
+                    }}
+                  >
+                    Check again
+                  </button>
+                ) : undefined
+              }
+            >
+              {folderError}
+            </CloudFolderWarning>
+          )}
           {uploadError && (
             <CloudFolderWarning
               action={
@@ -1355,7 +1407,7 @@ function CloudProjectsAccount({
           )}
           {teamPolicies.map(([id, team]) => {
             if (!team.projects.length) return null
-            if (projects?.loading && team.status === "storage_unavailable") return null
+            if (checkingUploadStatus && team.status === "storage_unavailable") return null
             const unavailable =
               projects?.workspaces &&
               !projects.workspaces.some(({ id: workspaceId }) => workspaceId === id)
@@ -1392,6 +1444,16 @@ function CloudProjectsAccount({
               </CloudFolderWarning>
             )
           })}
+          {showFolderRetryStatus && (
+            <p role="status">{cloudDiscoveryRetryMessage(projects.retryStage)}</p>
+          )}
+          {paging && (
+            <p id={pagingStatusId} role="status">
+              {paging === "loading"
+                ? "Loading more folders…"
+                : "Still checking for more folders."}
+            </p>
+          )}
           {needDeviceSwitch && (
             <button
               type="button"
@@ -1493,7 +1555,7 @@ function CloudProjectsAccount({
                       name={showName ? name : undefined}
                       policy={destinationPolicy}
                       deviceEnabled={value.deviceUploadEnabled}
-                      checkingStatus={projects?.loading}
+                      checkingStatus={checkingUploadStatus}
                       workspaceUnavailable={workspaceUnavailable}
                     />
                     {(scanning || progress) && (
@@ -1535,9 +1597,15 @@ function CloudProjectsAccount({
           disabled={primaryBlocked && !keepPrimaryFocusable}
           aria-disabled={keepPrimaryFocusable || undefined}
           aria-busy={!!syncPhase || scanning || undefined}
-          aria-describedby={saveRecovery ? uploadActionWarningId : undefined}
-          aria-description={
+          aria-describedby={
             saveRecovery
+              ? uploadActionWarningId
+              : checkFoldersInPrimary
+                ? folderWarningId
+                : undefined
+          }
+          aria-description={
+            saveRecovery || checkFoldersInPrimary
               ? undefined
               : move
                 ? "Apply the selected workspace change to this folder."
@@ -1549,7 +1617,9 @@ function CloudProjectsAccount({
           }
           onClick={(event) => {
             if (syncActionBusy) return
-            if (scanRetry && canRetryAction) {
+            if (checkFoldersInPrimary) {
+              void session.retryFolderScope()
+            } else if (scanRetry && canRetryAction) {
               void runSavedSync()
             } else if (!saveRecovery || (saveRecovery === "retry" && canRetryAction)) {
               void runSync(event.currentTarget)

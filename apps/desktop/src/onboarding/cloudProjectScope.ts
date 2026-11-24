@@ -102,8 +102,8 @@ export interface ProjectScopeObserver {
   receiveWorkspace: (value: CloudWorkspaceRecovery) => void
 }
 
-/** Verify the first page's account and workspace scope before reading folders.
- * Keep newer desktop events and report null if local setup is still unavailable.
+/** Verify account and workspace scope before the user can approve folders.
+ * Keep newer desktop events. A null result means local setup is still unavailable.
  */
 export async function readCloudProjectScope(
   port: CloudPort,
@@ -111,13 +111,14 @@ export async function readCloudProjectScope(
   binding: CloudDestinationBinding,
   signal: AbortSignal,
   observer: ProjectScopeObserver,
+  request: <T>(read: () => Promise<T>) => Promise<T>,
   onExtendedRetry?: (stage: "setup" | "workspaces") => void,
 ): Promise<readonly CloudWorkspace[] | null | undefined> {
   const setupError = observer.getSnapshot().cloud.setupError
   if (setupError && setupError !== cloudCaptureUnsupported) {
     const revision = observer.accountRevision()
     const cloud = await retryCloudRead(
-      port.read,
+      () => request(port.read),
       signal,
       (value) => !!value.setupError && value.setupError !== cloudCaptureUnsupported,
       onExtendedRetry && (() => onExtendedRetry("setup")),
@@ -131,7 +132,7 @@ export async function readCloudProjectScope(
   const previous = observer.getSnapshot()
   let unavailableReads = 0
   const status = await retryCloudRead(
-    ongoing.status,
+    () => request(ongoing.status),
     signal,
     (value) =>
       (value?.status === "storage_unavailable" ||
@@ -169,7 +170,7 @@ export async function readCloudProjectScope(
     !!items &&
     !items.some(({ id, kind }) => id === binding.destinationId && kind === "personal")
   const workspaces = await retryCloudRead(
-    () => verifyWorkspaces(binding),
+    () => request(() => verifyWorkspaces(binding)),
     signal,
     undefined,
     onExtendedRetry && (() => onExtendedRetry("workspaces")),

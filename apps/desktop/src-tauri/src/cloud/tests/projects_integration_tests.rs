@@ -1,11 +1,5 @@
 use super::*;
-use crate::cloud::{
-    auth::{
-        self, AccountSession, Config, EligibleWorkspace, TokenRequest, Tokens, Transport, Vault,
-    },
-    state::StateStore,
-};
-use std::{fs, sync::Arc};
+use std::fs;
 
 const ORIGIN: &str = "https://api.example";
 
@@ -249,7 +243,9 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
 
     tauri::async_runtime::block_on(async {
         let environment = antiburn_local::platform::environment::DiscoveryEnvironment::Native;
-        let common = worktree_common_dir(&environment, &linked).await.unwrap();
+        let common = worktree_common_dir(&environment, &linked, None)
+            .await
+            .unwrap();
         let output = antiburn_local::platform::git::run_git_output_in_environment(
             &environment,
             Some(&linked),
@@ -420,6 +416,19 @@ fn expired_origin_budget_keeps_plain_folders_but_does_not_group_unproved_git() {
         ..RequestOrigins::default()
     };
     assert!(matches!(expired.get(plain), ProjectOrigin::Incomplete));
+}
+
+#[test]
+fn exact_git_listing_does_not_start_after_its_deadline() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkout = directory.path().canonicalize().unwrap();
+    run_test_git(&checkout, &["init", "--quiet"]);
+    let path = checkout.to_str().unwrap();
+    assert!(context("native", path).complete);
+    let expired = Some(tokio::time::Instant::now());
+    let checked = context_for_path(path, Ok(Some(&checkout)), expired);
+    assert!(checked.inspection_incomplete);
+    assert!(checked.folders.is_empty());
 }
 
 #[test]
@@ -654,7 +663,7 @@ fn project_discovery_reports_git_inspection_failure_without_selecting_the_folder
         std::io::Error::from(std::io::ErrorKind::PermissionDenied),
         std::io::Error::from(std::io::ErrorKind::Other),
     ] {
-        let checked = context_for_path(&fixture.project, Err(error));
+        let checked = context_for_path(&fixture.project, Err(error), None);
         assert!(checked.inspection_incomplete);
         assert!(!checked.complete);
         assert!(checked.folders.is_empty());
@@ -727,42 +736,9 @@ fn settings_project_removes_unavailable_bindings_by_exact_folder_and_group_id() 
     assert!(group_projects_to_remove(&id, &[worktree.into()], &overlapping).is_err());
 }
 
-struct Authority;
-
-impl Transport for Authority {
-    fn exchange(&self, _: &Config, _: &TokenRequest<'_>) -> Result<Tokens, auth::Failure> {
-        Ok(Tokens {
-            access_token: "synthetic-access".into(),
-            refresh_token: "synthetic-refresh".into(),
-            expires_in: 900,
-            token_type: "Bearer".into(),
-            grant_id: "synthetic-grant".into(),
-            user_id: "synthetic-user".into(),
-            legacy_workspace_claim: false,
-            grant_expires_at: "1970-01-01T02:46:40Z".into(),
-            scope: "capture:write".into(),
-            resource: ORIGIN.into(),
-            iss: ORIGIN.into(),
-        })
-    }
-    fn session(&self, _: &Config, _: &str) -> Result<AccountSession, auth::Failure> {
-        Ok(crate::cloud::tests::session().into())
-    }
-    fn workspaces(&self, _: &Config, _: &str) -> Result<Vec<EligibleWorkspace>, auth::Failure> {
-        Ok(vec![EligibleWorkspace {
-            workspace: crate::cloud::tests::session().workspace,
-            membership_generation: None,
-        }])
-    }
-    fn revoke(&self, _: &Config, _: &str) -> Result<(), auth::Failure> {
-        Ok(())
-    }
-}
-
 struct Fixture {
     directory: tempfile::TempDir,
     store: Store,
-    engine: Engine,
     cache: Cache,
     source: SourceSelection,
     project: String,
@@ -792,23 +768,6 @@ impl Fixture {
         drop(connection);
         let store = Store::open(&base).unwrap();
         store.initialize_cloud_setup().unwrap();
-        let vault: Box<dyn Vault> = Box::new(Arc::new(crate::cloud::tests::MemoryVault::default()));
-        let mut engine = Engine::new(
-            Config::parse(ORIGIN, ORIGIN),
-            vault,
-            Box::new(Authority),
-            StateStore::new(&base),
-        )
-        .with_clock(|| 100);
-        let (_, _listener, attempt) = engine.begin(100, 0).unwrap();
-        engine
-            .callback(
-                &attempt,
-                auth::Callback::Code("synthetic".into()),
-                100,
-                || true,
-            )
-            .unwrap();
         let project = project.to_str().unwrap().to_owned();
         let mut cache = Cache::default();
         cache.contexts.insert(
@@ -827,7 +786,6 @@ impl Fixture {
         Self {
             directory,
             store,
-            engine,
             cache,
             project,
             source: SourceSelection {
@@ -841,6 +799,14 @@ impl Fixture {
         DestinationBinding {
             account_id: "synthetic-user".into(),
             destination_id: "synthetic-personal".into(),
+        }
+    }
+
+    fn authority(&self) -> ListingAuthority {
+        ListingAuthority {
+            binding: self.binding(),
+            generation: 3,
+            expires_at: 100,
         }
     }
 
@@ -864,15 +830,15 @@ impl Fixture {
     }
 
     fn discover(&mut self, known: Vec<SourceSelection>) -> Discovery {
-        let binding = self.binding();
+        let authority = self.authority();
         discover_projects(
             &self.store,
             &mut self.cache,
-            &self.engine,
-            &binding,
+            &authority,
             None,
             (known, false),
             &|| true,
+            tokio::time::Instant::now() + Duration::from_secs(60),
         )
         .unwrap()
     }
@@ -1011,7 +977,7 @@ fn first_save_accepts_a_folder_with_complete_evidence_from_only_one_source() {
             rusqlite::params![transcript.to_str().unwrap(), fixture.project],
         )
         .unwrap();
-    let known = known_sources(&fixture.store, Vec::new()).unwrap();
+    let known = known_sources(&fixture.store, Vec::new(), &|| true).unwrap();
     let discovery = fixture.discover(known.0);
     assert!(discovery.partial);
     let group = &discovery.groups[0];
@@ -1079,16 +1045,21 @@ fn cloud_project_discovery_selected_custom_opencode_file_produces_groups_without
 #[test]
 fn cloud_project_discovery_uses_default_opencode_source_without_saving_consent() {
     let mut fixture = Fixture::new();
-    let binding = fixture.binding();
-    let known = known_sources(&fixture.store, [PathBuf::from(&fixture.source.path)]).unwrap();
+    let authority = fixture.authority();
+    let known = known_sources(
+        &fixture.store,
+        [PathBuf::from(&fixture.source.path)],
+        &|| true,
+    )
+    .unwrap();
     let discovery = discover_projects(
         &fixture.store,
         &mut fixture.cache,
-        &fixture.engine,
-        &binding,
+        &authority,
         None,
         known,
         &|| true,
+        tokio::time::Instant::now() + PROJECT_LISTING_BUDGET,
     )
     .unwrap();
 
@@ -1134,32 +1105,81 @@ fn cloud_project_discovery_does_not_reuse_another_accounts_saved_provider_access
         account_id: "another-account".into(),
         destination_id: "synthetic-personal".into(),
     };
-    assert!(
-        discover_projects(
-            &fixture.store,
-            &mut fixture.cache,
-            &fixture.engine,
-            &wrong,
-            None,
-            (Vec::new(), false),
-            &|| true
-        )
-        .is_err()
-    );
+    let authority = fixture.authority();
+    assert!(authority.matches(&fixture.binding(), 3, 99));
+    assert!(!authority.matches(&wrong, 3, 99));
+    assert!(!authority.matches(&fixture.binding(), 4, 99));
+    assert!(!authority.matches(&fixture.binding(), 3, 100));
+    let other_workspace = DestinationBinding {
+        account_id: "synthetic-user".into(),
+        destination_id: "another-workspace".into(),
+    };
+    assert!(!authority.matches(&other_workspace, 3, 99));
     fixture.save_source("synthetic-user", "synthetic-personal", true);
-    let current = fixture.binding();
     assert!(
         discover_projects(
             &fixture.store,
             &mut fixture.cache,
-            &fixture.engine,
-            &current,
+            &authority,
             None,
             (Vec::new(), false),
-            &|| false
+            &|| false,
+            tokio::time::Instant::now() + PROJECT_LISTING_BUDGET,
         )
         .is_err()
     );
+}
+
+#[test]
+fn cloud_project_discovery_expired_budget_keeps_suggestions_without_claiming_source_proof() {
+    let mut fixture = Fixture::new();
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    fixture
+        .store
+        .lock()
+        .execute(
+            "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,
+                cwd,first_seen_at,last_seen_at,updated_at_epoch)
+             VALUES('native','opencode','synthetic-id','providerDb','synthetic-source',
+                ?1,'synthetic','synthetic',1)",
+            [&fixture.project],
+        )
+        .unwrap();
+    let authority = fixture.authority();
+    let discovery = discover_projects(
+        &fixture.store,
+        &mut fixture.cache,
+        &authority,
+        None,
+        (Vec::new(), false),
+        &|| true,
+        tokio::time::Instant::now(),
+    )
+    .unwrap();
+    assert!(discovery.partial);
+    assert!(discovery.source_roots.is_empty());
+    assert_eq!(discovery.groups.len(), 1);
+    assert_eq!(discovery.groups[0].path, fixture.project);
+    assert!(!discovery.groups[0].capture_supported);
+    assert!(discovery.groups[0].projects.is_empty());
+    assert!(fixture.cache.evidence.is_empty());
+}
+
+#[test]
+fn cloud_project_discovery_rechecks_scope_before_returning() {
+    let mut fixture = Fixture::new();
+    let authority = fixture.authority();
+    let first_check = std::cell::Cell::new(true);
+    let result = discover_projects(
+        &fixture.store,
+        &mut fixture.cache,
+        &authority,
+        None,
+        (Vec::new(), false),
+        &|| first_check.replace(false),
+        tokio::time::Instant::now(),
+    );
+    assert!(matches!(result, Err(error) if error == "Cloud account changed."));
 }
 
 #[test]
@@ -1257,7 +1277,7 @@ fn cloud_project_discovery_uses_recorded_claude_code_sources_at_the_production_b
         )
         .unwrap();
     fixture.cache = Cache::default();
-    let known = known_sources(&fixture.store, Vec::new()).unwrap();
+    let known = known_sources(&fixture.store, Vec::new(), &|| true).unwrap();
     assert!(!known.1);
     assert_eq!(
         known.0,
@@ -1364,7 +1384,12 @@ fn cloud_project_discovery_does_not_report_ordinary_opencode_pages_as_inspection
         )
         .unwrap();
     drop(connection);
-    let known = known_sources(&fixture.store, vec![PathBuf::from(&fixture.source.path)]).unwrap();
+    let known = known_sources(
+        &fixture.store,
+        vec![PathBuf::from(&fixture.source.path)],
+        &|| true,
+    )
+    .unwrap();
     let discovery = fixture.discover(known.0);
     assert!(!discovery.partial);
     assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
@@ -1572,7 +1597,12 @@ fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_
             [&fixture.project],
         )
         .unwrap();
-    let known = known_sources(&fixture.store, vec![PathBuf::from(&fixture.source.path)]).unwrap();
+    let known = known_sources(
+        &fixture.store,
+        vec![PathBuf::from(&fixture.source.path)],
+        &|| true,
+    )
+    .unwrap();
     let discovery = fixture.discover(known.0.clone());
     let selected = discovery
         .groups

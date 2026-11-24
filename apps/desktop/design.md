@@ -1084,10 +1084,16 @@ Notes for what isn't expressible as a token:
   before completing search focus. When Model usage has no visible content, its
   search result focuses the Model-based checks group without selecting a control.
   Keep the standard separation between groups.
-- **Cloud folder settings**: Keep Save in one compact footer row. Use the space
-  beside Save for status and recovery actions without moving the button or
-  the folder rows. Use the standard push button's short background and opacity
-  transition, with the global reduced-motion limit.
+- **Cloud folder settings**: Keep the primary action in a compact footer. Use the
+  space beside it for status and recovery actions. Align a single line of status
+  or error text with the button. Align the alert icon with the first line when
+  text wraps. Keep the button at the top of its column as the text grows.
+  Use the standard push button's short background and opacity transition,
+  with the global reduced-motion limit. Show a loading row before the first
+  results and status text when the user requests another page. Use a short
+  status if workspace verification blocks new selections. Do not show a
+  spinner or advisory warning when a partial read or refresh leaves usable
+  folders. Pair a blocking read error with **Check again**.
 - **CLI settings pane** — present the CLI as an internal runtime managed by antiburn.
   Add the purpose-led pane description: “Helps antiburn share check findings with
   your coding agents.” The card explains automatic management by antiburn.

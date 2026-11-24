@@ -95,7 +95,18 @@ impl Store {
                 source_id TEXT NOT NULL,
                 record_json TEXT NOT NULL CHECK(length(record_json) <= 16384),
                 PRIMARY KEY(account_id, destination_id, source_id)
-            );",
+             );
+             CREATE INDEX IF NOT EXISTS cloud_session_cwd
+                 ON session(environment_key, cwd, agent)
+                 WHERE cwd IS NOT NULL AND cwd <> '' AND length(CAST(cwd AS BLOB)) <= 4096;
+             CREATE INDEX IF NOT EXISTS cloud_opencode_cwd
+                 ON session(environment_key, agent, cwd, session_id)
+                 WHERE environment_key = 'native' AND wsl_distro IS NULL
+                   AND agent = 'opencode' AND source_kind = 'providerDb';
+             CREATE INDEX IF NOT EXISTS cloud_claude_source
+                 ON session(environment_key, agent, source_label)
+                 WHERE environment_key = 'native' AND wsl_distro IS NULL
+                   AND agent = 'claude-code' AND source_kind = 'file';",
         )?;
         transaction.commit()?;
         Ok(())

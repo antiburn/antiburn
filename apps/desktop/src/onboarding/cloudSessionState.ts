@@ -55,7 +55,7 @@ export interface CloudViewSnapshot {
     /** Discovery is still running after the initial quick attempts. */
     retrying?: boolean
     /** Extra pages do not invalidate the verified choices already shown. */
-    paging?: "loading" | "retrying" | undefined
+    paging?: "loading" | "retrying" | "pending" | undefined
     retryStage?: "setup" | "workspaces" | "folders" | undefined
     scopeInvalid?: boolean
     loaded: boolean
@@ -63,6 +63,8 @@ export interface CloudViewSnapshot {
     hasMore: boolean
     needsChoiceReview: boolean
     error: string | null
+    /** The current list remains usable after a folder-only refresh failure. */
+    refreshError?: string | undefined
     selectionKey: string
   } | null
   /** Desktop-owned ongoing policy and transfer counters, separate from local agents. */

@@ -312,12 +312,16 @@ it("keeps Start disabled while workspace availability is loading or missing", as
   expect(await screen.findByText(/Checking workspace destinations/)).toBeVisible()
   const start = screen.getByRole("button", { name: "Start syncing" })
   expect(start).toBeDisabled()
-  expect(screen.queryByRole("switch")).not.toBeInTheDocument()
+  const provisional = await screen.findByRole("switch", { name: /Sync Studio/ })
+  expect(provisional).toBeDisabled()
+  expect(provisional).not.toBeChecked()
+  expect(ongoing.groups).toHaveBeenCalledOnce()
   await waitFor(() => expect(port.workspaces).toHaveBeenCalledOnce())
   await act(async () => finish([team]))
   expect(await screen.findByText(/Workspace availability could not be confirmed/)).toBeVisible()
   expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
+  expect(provisional).toBeDisabled()
   expect(start).toBeDisabled()
   expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
@@ -544,11 +548,7 @@ it.each([
   render(
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
-  expect(
-    await screen.findByText(
-      page.partial ? "Still checking session folders." : "Folder discovery is incomplete.",
-    ),
-  ).toBeVisible()
+  expect(await screen.findByText("Folder discovery is incomplete.")).toBeVisible()
   expect(screen.queryByText(/No project folders found/)).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
@@ -641,7 +641,7 @@ it("reloads account setup before retrying discovery after a setup failure", asyn
   act(() => emit({ setupError: "Synthetic setup failure" }))
   expect(screen.queryByText("Synthetic setup failure")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
-  expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  expect(ongoing.groups).toHaveBeenCalledOnce()
   await act(async () =>
     finish({
       groups: [],
@@ -650,7 +650,7 @@ it("reloads account setup before retrying discovery after a setup failure", asyn
       partial: false,
     }),
   )
-  expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+  expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
   expect(screen.queryByText(/No project folders found/)).not.toBeInTheDocument()
   expect(ongoing.groups).toHaveBeenCalledTimes(2)
   expect(ongoing.enable).not.toHaveBeenCalled()

@@ -46,10 +46,15 @@ it.each([
   expect(screen.queryByText("Antiburn Cloud is coming soon")).not.toBeInTheDocument()
   expect(await screen.findByText("Signed in as Example")).toBeVisible()
   expect(screen.queryByRole("button", { name: "Check again" })).not.toBeInTheDocument()
-  expect(await screen.findByText("Loading folders…")).toBeVisible()
+  expect(await screen.findByText("Checking Cloud workspace access…")).toBeVisible()
   const binding = { accountId: "synthetic-account", destinationId: "synthetic-personal" }
   await waitFor(() => expect(workspaces).toHaveBeenCalledExactlyOnceWith(binding))
-  expect(ongoing.groups).not.toHaveBeenCalled()
+  expect(screen.getByText("Studio", { selector: "strong" })).toBeVisible()
+  expect(screen.queryByRole("switch", { name: /Sync Studio/ })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  )
   expect(ongoing.enable).not.toHaveBeenCalled()
 
   finishVerification()
