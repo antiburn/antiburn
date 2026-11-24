@@ -2864,7 +2864,8 @@ async fn guarded_repo_admission(
     if access != ProjectAccessDecision::Allowed {
         return RepoAdmission::DeferredProject(cwd.to_path_buf(), access);
     }
-    let known_folder = non_repository_cwds.is_some_and(|cwds| cwds.lock().unwrap().contains(cwd));
+    let known_folder =
+        non_repository_cwds.is_some_and(|cwds| cwds.lock().is_ok_and(|paths| paths.contains(cwd)));
     let root = if known_folder {
         Ok(None)
     } else {
@@ -2875,12 +2876,13 @@ async fn guarded_repo_admission(
         // Only a CWD that Git reports as outside every repository can move
         // to a repository below it or stay as a folder.
         Ok(None) => {
-            if !known_folder && let Some(cwds) = non_repository_cwds {
-                const CWD_LIMIT: usize = 1024;
-                let mut cwds = cwds.lock().unwrap();
-                if cwds.len() < CWD_LIMIT {
-                    cwds.insert(cwd.to_path_buf());
-                }
+            const CWD_LIMIT: usize = 1024;
+            if !known_folder
+                && let Some(cwds) = non_repository_cwds
+                && let Ok(mut paths) = cwds.lock()
+                && paths.len() < CWD_LIMIT
+            {
+                paths.insert(cwd.to_path_buf());
             }
         }
         Err(error) => {
