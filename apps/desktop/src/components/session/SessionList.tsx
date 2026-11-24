@@ -110,6 +110,8 @@ export interface SessionListProps {
     autoLoad: boolean
     /** Reset the search budget when the active filters change. */
     filterKey: string
+    /** Report a manual continuation button activation. */
+    onManualLoad?: (failed: boolean) => void
     onLoadMore: () => Promise<void>
   }
   /** Calendar-day window for finished sessions. Also drives the empty copy. */
@@ -1087,6 +1089,7 @@ export function SessionList({
         <PushButton
           ref={preserveFooterFocus}
           onClick={() => {
+            continuation.onManualLoad?.(continuation.failed)
             if (!continuation.failed) {
               searchDemand.current = { key: searchKey, attempts: 1 }
               setExhaustedSearch(null)

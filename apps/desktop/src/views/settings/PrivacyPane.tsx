@@ -236,7 +236,7 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                   the promise below stops being true.
 
                   The list lets a reader count every field. */}
-              <p>The schema has thirty-one fields, and these are all of them:</p>
+              <p>The schema has thirty-three fields, and these are all of them:</p>
               {/* `pl-7`, not the `pl-4` this started as. Root font-size here
                   is 13px, so `pl-4` is 13px of padding — less than the disc
                   marker's own 17.5px advance, which left the bullets painting
@@ -247,6 +247,11 @@ export function PrivacyPane({ settings, update, loaded, info }: PrivacyPaneProps
                 <li>A random id for the message, so a retry is not counted twice.</li>
                 <li>A random installation id.</li>
                 <li>A random id for a window of captured analytics events.</li>
+                <li>A random id for events from one visible session detail visit.</li>
+                <li>
+                  Coarse session context, including agent, environment, activity, session kind,
+                  entry route, recency range, and combined check badge category.
+                </li>
                 <li>The event name, such as &ldquo;a scan finished&rdquo;.</li>
                 <li>When it happened.</li>
                 <li>When it was delivered.</li>

@@ -1,11 +1,26 @@
 import { Search, X } from "lucide-react"
 import { useCallback, useId, useRef, useState, useSyncExternalStore } from "react"
 import { appInfoStore } from "../../lib/appInfoStore"
-import { groupAppResults, type AppSearchResult } from "../../lib/appSearch"
+import {
+  groupAppResults,
+  resolveSettingsSearchTarget,
+  type AppSearchResult,
+} from "../../lib/appSearch"
+import { noteSessionFilter } from "../../lib/sessionAnalytics"
 import {
   AppSearchCheckAvailability,
   type AppSearchCheckAvailabilityState,
 } from "./AppSearchCheckAvailability"
+
+function sessionSearchDestination({
+  target,
+}: AppSearchResult): "sessions" | "agent" | "settings" | null {
+  if (target.kind === "view" && target.section === "activity")
+    return target.filters?.agents.length ? "agent" : "sessions"
+  if (target.kind === "setting" && resolveSettingsSearchTarget(target).pane === "sessions")
+    return "settings"
+  return null
+}
 
 export function AppSearch({
   onChoose,
@@ -28,6 +43,7 @@ export function AppSearch({
   const input = useRef<HTMLInputElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const choosing = useRef(false)
+  const edited = useRef(false)
   const live = useRef(false)
   const id = useId()
   const groups = groupAppResults(
@@ -40,15 +56,32 @@ export function AppSearch({
   const results = groups.flatMap((group) => group.results)
   const active = results.find((result) => result.id === selectedId) ?? results[0]
 
+  function dismiss() {
+    if (choosing.current) return
+    noteSessionFilter(
+      !edited.current
+        ? "search_dismissed"
+        : results.length > 0
+          ? "search_dismissed_with_results"
+          : availability.loading || availability.error || availability.snapshot === null
+            ? "search_dismissed_results_unavailable"
+            : "search_dismissed_no_results",
+    )
+    onClose()
+  }
+
   async function choose(result: AppSearchResult) {
     if (choosing.current) return
     choosing.current = true
+    const destination = sessionSearchDestination(result)
+    if (destination) noteSessionFilter(`search_${destination}_attempted`)
     setPending(true)
     setError(false)
     // Release modal focus before the destination reveals its own target.
     dialog.current?.close()
     try {
       await onChoose(result)
+      if (destination) noteSessionFilter(`search_${destination}_opened`)
       if (live.current) onClose()
     } catch {
       if (live.current) {
@@ -87,7 +120,7 @@ export function AppSearch({
       ref={mountDialog}
       onCancel={(event) => {
         event.preventDefault()
-        onClose()
+        dismiss()
       }}
       onClick={(event) => {
         if (event.target !== event.currentTarget) return
@@ -98,7 +131,7 @@ export function AppSearch({
           event.clientY < bounds.top ||
           event.clientY > bounds.bottom
         )
-          onClose()
+          dismiss()
       }}
     >
       <div className="flex items-center gap-3 border-b border-separator px-4 py-2">
@@ -115,7 +148,9 @@ export function AppSearch({
           placeholder="Search views, features, settings and checks…"
           maxLength={200}
           value={query}
+          onClick={() => noteSessionFilter("search_field_clicked")}
           onChange={(event) => {
+            edited.current = true
             setQuery(event.target.value)
             setSelectedId(null)
             setError(false)
@@ -146,7 +181,7 @@ export function AppSearch({
           type="button"
           aria-label="Close search"
           className="main-window-tool"
-          onClick={onClose}
+          onClick={dismiss}
         >
           <X size={16} aria-hidden="true" />
         </button>
@@ -165,7 +200,10 @@ export function AppSearch({
             type="button"
             className="ui-push-button"
             disabled={availability.loading}
-            onClick={() => void retryAvailability.current?.()}
+            onClick={() => {
+              noteSessionFilter("search_retry_checks")
+              void retryAvailability.current?.()
+            }}
           >
             Retry
           </button>

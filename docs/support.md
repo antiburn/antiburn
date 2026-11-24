@@ -366,11 +366,14 @@ signed bundle and restarts antiburn. The app never depends on either connection.
   and require the next package to be installed manually.
 - **Anonymised product analytics** are the one thing antiburn reports to us.
   Official release builds start with it on, including during the first run. The switch
-  is in Settings → Privacy. The event schema has thirty-one fields and
+  is in Settings → Privacy. The event schema has thirty-three fields and
   no others: the constant `desktop`; a random per-message id used to discard
   duplicate deliveries; a random installation identifier that persists across
   restarts and upgrades without scheduled replacement;
-  a random analytics-session identifier; the event name; the time it happened and the time it was delivered; the
+  a random analytics-session identifier; a random ID for events from one visible
+  session detail visit; coarse context about the selected session, including
+  the agent, environment, activity, kind, entry route, recency range, and combined
+  check badge category; the event name; the time it happened and the time it was delivered; the
   processor architecture; a count rounded into a range where the event has one;
   a short label naming a surface, Settings pane, provider, setting, agent
   category, or failure category, never work content or an entered value; a

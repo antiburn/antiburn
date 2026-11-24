@@ -24,6 +24,8 @@ export type SurfaceExposure = {
   /** Local identity for visible content within one surface. This value never leaves the renderer. */
   identity?: string | number
   state?: SurfaceState | null
+  /** Match readiness to the visible main-window detail visit. */
+  sessionVisit?: string
 }
 
 export type LiveUsageObservation = {
@@ -36,6 +38,7 @@ type ActiveExposure = {
   surface: Surface
   origin: SurfaceOrigin
   identity: string | number | undefined
+  sessionVisit: string | undefined
   states: Set<SurfaceState>
   liveUsageStates: Set<string>
 }
@@ -135,7 +138,8 @@ export class SurfaceExposureTracker {
       current &&
       current.surface === exposure.surface &&
       current.origin === exposure.origin &&
-      current.identity === exposure.identity
+      current.identity === exposure.identity &&
+      current.sessionVisit === exposure.sessionVisit
     ) {
       if (exposure.state) this.observe(exposure.state, current.generation)
       else this.resumeTimeout(current.generation)
@@ -149,6 +153,7 @@ export class SurfaceExposureTracker {
       surface: exposure.surface,
       origin: exposure.origin,
       identity: exposure.identity,
+      sessionVisit: exposure.sessionVisit,
       states: new Set(),
       liveUsageStates: new Set(),
     }
@@ -171,6 +176,15 @@ export class SurfaceExposureTracker {
     if (!active || generation !== active.generation || active.states.has(state)) return
     active.states.add(state)
     if (state !== "loading_timeout") this.clearTimeout()
+    if (active.surface === "session_detail" && active.sessionVisit) {
+      noteInteraction({
+        kind: "sessionDetailStateObserved",
+        visit: active.sessionVisit,
+        state,
+        origin: active.origin,
+      })
+      return
+    }
     noteInteraction({
       kind: "surfaceStateObserved",
       surface: active.surface,

@@ -1,3 +1,4 @@
+import { noteInteraction } from "../../../lib/ipc"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import { BellRing, Clock } from "lucide-react"
 import { useState } from "react"
@@ -21,7 +22,9 @@ export function RemindLaterAction({ detector }: { detector: CheckId }) {
     try {
       if (action === "unsnooze") await unsnoozeBurnCheck(detector)
       else await snoozeBurnCheck(detector, action)
+      noteInteraction({ kind: "burnCheckReminderCompleted", action, outcome: "succeeded" })
     } catch {
+      noteInteraction({ kind: "burnCheckReminderCompleted", action, outcome: "failed" })
       setFailedAction(action)
     } finally {
       setPending(false)

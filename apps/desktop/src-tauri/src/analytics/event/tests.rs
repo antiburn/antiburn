@@ -29,6 +29,8 @@ fn assert_closed_payload(
     event.event = event_name.as_str().to_owned();
     event.properties = Properties {
         arch: "aarch64",
+        session_context: facts.session_context,
+        session_visit_id: facts.session_visit_id,
         bucket: facts.bucket,
         label: facts.label,
         detail: facts.detail,
@@ -779,6 +781,18 @@ fn sample() -> Event {
         original_timestamp: "2026-08-18T00:00:00Z".into(),
         properties: Properties {
             arch: "aarch64",
+            session_context: Some(
+                serde_json::from_value(serde_json::json!({
+                    "agent": "codex", "environment": "native", "activity": "active",
+                    "sessionKind": "session", "entryRoute": "session_list",
+                    "recency": "up_to_3h", "checkBadge": "unknown"
+                }))
+                .expect("session context"),
+            ),
+            session_visit_id: Some(
+                serde_json::from_value(serde_json::json!("44444444-4444-4444-8444-444444444444"))
+                    .expect("visit ID"),
+            ),
             bucket: Some("10-49"),
             label: Some("claude-code"),
             detail: Some("native"),
@@ -986,7 +1000,7 @@ fn reading_coverage_is_covered_within_an_hour_of_the_windows_end() {
 /// `apps/desktop/src/views/settings/PrivacyPane.tsx` is the bug this
 /// comment exists to prevent.
 #[test]
-fn the_wire_payload_is_exactly_these_thirty_one_fields() {
+fn the_wire_payload_is_exactly_these_thirty_three_fields() {
     let json = serde_json::to_value(sample()).expect("serializes");
     let object = json.as_object().expect("an object");
     let mut keys: Vec<_> = object.keys().map(String::as_str).collect();
@@ -1034,6 +1048,8 @@ fn the_wire_payload_is_exactly_these_thirty_one_fields() {
             "residualBand",
             "resourceUsage",
             "responseShape",
+            "sessionContext",
+            "sessionVisitId",
             "unexplainedBand",
             "unrecognizedTypes",
             "usageBand",
@@ -1074,6 +1090,8 @@ fn no_user_or_organisation_identity_is_ever_carried() {
 #[test]
 fn absent_optional_fields_are_omitted_rather_than_null() {
     let mut event = sample();
+    event.properties.session_context = None;
+    event.properties.session_visit_id = None;
     event.properties.bucket = None;
     event.properties.label = None;
     event.properties.detail = None;
@@ -1096,6 +1114,8 @@ fn absent_optional_fields_are_omitted_rather_than_null() {
     event.properties.resource_usage = None;
     event.properties.unrecognized_types = None;
     let json = serde_json::to_string(&event).expect("serializes");
+    assert!(!json.contains("sessionContext"), "{json}");
+    assert!(!json.contains("sessionVisitId"), "{json}");
     assert!(!json.contains("bucket"), "{json}");
     assert!(!json.contains("label"), "{json}");
     assert!(!json.contains("detail"), "{json}");
@@ -1282,6 +1302,13 @@ fn no_variant_escapes_the_catalog() {
             | EventName::SettingToggled
             | EventName::AnalyticsOptedOut
             | EventName::SessionOpened
+            | EventName::SessionDetailViewed
+            | EventName::SessionDetailTabSelected
+            | EventName::SessionDetailInteraction
+            | EventName::SessionFilterInteraction
+            | EventName::SessionFilterResultsObserved
+            | EventName::SessionMetricSelected
+            | EventName::BurnCheckReminderCompleted
             | EventName::ErrorOccurred
             | EventName::UnrecognizedRecordsObserved
             | EventName::SurfaceViewed
@@ -1330,7 +1357,7 @@ fn no_variant_escapes_the_catalog() {
     }
     assert_eq!(
         EVERY_EVENT.len(),
-        50,
+        57,
         "a variant was added to the match above but not to EVERY_EVENT"
     );
     assert!(EVERY_EVENT.iter().copied().all(listed));
@@ -1436,7 +1463,7 @@ fn every_document_that_counts_the_fields_counts_the_same_number() {
         23 => "twenty-three",
         27 => "twenty-seven",
         28 => "twenty-eight",
-        31 => "thirty-one",
+        33 => "thirty-three",
         other => panic!("no word for {other} fields; add one and update the documents"),
     };
 
@@ -2125,4 +2152,96 @@ fn promotion_interactions_resolve_only_closed_actions_and_origins() {
     ] {
         assert!(serde_json::from_value::<Interaction>(value).is_err());
     }
+}
+
+#[test]
+fn session_visit_interactions_accept_only_closed_context_and_uuid_v4() {
+    let visit = "44444444-4444-4444-8444-444444444444";
+    let context = serde_json::json!({
+        "agent": "codex",
+        "environment": "native",
+        "activity": "active",
+        "sessionKind": "session",
+        "entryRoute": "popover",
+        "recency": "up_to_3h",
+        "checkBadge": "mixed",
+    });
+    for (input, expected) in [
+        (
+            serde_json::json!({ "kind": "popoverSessionOpened", "visit": visit, "context": context }),
+            EventName::SessionOpened,
+        ),
+        (
+            serde_json::json!({ "kind": "sessionDetailViewed", "visit": visit, "context": context, "origin": "user" }),
+            EventName::SessionDetailViewed,
+        ),
+        (
+            serde_json::json!({ "kind": "sessionDetailTabSelected", "visit": visit, "context": context, "tab": "cost" }),
+            EventName::SessionDetailTabSelected,
+        ),
+        (
+            serde_json::json!({ "kind": "sessionDetailInteraction", "visit": visit, "context": context, "action": "limits_expanded" }),
+            EventName::SessionDetailInteraction,
+        ),
+    ] {
+        let (name, facts) = serde_json::from_value::<Interaction>(input)
+            .unwrap()
+            .resolve();
+        assert_eq!(name, expected);
+        assert_eq!(
+            serde_json::to_value(facts.session_context).unwrap(),
+            context
+        );
+        assert_eq!(serde_json::to_value(facts.session_visit_id).unwrap(), visit);
+    }
+    let readiness = serde_json::json!({
+        "kind": "sessionDetailStateObserved", "visit": visit, "state": "ready", "origin": "user",
+    });
+    let (name, facts) = serde_json::from_value::<Interaction>(readiness)
+        .unwrap()
+        .resolve();
+    assert_eq!(name, EventName::SurfaceStateObserved);
+    assert_eq!(facts.label, Some("session_detail"));
+    assert_eq!(facts.detail, Some("ready"));
+    assert_eq!(serde_json::to_value(facts.session_visit_id).unwrap(), visit);
+    assert!(facts.session_context.is_none());
+
+    for action in ["open_subagent", "open_orchestrator"] {
+        let input = serde_json::json!({
+            "kind": "sessionDetailInteraction", "visit": visit, "context": context, "action": action,
+        });
+        let (name, facts) = serde_json::from_value::<Interaction>(input)
+            .unwrap()
+            .resolve();
+        assert_eq!(name, EventName::SessionDetailInteraction);
+        assert_eq!(facts.label, Some(action));
+        assert_eq!(serde_json::to_value(facts.session_visit_id).unwrap(), visit);
+    }
+
+    let (name, facts) = serde_json::from_value::<Interaction>(serde_json::json!({
+        "kind": "sessionFilterInteraction", "action": "search_dismissed_results_unavailable",
+    }))
+    .unwrap()
+    .resolve();
+    assert_eq!(name, EventName::SessionFilterInteraction);
+    assert_eq!(facts.label, Some("search_dismissed_results_unavailable"));
+    assert!(facts.session_context.is_none());
+    assert!(facts.session_visit_id.is_none());
+
+    for invalid in [
+        serde_json::json!({ "kind": "sessionDetailViewed", "visit": "raw-id", "context": context, "origin": "user" }),
+        serde_json::json!({ "kind": "sessionDetailViewed", "visit": "44444444-4444-1444-8444-444444444444", "context": context, "origin": "user" }),
+        serde_json::json!({ "kind": "sessionDetailViewed", "visit": visit, "context": context, "origin": "user", "sessionId": "raw-id" }),
+        serde_json::json!({ "kind": "sessionFilterInteraction", "action": "filter_menu_opened", "visit": visit }),
+        serde_json::json!({ "kind": "sessionMetricSelected", "metric": "some model", "surface": "popover" }),
+        serde_json::json!({ "kind": "burnCheckReminderCompleted", "action": "week", "outcome": "failed", "detector": "private" }),
+    ] {
+        assert!(serde_json::from_value::<Interaction>(invalid).is_err());
+    }
+    let mut extra_context = context;
+    extra_context["title"] = "private title".into();
+    let invalid = serde_json::json!({
+        "kind": "sessionDetailViewed", "visit": visit, "context": extra_context, "origin": "user"
+    });
+    assert!(serde_json::from_value::<Interaction>(invalid).is_err());
 }

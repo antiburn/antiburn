@@ -1,3 +1,12 @@
+import type {
+  SessionContext,
+  SessionDetailAction,
+  SessionDetailTab,
+  SessionFilterControl,
+  SessionFilterResult,
+  SessionMetric,
+  SessionMetricSurface,
+} from "./sessionAnalytics"
 import { settingsSearchRequest, type SettingsControlId } from "./settingsSearchTargets"
 /**
  * Typed shell IPC edge, including re-exported feature edges.
@@ -386,6 +395,39 @@ export type Interaction =
       origin: SurfaceOrigin
     }
   | { kind: "sessionOpened"; agent: string; environment: "native" | "wsl" | "remote" }
+  | { kind: "popoverSessionOpened"; context: SessionContext; visit?: string }
+  | {
+      kind: "sessionDetailViewed"
+      context: SessionContext
+      visit?: string
+      origin: SurfaceOrigin
+    }
+  | {
+      kind: "sessionDetailStateObserved"
+      visit: string
+      state: SurfaceState
+      origin: SurfaceOrigin
+    }
+  | {
+      kind: "sessionDetailTabSelected"
+      tab: SessionDetailTab
+      context: SessionContext
+      visit?: string
+    }
+  | {
+      kind: "sessionDetailInteraction"
+      action: SessionDetailAction
+      context: SessionContext
+      visit?: string
+    }
+  | { kind: "sessionFilterInteraction"; action: SessionFilterControl }
+  | { kind: "sessionFilterResultsObserved"; result: SessionFilterResult }
+  | { kind: "sessionMetricSelected"; metric: SessionMetric; surface: SessionMetricSurface }
+  | {
+      kind: "burnCheckReminderCompleted"
+      action: "week" | "month" | "forever" | "unsnooze"
+      outcome: "succeeded" | "failed"
+    }
   | { kind: "surfaceViewed"; surface: Surface; origin: SurfaceOrigin }
   | {
       kind: "surfaceStateObserved"

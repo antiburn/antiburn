@@ -578,6 +578,7 @@ describe("PopoverView", () => {
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("open_main_window_session", {
+        sessionVisit: expect.any(String),
         target: {
           agent: "claude-code",
           sessionId: "session-abc-123",
@@ -614,6 +615,7 @@ describe("PopoverView", () => {
 
     await waitFor(() =>
       expect(invoke).toHaveBeenCalledWith("open_main_window_session", {
+        sessionVisit: expect.any(String),
         target: {
           agent: "claude-code",
           sessionId: "session-abc-123",
@@ -771,26 +773,31 @@ describe("PopoverView", () => {
     ).toHaveAccessibleName("Usage and spend")
   })
 
-  it("notes an opened session as an agent and an environment, and nothing else", async () => {
+  it("records coarse session context and passes the random visit to navigation", async () => {
     render(<PopoverView />)
 
     fireEvent.click(await screen.findByText("Wire the tray popover"))
 
     const notes = invoke.mock.calls.filter(([name]) => name === "note_interaction")
-    // The card records exactly one activity-to-session transition.
     expect(notes).toHaveLength(1)
-    expect(invoke).toHaveBeenCalledWith("note_interaction", {
-      interaction: { kind: "sessionOpened", agent: "claude-code", environment: "native" },
+    const interaction = (notes[0]?.[1] as { interaction: { visit: string } }).interaction
+    expect(interaction).toEqual({
+      kind: "popoverSessionOpened",
+      visit: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      context: {
+        agent: "claude-code",
+        environment: "native",
+        activity: expect.stringMatching(/^(active|inactive)$/),
+        sessionKind: "session",
+        entryRoute: "popover",
+        recency: expect.any(String),
+        checkBadge: expect.any(String),
+      },
     })
-    // The shape is the guarantee. Nothing identifying the session itself may
-    // ride along, and the shell would refuse it if it did — this asserts the
-    // caller does not even try.
-    const [, payload] = invoke.mock.calls.find(([name]) => name === "note_interaction") ?? []
-    expect(Object.keys((payload as { interaction: object }).interaction).sort()).toEqual([
-      "agent",
-      "environment",
-      "kind",
-    ])
+    expect(invoke).toHaveBeenCalledWith("open_main_window_session", {
+      target: expect.objectContaining({ agent: "claude-code" }),
+      sessionVisit: interaction.visit,
+    })
   })
 
   it("asks for provider usage with the reader own offset and shows the usage-limits bar", async () => {

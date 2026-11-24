@@ -249,9 +249,12 @@ function generatedAtEpoch(generatedAt: string): number | null {
 export function SessionQuotaSection({
   sessionQuota,
   onOpenQuota,
+  onExpand,
 }: {
   sessionQuota: SessionQuotaPayload | null
   onOpenQuota: (target: SessionQuotaOpenTarget) => void
+  /** Called when the reader explicitly opens the section. */
+  onExpand?: () => void
 }) {
   const expanded = useLimitsExpanded()
   if (!sessionQuota || sessionQuota.entries.length === 0) return null
@@ -274,7 +277,10 @@ export function SessionQuotaSection({
     >
       <button
         type="button"
-        onClick={toggleLimitsExpanded}
+        onClick={() => {
+          if (!expanded) onExpand?.()
+          toggleLimitsExpanded()
+        }}
         aria-expanded={expanded}
         className="flex w-full items-center justify-between gap-x-3 rounded-control px-1 py-1 text-left type-body cursor-pointer! transition-colors duration-[var(--duration-fast)] ease-out hover:bg-surface-hover active:opacity-100"
       >

@@ -20,6 +20,8 @@ interface MainWindowNavigationDestination {
 export interface MainWindowNavigationRequest {
   revision: number
   destination: MainWindowNavigationDestination
+  sessionEntry?: "popover" | "burn_check_sample"
+  sessionVisit?: string
 }
 
 export interface MainWindowHealthCheckRequest {
@@ -71,9 +73,15 @@ export async function getMainWindowVisible(): Promise<boolean> {
 }
 
 /** Open or focus the main window and select one exact local session. */
-export async function openMainWindowSession(target: MainWindowSessionIdentity): Promise<void> {
+export async function openMainWindowSession(
+  target: MainWindowSessionIdentity,
+  sessionVisit?: string,
+): Promise<void> {
   if (!isTauri()) return
-  await invoke("open_main_window_session", { target })
+  await invoke("open_main_window_session", {
+    target,
+    ...(sessionVisit ? { sessionVisit } : {}),
+  })
 }
 
 /** Open or focus the main window and select one top-level section. */

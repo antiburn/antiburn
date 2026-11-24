@@ -1,3 +1,4 @@
+import { sessionContext } from "../../lib/sessionAnalytics"
 import type * as MemoriesIpcModule from "../../lib/memoriesIpc"
 import type * as IpcModule from "../../lib/ipc"
 import type * as SubjectModule from "../../lib/sessionSubject"
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   openSessionActivityStream: vi.fn(),
   listOverviewSessions: vi.fn().mockResolvedValue([]),
   getMainWindowVisible: vi.fn(),
+  peekMainWindowNavigationTarget: vi.fn(),
   existingMainWindowSessionTargets: vi.fn(),
   getLiveUsage: vi.fn(),
   getSessionLimitAllocations: vi.fn(),
@@ -46,6 +48,7 @@ vi.mock("../../lib/ipc", async (importOriginal) => {
     ...actual,
     ...mocks,
     onMainWindowVisibilityChanged: subscribe("visibility"),
+    onMainWindowNavigationTarget: subscribe("navigationTarget"),
     onSettingsChanged: subscribe("settings"),
     onSessionIndexChanged: subscribe("index"),
     onSessionUpdated: subscribe("update"),
@@ -136,6 +139,7 @@ beforeEach(() => {
   mocks.getSettings.mockResolvedValue(DEFAULT_SETTINGS)
   mocks.setSettings.mockImplementation(async (settings) => settings)
   mocks.getMainWindowVisible.mockResolvedValue(true)
+  mocks.peekMainWindowNavigationTarget.mockReset().mockResolvedValue(null)
   mocks.existingMainWindowSessionTargets.mockImplementation(async (targets) => targets)
   const now = Date.now()
   mocks.listRecentSessions.mockResolvedValue([
@@ -910,13 +914,31 @@ describe("MainActivitySession", () => {
     expect(mocks.getLiveUsage).toHaveBeenCalledTimes(usageCalls)
   })
 
+  function commitDetail(session: MainActivitySession) {
+    const subject = session.getSnapshot().subject
+    if (!subject) throw new Error("Expected a subject")
+    const key = sessionKey(subject)
+    session.presentDetail(
+      key,
+      sessionContext(subject, {
+        route: "return",
+        isActive: undefined,
+        snoozed: new Set(),
+        now: Date.now(),
+      }),
+    )
+    return key
+  }
+
   it("records automatic default-session exposure without sending identity", async () => {
     const { session } = start()
     await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().analysis).not.toBeNull())
+    commitDetail(session)
     await vi.waitFor(() =>
       expect(mocks.noteInteraction).toHaveBeenCalledWith({
-        kind: "surfaceStateObserved",
-        surface: "session_detail",
+        kind: "sessionDetailStateObserved",
+        visit: expect.any(String),
         state: "ready",
         origin: "automatic",
       }),
@@ -947,6 +969,8 @@ describe("MainActivitySession", () => {
     )
 
     session.subscribe(() => {})
+    await vi.waitFor(() => expect(session.getSnapshot().active).toBe(true))
+    commitDetail(session)
     await vi.waitFor(() =>
       expect(mocks.noteInteraction).toHaveBeenCalledWith({
         kind: "surfaceViewed",
@@ -964,7 +988,9 @@ describe("MainActivitySession", () => {
     mocks.noteInteraction.mockClear()
 
     session.selectEntry(session.getSnapshot().entries![1]!)
+    commitDetail(session)
     session.openRelated({ agent: "claude", sessionId: "related", wslDistro: null })
+    commitDetail(session)
 
     expect(
       mocks.noteInteraction.mock.calls.filter(
@@ -984,11 +1010,13 @@ describe("MainActivitySession", () => {
     else mocks.loadSessionAnalysis.mockResolvedValue(result)
     const { session } = start()
     await ready(session)
+    await vi.waitFor(() => expect(session.getSnapshot().analysis).not.toBeNull())
+    commitDetail(session)
 
     await vi.waitFor(() =>
       expect(mocks.noteInteraction).toHaveBeenCalledWith({
-        kind: "surfaceStateObserved",
-        surface: "session_detail",
+        kind: "sessionDetailStateObserved",
+        visit: expect.any(String),
         state,
         origin: "automatic",
       }),
@@ -1004,6 +1032,7 @@ describe("MainActivitySession", () => {
 
     session.clearSelection()
     session.selectEntry(selected)
+    commitDetail(session)
 
     expect(mocks.noteInteraction).toHaveBeenCalledWith({
       kind: "surfaceViewed",
@@ -1011,6 +1040,167 @@ describe("MainActivitySession", () => {
       origin: "user",
     })
   })
+
+  it("links a popover request to one visible visit and replaces the ID on return", async () => {
+    const visit = "44444444-4444-4444-8444-444444444444"
+    const { session } = start()
+    await ready(session)
+    session.restoreNavigation(
+      parseSessionFilters("all"),
+      { agent: "codex", sessionId: "linked", wslDistro: null },
+      "user",
+      false,
+      false,
+      { route: "popover", visit },
+    )
+    expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "sessionDetailViewed", visit }),
+    )
+
+    const key = commitDetail(session)
+    commitDetail(session)
+    session.noteDetailAction(key, { kind: "sessionDetailTabSelected", tab: "cost" })
+    session.noteDetailAction(key, {
+      kind: "sessionDetailInteraction",
+      action: "limits_expanded",
+    })
+    session.noteDetailAction(key, {
+      kind: "sessionDetailInteraction",
+      action: "limits_expanded",
+    })
+    session.presentDetail(null)
+    session.noteDetailAction(key, { kind: "sessionDetailTabSelected", tab: "tools" })
+    commitDetail(session)
+
+    const payloads = mocks.noteInteraction.mock.calls.map(([payload]) => payload)
+    const views = payloads.filter(({ kind }) => kind === "sessionDetailViewed")
+    expect(views).toEqual([
+      expect.objectContaining({
+        visit,
+        context: expect.objectContaining({ entryRoute: "popover" }),
+      }),
+      expect.objectContaining({
+        visit: expect.not.stringMatching(visit),
+        context: expect.objectContaining({ entryRoute: "return" }),
+      }),
+    ])
+    expect(payloads.filter(({ kind }) => kind === "sessionDetailTabSelected")).toEqual([
+      expect.objectContaining({ visit, tab: "cost" }),
+    ])
+    expect(payloads.filter(({ kind }) => kind === "sessionDetailInteraction")).toEqual([
+      expect.objectContaining({ visit, action: "limits_expanded" }),
+    ])
+  })
+
+  it("waits for a pending popover target when window visibility arrives first", async () => {
+    vi.stubGlobal("__ANTIBURN_WINDOW_GENERATION__", 7)
+    const { session } = start()
+    const navigation = new MainWindowNavigationSession(session)
+    const stop = navigation.subscribe(() => {})
+    try {
+      await ready(session)
+      commitDetail(session)
+      mocks.events.get("visibility")!(false)
+      mocks.noteInteraction.mockClear()
+      const visit = "44444444-4444-4444-8444-444444444444"
+      const target = { agent: "codex", sessionId: "target", wslDistro: null }
+      const request = {
+        revision: 1,
+        destination: { section: "activity", target },
+        sessionEntry: "popover",
+        sessionVisit: visit,
+      }
+      const pending = deferred<typeof request>()
+      mocks.peekMainWindowNavigationTarget.mockReturnValueOnce(pending.promise)
+      mocks.events.get("visibility")!(true)
+      commitDetail(session)
+      expect(mocks.noteInteraction).not.toHaveBeenCalled()
+
+      pending.resolve(request)
+      await vi.waitFor(() => expect(session.getSnapshot().active).toBe(true))
+      expect(session.getSnapshot().subject).toEqual(target)
+      commitDetail(session)
+      mocks.events.get("navigationTarget")!(request)
+      commitDetail(session)
+      expect(
+        mocks.noteInteraction.mock.calls
+          .map(([event]) => event)
+          .filter(({ kind }) => kind === "sessionDetailViewed"),
+      ).toEqual([
+        expect.objectContaining({
+          visit,
+          context: expect.objectContaining({ entryRoute: "popover" }),
+        }),
+      ])
+    } finally {
+      stop()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("retires the visible visit and any pending visit ID across consent changes", async () => {
+    const { session } = start()
+    await ready(session)
+    const key = commitDetail(session)
+    const pendingId = "44444444-4444-4444-8444-444444444444"
+    const subject = session.getSnapshot().subject!
+    const settings = mocks.events.get("settings")!
+
+    settings({ ...DEFAULT_SETTINGS, analyticsEnabled: false })
+    session.restoreNavigation(parseSessionFilters("all"), subject, "user", false, false, {
+      route: "popover",
+      visit: pendingId,
+    })
+    commitDetail(session)
+    session.noteDetailAction(key, { kind: "sessionDetailTabSelected", tab: "tools" })
+    settings(DEFAULT_SETTINGS)
+    commitDetail(session)
+    session.noteDetailAction(key, { kind: "sessionDetailTabSelected", tab: "cost" })
+
+    const events = mocks.noteInteraction.mock.calls.map(([event]) => event)
+    const views = events.filter(({ kind }) => kind === "sessionDetailViewed")
+    expect(views).toHaveLength(2)
+    expect(views[1].visit).toEqual(expect.any(String))
+    expect(views[1].visit).not.toBe(views[0].visit)
+    expect(views[1].visit).not.toBe(pendingId)
+    expect(events.filter(({ kind }) => kind === "sessionDetailTabSelected")).toEqual([
+      expect.objectContaining({ tab: "cost", visit: views[1].visit }),
+    ])
+  })
+
+  it.each([
+    { filtered: false, route: "session_list" },
+    { filtered: true, route: "filtered_list" },
+  ])(
+    "attributes reopening the same concealed session to $route",
+    async ({ filtered, route }) => {
+      const { session } = start()
+      await ready(session)
+      const entry = session.getSnapshot().entries![0]!
+      commitDetail(session)
+      if (filtered) session.setSpendFilter("notable")
+      session.selectEntry(entry)
+      commitDetail(session)
+      session.presentDetail(null)
+      session.selectEntry(entry)
+      commitDetail(session)
+
+      const views = mocks.noteInteraction.mock.calls
+        .map(([payload]) => payload)
+        .filter(({ kind }) => kind === "sessionDetailViewed")
+      expect(views).toEqual([
+        expect.objectContaining({
+          origin: "automatic",
+          context: expect.objectContaining({ entryRoute: "automatic" }),
+        }),
+        expect.objectContaining({
+          origin: "user",
+          context: expect.objectContaining({ entryRoute: route }),
+        }),
+      ])
+      expect(views[1]?.visit).not.toBe(views[0]?.visit)
+    },
+  )
 
   it("leaves older sessions unselected", async () => {
     const yesterday = new Date()

@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { CollectionDetailPane, type CollectionItem } from "./CollectionDetailPane"
@@ -22,6 +23,30 @@ function Workspace({ entries = items }: { entries?: CollectionItem[] }) {
 
 describe("CollectionDetailPane", () => {
   afterEach(() => vi.unstubAllGlobals())
+
+  it("ends detail presentation on removal, without ending it on a rerender or ref replay", async () => {
+    const onDetailUnmount = vi.fn()
+    const show = (selection: CollectionItem) => (
+      <StrictMode>
+        <CollectionDetailPane
+          title="Collection"
+          items={items}
+          selection={selection}
+          emptyMessage="Empty"
+          detailEmptyMessage="Select"
+          renderDetail={(item) => item.label}
+          onDetailPresentation={() => {}}
+          onDetailUnmount={onDetailUnmount}
+        />
+      </StrictMode>
+    )
+    const view = render(show(items[0]!))
+    view.rerender(show(items[1]!))
+    await act(async () => {})
+    expect(onDetailUnmount).not.toHaveBeenCalled()
+    view.unmount()
+    await waitFor(() => expect(onDetailUnmount).toHaveBeenCalledOnce())
+  })
 
   it("returns to the wide collection after external detail and accepts a newer reveal", async () => {
     vi.stubGlobal("innerWidth", 1200)

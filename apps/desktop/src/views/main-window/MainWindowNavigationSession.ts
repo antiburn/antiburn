@@ -1,3 +1,4 @@
+import type { SessionNavigationHint } from "../../lib/sessionAnalytics"
 import {
   acknowledgeMainWindowNavigationTarget,
   existingMainWindowSessionTargets,
@@ -118,6 +119,7 @@ export class MainWindowNavigationSession {
     }
     activity.onDeleted = (subject) => this.pruneSubject(subject)
     activity.onSessionInventoryInvalidated = () => this.requestDeletedSubjectReconciliation()
+    activity.beforeWindowVisible = () => this.peek(this.generation)
   }
 
   getSnapshot = (): MainWindowNavigationSnapshot => this.snapshot
@@ -147,15 +149,19 @@ export class MainWindowNavigationSession {
     this.navigate({ section })
   }
 
-  navigate(destination: MainDestination, revealDetail = true): void {
-    this.commit(destination, false, "user")
+  navigate(
+    destination: MainDestination,
+    revealDetail = true,
+    hint?: SessionNavigationHint,
+  ): void {
+    this.commit(destination, false, "user", hint)
     if (revealDetail) this.revealDetail()
   }
 
   back = (): void => {
     if (this.index === 0) return
     this.index -= 1
-    this.restore("user")
+    this.restore("user", false, false, { route: "history" })
     this.revealDetail()
     noteInteraction({ kind: "navigationHistoryMoved", direction: "back" })
   }
@@ -163,7 +169,7 @@ export class MainWindowNavigationSession {
   forward = (): void => {
     if (this.index >= this.history.length - 1) return
     this.index += 1
-    this.restore("user")
+    this.restore("user", false, false, { route: "history" })
     this.revealDetail()
     noteInteraction({ kind: "navigationHistoryMoved", direction: "forward" })
   }
@@ -177,11 +183,13 @@ export class MainWindowNavigationSession {
     destination: MainDestination,
     replace: boolean,
     origin: "user" | "automatic",
+    hint?: SessionNavigationHint,
   ): void {
     const clearDefaultSelection = !replace && origin === "user" && destination.subject === null
     const normalized = normalizeDestination(destination, this.activity?.getSnapshot().filters)
     if (destinationKey(normalized) === destinationKey(this.history[this.index]!)) {
-      if (clearDefaultSelection) this.restore(origin, false, true)
+      if (clearDefaultSelection || hint)
+        this.restore(origin, false, clearDefaultSelection, hint)
       else if (!replace) this.publish()
       return
     }
@@ -194,13 +202,14 @@ export class MainWindowNavigationSession {
       this.index = this.history.length - 1
     }
     this.noteHistoryChanged()
-    this.restore(origin, !replace && origin === "user", clearDefaultSelection)
+    this.restore(origin, !replace && origin === "user", clearDefaultSelection, hint)
   }
 
   private restore(
     origin: "user" | "automatic",
     reportFilterSelection = false,
     clearDefaultSelection = false,
+    hint?: SessionNavigationHint,
   ): void {
     const destination = this.history[this.index]!
     this.restoring = true
@@ -216,6 +225,7 @@ export class MainWindowNavigationSession {
           origin,
           reportFilterSelection,
           clearDefaultSelection,
+          ...(hint ? ([hint] as const) : []),
         )
       }
     } finally {
@@ -407,7 +417,16 @@ export class MainWindowNavigationSession {
     if (request.revision > this.targetRevision) {
       this.targetRevision = request.revision
       this.snapshot = { ...this.snapshot, requests: this.snapshot.requests + 1 }
-      this.navigate(this.destinationForRequest(request))
+      this.navigate(
+        this.destinationForRequest(request),
+        true,
+        request.sessionEntry
+          ? {
+              route: request.sessionEntry,
+              ...(request.sessionVisit ? { visit: request.sessionVisit } : {}),
+            }
+          : undefined,
+      )
     }
     const generation = this.rendererGeneration()
     if (generation === null) return

@@ -72,12 +72,24 @@ pub struct NavigationDestination {
     target: Option<SessionTarget>,
 }
 
+/// The entry path of a targeted session request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SessionEntry {
+    Popover,
+    BurnCheckSample,
+}
+
 /// Revisioned request shared by the event and renderer recovery paths.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NavigationTargetRequest {
     revision: u64,
     destination: NavigationDestination,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_entry: Option<SessionEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_visit: Option<crate::analytics::session::SessionVisitId>,
 }
 
 #[derive(Clone, Debug)]
@@ -504,9 +516,20 @@ impl MainWindowState {
         &self,
         destination: NavigationDestination,
     ) -> NavigationTargetRequest {
+        self.request_navigation(destination, None, None)
+    }
+
+    fn request_navigation(
+        &self,
+        destination: NavigationDestination,
+        session_entry: Option<SessionEntry>,
+        session_visit: Option<crate::analytics::session::SessionVisitId>,
+    ) -> NavigationTargetRequest {
         let request = NavigationTargetRequest {
             revision: next_atomic_nonzero(&self.navigation_target_revision),
             destination,
+            session_entry,
+            session_visit,
         };
         let mut state = lock(&self.navigation_target);
         state.pending = Some(request.clone());
@@ -899,8 +922,15 @@ pub fn open(app: &AppHandle, trigger: OpenTrigger) -> tauri::Result<()> {
 /// [`crate::commands::open_settings_window`] for what a synchronous command
 /// costs on Windows.
 #[tauri::command]
-pub async fn open_main_window_session(app: AppHandle, target: SessionTarget) -> Result<(), String> {
-    on_main_value(&app, move |app| route_session_target(app, target)).await?
+pub async fn open_main_window_session(
+    app: AppHandle,
+    target: SessionTarget,
+    session_visit: Option<crate::analytics::session::SessionVisitId>,
+) -> Result<(), String> {
+    on_main_value(&app, move |app| {
+        route_session_target(app, target, SessionEntry::Popover, session_visit)
+    })
+    .await?
 }
 
 /// Return the bounded navigation targets that still exist in the local index.
@@ -949,16 +979,28 @@ fn existing_session_targets(
         .collect()
 }
 
-fn route_session_target(app: &AppHandle, target: SessionTarget) -> Result<(), String> {
+fn route_session_target(
+    app: &AppHandle,
+    target: SessionTarget,
+    entry: SessionEntry,
+    visit: Option<crate::analytics::session::SessionVisitId>,
+) -> Result<(), String> {
     ::tracing::info!(
         event = "main_window_open_source",
-        source = "popover_session"
+        source = match entry {
+            SessionEntry::Popover => "popover_session",
+            SessionEntry::BurnCheckSample => "burn_check_sample",
+        }
     );
     let state = app.state::<MainWindowState>();
-    let request = state.request_navigation_target(NavigationDestination {
-        section: MainWindowSection::Activity,
-        target: Some(target),
-    });
+    let request = state.request_navigation(
+        NavigationDestination {
+            section: MainWindowSection::Activity,
+            target: Some(target),
+        },
+        Some(entry),
+        visit,
+    );
     if let Err(error) = open(app, OpenTrigger::Interaction) {
         state.clear_navigation_target(request.revision);
         return Err(error.to_string());
@@ -1146,7 +1188,10 @@ pub async fn open_burn_check_sample(
         Ok(target) => target,
         Err(outcome) => return Ok(outcome),
     };
-    on_main_value(&app, move |app| route_session_target(app, target)).await??;
+    on_main_value(&app, move |app| {
+        route_session_target(app, target, SessionEntry::BurnCheckSample, None)
+    })
+    .await??;
     Ok(OpenBurnCheckSampleOutcome::Opened)
 }
 

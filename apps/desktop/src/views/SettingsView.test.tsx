@@ -792,7 +792,7 @@ describe("SettingsView", () => {
     // `every_document_that_counts_the_fields_counts_the_same_number` greps
     // this pane for that phrase, so it has to survive edits to this section.
     expect(
-      screen.getByText(/schema has thirty-one fields, and these are all of them/i),
+      screen.getByText(/schema has thirty-three fields, and these are all of them/i),
     ).toBeInTheDocument()
     for (const field of [
       /the word .desktop./i,
@@ -829,7 +829,7 @@ describe("SettingsView", () => {
     // neighbouring paragraph: the body is a sibling of nothing predictable,
     // and the id is the component's actual contract.
     const body = document.getElementById(enumeration.getAttribute("aria-controls") ?? "")
-    expect(body?.querySelectorAll("li")).toHaveLength(31)
+    expect(body?.querySelectorAll("li")).toHaveLength(33)
     // The exclusions live in the same body as the list, so a reader checking
     // one against the other does not have to open a second row to find them.
     expect(

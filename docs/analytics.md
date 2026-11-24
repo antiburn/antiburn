@@ -36,19 +36,17 @@ environment for a second, process-level opt-out.
 
 ## Exactly what the event schema can carry
 
-Thirty-one fields, and this is the whole list. Fourteen are the established
+Thirty-three fields, and this is the whole list. Fourteen are the established
 event envelope and general properties. The nine Claude reset fields are optional
 and appear only on `antiburn.claude_limit_reset_observed`. The three limit-factor
 fields are optional and appear only on `antiburn.limit_factor_observed`. The
 three quota-window fields are optional and appear only on
 `antiburn.quota_window_closed`. One nested resource summary appears only on
 `antiburn.resource_usage_observed`. One sanitized list of record type names is
-optional and appears only on `antiburn.unrecognized_records_observed`. The
-payload is a closed Rust struct
-([`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs))
-with no map and almost no free-form string — see `properties.unrecognizedTypes`
-below for the one bounded, sanitized exception — so there is nowhere for
-anything else to be put.
+optional and appears only on `antiburn.unrecognized_records_observed`. Two
+optional properties describe a session detail visit. The payload is a closed
+Rust struct ([`analytics/event.rs`](../apps/desktop/src-tauri/src/analytics/event.rs)).
+Session context uses fixed categories and the visit identifier is a random UUID.
 
 | Field                           | What it is                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Example                                 |
 | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
@@ -63,7 +61,9 @@ anything else to be put.
 | `properties.bucket`             | A count rounded into a range. Never exact.                                                                                                                                                                                                                                                                                                                                                                                                                        | `10-49`                                 |
 | `properties.label`              | A key from a closed vocabulary: surface, Settings pane, provider, setting, deterministic check, agent category, or failure category. Never work content or a user-selected value.                                                                                                                                                                                                                                                                                 | `activity`                              |
 | `properties.detail`             | A second value from a closed vocabulary, such as a visible state, action result, `user` or `automatic` origin, `native` versus `wsl`, or a usage window's `short` or `long` role.                                                                                                                                                                                                                                                                                 | `ready`                                 |
-| `properties.origin`             | Whether a state or promotion interaction belongs to a `user` or `automatic` exposure, or whether a Burn Check watch started as `passive` or `action`. Optional and present only on `antiburn.surface_state_observed`, `antiburn.burn_check_outcome_observed`, and `antiburn.promotion_interaction`.                                                                                                                                                               | `user`                                  |
+| `properties.origin`             | Whether a state or promotion interaction belongs to a `user` or `automatic` exposure, or whether a Burn Check watch started as `passive` or `action`. Optional and present only on `antiburn.surface_state_observed`, `antiburn.burn_check_outcome_observed`, `antiburn.promotion_interaction`, and `antiburn.session_detail_viewed`.                                                                                                                             | `user`                                  |
+| `properties.sessionContext`     | Fixed categories for a popover session click, main-window session view, pill switch, or detail action. Includes agent when recognized, environment, activity, session kind, entry route, recency, and check badge.                                                                                                                                                                                                                                                | `{"agent":"codex", …}`                  |
+| `properties.sessionVisitId`     | Random ID for one visible main-window session detail visit. A popover click can carry the same ID as its resulting view. Detail actions, pill switches, and visible readiness observations can also carry it.                                                                                                                                                                                                                                                     | `44444444-4444-4444-8444-444444444444`  |
 | `properties.usageBand`          | How close a usage window runs to its limit: `below_80`, `80_to_under_100`, `at_limit`, or `unknown`. On the Claude reset event, Claude's five-hour usage from the same reset-check response; on `antiburn.usage_observed`, the window named by `detail`.                                                                                                                                                                                                          | `80_to_under_100`                       |
 | `properties.responseShape`      | Whether `juniper_tide` was an `object`, `missing`, `null`, or `malformed`; also `invalid_json`, `malformed_envelope`, `not_received`, `unreadable`, or `not_requested` for request and envelope outcomes.                                                                                                                                                                                                                                                         | `object`                                |
 | `properties.eligibility`        | Claude's `eligible` boolean as `eligible` or `ineligible`, or `missing`, `null`, or `malformed`.                                                                                                                                                                                                                                                                                                                                                                  | `eligible`                              |
@@ -121,11 +121,9 @@ back that save, so the withdrawn identity and events cannot be reused.
 
 ### Agent and provider categories
 
-`antiburn.session_opened` carries the agent that recorded the session you
-opened — `claude-code`, `codex`, `cursor`, and so on, from the fixed list
-antiburn knows how to read. Nothing else about the session travels with it: not
-its title, not its repository, not its path, and not the name of your WSL
-distribution, which you chose and which would identify your machine.
+Session analytics use the fixed agent vocabulary, for example `claude-code`,
+`codex`, and `cursor`. Session titles, repository names, paths, native session
+identifiers, and WSL distribution names stay on the device.
 `antiburn.session_filters_changed` carries the same fixed agent list only when
 you add or remove an agent in the Sessions filters. Unknown agent slugs stay
 local. Earlier releases emit `antiburn.session_filter_selected` when you select
@@ -390,7 +388,7 @@ environment.
 | `antiburn.onboarding_step_viewed`        | Retired: earlier app versions still send it; the version that replaced the setup window with the first-run Overview and later versions do not. A fixed setup step became visible, recorded at most once per onboarding flow. The first-run Overview's funnel steps are now `antiburn.first_run_step_reached`.                                                                                                                                                                                                                                                                                                                | `label` — one of `welcome`, `agents_detected`, `sources_and_repos`, `ready`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `antiburn.scan_completed`                | A full discovery pass finishes and its session-count bucket differs from the previous reported outcome. The first full pass in a run is reported. Automatic full reconciliation runs at startup and about every five minutes; file watchers usually cause scoped passes, which emit no scan analytics.                                                                                                                                                                                                                                                                                                                       | `bucket` — how many sessions                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `antiburn.setting_toggled`               | A preference changes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `label` — one of `live_usage`, `notifications`, `launch_at_login`, `tray_icon`, `dock_icon`, `discovery_paused`, `include_non_repo_folders`. The key only; never the value.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `antiburn.session_opened`                | You open a session from the activity list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `label` — which agent recorded it, from the fixed list antiburn supports. `detail` — `native`, `wsl`, or `remote`. **Not** the session, its title, its repository, or the name of your WSL distribution.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `antiburn.session_opened`                | You open a session from the popover activity list.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `label` is the known agent, `detail` is `native`, `wsl`, or `remote`. Coarse context and a random visit ID can also appear.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `antiburn.analytics_opted_out`           | You turn analytics off.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | No event-specific properties. It is emitted only when analytics was configured and enabled; an environment opt-out, unavailable configuration, or missing identity emits nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `antiburn.surface_viewed`                | A native product surface becomes visible after a successful show or navigation transition. Prewarming, refreshes, remounts, resizes, and repeated show requests emit nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                | `label` — `activity`, `session_detail`, `provider_preview`, `checks_preview`, `burn_checks`, `hud`, `hud_detail`, `settings`, `quota`, `memories`, or `agents`. `detail` — `user` or `automatic`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `antiburn.settings_pane_viewed`          | A Settings pane is selected and visible. Repeating the current pane emits nothing. A direct pane link reports only the resulting pane. The Sources pane is retired; its rows are in the Agents and Sessions panes. The progress rows in the main-window sidebar open the Agents, Sessions, and Checks panes after the first run.                                                                                                                                                                                                                                                                                             | `label` — `general`, `agents`, `sessions`, `checks`, `appearance`, `privacy`, `notifications`, `usage`, or `about`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -643,6 +641,59 @@ The first-party endpoint stores the request IP address and user-agent with each
 raw event. Raw events have no automatic deletion schedule and are retained until
 the operator deletes them. See the [privacy policy](privacy-policy.md).
 
+### Session controls
+
+| Event                                      | When it fires                                                                                                     | Properties                                                                                           |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `antiburn.session_detail_viewed`           | A selected session detail is visible in the main window.                                                          | `sessionContext`, `sessionVisitId`, and `origin` of `user` or `automatic`.                           |
+| `antiburn.session_detail_tab_selected`     | You switch detail pills in the main window.                                                                       | `label` is `context`, `cost`, or `tools`, with context and visit ID.                                 |
+| `antiburn.session_detail_interaction`      | You activate a session detail control.                                                                            | The fixed action in [Session controls](#session-controls), with context and visit ID.                |
+| `antiburn.session_filter_interaction`      | You activate a search or Sessions filter control.                                                                 | The fixed action in [Session controls](#session-controls).                                           |
+| `antiburn.session_filter_results_observed` | A visible, deliberately filtered list has no matches yet, or no matches after the available results are resolved. | `label` is `results_pending` or `no_matches`.                                                        |
+| `antiburn.session_metric_selected`         | You switch the metric displayed on session rows.                                                                  | `label` is `cost`, `weekly_percent`, or `five_hour_percent`. `detail` is `popover` or `main_window`. |
+| `antiburn.burn_check_reminder_completed`   | An explicit Burn Check snooze or unsnooze attempt settles.                                                        | `label` is `week`, `month`, `forever`, or `unsnooze`. `detail` is `succeeded` or `failed`.           |
+
+The visit ID is generated at a popover click or when main-window detail becomes
+visible. An accepted popover open carries the click's ID into the resulting
+visit. The ID changes when you switch sessions or reopen a concealed detail.
+Turning analytics off ends the current visit. Turning it back on starts a new
+visit if detail is visible.
+The app keeps the active association in memory. Captured events follow the
+same queue and retention rules as other analytics. Main-window detail readiness
+can include this ID on `antiburn.surface_state_observed`.
+
+Session context includes these categories:
+
+- Environment is `native`, `wsl`, or `remote`.
+- Activity is `active`, `inactive`, or `unknown`. Session kind is `session` or `subagent`.
+- Entry route is `popover`, `session_list`, `filtered_list`, `adjacent`, `related`,
+  `burn_check_sample`, `history`, `automatic`, or `return`.
+- Recency is `up_to_3h`, `over_3h_to_24h`, `over_24h_to_7d`, `over_7d`, or `unknown`.
+- The check badge category is `passing`, `failing`, `mixed`, or `unknown`. It
+  reflects the available presentation after snoozes. Individual check results stay local.
+
+Detail action labels are `fork_menu_opened`, `open_parent`, `open_child`,
+`open_subagent`, `open_orchestrator`, `reveal_transcript`, `copy_path`,
+`copy_discussion_prompt`, `request_removal`,
+`open_project_folder`, `copy_project_path`, `open_quota`, `open_memory`,
+`pin_cost_series`, and `limits_expanded`.
+
+Search and filter labels are `search_field_clicked`, `search_dismissed`,
+`search_dismissed_no_results`, `search_dismissed_results_unavailable`,
+`search_dismissed_with_results`,
+`search_retry_checks`, `search_sessions_attempted`, `search_agent_attempted`,
+`search_settings_attempted`, `search_sessions_opened`, `search_agent_opened`,
+`search_settings_opened`, `filter_menu_opened`, `filter_menu_dismissed`,
+`all_agents`, `agent_option`, `result_all`, `result_passing`, `result_failing`,
+`spend_all`, `spend_notable`, `spend_material`, `remove_agent_chip`,
+`remove_result_chip`, `remove_spend_chip`, `clear_filters`,
+`change_time_range`, `find_older_matches`, and `retry_list`.
+These events carry no query, filter combinations, session context, or visit ID.
+When an edited search is dismissed with an empty result list, the outcome is
+`search_dismissed_results_unavailable` while check availability is loading
+or unavailable. A settled, successful availability read permits
+`search_dismissed_no_results`.
+
 ## Verifying this yourself
 
 Everything above is checkable on your own machine.
@@ -674,6 +725,14 @@ ANTIBURN_ANALYTICS_URL=http://127.0.0.1:8787 \
 ANTIBURN_ANALYTICS_OPERATOR="Local development" \
 pnpm tauri dev --features analytics --config src-tauri/tauri.debug.conf.json
 ```
+
+To verify session analytics, open a session from the popover, switch a detail
+pill, and activate a detail control. Compare the POST bodies for the click,
+view, readiness, and action. They share a visit ID. Reopen the detail and
+confirm the new ID. Use search and filters and verify their events omit the
+visit ID. Switch a list metric and exercise a Burn Check reminder. After
+turning analytics off in the test profile, repeat these actions and confirm
+that ordinary events stop.
 
 An empty queue makes no periodic network request. The first queued event starts
 a one-minute delivery timer; later arrivals do not move it. Reaching 50 queued
