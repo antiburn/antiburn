@@ -1,3 +1,5 @@
+import { newSessionVisitId, noteSessionMetric, sessionContext } from "../lib/sessionAnalytics"
+import { sessionHygieneFor } from "../lib/useSessionHygiene"
 import { useCallback, useRef, useState, useSyncExternalStore } from "react"
 
 import { AlertTriangle, ArrowUpRight } from "lucide-react"
@@ -277,25 +279,32 @@ export function PopoverView() {
               onOpenSession={(entry) => {
                 if (!entry.sessionId) return
                 void peekTriggers.leave()
-                // Record when the activity list leads to session detail.
-                // Keep this analytics event privacy-safe at the call site.
-                // Which agent, and native or WSL; never the distribution's
-                // name, which the reader chose.
+                const visit = newSessionVisitId()
                 noteInteraction({
-                  kind: "sessionOpened",
-                  agent: entry.agent,
-                  environment: entry.remoteHostId
-                    ? "remote"
-                    : entry.wslDistro
-                      ? "wsl"
-                      : "native",
+                  kind: "popoverSessionOpened",
+                  context: sessionContext(entry, {
+                    route: "popover",
+                    isActive: entry.isActive,
+                    hygiene: sessionHygieneFor(hygieneBySession, {
+                      agent: entry.agent,
+                      sessionId: entry.sessionId,
+                      wslDistro: entry.wslDistro ?? null,
+                      remoteHostId: entry.remoteHostId ?? null,
+                    }),
+                    snoozed: snoozedDetectors,
+                    now: Date.now(),
+                  }),
+                  ...(visit ? { visit } : {}),
                 })
-                void openMainWindowSession({
-                  agent: entry.agent,
-                  sessionId: entry.sessionId,
-                  wslDistro: entry.wslDistro ?? null,
-                  ...(entry.remoteHostId ? { remoteHostId: entry.remoteHostId } : {}),
-                })
+                void openMainWindowSession(
+                  {
+                    agent: entry.agent,
+                    sessionId: entry.sessionId,
+                    wslDistro: entry.wslDistro ?? null,
+                    ...(entry.remoteHostId ? { remoteHostId: entry.remoteHostId } : {}),
+                  },
+                  visit,
+                )
               }}
               renderAgentIcon={renderAgentIcon}
               viewportRef={restoreListScroll}
@@ -306,7 +315,14 @@ export function PopoverView() {
               badgeMetric={
                 state.settings?.sessionBadgeMetric ?? DEFAULT_SETTINGS.sessionBadgeMetric
               }
-              onBadgeMetricChange={session.setSessionBadgeMetric}
+              onBadgeMetricChange={(metric) => {
+                noteSessionMetric(
+                  "popover",
+                  state.settings?.sessionBadgeMetric ?? DEFAULT_SETTINGS.sessionBadgeMetric,
+                  metric,
+                )
+                session.setSessionBadgeMetric(metric)
+              }}
               now={new Date(state.now)}
               liveUsage={state.liveUsage}
               sessionLimitAllocations={state.sessionLimitAllocations}

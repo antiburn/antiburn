@@ -241,6 +241,32 @@ async function reopenDuringAppend(session: MainActivitySession) {
 }
 
 describe("MainActivityView", () => {
+  it("reports compact detail only after a committed reveal and rotates the visit on return", async () => {
+    vi.stubGlobal("innerWidth", 550)
+    mocks.listRecentSessions.mockResolvedValue([entry("private-source-id")])
+    const { session } = renderActivity()
+    await ready(session)
+
+    act(() => session.selectEntry(session.getSnapshot().entries![0]!))
+    expect(mocks.noteInteraction).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "sessionDetailViewed" }),
+    )
+
+    act(() => session.revealDetail())
+    expect(await screen.findByText("Detail: private-source-id")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Back to sessions" }))
+    act(() => session.revealDetail())
+    expect(await screen.findByText("Detail: private-source-id")).toBeVisible()
+
+    const views = mocks.noteInteraction.mock.calls
+      .map(([payload]) => payload)
+      .filter(({ kind }) => kind === "sessionDetailViewed")
+    expect(views).toHaveLength(2)
+    expect(views[0].visit).not.toBe(views[1].visit)
+    expect(views.map(({ context }) => context.entryRoute)).toEqual(["session_list", "return"])
+    expect(JSON.stringify(views)).not.toContain("private-source-id")
+  })
+
   it("renders only the sessions the current filter selects", async () => {
     mocks.getSettings.mockResolvedValue({ ...DEFAULT_SETTINGS, sessionFilter: "material" })
     mocks.listRecentSessions.mockResolvedValue([
@@ -439,6 +465,10 @@ describe("MainActivityView", () => {
     expect(await screen.findByText("Detail: open-session")).toBeVisible()
     act(() => session.toggleAgent("claude-code"))
     expect(await screen.findByText("1 total sessions, 0 matching")).toBeVisible()
+    expect(mocks.noteInteraction).toHaveBeenCalledWith({
+      kind: "sessionFilterResultsObserved",
+      result: "no_matches",
+    })
     expect(screen.getByText("Detail: open-session")).toBeVisible()
     expect(screen.getByText("This item is outside the current list.")).toBeVisible()
     expect(screen.getByRole("button", { name: "Filters" })).toBeVisible()

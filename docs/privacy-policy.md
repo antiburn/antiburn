@@ -133,13 +133,18 @@ which features are used, and coarse hourly ranges for the application's own
 resource use. This includes application launch and progress through the
 first-run steps shown in the Overview.
 
-The event schema contains thirty-one fields:
+The event schema contains thirty-three fields:
 
 - the constant product surface `desktop`;
 - random message, installation, and analytics-session identifiers;
 - the event name and capture and delivery times;
 - the processor architecture, operating-system family, and app version;
 - an optional count rounded to a range;
+- coarse session context for a popover session click or a main-window detail view
+  or action, covering agent, environment, activity, session kind, entry route,
+  recency range, and a combined check badge category;
+- a random identifier shared by events from one visible session detail visit,
+  which can also link the popover click that opens it;
 - optional labels selected from fixed lists in the application;
 - whether a visible state followed a user or automatic exposure, or whether a
   Burn Check watch started passively or from an action;

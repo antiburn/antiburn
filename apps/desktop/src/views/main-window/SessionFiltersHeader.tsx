@@ -1,3 +1,4 @@
+import { noteSessionFilter, type SessionFilterControl } from "../../lib/sessionAnalytics"
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu"
 import * as TooltipPrimitive from "@radix-ui/react-tooltip"
 import { Check, ListFilter, Minus, X } from "lucide-react"
@@ -123,6 +124,7 @@ function FilterRadioGroup<T extends SessionResultFilter | SessionSpendFilter>({
   counts,
   hasMoreSessions,
   onChange,
+  onActivate,
 }: {
   label: string
   value: T
@@ -130,6 +132,7 @@ function FilterRadioGroup<T extends SessionResultFilter | SessionSpendFilter>({
   counts: Record<T, number>
   hasMoreSessions: boolean
   onChange: (value: T) => void
+  onActivate: (value: T) => void
 }) {
   return (
     <DropdownMenu.Group>
@@ -152,7 +155,10 @@ function FilterRadioGroup<T extends SessionResultFilter | SessionSpendFilter>({
               textValue={option.accessibleLabel ?? option.label}
               aria-label={`${option.accessibleLabel ?? option.label}${option.description ? `, ${option.description}` : ""}, ${sessionCountLabel(counts[option.value])}`}
               className="ui-menu-item"
-              onSelect={(event) => event.preventDefault()}
+              onSelect={(event) => {
+                event.preventDefault()
+                onActivate(option.value)
+              }}
             >
               <Indicator />
               {Mark ? (
@@ -249,6 +255,7 @@ export function SessionFiltersHeader({
   const [filterTooltipOpen, setFilterTooltipOpen] = useState(false)
   const pointerOpened = useRef(false)
   const pointerDismissed = useRef(false)
+  const closingAfterSelection = useRef(false)
   const observeMenu = useCallback(
     (content: HTMLDivElement | null) => {
       if (!content) return
@@ -326,6 +333,12 @@ export function SessionFiltersHeader({
   function removeChip(chip: ActiveChip, event: MouseEvent<HTMLButtonElement>) {
     const index = chips.findIndex((candidate) => candidate.id === chip.id)
     const focusTarget = chips[index + 1]?.id ?? chips[index - 1]?.id
+    const action: SessionFilterControl = chip.agent
+      ? "remove_agent_chip"
+      : chip.id.startsWith("result:")
+        ? "remove_result_chip"
+        : "remove_spend_chip"
+    noteSessionFilter(action)
     chip.remove()
     if (event.detail === 0) restoreFocus(focusTarget)
   }
@@ -402,6 +415,10 @@ export function SessionFiltersHeader({
             modal={false}
             open={menuOpen}
             onOpenChange={(open) => {
+              if (open) noteSessionFilter("filter_menu_opened")
+              else if (!closingAfterSelection.current)
+                noteSessionFilter("filter_menu_dismissed")
+              closingAfterSelection.current = false
               pointerDismissed.current = false
               setFilterTooltipOpen(false)
               setMenuOpen(open)
@@ -466,7 +483,10 @@ export function SessionFiltersHeader({
                     className="ui-menu-item"
                     textValue="All agents"
                     aria-label={`All agents, ${sessionCountLabel(counts.agentsAll)}`}
-                    onSelect={(event) => event.preventDefault()}
+                    onSelect={(event) => {
+                      event.preventDefault()
+                      noteSessionFilter("all_agents")
+                    }}
                     onCheckedChange={onResetAgents}
                   >
                     <Indicator checkbox />
@@ -486,7 +506,10 @@ export function SessionFiltersHeader({
                         className="ui-menu-item"
                         textValue={label}
                         aria-label={`${label}, ${sessionCountLabel(count)}`}
-                        onSelect={(event) => event.preventDefault()}
+                        onSelect={(event) => {
+                          event.preventDefault()
+                          noteSessionFilter("agent_option")
+                        }}
                         onCheckedChange={() => onToggleAgent(agent)}
                       >
                         <Indicator checkbox />
@@ -505,6 +528,7 @@ export function SessionFiltersHeader({
                   counts={counts.result}
                   hasMoreSessions={hasMoreSessions}
                   onChange={onResultChange}
+                  onActivate={(value) => noteSessionFilter(`result_${value}`)}
                 />
                 <DropdownMenu.Separator className="ui-menu-separator" />
                 <FilterRadioGroup
@@ -514,11 +538,19 @@ export function SessionFiltersHeader({
                   counts={counts.spend}
                   hasMoreSessions={hasMoreSessions}
                   onChange={onSpendChange}
+                  onActivate={(value) => noteSessionFilter(`spend_${value}`)}
                 />
                 {chips.length > 0 ? (
                   <>
                     <DropdownMenu.Separator className="ui-menu-separator" />
-                    <DropdownMenu.Item className="ui-menu-item" onSelect={onClear}>
+                    <DropdownMenu.Item
+                      className="ui-menu-item"
+                      onSelect={() => {
+                        closingAfterSelection.current = true
+                        noteSessionFilter("clear_filters")
+                        onClear()
+                      }}
+                    >
                       <span className="size-4 shrink-0" aria-hidden="true" />
                       Clear filters
                     </DropdownMenu.Item>

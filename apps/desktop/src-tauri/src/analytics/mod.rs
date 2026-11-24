@@ -29,6 +29,7 @@ pub mod event;
 pub mod ingested_incidents;
 #[cfg(feature = "analytics")]
 mod resources;
+pub mod session;
 
 pub fn record_cli_operation(
     app: &tauri::AppHandle,
@@ -66,6 +67,8 @@ pub fn install_schedulers(_app: &tauri::AppHandle, _schedulers: &crate::Schedule
 #[cfg(not(feature = "analytics"))]
 pub fn record(_app: &tauri::AppHandle, _name: event::EventName, facts: event::Facts) {
     let _ = (
+        facts.session_context,
+        facts.session_visit_id,
         facts.bucket,
         facts.label,
         facts.detail,
@@ -94,6 +97,49 @@ pub fn record_interaction(_app: &tauri::AppHandle, interaction: event::Interacti
     match interaction {
         event::Interaction::SessionOpened { agent, environment } => {
             let _ = (agent, environment);
+        }
+        event::Interaction::PopoverSessionOpened { context, visit } => {
+            let _ = (context, visit);
+        }
+        event::Interaction::SessionDetailViewed {
+            context,
+            visit,
+            origin,
+        } => {
+            let _ = (context, visit, origin);
+        }
+        event::Interaction::SessionDetailStateObserved {
+            visit,
+            state,
+            origin,
+        } => {
+            let _ = (visit, state, origin);
+        }
+        event::Interaction::SessionDetailTabSelected {
+            tab,
+            context,
+            visit,
+        } => {
+            let _ = (tab, context, visit);
+        }
+        event::Interaction::SessionDetailUsed {
+            action,
+            context,
+            visit,
+        } => {
+            let _ = (action, context, visit);
+        }
+        event::Interaction::SessionFilterUsed { action } => {
+            let _ = action;
+        }
+        event::Interaction::SessionFilterResultsObserved { result } => {
+            let _ = result;
+        }
+        event::Interaction::SessionMetricSelected { metric, surface } => {
+            let _ = (metric, surface);
+        }
+        event::Interaction::BurnCheckReminderCompleted { action, outcome } => {
+            let _ = (action, outcome);
         }
         event::Interaction::SurfaceViewed { surface, origin } => {
             let _ = (surface, origin);
@@ -498,6 +544,8 @@ mod enabled {
             original_timestamp: crate::store::now_rfc3339(),
             properties: event::Properties {
                 arch: event::arch(),
+                session_context: None,
+                session_visit_id: None,
                 bucket: None,
                 label: None,
                 detail: None,
@@ -610,6 +658,8 @@ mod enabled {
             original_timestamp: crate::store::now_rfc3339(),
             properties: event::Properties {
                 arch: event::arch(),
+                session_context: facts.session_context,
+                session_visit_id: facts.session_visit_id,
                 bucket: facts.bucket,
                 label: facts.label,
                 detail: facts.detail,

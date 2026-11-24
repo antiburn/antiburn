@@ -45,6 +45,14 @@ import {
   type SessionSpendFilter,
 } from "../../lib/sessionFilters"
 import { sessionKey, loadSessionAnalysis, type SessionSubject } from "../../lib/sessionSubject"
+import {
+  newSessionVisitId,
+  type SessionContext,
+  type SessionDetailAction,
+  type SessionDetailTab,
+  type SessionFilterResult,
+  type SessionNavigationHint,
+} from "../../lib/sessionAnalytics"
 import { SurfaceExposureTracker } from "../../lib/surfaceExposure"
 
 export interface MainActivitySnapshot {
@@ -152,6 +160,7 @@ export class MainActivitySession {
     origin: SurfaceOrigin = "automatic",
     reportFilterSelection = false,
     clearDefaultSelection = false,
+    hint?: SessionNavigationHint,
   ): void {
     this.restoringNavigation = true
     try {
@@ -181,8 +190,11 @@ export class MainActivitySession {
         subject &&
         (!this.snapshot.subject || sessionKey(subject) !== sessionKey(this.snapshot.subject))
       )
-        this.open(subject, [], origin)
-      else if (!subject && (this.snapshot.subject || clearDefaultSelection))
+        this.open(subject, [], origin, hint)
+      else if (subject && hint && (hint.route === "popover" || !this.visit)) {
+        this.pendingVisit = { key: sessionKey(subject), hint }
+        this.exposureOrigin = origin
+      } else if (!subject && (this.snapshot.subject || clearDefaultSelection))
         this.clearSelection()
     } finally {
       this.restoringNavigation = false
@@ -263,6 +275,94 @@ export class MainActivitySession {
   private usageRevision = 0
   private readonly exposure = new SurfaceExposureTracker()
   private exposureOrigin: SurfaceOrigin = "automatic"
+  private pendingVisit: { key: string; hint: SessionNavigationHint } | null = null
+  private visit: {
+    key: string
+    id?: string
+    context: SessionContext
+    origin: SurfaceOrigin
+    limitsExpanded: boolean
+  } | null = null
+  private filterVisit: { key: string; seen: Set<SessionFilterResult> } | null = null
+
+  /** Observe a filter result only after the deliberate filter is rendered and visible. */
+  presentFilterResult(key: string, result: SessionFilterResult | null): void {
+    const visit = this.filterVisit
+    if (
+      !this.snapshot.active ||
+      !visit ||
+      visit.key !== key ||
+      !result ||
+      visit.seen.has(result)
+    )
+      return
+    visit.seen.add(result)
+    noteInteraction({ kind: "sessionFilterResultsObserved", result })
+  }
+
+  /** Commit the subject shown by the detail slot and synchronize its visible visit. */
+  presentDetail(key: string | null, context?: SessionContext): void {
+    if (!key || !context || !this.snapshot.active || !this.snapshot.subject) {
+      this.visit = null
+      this.syncExposure()
+      return
+    }
+    if (key !== sessionKey(this.snapshot.subject)) return
+    const hint = this.pendingVisit?.key === key ? this.pendingVisit.hint : undefined
+    const existing = this.visit
+    if (existing?.key === key && !hint) {
+      existing.context = { ...context, entryRoute: existing.context.entryRoute }
+    } else {
+      this.exposure.conceal("session_detail")
+      this.pendingVisit = null
+      const id = hint?.visit ?? newSessionVisitId()
+      const scoped = { ...context, entryRoute: hint?.route ?? ("return" as const) }
+      this.visit = {
+        key,
+        ...(id ? { id } : {}),
+        context: scoped,
+        origin: this.exposureOrigin,
+        limitsExpanded: false,
+      }
+      noteInteraction({
+        kind: "sessionDetailViewed",
+        context: scoped,
+        ...(id ? { visit: id } : {}),
+        origin: this.exposureOrigin,
+      })
+    }
+    this.syncExposure(true)
+  }
+
+  /** Record an explicit action only for the detail visit that owns the control. */
+  noteDetailAction(
+    key: string,
+    interaction:
+      | { kind: "sessionDetailTabSelected"; tab: SessionDetailTab }
+      | { kind: "sessionDetailInteraction"; action: SessionDetailAction },
+    checkBadge?: SessionContext["checkBadge"],
+  ): void {
+    const visit = this.visit
+    if (
+      !this.snapshot.active ||
+      visit?.key !== key ||
+      !this.snapshot.subject ||
+      sessionKey(this.snapshot.subject) !== key
+    )
+      return
+    if (
+      interaction.kind === "sessionDetailInteraction" &&
+      interaction.action === "limits_expanded"
+    ) {
+      if (visit.limitsExpanded) return
+      visit.limitsExpanded = true
+    }
+    noteInteraction({
+      ...interaction,
+      context: checkBadge === undefined ? visit.context : { ...visit.context, checkBadge },
+      ...(visit.id ? { visit: visit.id } : {}),
+    })
+  }
 
   getSnapshot = (): MainActivitySnapshot => this.snapshot
   subscribe = (listener: () => void): (() => void) => this.attach(listener, "detail")
@@ -278,19 +378,23 @@ export class MainActivitySession {
     for (const listener of this.listeners) listener()
   }
 
-  private syncExposure(): void {
-    const subject = this.snapshot.subject
-    if (!this.snapshot.active || !subject) {
+  private syncExposure(committed = false): void {
+    const { subject, active, analysis } = this.snapshot
+    const visit = this.visit
+    if (!active || !subject || !visit || visit.key !== sessionKey(subject)) {
+      if (!active || !subject) this.visit = null
       this.exposure.conceal("session_detail")
       return
     }
-    const generation = this.exposure.expose({
+    if (!committed) return
+    const state = analysisSurfaceState(subject, analysis)
+    this.exposure.expose({
       surface: "session_detail",
-      origin: this.exposureOrigin,
-      identity: sessionKey(subject),
+      origin: visit.origin,
+      identity: visit.key,
+      ...(visit.id ? { sessionVisit: visit.id } : {}),
+      state,
     })
-    const state = analysisSurfaceState(subject, this.snapshot.analysis)
-    if (state) this.exposure.observe(state, generation)
   }
 
   private attach(listener: () => void, scope?: "detail" | "list" | "local"): () => void {
@@ -867,15 +971,19 @@ export class MainActivitySession {
     const entry = orderedActivityEntries(this.snapshot).find(
       (item) => item.sessionId && (item.isActive || activityDayAge(item.timestamp, now) === 0),
     )
-    if (entry) this.open(subjectForEntry(entry), [], "automatic")
+    if (entry) this.open(subjectForEntry(entry), [], "automatic", { route: "automatic" })
   }
 
-  selectEntry = (entry: SessionListEntry): void => {
+  selectEntry = (entry: SessionListEntry, adjacent = false): void => {
     if (!entry.sessionId) return
     const subject = subjectForEntry(entry)
     if (this.snapshot.subject && sessionKey(this.snapshot.subject) === sessionKey(subject))
       return
-    this.open(subject, [], "user")
+    const { agents, result, spend } = this.snapshot.filters
+    const filtered = agents.length > 0 || result !== "all" || spend !== "all"
+    this.open(subject, [], "user", {
+      route: adjacent ? "adjacent" : filtered ? "filtered_list" : "session_list",
+    })
   }
 
   revealDetail(): void {
@@ -887,20 +995,25 @@ export class MainActivitySession {
   openRelated = (subject: SessionSubject): void => {
     const current = this.snapshot.subject
     if (current && sessionKey(current) === sessionKey(subject)) return
-    this.open(subject, current ? [...this.snapshot.history, current] : [], "user")
+    this.open(subject, current ? [...this.snapshot.history, current] : [], "user", {
+      route: "related",
+    })
   }
 
   goBack = (): void => {
     const previous = this.snapshot.history.at(-1)
-    if (previous) this.open(previous, this.snapshot.history.slice(0, -1), "user")
+    if (previous)
+      this.open(previous, this.snapshot.history.slice(0, -1), "user", { route: "history" })
   }
 
   private open(
     subject: SessionSubject,
     history: SessionSubject[],
     origin: SurfaceOrigin,
+    hint: SessionNavigationHint = { route: "return" },
   ): void {
     this.exposureOrigin = origin
+    this.pendingVisit = { key: sessionKey(subject), hint }
     this.defaultSelectionPending = false
     this.analysisVersion += 1
     this.analysisRun += 1
@@ -927,6 +1040,7 @@ export class MainActivitySession {
   }
 
   clearSelection = (): void => {
+    this.pendingVisit = null
     this.defaultSelectionPending = false
     this.analysisVersion += 1
     this.analysisRun += 1
@@ -1200,6 +1314,14 @@ export class MainActivitySession {
     const normalized = normalizeSessionFilters(filters)
     const id = serializeSessionFilters(normalized)
     if (serializeSessionFilters(this.snapshot.filters) === id) return
+    this.filterVisit =
+      action &&
+      action !== "cleared_all" &&
+      (normalized.agents.length > 0 ||
+        normalized.result !== "all" ||
+        normalized.spend !== "all")
+        ? { key: id, seen: new Set() }
+        : null
     this.settingsVersion += 1
     this.update({
       settings: { ...this.snapshot.settings, sessionFilter: id },

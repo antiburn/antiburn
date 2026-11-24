@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AppSearch } from "./AppSearch"
+import { noteInteraction } from "../../lib/ipc"
+import type * as IpcModule from "../../lib/ipc"
 import type * as CheckAvailabilityModule from "../../lib/checkAvailability"
 import {
   emptyCheckAvailability,
@@ -15,6 +17,11 @@ vi.mock("../../lib/checkAvailability", async (importOriginal) => ({
   ...(await importOriginal<typeof CheckAvailabilityModule>()),
   getCheckAvailability: vi.fn(),
   onCheckAvailabilityChanged: vi.fn(),
+}))
+
+vi.mock("../../lib/ipc", async (importOriginal) => ({
+  ...(await importOriginal<typeof IpcModule>()),
+  noteInteraction: vi.fn(),
 }))
 
 let availabilityEvent: (event: CheckAvailabilityEvent) => void
@@ -43,6 +50,7 @@ function deferred<T>() {
 }
 
 beforeEach(() => {
+  vi.mocked(noteInteraction).mockClear()
   vi.mocked(getCheckAvailability).mockReset().mockResolvedValue(emptyCheckAvailability)
   vi.mocked(onCheckAvailabilityChanged)
     .mockReset()
@@ -123,6 +131,33 @@ describe("app search palette", () => {
     fireEvent.keyDown(input, { key: "Enter" })
     expect(choose).not.toHaveBeenCalled()
   })
+  it("records a search dead end without recording the query", () => {
+    const input = open()
+    fireEvent.click(input)
+    fireEvent.change(input, { target: { value: "no matching result xyz" } })
+    fireEvent.click(screen.getByRole("button", { name: "Close search" }))
+    expect(vi.mocked(noteInteraction).mock.calls).toEqual([
+      [{ kind: "sessionFilterInteraction", action: "search_field_clicked" }],
+      [{ kind: "sessionFilterInteraction", action: "search_dismissed_no_results" }],
+    ])
+  })
+
+  it("tracks attempts and only accepted Sessions destinations", async () => {
+    const choose = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("unavailable"))
+      .mockResolvedValueOnce(undefined)
+    const input = open(choose)
+    fireEvent.change(input, { target: { value: "codex sessions" } })
+    await act(async () => fireEvent.keyDown(input, { key: "Enter" }))
+    await act(async () => fireEvent.keyDown(input, { key: "Enter" }))
+    expect(vi.mocked(noteInteraction).mock.calls).toEqual([
+      [{ kind: "sessionFilterInteraction", action: "search_agent_attempted" }],
+      [{ kind: "sessionFilterInteraction", action: "search_agent_attempted" }],
+      [{ kind: "sessionFilterInteraction", action: "search_agent_opened" }],
+    ])
+  })
+
   it("reopens after failed navigation and permits one explicit retry", async () => {
     const choose = vi
       .fn()

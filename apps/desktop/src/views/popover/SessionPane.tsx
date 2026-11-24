@@ -1,3 +1,9 @@
+import {
+  sessionCheckBadge,
+  type SessionContext,
+  type SessionDetailAction,
+  type SessionDetailTab,
+} from "../../lib/sessionAnalytics"
 import { environmentKey } from "../../lib/presentation/localIdentity"
 import { confirm } from "@tauri-apps/plugin-dialog"
 import { useCallback } from "react"
@@ -70,6 +76,13 @@ export interface SessionPaneProps {
   onOpenMemory?: (target: { slug: string; path: string }) => void
   /** The session's local records were deleted, so it can no longer be shown. */
   onDeleted: () => void
+  /** Report an explicit action from the main-window detail visit. */
+  onDetailInteraction?: (
+    interaction:
+      | { kind: "sessionDetailTabSelected"; tab: SessionDetailTab }
+      | { kind: "sessionDetailInteraction"; action: SessionDetailAction },
+    badge?: SessionContext["checkBadge"],
+  ) => void
   /** Remove popover-only chrome when the pane sits in another window. */
   embedded?: boolean
   /** Pause hidden hygiene work while keeping the pane mounted. */
@@ -231,6 +244,7 @@ export function SessionPane({
   sessionMemories = null,
   onOpenMemory,
   onDeleted,
+  onDetailInteraction,
   embedded = false,
   active = true,
 }: SessionPaneProps) {
@@ -359,6 +373,13 @@ export function SessionPane({
     })
   }, [onOpenSession, subject])
 
+  function noteAction(action: SessionDetailAction) {
+    onDetailInteraction?.(
+      { kind: "sessionDetailInteraction", action },
+      sessionCheckBadge(snoozes.status === "ready" ? hygiene : undefined, snoozedDetectors),
+    )
+  }
+
   return (
     <SessionDetailPresentation
       summary={payload?.summary ?? null}
@@ -392,22 +413,63 @@ export function SessionPane({
       relations={relations}
       calledTools={payload?.calledTools ?? null}
       sessionQuota={subject.remoteHostId ? null : sessionQuota}
-      {...(onOpenQuota ? { onOpenQuota } : {})}
+      {...(onOpenQuota
+        ? {
+            onOpenQuota: (target) => {
+              noteAction("open_quota")
+              onOpenQuota(target)
+            },
+          }
+        : {})}
       sessionMemories={subject.remoteHostId ? null : sessionMemories}
-      {...(onOpenMemory ? { onOpenMemory } : {})}
+      {...(onOpenMemory
+        ? {
+            onOpenMemory: (target) => {
+              noteAction("open_memory")
+              onOpenMemory(target)
+            },
+          }
+        : {})}
       {...(onBack ? { onBack } : {})}
       {...(onPrev ? { onPrev } : {})}
       {...(onNext ? { onNext } : {})}
       onOpenSubagent={openSubagent}
       onOpenOrchestrator={openOrchestrator}
       onOpenRelatedSession={openRelated}
-      onDeleteSession={() => void handleDelete()}
+      onDeleteSession={() => {
+        noteAction("request_removal")
+        void handleDelete()
+      }}
+      {...(onDetailInteraction
+        ? {
+            onDetailAction: noteAction,
+            onDetailTab: (tab) =>
+              onDetailInteraction(
+                { kind: "sessionDetailTabSelected", tab },
+                sessionCheckBadge(
+                  snoozes.status === "ready" ? hygiene : undefined,
+                  snoozedDetectors,
+                ),
+              ),
+          }
+        : {})}
       {...(sourcePath && !subject.remoteHostId
         ? {
-            onRevealSource: handleReveal,
-            onCopySourcePath: handleCopyPath,
+            onRevealSource: () => {
+              noteAction("reveal_transcript")
+              handleReveal()
+            },
+            onCopySourcePath: () => {
+              noteAction("copy_path")
+              return handleCopyPath()
+            },
             ...(snoozes.status === "ready"
-              ? { onCopyDiscussionPrompt: handleCopyDiscussionPrompt }
+              ? {
+                  onCopyDiscussionPrompt: () => {
+                    noteAction("copy_discussion_prompt")
+                    return handleCopyDiscussionPrompt()
+                  },
+                }
               : {}),
           }
         : {})}
@@ -415,20 +477,24 @@ export function SessionPane({
         ? {
             projectFolder: {
               path: projectPath,
-              onOpen: () =>
-                performProjectFolderAction(projectPath, "open", {
+              onOpen: () => {
+                noteAction("open_project_folder")
+                return performProjectFolderAction(projectPath, "open", {
                   kind: "session",
                   environmentKey: environmentKey(subject.wslDistro, subject.remoteHostId),
                   agent: subject.agent,
                   sessionId: subject.sessionId,
-                }),
-              onCopy: () =>
-                performProjectFolderAction(projectPath, "copy", {
+                })
+              },
+              onCopy: () => {
+                noteAction("copy_project_path")
+                return performProjectFolderAction(projectPath, "copy", {
                   kind: "session",
                   environmentKey: environmentKey(subject.wslDistro, subject.remoteHostId),
                   agent: subject.agent,
                   sessionId: subject.sessionId,
-                }),
+                })
+              },
             },
           }
         : {})}

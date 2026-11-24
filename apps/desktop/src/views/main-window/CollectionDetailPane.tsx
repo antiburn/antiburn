@@ -24,6 +24,8 @@ interface CollectionDetailPaneProps<T extends CollectionItem> {
   /** A feature may supply its own unselected detail presentation. */
   detailEmptyContent?: ReactNode
   renderDetail: (item: T) => ReactNode
+  /** Report the committed detail selection, or null while concealed. */
+  onDetailPresentation?: (item: T | null) => void
   selection?: T | null
   /** Use null while the feature can still load the selected item. */
   outsideSelectionMessage?: string | null
@@ -45,6 +47,7 @@ export function CollectionDetailPane<T extends CollectionItem>({
   detailEmptyMessage,
   detailEmptyContent,
   renderDetail,
+  onDetailPresentation,
   renderCollection,
   selection: controlledSelection,
   outsideSelectionMessage = "This item is outside the current list.",
@@ -159,6 +162,7 @@ export function CollectionDetailPane<T extends CollectionItem>({
         hidden={!showDetail}
         data-detail-pane
         ref={(node) => {
+          if (node) onDetailPresentation?.(showDetail ? selected : null)
           if (
             !node ||
             !hasExternalDetailReveal ||

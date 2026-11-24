@@ -1,3 +1,9 @@
+import {
+  noteSessionFilter,
+  noteSessionMetric,
+  sessionContext,
+} from "../../lib/sessionAnalytics"
+import { sessionHygieneFor } from "../../lib/useSessionHygiene"
 import { lazy, Suspense, useRef, useState, useSyncExternalStore } from "react"
 import { CalendarDays } from "lucide-react"
 
@@ -190,8 +196,15 @@ export function MainActivityView({
   const days = state.settings.activityWindowDays
 
   function clearFilters() {
+    noteSessionFilter("clear_filters")
     session.clearFilters()
     filterButtonRef.current?.focus()
+  }
+
+  function openTimeRangeSettings() {
+    if (!onOpenRangeSettings) return
+    noteSessionFilter("change_time_range")
+    onOpenRangeSettings()
   }
 
   function cancelAdjacentNavigation() {
@@ -360,7 +373,7 @@ export function MainActivityView({
           setCheckRetry((retry) => (backward && retry?.append ? retry : null))
           if (match) {
             setAdjacentStatus(null)
-            session.selectEntry(match)
+            session.selectEntry(match, true)
           } else {
             setAdjacentStatus({
               ...scope,
@@ -460,8 +473,63 @@ export function MainActivityView({
       detailEmptyMessage="Select a session to view its details."
       detailEmptyContent={<SessionEmptyDetail />}
       detailOwnsViewport
+      onDetailPresentation={(item) => {
+        if (!item || !active || !state.active) {
+          session.presentDetail(null)
+          return
+        }
+        const entry = !item.subject.subagent
+          ? state.entries?.find(
+              (candidate) => sessionKey(subjectForEntry(candidate)) === item.id,
+            )
+          : undefined
+        const payload = state.analysis?.key === item.id ? state.analysis.payload : null
+        session.presentDetail(
+          item.id,
+          sessionContext(
+            { ...item.subject, timestamp: entry?.timestamp ?? item.subject.timestamp },
+            {
+              route: "return",
+              isActive:
+                entry?.isActive ??
+                (payload?.analysisPending === false ? payload.isActive : undefined),
+              hygiene:
+                snoozes.status === "ready"
+                  ? sessionHygieneFor(hygieneBySession, {
+                      agent: item.subject.agent,
+                      sessionId: item.subject.sessionId,
+                      wslDistro: item.subject.wslDistro ?? null,
+                      remoteHostId: item.subject.remoteHostId ?? null,
+                    })
+                  : undefined,
+              snoozed: snoozedDetectors,
+              now: Date.now(),
+            },
+          ),
+        )
+      }}
       renderCollection={({ openDetail, compact, visible }) => (
-        <div className="session-filter-collection flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          className="session-filter-collection flex min-h-0 min-w-0 flex-1 flex-col"
+          ref={(node) => {
+            if (
+              !node ||
+              !active ||
+              !state.active ||
+              !visible ||
+              snoozes.status !== "ready" ||
+              state.entries === null ||
+              state.listError ||
+              state.loadMoreSessionsError ||
+              filteredEntries.length > 0
+            )
+              return
+            session.presentFilterResult(
+              serializeSessionFilters(state.filters),
+              state.hasMoreSessions || awaitingResultFilter ? "results_pending" : "no_matches",
+            )
+          }}
+        >
           {state.entries !== null && snoozes.status === "ready" && (
             <SessionFiltersHeader
               filters={state.filters}
@@ -477,14 +545,20 @@ export function MainActivityView({
               onClear={session.clearFilters}
               highCostThresholdUsd={highCostThresholdUsd ?? undefined}
               days={days}
-              onChangeTimeRange={() => onOpenRangeSettings?.()}
+              onChangeTimeRange={openTimeRangeSettings}
               triggerRef={filterButtonRef}
             />
           )}
           {state.listError && (
             <div role="status" className="px-4 py-2 type-callout text-label-secondary">
               Could not load sessions.{" "}
-              <button className="text-label underline" onClick={session.refreshList}>
+              <button
+                className="text-label underline"
+                onClick={() => {
+                  noteSessionFilter("retry_list")
+                  session.refreshList()
+                }}
+              >
                 Retry
               </button>
             </div>
@@ -513,6 +587,8 @@ export function MainActivityView({
                       filterKey: serializeSessionFilters(state.filters),
                       failed: state.loadMoreSessionsError,
                       onLoadMore: session.loadMoreSessions,
+                      onManualLoad: (failed) =>
+                        noteSessionFilter(failed ? "retry_list" : "find_older_matches"),
                     },
                   }
                 : {})}
@@ -534,9 +610,7 @@ export function MainActivityView({
                       "Try a wider time range. New sessions appear here as they are discovered on this machine.",
                     emptyIcon: <CalendarDays size={20} strokeWidth={1.75} aria-hidden="true" />,
                     emptyActions: (
-                      <PushButton onClick={() => onOpenRangeSettings?.()}>
-                        Change time range
-                      </PushButton>
+                      <PushButton onClick={openTimeRangeSettings}>Change time range</PushButton>
                     ),
                   })}
               draggableHeader={false}
@@ -551,7 +625,10 @@ export function MainActivityView({
               renderAgentIcon={renderAgentIcon}
               now={new Date(state.now)}
               badgeMetric={state.settings.sessionBadgeMetric}
-              onBadgeMetricChange={(metric) => void session.setBadgeMetric(metric)}
+              onBadgeMetricChange={(metric) => {
+                noteSessionMetric("main_window", state.settings.sessionBadgeMetric, metric)
+                void session.setBadgeMetric(metric)
+              }}
               liveUsage={state.liveUsage}
               sessionLimitAllocations={state.allocations}
               hygieneBySession={hygieneBySession}
@@ -595,12 +672,12 @@ export function MainActivityView({
               (checkResults && loadedIndex > 0)
                 ? { onPrev: () => void navigateAdjacent("previous") }
                 : previous
-                  ? { onPrev: () => session.selectEntry(previous) }
+                  ? { onPrev: () => session.selectEntry(previous, true) }
                   : {})}
               {...(retryChecks && !retryPreviousChecks
                 ? { onNext: () => void navigateAdjacent("next") }
                 : next && !checkResults
-                  ? { onNext: () => session.selectEntry(next) }
+                  ? { onNext: () => session.selectEntry(next, true) }
                   : canLocateSelection
                     ? { onNext: () => void navigateAdjacent("next") }
                     : next || (loadedIndex >= 0 && state.hasMoreSessions)
@@ -611,6 +688,9 @@ export function MainActivityView({
                         ? { onNext: () => void navigateAdjacent("next") }
                         : {})}
               onOpenSession={session.openRelated}
+              onDetailInteraction={(interaction, badge) =>
+                session.noteDetailAction(item.id, interaction, badge)
+              }
               sessionQuota={state.sessionQuota}
               {...(onOpenQuota ? { onOpenQuota } : {})}
               sessionMemories={state.sessionMemories}

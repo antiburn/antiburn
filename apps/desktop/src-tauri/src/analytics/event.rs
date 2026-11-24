@@ -3,7 +3,8 @@
 //! This module enforces the promise the Privacy pane makes. Almost every
 //! [`Event`] field is a `&'static str` the caller passes in. No caller can put
 //! a path, a repository name, a session title, or a credential here. There
-//! are two bounded exceptions, not a free-form map or a `serde_json::Value`.
+//! are bounded typed exceptions instead of a free-form map or a `serde_json::Value`.
+//! Session context uses closed categories and the visit ID uses a random UUID.
 //! `properties.resourceUsage` is a closed nested struct.
 //! `properties.unrecognizedTypes` is a sanitized `Vec<String>` of transcript
 //! record type names. `analytics::sanitize_unrecognized_types` caps its count
@@ -17,10 +18,13 @@
 //! to it; a bucket is the answer to "roughly how much is this being used"
 //! without also answering "is this the same machine as last week".
 
+use super::session::{
+    BurnCheckReminderAction, BurnCheckReminderOutcome, SessionContext, SessionDetailAction,
+    SessionDetailTab, SessionFilterControl, SessionFilterResult, SessionMetric,
+    SessionMetricSurface, SessionVisitId,
+};
 use antiburn_local::model::AgentKind;
-use serde::Deserialize;
-#[cfg(feature = "analytics")]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The events this application may report. A closed set, by design: a
 /// `&'static str` a caller passes in would put naming — and therefore scope —
@@ -42,6 +46,20 @@ pub enum EventName {
     /// A session was opened from the activity list.
     #[cfg(feature = "analytics")]
     SessionOpened,
+    #[cfg(feature = "analytics")]
+    SessionDetailViewed,
+    #[cfg(feature = "analytics")]
+    SessionDetailTabSelected,
+    #[cfg(feature = "analytics")]
+    SessionDetailInteraction,
+    #[cfg(feature = "analytics")]
+    SessionFilterInteraction,
+    #[cfg(feature = "analytics")]
+    SessionFilterResultsObserved,
+    #[cfg(feature = "analytics")]
+    SessionMetricSelected,
+    #[cfg(feature = "analytics")]
+    BurnCheckReminderCompleted,
     /// Something failed, by category. No message, no path, no backtrace.
     #[cfg(feature = "analytics")]
     ErrorOccurred,
@@ -185,6 +203,13 @@ pub const EVERY_EVENT: &[EventName] = &[
     EventName::SettingToggled,
     EventName::AnalyticsOptedOut,
     EventName::SessionOpened,
+    EventName::SessionDetailViewed,
+    EventName::SessionDetailTabSelected,
+    EventName::SessionDetailInteraction,
+    EventName::SessionFilterInteraction,
+    EventName::SessionFilterResultsObserved,
+    EventName::SessionMetricSelected,
+    EventName::BurnCheckReminderCompleted,
     EventName::ErrorOccurred,
     EventName::UnrecognizedRecordsObserved,
     EventName::ClaudeLimitResetObserved,
@@ -241,6 +266,13 @@ impl EventName {
             EventName::SettingToggled => "antiburn.setting_toggled",
             EventName::AnalyticsOptedOut => "antiburn.analytics_opted_out",
             EventName::SessionOpened => "antiburn.session_opened",
+            EventName::SessionDetailViewed => "antiburn.session_detail_viewed",
+            EventName::SessionDetailTabSelected => "antiburn.session_detail_tab_selected",
+            EventName::SessionDetailInteraction => "antiburn.session_detail_interaction",
+            EventName::SessionFilterInteraction => "antiburn.session_filter_interaction",
+            EventName::SessionFilterResultsObserved => "antiburn.session_filter_results_observed",
+            EventName::SessionMetricSelected => "antiburn.session_metric_selected",
+            EventName::BurnCheckReminderCompleted => "antiburn.burn_check_reminder_completed",
             EventName::ErrorOccurred => "antiburn.error_occurred",
             EventName::UnrecognizedRecordsObserved => "antiburn.unrecognized_records_observed",
             EventName::ClaudeLimitResetObserved => "antiburn.claude_limit_reset_observed",
@@ -298,6 +330,11 @@ impl EventName {
             EventName::SettingToggled
             | EventName::AnalyticsOptedOut
             | EventName::SessionOpened
+            | EventName::SessionDetailTabSelected
+            | EventName::SessionDetailInteraction
+            | EventName::SessionFilterInteraction
+            | EventName::SessionMetricSelected
+            | EventName::BurnCheckReminderCompleted
             | EventName::SettingsPaneViewed
             | EventName::BurnCheckAutoFixReviewed
             | EventName::BurnCheckAutoFixConfirmed
@@ -347,6 +384,8 @@ impl EventName {
             | EventName::ClaudeLimitResetObserved
             | EventName::ClaudeLoginObserved
             | EventName::SurfaceStateObserved
+            | EventName::SessionDetailViewed
+            | EventName::SessionFilterResultsObserved
             | EventName::LiveUsageStateObserved
             | EventName::UsageObserved
             | EventName::LimitFactorObserved
@@ -421,6 +460,12 @@ pub struct Event {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Properties {
+    /// The coarse session context snapshot at capture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_context: Option<SessionContext>,
+    /// A random ID relates events from a single detail visit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_visit_id: Option<SessionVisitId>,
     /// CPU architecture.
     pub arch: &'static str,
     /// A bucketed magnitude, where the event has one. Never an exact count.
@@ -528,6 +573,10 @@ pub fn cli_operation_facts(operation: CliOperation, succeeded: bool) -> Facts {
 /// value arriving in a dashboard nobody cross-checks.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
+    /// The coarse session context snapshot at capture.
+    pub session_context: Option<SessionContext>,
+    /// A random ID relates events from a single detail visit.
+    pub session_visit_id: Option<SessionVisitId>,
     /// A bucketed magnitude, never an exact count.
     pub bucket: Option<&'static str>,
     /// The primary dimension.
@@ -704,8 +753,7 @@ pub struct Context {
 /// and a map would move naming — and therefore scope — into TypeScript, where
 /// nothing stops a future call site from passing a repository name. Here the
 /// renderer may only name a shape that already exists, serde rejects anything
-/// outside it, and every string that reaches the payload is a `&'static str`
-/// this file wrote. Every doc comment below that says "closed" means this.
+/// outside it. Fields use closed categories or the bounded types in this module.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Interaction {
@@ -726,6 +774,55 @@ pub enum Interaction {
     SessionOpened {
         agent: AgentKind,
         environment: Environment,
+    },
+    /// A popover row requested a detail visit.
+    PopoverSessionOpened {
+        context: SessionContext,
+        visit: Option<SessionVisitId>,
+    },
+    /// Main-window detail became visible.
+    SessionDetailViewed {
+        context: SessionContext,
+        visit: Option<SessionVisitId>,
+        origin: Origin,
+    },
+    /// The matching detail visit presented a data state.
+    SessionDetailStateObserved {
+        visit: SessionVisitId,
+        state: SurfaceState,
+        origin: Origin,
+    },
+    /// The reader switched the active session detail pill.
+    SessionDetailTabSelected {
+        tab: SessionDetailTab,
+        context: SessionContext,
+        visit: Option<SessionVisitId>,
+    },
+    /// The reader activated a session detail control.
+    #[serde(rename = "sessionDetailInteraction")]
+    SessionDetailUsed {
+        action: SessionDetailAction,
+        context: SessionContext,
+        visit: Option<SessionVisitId>,
+    },
+    /// The reader activated a search or filter control.
+    #[serde(rename = "sessionFilterInteraction")]
+    SessionFilterUsed {
+        action: SessionFilterControl,
+    },
+    /// A visible filtered list presented an empty or pending result.
+    SessionFilterResultsObserved {
+        result: SessionFilterResult,
+    },
+    /// The reader selected a different session list metric.
+    SessionMetricSelected {
+        metric: SessionMetric,
+        surface: SessionMetricSurface,
+    },
+    /// An explicit save of a check reminder action settled.
+    BurnCheckReminderCompleted {
+        action: BurnCheckReminderAction,
+        outcome: BurnCheckReminderOutcome,
     },
     /// A fixed product surface became visible.
     SurfaceViewed {
@@ -1218,7 +1315,7 @@ pub enum LiveUsageState {
 /// Where an agent ran. Two values, and neither names anything: a WSL
 /// distribution's *name* is chosen by the reader and is deliberately not
 /// carried, unlike the contract's own client, which sends it.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Environment {
     Native,
@@ -1427,6 +1524,99 @@ impl Interaction {
                 Facts {
                     label: Some(agent.slug()),
                     detail: Some(environment.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::PopoverSessionOpened { context, visit } => (
+                EventName::SessionOpened,
+                Facts {
+                    label: context.agent.map(AgentKind::slug),
+                    detail: Some(context.environment.as_str()),
+                    session_context: Some(context),
+                    session_visit_id: visit,
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionDetailViewed {
+                context,
+                visit,
+                origin,
+            } => (
+                EventName::SessionDetailViewed,
+                Facts {
+                    origin: Some(origin.as_str()),
+                    session_context: Some(context),
+                    session_visit_id: visit,
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionDetailStateObserved {
+                visit,
+                state,
+                origin,
+            } => (
+                EventName::SurfaceStateObserved,
+                Facts {
+                    label: Some(StateSurface::SessionDetail.as_str()),
+                    detail: Some(state.as_str()),
+                    origin: Some(origin.as_str()),
+                    session_visit_id: Some(visit),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionDetailTabSelected {
+                tab,
+                context,
+                visit,
+            } => (
+                EventName::SessionDetailTabSelected,
+                Facts {
+                    label: Some(tab.as_str()),
+                    session_context: Some(context),
+                    session_visit_id: visit,
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionDetailUsed {
+                action,
+                context,
+                visit,
+            } => (
+                EventName::SessionDetailInteraction,
+                Facts {
+                    label: Some(action.as_str()),
+                    session_context: Some(context),
+                    session_visit_id: visit,
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionFilterUsed { action } => (
+                EventName::SessionFilterInteraction,
+                Facts {
+                    label: Some(action.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionFilterResultsObserved { result } => (
+                EventName::SessionFilterResultsObserved,
+                Facts {
+                    label: Some(result.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::SessionMetricSelected { metric, surface } => (
+                EventName::SessionMetricSelected,
+                Facts {
+                    label: Some(metric.as_str()),
+                    detail: Some(surface.as_str()),
+                    ..Facts::default()
+                },
+            ),
+            Interaction::BurnCheckReminderCompleted { action, outcome } => (
+                EventName::BurnCheckReminderCompleted,
+                Facts {
+                    label: Some(action.as_str()),
+                    detail: Some(outcome.as_str()),
                     ..Facts::default()
                 },
             ),
