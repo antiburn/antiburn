@@ -13,7 +13,7 @@ const progress = {
 describe("uploadProgressMessage", () => {
   it("shows accepted sessions and cumulative transferred bytes", () => {
     expect(uploadProgressMessage([ongoingStatus({ uploadProgress: progress })])).toBe(
-      "1/5 sessions, 12 MB of 85 MB uploaded",
+      "1 of 5 sessions uploaded • 12 MB of 85 MB transferred",
     )
   })
 
@@ -21,25 +21,25 @@ describe("uploadProgressMessage", () => {
     "keeps counts and bytes visible while %s",
     (phase) => {
       expect(uploadProgressMessage([ongoingStatus({ uploadProgress: progress })], phase)).toBe(
-        `1/5 sessions, 12 MB of 85 MB uploaded • ${phase}`,
+        `1 of 5 sessions uploaded • 12 MB of 85 MB transferred • ${phase}`,
       )
     },
   )
 
-  it("marks the session count as unfinished until discovery completes", () => {
+  it("shows sessions found without using them as an unfinished denominator", () => {
     expect(
       uploadProgressMessage([
         ongoingStatus({ uploadProgress: { ...progress, total: null, found: 5 } }),
       ]),
-    ).toBe("1/5+ sessions, 12 MB of 85 MB uploaded")
+    ).toBe("1 session uploaded • 5 sessions found • 12 MB of 85 MB transferred")
   })
 
-  it("shows an unknown session total before discovery finds a session", () => {
+  it("keeps an observed zero acceptance count when the session total is unknown", () => {
     expect(
       uploadProgressMessage([
         ongoingStatus({ uploadProgress: { ...progress, uploaded: 0, total: null } }),
       ]),
-    ).toBe("0/? sessions, 12 MB of 85 MB uploaded")
+    ).toBe("0 sessions uploaded • 12 MB of 85 MB transferred")
   })
 
   it("does not replace an unknown byte total with zero", () => {
@@ -52,8 +52,45 @@ describe("uploadProgressMessage", () => {
           },
         }),
       ]),
-    ).toBe("1/5 sessions, 12 MB of ? uploaded")
+    ).toBe("1 of 5 sessions uploaded • 12 MB transferred")
   })
+
+  it.each([
+    { uploaded: 0, total: 1, expected: "0 of 1 session uploaded" },
+    { uploaded: 1, total: 1, expected: "1 of 1 session uploaded" },
+    { uploaded: 1, total: null, expected: "1 session uploaded" },
+    { uploaded: 2, total: null, expected: "2 sessions uploaded" },
+  ])("uses the measured count with correct plurals: $expected", ({ expected, ...value }) => {
+    expect(uploadProgressMessage([ongoingStatus({ uploadProgress: value })])).toBe(expected)
+  })
+
+  it.each([
+    {
+      value: { uploaded: 1, total: 5, scanIncomplete: true, found: 5 },
+      expected: "1 session uploaded • 5 sessions found",
+    },
+    {
+      value: { uploaded: 1, total: 5, scanIncomplete: true },
+      expected: "1 session uploaded",
+    },
+    {
+      value: { uploaded: 0, total: 0, scanIncomplete: true },
+      expected: "0 sessions uploaded",
+    },
+    {
+      value: { uploaded: 1, total: null, found: 1 },
+      expected: "1 session uploaded",
+    },
+    {
+      value: { uploaded: 1, total: 1, found: 5 },
+      expected: "1 of 1 session uploaded",
+    },
+  ])(
+    "does not turn incomplete or stale discovery into a final total: $expected",
+    ({ value, expected }) => {
+      expect(uploadProgressMessage([ongoingStatus({ uploadProgress: value })])).toBe(expected)
+    },
+  )
 
   it("keeps zero totals when an empty scan is complete", () => {
     expect(
@@ -66,7 +103,7 @@ describe("uploadProgressMessage", () => {
           },
         }),
       ]),
-    ).toBe("0/0 sessions, 0 B of 0 B uploaded")
+    ).toBe("No sessions to upload")
   })
 
   it("shows zero sent bytes when cumulative transfer proves no bytes were sent", () => {
@@ -79,7 +116,65 @@ describe("uploadProgressMessage", () => {
           },
         }),
       ]),
-    ).toBe("1/5 sessions, 0 B of 85 MB uploaded")
+    ).toBe("1 of 5 sessions uploaded • 0 B of 85 MB transferred")
+  })
+
+  it("keeps measured zero bytes when the transfer total is unknown", () => {
+    expect(
+      uploadProgressMessage([
+        ongoingStatus({
+          uploadProgress: {
+            ...progress,
+            transfer: { sentBytes: 0, totalBytes: null },
+          },
+        }),
+      ]),
+    ).toBe("1 of 5 sessions uploaded • 0 B transferred")
+  })
+
+  it("omits zero-byte transfer work for sessions with matching acceptance receipts", () => {
+    expect(
+      uploadProgressMessage([
+        ongoingStatus({
+          uploadProgress: {
+            uploaded: 5,
+            total: 5,
+            transfer: { sentBytes: 0, totalBytes: 0 },
+          },
+        }),
+      ]),
+    ).toBe("5 of 5 sessions uploaded")
+  })
+
+  it("does not use completed byte transfer to claim session acceptance", () => {
+    expect(
+      uploadProgressMessage([
+        ongoingStatus({
+          uploadProgress: {
+            uploaded: 0,
+            total: 5,
+            transfer: { sentBytes: 85_000_000, totalBytes: 85_000_000 },
+          },
+        }),
+      ]),
+    ).toBe("0 of 5 sessions uploaded • 85 MB of 85 MB transferred")
+  })
+
+  it.each([
+    { sentBytes: 1, totalBytes: 999, expected: "1 B of 999 B transferred" },
+    { sentBytes: 1_000, totalBytes: 2_000, expected: "1 KB of 2 KB transferred" },
+    { sentBytes: 12_000_000, totalBytes: 85_000_000, expected: "12 MB of 85 MB transferred" },
+    {
+      sentBytes: 1_000_000_000,
+      totalBytes: 2_000_000_000,
+      expected: "1 GB of 2 GB transferred",
+    },
+  ])("uses decimal byte units: $expected", ({ expected, ...transfer }) => {
+    expect(
+      uploadProgressMessage([
+        ongoingStatus({ uploadProgress: { uploaded: 1, total: 5, transfer } }),
+      ]),
+    ).toBe(`1 of 5 sessions uploaded • ${expected}`)
   })
 
   it("keeps completed counts and bytes during a later routine phase", () => {
@@ -97,7 +192,7 @@ describe("uploadProgressMessage", () => {
         ],
         "Checking folders",
       ),
-    ).toBe("5/5 sessions, 85 MB of 85 MB uploaded • Checking folders")
+    ).toBe("5 of 5 sessions uploaded • 85 MB of 85 MB transferred • Checking folders")
   })
 
   it.each([
@@ -106,7 +201,7 @@ describe("uploadProgressMessage", () => {
   ])("ignores a per-upload transfer reset to $sentBytes bytes", (uploadTransfer) => {
     expect(
       uploadProgressMessage([ongoingStatus({ uploadProgress: progress, uploadTransfer })]),
-    ).toBe("1/5 sessions, 12 MB of 85 MB uploaded")
+    ).toBe("1 of 5 sessions uploaded • 12 MB of 85 MB transferred")
   })
 
   it("does not use per-upload bytes when cumulative transfer is missing", () => {
@@ -117,7 +212,7 @@ describe("uploadProgressMessage", () => {
           uploadTransfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
         }),
       ]),
-    ).toBe("1/5 sessions, ? of ? uploaded")
+    ).toBe("1 of 5 sessions uploaded")
   })
 
   it("counts separate workspace deliveries as session uploads", () => {
@@ -133,7 +228,7 @@ describe("uploadProgressMessage", () => {
           },
         }),
       ]),
-    ).toBe("3/8 session uploads, 19 MB of 105 MB uploaded")
+    ).toBe("3 of 8 session uploads complete • 19 MB of 105 MB transferred")
   })
 
   it("keeps the combined session total unfinished if any scan has gaps", () => {
@@ -142,26 +237,67 @@ describe("uploadProgressMessage", () => {
         ongoingStatus({ uploadProgress: progress }),
         ongoingStatus({
           destinationId: "synthetic-team",
-          uploadProgress: { ...progress, scanIncomplete: true },
+          uploadProgress: { ...progress, scanIncomplete: true, found: 5 },
         }),
       ]),
-    ).toBe("2/10+ session uploads, 24 MB of 170 MB uploaded")
+    ).toBe(
+      "2 session uploads complete • 10 session uploads found • 24 MB of 170 MB transferred",
+    )
   })
 
-  it("keeps combined totals unknown if a workspace has no progress", () => {
+  it("omits partial combined counts and bytes if a workspace has no progress", () => {
     expect(
       uploadProgressMessage([
         ongoingStatus({ uploadProgress: progress }),
         ongoingStatus({ destinationId: "synthetic-team" }),
       ]),
-    ).toBe("?/5+ session uploads, ? of ? uploaded")
+    ).toBeNull()
+  })
+
+  it("shows only the phase when one workspace has no measurements", () => {
+    expect(
+      uploadProgressMessage(
+        [
+          ongoingStatus({ uploadProgress: progress }),
+          ongoingStatus({ destinationId: "synthetic-team" }),
+        ],
+        "Checking folders",
+      ),
+    ).toBe("Checking folders")
+  })
+
+  it("uses a finalized workspace total instead of its stale found count in a combined lower bound", () => {
+    expect(
+      uploadProgressMessage([
+        ongoingStatus({ uploadProgress: { uploaded: 1, total: 5, found: 99 } }),
+        ongoingStatus({
+          destinationId: "synthetic-team",
+          uploadProgress: { uploaded: 2, total: null, found: 3 },
+        }),
+      ]),
+    ).toBe("3 session uploads complete • 8 session uploads found")
+  })
+
+  it.each([
+    { total: 0, expected: "1 of 1 session upload complete" },
+    { total: null, expected: "1 session upload complete" },
+  ])("keeps a singular combined delivery count: $expected", ({ total, expected }) => {
+    expect(
+      uploadProgressMessage([
+        ongoingStatus({ uploadProgress: { uploaded: 1, total: 1 } }),
+        ongoingStatus({
+          destinationId: "synthetic-team",
+          uploadProgress: { uploaded: 0, total },
+        }),
+      ]),
+    ).toBe(expected)
   })
 
   it.each([
     {
       name: "a missing transfer",
       otherProgress: { uploaded: 2, total: 3 },
-      expected: "3/8 session uploads, ? of ? uploaded",
+      expected: "3 of 8 session uploads complete",
     },
     {
       name: "an unknown transfer total",
@@ -170,7 +306,7 @@ describe("uploadProgressMessage", () => {
         total: 3,
         transfer: { sentBytes: 0, totalBytes: null },
       },
-      expected: "3/8 session uploads, 12 MB of ? uploaded",
+      expected: "3 of 8 session uploads complete • 12 MB transferred",
     },
   ])("preserves the combined byte evidence with $name", ({ otherProgress, expected }) => {
     expect(
@@ -192,19 +328,22 @@ describe("uploadProgressMessage", () => {
         ongoingStatus({
           uploadProgress: {
             uploaded: 1_234,
-            total: 5_678,
+            total: 4_096,
             transfer: { sentBytes: 1_250_000_000, totalBytes: 8_500_000_000 },
           },
         }),
       ]),
     ).toBe(
-      `${countFormat.format(1_234)}/${countFormat.format(5_678)} sessions, ${sizeFormat.format(1.25)} GB of ${sizeFormat.format(8.5)} GB uploaded`,
+      `${countFormat.format(1_234)} of ${countFormat.format(4_096)} sessions uploaded • ${sizeFormat.format(1.25)} GB of ${sizeFormat.format(8.5)} GB transferred`,
     )
   })
 
   it.each([
     { policies: [] },
     { policies: [ongoingStatus()] },
+    {
+      policies: [ongoingStatus(), ongoingStatus({ destinationId: "synthetic-team" })],
+    },
     {
       policies: [
         ongoingStatus({
@@ -221,16 +360,14 @@ describe("uploadProgressMessage", () => {
   it.each([{ policies: [] }, { policies: [ongoingStatus()] }])(
     "shows a phase before progress is available",
     ({ policies }) => {
-      expect(uploadProgressMessage(policies, "Starting sync")).toBe(
-        "?/? sessions, ? of ? uploaded • Starting sync",
-      )
+      expect(uploadProgressMessage(policies, "Starting sync")).toBe("Starting sync")
     },
   )
 })
 
 describe("CloudSyncActivity", () => {
   it("keeps one live region and text node through progress, recovery, and errors", () => {
-    const initialMessage = "?/? sessions, ? of ? uploaded • Starting sync"
+    const initialMessage = "Starting sync"
     const { rerender } = render(<CloudSyncActivity message={initialMessage} active />)
     const status = screen.getByRole("status")
     const messageElement = screen.getByTitle(initialMessage)
@@ -244,12 +381,13 @@ describe("CloudSyncActivity", () => {
 
     for (const { message, active } of [
       {
-        message: "2/5 sessions, 24 MB of 85 MB uploaded • Checking saved uploads",
+        message:
+          "2 of 5 sessions uploaded • 24 MB of 85 MB transferred • Checking saved uploads",
         active: true,
       },
       { message: "Recovering saved uploads…", active: true },
       { message: "Could not upload sessions. Try again.", active: false },
-      { message: "5/5 sessions, 85 MB of 85 MB uploaded", active: false },
+      { message: "5 of 5 sessions uploaded • 85 MB of 85 MB transferred", active: false },
     ]) {
       rerender(<CloudSyncActivity message={message} active={active} />)
 
@@ -264,7 +402,8 @@ describe("CloudSyncActivity", () => {
   })
 
   it("allows the complete progress message to wrap instead of truncating it", () => {
-    const message = "123/456 session uploads, 12 MB of 85 MB uploaded • Checking saved uploads"
+    const message =
+      "123 of 456 session uploads complete • 12 MB of 85 MB transferred • Checking saved uploads"
     render(<CloudSyncActivity message={message} active />)
 
     const status = screen.getByRole("status")

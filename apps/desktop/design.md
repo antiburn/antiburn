@@ -1088,12 +1088,37 @@ Notes for what isn't expressible as a token:
   space beside it for status and recovery actions. Align a single line of status
   or error text with the button. Align the alert icon with the first line when
   text wraps. Keep the button at the top of its column as the text grows.
-  Use the standard push button's short background and opacity transition,
-  with the global reduced-motion limit. Show a loading row before the first
-  results and status text when the user requests another page. Use a short
-  status if workspace verification blocks new selections. Do not show a
-  spinner or advisory warning when a partial read or refresh leaves usable
-  folders. Pair a blocking read error with **Check again**.
+  Reuse the existing Skeleton and push button components, semantic colors,
+  `type-*` scale, `rounded-control`, and motion tokens. Change no tokens for
+  loading or progress. Use the push button's short background and opacity
+  transition with the global reduced-motion limit.
+  Show skeletons for content that awaits the first account or sync-status read.
+  Announce one `Loading Cloud settings` status, not each skeleton. Do not guess
+  account, switch, folder, or counter values. Keep verified account and folder
+  content visible during background refreshes in the same scope. End loading
+  on failure and pair the error with a supported recovery action.
+  Show known counts as `1 of 5 sessions uploaded` or `1 session uploaded` when
+  the total is unknown. An optional `5 sessions found` is a discovery lower
+  bound. Use `3 of 8 session uploads complete` across workspaces. Do not present
+  known workspace subtotals as a complete total when another member is unknown.
+  Keep session acceptance separate from confirmed compressed-byte transfer:
+  `12 MB of 85 MB transferred` or `12 MB transferred` when the byte total is
+  unknown. Omit missing measurements, `?` and `+` placeholders, and guessed
+  zeros, totals, percentages, or time remaining. Keep the current phase beside
+  known counters or alone, such as `Checking folders` or `Checking saved uploads`.
+  Do not claim `Up to date` without complete, successful scan evidence.
+  Keep the same footer button location and size. Show **Syncing** with native
+  `disabled` while a scan, upload, or automatic recovery is active, even after
+  the command response completes. Use `surface-tertiary` fill and
+  `label-secondary` text without reducing opacity. Return to **Sync now** when
+  activity ends.
+  If disabling removes keyboard focus and a save fails, restore the same
+  enabled retry button. Do not move focus back after the user chooses another
+  control or window.
+  Show status text when the user requests another folder page. Use a short
+  status if workspace verification blocks new selections. Do not show a spinner
+  or advisory warning when a partial read or refresh leaves usable folders.
+  Pair a blocking read error with **Check again**.
 - **CLI settings pane** — present the CLI as an internal runtime managed by antiburn.
   Add the purpose-led pane description: “Helps antiburn share check findings with
   your coding agents.” The card explains automatic management by antiburn.
@@ -2145,9 +2170,8 @@ approval and **Sync now** after approval. A failure can change the action in
 place to **Try again**, **Review folders**, or **Check Cloud**. Do not add a
 second button for the same step. Show an upload switch only when it can pause
 or resume uploads.
-Show one short status line beside the action. During a scan or upload, show
-**Syncing** with a spinner. Use confirmed bytes for one upload when the size
-is known. Otherwise use session counts or a short activity label. Keep folder
+Use the Cloud folder settings rules above for initial skeletons, independent
+session and transfer progress, and the disabled **Syncing** action. Keep folder
 switches and workspace dropdowns in place while they are disabled.
 Keep repository approval in the same folder picker. Use one short scope note
 for pending Git choices. Do not add separate worktree or migration controls.

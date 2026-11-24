@@ -26,7 +26,7 @@ export function savedUploadDisplayState(policy: CloudOngoingStatus) {
     : policy.status
 }
 
-/** Keep the last scan counters visible unless access, storage, or consent blocks them. */
+/** Keep measured progress visible without inferring activity from missing counters. */
 export function idleSyncMessage({
   policies,
   deviceEnabled,
@@ -61,8 +61,8 @@ export function idleSyncMessage({
   if (deviceEnabled === false || enabled.every(({ paused }) => paused))
     return "Folder sync paused"
   if (deviceEnabled !== true) return "Checking folder sync…"
-  const current = enabled.filter(({ storageKnown, paused }) => storageKnown && !paused)
-  if (!current.length) return "Status unavailable"
+  const current = enabled.filter(({ paused }) => !paused)
+  if (current.some(({ storageKnown }) => !storageKnown)) return "Status unavailable"
   const phase = current.some(onlyAutomaticRecovery)
     ? "Checking saved uploads"
     : current.some((policy) => policy.uploadProgress?.scanIncomplete)

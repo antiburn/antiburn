@@ -482,7 +482,15 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
           partial: name === "folders-empty-partial" || partialSettingsPage,
         }
       },
-      status: async () => ongoingStatus(),
+      status: async () => {
+        if (params.has("deferStatus"))
+          await new Promise<void>((resolve) =>
+            window.addEventListener("cloud-fixture:finish-status", () => resolve(), {
+              once: true,
+            }),
+          )
+        return ongoingStatus()
+      },
       confirmTeamFolders: async ({
         accountId,
         destinationId,
@@ -637,7 +645,15 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
         return ongoing
       },
     },
-    read: async () => value,
+    read: async () => {
+      if (params.has("deferAccount"))
+        await new Promise<void>((resolve) =>
+          window.addEventListener("cloud-fixture:finish-account", () => resolve(), {
+            once: true,
+          }),
+        )
+      return value
+    },
     watch: async () => {
       const releaseFolders = () => {
         // Keep an early release for the next read. A remount can replace this watcher.

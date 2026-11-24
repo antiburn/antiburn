@@ -1,4 +1,4 @@
-/** Focus the replacement control or list only if the action removed focus. */
+/** Restore a usable trigger, replacement control, or list only if the action removed focus. */
 export async function changeFolderWithFocus(
   trigger: Element | null,
   foldersId: string,
@@ -26,6 +26,14 @@ export async function changeFolderWithFocus(
         !(document.activeElement === trigger && trigger.matches(":disabled")))
     )
       return
+    if (
+      trigger instanceof HTMLElement &&
+      trigger.isConnected &&
+      !trigger.matches(':disabled, [aria-disabled="true"]')
+    ) {
+      trigger.focus()
+      return
+    }
     const folders = document.getElementById(foldersId)
     const row = Array.from(
       folders?.querySelectorAll<HTMLElement>("[data-cloud-folder]") ?? [],

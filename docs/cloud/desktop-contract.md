@@ -463,6 +463,14 @@ uploads run or the policy is paused.
 Errors use an inline alert rather than muted routine status. Jobs excluded by the
 current folder policy retain their bytes but do not count as current upload failures.
 
+While the first account and sync-status reads are pending, Settings shows skeletons
+for the content that depends on those reads. It announces one accessible
+`Loading Cloud settings` status. Missing results do not imply a signed-out account,
+switch values, folder approval, or zero counters. Verified account and folder content
+stays visible during background refreshes in the same account, destination, and
+service scope. A read failure ends loading and shows a recovery action instead of
+an indefinite skeleton.
+
 `storageKnown` is true only when saved-state reads succeed. When false, status
 counters and progress are unknown or last-known values, not current results. The desktop
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
@@ -543,14 +551,36 @@ the total is known again. Proven folder exclusions and deletion markers remove
 that source's contributions. The tracker bounds both source and capture counts
 to 4,096. Reaching either bound can leave totals unknown. These counters share
 the session progress lifetime and its account, policy, and sign-in limits.
-Settings keeps session and byte progress together, such as
-`1/5 sessions, 12 MB of 85 MB uploaded`. Routine activity appears after a bullet,
-such as `Checking folders` or `Checking saved uploads`. It does not replace the
-counters. A `+` marks sessions found before the count is final; `?` marks an
-unknown count or byte size. Combined workspace counts use `session uploads`
-because sending one local session to two workspaces counts as two deliveries.
-Errors replace the progress line. The same button shows `Syncing` while a scan,
-upload, or automatic recovery is active, then returns to `Sync now`.
+Settings shows each available session and byte measurement independently:
+
+- A known session total reads `1 of 5 sessions uploaded`. A measured acceptance
+  count with an unknown total reads `1 session uploaded`.
+- During discovery, an optional count such as `5 sessions found` is a lower bound,
+  not a final total.
+- Cumulative transfer with a known total reads `12 MB of 85 MB transferred`.
+  A measured transfer count with an unknown total reads `12 MB transferred`.
+- Unavailable measurements are omitted. Settings does not use `?` or `+`
+  placeholders, guessed zeros, or guessed totals. It does not infer percentages
+  or time remaining from missing measurements.
+
+Session counts describe accepted source versions. Transfer counts describe
+confirmed compressed bytes, not raw network traffic or session acceptance.
+Combined workspace counts use `session uploads`, such as
+`3 of 8 session uploads complete`, because sending one local session to two
+workspaces counts as two deliveries. A combined session or byte total is known
+only when every included workspace supplies that measurement with a known total.
+A sum of known members is not a complete aggregate when another member is unknown.
+
+Routine activity remains independent of the counters. When measurements are
+available, activity follows them after a bullet, such as `Checking folders` or
+`Checking saved uploads`. Without measurements, Settings shows the activity alone.
+Errors replace the progress line and offer a supported recovery action. Settings
+does not claim `Up to date` without evidence that the current scan scope is complete
+and has no pending, blocked, unsupported, or undiscovered work.
+The same footer button keeps its location and size. It shows `Syncing` and uses the
+native `disabled` attribute while a scan, upload, or automatic recovery is active.
+Completion of the command response does not enable it while background work
+remains active. It returns to `Sync now` only after that activity ends.
 While a scan is active, `found` can report how many matching sessions Desktop
 has found so far. It is not a final total. If Desktop can identify one current
 upload, `uploadTransfer` reports confirmed compressed bytes and the bytes the

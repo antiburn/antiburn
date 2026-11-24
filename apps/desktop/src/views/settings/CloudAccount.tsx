@@ -135,6 +135,76 @@ function CloudFolderLoadingRow({ message }: { message: string }) {
   )
 }
 
+/** Reserve Settings rows until their first read settles. Do not show guessed controls. */
+function CloudSettingsLoading({
+  account,
+  uploadControl,
+  folderRowId,
+}: {
+  account: boolean
+  uploadControl: boolean
+  folderRowId: string | undefined
+}) {
+  return (
+    <>
+      <div aria-busy="true">
+        {account && (
+          <div className="flex items-start justify-between gap-3 px-4 py-3">
+            <div className="min-w-0 space-y-2">
+              <Skeleton className="h-4 w-40 max-w-full motion-reduce:animate-none" />
+              <Skeleton className="h-3 w-20 motion-reduce:animate-none" />
+            </div>
+            <Skeleton className="h-6 w-16 shrink-0 motion-reduce:animate-none" />
+          </div>
+        )}
+        {uploadControl && (
+          <SettingsRow
+            searchId="cloudUpload"
+            className="border-t border-separator"
+            trailing={<Skeleton className="h-5 w-8 motion-reduce:animate-none" />}
+          />
+        )}
+        <SettingsRow
+          searchId="cloudFolders"
+          id={folderRowId}
+          role="group"
+          aria-label="Cloud folders"
+          className="@container border-t border-separator"
+        >
+          <Skeleton className="mt-1 h-3 w-64 max-w-full motion-reduce:animate-none" />
+          <div className="mt-3 grid min-h-32 @min-[30rem]:min-h-24">
+            {["w-32", "w-24"].map((width) => (
+              <div
+                key={width}
+                className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3 py-2"
+              >
+                <Skeleton className="h-4 w-4 motion-reduce:animate-none" />
+                <div className="min-w-0 space-y-2">
+                  <Skeleton className={`h-3 max-w-full motion-reduce:animate-none ${width}`} />
+                  <Skeleton className="h-3 w-40 max-w-full motion-reduce:animate-none" />
+                </div>
+                <Skeleton className="h-5 w-8 motion-reduce:animate-none" />
+              </div>
+            ))}
+          </div>
+        </SettingsRow>
+      </div>
+      <footer className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 border-t border-separator px-4 py-2 type-footnote text-label-secondary">
+        <p role="status" className="flex min-h-8 items-center">
+          Loading Cloud settings…
+        </p>
+        <button
+          type="button"
+          className="ui-push-button min-h-8 min-w-28 disabled:bg-surface-tertiary disabled:text-label-secondary"
+          disabled
+        >
+          Sync now
+        </button>
+      </footer>
+    </>
+  )
+}
+
 function RetryUploadButton({
   label,
   busy,
@@ -209,6 +279,18 @@ export function CloudAccount({
           : !["idle", "signed_in", "signed_out"].includes(value.cloud.status)
             ? cloudStatusMessage(value.cloud.status)
             : null
+  if (!value.loaded)
+    return <CloudSettingsLoading account uploadControl={!!children} folderRowId={folderRowId} />
+  const loadingSyncStatus =
+    session.projectSyncSupported &&
+    value.cloud.status === "signed_in" &&
+    personalCloudDestination(value.cloud.destination ?? null) &&
+    !value.ongoing &&
+    !value.projects?.loaded &&
+    !value.projects?.error &&
+    !value.projects?.refreshError &&
+    !value.cloud.setupError &&
+    !value.error
   return (
     <>
       <div className="flex items-start justify-between gap-3 px-4 py-3">
@@ -357,8 +439,16 @@ export function CloudAccount({
           />
         </div>
       )}
-      {children && <div className="border-t border-separator">{children}</div>}
-      {session.projectSyncSupported ? (
+      {!loadingSyncStatus && children && (
+        <div className="border-t border-separator">{children}</div>
+      )}
+      {loadingSyncStatus ? (
+        <CloudSettingsLoading
+          account={false}
+          uploadControl={!!children}
+          folderRowId={folderRowId}
+        />
+      ) : session.projectSyncSupported ? (
         <CloudProjectsAccount session={session} value={value} folderRowId={folderRowId} />
       ) : (
         <>
@@ -924,7 +1014,13 @@ function CloudProjectsAccount({
     const focus = new AbortController()
     const stopFollowingSave = () => focus.abort()
     if (document.activeElement === trigger) {
-      trigger.addEventListener("blur", stopFollowingSave, { signal: focus.signal })
+      document.addEventListener(
+        "focusin",
+        (event) => {
+          if (event.target !== trigger && event.target !== document.body) stopFollowingSave()
+        },
+        { signal: focus.signal },
+      )
       window.addEventListener("blur", stopFollowingSave, { signal: focus.signal })
     } else stopFollowingSave()
     setSyncPhase("saving")
@@ -1525,9 +1621,9 @@ function CloudProjectsAccount({
         <CloudSyncActivity message={footerStatus} active={syncWorking && !syncError} />
         <button
           type="button"
-          className={`ui-push-button min-h-8 min-w-28 gap-1 enabled:bg-accent-fill enabled:text-white enabled:hover:bg-accent-hover disabled:opacity-50 ${syncWorking ? "" : "aria-disabled:opacity-50"}`}
-          disabled={primaryBlocked && !keepPrimaryFocusable}
-          aria-disabled={keepPrimaryFocusable || undefined}
+          className="ui-push-button min-h-8 min-w-28 gap-1 enabled:bg-accent-fill enabled:text-white enabled:hover:bg-accent-hover disabled:bg-surface-tertiary disabled:text-label-secondary aria-disabled:opacity-50"
+          disabled={syncWorking || (primaryBlocked && !keepPrimaryFocusable)}
+          aria-disabled={(!syncWorking && keepPrimaryFocusable) || undefined}
           aria-busy={syncWorking || undefined}
           aria-describedby={
             syncWorking

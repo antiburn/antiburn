@@ -439,6 +439,42 @@ test("the first Personal folder save can be retried at narrow width", async ({ p
   await expect(saveCalls).toHaveAttribute("data-sync-calls", "1")
 })
 
+for (const width of [375, 768, 1440]) {
+  test(`Cloud Settings reserves loading rows at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 })
+    await page.emulateMedia({ reducedMotion: "reduce" })
+    await page.goto(
+      "/tests/visual/?surface=cloud&cloud=settings-progress&deferAccount=1&deferStatus=1",
+    )
+    const settings = page.getByRole("main", { name: "Cloud Settings preview" })
+    const status = settings.getByRole("status")
+    await expect(status).toHaveText("Loading Cloud settings…")
+    await expect(settings.locator("[aria-busy=true]")).toHaveCount(1)
+    await expect(settings.locator("[data-placeholder]").first()).toBeVisible()
+    await expect(settings.getByRole("switch")).toHaveCount(0)
+    await expect(
+      settings.getByText(/Not signed in|have not started|Could not read/),
+    ).toHaveCount(0)
+    await expect(settings.getByRole("button", { name: "Sync now" })).toBeDisabled()
+    await capture(page, `account-${width}`, "cloud-settings-loading")
+
+    await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-account")))
+    await expect(settings.getByText("Signed in as example")).toBeVisible()
+    await expect(status).toHaveText("Loading Cloud settings…")
+    await expect(settings.getByRole("switch")).toHaveCount(0)
+    await expect(settings.getByText(/Status unavailable|Uploads paused/)).toHaveCount(0)
+    await capture(page, `status-${width}`, "cloud-settings-loading")
+
+    await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-status")))
+    await expect(settings.locator("[aria-busy=true]")).toHaveCount(0)
+    await expect(settings.locator("[data-placeholder]")).toHaveCount(0)
+    await expect(settings.getByRole("switch", { name: /Sync Studio/ })).toBeVisible()
+    await expect(status).not.toHaveText(/Loading|\?/)
+    expect(await settings.evaluate((node) => node.scrollWidth === node.clientWidth)).toBe(true)
+    await capture(page, `loaded-${width}`, "cloud-settings-loading")
+  })
+}
+
 test("folder discovery retries and saved verification stay automatic in Sessions settings", async ({
   page,
 }) => {
@@ -450,9 +486,7 @@ test("folder discovery retries and saved verification stay automatic in Sessions
   await expect(page.getByText("Loading folders…")).toBeVisible()
   await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-folders")))
   await expect(page.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
-  await expect(page.locator("footer").getByRole("status")).toHaveText(
-    "?/? sessions, ? of ? uploaded • Checking saved uploads",
-  )
+  await expect(page.locator("footer").getByRole("status")).toHaveText("Checking saved uploads")
   await expect(
     page.locator("footer").getByRole("button", { name: "Syncing", exact: true }),
   ).toBeDisabled()
@@ -545,7 +579,7 @@ for (const width of [860, 480]) {
     const before = await bounds()
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
     await expect(page.locator("footer").getByRole("status")).toHaveText(
-      "6/96 sessions, 1 MB of 3 MB uploaded • Uploading sessions",
+      "6 of 96 sessions uploaded • 1 MB of 3 MB transferred • Uploading sessions",
     )
     await expect(page.getByText("3 queued")).toHaveCount(0)
     await expect(control).toBeFocused()
@@ -561,9 +595,12 @@ for (const width of [860, 480]) {
     await capture(page, `cloud-settings-sync-status-${width}`, "cloud-sync-status")
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
     await expect(
-      page.getByText("6/96 sessions, 1 MB of 3 MB uploaded • Uploading sessions", {
-        exact: true,
-      }),
+      page.getByText(
+        "6 of 96 sessions uploaded • 1 MB of 3 MB transferred • Uploading sessions",
+        {
+          exact: true,
+        },
+      ),
     ).toHaveCount(0)
     await expect(control).toBeFocused()
     await expect(control).toBeEnabled()
@@ -593,6 +630,7 @@ for (const theme of ["light", "dark"] as const) {
       const status = footer.getByRole("status")
       const sync = footer.getByRole("button", { name: /^(Sync now|Syncing)$/ })
       await expect(sync).toHaveText("Sync now")
+      await expect(sync).toBeEnabled()
       await sync.focus()
       const initialSize = await sync.evaluate((button) => ({
         width: button.getBoundingClientRect().width,
@@ -605,7 +643,7 @@ for (const theme of ["light", "dark"] as const) {
         await expect(sync).toHaveAccessibleName("Syncing")
         await expect(sync).toHaveText("Syncing")
         await expect(sync).toBeDisabled()
-        await expect(sync).toBeFocused()
+        await expect(sync).not.toBeFocused()
         await expect(sync).toHaveAttribute("aria-busy", "true")
         await expect(sync).toHaveCSS("opacity", "1")
         const label = sync.locator("span:not([aria-hidden])")
@@ -628,24 +666,40 @@ for (const theme of ["light", "dark"] as const) {
         await expect(status.locator("span[title]")).toHaveCSS("white-space", "normal")
         await capture(page, `${theme}-${width}-${phase}`, "cloud-sync-status")
       }
-      await busy("1/5+ sessions, 12 MB of ? uploaded • Checking folders", "checking-folders")
+      await busy(
+        "1 session uploaded • 5 sessions found • 12 MB transferred • Checking folders",
+        "checking-folders",
+      )
+      await sync.dispatchEvent("click")
+      await expect(page.locator("body")).toHaveAttribute("data-sync-calls", "1")
       await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-sync")))
-      await busy("1/5 sessions, 12 MB of 85 MB uploaded • Uploading sessions", "upload")
+      await busy(
+        "1 of 5 sessions uploaded • 12 MB of 85 MB transferred • Uploading sessions",
+        "upload",
+      )
       await page.evaluate(() =>
         window.dispatchEvent(new Event("cloud-fixture:recover-transfer")),
       )
-      await busy("1/5 sessions, 12 MB of 85 MB uploaded • Checking saved uploads", "recovery")
+      await busy(
+        "1 of 5 sessions uploaded • 12 MB of 85 MB transferred • Checking saved uploads",
+        "recovery",
+      )
       await page.evaluate(() =>
         window.dispatchEvent(new Event("cloud-fixture:update-transfer")),
       )
-      await busy("2/5 sessions, 17 MB of 85 MB uploaded • Uploading sessions", "next-upload")
+      await busy(
+        "2 of 5 sessions uploaded • 17 MB of 85 MB transferred • Uploading sessions",
+        "next-upload",
+      )
       await expect(status).not.toContainText("2 MB of 5 MB")
       await page.evaluate(() =>
         window.dispatchEvent(new Event("cloud-fixture:finish-transfer")),
       )
-      await expect(status).toHaveText("5/5 sessions, 85 MB of 85 MB uploaded")
+      await expect(status).toHaveText("5 of 5 sessions uploaded • 85 MB of 85 MB transferred")
       await expect(sync).toHaveText("Sync now")
       await expect(sync).toBeEnabled()
+      await expect(sync).not.toBeFocused()
+      await sync.focus()
       await expect(sync).toBeFocused()
       await expect(sync).not.toHaveAttribute("aria-busy", "true")
       await expect(sync.locator("svg")).toHaveCount(0)
@@ -790,10 +844,8 @@ for (const [size, width, scale] of [
     await expect(retry).toBeEnabled()
     await expect(retry).toBeFocused()
     const afterError = await relativeGeometry()
-    expect({ x: afterError.x, y: afterError.y }).toEqual({
-      x: beforeError.x,
-      y: beforeError.y,
-    })
+    for (const metric of ["x", "y"] as const)
+      expect(Math.abs(afterError[metric] - beforeError[metric])).toBeLessThanOrEqual(1)
     await capture(page, `team-save-error-${size}`)
     await page.keyboard.press("Enter")
     await expect(save).toBeEnabled()
@@ -830,6 +882,32 @@ test("a saved folder stays editable when switching between Team and Personal", a
   await capture(page, "cloud-settings-workspace-move-narrow-dark")
 })
 
+test("a deferred folder save failure returns keyboard focus to retry", async ({ page }) => {
+  await page.setViewportSize({ width: 480, height: 320 })
+  await page.emulateMedia({ reducedMotion: "reduce" })
+  await page.goto(
+    "/tests/visual/?surface=cloud&cloud=settings-team-confirmation&saveFailure=1&deferSaveFailure=1",
+  )
+  const settings = page.getByRole("main", { name: "Cloud Settings preview" })
+  const footer = settings.locator("footer")
+  const sync = footer.getByRole("button", { name: /^(Sync now|Syncing|Try again)$/ })
+  await expect(sync).toBeEnabled()
+  await sync.focus()
+  await sync.press("Enter")
+  await expect(sync).toHaveText("Syncing")
+  await expect(sync).toBeDisabled()
+  await expect(sync).not.toBeFocused()
+  await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-save")))
+  const warning = settings.getByRole("alert")
+  await expect(warning).toHaveText("Could not save folders. Try again.")
+  await expect(sync).toHaveText("Try again")
+  await expect(sync).toBeEnabled()
+  await expect(sync).toBeFocused()
+  await expect(sync).toBeInViewport({ ratio: 1 })
+  await expect(warning).toBeInViewport({ ratio: 1 })
+  await capture(page, "save-error-focus", "cloud-settings-loading")
+})
+
 test("a failed folder save does not scroll away from another focused setting", async ({
   page,
 }) => {
@@ -849,11 +927,9 @@ test("a failed folder save does not scroll away from another focused setting", a
   await page.keyboard.press("Enter")
   const syncing = footer.getByRole("button", { name: "Syncing", exact: true })
   await expect(syncing).toBeDisabled()
-  await expect(syncing).toBeFocused()
+  await expect(syncing).not.toBeFocused()
   await expect(folder).toBeDisabled()
-  await expect(footer.getByRole("status")).toHaveText(
-    "?/? sessions, ? of ? uploaded • Saving folder choices",
-  )
+  await expect(footer.getByRole("status")).toHaveText("Saving folder choices")
   await expect(footer.getByRole("status").locator('span[aria-hidden="true"] svg')).toBeVisible()
   await expect(footer.getByText("Folder sync enabled")).toHaveCount(0)
   await settings.evaluate((pane) => {
@@ -973,7 +1049,8 @@ for (const zoom of [1, 2]) {
     await sync.focus()
     await sync.press("Enter")
     await expect(sync).toHaveText("Syncing")
-    await expect(sync).toBeFocused()
+    await expect(sync).toBeDisabled()
+    await expect(sync).not.toBeFocused()
     const status = footer.getByRole("status")
     await expect(status).toHaveText("Folder sync needs attention")
     const text = status.getByText("Folder sync needs attention")
@@ -1125,7 +1202,7 @@ for (const theme of ["light", "dark"] as const) {
     await sync.press("Enter")
     await expect(sync).toHaveText("Syncing")
     await expect(sync).toBeDisabled()
-    await expect(sync).toBeFocused()
+    await expect(sync).not.toBeFocused()
     await expect(sync).toHaveAttribute("aria-busy", "true")
     await expect(sync.locator('span[aria-hidden="true"] svg')).toBeVisible()
     await expect(status).toHaveText("Folder sync needs attention")

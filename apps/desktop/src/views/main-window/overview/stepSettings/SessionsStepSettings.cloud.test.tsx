@@ -187,7 +187,7 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-it("shows status instead of upload controls while checking Cloud availability", async () => {
+it("shows placeholders instead of upload controls while checking Cloud availability", async () => {
   mockCloud(true, false)
   const invokeCloud = invoke.getMockImplementation()!
   let finishCloudRead!: () => void
@@ -198,7 +198,7 @@ it("shows status instead of upload controls while checking Cloud availability", 
     })
   })
   render(<SessionsStepSettings />)
-  expect(await screen.findByText("Checking Cloud availability…")).toBeVisible()
+  expect(await screen.findByText("Loading Cloud settings…")).toBeVisible()
   expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Choose folders" })).not.toBeInTheDocument()
 
@@ -300,6 +300,7 @@ it.each(["pause", "scan"])(
     })
 
     render(<SessionsStepSettings />)
+    await screen.findByRole("switch", { name: uploadLabel })
     const sync = await screen.findByRole("button", { name: "Sync now" })
     const upload = () => screen.getByRole("switch", { name: uploadLabel })
     const folder = screen.getByRole("switch", { name: studioLabel })
@@ -309,7 +310,8 @@ it.each(["pause", "scan"])(
       expect(folder).toHaveAttribute("aria-disabled", "true")
     }
     fireEvent.click(sync)
-    expect(screen.getByText(/ • Starting sync$/)).toBeVisible()
+    expect(screen.getByText("Starting sync", { exact: true })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Syncing" })).toBeDisabled()
     expect(upload()).toBeChecked()
     expect(upload()).toBeEnabled()
     expectDisabledFolderSwitch()
@@ -484,12 +486,12 @@ it.each([
       fails ? "new-revision" : undefined,
     )
     render(<SessionsStepSettings />)
+    expect(await screen.findByText("Sync now approves the listed Team folders.")).toBeVisible()
     const confirmation = await screen.findByRole("button", {
       name: "Sync now",
     })
     const upload = () => screen.getByRole("switch", { name: uploadLabel })
     expect(upload()).toHaveAttribute("aria-checked", String(enabled))
-    expect(await screen.findByText("Sync now approves the listed Team folders.")).toBeVisible()
     const manageSaved = screen.getByText("Manage other saved folders")
     const disclosure = manageSaved.closest("details")
     expect(disclosure).not.toHaveAttribute("open")
