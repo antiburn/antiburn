@@ -18,7 +18,7 @@
 
 A little free desktop app to check your sessions for the most common causes of token burn - sessions that go too deep, subagents that go too hard, skills and MCPs that go unused, etc etc etc.
 
-antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Devin (Windsurf), Pi, and Oh My Pi. See supported agents on [antiburn.com](https://antiburn.com/docs/agents/supported-agents/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=supported_agents) for what antiburn reads from each one, and the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
+antiburn supports Claude Code, Codex, Cursor, GitHub Copilot, Cline, OpenCode, Kiro, Amp, Antigravity, Devin (Windsurf), Pi, and Oh My Pi. See [supported agents on antiburn.com](https://antiburn.com/docs/agents/supported-agents/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=supported_agents) for what antiburn reads from each one, and the [support matrix](docs/support.md) for platform limits, discovery details, and local data storage.
 
 ## Agent plugin
 
@@ -28,17 +28,17 @@ The plugin works independently of the desktop app.
 
 ## Checks
 
-Each check has a docs page explaining what it measures and how to fix it. The config guides on [antiburn.com](https://antiburn.com/guides/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=checks_config_guides) cover the Claude Code, Codex, and Pi settings behind most of them.
+Each check has a docs page explaining what it measures and how to fix it. The [config guides for checks on antiburn.com](https://antiburn.com/guides/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=checks_config_guides) cover the Claude Code, Codex, and Pi settings behind most of them.
 
-- Excess cache rehydration ([antiburn.com](https://antiburn.com/docs/findings/excess-cache-rehydration/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=excess_cache_rehydration)) - cache writes are expensive; let's all work out how to avoid too many of them.
-- Fast mode overuse ([antiburn.com](https://antiburn.com/docs/findings/fast-mode-overuse/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=fast_mode_overuse)) - fast mode is great if you're not close to limit, but be careful if you are.
-- Model overthinking ([antiburn.com](https://antiburn.com/docs/findings/model-overthinking/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=model_overthinking)) - I know `xhigh` and `ultra` sound cool but they're usually better avoided.
-- Old model usage ([antiburn.com](https://antiburn.com/docs/findings/old-model-usage/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=old_model_usage)) - worth checking if you're still pinned to old models, especially in subagents.
-- Overpowered subagents ([antiburn.com](https://antiburn.com/docs/findings/overpowered-subagents/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=overpowered_subagents)) - using subagents on premium models is generally a bad idea.
-- Session overdepth ([antiburn.com](https://antiburn.com/docs/findings/session-overdepth/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=session_overdepth)) - compaction works now, friends don't let friends have 950k context windows.
-- Unused built-in tools ([antiburn.com](https://antiburn.com/docs/findings/unused-built-in-tools/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=unused_builtin_tools)) - Claude (especially) has a bunch of heavy built-in tools that you should probably disable.
-- Unused MCP servers ([antiburn.com](https://antiburn.com/docs/findings/unused-mcp-servers/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=unused_mcp_servers)) - MCPs are usually situational, just turn them on when you need them.
-- Unused skills ([antiburn.com](https://antiburn.com/docs/findings/unused-skills/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=unused_skills)) - most of us have skills installed that cost tokens every session, but that we never use any more.
+- [Excess cache rehydration on antiburn.com](https://antiburn.com/docs/findings/excess-cache-rehydration/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=excess_cache_rehydration) - cache writes are expensive; let's all work out how to avoid too many of them.
+- [Fast mode overuse on antiburn.com](https://antiburn.com/docs/findings/fast-mode-overuse/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=fast_mode_overuse) - fast mode is great if you're not close to limit, but be careful if you are.
+- [Model overthinking on antiburn.com](https://antiburn.com/docs/findings/model-overthinking/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=model_overthinking) - I know `xhigh` and `ultra` sound cool but they're usually better avoided.
+- [Old model usage on antiburn.com](https://antiburn.com/docs/findings/old-model-usage/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=old_model_usage) - worth checking if you're still pinned to old models, especially in subagents.
+- [Overpowered subagents on antiburn.com](https://antiburn.com/docs/findings/overpowered-subagents/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=overpowered_subagents) - using subagents on premium models is generally a bad idea.
+- [Session overdepth on antiburn.com](https://antiburn.com/docs/findings/session-overdepth/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=session_overdepth) - compaction works now, friends don't let friends have 950k context windows.
+- [Unused built-in tools on antiburn.com](https://antiburn.com/docs/findings/unused-built-in-tools/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=unused_builtin_tools) - Claude (especially) has a bunch of heavy built-in tools that you should probably disable.
+- [Unused MCP servers on antiburn.com](https://antiburn.com/docs/findings/unused-mcp-servers/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=unused_mcp_servers) - MCPs are usually situational, just turn them on when you need them.
+- [Unused skills on antiburn.com](https://antiburn.com/docs/findings/unused-skills/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=unused_skills) - most of us have skills installed that cost tokens every session, but that we never use any more.
 
 ### Write your own checks with YAML
 
@@ -88,7 +88,7 @@ npx skills add antiburn/antiburn --skill antiburn-checks
 
 ## Install
 
-Full walkthrough: installation on [antiburn.com](https://antiburn.com/docs/getting-started/installation/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=installation_walkthrough) and updating on [antiburn.com](https://antiburn.com/docs/getting-started/updating/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=updating_walkthrough).
+Full walkthrough: [installation on antiburn.com](https://antiburn.com/docs/getting-started/installation/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=installation_walkthrough) and [updating on antiburn.com](https://antiburn.com/docs/getting-started/updating/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=updating_walkthrough).
 
 macOS 13 or later, with Homebrew (Apple silicon and Intel):
 
@@ -126,7 +126,7 @@ network client. The Tauri desktop app in `apps/desktop` owns the UI and host
 integration. See [capture and local analysis](docs/cloud/capture.md#capture-and-local-analysis)
 for the data boundary.
 
-Antiburn Cloud is not live. Sign up for the waiting list on [antiburn.com](https://antiburn.com/cloud/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=cloud_waitlist).
+Antiburn Cloud is not live. [Sign up for the Cloud waiting list on antiburn.com](https://antiburn.com/cloud/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=cloud_waitlist).
 Public builds keep Cloud disabled until launch.
 
 Rust uses the toolchain in `rust-toolchain.toml`. Desktop development also needs
@@ -156,22 +156,22 @@ See the [desktop guide](apps/desktop/README.md) for app commands and the
 Local session analysis needs no Antiburn account, server, or backend. The app can
 make direct provider requests for enabled usage features and model-based checks.
 
-antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See privacy and data on [antiburn.com](https://antiburn.com/docs/privacy/privacy-and-data/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=privacy_data) and the complete [analytics contract](docs/analytics.md).
+antiburn has analytics that we use to improve the app, but analytics events never include anything you care about: sessions, prompts, file paths, repository names, credentials, etc. You can turn analytics off, and builds from a clean checkout have no analytics endpoint. See [privacy and data on antiburn.com](https://antiburn.com/docs/privacy/privacy-and-data/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=privacy_data) and the complete [analytics contract](docs/analytics.md).
 
 Open source, so if you're worried, point your coding agent at this repo to audit exactly what data leaves the device.
 
 ## Community
 
-Questions, fixes, what's burning: join the antiburn Slack on [antiburn.com](https://antiburn.com/slack?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=slack_community).
+Questions, fixes, what's burning: [join the antiburn Slack via antiburn.com](https://antiburn.com/slack?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=slack_community).
 
 Bugs and feature requests go in [GitHub issues](https://github.com/antiburn/antiburn/issues).
 
 ## Project links
 
-- Docs: [antiburn.com](https://antiburn.com/docs/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=project_docs)
-- Config guides: [antiburn.com](https://antiburn.com/guides/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=project_config_guides)
-- Resources: [antiburn.com](https://antiburn.com/resources/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=resources)
-- Release notes: [antiburn.com](https://antiburn.com/release-notes/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=release_notes)
+- [Docs on antiburn.com](https://antiburn.com/docs/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=project_docs)
+- [Config guides on antiburn.com](https://antiburn.com/guides/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=project_config_guides)
+- [Resources on antiburn.com](https://antiburn.com/resources/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=resources)
+- [Release notes on antiburn.com](https://antiburn.com/release-notes/?utm_source=github&utm_medium=referral&utm_campaign=antiburn_readme&utm_content=release_notes)
 - [Contributing](CONTRIBUTING.md)
 - [Support](SUPPORT.md)
 - [Governance](GOVERNANCE.md)
