@@ -26,12 +26,11 @@ import {
   projectFolderRoutes,
   projectSyncConsent,
 } from "./cloudProjectRoutes"
-import { mergeProjectPage, projectPagesByPort, type ProjectPages } from "./cloudProjectPages"
-import { cloudReadScopeMessage, retryCloudRead } from "./cloudReadRetry"
+import type { ProjectPages } from "./cloudProjectPages"
+import { CloudProjectReader } from "./cloudProjectReader"
+import { retryCloudRead } from "./cloudReadRetry"
 import {
   cloudFolderReadChanged,
-  cloudFoldersLoading,
-  readCloudProjectScope,
   savedUploadStatusBecameUnavailable,
   shouldRecheckCloudFolders,
 } from "./cloudProjectScope"
@@ -39,7 +38,6 @@ import {
   accountViewPatch,
   backfillTarget,
   cloudContextChange,
-  cloudProjectSourceKey,
   cloudUploadStatusUnknown,
   confirmationContextKey,
   folderRouteConfirmed,
@@ -107,11 +105,9 @@ export class CloudSession {
   private localToolsLoading = false
   private localToolsEventGeneration = 0
   private localToolsStatusRevision = -1
-  private projectRead: AbortController | undefined
-  private pendingProjectPage: Promise<unknown> | undefined
   private accountRead: AbortController | undefined
   private projectPages: ProjectPages | undefined
-  private projectPageScope: string | undefined
+  private readonly projectReader: CloudProjectReader
   private projectChoices: CloudProjectChoices = {}
   private projectTargets: Record<string, string> = {}
   private confirmedProjectChoices: CloudProjectChoices = {}
@@ -144,6 +140,21 @@ export class CloudSession {
     this.port = port
     this.analytics = analytics
     this.holdIdentity = holdIdentity
+    this.projectReader = new CloudProjectReader(port, {
+      getSnapshot: this.getSnapshot,
+      accountRevision: () => this.revision,
+      policyRevision: () => this.ongoingRevision,
+      receiveAccount: (cloud) => this.receive(cloud),
+      receivePolicy: (status) => this.receiveOngoing(status),
+      receiveWorkspace: (recovery) => this.receiveWorkspaceRecovery(recovery),
+      isActive: () => this.active,
+      isVisible: () => this.visible,
+      getPages: () => this.projectPages,
+      needsChoiceReview: () => this.needsChoiceReview,
+      publishProjects: (projects) => this.publish({ projects }),
+      publishGroups: (pages, workspaces, loading) =>
+        this.publishProjectGroups(pages, workspaces, loading),
+    })
   }
   /** Return the stable snapshot expected by useSyncExternalStore. */
   getSnapshot = () => this.snapshot
@@ -174,7 +185,7 @@ export class CloudSession {
         this.stopLocalTools?.()
         this.stopLocalTools = undefined
         this.localToolsLoading = false
-        this.projectRead?.abort()
+        this.projectReader.abort()
         this.accountRead?.abort()
         clearTimeout(this.timer)
         document.removeEventListener("visibilitychange", this.visibility)
@@ -187,21 +198,9 @@ export class CloudSession {
   setVisible = (visible: boolean) => {
     if (this.visible === visible) return
     this.visible = visible
-    if (!visible && this.projectRead) this.suspendProjectRead()
+    if (!visible && this.projectReader.hasRead) this.projectReader.suspend()
     else if (visible) this.refreshIncompleteProjects()
     this.visibility()
-  }
-  private suspendProjectRead() {
-    this.projectRead?.abort()
-    const projects = this.snapshot.projects
-    if (projects?.paging) this.publish({ projects: { ...projects, paging: undefined } })
-    else if (projects?.loading)
-      this.publish({ projects: { ...projects, loading: false, retrying: true } })
-  }
-  /** Stop page retries and let any dispatched read release native admission. */
-  private async finishProjectPaging() {
-    if (this.snapshot.projects?.paging) this.suspendProjectRead()
-    await this.pendingProjectPage?.catch(() => undefined)
   }
   private visibility = () => {
     if (!this.visible || document.hidden) this.viewed = null
@@ -243,9 +242,9 @@ export class CloudSession {
       value,
     )
     const setupFailed = !!value.setupError && !this.snapshot.cloud.setupError
-    if (resetProjects || sourcesChanged || setupFailed) this.projectRead?.abort()
+    if (resetProjects || sourcesChanged || setupFailed) this.projectReader.abort()
     if (resetProjects) {
-      if (this.snapshot.cloud.identity) projectPagesByPort.delete(this.port)
+      if (this.snapshot.cloud.identity) this.projectReader.forgetCachedPages()
       this.projectPages = undefined
       this.projectChoices = {}
       this.projectTargets = {}
@@ -619,116 +618,9 @@ export class CloudSession {
       },
     })
   }
-  /** Read one bounded page without saving initial ON choices. Desktop code
-   * owns source evidence and worktree grouping; failed pages never become empty success.
-   */
-  loadProjects = async (more = false, retryInBackground = true) => {
-    const port = this.port.ongoing
-    const binding = this.projectBinding(!more)
-    if (
-      !this.visible ||
-      (more &&
-        (!this.projectPages?.next ||
-          this.pendingProjectPage ||
-          this.snapshot.projects?.scopeInvalid))
-    )
-      return
-    if (!port || !binding || (this.projectRead && !this.projectRead.signal.aborted)) return
-    const read = (this.projectRead = new AbortController())
-    const { signal } = read
-    const scopeKey = JSON.stringify([binding, cloudProjectSourceKey(this.snapshot.cloud)])
-    const current = () => this.active && !signal.aborted
-    const existing = this.snapshot.projects
-    this.publish({
-      projects:
-        more && existing
-          ? { ...existing, paging: "loading" }
-          : cloudFoldersLoading(existing, this.needsChoiceReview),
-    })
-    const onExtendedRetry = retryInBackground
-      ? (stage: "setup" | "workspaces" | "folders") => {
-          const projects = this.snapshot.projects
-          if (current() && projects)
-            this.publish({
-              projects: more
-                ? { ...projects, paging: "retrying" }
-                : { ...projects, retrying: true, retryStage: stage },
-            })
-        }
-      : undefined
-    try {
-      let workspaces = existing?.workspaces
-      const cached = projectPagesByPort.get(this.port)
-      const previous =
-        this.projectPageScope === scopeKey
-          ? this.projectPages
-          : cached?.binding === scopeKey
-            ? cached.pages
-            : undefined
-      if (!more) {
-        const verified = await readCloudProjectScope(
-          this.port,
-          port,
-          binding,
-          signal,
-          {
-            getSnapshot: this.getSnapshot,
-            accountRevision: () => this.revision,
-            policyRevision: () => this.ongoingRevision,
-            receiveAccount: (cloud) => this.receive(cloud),
-            receivePolicy: (status) => this.receiveOngoing(status),
-            receiveWorkspace: (recovery) => this.receiveWorkspaceRecovery(recovery),
-          },
-          onExtendedRetry,
-        )
-        if (!current()) return
-        if (verified === null) {
-          this.publish({ projects: { ...this.snapshot.projects!, loading: false } })
-          return
-        }
-        workspaces = verified
-        if (!existing?.loaded && previous) this.publishProjectGroups(previous, workspaces, true)
-      }
-      const cursor = more ? (this.projectPages?.next ?? null) : null
-      const { pages } = await retryCloudRead(
-        async () => {
-          const request = port.groups(binding, cursor)
-          if (more) this.pendingProjectPage = request
-          try {
-            const page = await request
-            return {
-              pages: mergeProjectPage(previous, cursor, page),
-              incomplete: page.partial && !page.groups.length && !page.nextCursor,
-            }
-          } finally {
-            if (this.pendingProjectPage === request) this.pendingProjectPage = undefined
-          }
-        },
-        signal,
-        ({ incomplete }) => incomplete,
-        onExtendedRetry && (() => onExtendedRetry("folders")),
-      )
-      if (!current()) return
-      projectPagesByPort.set(this.port, { binding: scopeKey, pages })
-      this.projectPageScope = scopeKey
-      this.publishProjectGroups(pages, workspaces, false)
-    } catch (error) {
-      const scopeMessage = cloudReadScopeMessage(error)
-      if (current())
-        this.publish({
-          projects: {
-            ...this.snapshot.projects!,
-            loading: false,
-            retrying: false,
-            paging: undefined,
-            scopeInvalid: !!scopeMessage,
-            error: scopeMessage ?? "Could not check session folders.",
-          },
-        })
-    } finally {
-      if (this.projectRead === read) this.projectRead = undefined
-    }
-  }
+  /** Read folder evidence without saving draft choices. */
+  loadProjects = (more = false, retryInBackground = true) =>
+    this.projectReader.load(more, retryInBackground)
   /** Extend the visible draft only after an explicit page request. */
   loadMoreProjects = () => this.loadProjects(true)
   /** Stage a local group choice for the current account. Only Start saves consent. */
@@ -1114,7 +1006,7 @@ export class CloudSession {
   /** Close the account connection and let desktop code clean up old Team grants. */
   signOut = () => {
     this.invalidateContentConfirmation()
-    this.suspendProjectRead()
+    this.projectReader.suspend()
     return this.run("sign_out", this.port.signOut)
   }
   /** Run only after the UI's separate reset confirmation; keep the remote warning. */
@@ -1505,8 +1397,8 @@ export class CloudSession {
         sync: starting,
         [errorField]: null,
       })
-      if (projects.paging || this.pendingProjectPage) {
-        await this.finishProjectPaging()
+      if (projects.paging || this.projectReader.hasPendingPage) {
+        await this.projectReader.finishPaging()
         if (!current()) return
       }
       const policy = this.projectPolicy(destinationId)
@@ -1593,8 +1485,8 @@ export class CloudSession {
     this.publish({ busy: true, error: null, sync: starting })
     if (this.analytics) noteCloudAction(this.snapshot.screen, "start_sync")
     try {
-      if (this.snapshot.projects?.paging || this.pendingProjectPage)
-        await this.finishProjectPaging()
+      if (this.snapshot.projects?.paging || this.projectReader.hasPendingPage)
+        await this.projectReader.finishPaging()
       for (const route of routes) {
         if (!current()) return
         const { id, groups, workspace } = route

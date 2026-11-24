@@ -431,6 +431,59 @@ it("rejects an older rendered Start after a later page adds a group member", asy
   }
 })
 
+it.each(["onboarding", "settings"] as const)(
+  "waits for a canceled page before saving folder choices in %s",
+  async (entry) => {
+    const { port, ongoing } = cloudProjectFixture()
+    const studio = projectGroup()
+    const firstPage = {
+      groups: [studio],
+      sourceRoots: [
+        { sourceKind: "claude_jsonl" as const, path: studio.projects[0]!.sourcePath },
+      ],
+      nextCursor: { environment: "native", cwd: "/Example/Studio" },
+      partial: false,
+    }
+    let finishPage!: (page: Awaited<ReturnType<typeof ongoing.groups>>) => void
+    ongoing.groups.mockResolvedValueOnce(firstPage).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishPage = resolve
+        }),
+    )
+    const session = new CloudSession(port, false, true)
+    const stop = session.subscribe(vi.fn())
+    try {
+      await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+      if (entry === "settings") session.selectProject("studio", true, "synthetic-personal")
+      const paging = session.loadMoreProjects()
+      expect(session.getSnapshot().projects?.paging).toBe("loading")
+
+      const saving =
+        entry === "onboarding"
+          ? session.startSync()
+          : session.startPendingProjects(session.getSnapshot())
+      expect(session.getSnapshot().projects?.paging).toBeUndefined()
+      await Promise.resolve()
+      expect(ongoing.enable).not.toHaveBeenCalled()
+
+      finishPage({
+        ...firstPage,
+        groups: [projectGroup({ id: "later" })],
+        nextCursor: null,
+      })
+      await paging
+      await saving
+      expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ projects: studio.projects }),
+      )
+      expect(session.getSnapshot().projects?.groups.map(({ id }) => id)).toEqual(["studio"])
+    } finally {
+      stop()
+    }
+  },
+)
+
 it("does not admit a project whose desktop session folder was not returned", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.groups.mockResolvedValueOnce({

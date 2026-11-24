@@ -92,7 +92,8 @@ export function cloudFoldersLoading(
   }
 }
 
-interface ProjectScopeObserver {
+/** Apply read results only if a newer event has not changed the same state. */
+export interface ProjectScopeObserver {
   getSnapshot: () => CloudViewSnapshot
   accountRevision: () => number
   policyRevision: () => number
