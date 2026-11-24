@@ -547,6 +547,7 @@ for (const width of [860, 480]) {
     )
     await expect(page.getByText("3 queued")).toHaveCount(0)
     await expect(control).toBeFocused()
+    await expect(control).toBeDisabled()
     await expect(control).toBeChecked()
     const after = await bounds()
     for (const [index, box] of before.entries()) {
@@ -559,6 +560,7 @@ for (const width of [860, 480]) {
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
     await expect(page.getByText("6 of 96 sessions uploaded", { exact: true })).toHaveCount(0)
     await expect(control).toBeFocused()
+    await expect(control).toBeEnabled()
   })
 }
 

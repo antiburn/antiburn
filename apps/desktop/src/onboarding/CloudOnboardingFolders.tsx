@@ -68,6 +68,7 @@ export function CloudFolderSyncControl({
   descriptionId,
   selected,
   disabled,
+  busy = false,
   workspaces,
   destinationId,
   selectedWorkspace,
@@ -81,6 +82,8 @@ export function CloudFolderSyncControl({
   descriptionId: string
   selected: boolean
   disabled: boolean
+  /** Disable changes during sync. A switch can keep its current focus. */
+  busy?: boolean
   workspaces?: readonly CloudWorkspace[] | undefined
   destinationId?: string | undefined
   selectedWorkspace?: string | undefined
@@ -130,7 +133,7 @@ export function CloudFolderSyncControl({
             : `rounded-control bg-surface-card px-2 py-1 type-footnote text-label${typedWorkspaceLabels ? " min-h-8 min-w-0 max-w-[min(100%,12rem)] truncate" : ""}`
         }
         value={value}
-        disabled={disabled}
+        disabled={disabled || busy}
         onChange={(event) => {
           const target = event.currentTarget.value
           if (target === "") onSelect(false)
@@ -148,7 +151,7 @@ export function CloudFolderSyncControl({
     if (!wrapWorkspaceLabel) return picker
     return (
       <div
-        className={`relative flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-control bg-surface-card px-2 py-1 type-footnote text-label has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent-fill ${disabled ? "opacity-50" : ""}`}
+        className={`relative flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-control bg-surface-card px-2 py-1 type-footnote text-label has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent-fill ${disabled || busy ? "opacity-50" : ""}`}
       >
         <span className="min-w-0 wrap-anywhere" aria-hidden="true">
           {options.find(({ id }) => id === value)?.label}
@@ -164,6 +167,7 @@ export function CloudFolderSyncControl({
       aria-describedby={descriptionId}
       checked={selected}
       disabled={disabled}
+      aria-disabled={busy}
       onCheckedChange={onSelect}
     />
   )

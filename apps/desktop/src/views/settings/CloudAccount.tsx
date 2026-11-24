@@ -690,7 +690,7 @@ function CloudProjectsAccount({
             aria-label={controlLabel}
             aria-describedby={descriptionId}
             checked
-            disabled={folderControlsBusy}
+            aria-disabled={folderControlsBusy}
             onCheckedChange={(next) => {
               if (next) return
               const active = document.activeElement
@@ -1159,11 +1159,8 @@ function CloudProjectsAccount({
                                     ? draftTarget
                                     : undefined
                               }
-                              disabled={
-                                folderControlsBusy ||
-                                !!controlMessage ||
-                                !!(canMove && projects.loading)
-                              }
+                              disabled={!!controlMessage || !!(canMove && projects.loading)}
+                              busy={folderControlsBusy}
                               onSelect={(next, workspace) => {
                                 if (folderControlsBusy) return
                                 if (canMove && savedDestination && sourceRevision) {
@@ -1237,7 +1234,7 @@ function CloudProjectsAccount({
                         <ToggleSwitch
                           aria-label={`Sync ${path} to Personal`}
                           checked
-                          disabled={folderControlsBusy}
+                          aria-disabled={folderControlsBusy}
                           onCheckedChange={(next) => {
                             if (next) return
                             void changeFolderWithFocus(

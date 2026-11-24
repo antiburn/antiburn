@@ -22,7 +22,6 @@ const teamName = "Example Team for Design, Documentation, and Developer Experien
 /** Build preview-only account/request state; simulated success cannot establish product support. */
 export function cloudFixture(name: string, refreshFolders?: () => void): CloudPort {
   const params = new URLSearchParams(window.location.search)
-  const footerPreview = params.has("footerPreview")
   const deferFolders = params.has("deferFolders")
   const partialSettingsFolders = params.has("partialSettingsFolders")
   const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
@@ -232,7 +231,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
     ongoing = {
       ...ongoing,
       storageKnown: true,
-      status: "syncing",
+      status: "ready",
       consentVersion: "desktop-project-sync-v1",
       deviceUploadEnabled: true,
       selectedSources: groups.map((group) => ({
@@ -279,7 +278,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
     ongoing = {
       ...ongoing,
       storageKnown: true,
-      status: footerPreview ? "ready" : "syncing",
+      status: "ready",
       consentVersion: "desktop-project-sync-v1",
       selectedSources: approved.map((group) => ({
         sourceKind: "claude_jsonl",
@@ -321,7 +320,12 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
   let showQueueProgress = false
   const ongoingStatus = (): CloudOngoingStatus =>
     showQueueProgress
-      ? { ...ongoing, queuedCount: 3, uploadProgress: { uploaded: 6, total: 96 } }
+      ? {
+          ...ongoing,
+          status: "syncing",
+          queuedCount: 3,
+          uploadProgress: { uploaded: 6, total: 96 },
+        }
       : ongoing
   return {
     displayHome: async () => "/Users/avery",

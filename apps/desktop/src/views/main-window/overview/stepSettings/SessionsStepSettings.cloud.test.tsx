@@ -306,7 +306,7 @@ it.each(["pause", "scan"])(
     const expectDisabledFolderSwitch = () => {
       expect(screen.getByRole("switch", { name: studioLabel })).toBe(folder)
       expect(folder).toBeChecked()
-      expect(folder).toBeDisabled()
+      expect(folder).toHaveAttribute("aria-disabled", "true")
     }
     fireEvent.click(sync)
     expect(screen.getByText("Starting sync…")).toBeVisible()
@@ -331,7 +331,7 @@ it.each(["pause", "scan"])(
     expect(upload()).toBeEnabled()
     expect(screen.getByRole("switch", { name: studioLabel })).toBe(folder)
     expect(folder).toBeChecked()
-    expect(folder).toBeEnabled()
+    expect(folder).not.toHaveAttribute("aria-disabled")
     expect(screen.queryByText("Scanning folders…")).not.toBeInTheDocument()
     expect(screen.queryByText(/Could not start sync/)).not.toBeInTheDocument()
     expect(screen.getByText("Uploads are paused on this device.")).toBeVisible()
