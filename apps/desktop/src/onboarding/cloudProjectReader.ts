@@ -1,5 +1,10 @@
 import type { CloudPort, CloudWorkspace } from "../lib/cloud"
-import { mergeProjectPage, projectPagesByPort, type ProjectPages } from "./cloudProjectPages"
+import {
+  mergeProjectPage,
+  nextProjectCursor,
+  projectPagesByPort,
+  type ProjectPages,
+} from "./cloudProjectPages"
 import {
   cloudFoldersLoading,
   readCloudProjectScope,
@@ -40,7 +45,7 @@ interface ProjectReaderObserver extends ProjectScopeObserver {
   publishGroups: (
     pages: ProjectPages,
     workspaces: readonly CloudWorkspace[] | undefined,
-    state?: "provisional" | "refreshing",
+    state?: "provisional" | "refreshing" | "paging",
   ) => void
 }
 
@@ -114,15 +119,20 @@ export class CloudProjectReader {
   suspend() {
     this.abort()
     const projects = this.observer.getSnapshot().projects
-    if (projects?.paging || projects?.loading || projects?.retrying)
+    if (projects?.paging || projects?.loading || projects?.retrying) {
+      const hasMore = projects.paging
+        ? nextProjectCursor(this.observer.getPages()) !== undefined
+        : projects.hasMore
       this.observer.publishProjects({
         ...projects,
+        hasMore,
         loaded: projects.loaded && !projects.loading,
         loading: false,
         retrying: false,
         retryStage: undefined,
-        paging: this.pendingPaging(projects.hasMore),
+        paging: this.pendingPaging(hasMore),
       })
+    }
   }
 
   /** Stop discovery before a write. Desktop still controls admission if a read does not finish. */
@@ -187,10 +197,11 @@ export class CloudProjectReader {
     const port = this.port.ongoing
     const binding = projectBinding(observer.getSnapshot().cloud, !more)
     const existing = observer.getSnapshot().projects
+    const next = nextProjectCursor(observer.getPages())
     if (
       !observer.isActive() ||
       !observer.isVisible() ||
-      (more && (!observer.getPages()?.next || this.folderLane.pending || !this.canUseChoices))
+      (more && (next === undefined || this.folderLane.pending || !this.canUseChoices))
     )
       return
     if (!port || !binding) return
@@ -244,9 +255,10 @@ export class CloudProjectReader {
         : cached?.binding === scopeKey
           ? cached.pages
           : undefined
-    const cursor = more ? (previous?.next ?? null) : null
+    const cursor = more ? (next ?? null) : null
     let latest: ProjectPages | undefined
     let remainingEmptyRechecks = 1
+    let remainingPageContinuations = 1
     const foreground = setTimeout(() => {
       retryDeadline.abort(timeoutError)
       if (!current()) return
@@ -268,11 +280,8 @@ export class CloudProjectReader {
       if (scopeVerified) {
         projectPagesByPort.set(this.port, { binding: scopeKey, pages })
         this.pageScope = scopeKey
-        observer.publishGroups(
-          pages,
-          workspaces,
-          settled || foregroundExpired ? undefined : "refreshing",
-        )
+        const state = settled || foregroundExpired ? undefined : more ? "paging" : "refreshing"
+        observer.publishGroups(pages, workspaces, state)
       } else if (!usableChoices && !foregroundExpired) {
         this.pageScope = undefined
         observer.publishGroups(pages, undefined, "provisional")
@@ -293,9 +302,11 @@ export class CloudProjectReader {
         !page.nextCursor &&
         !fallback?.next &&
         fallback?.groups.length
-          ? { ...fallback, partial: true }
+          ? { ...fallback, partial: true, deferred: page.retrySamePage ? null : undefined }
           : mergeProjectPage(previous, cursor, page)
-      if (!more && current() && latest.groups.length) publish(latest)
+      const continuing =
+        page.retrySamePage && remainingPageContinuations > 0 && !retrySignal.aborted
+      if (current() && (!more ? latest.groups.length : continuing)) publish(latest)
       return page
     }
     const readPage = () =>
@@ -304,12 +315,16 @@ export class CloudProjectReader {
         : retryCloudRead(
             () => requestPage(retrySignal),
             retrySignal,
-            (page) =>
-              !retrySignal.aborted &&
-              page.partial &&
-              !page.nextCursor &&
-              !latest?.groups.length &&
-              remainingEmptyRechecks-- > 0,
+            (page) => {
+              if (retrySignal.aborted) return false
+              if (page.retrySamePage) return remainingPageContinuations-- > 0
+              return (
+                page.partial &&
+                !page.nextCursor &&
+                !latest?.groups.length &&
+                remainingEmptyRechecks-- > 0
+              )
+            },
             onExtendedRetry && (() => onExtendedRetry("folders")),
           )
       ).then(
@@ -366,12 +381,16 @@ export class CloudProjectReader {
         const scopeInvalid = projects.scopeInvalid || !!scopeMessage
         const keepChoices = this.canUseChoices && !scopeInvalid
         const message = scopeVerified ? folderReadError : scopeReadError
+        const hasMore = more
+          ? nextProjectCursor(observer.getPages()) !== undefined
+          : projects.hasMore
         observer.publishProjects({
           ...projects,
+          hasMore,
           loading: false,
           retrying: false,
           retryStage: undefined,
-          paging: this.pendingPaging(projects.hasMore),
+          paging: this.pendingPaging(hasMore),
           scopeInvalid,
           error: scopeMessage ?? (keepChoices ? null : message),
           refreshError: keepChoices ? message : undefined,

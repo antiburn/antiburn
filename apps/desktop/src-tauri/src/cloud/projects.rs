@@ -5,6 +5,7 @@
 use super::{
     Controller, DestinationBinding, Draft, Folder, now,
     repository_checkout::{CheckoutOrigin, CheckoutOriginCache},
+    repository_origin::legacy_repository_origin_for_off_choice,
     sync,
     work::Priority,
 };
@@ -30,6 +31,12 @@ use std::{
     sync::atomic::Ordering,
 };
 use tauri::Manager;
+
+pub(super) use crate::store::cloud_capture::sync::repository_group_id;
+
+#[path = "project_listing.rs"]
+mod listing;
+use listing::{ListingLookups, ListingProgress};
 
 const CACHE_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_CONTEXT_ENTRIES: usize = 512;
@@ -83,10 +90,9 @@ struct CachedEvidence {
 #[derive(Default)]
 pub(super) struct Cache {
     evidence: BTreeMap<String, CachedEvidence>,
-    contexts: BTreeMap<(String, String), (Instant, Context)>,
+    listing_progress: Option<ListingProgress>,
     bytes: usize,
     scan_bytes: u64,
-    context_bytes: usize,
 }
 
 impl Cache {
@@ -206,46 +212,6 @@ impl Cache {
             entry.observed_at = Instant::now() - Duration::from_secs(3601);
         }
     }
-
-    fn context(&mut self, environment: &str, cwd: &str, origins: &mut RequestOrigins) -> Context {
-        if environment == "native" {
-            match origins.get(cwd) {
-                ProjectOrigin::Repository(checkout, origin) => {
-                    return Context {
-                        main: checkout.clone(),
-                        folders: vec![checkout],
-                        origin: Some(origin),
-                        complete: true,
-                        inspection_incomplete: false,
-                    };
-                }
-                ProjectOrigin::Plain => return Context::plain(cwd),
-                ProjectOrigin::Unavailable => return Context::unavailable(cwd, false),
-                ProjectOrigin::Incomplete => return Context::unavailable(cwd, true),
-                ProjectOrigin::ExactGit => {}
-            }
-        }
-        let key = (environment.to_owned(), cwd.to_owned());
-        if let Some((observed, context)) = self.contexts.get(&key)
-            && observed.elapsed() < Duration::from_secs(if context.complete { 60 } else { 1 })
-        {
-            return context.clone();
-        }
-        let value = context_before(environment, cwd, Some(origins.deadline));
-        let bytes = value.main.len()
-            + value.folders.iter().map(String::len).sum::<usize>()
-            + value.folders.len() * std::mem::size_of::<String>()
-            + key.0.len()
-            + key.1.len()
-            + 128;
-        if self.contexts.len() >= 512 || self.context_bytes + bytes > CACHE_BYTES {
-            self.contexts.clear();
-            self.context_bytes = 0;
-        }
-        self.context_bytes += bytes;
-        self.contexts.insert(key, (Instant::now(), value.clone()));
-        value
-    }
 }
 
 /// An exact folder group or a repository group with local anchor folders.
@@ -254,6 +220,9 @@ impl Cache {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Group {
     id: String,
+    /// A previous choice can keep this group off. This ID never grants access.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    legacy_opt_out_id: Option<String>,
     environment: String,
     path: String,
     label: String,
@@ -280,6 +249,9 @@ pub(crate) struct Discovery {
     next_cursor: Option<Cursor>,
     /// An inspection failed or exceeded a supported source, selection, or origin bound.
     partial: bool,
+    /// A retry of this cursor can continue Git listing work. This is not consent.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    retry_same_page: bool,
 }
 
 #[derive(Clone)]
@@ -364,6 +336,7 @@ async fn worktree_common_dir(
     if !output.status.success() {
         return None;
     }
+    require_worktree_time(deadline).ok()?;
     checkout
         .join(git_path_record(std::str::from_utf8(&output.stdout).ok()?)?)
         .canonicalize()
@@ -443,9 +416,19 @@ fn git_path_record(text: &str) -> Option<&Path> {
     (!path.is_empty() && !path.chars().any(char::is_control)).then(|| Path::new(path))
 }
 
+/// Stop between filesystem calls. The listing worker keeps its permit while
+/// an already started filesystem call is in progress.
+fn require_worktree_time(deadline: Option<tokio::time::Instant>) -> std::io::Result<()> {
+    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+        return Err(std::io::ErrorKind::TimedOut.into());
+    }
+    Ok(())
+}
+
 /// Bound reads of Git's worktree pointer files and reject special files.
-fn read_worktree_pointer(path: &Path) -> Option<String> {
+fn read_worktree_pointer(path: &Path, deadline: Option<tokio::time::Instant>) -> Option<String> {
     use std::io::Read;
+    require_worktree_time(deadline).ok()?;
     if !path.symlink_metadata().ok()?.is_file() {
         return None;
     }
@@ -456,20 +439,36 @@ fn read_worktree_pointer(path: &Path) -> Option<String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
-    let file = options.open(path).ok()?;
+    require_worktree_time(deadline).ok()?;
+    let mut file = options.open(path).ok()?;
+    require_worktree_time(deadline).ok()?;
     if !file.metadata().ok()?.is_file() {
         return None;
     }
-    let mut text = String::new();
-    file.take(8192).read_to_string(&mut text).ok()?;
-    (text.len() < 8192).then_some(text)
+    let mut bytes = [0; 8192];
+    let mut read = 0;
+    while read < bytes.len() {
+        require_worktree_time(deadline).ok()?;
+        match file.read(&mut bytes[read..]) {
+            Ok(0) => return std::str::from_utf8(&bytes[..read]).ok().map(str::to_owned),
+            Ok(count) => read += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 /// A Git list entry can outlive its checkout. Check both pointers for linked
 /// worktrees so a different repo at the same path cannot become a group member.
-fn registered_linked_checkout(checkout: &Path, common: &Path) -> Option<()> {
+fn registered_linked_checkout(
+    checkout: &Path,
+    common: &Path,
+    deadline: Option<tokio::time::Instant>,
+) -> Option<()> {
     let dot_git = checkout.join(".git");
-    let pointer = read_worktree_pointer(&dot_git)?;
+    let pointer = read_worktree_pointer(&dot_git, deadline)?;
+    require_worktree_time(deadline).ok()?;
     let git_dir = checkout
         .join(git_path_record(pointer.strip_prefix("gitdir: ")?)?)
         .canonicalize()
@@ -477,7 +476,8 @@ fn registered_linked_checkout(checkout: &Path, common: &Path) -> Option<()> {
     if git_dir.parent()? != common.join("worktrees") {
         return None;
     }
-    let registration = read_worktree_pointer(&git_dir.join("gitdir"))?;
+    let registration = read_worktree_pointer(&git_dir.join("gitdir"), deadline)?;
+    require_worktree_time(deadline).ok()?;
     (git_dir
         .join(git_path_record(&registration)?)
         .canonicalize()
@@ -488,15 +488,20 @@ fn registered_linked_checkout(checkout: &Path, common: &Path) -> Option<()> {
 
 /// Missing directories and aliases cannot qualify. Other I/O errors prevent
 /// the caller from deciding whether an existing directory can qualify.
-fn existing_project_path(path: &str) -> std::io::Result<Option<&Path>> {
+fn existing_project_path(
+    path: &str,
+    deadline: Option<tokio::time::Instant>,
+) -> std::io::Result<Option<&Path>> {
     if !crate::store::cloud_capture::sync::valid_project_path(path) {
         return Ok(None);
     }
     let path = Path::new(path);
     let inspected = || -> std::io::Result<_> {
+        require_worktree_time(deadline)?;
         if !path.symlink_metadata()?.is_dir() {
             return Ok(None);
         }
+        require_worktree_time(deadline)?;
         Ok((path.canonicalize()? == path).then_some(path))
     };
     match inspected() {
@@ -526,7 +531,14 @@ fn has_git_marker(path: &Path) -> bool {
 
 /// Parse Git's porcelain records, then check the registered checkouts on disk.
 /// Old Git can put raw newlines in paths. Parsed paths alone do not prove membership.
-fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> Option<Context> {
+fn worktree_context(
+    list: &str,
+    separator: char,
+    repo: &Path,
+    common: &Path,
+    deadline: Option<tokio::time::Instant>,
+) -> Option<Context> {
+    require_worktree_time(deadline).ok()?;
     let delimiter = if separator == '\0' { "\0\0" } else { "\n\n" };
     let mut entries = list.split(delimiter).map(|entry| {
         let mut fields = entry.split(separator);
@@ -541,7 +553,7 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
     // Git lists the parent repo first, even when run in a linked checkout.
     let (main, bare, prunable) = entries.next()??;
     let verified_main = !prunable
-        && existing_project_path(main)
+        && existing_project_path(main, deadline)
             .ok()
             .flatten()
             .is_some_and(|path| {
@@ -550,7 +562,9 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
                 }
                 // A copied .git pointer can refer to the parent without proving its path.
                 let dot_git = path.join(".git");
-                dot_git == common && dot_git.symlink_metadata().is_ok_and(|meta| meta.is_dir())
+                dot_git == common
+                    && require_worktree_time(deadline).is_ok()
+                    && dot_git.symlink_metadata().is_ok_and(|meta| meta.is_dir())
             });
     let linked: Vec<_> = entries.flatten().take(100).collect();
     let mut complete = linked.len() < 100;
@@ -559,9 +573,10 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
         folders.push(main.to_owned());
     }
     for &(root, bare, prunable) in linked.iter().take(99) {
+        require_worktree_time(deadline).ok()?;
         if !bare && !prunable {
-            match existing_project_path(root) {
-                Ok(Some(path)) if registered_linked_checkout(path, common).is_some() => {
+            match existing_project_path(root, deadline) {
+                Ok(Some(path)) if registered_linked_checkout(path, common, deadline).is_some() => {
                     folders.push(root.to_owned());
                 }
                 Err(_) => complete = false,
@@ -569,6 +584,7 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
             }
         }
     }
+    require_worktree_time(deadline).ok()?;
     if !folders.iter().any(|folder| Path::new(folder) == repo) {
         return None;
     }
@@ -610,7 +626,7 @@ fn context_before(environment: &str, cwd: &str, deadline: Option<tokio::time::In
     if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
         return Context::unavailable(cwd, true);
     }
-    context_for_path(cwd, existing_project_path(cwd), deadline)
+    context_for_path(cwd, existing_project_path(cwd, deadline), deadline)
 }
 
 fn context_for_path(
@@ -686,7 +702,7 @@ fn context_for_path(
                 let Some(common) = worktree_common_dir(&environment, &repo, deadline).await else {
                     return inspection_failed();
                 };
-                let checked = worktree_context(list, separator, &repo, &common);
+                let checked = worktree_context(list, separator, &repo, &common, deadline);
                 if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
                     return inspection_failed();
                 }
@@ -860,17 +876,6 @@ pub(super) fn group_id(environment: &str, path: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(bytes))
 }
 
-/// Identify an origin group without changing legacy path-based IDs.
-pub(super) fn repository_group_id(origin: &str) -> String {
-    use base64::Engine as _;
-    use sha2::{Digest, Sha256};
-    // A prefix that is not a JSON array separates this domain from path IDs.
-    let mut hash = Sha256::new();
-    hash.update(b"antiburn-repository-origin-v1\0");
-    hash.update(origin.as_bytes());
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hash.finalize())
-}
-
 #[derive(Clone)]
 enum ProjectOrigin {
     Repository(String, String),
@@ -904,56 +909,70 @@ impl RequestOrigins {
     /// Use one deadline for all Git lookups in this request. Reuse completed
     /// proof for the same path, but never treat skipped Git as an exact folder.
     fn get(&mut self, path: &str) -> ProjectOrigin {
-        if cfg!(not(unix)) {
-            return ProjectOrigin::ExactGit;
-        }
         if let Some(saved) = self.paths.get(path) {
             return saved.clone();
         }
-        let checked = if tokio::time::Instant::now() < self.deadline {
+        let checked = inspect_origin(&mut self.checkouts, path, self.deadline, || {
             tauri::async_runtime::block_on(async {
-                if tokio::time::Instant::now() >= self.deadline {
-                    return None;
-                }
-                tokio::time::timeout_at(self.deadline, self.checkouts.lookup(Path::new(path)))
-                    .await
-                    .ok()
+                let probe = tokio::time::timeout_at(
+                    self.deadline,
+                    tokio::fs::canonicalize(Path::new(path)),
+                )
+                .await;
+                classify_unverified_path(path, probe.ok())
             })
-        } else {
-            None
-        };
-        let checked = match checked {
-            Some(CheckoutOrigin::Plain) => ProjectOrigin::Plain,
-            Some(CheckoutOrigin::Verified { origin: None, .. }) => ProjectOrigin::ExactGit,
-            Some(CheckoutOrigin::Verified {
-                checkout,
-                origin: Some(origin),
-            }) => checkout
-                .to_str()
-                .map_or(ProjectOrigin::Incomplete, |checkout| {
-                    ProjectOrigin::Repository(checkout.into(), origin.as_label().into())
-                }),
-            None => ProjectOrigin::Incomplete,
-            Some(CheckoutOrigin::UnverifiedGit) if tokio::time::Instant::now() >= self.deadline => {
-                ProjectOrigin::Incomplete
-            }
-            Some(CheckoutOrigin::UnverifiedGit) => tauri::async_runtime::block_on(async {
-                let path = Path::new(path);
-                let probe =
-                    tokio::time::timeout_at(self.deadline, tokio::fs::canonicalize(path)).await;
-                match probe {
-                    Ok(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                        ProjectOrigin::Unavailable
-                    }
-                    Ok(Ok(canonical)) if canonical != path => ProjectOrigin::Unavailable,
-                    _ => ProjectOrigin::Incomplete,
-                }
-            }),
-        };
+        });
         if self.paths.len() < REQUEST_CONTEXT_ENTRIES {
             self.paths.insert(path.into(), checked.clone());
         }
         checked
+    }
+}
+
+/// Resolve checkout evidence before the caller's deadline. The caller owns
+/// filesystem admission for the fallback that distinguishes missing paths.
+fn inspect_origin(
+    checkouts: &mut CheckoutOriginCache,
+    path: &str,
+    deadline: tokio::time::Instant,
+    probe_unverified: impl FnOnce() -> ProjectOrigin,
+) -> ProjectOrigin {
+    if cfg!(not(unix)) {
+        return ProjectOrigin::ExactGit;
+    }
+    let checked = tauri::async_runtime::block_on(async {
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::timeout_at(deadline, checkouts.lookup(Path::new(path)))
+            .await
+            .ok()
+    });
+    match checked {
+        Some(CheckoutOrigin::Plain) => ProjectOrigin::Plain,
+        Some(CheckoutOrigin::Verified { origin: None, .. }) => ProjectOrigin::ExactGit,
+        Some(CheckoutOrigin::Verified {
+            checkout,
+            origin: Some(origin),
+        }) => checkout
+            .to_str()
+            .map_or(ProjectOrigin::Incomplete, |checkout| {
+                ProjectOrigin::Repository(checkout.into(), origin.as_label().into())
+            }),
+        Some(CheckoutOrigin::UnverifiedGit) if tokio::time::Instant::now() < deadline => {
+            probe_unverified()
+        }
+        _ => ProjectOrigin::Incomplete,
+    }
+}
+
+fn classify_unverified_path(path: &str, probe: Option<std::io::Result<PathBuf>>) -> ProjectOrigin {
+    match probe {
+        Some(Err(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            ProjectOrigin::Unavailable
+        }
+        Some(Ok(canonical)) if canonical != Path::new(path) => ProjectOrigin::Unavailable,
+        _ => ProjectOrigin::Incomplete,
     }
 }
 
@@ -1204,6 +1223,11 @@ fn add_suggestion(
                 || group_id(&suggestion.environment, &context.main),
                 repository_group_id,
             ),
+            legacy_opt_out_id: context
+                .origin
+                .as_deref()
+                .and_then(legacy_repository_origin_for_off_choice)
+                .map(|origin| repository_group_id(&origin)),
             environment: suggestion.environment.clone(),
             path: context.main.clone(),
             label: Path::new(&context.main)
@@ -1306,6 +1330,10 @@ impl<'a> ProjectScans<'a> {
     fn root_incomplete(&self, index: usize) -> bool {
         self.pending.iter().any(|(pending, _)| *pending == index)
     }
+
+    fn has_remaining(&self) -> bool {
+        self.remaining > 0 && (self.first < self.roots.len() || !self.pending.is_empty())
+    }
 }
 
 struct ProjectRootScan {
@@ -1402,22 +1430,37 @@ impl ProjectRootScan {
     }
 }
 
+struct ListingWindow<'a> {
+    deadline: tokio::time::Instant,
+    now: &'a dyn Fn() -> tokio::time::Instant,
+}
+
+impl ListingWindow<'_> {
+    fn new(deadline: tokio::time::Instant) -> Self {
+        Self {
+            deadline,
+            now: &tokio::time::Instant::now,
+        }
+    }
+}
+
 /// Build one discovery page using only the current account's saved provider
 /// preferences. Suggestions and source access never create upload consent.
 fn discover_projects(
     store: &Store,
     cache: &mut Cache,
-    authority: &ListingAuthority,
+    scope: (&ListingAuthority, u64),
     after: Option<&Cursor>,
     known: (Vec<SourceSelection>, bool),
     current: &dyn Fn() -> bool,
-    deadline: tokio::time::Instant,
+    window: ListingWindow<'_>,
 ) -> Result<Discovery, String> {
     if !current() {
         return Err("Cloud account changed.".into());
     }
+    let (authority, sync_generation) = scope;
     let binding = &authority.binding;
-    let within_budget = || tokio::time::Instant::now() < deadline;
+    let within_budget = || (window.now)() < window.deadline;
     let scanning = || current() && within_budget();
     let saved = store
         .cloud_draft(&binding.account_id, &binding.destination_id)
@@ -1439,8 +1482,14 @@ fn discover_projects(
         }
     });
     let mut groups = BTreeMap::new();
-    let mut origins = RequestOrigins::before(
-        deadline.min(tokio::time::Instant::now() + PROJECT_ORIGIN_LOOKUP_BUDGET),
+    let progress_key =
+        ListingProgress::key(authority, sync_generation, after, &saved.folders, &roots);
+    let mut lookups = ListingLookups::new(
+        cache.listing_progress.take(),
+        progress_key,
+        window
+            .deadline
+            .min(tokio::time::Instant::now() + PROJECT_ORIGIN_LOOKUP_BUDGET),
     );
     let mut suggested_native_paths = Vec::new();
     cache.begin_scan();
@@ -1451,7 +1500,7 @@ fn discover_projects(
         if suggestion.environment == "native" {
             suggested_native_paths.push(suggestion.cwd.clone());
         }
-        let context = cache.context(&suggestion.environment, &suggestion.cwd, &mut origins);
+        let context = lookups.context(&suggestion.environment, &suggestion.cwd);
         partial |= context.inspection_incomplete;
         if suggestion.environment == "native" && !context.complete && !context.inspection_incomplete
         {
@@ -1491,13 +1540,20 @@ fn discover_projects(
             Ok(candidates) => candidates,
             Err(_) => {
                 partial = true;
+                if !within_budget() {
+                    lookups.defer_provider_work();
+                }
                 continue;
             }
         };
         partial |= listing.partial;
         qualified[index] = true;
         for candidate in listing.candidates {
-            if !scanning() {
+            if !current() {
+                break 'providers;
+            }
+            if !within_budget() {
+                lookups.defer_provider_work();
                 break 'providers;
             }
             let evidence = match cache.evidence(
@@ -1520,14 +1576,20 @@ fn discover_projects(
             partial |= !evidence.scan_complete();
             let mut matched = BTreeSet::new();
             for path in evidence.project_paths() {
-                if !scanning() {
+                if !current() {
                     break 'providers;
                 }
-                let Some(project) = path.to_str() else {
+                let Some(project) = path.to_str().filter(|project| {
+                    crate::store::cloud_capture::sync::valid_project_path(project)
+                }) else {
                     partial = true;
                     continue;
                 };
-                let context = cache.context("native", project, &mut origins);
+                if !within_budget() {
+                    lookups.defer_provider_work();
+                    break 'providers;
+                }
+                let context = lookups.context("native", project);
                 partial |= context.inspection_incomplete;
                 if !context.complete && !context.inspection_incomplete {
                     continue;
@@ -1614,7 +1676,15 @@ fn discover_projects(
     if !current() {
         return Err("Cloud account changed.".into());
     }
-    partial |= !within_budget() || !scans.pending.is_empty();
+    if !within_budget() {
+        partial = true;
+        if scans.has_remaining() {
+            lookups.defer_provider_work();
+        }
+    }
+    partial |= !scans.pending.is_empty();
+    let (progress, retry_same_page) = lookups.finish();
+    cache.listing_progress = progress;
     Ok(Discovery {
         groups: groups.into_values().collect(),
         source_roots: roots
@@ -1624,6 +1694,7 @@ fn discover_projects(
             .collect(),
         next_cursor,
         partial,
+        retry_same_page,
     })
 }
 
@@ -1688,11 +1759,11 @@ pub(crate) async fn cloud_project_groups(
         let discovery = discover_projects(
             &store,
             &mut cache,
-            &authority,
+            (&authority, sync_generation),
             after.as_ref(),
             (known, partial || file_partial),
             &current,
-            deadline,
+            ListingWindow::new(deadline),
         );
         let active = controller
             .project_listing_authority

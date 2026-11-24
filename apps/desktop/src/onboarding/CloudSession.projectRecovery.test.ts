@@ -15,6 +15,126 @@ const discovery = {
   partial: false,
 }
 
+it("continues the same page once without blocking usable folder choices", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const incomplete = { ...discovery, partial: true, retrySamePage: true }
+  const laterFolder = projectGroup({
+    id: "later",
+    path: "/Example/Later",
+    label: "Later",
+    folderPaths: ["/Example/Later"],
+    projects: [],
+    captureSupported: false,
+  })
+  let finish!: () => void
+  ongoing.groups.mockResolvedValueOnce(incomplete).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = () => resolve({ ...incomplete, groups: [...incomplete.groups, laterFolder] })
+      }),
+  )
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
+    expect(session.getSnapshot().projects).toMatchObject({
+      loading: false,
+      choices: { studio: true },
+    })
+    session.selectProject("studio", false)
+    expect(session.getSnapshot().projects?.choices).toEqual({ studio: false })
+    finish()
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.retrying).toBe(false))
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(ongoing.groups.mock.calls[1]).toEqual(ongoing.groups.mock.calls[0])
+    expect(session.getSnapshot().projects?.groups.map(({ id }) => id)).toContain("later")
+    expect(session.getSnapshot().projects?.choices.studio).toBe(false)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("shows later-page rows while the same-page continuation keeps paging pending", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const cursor = { environment: "native", cwd: "/Example/Studio" }
+  const secondPage = {
+    ...discovery,
+    groups: [projectGroup({ id: "later" })],
+    partial: true,
+    retrySamePage: true,
+  }
+  let finish!: () => void
+  ongoing.groups
+    .mockResolvedValueOnce({ ...discovery, nextCursor: cursor })
+    .mockResolvedValueOnce(secondPage)
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ...secondPage, partial: false, retrySamePage: false })
+        }),
+    )
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => {
+      expect(session.getSnapshot().projects?.hasMore).toBe(true)
+      expect(session.getSnapshot().projects?.paging).toBeUndefined()
+    })
+    const paging = session.loadMoreProjects()
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
+    expect(session.getSnapshot().projects).toMatchObject({ hasMore: true, paging: "pending" })
+    expect(session.getSnapshot().projects?.groups.map(({ id }) => id)).toContain("later")
+    expect(ongoing.groups.mock.calls[2]).toEqual(ongoing.groups.mock.calls[1])
+    finish()
+    await paging
+    expect(session.getSnapshot().projects).toMatchObject({ hasMore: false, paging: undefined })
+  } finally {
+    stop()
+  }
+})
+
+it("resumes an interrupted later page before reading its next cursor", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const cursor = { environment: "native", cwd: "/Example/Studio" }
+  const nextCursor = { environment: "native", cwd: "/Example/Later" }
+  const complete = { ...discovery, nextCursor }
+  let finish!: () => void
+  ongoing.groups
+    .mockResolvedValueOnce({ ...discovery, nextCursor: cursor })
+    .mockResolvedValueOnce({ ...complete, partial: true, retrySamePage: true })
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve(complete)
+        }),
+    )
+    .mockResolvedValueOnce(complete)
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    const interrupted = session.loadMoreProjects()
+    await vi.advanceTimersByTimeAsync(30_000)
+    await interrupted
+    expect(session.getSnapshot().projects?.paging).toBe("pending")
+    finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(session.getSnapshot().projects?.paging).toBeUndefined()
+
+    await session.loadMoreProjects()
+    expect(ongoing.groups.mock.calls.slice(1).map(([, after]) => after)).toEqual([
+      cursor,
+      cursor,
+      cursor,
+    ])
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
 it.each(["status", "groups"] as const)(
   "rechecks setup automatically and ignores the old %s reply",
   async (stage) => {

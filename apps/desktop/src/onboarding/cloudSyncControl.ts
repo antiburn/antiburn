@@ -1,6 +1,8 @@
 import type { CloudOngoingStatus, CloudPort } from "../lib/cloud"
 import { projectBinding, uploadActionError, type CloudViewSnapshot } from "./cloudSessionState"
 
+type SyncControlResult = "requested" | "stopped" | { error: string }
+
 /** Serialize upload controls for one Cloud view. Pause can fence an active scan. */
 export function createSyncControl({
   getPort,
@@ -29,7 +31,7 @@ export function createSyncControl({
       backfillCurrent?: () => boolean
       pause?: boolean
     } = {},
-  ) => {
+  ): Promise<SyncControlResult> => {
     const port = getPort()
     const started = generation()
     const view = getSnapshot()
@@ -40,7 +42,7 @@ export function createSyncControl({
       !port ||
       ((view.busy || pending?.generation === started) && !pausing)
     )
-      return false
+      return "stopped"
     const operation = pausing ?? { generation: started, count: 0, pauseRequested: false }
     pending = operation
     operation.count++
@@ -64,11 +66,12 @@ export function createSyncControl({
           : revision === policyRevision())
       )
         receive(status)
-      return current()
+      return current() ? "requested" : "stopped"
     } catch (error) {
-      if (current())
-        publish({ uploadActionError: uploadActionError(error, !!backfillCurrent, !!team) })
-      return false
+      if (!current()) return "stopped"
+      const message = uploadActionError(error, !!backfillCurrent, !!team)
+      publish({ uploadActionError: message })
+      return { error: message }
     } finally {
       operation.count--
       if (!operation.count && pending === operation) {

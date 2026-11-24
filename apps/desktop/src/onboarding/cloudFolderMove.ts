@@ -167,7 +167,7 @@ export function createFolderMove(session: FolderMoveSession) {
       return "clear_draft"
     }
 
-    let removal: "not_started" | "pending_reply" | "replied" | "confirmed" = "not_started"
+    let removal: "not_started" | "unconfirmed" | "confirmed" = "not_started"
     const confirmedRemoval = (status: CloudOngoingStatus | null | undefined) =>
       removalConfirmed(status, sourcePolicy, source, sourceRevision, group, expectedRemovals)
     const confirmedTarget = (status: CloudOngoingStatus | null | undefined) =>
@@ -212,7 +212,7 @@ export function createFolderMove(session: FolderMoveSession) {
         if (sameAccount()) publish({ uploadActionError: folderChangedMessage })
         return "clear_draft"
       }
-      removal = "pending_reply"
+      removal = "unconfirmed"
       const receipt = await port.setProject({
         ...source,
         groupId: id,
@@ -222,7 +222,6 @@ export function createFolderMove(session: FolderMoveSession) {
         expectedPolicyRevision: sourceRevision,
         expectedRemovals,
       })
-      removal = "replied"
       if (!current()) return "clear_draft"
       const removalRevision = receipt.policyRevision
       if (!removalRevision || !confirmedRemoval(receipt))
@@ -283,9 +282,9 @@ export function createFolderMove(session: FolderMoveSession) {
       }
       if (!current()) return "clear_draft"
 
-      const removalRejected = removal === "pending_reply"
+      const removalUnconfirmed = removal === "unconfirmed"
       const targetToCheck = removal === "confirmed" ? target : null
-      if (removalRejected || targetToCheck) {
+      if (removalUnconfirmed || targetToCheck) {
         if (targetToCheck && confirmedTarget(policyOf(targetToCheck.destinationId)))
           return "clear_draft"
         const before = getSnapshot()
@@ -297,17 +296,25 @@ export function createFolderMove(session: FolderMoveSession) {
               (policy) => policy.accountId === anchor.accountId,
             )
           : undefined
-        // A rejected removal never reached the target write. Accept only proof of removal.
+        // Readback for an unconfirmed removal can only update the source. An incomplete
+        // event can already show the saved revision, so allow complete proof for that revision.
         for (const policy of checkedPolicies ?? []) {
           const workspace = policy.destinationId
-          if (
-            workspace &&
-            policy.status !== "storage_unavailable" &&
-            policyOf(workspace) === policyOf(workspace, before) &&
-            (!removalRejected ||
-              (workspace === from && sourceCurrent() && confirmedRemoval(policy)))
-          )
-            receiveStatus(policy)
+          if (!workspace || policy.status === "storage_unavailable") continue
+          const observed = policyOf(workspace)
+          if (observed !== policyOf(workspace, before)) continue
+          if (removalUnconfirmed) {
+            const revision = policy.policyRevision
+            if (workspace !== from || !revision || !confirmedRemoval(policy)) continue
+            if (
+              !sourceCurrent() &&
+              (confirmedRemoval(observed) || !matchesUploadPolicy(observed, source, revision))
+            )
+              continue
+            // The policy check does not cover device switch events.
+            const { deviceUploadEnabled: _deviceUploadEnabled, ...sourceStatus } = policy
+            receiveStatus(sourceStatus)
+          } else receiveStatus(policy)
         }
         if (
           !current() ||
@@ -326,7 +333,7 @@ export function createFolderMove(session: FolderMoveSession) {
               ? "Sync stopped for this folder. Choose a workspace to sync it again."
               : oldOff
                 ? "Sync stopped in the old workspace. Check the saved folder before choosing a workspace."
-                : removalRejected
+                : removalUnconfirmed
                   ? removalUnknownMessage
                   : "Could not confirm where this folder syncs. Check the saved folder before choosing a workspace.",
         })
@@ -487,6 +494,7 @@ function removalConfirmed(
   )
   return (
     !!policy?.policyRevision &&
+    policy.status !== "storage_unavailable" &&
     policy.policyRevision !== previousRevision &&
     matchesUploadPolicy(policy, binding, policy.policyRevision) &&
     policy.consentVersion === "desktop-project-sync-v1" &&

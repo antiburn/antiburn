@@ -26,12 +26,14 @@ export function mergeProjectPage(
   const pages = new Map(previous?.pages).set(JSON.stringify(cursor), page)
   const connected = new Map<string, ProjectPage>()
   let next: CloudProjectCursor | null = null
+  let deferred: CloudProjectCursor | null | undefined
   do {
     const key = JSON.stringify(next)
     if (connected.has(key)) throw new Error("Project discovery repeated a page.")
     const current = pages.get(key)
     if (!current) break
     connected.set(key, current)
+    if (deferred === undefined && current.retrySamePage) deferred = next
     next = current.nextCursor
   } while (next)
 
@@ -53,7 +55,12 @@ export function mergeProjectPage(
     (sources, { sourceRoots }) => mergeProjectSources(sources, sourceRoots),
     [],
   )
-  return { pages: connected, groups, sources, next, partial }
+  return { pages: connected, groups, sources, next, deferred, partial }
+}
+
+/** Resume deferred work on a visible page before requesting a new page. */
+export function nextProjectCursor(pages: ProjectPages | undefined) {
+  return pages?.deferred === undefined ? (pages?.next ?? undefined) : pages.deferred
 }
 
 /** Display data and loaded pages for one account and verified destination. */
@@ -62,5 +69,6 @@ export type ProjectPages = {
   groups: DesktopCloudProjectGroup[]
   sources: CloudSourceSelection[]
   next: CloudProjectCursor | null
+  deferred: CloudProjectCursor | null | undefined
   partial: boolean
 }

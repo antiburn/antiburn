@@ -325,9 +325,11 @@ not change consent.
 
 On macOS and Linux, approval for a Git checkout with a supported fetch
 `origin` covers other local checkouts and linked worktrees with the same
-origin. Desktop compares the host and full repository path. Standard HTTPS
-and SSH forms can match on supported hosting services. Desktop does not
-match a fork through its `upstream` remote.
+origin. Standard HTTPS and SSH forms can match on supported hosting services.
+For other endpoints, Desktop keeps the transport and full path, including
+any `.git` suffix. A saved origin label that does not prove the full path
+cannot grant upload access. Older opt-outs still apply unless you select
+the folder again. Desktop does not match a fork through its `upstream` remote.
 This is a local Git configuration check, not proof of remote ownership.
 
 Desktop keeps one rule per repository in each workspace. The rule uses only
@@ -413,6 +415,9 @@ background refresh does not block already verified choices in the same scope.
 
 Listings can return partial results. Listing stops starting new provider
 reads after its 3-second work budget. An in-progress read can take longer.
+If Desktop checked some folder paths before deferring the rest, Settings
+can check the same page once in the background. These results do not replace
+the fresh checks required for approval.
 Folder approval checks current evidence and can inspect up to 4,096
 candidates across up to 100 source roots. Each provider page holds at most
 512 candidates. Desktop gives each root a first

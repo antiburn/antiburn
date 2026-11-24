@@ -195,7 +195,7 @@ it("uses the existing account to save folder consent only for the chosen Team", 
 })
 
 it("confirms a mixed draft and retries only the folder route that failed", async () => {
-  const { port, ongoing } = cloudProjectFixture()
+  const { port, ongoing, emit } = cloudProjectFixture()
   const docsProject = {
     sourceKind: "claude_jsonl" as const,
     sourcePath: "/Example/claude/projects/docs",
@@ -231,6 +231,7 @@ it("confirms a mixed draft and retries only the folder route that failed", async
         selectedSources: consent.selectedSources,
         projectChoices: consent.projectChoices,
       })
+      emit({ syncEnabled: true })
       return personalStatus
     })
     .mockRejectedValueOnce(new Error("Team unavailable"))
@@ -268,6 +269,9 @@ it("confirms a mixed draft and retries only the folder route that failed", async
   expect(
     await screen.findByText(/Could not confirm folder sync for Example Team/),
   ).toBeVisible()
+  act(() => emit({ syncEnabled: true }))
+  expect(screen.getByText(/Could not confirm folder sync for Example Team/)).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Done" })).not.toBeInTheDocument()
   expect(ongoing.enable).toHaveBeenNthCalledWith(
     1,
     expect.objectContaining({

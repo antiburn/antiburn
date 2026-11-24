@@ -1,6 +1,6 @@
 //! Bounded session discovery and source version checks for Cloud sync.
 
-use super::repository_capture::{LookupDeferred, RepositoryLookups};
+use super::repository_capture::{LookupDeferred, OriginProof, RepositoryLookups};
 use crate::{
     cloud::{file_sources, projects},
     store::cloud_capture::{
@@ -39,15 +39,16 @@ pub(super) struct RepositoryLookupCursor {
     source_id: String,
     paths: Vec<PathBuf>,
     next_path: usize,
+    incomplete: bool,
 }
 
 impl RepositoryLookupCursor {
-    /// Return the first unchecked path for the same candidate and path list.
-    fn start(&self, source_id: &str, paths: &[PathBuf]) -> usize {
+    /// Keep the position and incomplete proof only for the same candidate and paths.
+    fn resume(&self, source_id: &str, paths: &[PathBuf]) -> (usize, bool) {
         if self.source_id == source_id && self.paths == paths {
-            self.next_path
+            (self.next_path, self.incomplete)
         } else {
-            0
+            (0, false)
         }
     }
 }
@@ -220,22 +221,24 @@ pub(super) fn discover_policy_page(
                         (project, None, None)
                     }
                     Ok(false) if has_repository_rules && evidence.scan_complete() => {
+                        let source_id = candidate.source_id();
                         let paths = evidence.project_paths();
-                        let start = pending_lookup
-                            .map_or(0, |pending| pending.start(candidate.source_id(), paths));
+                        let (start, mut incomplete) = pending_lookup
+                            .map_or((0, false), |pending| pending.resume(source_id, paths));
                         let mut matched = None;
                         for (path_index, path) in paths.iter().enumerate().skip(start) {
                             if !current() {
                                 return Err("Cloud upload controls changed.".into());
                             }
                             match repository_lookups.origin(path) {
-                                Ok(Some(origin))
+                                Ok(OriginProof::Verified(origin))
                                     if policy.allows_repository(&root.source_scope_id, &origin) =>
                                 {
                                     matched = Some((path, origin));
                                     break;
                                 }
-                                Ok(_) => {}
+                                Ok(OriginProof::Incomplete) => incomplete = true,
+                                Ok(OriginProof::Verified(_) | OriginProof::NoOrigin) => {}
                                 Err(LookupDeferred) => {
                                     return Ok((
                                         selected,
@@ -243,9 +246,10 @@ pub(super) fn discover_policy_page(
                                             root: index,
                                             after: previous_key,
                                             repository_lookup: Some(RepositoryLookupCursor {
-                                                source_id: candidate.source_id().into(),
+                                                source_id: source_id.into(),
                                                 paths: paths.to_vec(),
                                                 next_path: path_index,
+                                                incomplete,
                                             }),
                                         }),
                                         coverage,
@@ -254,6 +258,7 @@ pub(super) fn discover_policy_page(
                             }
                         }
                         let Some((path, origin)) = matched else {
+                            coverage.partial |= incomplete;
                             continue;
                         };
                         let (Some(project), Ok(projects)) =
@@ -343,14 +348,15 @@ mod repository_paging_tests {
             source_id: "session-a".into(),
             paths: paths.clone(),
             next_path: 1,
+            incomplete: true,
         };
 
-        assert_eq!(pending.start("session-a", &paths), 1);
-        assert_eq!(pending.start("session-b", &paths), 0);
-        assert_eq!(pending.start("session-a", &paths[1..]), 0);
+        assert_eq!(pending.resume("session-a", &paths), (1, true));
+        assert_eq!(pending.resume("session-b", &paths), (0, false));
+        assert_eq!(pending.resume("session-a", &paths[1..]), (0, false));
         assert_eq!(
-            pending.start("session-a", &[PathBuf::from("/new"), paths[1].clone()]),
-            0
+            pending.resume("session-a", &[PathBuf::from("/new"), paths[1].clone()]),
+            (0, false)
         );
     }
 }

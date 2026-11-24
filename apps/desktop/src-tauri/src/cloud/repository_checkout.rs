@@ -525,6 +525,7 @@ mod tests {
     use tokio::{fs as async_fs, process::Command};
 
     const ORIGIN: &str = "https://git.example.test/Org/Repo.git";
+    const ORIGIN_LABEL: &str = "endpoint-v2:git.example.test/Org/Repo.git";
 
     async fn git(cwd: &Path, args: &[&str]) {
         let output = Command::new("git")
@@ -629,11 +630,7 @@ mod tests {
         let nested = linked.join("src");
         fs::create_dir(&nested).unwrap();
         let mut cache = CheckoutOriginCache::default();
-        assert_origin(
-            cache.lookup(&nested).await,
-            &linked,
-            "git.example.test/Org/Repo",
-        );
+        assert_origin(cache.lookup(&nested).await, &linked, ORIGIN_LABEL);
         assert_eq!(cache.origin_parses, 1);
         git(
             &linked,
@@ -683,7 +680,7 @@ mod tests {
         assert_origin(
             lookup_checkout_origin(&project).await,
             &project,
-            "git.example.test/Org/Repo",
+            ORIGIN_LABEL,
         );
     }
 
@@ -694,11 +691,7 @@ mod tests {
         let project = root.join("project");
         repo(&project).await;
         let mut cache = CheckoutOriginCache::default();
-        assert_origin(
-            cache.lookup(&project).await,
-            &project,
-            "git.example.test/Org/Repo",
-        );
+        assert_origin(cache.lookup(&project).await, &project, ORIGIN_LABEL);
         assert_eq!(cache.origin_parses, 1);
         let config = project.join(".git/config");
         let modified = config.metadata().unwrap().modified().unwrap();
@@ -713,13 +706,13 @@ mod tests {
         assert_origin(
             cache.lookup(&project).await,
             &project,
-            "git.example.test/Org/Next",
+            "endpoint-v2:git.example.test/Org/Next.git",
         );
         assert_eq!(cache.origin_parses, 2);
         assert_origin(
             lookup_checkout_origin(&project).await,
             &project,
-            "git.example.test/Org/Next",
+            "endpoint-v2:git.example.test/Org/Next.git",
         );
     }
 
@@ -820,8 +813,8 @@ mod tests {
                 );
             }
         }
-        assert_origin(first, &template, "git.example.test/Org/Repo");
-        assert_origin(last, &last_path, "git.example.test/Org/Repo");
+        assert_origin(first, &template, ORIGIN_LABEL);
+        assert_origin(last, &last_path, ORIGIN_LABEL);
         assert_eq!(cache.origin_parses, 1);
 
         async_fs::write(registry.join("worktree-4095/gitdir"), b"/wrong/.git\n")

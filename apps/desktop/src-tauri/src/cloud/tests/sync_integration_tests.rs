@@ -4,7 +4,11 @@ use antiburn_cloud_capture::{
     CaptureIdentity, CaptureManifest, Chunk, ChunkKey, ServerStatus, Spool, Transport,
     TransportError, UploadPlan,
 };
-use std::{fs, io::Read, path::PathBuf};
+use std::{
+    fs,
+    io::{Read, Write},
+    path::PathBuf,
+};
 
 fn write_session(root: &Path, id: &str, cwd: &Path, tool_path: &Path) {
     fs::write(
@@ -328,6 +332,12 @@ fn repository_approval_captures_a_matching_clone_and_rechecks_its_origin() {
         anchor_path: anchor.to_str().unwrap().into(),
         scopes: BTreeSet::from(["scope".into()]),
     });
+    let folders = saved_folders(&policy);
+    assert_eq!(folders.len(), 1);
+    assert_eq!(
+        policy.repository_rule_for_group(&folders[0].group_id),
+        policy.repository_rules.first()
+    );
     let root = Path::new(&policy.roots[0].path);
     write_session(root, "matching", &checkout, &anchor.join("file"));
     write_session(root, "plain", &anchor, &checkout.join("file"));
@@ -357,9 +367,70 @@ fn repository_approval_captures_a_matching_clone_and_rechecks_its_origin() {
         &selection.scope,
         origin,
         &selection.project,
-        &[checkout]
+        std::slice::from_ref(&checkout)
     ));
-    assert!(discover_policy(&policy, &|| true).unwrap().is_empty());
+    let mut cache = crate::cloud::projects::Cache::default();
+    let (matches, next, coverage) =
+        discover_policy_page(&policy, &|| true, &mut cache, &DiscoveryCursor::default()).unwrap();
+    assert!(matches.is_empty());
+    assert!(next.is_none());
+    assert!(!coverage.partial);
+    assert!(!coverage.blocked);
+
+    let damaged = anchor.join("damaged");
+    fs::create_dir(&damaged).unwrap();
+    fs::write(damaged.join(".git"), "invalid pointer\n").unwrap();
+    fs::remove_file(root.join("matching.jsonl")).unwrap();
+    write_session(root, "mixed", &damaged, &anchor.join("file"));
+    assert!(damaged < checkout);
+    writeln!(
+        fs::OpenOptions::new()
+            .append(true)
+            .open(root.join("mixed.jsonl"))
+            .unwrap(),
+        "{}",
+        serde_json::json!({
+            "sessionId": "mixed", "cwd": checkout, "version": "2.1.55", "type": "user",
+            "message": {"role": "user", "content": "changed directory"},
+        })
+    )
+    .unwrap();
+
+    for (fetch_url, expected_partial) in [
+        ("https://github.com/Example/Other.git", true),
+        ("https://github.com/Example/Project.git", false),
+    ] {
+        git(
+            &checkout,
+            &["config", "--local", "remote.origin.url", fetch_url],
+        );
+        let mut cursor = DiscoveryCursor::default();
+        let mut selected = Vec::new();
+        let mut partial = false;
+        loop {
+            let (matches, next, coverage) =
+                discover_policy_page(&policy, &|| true, &mut cache, &cursor).unwrap();
+            assert!(!coverage.blocked);
+            partial |= coverage.partial;
+            selected.extend(matches);
+            let Some(next) = next else {
+                break;
+            };
+            assert_ne!(next, cursor);
+            cursor = next;
+        }
+        assert_eq!(partial, expected_partial);
+        if expected_partial {
+            assert!(selected.is_empty());
+        } else {
+            assert_eq!(selected.len(), 1);
+            assert_eq!(selected[0].candidate.native_session_id(), "mixed");
+            assert_eq!(
+                selected[0].repository_origin.as_deref(),
+                Some(origin.as_str())
+            );
+        }
+    }
 }
 
 #[test]

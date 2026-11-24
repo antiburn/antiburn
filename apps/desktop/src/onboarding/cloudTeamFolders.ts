@@ -121,13 +121,14 @@ export function createTeamFolderConfirmation(session: TeamFolderSession) {
           displayed.revision
         )
           session.receive(status)
-        if (addedGroups.length) session.clearCommittedChoices(addedGroups, choices)
-        return confirmsSavedWrite(
+        const confirmed = confirmsSavedWrite(
           session.getSnapshot().teamStatuses?.[destinationId],
           status,
           target,
           expected,
         )
+        if (confirmed && addedGroups.length) session.clearCommittedChoices(addedGroups, choices)
+        return confirmed
       }
     } catch (error) {
       if (stillBound())

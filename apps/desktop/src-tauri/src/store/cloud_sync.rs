@@ -104,13 +104,12 @@ pub(crate) struct RepositoryRule {
     pub scopes: BTreeSet<String>,
 }
 
-/// Identify a repository group independently of its display anchor and scopes.
+/// Use the same repository group ID for discovery, saved status, and policy writes.
 pub(crate) fn repository_group_id(origin: &str) -> String {
-    let bytes = serde_json::to_vec(&("repository-origin-v1", origin))
-        .expect("repository identity serialization");
+    // Exact folder IDs hash a JSON array. Keep repository IDs in a separate domain.
     let mut hash = Sha256::new();
-    hash.update(b"antiburn:");
-    hash.update(bytes);
+    hash.update(b"antiburn-repository-origin-v1\0");
+    hash.update(origin.as_bytes());
     URL_SAFE_NO_PAD.encode(hash.finalize())
 }
 

@@ -327,10 +327,21 @@ impl<'a> HttpTransport<'a> {
         self
     }
 
-    /// Recheck a live repository rule before the spool reads full content.
+    /// Recheck a live repository rule before reading content and sending a PUT.
     pub(super) fn with_source_authority(mut self, check: &'a dyn Fn() -> bool) -> Self {
         self.source_authority = Some(check);
         self
+    }
+
+    /// Keep a local pause or policy change separate from loss of account access.
+    fn check_current_authority(&self) -> Result<(), TransportError> {
+        if !(self.account_current)() || self.engine.session().is_none() {
+            return Err(TransportError::Unauthorized);
+        }
+        if !(self.current)() {
+            return Err(TransportError::Rejected);
+        }
+        Ok(())
     }
 
     fn request(
@@ -617,8 +628,13 @@ fn signed_request(
 
 impl Transport for HttpTransport<'_> {
     fn check_source_authority(&self) -> Result<(), TransportError> {
-        if !(self.current)() || self.source_authority.is_some_and(|check| !check()) {
-            return Err(TransportError::Rejected);
+        self.check_current_authority()?;
+        if let Some(check) = self.source_authority {
+            let allowed = check();
+            self.check_current_authority()?;
+            if !allowed {
+                return Err(TransportError::Rejected);
+            }
         }
         Ok(())
     }
@@ -710,20 +726,15 @@ impl Transport for HttpTransport<'_> {
         if bytes.len() as u64 != chunk.compressed_bytes {
             return Err(TransportError::Rejected);
         }
-        if !(self.current)() || self.engine.session().is_none() {
-            return Err(TransportError::Unauthorized);
-        }
         // This client has no default bearer or cookie storage.
-        let response = auth::client(&url)
+        let request = auth::client(&url)
             .map_err(|_| TransportError::Rejected)?
             .put(url)
             .headers(headers)
-            .body(bytes)
-            .send()
-            .map_err(|_| TransportError::Offline)?;
-        if !(self.current)() {
-            return Err(TransportError::Unauthorized);
-        }
+            .body(bytes);
+        self.check_source_authority()?;
+        let response = request.send().map_err(|_| TransportError::Offline)?;
+        self.check_current_authority()?;
         if response.status().is_success() {
             Ok(())
         } else {

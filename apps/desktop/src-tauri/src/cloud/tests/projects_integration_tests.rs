@@ -256,7 +256,17 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
         .unwrap();
         assert!(output.status.success());
         let list = std::str::from_utf8(&output.stdout).unwrap();
-        let grouped = worktree_context(list, '\n', &linked, &common).unwrap();
+        let grouped = worktree_context(list, '\n', &linked, &common, None).unwrap();
+        assert!(
+            worktree_context(
+                list,
+                '\n',
+                &linked,
+                &common,
+                Some(tokio::time::Instant::now()),
+            )
+            .is_none()
+        );
         assert_eq!(grouped.main, main.to_str().unwrap());
         assert_eq!(grouped.folders, expected);
         assert!(grouped.complete);
@@ -271,7 +281,7 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
         let (_, records) = list.split_once('\n').unwrap();
         for field in ["", "bare\n"] {
             let forged = format!("worktree {}\n{field}{records}", unverified_parent.display());
-            let fallback = worktree_context(&forged, '\n', &linked, &common).unwrap();
+            let fallback = worktree_context(&forged, '\n', &linked, &common, None).unwrap();
             assert_eq!(fallback.main, linked.to_str().unwrap());
             assert_eq!(fallback.folders, [linked.to_str().unwrap()]);
             assert!(!fallback.complete);
@@ -381,7 +391,7 @@ fn run_test_git(checkout: &Path, args: &[&str]) {
 }
 
 #[test]
-fn expired_origin_budget_keeps_plain_folders_but_does_not_group_unproved_git() {
+fn approval_origin_budget_reuses_checked_paths_but_never_groups_unproved_git() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let plain = root.join("plain");
@@ -391,26 +401,17 @@ fn expired_origin_budget_keeps_plain_folders_but_does_not_group_unproved_git() {
     run_test_git(&checkout, &["init", "--quiet"]);
 
     let checkout = checkout.to_str().unwrap();
-    let mut cache = Cache::default();
-    let checked = cache.context("native", checkout, &mut RequestOrigins::default());
-    assert!(checked.complete);
-    assert!(checked.origin.is_none());
+    assert!(matches!(
+        RequestOrigins::default().get(checkout),
+        ProjectOrigin::ExactGit
+    ));
 
     let plain = plain.to_str().unwrap();
     let mut origins = RequestOrigins::default();
     assert!(matches!(origins.get(plain), ProjectOrigin::Plain));
     origins.deadline = tokio::time::Instant::now();
     assert!(matches!(origins.get(checkout), ProjectOrigin::Incomplete));
-    let skipped = cache.context("native", checkout, &mut origins);
-    assert!(skipped.inspection_incomplete);
-    assert!(!skipped.complete);
-    assert!(skipped.folders.is_empty());
-
     assert!(matches!(origins.get(plain), ProjectOrigin::Plain));
-    let checked = cache.context("native", plain, &mut origins);
-    assert!(checked.complete);
-    assert!(!checked.inspection_incomplete);
-    assert_eq!(checked.folders, [plain]);
     let mut expired = RequestOrigins {
         deadline: tokio::time::Instant::now(),
         ..RequestOrigins::default()
@@ -425,6 +426,12 @@ fn exact_git_listing_does_not_start_after_its_deadline() {
     run_test_git(&checkout, &["init", "--quiet"]);
     let path = checkout.to_str().unwrap();
     assert!(context("native", path).complete);
+    let mut listing = ListingLookups::new(
+        None,
+        [0; 32],
+        tokio::time::Instant::now() + PROJECT_ORIGIN_LOOKUP_BUDGET,
+    );
+    assert!(listing.context("native", path).complete);
     let expired = Some(tokio::time::Instant::now());
     let checked = context_for_path(path, Ok(Some(&checkout)), expired);
     assert!(checked.inspection_incomplete);
@@ -538,6 +545,7 @@ fn origin_group_uses_one_observed_checkout_per_source_and_requires_explicit_choi
     assert_eq!(group.folder_paths, [linked, separate]);
     assert_eq!(group.worktree_count, 0);
     assert_eq!(group.repository_wide, Some(true));
+    assert!(group.legacy_opt_out_id.is_none());
     assert_eq!(group.agents, ["codex", "opencode"]);
     assert_eq!(group.session_count, 2);
     assert!(group.capture_session_count >= 2);
@@ -568,6 +576,44 @@ fn origin_group_uses_one_observed_checkout_per_source_and_requires_explicit_choi
         ]
         .into()
     );
+    assert_eq!(group.id, "0TdUQ5GwwyA2XgOsHZQZHVWat2fPFWEc-zUwgmRv37c");
+    let exact = ProjectSelection {
+        source_kind: fixture.source.source_kind,
+        source_path: fixture.source.path.clone(),
+        project_path: fixture.project.clone(),
+    };
+    let policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            &binding.account_id,
+            &binding.destination_id,
+            ORIGIN,
+            std::slice::from_ref(&fixture.source),
+            std::slice::from_ref(&exact),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let added = fixture
+        .store
+        .set_cloud_sync_project_with_repositories(
+            &policy,
+            &group.id,
+            true,
+            (&projects, &confirmed),
+            false,
+            || true,
+        )
+        .unwrap();
+    assert_eq!(added.projects.as_slice(), std::slice::from_ref(&exact));
+    let rule = added.repository_rule_for_group(&group.id).unwrap();
+    assert_eq!(rule.origin, origin);
+    let revoked = fixture
+        .store
+        .revoke_cloud_repository(&added, &group.id, &rule.origin, || true)
+        .unwrap();
+    assert!(revoked.repository_rules.is_empty());
+    assert_eq!(revoked.projects, [exact]);
+    assert_eq!(revoked.project_choices.get(&group.id), Some(&false));
     let legacy_project = group
         .projects
         .iter()
@@ -636,6 +682,55 @@ fn origin_group_uses_one_observed_checkout_per_source_and_requires_explicit_choi
         )
         .is_err()
     );
+}
+
+#[test]
+fn generic_endpoint_group_exposes_legacy_choice_without_approving_it() {
+    let mut fixture = Fixture::new();
+    let checkout = Path::new(&fixture.project);
+    run_test_git(checkout, &["init", "--quiet"]);
+    run_test_git(
+        checkout,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://git.example/Team/Repo.git",
+        ],
+    );
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    let discovery = fixture.discover(Vec::new());
+    let group = &discovery.groups[0];
+    let current = "endpoint-v2:git.example/Team/Repo.git";
+    let legacy_id = repository_group_id("git.example/Team/Repo");
+    assert_eq!(group.id, repository_group_id(current));
+    assert_eq!(
+        serde_json::to_value(group).unwrap()["legacyOptOutId"],
+        legacy_id
+    );
+    let projects = group.projects.iter().cloned().collect();
+    let binding = fixture.binding();
+    assert!(
+        confirm_project_choices_with_origins(
+            &fixture.store,
+            &mut fixture.cache,
+            &binding,
+            &[(legacy_id, true)].into(),
+            &projects,
+            &|| true,
+        )
+        .is_err()
+    );
+    let (_, anchors) = confirm_project_choices_with_origins(
+        &fixture.store,
+        &mut fixture.cache,
+        &binding,
+        &[(group.id.clone(), true)].into(),
+        &projects,
+        &|| true,
+    )
+    .unwrap();
+    assert_eq!(anchors, [(fixture.project, current.into())].into());
 }
 
 #[test]
@@ -769,24 +864,10 @@ impl Fixture {
         let store = Store::open(&base).unwrap();
         store.initialize_cloud_setup().unwrap();
         let project = project.to_str().unwrap().to_owned();
-        let mut cache = Cache::default();
-        cache.contexts.insert(
-            ("native".into(), project.clone()),
-            (
-                Instant::now(),
-                Context {
-                    main: project.clone(),
-                    folders: vec![project.clone()],
-                    origin: None,
-                    complete: true,
-                    inspection_incomplete: false,
-                },
-            ),
-        );
         Self {
             directory,
             store,
-            cache,
+            cache: Cache::default(),
             project,
             source: SourceSelection {
                 source_kind: SourceKind::OpenCodeSqliteV2,
@@ -834,11 +915,11 @@ impl Fixture {
         discover_projects(
             &self.store,
             &mut self.cache,
-            &authority,
+            (&authority, 0),
             None,
             (known, false),
             &|| true,
-            tokio::time::Instant::now() + Duration::from_secs(60),
+            ListingWindow::new(tokio::time::Instant::now() + Duration::from_secs(60)),
         )
         .unwrap()
     }
@@ -1055,15 +1136,22 @@ fn cloud_project_discovery_uses_default_opencode_source_without_saving_consent()
     let discovery = discover_projects(
         &fixture.store,
         &mut fixture.cache,
-        &authority,
+        (&authority, 0),
         None,
         known,
         &|| true,
-        tokio::time::Instant::now() + PROJECT_LISTING_BUDGET,
+        ListingWindow::new(tokio::time::Instant::now() + PROJECT_LISTING_BUDGET),
     )
     .unwrap();
 
     assert!(!discovery.partial);
+    assert!(!discovery.retry_same_page);
+    assert!(
+        serde_json::to_value(&discovery)
+            .unwrap()
+            .get("retrySamePage")
+            .is_none()
+    );
     assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
     assert!(discovery.groups.iter().any(|group| group.capture_supported));
     assert!(
@@ -1120,11 +1208,11 @@ fn cloud_project_discovery_does_not_reuse_another_accounts_saved_provider_access
         discover_projects(
             &fixture.store,
             &mut fixture.cache,
-            &authority,
+            (&authority, 0),
             None,
             (Vec::new(), false),
             &|| false,
-            tokio::time::Instant::now() + PROJECT_LISTING_BUDGET,
+            ListingWindow::new(tokio::time::Instant::now() + PROJECT_LISTING_BUDGET),
         )
         .is_err()
     );
@@ -1149,20 +1237,81 @@ fn cloud_project_discovery_expired_budget_keeps_suggestions_without_claiming_sou
     let discovery = discover_projects(
         &fixture.store,
         &mut fixture.cache,
-        &authority,
+        (&authority, 0),
         None,
         (Vec::new(), false),
         &|| true,
-        tokio::time::Instant::now(),
+        ListingWindow::new(tokio::time::Instant::now()),
     )
     .unwrap();
     assert!(discovery.partial);
+    assert!(!discovery.retry_same_page);
     assert!(discovery.source_roots.is_empty());
     assert_eq!(discovery.groups.len(), 1);
     assert_eq!(discovery.groups[0].path, fixture.project);
     assert!(!discovery.groups[0].capture_supported);
     assert!(discovery.groups[0].projects.is_empty());
     assert!(fixture.cache.evidence.is_empty());
+}
+
+#[test]
+fn provider_deadline_retains_git_progress_for_the_same_listing_page() {
+    let mut fixture = Fixture::new();
+    let later = Path::new(&fixture.project).join("later-recorded-folder");
+    fs::create_dir(&later).unwrap();
+    let later = later.to_str().unwrap();
+    rusqlite::Connection::open(&fixture.source.path)
+        .unwrap()
+        .execute(
+            "UPDATE session_v2 SET directory=?1 WHERE id <> 'ses_child'",
+            [later],
+        )
+        .unwrap();
+    let authority = fixture.authority();
+    let read_cutoff_page = |cache: &mut Cache| {
+        let start = tokio::time::Instant::now();
+        let deadline = start + PROJECT_LISTING_BUDGET;
+        // The first six budget checks admit the root and its first recorded CWD.
+        let checks_left = std::cell::Cell::new(6usize);
+        let now = || match checks_left.get() {
+            0 => deadline,
+            remaining => {
+                checks_left.set(remaining - 1);
+                start
+            }
+        };
+        discover_projects(
+            &fixture.store,
+            cache,
+            (&authority, 0),
+            None,
+            (vec![fixture.source.clone()], false),
+            &|| true,
+            ListingWindow {
+                deadline,
+                now: &now,
+            },
+        )
+        .unwrap()
+    };
+
+    let first = read_cutoff_page(&mut fixture.cache);
+    assert!(first.partial);
+    assert_eq!(serde_json::to_value(&first).unwrap()["retrySamePage"], true);
+    assert_eq!(first.groups.len(), 1);
+    assert!(first.groups[0].capture_supported);
+    assert_eq!(first.groups[0].path, fixture.project);
+
+    let repeated = read_cutoff_page(&mut fixture.cache);
+    assert!(repeated.partial);
+    assert_eq!(repeated.groups[0].path, fixture.project);
+    assert!(!repeated.retry_same_page);
+    assert!(fixture.cache.listing_progress.is_some());
+
+    let finished = fixture.discover(vec![fixture.source.clone()]);
+    assert!(!finished.partial);
+    assert!(!finished.retry_same_page);
+    assert!(finished.groups.iter().any(|group| group.path == later));
 }
 
 #[test]
@@ -1173,11 +1322,11 @@ fn cloud_project_discovery_rechecks_scope_before_returning() {
     let result = discover_projects(
         &fixture.store,
         &mut fixture.cache,
-        &authority,
+        (&authority, 0),
         None,
         (Vec::new(), false),
         &|| first_check.replace(false),
-        tokio::time::Instant::now(),
+        ListingWindow::new(tokio::time::Instant::now()),
     );
     assert!(matches!(result, Err(error) if error == "Cloud account changed."));
 }

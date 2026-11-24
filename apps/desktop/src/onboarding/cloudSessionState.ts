@@ -172,16 +172,20 @@ export function folderRouteConfirmed(
     !selected.length
   )
     return false
+  return selected.every(savedFolderBindingMatcher(status))
+}
+
+/** Match one exact source binding or the source anchor of a saved repository rule. */
+function savedFolderBindingMatcher(status: CloudOngoingStatus) {
   const saved = new Set(savedExactProjects(status).map(exactProjectKey))
-  return selected.every(({ repositoryGroupId, ...project }) =>
+  return ({ repositoryGroupId, ...project }: FolderRouteBinding) =>
     repositoryGroupId
       ? savedRepositoryProjects(status, repositoryGroupId).some(
           (anchor) =>
             anchor.sourceKind === project.sourceKind &&
             anchor.sourcePath === project.sourcePath,
         )
-      : saved.has(exactProjectKey(project)),
-  )
+      : saved.has(exactProjectKey(project))
 }
 
 /** Verify that the observed policy still matches the completed native write. */
@@ -198,6 +202,78 @@ export function confirmsSavedWrite(
     !current?.sourceConfirmationRequired &&
     folderRouteConfirmed(reply, binding, projects) &&
     (current === reply || folderRouteConfirmed(current, binding, projects))
+  )
+}
+
+/** Save the exact route evidence for the final onboarding check. */
+export interface RequestedFolderRoute {
+  target: CloudDestinationBinding
+  name: string
+  expected: FolderRouteBinding[]
+}
+
+/** Recheck saved routes on later attempts. Drop grants Desktop confirms are gone. */
+export function checkOnboardingFolderRoutes(
+  routes: readonly RequestedFolderRoute[],
+  priorSavedRoutes: readonly RequestedFolderRoute[],
+  policyFor: (id: string) => CloudOngoingStatus | null | undefined,
+) {
+  const savedRoutes = new Map<string, RequestedFolderRoute>()
+  const pending = new Map<string, string>()
+  let needsReview = false
+  const remember = (route: RequestedFolderRoute) =>
+    savedRoutes.set(JSON.stringify([route.target, route.expected]), route)
+  for (const route of priorSavedRoutes) {
+    const policy = policyFor(route.target.destinationId)
+    const known = hasFolderRuleEvidence(policy, route.target)
+    if (known && !hasRequestedFolderRule(route, policy)) continue
+    remember(route)
+    if (
+      known &&
+      policy.storageKnown &&
+      !policy.folderConfirmationRequired &&
+      !policy.sourceConfirmationRequired
+    )
+      continue
+    pending.set(route.target.destinationId, route.name)
+    needsReview = true
+  }
+  for (const route of routes) {
+    const { target, name, expected } = route
+    const policy = policyFor(target.destinationId)
+    if (hasFolderRuleEvidence(policy, target) && hasRequestedFolderRule(route, policy))
+      remember(route)
+    if (policy?.folderConfirmationRequired || policy?.sourceConfirmationRequired)
+      needsReview = true
+    else if (folderRouteConfirmed(policy, target, expected)) continue
+    pending.set(target.destinationId, name)
+  }
+  const nextStep = needsReview
+    ? "Review saved folders in Settings before trying again."
+    : "Review the remaining choices and try again."
+  const error = pending.size
+    ? `Could not confirm folder sync for ${[...pending.values()].join(", ")}. ${nextStep}`
+    : null
+  return { error, savedRoutes: [...savedRoutes.values()] }
+}
+
+/** Team policy metadata can prove saved rules even when upload counters are unavailable. */
+function hasFolderRuleEvidence(
+  policy: CloudOngoingStatus | null | undefined,
+  target: CloudDestinationBinding,
+): policy is CloudOngoingStatus {
+  return (
+    policy?.accountId === target.accountId &&
+    policy.destinationId === target.destinationId &&
+    (policy.storageKnown || policy.status === "consent_required" || !!policy.savedFolders)
+  )
+}
+
+/** Check whether the latest policy still grants any binding in this onboarding route. */
+function hasRequestedFolderRule(route: RequestedFolderRoute, policy: CloudOngoingStatus) {
+  return (
+    policy.consentVersion === "desktop-project-sync-v1" &&
+    route.expected.some(savedFolderBindingMatcher(policy))
   )
 }
 
@@ -505,11 +581,11 @@ export function accountViewPatch(
     resetProjects: boolean
     contextChanged: boolean
     ongoing: boolean
-    projectSyncStarted: boolean
+    projectSyncState: "pending" | "started" | undefined
     preparedRequestId: string | null
   },
 ): Partial<CloudViewSnapshot> {
-  const { resetProjects, contextChanged, ongoing, projectSyncStarted, preparedRequestId } =
+  const { resetProjects, contextChanged, ongoing, projectSyncState, preparedRequestId } =
     options
   const retryInvalidated =
     contextChanged ||
@@ -521,6 +597,9 @@ export function accountViewPatch(
       ? "identity"
       : value.draft.screen
     : "handoff"
+  const complete = ongoing
+    ? projectSyncState === "started" || (projectSyncState !== "pending" && value.syncEnabled)
+    : !!value.pendingSync
   return {
     cloud: value,
     ...(resetProjects
@@ -536,9 +615,11 @@ export function accountViewPatch(
         ? { projects: { ...previous.projects, loading: false } }
         : {}),
     screen:
-      value.identity && (ongoing ? projectSyncStarted || value.syncEnabled : value.pendingSync)
+      value.identity && complete
         ? "complete"
-        : screen,
+        : projectSyncState === "pending" && screen === "complete"
+          ? previous.screen
+          : screen,
     loaded: true,
     ...(previous.error === CLOUD_BUSY_MESSAGE ? { error: null } : {}),
     ...(retryInvalidated ? { sourceListingNeedsRetry: false } : {}),
@@ -764,6 +845,7 @@ export function projectViewGroups(
       worktreeCount: group.worktreeCount,
       groupingComplete: group.groupingComplete,
       ...(group.repositoryWide && { repositoryWide: true }),
+      ...(group.legacyOptOutId && { legacyOptOutId: group.legacyOptOutId }),
       discoveryStale: group.discoveryStale ?? false,
       sessionCount: group.discoveryStale
         ? null

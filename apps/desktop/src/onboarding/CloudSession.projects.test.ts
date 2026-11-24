@@ -661,6 +661,81 @@ it("does not admit a project whose desktop session folder was not returned", asy
   }
 })
 
+it.each([
+  ["receipt", "sourceConfirmationRequired"],
+  ["readback", "sourceConfirmationRequired"],
+  ["readback", "folderConfirmationRequired"],
+] as const)("keeps onboarding open when the %s has %s", async (evidence, flag) => {
+  const { port, ongoing } = cloudProjectFixture()
+  const review = ongoingStatus({
+    status: "paused",
+    paused: true,
+    consentVersion: "desktop-project-sync-v1",
+    policyRevision: "saved-policy",
+    projects: projectGroup().projects,
+    projectChoices: { studio: true },
+    [flag]: true,
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    session.selectProject("studio", true, "synthetic-personal")
+    ongoing.status.mockResolvedValue(review)
+    if (evidence === "receipt") ongoing.enable.mockResolvedValueOnce(review)
+    else ongoing.enable.mockRejectedValueOnce(new Error("Synthetic lost reply"))
+
+    await session.startSync()
+    expect(session.getSnapshot()).toMatchObject({
+      screen: "folders",
+      error:
+        "Could not confirm folder sync for Personal. Review saved folders in Settings before trying again.",
+      projects: { targets: { studio: "synthetic-personal" } },
+    })
+    expect(ongoing.status).toHaveBeenCalledTimes(2)
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+    expect(ongoing.setProject).not.toHaveBeenCalled()
+    expect(ongoing.confirmTeamFolders).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("uses readback after a superseded onboarding receipt without clearing the draft", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  ongoing.enable.mockImplementationOnce(async (consent) => {
+    const receipt = ongoingStatus({
+      status: "ready",
+      policyRevision: "saved-policy",
+      consentVersion: consent.version,
+      projects: consent.projects,
+      projectChoices: consent.projectChoices,
+    })
+    const latest = { ...receipt, policyRevision: "newer-policy" }
+    ongoing.status.mockResolvedValue(latest)
+    emitSync(latest)
+    return receipt
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.loaded).toBe(true))
+    session.selectProject("studio", true, "synthetic-personal")
+    await session.startSync()
+    expect(session.getSnapshot()).toMatchObject({
+      screen: "complete",
+      error: null,
+      ongoing: { policyRevision: "newer-policy" },
+      projects: { targets: { studio: "synthetic-personal" } },
+    })
+    expect(ongoing.status).toHaveBeenCalledTimes(2)
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+    expect(ongoing.setProject).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
 it("keeps a newer desktop status instead of a stale pause reply", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
   const session = new CloudSession(port, false, true)

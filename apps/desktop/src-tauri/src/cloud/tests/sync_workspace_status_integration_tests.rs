@@ -18,6 +18,34 @@ fn anchor(directory: &std::path::Path) -> Engine {
     )
 }
 
+#[test]
+fn cloud_sync_turn_distinguishes_closed_local_admission_from_an_account_change() {
+    let directory = tempfile::tempdir().unwrap();
+    let base = directory.path().canonicalize().unwrap();
+    let store = Store::open_in_memory(&base).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let mut runner = Runner::default();
+    let mut engine = anchor(&base);
+    let mut host = capture::Host::new(&base);
+    let mut cache = super::super::projects::Cache::default();
+    for (account_is_current, expected) in [(true, State::Paused), (false, State::ReauthRequired)] {
+        runner
+            .turn(
+                &store,
+                &mut host,
+                &mut engine,
+                &|| {
+                    assert!(account_is_current);
+                    false
+                },
+                &|| account_is_current,
+                &mut cache,
+            )
+            .unwrap();
+        assert_eq!(runner.state, expected);
+    }
+}
+
 fn policy(store: &Store, account: &str, workspace: &str, resource: &str, issuer: &str) -> Policy {
     policy_with_paths(
         store,

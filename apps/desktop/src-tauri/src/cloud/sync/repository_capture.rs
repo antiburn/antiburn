@@ -19,20 +19,28 @@ const PAGE_LOOKUP_BUDGET: Duration = Duration::from_millis(250);
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct LookupDeferred;
 
+/// Distinguish a proved nonmatch from an inspection that could not prove a match.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum OriginProof {
+    Verified(String),
+    NoOrigin,
+    Incomplete,
+}
+
 /// Reuse lookups for identical recorded paths within one discovery page.
 /// Never reuse these results for a new capture or reservation retry.
 #[derive(Default)]
 pub(super) struct RepositoryLookups {
-    origins: BTreeMap<PathBuf, Option<String>>,
+    origins: BTreeMap<PathBuf, OriginProof>,
     checkouts: CheckoutOriginCache,
     lookup_time: Duration,
 }
 
 impl RepositoryLookups {
-    /// Read the nearest verified origin. A cached result needs no lookup time.
+    /// Inspect the nearest checkout. A cached result needs no lookup time.
     /// Call only on the bounded discovery worker. A deferral makes no claim
     /// about this path. Keep it for the next page.
-    pub(super) fn origin(&mut self, path: &Path) -> Result<Option<String>, LookupDeferred> {
+    pub(super) fn origin(&mut self, path: &Path) -> Result<OriginProof, LookupDeferred> {
         if let Some(origin) = self.origins.get(path) {
             return Ok(origin.clone());
         }
@@ -79,19 +87,22 @@ pub(super) fn saved_job_origin_current(job: &Job) -> bool {
 /// Use the desktop Tokio runtime from the bounded blocking worker. The async
 /// lookup limits its own filesystem and Git work.
 fn verified_origin(path: &Path) -> Option<String> {
-    origin_for_path(
+    match origin_for_path(
         tauri::async_runtime::block_on(lookup_checkout_origin(path)),
         path,
-    )
+    ) {
+        OriginProof::Verified(origin) => Some(origin),
+        OriginProof::NoOrigin | OriginProof::Incomplete => None,
+    }
 }
 
-fn origin_for_path(result: CheckoutOrigin, path: &Path) -> Option<String> {
+fn origin_for_path(result: CheckoutOrigin, path: &Path) -> OriginProof {
     match result {
-        CheckoutOrigin::Verified {
-            checkout,
-            origin: Some(origin),
-        } if path.starts_with(&checkout) => Some(origin.as_label().to_owned()),
-        _ => None,
+        CheckoutOrigin::Verified { checkout, origin } if path.starts_with(&checkout) => origin
+            .map(|origin| OriginProof::Verified(origin.as_label().to_owned()))
+            .unwrap_or(OriginProof::NoOrigin),
+        CheckoutOrigin::Plain => OriginProof::NoOrigin,
+        CheckoutOrigin::UnverifiedGit | CheckoutOrigin::Verified { .. } => OriginProof::Incomplete,
     }
 }
 
@@ -105,9 +116,10 @@ mod tests {
             origins: BTreeMap::from([
                 (
                     "/matched".into(),
-                    Some("github.com/example/repository".into()),
+                    OriginProof::Verified("github.com/example/repository".into()),
                 ),
-                ("/unmatched".into(), None),
+                ("/unmatched".into(), OriginProof::NoOrigin),
+                ("/unverified".into(), OriginProof::Incomplete),
             ]),
             lookup_time: PAGE_LOOKUP_BUDGET,
             ..RepositoryLookups::default()
@@ -115,10 +127,19 @@ mod tests {
 
         assert_eq!(
             lookups.origin(Path::new("/matched")),
-            Ok(Some("github.com/example/repository".into()))
+            Ok(OriginProof::Verified(
+                "github.com/example/repository".into()
+            ))
         );
-        assert_eq!(lookups.origin(Path::new("/unmatched")), Ok(None));
+        assert_eq!(
+            lookups.origin(Path::new("/unmatched")),
+            Ok(OriginProof::NoOrigin)
+        );
+        assert_eq!(
+            lookups.origin(Path::new("/unverified")),
+            Ok(OriginProof::Incomplete)
+        );
         assert_eq!(lookups.origin(Path::new("/unread")), Err(LookupDeferred));
-        assert_eq!(lookups.origins.len(), 2);
+        assert_eq!(lookups.origins.len(), 3);
     }
 }

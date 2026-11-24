@@ -49,6 +49,8 @@ export type CloudSourceKind =
  */
 export interface CloudProjectGroup {
   id: string
+  /** An older group ID can preserve an opt-out, never an approval. */
+  legacyOptOutId?: string
   name: string
   path: string
   memberPaths: readonly string[]
@@ -151,6 +153,7 @@ export interface CloudProjectSelection {
 /** Desktop project group. Other agents supply suggestions only, not upload proof. */
 export interface DesktopCloudProjectGroup {
   id: string
+  legacyOptOutId?: string
   environment: string
   path: string
   label: string
@@ -178,6 +181,8 @@ interface CloudProjectDiscovery {
   sourceRoots: CloudSourceSelection[]
   nextCursor: CloudProjectCursor | null
   partial: boolean
+  /** Desktop finished some folder lookups and deferred the rest on this page. */
+  retrySamePage?: boolean
 }
 /** Merge desktop pages by stable group ID without making new membership claims.
  * Cached counts cover separate CWD pages; capture counts can repeat across pages.
@@ -229,7 +234,10 @@ export function cloudProjectChoices(
   return Object.fromEntries(
     groups.map((group) => {
       if (Object.hasOwn(current, group.id)) return [group.id, current[group.id]!]
-      return [group.id, Object.hasOwn(saved, group.id) ? saved[group.id]! : defaultSelected]
+      if (Object.hasOwn(saved, group.id)) return [group.id, saved[group.id]!]
+      if (group.legacyOptOutId && saved[group.legacyOptOutId] === false)
+        return [group.id, false]
+      return [group.id, defaultSelected]
     }),
   )
 }

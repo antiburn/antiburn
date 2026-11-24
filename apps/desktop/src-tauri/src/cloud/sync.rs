@@ -25,7 +25,7 @@ use antiburn_cloud_capture::{Limits, MetadataSections, discover_claude, discover
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -1199,8 +1199,13 @@ impl Runner {
                     .map_err(|_| "Could not acknowledge accepted capture state.")?;
             }
         }
-        if !account_current() || !current() {
-            self.state = State::ReauthRequired;
+        let account_is_current = account_current();
+        if !account_is_current || !current() {
+            self.state = if account_is_current {
+                State::Paused
+            } else {
+                State::ReauthRequired
+            };
             return Ok(());
         }
         if let Err(error) = engine.refresh(now(), account_current) {
@@ -1521,6 +1526,11 @@ impl Runner {
                     .with_membership_generation(job.membership_generation.as_deref());
             let started = Instant::now();
             let mut result = host.spool()?.resume_step(&entry.identity, &mut transport);
+            if result.is_err() && !current() {
+                // Keep the saved job resumable when local admission closes.
+                self.state = State::Paused;
+                return Ok(());
+            }
             let saved_replay_attempts = self
                 .conflict_finalization_replays
                 .get(&entry.identity.capture_id)
@@ -1968,7 +1978,7 @@ impl Runner {
             let limits = capabilities.limits.clone();
             host.configure_limits(limits.clone())?;
             let folders = if let Some(job) = waiting {
-                exact_project_directories(job.project_folders.iter().map(String::as_str))
+                waiting_project_directories(job)
             } else if selection.repository_origin.is_some() {
                 vec![Path::new(&selection.project).to_owned()]
             } else {
@@ -2583,6 +2593,15 @@ fn empty_preparation(entry: &QueueEntry) -> bool {
         && entry.upload_plan.is_none()
         && entry.server_status.is_none()
         && !entry.completion_submitted
+}
+
+/// Retry a waiting capture with the same project directory binding.
+fn waiting_project_directories(job: &Job) -> Vec<PathBuf> {
+    if job.repository_origin.is_some() {
+        vec![PathBuf::from(&job.project_path)]
+    } else {
+        exact_project_directories(job.project_folders.iter().map(String::as_str))
+    }
 }
 
 fn transport_state<T>(
@@ -4093,6 +4112,10 @@ mod scheduler_tests;
 #[cfg(test)]
 #[path = "tests/sync_consent_tests.rs"]
 mod consent_tests;
+
+#[cfg(test)]
+#[path = "tests/sync_capacity_tests.rs"]
+mod capacity_tests;
 
 #[cfg(test)]
 #[path = "tests/sync_workspace_status_integration_tests.rs"]
