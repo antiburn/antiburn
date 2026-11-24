@@ -2,7 +2,7 @@
 
 use super::{Job, Policy, Selection, State, Status, Store};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 const MAX_TRACKED_SOURCES: usize = 4096;
@@ -28,7 +28,6 @@ pub(super) struct BackfillProgress {
     revision: String,
     grant_id: String,
     sources: BTreeMap<String, Source>,
-    accepted_during_scan: BTreeSet<String>,
     decisions: BTreeMap<&'static str, usize>,
     last_report: Option<Instant>,
     reported_complete: bool,
@@ -59,7 +58,6 @@ impl BackfillProgress {
             revision: policy.revision.clone(),
             grant_id: grant_id.into(),
             sources: BTreeMap::new(),
-            accepted_during_scan: BTreeSet::new(),
             decisions: BTreeMap::new(),
             last_report: None,
             reported_complete: false,
@@ -195,17 +193,15 @@ impl BackfillProgress {
         }
     }
 
-    /// Update a source already counted in this scan. An unchanged accepted
-    /// receipt still counts even if an explicit re-offer is blocked.
+    /// Update the problem for a source already counted in this scan.
     pub(super) fn observe_problem(&mut self, source_id: &str, problem: Option<SourceProblem>) {
         if let Some(source) = self.sources.get_mut(source_id) {
             source.problem = problem;
         }
     }
 
-    /// Reconcile exact acceptance. A saved job can finish before the scan
-    /// reaches its source. In that case do not re-offer the same version.
-    /// Use the saved observation, which can differ from the job's first observation.
+    /// Reconcile acceptance for a counted source. The saved receipt can describe
+    /// a different observation than the scan or the original job.
     pub(super) fn observe_acceptance(&mut self, store: &Store, job: &Job) -> bool {
         if !self.matches_job(job) {
             return false;
@@ -214,13 +210,6 @@ impl BackfillProgress {
         let Some(resource) = self.resource.as_deref() else {
             return false;
         };
-        if !self.finished {
-            if self.accepted_during_scan.len() < MAX_TRACKED_SOURCES {
-                self.accepted_during_scan.insert(id.clone());
-            } else if !self.accepted_during_scan.contains(id) {
-                self.incomplete = true;
-            }
-        }
         let Some(source) = self.sources.get_mut(id) else {
             return false;
         };
@@ -294,11 +283,6 @@ impl BackfillProgress {
                 outcome = "excluded"
             );
         }
-    }
-
-    /// Skip a second capture only when the caller also matches the saved receipt.
-    pub(super) fn accepted_during_scan(&self, source_id: &str) -> bool {
-        self.accepted_during_scan.contains(source_id)
     }
 
     fn matches_job(&self, job: &Job) -> bool {

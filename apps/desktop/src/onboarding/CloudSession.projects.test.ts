@@ -8,6 +8,74 @@ import {
   localToolsFixture,
 } from "./__tests__/cloudProjectFixtures"
 
+it("requests a full scan only for the current saved folder policy", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  ongoing.status.mockResolvedValue(saved)
+  const current = { ...saved, policyRevision: "new-policy" }
+  ongoing.backfill!.mockResolvedValue({ ...current, backfillInProgress: true })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() =>
+      expect(session.getSnapshot().ongoing?.projects).toEqual(saved.projects),
+    )
+    const displayed = session.getSnapshot()
+    emitSync(current)
+    expect(await session.syncNow(displayed)).toBe(false)
+    expect(ongoing.backfill).not.toHaveBeenCalled()
+
+    expect(await session.syncNow(session.getSnapshot())).toBe(true)
+    expect(ongoing.backfill).toHaveBeenCalledExactlyOnceWith(
+      { accountId: "synthetic-account", destinationId: "synthetic-personal" },
+      "new-policy",
+    )
+    expect(ongoing.enable).not.toHaveBeenCalled()
+    expect(ongoing.retry).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it("checks a saved Team even when the Personal scan request fails", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const personal = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  const team = { ...personal, destinationId: "synthetic-team", policyRevision: "team-policy" }
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Team", kind: "team" as const },
+  ])
+  ongoing.status.mockResolvedValue(personal)
+  ongoing.backfill
+    .mockRejectedValueOnce("Synthetic scan failure")
+    .mockResolvedValueOnce({ ...team, backfillInProgress: true })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.waitFor(() => expect(session.getSnapshot().projects?.workspaces).toHaveLength(2))
+    emitSync(team)
+    expect(await session.syncNow(session.getSnapshot())).toBe(false)
+    expect(ongoing.backfill).toHaveBeenNthCalledWith(
+      2,
+      { accountId: "synthetic-account", destinationId: "synthetic-team" },
+      "team-policy",
+    )
+    expect(session.getSnapshot().uploadActionError).toBe("Could not start sync.")
+  } finally {
+    stop()
+  }
+})
+
 it("does not use an older rendered selection to authorize a legacy provider-source request", async () => {
   const value: CloudSnapshot = {
     ...emptyCloudSnapshot,

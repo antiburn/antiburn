@@ -20,12 +20,17 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::atomic::Ordering,
 };
 use tauri::Manager;
 
 const CACHE_BYTES: usize = 4 * 1024 * 1024;
-const PROJECT_SCAN_ENTRIES: usize = 512;
+const CONFIRMATION_CONTEXT_ENTRIES: usize = 512;
+const PROJECT_SCAN_CANDIDATES: usize = 4096;
+const PROJECT_SCAN_PAGE_CANDIDATES: usize = 512;
+const CLAUDE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+const CLAUDE_FIRST_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 
 struct CachedEvidence {
     observation: String,
@@ -50,6 +55,8 @@ impl Cache {
         self.scan_bytes = 0;
     }
 
+    /// The first uncached Claude transcript can use the full per-source limit.
+    /// After that read, only the remaining shared scan budget is available.
     pub(super) fn evidence(
         &mut self,
         account: &str,
@@ -81,17 +88,31 @@ impl Cache {
         {
             return Ok(Some(saved.evidence.clone()));
         }
-        if candidate.source_kind() == antiburn_cloud_capture::CaptureSourceKind::ClaudeJsonl {
+        let claude_limits;
+        let limits = if candidate.source_kind()
+            == antiburn_cloud_capture::CaptureSourceKind::ClaudeJsonl
+        {
             let bytes = std::fs::symlink_metadata(candidate.source_path())
                 .map_err(|_| "Session source metadata is unavailable.")?
                 .len();
-            if self.scan_bytes >= 64 * 1024 * 1024 {
+            if bytes > limits.source_bytes.min(CLAUDE_FIRST_SOURCE_BYTES) {
+                return Err("Could not read recorded project metadata.".into());
+            }
+            let bytes = bytes.max(1);
+            if self.scan_bytes != 0 && bytes > CLAUDE_SCAN_BYTES.saturating_sub(self.scan_bytes) {
                 return Ok(None);
             }
-            self.scan_bytes = self
-                .scan_bytes
-                .saturating_add(bytes.min(limits.source_bytes));
-        }
+            self.scan_bytes += bytes;
+            // The reader checks the opened file size before streaming. If the
+            // file grows, it cannot read more than this reservation.
+            claude_limits = antiburn_cloud_capture::Limits {
+                source_bytes: bytes,
+                ..limits.clone()
+            };
+            &claude_limits
+        } else {
+            limits
+        };
         let evidence = candidate
             .project_evidence_with_limits(limits)
             .map_err(|_| "Could not read recorded project metadata.")?;
@@ -208,6 +229,35 @@ struct Context {
     main: String,
     folders: Vec<String>,
     complete: bool,
+    inspection_incomplete: bool,
+}
+
+/// Use fresh Git proof for each confirmation. A complete context proves each
+/// exact member path, but does not prove any descendant or unlisted path.
+#[derive(Default)]
+struct ConfirmationContexts(BTreeMap<String, Rc<Context>>);
+
+impl ConfirmationContexts {
+    fn get(&mut self, path: &str) -> Rc<Context> {
+        if let Some(saved) = self.0.get(path) {
+            return Rc::clone(saved);
+        }
+        let checked = Rc::new(context("native", path));
+        if self.0.len() < CONFIRMATION_CONTEXT_ENTRIES {
+            self.0.insert(path.into(), Rc::clone(&checked));
+        }
+        if checked.complete {
+            for folder in &checked.folders {
+                if self.0.len() == CONFIRMATION_CONTEXT_ENTRIES {
+                    break;
+                }
+                self.0
+                    .entry(folder.clone())
+                    .or_insert_with(|| Rc::clone(&checked));
+            }
+        }
+        checked
+    }
 }
 
 /// Read the current checkout's Git directory shared by all its worktrees.
@@ -233,7 +283,9 @@ async fn worktree_common_dir(
 }
 
 fn git_path_record(text: &str) -> Option<&Path> {
-    let path = text.strip_suffix('\n')?;
+    let path = text
+        .strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))?;
     (!path.is_empty() && !path.chars().any(char::is_control)).then(|| Path::new(path))
 }
 
@@ -280,12 +332,32 @@ fn registered_linked_checkout(checkout: &Path, common: &Path) -> Option<()> {
         .then_some(())
 }
 
-fn existing_project_path(path: &str) -> Option<&Path> {
+/// Missing directories and aliases cannot qualify. Other I/O errors prevent
+/// the caller from deciding whether an existing directory can qualify.
+fn existing_project_path(path: &str) -> std::io::Result<Option<&Path>> {
     if !crate::store::cloud_capture::sync::valid_project_path(path) {
-        return None;
+        return Ok(None);
     }
     let path = Path::new(path);
-    (path.is_dir() && path.canonicalize().ok().as_deref() == Some(path)).then_some(path)
+    let inspected = || -> std::io::Result<_> {
+        if !path.symlink_metadata()?.is_dir() {
+            return Ok(None);
+        }
+        Ok((path.canonicalize()? == path).then_some(path))
+    };
+    match inspected() {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        #[cfg(unix)]
+        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => Ok(None),
+        result => result,
+    }
 }
 
 /// Parse Git's porcelain records, then check the registered checkouts on disk.
@@ -305,26 +377,32 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
     // Git lists the parent repo first, even when run in a linked checkout.
     let (main, bare, prunable) = entries.next()??;
     let verified_main = !prunable
-        && existing_project_path(main).is_some_and(|path| {
-            if bare {
-                return path == common;
-            }
-            // A copied .git pointer can refer to the parent without proving its path.
-            let dot_git = path.join(".git");
-            dot_git == common && dot_git.symlink_metadata().is_ok_and(|meta| meta.is_dir())
-        });
+        && existing_project_path(main)
+            .ok()
+            .flatten()
+            .is_some_and(|path| {
+                if bare {
+                    return path == common;
+                }
+                // A copied .git pointer can refer to the parent without proving its path.
+                let dot_git = path.join(".git");
+                dot_git == common && dot_git.symlink_metadata().is_ok_and(|meta| meta.is_dir())
+            });
     let linked: Vec<_> = entries.flatten().take(100).collect();
+    let mut complete = linked.len() < 100;
     let mut folders = Vec::new();
     if verified_main && !bare {
         folders.push(main.to_owned());
     }
     for &(root, bare, prunable) in linked.iter().take(99) {
-        if !bare
-            && !prunable
-            && let Some(path) = existing_project_path(root)
-            && registered_linked_checkout(path, common).is_some()
-        {
-            folders.push(root.to_owned());
+        if !bare && !prunable {
+            match existing_project_path(root) {
+                Ok(Some(path)) if registered_linked_checkout(path, common).is_some() => {
+                    folders.push(root.to_owned());
+                }
+                Err(_) => complete = false,
+                _ => {}
+            }
         }
     }
     if !folders.iter().any(|folder| Path::new(folder) == repo) {
@@ -336,11 +414,11 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
             main: current.clone(),
             folders: vec![current],
             complete: false,
+            inspection_incomplete: true,
         });
     }
     folders.sort();
     folders.dedup();
-    let mut complete = linked.len() < 100;
     if folders.iter().map(String::len).sum::<usize>() > 64 * 1024 {
         folders.clear();
         complete = false;
@@ -349,22 +427,36 @@ fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> 
         main: main.into(),
         folders,
         complete,
+        inspection_incomplete: !complete,
     })
 }
 
 /// Use current local Git context only. Foreign environment paths are never
 /// probed through the local filesystem, even when their strings match.
 fn context(environment: &str, cwd: &str) -> Context {
-    let fallback = || Context {
+    let path = if environment == "native" {
+        existing_project_path(cwd)
+    } else {
+        Ok(None)
+    };
+    context_for_path(cwd, path)
+}
+
+fn context_for_path(cwd: &str, path: std::io::Result<Option<&Path>>) -> Context {
+    let unavailable = || Context {
         main: cwd.into(),
         folders: Vec::new(),
         complete: false,
+        inspection_incomplete: false,
     };
-    if environment != "native" {
-        return fallback();
-    }
-    let Some(path) = existing_project_path(cwd) else {
-        return fallback();
+    let inspection_failed = || Context {
+        inspection_incomplete: true,
+        ..unavailable()
+    };
+    let path = match path {
+        Ok(Some(path)) => path,
+        Ok(None) => return unavailable(),
+        Err(_) => return inspection_failed(),
     };
     use antiburn_local::platform::git;
     tauri::async_runtime::block_on(async {
@@ -380,7 +472,7 @@ fn context(environment: &str, cwd: &str) -> Context {
                 )
                 .await
                 else {
-                    return fallback();
+                    return inspection_failed();
                 };
                 let mut separator = '\0';
                 if output.status.code() == Some(129) {
@@ -393,28 +485,40 @@ fn context(environment: &str, cwd: &str) -> Context {
                     )
                     .await
                     else {
-                        return fallback();
+                        return inspection_failed();
                     };
                     output = legacy;
                     separator = '\n';
                 }
                 if !output.status.success() {
-                    return fallback();
+                    return inspection_failed();
                 }
                 let Ok(list) = std::str::from_utf8(&output.stdout) else {
-                    return fallback();
+                    return inspection_failed();
                 };
                 let Some(common) = worktree_common_dir(&environment, &repo).await else {
-                    return fallback();
+                    return inspection_failed();
                 };
-                worktree_context(list, separator, &repo, &common).unwrap_or_else(fallback)
+                worktree_context(list, separator, &repo, &common).unwrap_or_else(inspection_failed)
             }
-            Ok(None) => Context {
-                main: cwd.into(),
-                folders: vec![cwd.into()],
-                complete: true,
-            },
-            Err(_) => fallback(),
+            Ok(None) => {
+                // Git can report no repository when a .git marker is damaged.
+                if path.ancestors().any(|ancestor| {
+                    !matches!(
+                        ancestor.join(".git").symlink_metadata(),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                    )
+                }) {
+                    return inspection_failed();
+                }
+                Context {
+                    main: cwd.into(),
+                    folders: vec![cwd.into()],
+                    complete: true,
+                    inspection_incomplete: false,
+                }
+            }
+            Err(_) => inspection_failed(),
         }
     })
 }
@@ -579,7 +683,7 @@ pub(super) fn confirm_project_choices(
     known.extend(super::file_sources::roots().0);
     let (roots, _) = merge_sources(known, &saved.folders)?;
     let mut by_source = BTreeMap::<&SourceSelection, (BTreeSet<String>, BTreeSet<String>)>::new();
-    let mut contexts = BTreeMap::new();
+    let mut contexts = ConfirmationContexts::default();
     for project in projects {
         let root = roots
             .iter()
@@ -587,9 +691,7 @@ pub(super) fn confirm_project_choices(
                 root.source_kind == project.source_kind && root.path == project.source_path
             })
             .ok_or("A session source changed. Reload projects and confirm again.")?;
-        let member = contexts
-            .entry(&project.project_path)
-            .or_insert_with(|| context("native", &project.project_path));
+        let member = contexts.get(&project.project_path);
         let group = group_id("native", &member.main);
         if !member.complete
             || choices.get(&group) != Some(&true)
@@ -611,7 +713,7 @@ pub(super) fn confirm_project_choices(
         |index| {
             let paths = targets[index].0.iter().cloned().collect::<Vec<_>>();
             store
-                .cloud_opencode_session_ids(&paths, PROJECT_SCAN_ENTRIES)
+                .cloud_opencode_session_ids(&paths, PROJECT_SCAN_PAGE_CANDIDATES)
                 .map(Cow::Owned)
                 .map_err(|_| "Could not read cached session identities.".into())
         },
@@ -642,7 +744,12 @@ pub(super) fn confirm_project_choices(
                 .iter()
                 .filter_map(|path| path.to_str())
             {
-                groups.remove(&group_id("native", &cache.context("native", path).main));
+                let member = contexts.get(path);
+                if member.complete {
+                    groups.remove(&group_id("native", &member.main));
+                } else {
+                    partial[index] |= member.inspection_incomplete;
+                }
             }
             if groups.is_empty() {
                 break;
@@ -651,7 +758,7 @@ pub(super) fn confirm_project_choices(
     }
     for (index, (_, groups)) in targets.into_iter().enumerate() {
         if !groups.is_empty() {
-            if partial[index] || scans.cursor_incomplete(index) {
+            if partial[index] || scans.root_incomplete(index) {
                 return Err("Project discovery is incomplete. Restore access or choose fewer sources and retry.".into());
             }
             return Err("Could not confirm a supported session for this project. Reload projects and try again.".into());
@@ -709,11 +816,10 @@ pub(super) fn group_projects_to_remove(
 }
 
 fn add_suggestion(
-    cache: &mut Cache,
     groups: &mut BTreeMap<(String, String), Group>,
     suggestion: Suggestion,
+    context: &Context,
 ) {
-    let context = cache.context(&suggestion.environment, &suggestion.cwd);
     let key = (suggestion.environment.clone(), context.main.clone());
     let group = groups.entry(key).or_insert_with(|| Group {
         id: group_id(&suggestion.environment, &context.main),
@@ -725,7 +831,7 @@ fn add_suggestion(
             .unwrap_or(&context.main)
             .into(),
         worktree_count: context.folders.len().saturating_sub(1) as u32,
-        folder_paths: context.folders,
+        folder_paths: context.folders.clone(),
         agents: Vec::new(),
         session_count: 0,
         capture_session_count: 0,
@@ -754,7 +860,7 @@ impl<'a> ProjectScans<'a> {
             roots,
             first: 0,
             pending: VecDeque::new(),
-            remaining: PROJECT_SCAN_ENTRIES,
+            remaining: PROJECT_SCAN_CANDIDATES,
         }
     }
 
@@ -765,22 +871,28 @@ impl<'a> ProjectScans<'a> {
         needs_more: impl Fn(usize) -> bool,
         hints: impl FnOnce(usize) -> Result<Cow<'h, [String]>, String>,
     ) -> Option<(usize, Result<super::file_sources::Page, String>)> {
+        if self.remaining == 0 {
+            return None;
+        }
         let (index, mut scan, mut share, first) = if self.first < self.roots.len() {
             let index = self.first;
-            let share = self.remaining / (self.roots.len() - index);
+            let share = (self.remaining / (self.roots.len() - index))
+                .clamp(1, PROJECT_SCAN_PAGE_CANDIDATES);
             self.first += 1;
             (index, ProjectRootScan::new(self.roots[index]), share, true)
         } else {
-            if self.remaining == 0 {
-                return None;
-            }
             let (index, scan) = loop {
                 let (index, scan) = self.pending.pop_front()?;
                 if needs_more(index) {
                     break (index, scan);
                 }
             };
-            (index, scan, self.remaining, false)
+            (
+                index,
+                scan,
+                self.remaining.min(PROJECT_SCAN_PAGE_CANDIDATES),
+                false,
+            )
         };
         self.remaining -= share;
         let result = (|| {
@@ -793,7 +905,12 @@ impl<'a> ProjectScans<'a> {
                 } else {
                     Cow::Borrowed(&[])
                 };
-            scan.read(self.roots[index], &ids, &mut share, current)
+            let page = scan.read(self.roots[index], &ids, &mut share, current)?;
+            if page.next_cursor.is_some() && (page.visited == 0 || page.next_cursor == scan.after) {
+                return Err("Session discovery did not advance.".into());
+            }
+            scan.after.clone_from(&page.next_cursor);
+            Ok(page)
         })();
         if let Ok(page) = &result {
             self.remaining += share;
@@ -804,17 +921,15 @@ impl<'a> ProjectScans<'a> {
         Some((index, result))
     }
 
-    fn cursor_incomplete(&self, index: usize) -> bool {
-        self.pending
-            .iter()
-            .any(|(pending, scan)| *pending == index && scan.cursor.is_some())
+    fn root_incomplete(&self, index: usize) -> bool {
+        self.pending.iter().any(|(pending, _)| *pending == index)
     }
 }
 
 struct ProjectRootScan {
     after: Option<String>,
     cursor: Option<super::file_sources::CursorScan>,
-    seen: BTreeSet<String>,
+    hinted_ids: BTreeSet<String>,
 }
 
 impl ProjectRootScan {
@@ -826,7 +941,7 @@ impl ProjectRootScan {
                 SourceKind::CursorCliAgentJsonl | SourceKind::CursorIdeComposer
             )
             .then(super::file_sources::CursorScan::new),
-            seen: BTreeSet::new(),
+            hinted_ids: BTreeSet::new(),
         }
     }
 
@@ -851,7 +966,9 @@ impl ProjectRootScan {
                     current,
                 )
                 .map_err(|_| "Could not qualify the selected Cursor source.")?;
-            *remaining -= page.visited;
+            *remaining = remaining
+                .checked_sub(page.visited)
+                .ok_or("Session discovery exceeded its page limit.")?;
             return Ok(page);
         }
         let mut candidates = Vec::new();
@@ -870,7 +987,7 @@ impl ProjectRootScan {
                 &sync::metadata_limits(),
             ) {
                 Ok(candidate) => {
-                    if self.seen.insert(candidate.source_id().to_owned()) {
+                    if self.hinted_ids.insert(candidate.source_id().to_owned()) {
                         candidates.push(candidate);
                     }
                 }
@@ -887,12 +1004,13 @@ impl ProjectRootScan {
             self.after.as_deref(),
             *remaining,
         )?;
-        *remaining -= page.visited;
-        self.after.clone_from(&page.next_cursor);
+        *remaining = remaining
+            .checked_sub(page.visited)
+            .ok_or("Session discovery exceeded its page limit.")?;
         candidates.extend(
             std::mem::take(&mut page.candidates)
                 .into_iter()
-                .filter(|candidate| self.seen.insert(candidate.source_id().to_owned())),
+                .filter(|candidate| !self.hinted_ids.remove(candidate.source_id())),
         );
         page.candidates = candidates;
         Ok(page)
@@ -940,7 +1058,7 @@ fn discover_projects(
                 .filter(|suggestion| suggestion.environment == "native")
                 .map(|suggestion| suggestion.cwd.clone())
                 .collect::<Vec<_>>(),
-            PROJECT_SCAN_ENTRIES,
+            PROJECT_SCAN_PAGE_CANDIDATES,
         )
         .map_err(|_| "Could not read cached session identities.")?;
     let mut groups = BTreeMap::new();
@@ -949,7 +1067,13 @@ fn discover_projects(
         if !current() {
             return Err("Cloud account changed.".into());
         }
-        add_suggestion(cache, &mut groups, suggestion);
+        let context = cache.context(&suggestion.environment, &suggestion.cwd);
+        partial |= context.inspection_incomplete;
+        if suggestion.environment == "native" && !context.complete && !context.inspection_incomplete
+        {
+            continue;
+        }
+        add_suggestion(&mut groups, suggestion, &context);
     }
     let mut qualified = vec![false; roots.len()];
     let mut project_choices = 0usize;
@@ -980,7 +1104,10 @@ fn discover_projects(
                 &sync::metadata_limits(),
             ) {
                 Ok(Some(evidence)) => evidence,
-                Ok(None) => continue,
+                Ok(None) => {
+                    partial = true;
+                    continue;
+                }
                 Err(_) => {
                     partial = true;
                     continue;
@@ -994,6 +1121,10 @@ fn discover_projects(
                     continue;
                 };
                 let context = cache.context("native", project);
+                partial |= context.inspection_incomplete;
+                if !context.complete && !context.inspection_incomplete {
+                    continue;
+                }
                 if !groups.contains_key(&("native".into(), context.main.clone())) {
                     if after.is_some() {
                         continue;
@@ -1010,7 +1141,6 @@ fn discover_projects(
                         continue;
                     }
                     add_suggestion(
-                        cache,
                         &mut groups,
                         Suggestion {
                             environment: "native".into(),
@@ -1018,6 +1148,7 @@ fn discover_projects(
                             agents: vec![root.source_kind.upload_names().0.into()],
                             session_count: 0,
                         },
+                        &context,
                     );
                 }
                 if let Some(group) = groups.get_mut(&("native".into(), context.main)) {
@@ -1025,6 +1156,7 @@ fn discover_projects(
                         group.capture_session_count += 1;
                     }
                     if !evidence.scan_complete()
+                        || !context.complete
                         || !group.grouping_complete
                         || group.folder_paths.is_empty()
                     {
@@ -1061,7 +1193,7 @@ fn discover_projects(
     if !current() || engine.session().is_none() {
         return Err("Cloud account changed.".into());
     }
-    partial |= (0..roots.len()).any(|index| scans.cursor_incomplete(index));
+    partial |= !scans.pending.is_empty();
     Ok(Discovery {
         groups: groups.into_values().collect(),
         source_roots: roots

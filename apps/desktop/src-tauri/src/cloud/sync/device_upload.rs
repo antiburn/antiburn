@@ -42,8 +42,8 @@ pub(super) fn save_switch(
     )
 }
 
-/// Confirm the request before and after the durable write. Sign-out and newer
-/// OFF requests can invalidate this request without the Cloud permit.
+/// Accept ON before the durable commit. The device CAS orders ON against OFF.
+/// The account recheck rejects a sign-out that races with that CAS.
 pub(super) fn resume(
     scheduler: &Scheduler,
     store: &Store,
@@ -65,12 +65,25 @@ pub(super) fn resume(
         return Err(CHANGED.into());
     }
     match store.resume_cloud_device_uploads(current, || {
-        current() && scheduler.finish_device_change(expected_pause).is_ok()
+        if scheduler.finish_device_change(expected_pause).is_err() {
+            return false;
+        }
+        if account_current() {
+            return true;
+        }
+        // Restore this fence only if a newer OFF has not replaced it.
+        let _ = scheduler.device_pause.compare_exchange(
+            expected_pause & !1,
+            expected_pause,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        false
     }) {
         Ok(true) => Ok(()),
         Ok(false) => Err(CHANGED.into()),
         Err(_) => {
-            // If the store could not restore OFF, keep admission closed here.
+            // Keep admission closed if the store cannot confirm the commit.
             scheduler.device_pause.fetch_or(1, Ordering::AcqRel);
             Err(SAVE_FAILED.into())
         }

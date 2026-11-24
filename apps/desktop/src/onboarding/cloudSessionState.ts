@@ -98,26 +98,42 @@ export function confirmationContextKey(value: CloudViewSnapshot) {
   ])
 }
 
+function exactProjectKey(project: CloudProjectSelection) {
+  return JSON.stringify([project.sourceKind, project.sourcePath, project.projectPath])
+}
+
 /** Confirm the exact provider sources and project paths for one saved route. */
 export function folderRouteConfirmed(
   status: CloudOngoingStatus | null | undefined,
   binding: CloudDestinationBinding,
   selected: CloudProjectSelection[],
 ) {
+  if (
+    status?.accountId !== binding.accountId ||
+    status.destinationId !== binding.destinationId ||
+    !status.storageKnown ||
+    status.consentVersion !== "desktop-project-sync-v1" ||
+    !selected.length
+  )
+    return false
+  const saved = new Set(status.projects.map(exactProjectKey))
+  return selected.every((project) => saved.has(exactProjectKey(project)))
+}
+
+/** Verify that the observed policy still matches the completed native write. */
+export function confirmsSavedWrite(
+  current: CloudOngoingStatus | null | undefined,
+  reply: CloudOngoingStatus,
+  binding: CloudDestinationBinding,
+  projects: CloudProjectSelection[],
+) {
   return (
-    status?.accountId === binding.accountId &&
-    status.destinationId === binding.destinationId &&
-    status.storageKnown &&
-    status.consentVersion === "desktop-project-sync-v1" &&
-    selected.length > 0 &&
-    selected.every((project) =>
-      status.projects.some(
-        (saved) =>
-          saved.sourceKind === project.sourceKind &&
-          saved.sourcePath === project.sourcePath &&
-          saved.projectPath === project.projectPath,
-      ),
-    )
+    !!reply.policyRevision &&
+    matchesUploadPolicy(current, binding, reply.policyRevision) &&
+    !current?.folderConfirmationRequired &&
+    !current?.sourceConfirmationRequired &&
+    folderRouteConfirmed(reply, binding, projects) &&
+    (current === reply || folderRouteConfirmed(current, binding, projects))
   )
 }
 
@@ -312,7 +328,7 @@ const folderSaveFailures = {
     recovery: "refresh",
   },
   incomplete: {
-    message: "Could not verify every selected folder. Choose fewer folders and save again.",
+    message: "Could not verify every selected folder.",
     recovery: "refresh",
   },
   connection: {
@@ -357,9 +373,11 @@ export function folderSaveRecovery(message: string | null | undefined) {
   switch (message) {
     case CLOUD_BUSY_MESSAGE:
       return "check"
+    case "Could not start sync.":
     case "Could not save folders. Try again.":
       return "retry"
     case "Restore saved sources or turn off their folders.":
+    case "The saved folder choices changed.":
     case "The saved folder or workspace changed. Review the folder choices and try again.":
     case "A selected team is unavailable. Check the folder choices.":
     case "Sync stopped in the old workspace. Check the saved folder before choosing a workspace.":
@@ -384,9 +402,9 @@ export function uploadActionError(error: unknown, backfill: boolean, team: boole
   if (isCloudBusy(error)) return CLOUD_BUSY_MESSAGE
   if (message === "Cloud folder choices changed. Reload before retrying saved work.")
     return backfill
-      ? "Cloud folder choices changed. Reopen Settings and try again."
+      ? "The saved folder choices changed."
       : "Cloud folder choices changed. Reopen Settings before retrying."
-  if (backfill) return "Could not start backfill. Try again."
+  if (backfill) return "Could not start sync."
   return team
     ? "Could not retry saved Team uploads. Saved work is kept."
     : "Could not change Cloud uploads. Try again."
@@ -602,11 +620,7 @@ export function projectConfirmationKey(
     group.path,
     group.groupingComplete,
     [...group.folderPaths].sort(),
-    selections
-      .map((project) =>
-        JSON.stringify([project.sourceKind, project.sourcePath, project.projectPath]),
-      )
-      .sort(),
+    selections.map(exactProjectKey).sort(),
   ])
 }
 

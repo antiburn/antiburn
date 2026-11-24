@@ -276,7 +276,7 @@ can enable sync. Folder approval stays bound to the account, workspace, issuer,
 and resource. Team policies also save the membership generation. If the saved
 proof is missing or no longer current, Desktop holds uploads for those folders.
 Once Desktop verifies the current membership for the same Team, Settings lists
-the exact saved folders. **Save** approves that list and any folders you chose
+the exact saved folders. **Sync now** approves that list and any folders you chose
 for the same Team in one update. It checks the current policy revision and
 validates the new choices. It does not unlock old jobs, change their saved bytes,
 or resume a paused device.
@@ -287,7 +287,7 @@ and membership are current. Each upload has its own destination and capture ID.
 An unavailable workspace does not block another eligible destination. Existing
 jobs keep their original destination, capture ID, and retry conditions.
 
-An older capture with no saved issuer cannot retry. An explicit **Save** can
+An older capture with no saved issuer cannot retry. An explicit folder approval can
 replace folder consent that has no issuer with the current verified scope.
 Desktop does not add an issuer to old captures. Eligible sessions can use new
 capture IDs. Desktop keeps the old spool bytes and counts them toward its
@@ -295,13 +295,13 @@ storage limit. It also keeps accepted receipts and deletion markers for the
 same resource, account, and workspace.
 
 Sign-in, source access, and the legacy local **Upload sessions** preference do
-not grant upload consent. Use **Start syncing** during onboarding or **Save**
-in Settings to approve selected folders. Onboarding can approve folders for
-more than one workspace in one action. Desktop saves each workspace separately
-and checks whether it saved the exact folders. A failed route stays selected for
-retry. Settings saves one workspace at a time.
+not grant upload consent. Use **Start syncing** to approve the first folder
+choices. Use **Sync now** to approve later choices in Settings. Onboarding can
+approve folders for more than one workspace in one action. Desktop saves each
+workspace separately and checks whether it saved the exact folders. A failed
+route stays selected for retry. Settings saves one workspace at a time.
 To change a verified saved folder's destination, choose the new workspace and
-select **Save**. Desktop removes the old rule before it approves the new one.
+select **Sync now**. Desktop removes the old rule before it approves the new one.
 This does not move sessions already in Cloud. The new rule may upload older local
 sessions. If Desktop confirms the removal but cannot save the new rule, the old
 rule stays off. Choose a workspace to start syncing the folder again.
@@ -339,11 +339,12 @@ Until confirmation, an existing saved policy stays unchanged.
 
 After initial consent, Settings shows the saved folder rules. Turning off a
 group removes its approved paths immediately. Adding a folder does not grant
-permission until you select **Save**. Save approves full sessions and current
-worktrees for the selected groups. The first Save checks current source and
-recorded folder evidence, just like later additions. Changes check the current
-policy revision and do not change other groups, unseen pages, or the device
-pause. Turning off the last group does not delete saved captures.
+permission until you select **Sync now**. Folder approval covers full sessions
+and current worktrees for the selected groups. First-time approval checks
+current source and recorded folder evidence, just like later additions.
+Changes check the current policy revision and do not change other groups,
+unseen pages, or the device pause. Turning off the last group does not delete
+saved captures.
 Settings lists folders with verified local directories. Use **Manage other
 saved folders** to turn off a saved rule that does not appear in the folder
 list. You do not need access to the original source to turn the rule off.
@@ -394,21 +395,25 @@ CWD evidence. Malformed or incomplete records can also block admission.
 OpenCode's recorded session directory does not prove a complete historical CWD list.
 See [project folder selection](capture.md#project-folder-selection) for the source rules.
 
-Listings are bounded and can report partial results. Successful source listings
-contain at most 512 candidates across up to 100 source roots. Folder discovery
-and Save give each root a first turn, then spend any remaining budget on
-provider pages in the same request. Cursor IDE uses its full assigned share
-because it does not report how many IDs it inspected. Codex and Pi count each
-inspected ID, even when opening the file fails. These pages use native ID order,
-not session dates. Before opening any session file, each Codex or Pi page indexes
-at most 4,096 directory entries. It descends at most three levels for Codex and
-one for Pi. **Load more folders** adds cached project suggestions. It does not
-scan all provider history.
+Listings are bounded and can report partial results. Folder discovery and
+approval inspect up to 4,096 candidates across up to 100 source roots. Each
+provider page holds at most 512 candidates. Desktop gives each root a first
+turn, then uses the remaining budget on later pages. Cursor IDE uses its full
+assigned share because it does not report how many IDs it inspected. Codex
+and Pi count each inspected ID, even when opening the file fails. These pages
+use native ID order, not session dates. Before opening any session file, each
+Codex or Pi page indexes at most 4,096 directory entries. It descends at most
+three levels for Codex and one for Pi. **Load more folders** adds cached project
+suggestions. It does not scan all provider history.
+Claude folder checks share a 64 MiB budget for uncached metadata reads. The
+first uncached transcript can use up to 128 MiB on its own. Evidence that does
+not fit the remaining budget makes the result partial.
 
-A saved policy permits at most 100 source/project path bindings. Missing access,
-unsupported schemas, and exceeded bounds do not become a complete empty listing
-or permission to upload an excluded source. Restore access or retry discovery in
-Settings.
+A saved policy permits at most 100 source roots and 100 distinct project
+directories. It can store up to 512 exact pairs of source and project directory.
+Missing access, unsupported schemas, and exceeded bounds do not become a complete
+empty listing or permission to upload an excluded source. Restore access or retry
+discovery in Settings.
 Setup failures do not hide account cleanup controls.
 
 Before enabling sync or making a capture, Desktop reads
@@ -441,46 +446,47 @@ counters and progress are unknown or last-known values, not current results. The
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
 values must match the current account, destination, and service.
 **Upload sessions to Antiburn Cloud** pauses or resumes uploads to every
-destination on this device. With no approved folders, **Choose folders** takes
-the user to folder setup instead of showing a switch. The switch does not
-change folder approval or start a retry.
+destination on this device. Before the first folder approval, Settings shows the
+folder choices without a device switch. The switch does not change folder
+approval or start a retry.
 Folder changes while the device is paused do not resume uploads. On upgrade,
 an old workspace pause starts the device switch off. The old workspace pause
 stays in force until that workspace is reviewed, because it can also mean the
-saved source choices changed. **Save** can clear a source hold after Desktop
+saved source choices changed. **Sync now** can clear a source hold after Desktop
 checks the selected folders and verifies that all kept source bindings are still
 allowed. Restore access or remove folders with unavailable sources before saving.
 **Retry saved uploads** is separate. It does not
 resume the device switch, clear a source-change pause, or expand the selection.
 It retries only the displayed workspace and saved folder rules. If those rules
 change in another window, reload them before retrying.
-**Backfill sessions** asks Desktop to offer all available sessions in
-the named workspace's saved folders again, including unchanged sessions it
-previously uploaded. Cloud can reuse content for the same source. Desktop keeps
-deletion markers, existing jobs and bytes, and upload retry delays. Backfill
-does not re-offer an unchanged source if its saved job reaches integrity
-acceptance during the same scan. It does not turn on uploads, save draft choices,
-or retry failed jobs. The button is unavailable until the user saves folders
-and enables uploads. Starting a scan does not confirm any uploads. Normal sync
-skips sessions when the accepted receipt matches their current version. After an
+**Start syncing** approves the first folder choices in Settings. **Sync now**
+applies pending folder changes. Both request a full scan of eligible saved
+folders after approval succeeds.
+The scan skips sessions when the accepted receipt matches their current version.
+Desktop keeps deletion markers, existing jobs and bytes, and upload retry delays.
+The scan does not resume paused uploads or retry failed jobs. Starting a scan
+does not confirm any uploads. While Desktop runs, scheduled sync continues with
+Settings closed. It skips matching receipts, reads sources in bounded pages,
+and uses one blocking Cloud worker. When it reaches the last discovery page, it
+sets the next discovery time 60 seconds ahead. After an
 upgrade, an unchanged Claude, Codex, or Pi file can be offered again if its
 receipt uses the old observation format. That receipt does not prove a match with
 `file-generation-v1`, so the re-offer can require more capture and transfer work.
-Desktop lets one backfill request wait for its current Cloud work to finish.
+Desktop lets one scan request wait for its current Cloud work to finish.
 If another request is already waiting, wait for it to start before requesting a
 second scan. Before scheduling, Desktop checks the account, upload controls, and
 saved folder policy again.
-Backfill starts at the first retained source key and scans in bounded pages.
+The full scan starts at the first retained source key and reads bounded pages.
 The desktop activity date range does not limit this scan. When the Claude
 metadata read budget is reached, the scan continues from the first unread
 source on a later turn. An unavailable source root or approved folder does not
 stop work in other verified folders. The scan reports a gap.
-Backfill cannot recover history the coding tool removed, use files outside
+The scan cannot recover history the coding tool removed, use files outside
 approved source roots, or read sources that exceed the provider limits.
 Settings shows when the scan is active. The scan can finish before Cloud
 accepts every upload.
-If Desktop restarts before the scan finishes, request backfill again.
-Each destination can report `uploadProgress` for its last explicit backfill in
+If Desktop restarts before the scan finishes, select **Sync now** again.
+Each destination can report `uploadProgress` for its last explicit scan in
 the current Desktop run and sign-in. `uploaded` counts Cloud acceptance for
 source versions found in that scan. `total` counts sources that match the saved
 folders and are not marked as deleted. `total` is null while the scan runs. It

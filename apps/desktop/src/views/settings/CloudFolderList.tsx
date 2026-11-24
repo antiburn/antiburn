@@ -1,38 +1,58 @@
 import { Component, createRef, type ReactNode } from "react"
 import type { CloudProjectGroup } from "../../lib/cloud"
 
-interface FolderFocus {
+type FolderFocus = {
   control: Element
-  path: string
   workspace: string
-}
+} & ({ exactPath: string } | { groupPaths: readonly string[] })
 
-/** Keep focus on the same saved permission when discovery replaces an exact row. */
+/** Keep focus on the same saved permission when discovery changes its row. */
 export class CloudFolderList extends Component<{
   children: ReactNode
   groups: readonly CloudProjectGroup[] | undefined
 }> {
   private list = createRef<HTMLDivElement>()
 
-  getSnapshotBeforeUpdate(): FolderFocus | null {
+  getSnapshotBeforeUpdate(previous: Readonly<typeof this.props>): FolderFocus | null {
     const control = document.activeElement
     if (
       !document.hasFocus() ||
-      !control?.matches('[role="switch"]') ||
+      !control?.matches('[role="switch"], select') ||
       !this.list.current?.contains(control)
     )
       return null
-    const row = control.closest<HTMLElement>("[data-exact-folder]")
-    const path = row?.dataset.exactFolder
-    const workspace = row?.dataset.cloudWorkspace
-    return path && workspace ? { control, path, workspace } : null
+    const workspace =
+      control.closest<HTMLElement>("[data-cloud-workspace]")?.dataset.cloudWorkspace
+    if (!workspace) return null
+    const exactPath = control.closest<HTMLElement>("[data-exact-folder]")?.dataset.exactFolder
+    if (exactPath) return { control, exactPath, workspace }
+    const groupId = control.closest<HTMLElement>("[data-cloud-folder]")?.dataset.cloudFolder
+    const group = previous.groups?.find(({ id }) => id === groupId)
+    return group ? { control, groupPaths: [group.path, ...group.memberPaths], workspace } : null
   }
 
   componentDidUpdate(_previous: unknown, _state: unknown, focus: FolderFocus | null) {
     if (!focus || focus.control.isConnected || document.activeElement !== document.body) return
+    if ("groupPaths" in focus) {
+      const savedRows = this.list.current?.querySelectorAll<HTMLElement>("[data-exact-folder]")
+      for (const row of savedRows ?? []) {
+        if (
+          row.dataset.cloudWorkspace !== focus.workspace ||
+          !row.dataset.exactFolder ||
+          !focus.groupPaths.includes(row.dataset.exactFolder)
+        )
+          continue
+        row.closest("details")?.querySelector("summary")?.focus({ preventScroll: true })
+        return
+      }
+      return
+    }
     const matching = new Set(
       this.props.groups
-        ?.filter((group) => group.path === focus.path || group.memberPaths.includes(focus.path))
+        ?.filter(
+          (group) =>
+            group.path === focus.exactPath || group.memberPaths.includes(focus.exactPath),
+        )
         .map((group) => group.id),
     )
     const rows = this.list.current?.querySelectorAll<HTMLElement>("[data-cloud-folder]")

@@ -2,7 +2,9 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeEach, expect, it, vi } from "vitest"
 import { emptyCloudSnapshot, type CloudOngoingStatus } from "../../../../lib/cloud"
 import { DEFAULT_SETTINGS } from "../../../../lib/ipc"
+import { CloudSession } from "../../../../onboarding/CloudSession"
 import {
+  cloudProjectFixture,
   ongoingStatus,
   projectGroup,
   localToolsStatus,
@@ -122,6 +124,7 @@ function mockCloud(
           const saved = {
             ...team,
             status: "ready" as const,
+            storageKnown: true,
             folderConfirmationRequired: false,
             policyRevision: "renewed-policy",
           }
@@ -131,6 +134,12 @@ function mockCloud(
           }
           return saved
         }
+        case "cloud_backfill_sync":
+          return (
+            status.teamStatuses?.find(
+              (team) => team.destinationId === args?.binding?.destinationId,
+            ) ?? status
+          )
         case "cloud_retry_sync": {
           const teams = status.teamStatuses ?? []
           const team = teams.find((item) => item.destinationId === args?.binding?.destinationId)
@@ -242,12 +251,10 @@ it("focuses the first folder with an upload choice without saving or enabling up
     folders.getByRole("switch", { name: "Sync Website: /Example/Website" }),
   ])
   expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
-  expect(screen.getByText("Choose folders and save to set up uploads.")).toBeVisible()
+  expect(screen.getByText("Uploads have not started on this device.")).toBeVisible()
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  const selected = folder.getAttribute("aria-checked")
-  fireEvent.click(screen.getByRole("button", { name: "Choose folders" }))
-  expect(folder).toHaveFocus()
-  expect(folder).toHaveAttribute("aria-checked", selected)
+  expect(screen.queryByRole("button", { name: "Choose folders" })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeEnabled()
   expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
   expect(
     invoke.mock.calls.filter(([command]) =>
@@ -262,8 +269,8 @@ it("focuses the first folder with an upload choice without saving or enabling up
   expect(screen.getByRole("switch", { name: "Include folders without Git" })).not.toBeChecked()
 })
 
-it.each(["pause", "backfill"])(
-  "keeps pause available during backfill when %s settles first",
+it.each(["pause", "scan"])(
+  "keeps pause available during manual sync when %s settles first",
   async (first) => {
     const saved = ongoingStatus({
       status: "ready",
@@ -293,12 +300,12 @@ it.each(["pause", "backfill"])(
     })
 
     render(<SessionsStepSettings />)
-    const backfill = await screen.findByRole("button", { name: "Backfill sessions" })
+    const sync = await screen.findByRole("button", { name: "Sync now" })
     const upload = () => screen.getByRole("switch", { name: uploadLabel })
     const expectNoFolderSwitch = () =>
       expect(screen.queryByRole("switch", { name: studioLabel })).not.toBeInTheDocument()
-    fireEvent.click(backfill)
-    expect(screen.getByText("Waiting for backfill to start…")).toBeVisible()
+    fireEvent.click(sync)
+    expect(screen.getByText("Starting sync…")).toBeVisible()
     expect(upload()).toBeChecked()
     expect(upload()).toBeEnabled()
     expectNoFolderSwitch()
@@ -322,7 +329,7 @@ it.each(["pause", "backfill"])(
     expect(folder).toBeChecked()
     expect(folder).toBeEnabled()
     expect(screen.queryByText("Scanning folders…")).not.toBeInTheDocument()
-    expect(screen.queryByText("Could not start backfill. Try again.")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Could not start sync/)).not.toBeInTheDocument()
     expect(screen.getByText("Uploads are paused on this device.")).toBeVisible()
   },
 )
@@ -344,10 +351,10 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
   const teamFolder = await screen.findByRole("combobox", {
     name: "Sync Studio: /Example/Studio",
   })
-  const backfill = screen.getByRole("button", { name: "Backfill sessions to Example Team" })
+  const sync = screen.getByRole("button", { name: "Sync now" })
   await waitFor(() => expect(upload()).toBeChecked())
   expect(teamFolder).toHaveValue("synthetic-team")
-  expect(backfill).not.toHaveAttribute("aria-disabled")
+  expect(sync).toBeEnabled()
   expect(screen.getByText("2 workspaces")).toBeVisible()
   expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
   expect(
@@ -367,8 +374,8 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
   await waitFor(() => expect(upload()).not.toBeChecked())
   expect(screen.getByText("Uploads are paused on this device.")).toBeVisible()
   expect(teamFolder).toHaveValue("synthetic-team")
-  expect(backfill).toBeVisible()
-  expect(backfill).toHaveAttribute("aria-disabled", "true")
+  expect(sync).toBeVisible()
+  expect(sync).toBeDisabled()
   await waitFor(() => expect(upload()).not.toHaveAttribute("aria-disabled", "true"))
   fireEvent.click(upload())
   await waitFor(() =>
@@ -379,7 +386,7 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
   )
   await waitFor(() => expect(upload()).toBeChecked())
   expect(teamFolder).toHaveValue("synthetic-team")
-  expect(backfill).not.toHaveAttribute("aria-disabled")
+  expect(sync).toBeEnabled()
   expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
   expect(
     invoke.mock.calls.some(
@@ -393,6 +400,52 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
     node.getAttribute("data-settings-control"),
   )
   expect(controls.indexOf("cloudUpload")).toBeLessThan(controls.indexOf("sourceRepositories"))
+})
+
+it("can pause and revoke during a setup error but cannot resume or approve new folders", async () => {
+  mockCloud(false, false)
+  const { port, ongoing, emit } = cloudProjectFixture()
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+  ])
+  ongoing.status.mockResolvedValue(saved)
+  ongoing.setEnabled.mockResolvedValue({
+    ...saved,
+    status: "paused",
+    paused: true,
+    deviceUploadEnabled: false,
+  })
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(() => {})
+  const { unmount } = render(<SessionsStepSettings sharedCloudSession={session} />)
+  await screen.findByRole("combobox", { name: studioLabel })
+  act(() => emit({ setupError: "Could not read Cloud setup." }))
+
+  const pause = screen.getByRole("switch", { name: uploadLabel })
+  expect(pause).toBeChecked()
+  expect(screen.queryByRole("combobox", { name: studioLabel })).not.toBeInTheDocument()
+  expect(screen.getByRole("switch", { name: /Sync Studio: .* to Personal/ })).toBeChecked()
+  const sync = screen.getByRole("button", { name: "Sync now" })
+  expect(sync.matches(":disabled") || sync.getAttribute("aria-disabled") === "true").toBe(true)
+  fireEvent.click(pause)
+  await waitFor(() => expect(session.getSnapshot().deviceUploadEnabled).toBe(false))
+  expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
+  expect(ongoing.setEnabled).toHaveBeenCalledExactlyOnceWith(false)
+
+  fireEvent.click(screen.getByRole("switch", { name: /Sync Studio: .* to Personal/ }))
+  await waitFor(() => expect(ongoing.setProject).toHaveBeenCalledOnce())
+  expect(ongoing.setProject).toHaveBeenCalledWith(expect.objectContaining({ selected: false }))
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.backfill).not.toHaveBeenCalled()
+  unmount()
+  stop()
 })
 
 it.each([
@@ -428,11 +481,11 @@ it.each([
     )
     render(<SessionsStepSettings />)
     const confirmation = await screen.findByRole("button", {
-      name: "Save",
+      name: "Sync now",
     })
     const upload = () => screen.getByRole("switch", { name: uploadLabel })
     expect(upload()).toHaveAttribute("aria-checked", String(enabled))
-    expect(await screen.findByText("Save the listed Team folders.")).toBeVisible()
+    expect(await screen.findByText("Sync now approves the listed Team folders.")).toBeVisible()
     const manageSaved = screen.getByText("Manage other saved folders")
     const disclosure = manageSaved.closest("details")
     expect(disclosure).not.toHaveAttribute("open")
@@ -448,6 +501,7 @@ it.each([
       invoke.mock.calls.filter(([command]) =>
         [
           "cloud_enable_sync",
+          "cloud_backfill_sync",
           "cloud_reapprove_team_sync",
           "cloud_retry_sync",
           "cloud_set_sync_enabled",
@@ -471,6 +525,20 @@ it.each([
             },
           },
         ],
+        ...(!fails && enabled
+          ? [
+              [
+                "cloud_backfill_sync",
+                {
+                  binding: {
+                    accountId: "synthetic-account",
+                    destinationId: team.destinationId,
+                  },
+                  expectedPolicyRevision: "renewed-policy",
+                },
+              ],
+            ]
+          : []),
       ]),
     )
     if (fails) {
@@ -484,10 +552,15 @@ it.each([
           screen.getByRole("switch", { name: `Sync ${path} to Example Team` }),
         ).toBeChecked()
     } else {
-      await waitFor(() => expect(confirmation).toBeDisabled())
-      await waitFor(() =>
-        expect(screen.getByRole("group", { name: "Cloud folders" })).toHaveFocus(),
-      )
+      if (enabled) {
+        await waitFor(() => expect(confirmation).toBeEnabled())
+        expect(confirmation).toHaveFocus()
+      } else {
+        await waitFor(() => expect(confirmation).toBeDisabled())
+        await waitFor(() =>
+          expect(screen.getByRole("group", { name: "Cloud folders" })).toHaveFocus(),
+        )
+      }
     }
     expect(upload()).toHaveAttribute("aria-checked", String(enabled))
     expect(screen.getByText("Signed in as Example").closest("div")).not.toHaveTextContent(

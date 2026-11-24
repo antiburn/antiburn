@@ -11,6 +11,8 @@ import {
 } from "../../lib/cloud"
 import type { LocalToolsStatus } from "../../lib/ipcPayloads"
 
+type MockCloudOngoing = Mocked<CloudOngoingPort & Required<Pick<CloudOngoingPort, "backfill">>>
+
 /** Synthetic tool evidence. This helper never reads an installed CLI or skill. */
 export function localToolsStatus(
   phase: LocalToolsStatus["phase"] = "unavailable",
@@ -104,7 +106,7 @@ export function ongoingStatus(patch: Partial<CloudOngoingStatus> = {}): CloudOng
 /** Mock desktop IPC at its renderer boundary. DOM tests do not prove service integration. */
 export function cloudProjectFixture(): {
   port: CloudPort
-  ongoing: Mocked<CloudOngoingPort>
+  ongoing: MockCloudOngoing
   emit: (patch: Partial<CloudSnapshot>) => void
   emitSync: (status: CloudOngoingStatus) => void
   emitLocalTools: (status: LocalToolsStatus) => void
@@ -121,7 +123,7 @@ export function cloudProjectFixture(): {
   let changed: (next: CloudSnapshot) => void = () => {}
   let syncChanged: (next: CloudOngoingStatus) => void = () => {}
   const root = { sourceKind: "claude_jsonl" as const, path: "/Example/claude/projects/studio" }
-  const ongoing: Mocked<CloudOngoingPort> = {
+  const ongoing: MockCloudOngoing = {
     groups: vi.fn<CloudOngoingPort["groups"]>(async () => ({
       groups: [projectGroup()],
       sourceRoots: [root],

@@ -68,7 +68,7 @@ class InvitationView {
     for (const listener of this.listeners) listener()
   }
 
-  send = async (request: Parameters<CloudInvitationPort>[1], retryInitialList = false) => {
+  send = async (request: Parameters<CloudInvitationPort>[1], retryOnce = false) => {
     if (this.view.busy) return
     clearTimeout(this.timer)
     const revision = ++this.revision
@@ -98,9 +98,14 @@ class InvitationView {
           reply = { kind: "uncertain", id: request.id, join: attempt.join }
         }
       } else {
-        this.publish({ busy: false, failed: true })
+        const hiddenDismiss = this.showConfirmedOnly && request.action === "dismiss" && !attempt
+        this.publish({ busy: false, failed: !hiddenDismiss })
         if (isWaiting(attempt)) this.schedule(attempt.id)
-        if (retryInitialList && request.action === "list") {
+        if (
+          revision === this.revision &&
+          retryOnce &&
+          (request.action === "list" || hiddenDismiss)
+        ) {
           this.timer = setTimeout(() => void this.send(request), POLL_INTERVAL_MS)
         }
         return
@@ -117,7 +122,7 @@ class InvitationView {
     ) {
       // Retire an old failure without showing it as a pending invitation.
       this.publish({ busy: false, failed: false })
-      if (revision === this.revision) void this.send({ action: "dismiss", id: reply.id })
+      if (revision === this.revision) void this.send({ action: "dismiss", id: reply.id }, true)
       return
     }
     // Expiry and sign-in replies do not say whether the current attempt is a join.

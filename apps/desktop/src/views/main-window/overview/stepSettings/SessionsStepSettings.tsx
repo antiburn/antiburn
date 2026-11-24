@@ -165,7 +165,6 @@ export function SessionsStepSettings({
   const cloudUnavailable = !cloud.cloud.authEnabled || !cloud.cloud.captureEnabled
   const cloudFolderRowId = useId()
   const uploadRowId = useId()
-  const uploadDescriptionId = useId()
   const canSetUpCloud =
     cloudSession.projectSyncSupported &&
     cloud.cloud.status === "signed_in" &&
@@ -176,12 +175,14 @@ export function SessionsStepSettings({
   )
   const deviceUploadsEnabled = cloud.deviceUploadEnabled === true
   const cloudStorageUnknown = cloudUploadStatusUnknown(cloud.ongoing)
+  const canPauseDuringSetupError = !!cloud.cloud.setupError && deviceUploadsEnabled
   const uploadControlUnavailable =
-    cloudStorageUnknown ||
-    cloudUnavailable ||
-    !!cloud.cloud.setupError ||
     !canSetUpCloud ||
-    (hasSavedFolders && cloud.deviceUploadEnabled === undefined)
+    (!canPauseDuringSetupError &&
+      (cloudStorageUnknown ||
+        cloudUnavailable ||
+        !!cloud.cloud.setupError ||
+        (hasSavedFolders && cloud.deviceUploadEnabled === undefined)))
   const uploadControlBusy =
     cloud.busy && !(cloud.canPauseBackfill && hasSavedFolders && deviceUploadsEnabled)
   const uploadControlReady =
@@ -198,7 +199,7 @@ export function SessionsStepSettings({
           : uploadControlBusy
             ? "Updating uploads…"
             : !hasSavedFolders
-              ? "Choose folders and save to set up uploads."
+              ? "Uploads have not started on this device."
               : cloud.deviceUploadEnabled === undefined
                 ? "Checking whether uploads are on…"
                 : undefined
@@ -269,28 +270,6 @@ export function SessionsStepSettings({
                   searchId="cloudUpload"
                   id={uploadRowId}
                   description={uploadDescription}
-                  descriptionId={uploadDescriptionId}
-                  trailing={
-                    !hasSavedFolders && uploadControlReady ? (
-                      <button
-                        type="button"
-                        className="ui-push-button"
-                        aria-controls={cloudFolderRowId}
-                        aria-describedby={uploadDescriptionId}
-                        data-settings-focus
-                        onClick={() => {
-                          const row = document.getElementById(cloudFolderRowId)
-                          const firstChoice = row?.querySelector<HTMLElement>(
-                            "select:not(:disabled), button[role=switch]",
-                          )
-                          const focusTarget = firstChoice ?? row
-                          focusTarget?.focus()
-                        }}
-                      >
-                        Choose folders
-                      </button>
-                    ) : undefined
-                  }
                 />
               )}
             </CloudAccount>

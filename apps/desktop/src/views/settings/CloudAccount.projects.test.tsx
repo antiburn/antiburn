@@ -154,15 +154,16 @@ it("shows workspace receipt progress and actual queue counts separately", async 
   const teamStatus = await within(statuses).findByRole("group", {
     name: "Example Team sync status",
   })
-  expect(personalStatus).toHaveTextContent("6 of 96 accepted · 3 queued")
-  expect(personalStatus).toHaveTextContent("4 blocked in backfill · 1 unsupported in backfill")
+  expect(personalStatus).toHaveTextContent("3 queued · 4 blocked · 1 unsupported")
+  expect(within(statuses).getByText("6 of 96 sessions accepted")).toBeVisible()
   expect(personalStatus).not.toHaveTextContent("90 queued")
-  expect(teamStatus).toHaveTextContent("2 accepted · 1 queued · Backfill scan incomplete")
+  expect(teamStatus).toHaveTextContent("1 queued · Folder scan incomplete")
+  expect(within(statuses).getByText(/2 sessions accepted/)).toBeVisible()
 
   act(() => emitSync({ ...team, storageKnown: false, status: "storage_unavailable" }))
   expect(teamStatus).toHaveTextContent("Checking saved uploads…")
-  expect(teamStatus).not.toHaveTextContent("2 accepted")
-  expect(personalStatus).toHaveTextContent("6 of 96 accepted · 3 queued")
+  expect(within(statuses).queryByText(/2 sessions accepted/)).not.toBeInTheDocument()
+  expect(within(statuses).getByText("6 of 96 sessions accepted")).toBeVisible()
 })
 
 it("offers manual upload retry only after Desktop stops automatic verification", async () => {
@@ -232,7 +233,7 @@ it("shows the verified workspace count instead of the Personal grant name", asyn
   expect(screen.queryByText("My workspace", { selector: "p" })).not.toBeInTheDocument()
 })
 
-it("keeps Save and the workspace picker mounted after saving to Team", async () => {
+it("keeps the primary button and workspace picker mounted after saving to Team", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const group = projectGroup()
   const begin = vi.spyOn(port, "begin")
@@ -252,14 +253,14 @@ it("keeps Save and the workspace picker mounted after saving to Team", async () 
   const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
   fireEvent.change(picker, { target: { value: "synthetic-team" } })
   expect(ongoing.enable).not.toHaveBeenCalled()
-  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled())
-  const start = screen.getByRole("button", { name: "Save" })
+  const start = screen.getByRole("button", { name: "Start syncing" })
+  expect(start).toBeEnabled()
   start.focus()
   fireEvent.click(start)
   await waitFor(() => expect(picker).toHaveFocus())
   expect(screen.getByRole("combobox", { name: /Sync Studio/ })).toBe(picker)
   expect(picker).toHaveValue("synthetic-team")
-  expect(screen.getByRole("button", { name: "Save" })).toBe(start)
+  expect(screen.getByRole("button", { name: "Sync now" })).toBe(start)
   expect(start).toBeDisabled()
   expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ destinationId: "synthetic-team", projects: group.projects }),
@@ -269,11 +270,11 @@ it("keeps Save and the workspace picker mounted after saving to Team", async () 
 })
 
 it.each([
-  ["synthetic-personal", "synthetic-team", "Backfill sessions"],
-  ["synthetic-team", "synthetic-personal", "Backfill sessions to Example Team"],
+  ["synthetic-personal", "synthetic-team"],
+  ["synthetic-team", "synthetic-personal"],
 ])(
-  "keeps the saved workspace picker for %s and does not move a folder until Save",
-  async (from, to, backfillName) => {
+  "keeps the saved workspace picker for %s and does not move a folder until Sync now",
+  async (from, to) => {
     const { port, ongoing } = cloudProjectFixture()
     const group = projectGroup()
     const saved = ongoingStatus({
@@ -294,29 +295,25 @@ it.each([
         : ongoingStatus({ deviceUploadEnabled: true, teamStatuses: [saved] }),
     )
     const session = new CloudSession(port, false, true)
-    const moveSavedProject = vi.spyOn(session, "moveSavedProject").mockResolvedValue(undefined)
+    const moveSavedProject = vi
+      .spyOn(session, "moveSavedProject")
+      .mockResolvedValue("clear_draft")
     render(<Account session={session} />)
     const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
-    const save = screen.getByRole("button", { name: "Save" })
-    const backfill = screen.getByRole("button", { name: backfillName })
+    const save = screen.getByRole("button", { name: "Sync now" })
     expect(picker).toHaveValue(from)
     expect(screen.queryByRole("switch", { name: /Sync Studio/ })).not.toBeInTheDocument()
-    expect(save).toBeDisabled()
-    expect(backfill).not.toHaveAttribute("aria-disabled")
+    expect(save).toBeEnabled()
 
     fireEvent.change(picker, { target: { value: "" } })
     expect(picker).toHaveValue("")
     expect(save).toBeEnabled()
-    expect(backfill).toHaveAttribute("aria-disabled", "true")
     fireEvent.change(picker, { target: { value: from } })
-    expect(save).toBeDisabled()
-    expect(backfill).not.toHaveAttribute("aria-disabled")
+    expect(save).toBeEnabled()
 
     fireEvent.change(picker, { target: { value: to } })
     expect(picker).toHaveValue(to)
     expect(save).toBeEnabled()
-    expect(backfill).toHaveAttribute("aria-disabled", "true")
-    fireEvent.click(backfill)
     expect(ongoing.backfill).not.toHaveBeenCalled()
     expect(ongoing.setProject).not.toHaveBeenCalled()
     expect(ongoing.enable).not.toHaveBeenCalled()
@@ -331,6 +328,7 @@ it.each([
         to,
       ),
     )
+    expect(ongoing.backfill).not.toHaveBeenCalled()
   },
 )
 
@@ -350,7 +348,7 @@ it("keeps a staged workspace change editable when its target disappears", async 
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
-  const save = screen.getByRole("button", { name: "Save" })
+  const save = screen.getByRole("button", { name: "Sync now" })
   fireEvent.change(picker, { target: { value: team.id } })
   expect(save).toBeEnabled()
 
@@ -364,6 +362,76 @@ it("keeps a staged workspace change editable when its target disappears", async 
   fireEvent.change(picker, { target: { value: personal.id } })
   expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeChecked()
   expect(ongoing.setProject).not.toHaveBeenCalled()
+})
+
+it("requires a new workspace choice when a staged move's saved policy changes", async () => {
+  const { port, ongoing, emitSync } = cloudProjectFixture()
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+  ])
+  ongoing.status.mockResolvedValue(saved)
+  const session = new CloudSession(port, false, true)
+  const move = vi.spyOn(session, "moveSavedProject")
+  render(<Account session={session} />)
+  const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
+  const sync = screen.getByRole("button", { name: "Sync now" })
+  fireEvent.change(picker, { target: { value: "synthetic-team" } })
+  expect(sync).toBeEnabled()
+
+  act(() => emitSync({ ...saved, policyRevision: "changed-policy" }))
+  expect(sync).toBeDisabled()
+  expect(screen.getByText("The saved folder changed. Choose a workspace again.")).toBeVisible()
+  fireEvent.click(sync)
+  expect(move).not.toHaveBeenCalled()
+  expect(ongoing.backfill).not.toHaveBeenCalled()
+  fireEvent.change(picker, { target: { value: "synthetic-personal" } })
+  fireEvent.change(picker, { target: { value: "synthetic-team" } })
+  expect(sync).toBeEnabled()
+})
+
+it("keeps a staged move if Desktop could not verify the target before removal", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const personal = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  const team = ongoingStatus({
+    status: "ready",
+    destinationId: "synthetic-team",
+    consentVersion: "desktop-project-sync-v1",
+    policyRevision: "team-policy",
+    projects: [{ ...projectGroup().projects[0]!, projectPath: "/Example/Other" }],
+  })
+  const saved = { ...personal, teamStatuses: [team] }
+  ongoing.status.mockResolvedValue(saved)
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+  ])
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
+  fireEvent.change(picker, { target: { value: "synthetic-team" } })
+  ongoing.status.mockRejectedValueOnce(new Error("Synthetic Team verification failure"))
+  fireEvent.click(screen.getByRole("button", { name: "Sync now" }))
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Could not verify the Team folder rules.",
+  )
+  expect(picker).toHaveValue("synthetic-team")
+  fireEvent.click(screen.getByRole("button", { name: "Review folders" }))
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull())
+  expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled()
+  expect(picker).toHaveValue("synthetic-team")
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+  expect(ongoing.backfill).not.toHaveBeenCalled()
 })
 
 it("does not restore folder focus when the user moved it during a save", async () => {
@@ -390,7 +458,7 @@ it("does not restore folder focus when the user moved it during a save", async (
   fireEvent.change(await screen.findByRole("combobox", { name: /Sync Studio/ }), {
     target: { value: "synthetic-team" },
   })
-  const start = screen.getByRole("button", { name: "Save" })
+  const start = screen.getByRole("button", { name: "Start syncing" })
   start.focus()
   fireEvent.click(start)
   const other = screen.getByRole("button", { name: "Other setting" })
@@ -403,7 +471,7 @@ it("does not restore folder focus when the user moved it during a save", async (
   expect(document.body).toHaveFocus()
 })
 
-it("revokes immediately and stages a new approval until Save", async () => {
+it("revokes immediately and stages a new approval until the primary sync action", async () => {
   const { port, ongoing } = cloudProjectFixture()
   ongoing.status.mockResolvedValue(
     ongoingStatus({
@@ -417,7 +485,7 @@ it("revokes immediately and stages a new approval until Save", async () => {
   render(<Account session={session} />)
   const toggle = () => screen.getByRole("switch", { name: /Sync Studio/ })
   await screen.findByRole("switch", { name: /Sync Studio/ })
-  const save = screen.getByRole("button", { name: "Save" })
+  const save = screen.getByRole("button", { name: "Sync now" })
   expect(save).toBeDisabled()
   expect(toggle()).toBeChecked()
   expect(
@@ -467,7 +535,7 @@ it("does not redirect a draft when its Team disappears from the verified list", 
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
-  const start = screen.getByRole("button", { name: "Save" })
+  const start = screen.getByRole("button", { name: "Start syncing" })
   fireEvent.change(picker, { target: { value: "synthetic-team" } })
   expect(start).toBeEnabled()
 
@@ -658,7 +726,7 @@ it("keeps a saved team folder bound to that team after membership is lost", asyn
   expect(toggle).toBeChecked()
   expect(toggle).toBeEnabled()
   expect(screen.queryByRole("combobox", { name: /Sync Studio/ })).not.toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Sync now" })).toBeDisabled()
 
   fireEvent.click(toggle)
   await waitFor(() =>
@@ -703,9 +771,9 @@ it("can confirm verified saved Team folders even if folder discovery fails", asy
   expect(screen.getByRole("group", { name: "Example Team sync status" })).toHaveTextContent(
     "Review saved folders",
   )
-  const confirm = screen.getByRole("button", { name: "Save" })
+  const confirm = screen.getByRole("button", { name: "Sync now" })
   expect(confirm).toBeEnabled()
-  expect(screen.getByText("Save the listed Team folders.")).toBeVisible()
+  expect(screen.getByText("Sync now approves the listed Team folders.")).toBeVisible()
   fireEvent.click(confirm)
   await waitFor(() =>
     expect(ongoing.confirmTeamFolders).toHaveBeenCalledWith({
@@ -741,19 +809,26 @@ it("lets a separate nested folder use Team even when the Personal parent is appr
   )
   render(<Account session={new CloudSession(port, false, true)} />)
   const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
-  const backfill = screen.getByRole("button", { name: "Backfill sessions" })
-  expect(backfill).not.toHaveAttribute("aria-disabled")
+  const sync = screen.getByRole("button", { name: "Sync now" })
+  expect(sync).toBeEnabled()
   fireEvent.change(picker, { target: { value: "synthetic-team" } })
-  expect(backfill).toBeVisible()
-  expect(backfill).toHaveAttribute("aria-disabled", "true")
-  fireEvent.click(backfill)
+  expect(sync).toBeEnabled()
   expect(ongoing.backfill).not.toHaveBeenCalled()
   expect(ongoing.enable).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByRole("button", { name: "Save" }))
+  fireEvent.click(sync)
   await waitFor(() =>
     expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ destinationId: "synthetic-team", projects: group.projects }),
     ),
+  )
+  await waitFor(() => expect(ongoing.backfill).toHaveBeenCalledTimes(2))
+  expect(ongoing.enable.mock.invocationCallOrder[0]).toBeLessThan(
+    ongoing.backfill.mock.invocationCallOrder[0]!,
+  )
+  expect(ongoing.backfill).toHaveBeenNthCalledWith(
+    2,
+    { accountId: "synthetic-account", destinationId: "synthetic-team" },
+    "synthetic-policy",
   )
   expect(ongoing.setProject).not.toHaveBeenCalled()
   expect(ongoing.retry).not.toHaveBeenCalled()
@@ -802,7 +877,7 @@ it("does not report queued work as active without a syncing state", async () => 
   expect(folder).toBeChecked()
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: /Retry/ })).not.toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Sync now" })).toBeDisabled()
   expect(screen.queryByText("Uploading sessions")).not.toBeInTheDocument()
   expect(ongoing.retry).not.toHaveBeenCalled()
   expect(ongoing.setProject).not.toHaveBeenCalled()
@@ -832,8 +907,8 @@ it("rechecks only the exact saved source paths and keeps the device pause", asyn
     }),
   )
   render(<Account session={new CloudSession(port, false, true)} />)
-  expect(await screen.findByText("Save to check changed sources.")).toBeVisible()
-  const save = screen.getByRole("button", { name: "Save" })
+  expect(await screen.findByText("Sync now checks changed sources.")).toBeVisible()
+  const save = screen.getByRole("button", { name: "Sync now" })
   expect(save).toBeEnabled()
   fireEvent.click(save)
   await waitFor(() => expect(save).toBeDisabled())
@@ -869,7 +944,7 @@ it("does not pick a second stale Team after saving the chosen Team", async () =>
   ongoing.status.mockResolvedValue(ongoingStatus({ teamStatuses: teams }))
   render(<Account session={new CloudSession(port, false, true)} />)
   const choice = await screen.findByRole("combobox", { name: "Save folders for" })
-  const save = screen.getByRole("button", { name: "Save" })
+  const save = screen.getByRole("button", { name: "Sync now" })
   expect(save).toBeDisabled()
   fireEvent.change(choice, { target: { value: "team-Design" } })
   expect(save).toBeEnabled()
@@ -1011,14 +1086,14 @@ it("hides a missing folder even when sessions were found", async () => {
   expect(screen.queryByText("/Example/Studio")).toBeNull()
   expect(screen.queryByRole("switch", { name: /^Sync Studio:/ })).toBeNull()
   expect(screen.queryByRole("combobox", { name: /^Sync Studio:/ })).toBeNull()
-  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
 it.each([
   [
     "Project discovery is incomplete. Restore access or choose fewer sources and retry.",
-    "Could not verify every selected folder. Choose fewer folders and save again.",
+    "Could not verify every selected folder.",
     "Review folders",
     2,
     1,
@@ -1046,58 +1121,74 @@ it.each([
     2,
   ],
 ])(
-  "offers a working recovery when the first Save fails",
+  "uses the primary button for recovery when the first save fails",
   async (failure, message, action, reads, saves) => {
     const { port, ongoing } = cloudProjectFixture()
     ongoing.enable.mockRejectedValueOnce(failure)
     render(<Account session={new CloudSession(port, false, true)} />)
     await screen.findByRole("switch", { name: /^Sync Studio:/ })
-    const save = screen.getByRole("button", { name: "Save" })
+    const save = screen.getByRole("button", { name: "Start syncing" })
+    const footer = within(save.closest("footer")!)
     fireEvent.click(save)
     expect(await screen.findByRole("alert")).toHaveTextContent(message)
+    expect(footer.getByRole("button", { name: action })).toBe(save)
+    expect(footer.getAllByRole("button")).toEqual([save])
     expect(save).toBeEnabled()
     expect(screen.queryByText(/Example\/private/)).toBeNull()
     expect(ongoing.enable).toHaveBeenCalledOnce()
-    fireEvent.click(screen.getByRole("button", { name: action }))
+    expect(ongoing.backfill).not.toHaveBeenCalled()
+    fireEvent.click(save)
     await waitFor(() => {
       expect(ongoing.groups).toHaveBeenCalledTimes(reads)
       expect(ongoing.enable).toHaveBeenCalledTimes(saves)
     })
     if (action === "Review folders")
       expect(screen.getByRole("group", { name: "Cloud folders" })).toHaveFocus()
+    if (action !== "Try again") {
+      await waitFor(() => expect(footer.queryByRole("alert")).toBeNull())
+      expect(footer.getByRole("button", { name: "Start syncing" })).toBe(save)
+      expect(ongoing.backfill).not.toHaveBeenCalled()
+    }
   },
 )
 
-it("starts desktop ongoing uploads from Settings without using legacy request discovery", async () => {
+it("saves the first folders before manually syncing their current policy", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
-  ongoing.enable.mockResolvedValueOnce(
-    ongoingStatus({
-      status: "ready",
-      consentVersion: "desktop-project-sync-v1",
-      deviceUploadEnabled: true,
-      projects: projectGroup().projects,
-    }),
-  )
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    policyRevision: "newly-approved",
+    deviceUploadEnabled: true,
+    projects: projectGroup().projects,
+  })
+  let finishSave!: (status: typeof saved) => void
+  ongoing.enable.mockImplementationOnce(() => new Promise((resolve) => (finishSave = resolve)))
+  ongoing.backfill.mockResolvedValueOnce(saved)
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
-  const start = screen.getByRole("button", { name: "Save" })
+  const start = screen.getByRole("button", { name: "Start syncing" })
   const footer = within(start.closest("footer")!)
-  const backfill = footer.getByRole("button", { name: "Backfill sessions" })
   const status = footer.getByRole("group", { name: "Folder sync status" })
   expect(start).toBeEnabled()
-  expect(status).toHaveTextContent("Save folders to enable sync.")
+  expect(status).toHaveTextContent("Folder sync not started")
   expect(footer.queryByText("Personal", { selector: "p" })).not.toBeInTheDocument()
-  expect(backfill).toBeVisible()
-  expect(backfill).toHaveAttribute("aria-disabled", "true")
-  fireEvent.click(backfill)
+  expect(footer.getAllByRole("button")).toEqual([start])
   expect(ongoing.backfill).not.toHaveBeenCalled()
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
   fireEvent.click(start)
   await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
+  expect(ongoing.backfill).not.toHaveBeenCalled()
+  await act(async () => finishSave(saved))
+  await waitFor(() =>
+    expect(ongoing.backfill).toHaveBeenCalledExactlyOnceWith(
+      { accountId: saved.accountId, destinationId: saved.destinationId },
+      saved.policyRevision,
+    ),
+  )
   await waitFor(() => expect(status).toHaveTextContent("Folder sync enabled"))
-  expect(backfill).not.toHaveAttribute("aria-disabled")
+  expect(footer.getByRole("button", { name: "Sync now" })).toBe(start)
   expect(status).not.toHaveTextContent("0 accepted")
   expect(port.prepareSync).not.toHaveBeenCalled()
   expect(port.start).not.toHaveBeenCalled()
@@ -1133,6 +1224,31 @@ it("starts desktop ongoing uploads from Settings without using legacy request di
   ).not.toBeInTheDocument()
 })
 
+it("does not scan an unconfirmed folder save even when another saved workspace can sync", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: [{ ...projectGroup().projects[0]!, projectPath: "/Example/Other" }],
+  })
+  port.workspaces = vi.fn(async () => [
+    { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
+    { id: "synthetic-team", name: "Example Team", kind: "team" as const },
+  ])
+  ongoing.status.mockResolvedValue(saved)
+  ongoing.enable.mockResolvedValue(saved)
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  const picker = await screen.findByRole("combobox", { name: /Sync Studio/ })
+  fireEvent.change(picker, { target: { value: "synthetic-team" } })
+  const sync = screen.getByRole("button", { name: "Sync now" })
+  fireEvent.click(sync)
+  await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
+  await waitFor(() => expect(sync).not.toHaveAttribute("aria-busy"))
+  expect(ongoing.backfill).not.toHaveBeenCalled()
+})
+
 it("keeps the cached-folder warning beside the unsaved folder sync status", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const session = new CloudSession(port, false, true)
@@ -1148,12 +1264,9 @@ it("keeps the cached-folder warning beside the unsaved folder sync status", asyn
   )
   expect(screen.queryByRole("group", { name: "Personal sync status" })).not.toBeInTheDocument()
   expect(screen.getByRole("group", { name: "Folder sync status" })).toHaveTextContent(
-    "Save folders to enable sync.",
+    "Folder sync not started",
   )
-  expect(screen.getByRole("button", { name: "Backfill sessions" })).toHaveAttribute(
-    "aria-disabled",
-    "true",
-  )
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
   expect(screen.queryByRole("button", { name: "Retry folders" })).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
@@ -1176,7 +1289,7 @@ it("keeps upload recovery available alongside a folder discovery warning", async
   ongoing.groups.mockRejectedValue(new Error("Synthetic discovery failure"))
   await act(() => session.loadProjects(false, false))
 
-  const footer = screen.getByRole("button", { name: "Save" }).closest("footer")!
+  const footer = screen.getByRole("button", { name: "Sync now" }).closest("footer")!
   const alerts = within(footer).getAllByRole("alert")
   expect(alerts).toHaveLength(2)
   expect(alerts[0]).toHaveTextContent("Previously loaded folders are still shown.")
@@ -1220,7 +1333,7 @@ it.each([
     expect(await screen.findByText("No sessions ready to upload")).toBeVisible()
     expect(screen.queryByRole("switch", { name: /Sync Studio/ })).toBeNull()
     const beforeAccess = session.getSnapshot()
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
     expect(screen.queryByText("No session folders found.")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
     expect(
@@ -1261,7 +1374,7 @@ it("keeps source access reachable for an unqualified group beside a qualified gr
   render(<Account session={session} />)
   expect(await screen.findByText("No sessions ready to upload")).toBeVisible()
   expect(screen.queryByRole("switch", { name: /Sync Website/ })).toBeNull()
-  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeEnabled()
   expect(
     screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
   ).not.toBeInTheDocument()
@@ -1282,7 +1395,7 @@ it("saves the verified folders while a later page is retrying", async () => {
   render(<Account session={new CloudSession(port, false, true)} />)
   fireEvent.click(await screen.findByRole("button", { name: "Load more folders" }))
   expect(await screen.findByText("Still checking for more folders.")).toBeVisible()
-  const save = screen.getByRole("button", { name: "Save" })
+  const save = screen.getByRole("button", { name: "Start syncing" })
   expect(save).toBeEnabled()
   fireEvent.click(save)
   await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
@@ -1292,7 +1405,7 @@ it("saves the verified folders while a later page is retrying", async () => {
   expect(screen.queryByText("Still checking for more folders.")).not.toBeInTheDocument()
 })
 
-it("accepts Save while a later page is in flight without racing the native read", async () => {
+it("accepts Start syncing while a later page is in flight without racing the native read", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const group = projectGroup()
   let finish!: (error: Error) => void
@@ -1307,7 +1420,7 @@ it("accepts Save while a later page is in flight without racing the native read"
   render(<Account session={new CloudSession(port, false, true)} />)
   fireEvent.click(await screen.findByRole("button", { name: "Load more folders" }))
   expect(await screen.findByText("Loading more folders…")).toBeVisible()
-  const save = screen.getByRole("button", { name: "Save" })
+  const save = screen.getByRole("button", { name: "Start syncing" })
   expect(save).toBeEnabled()
   fireEvent.click(save)
   expect(ongoing.enable).not.toHaveBeenCalled()
@@ -1321,7 +1434,7 @@ it("retries only the saved desktop policy when a new external worktree awaits co
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   await screen.findByRole("switch")
-  fireEvent.click(screen.getByRole("button", { name: "Save" }))
+  fireEvent.click(screen.getByRole("button", { name: "Start syncing" }))
   await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
   act(() =>
     emitSync(
@@ -1375,7 +1488,7 @@ it("retries only the saved desktop policy when a new external worktree awaits co
   expect(ongoing.enable).toHaveBeenCalledOnce()
 })
 
-it("requests a backfill for the saved revision without retrying or changing upload settings", async () => {
+it("syncs the saved revision without retrying or changing upload settings", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
   const saved = ongoingStatus({
     status: "ready",
@@ -1386,17 +1499,17 @@ it("requests a backfill for the saved revision without retrying or changing uplo
   })
   ongoing.status.mockResolvedValue(saved)
   let finishBackfill!: (status: typeof saved) => void
-  vi.mocked(ongoing.backfill!).mockImplementationOnce(
+  ongoing.backfill.mockImplementationOnce(
     () => new Promise((resolve) => (finishBackfill = resolve)),
   )
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  const button = await screen.findByRole("button", { name: "Backfill sessions" })
+  const button = await screen.findByRole("button", { name: "Sync now" })
   expect(button).not.toHaveAttribute("aria-disabled")
   fireEvent.click(button)
 
   expect(button).toHaveAttribute("aria-busy", "true")
-  expect(screen.getByText("Waiting for backfill to start…")).toHaveAttribute("role", "status")
+  expect(screen.getByText("Starting sync…")).toHaveAttribute("role", "status")
   await act(async () => finishBackfill({ ...saved, backfillInProgress: true }))
   await waitFor(() => expect(session.getSnapshot().busy).toBe(false))
   expect(button).toHaveAttribute("aria-disabled", "true")
@@ -1412,11 +1525,11 @@ it("requests a backfill for the saved revision without retrying or changing uplo
   expect(ongoing.enable).not.toHaveBeenCalled()
   const oldView = session.getSnapshot()
   act(() => emitSync({ ...saved, policyRevision: "new-revision" }))
-  await act(() => session.backfillSync(oldView))
+  await act(() => session.syncNow(oldView))
   expect(ongoing.backfill).toHaveBeenCalledOnce()
   act(() => emitSync({ ...saved, status: "paused", paused: true, deviceUploadEnabled: false }))
   expect(button).toBeVisible()
-  expect(button).toHaveAttribute("aria-disabled", "true")
+  expect(button).toBeDisabled()
   expect(screen.getByRole("group", { name: "Folder sync status" })).toHaveTextContent(
     "Folder sync paused",
   )
@@ -1424,7 +1537,87 @@ it("requests a backfill for the saved revision without retrying or changing uplo
   expect(ongoing.backfill).toHaveBeenCalledOnce()
 })
 
-it("shows each workspace's own session upload percentage beside its backfill control", async () => {
+it("retries a failed scan through the same button without approving a new draft", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const studio = projectGroup()
+  const websitePath = "/Example/Website"
+  ongoing.groups.mockResolvedValue({
+    groups: [
+      studio,
+      projectGroup({
+        id: "website",
+        label: "Website",
+        path: websitePath,
+        folderPaths: [websitePath],
+        projects: [{ ...studio.projects[0]!, projectPath: websitePath }],
+      }),
+    ],
+    sourceRoots: [{ sourceKind: "claude_jsonl", path: studio.projects[0]!.sourcePath }],
+    nextCursor: null,
+    partial: false,
+  })
+  const saved = ongoingStatus({
+    status: "ready",
+    consentVersion: "desktop-project-sync-v1",
+    deviceUploadEnabled: true,
+    projects: studio.projects,
+    projectChoices: { studio: true },
+  })
+  ongoing.status.mockResolvedValue(saved)
+  ongoing.backfill
+    .mockRejectedValueOnce(new Error("Synthetic failure"))
+    .mockResolvedValue(saved)
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const sync = await screen.findByRole("button", { name: "Sync now" })
+  const footer = within(sync.closest("footer")!)
+  fireEvent.click(sync)
+  expect(await footer.findByRole("alert")).toHaveTextContent("Could not start sync.")
+  expect(footer.getByRole("button", { name: "Try again" })).toBe(sync)
+  expect(footer.getAllByRole("button")).toEqual([sync])
+  expect(sync).toBeEnabled()
+  const website = screen.getByRole("switch", { name: /Sync Website/ })
+  expect(website).not.toBeChecked()
+  fireEvent.click(website)
+  expect(website).toBeChecked()
+  fireEvent.click(sync)
+  await waitFor(() => expect(footer.queryByRole("alert")).toBeNull())
+  expect(ongoing.backfill).toHaveBeenCalledTimes(2)
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+  expect(website).toBeChecked()
+})
+
+it("reviews changed saved folders without writing or scanning again", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      status: "ready",
+      consentVersion: "desktop-project-sync-v1",
+      deviceUploadEnabled: true,
+      projects: projectGroup().projects,
+    }),
+  )
+  ongoing.backfill.mockRejectedValueOnce(
+    new Error("Cloud folder choices changed. Reload before retrying saved work."),
+  )
+  render(<Account session={new CloudSession(port, false, true)} />)
+  const sync = await screen.findByRole("button", { name: "Sync now" })
+  fireEvent.click(sync)
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "The saved folder choices changed.",
+  )
+  expect(screen.getByRole("button", { name: "Review folders" })).toBe(sync)
+  fireEvent.click(sync)
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull())
+  expect(screen.getByRole("button", { name: "Sync now" })).toBe(sync)
+  expect(screen.getByRole("group", { name: "Cloud folders" })).toHaveFocus()
+  expect(ongoing.groups).toHaveBeenCalledTimes(2)
+  expect(ongoing.backfill).toHaveBeenCalledOnce()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+  expect(ongoing.setProject).not.toHaveBeenCalled()
+})
+
+it("shows each workspace's own session upload percentage beside one sync button", async () => {
   const { port, ongoing } = cloudProjectFixture()
   port.workspaces = vi.fn(async () => [
     { id: "synthetic-personal", name: "Personal", kind: "personal" as const },
@@ -1451,12 +1644,8 @@ it("shows each workspace's own session upload percentage beside its backfill con
     ],
   })
   render(<Account session={new CloudSession(port, false, true)} />)
-  expect(
-    await screen.findByRole("button", { name: "Backfill sessions to Personal" }),
-  ).toHaveTextContent(/^Backfill sessions$/)
-  expect(
-    await screen.findByRole("button", { name: "Backfill sessions to Example Team" }),
-  ).toHaveTextContent(/^Backfill sessions$/)
+  const button = await screen.findByRole("button", { name: "Sync now" })
+  expect(within(button.closest("footer")!).getAllByRole("button")).toEqual([button])
   expect(screen.getByRole("group", { name: "Personal sync status" })).toHaveTextContent(
     /^Personal · /,
   )
@@ -1491,7 +1680,7 @@ it("shows accepted sessions without a percentage until the scan has a nonzero to
   })
   ongoing.status.mockResolvedValue(saved)
   render(<Account session={new CloudSession(port, false, true)} />)
-  await screen.findByRole("button", { name: "Backfill sessions" })
+  await screen.findByRole("button", { name: "Sync now" })
 
   act(() =>
     emitSync({
@@ -1512,8 +1701,8 @@ it("shows accepted sessions without a percentage until the scan has a nonzero to
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 0, total: 0 } }))
-  expect(screen.getByText("No sessions found for backfill.", { selector: "p" })).toBeVisible()
-  expect(status).toHaveTextContent("Personal: No sessions found for backfill.")
+  expect(screen.getByText("No sessions found to sync.", { selector: "p" })).toBeVisible()
+  expect(status).toHaveTextContent("Personal: No sessions found to sync.")
   expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
   expect(screen.queryByText(/%$/)).not.toBeInTheDocument()
 
@@ -1528,7 +1717,7 @@ it("shows accepted sessions without a percentage until the scan has a nonzero to
   expect(screen.queryByText("100%")).not.toBeInTheDocument()
 
   act(() => emitSync({ ...saved, uploadProgress: { uploaded: 1000, total: 1000 } }))
-  expect(status).toHaveTextContent(`Personal: Backfill complete. ${count} sessions accepted.`)
+  expect(status).toHaveTextContent(`Personal: ${count} sessions accepted.`)
   expect(screen.getByText("100%")).toBeVisible()
 
   act(() =>
@@ -1568,7 +1757,7 @@ it("hides cached totals and progress after saved upload storage becomes unknown"
   act(() => emitSync(healthy))
   expect(session.getSnapshot().ongoing?.acceptedCount).toBe(7)
   const status = screen.getByRole("group", { name: "Folder sync status" })
-  expect(status).toHaveTextContent("Folder sync enabled · 7 accepted in this workspace")
+  expect(status).toHaveTextContent("Folder sync enabled · 7 accepted")
   expect(status).toHaveTextContent("2 queued")
   expect(screen.queryByText(/7 uploaded|Transferred/)).not.toBeInTheDocument()
   const unavailable = {
@@ -1756,7 +1945,7 @@ it("retries an incomplete empty folder listing without saving upload permission"
   expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Retry folder list" })).not.toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+  expect(screen.getByRole("button", { name: "Start syncing" })).toBeEnabled()
   expect(ongoing.retry).not.toHaveBeenCalled()
   expect(ongoing.setProject).not.toHaveBeenCalled()
   expect(ongoing.enable).not.toHaveBeenCalled()

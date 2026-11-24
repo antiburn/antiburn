@@ -1161,6 +1161,10 @@ impl Fixture {
     }
 
     fn accept_first(&mut self) {
+        self.accept_count(1);
+    }
+
+    fn accept_count(&mut self, expected: u32) {
         for _ in 0..10 {
             self.runner.next_integrity_poll = None;
             self.turn();
@@ -1173,12 +1177,12 @@ impl Fixture {
                 )
                 .unwrap()
                 .0
-                == 1
+                == expected
             {
                 return;
             }
         }
-        panic!("test capture did not become accepted");
+        panic!("test did not reach {expected} accepted sources");
     }
 
     /// Advance only synthetic capacity deadlines without sleeping or changing IDs.
@@ -1764,13 +1768,14 @@ fn cloud_device_upload_resume_requires_the_current_personal_binding() {
 }
 
 #[test]
-fn cloud_device_upload_resume_rolls_back_if_sign_out_wins_during_commit() {
+fn cloud_device_upload_resume_rolls_back_if_sign_out_races_the_device_cas() {
     let fixture = Fixture::new(READY, 0);
     fixture
         .store
         .set_cloud_device_upload_enabled(false)
         .unwrap();
     let scheduler = Scheduler::default();
+    let expected_pause = scheduler.fence_device_uploads();
     let checks = std::cell::Cell::new(0);
     let generation = AtomicU64::new(0);
     let result = device_upload::resume(
@@ -1781,7 +1786,7 @@ fn cloud_device_upload_resume_rolls_back_if_sign_out_wins_during_commit() {
             account_id: "account".into(),
             destination_id: "personal".into(),
         },
-        0,
+        expected_pause,
         0,
         || {
             checks.set(checks.get() + 1);
@@ -1794,7 +1799,59 @@ fn cloud_device_upload_resume_rolls_back_if_sign_out_wins_during_commit() {
     assert_eq!(checks.get(), 3);
     assert!(result.is_err());
     assert!(!fixture.store.cloud_device_upload_enabled().unwrap());
-    assert!(!scheduler.device_upload_enabled(&fixture.store).unwrap());
+    assert_eq!(
+        scheduler.device_pause.load(Ordering::Acquire),
+        expected_pause
+    );
+    assert!(!scheduler.device_admission_open());
+}
+
+#[test]
+fn cloud_device_upload_resume_orders_new_off_requests_against_the_device_cas() {
+    let fixture = Fixture::new(READY, 0);
+    let binding = DestinationBinding {
+        account_id: "account".into(),
+        destination_id: "personal".into(),
+    };
+    for (fence_at_check, resume_accepted) in [(2, false), (3, true)] {
+        fixture
+            .store
+            .set_cloud_device_upload_enabled(false)
+            .unwrap();
+        let scheduler = Scheduler::default();
+        let expected_pause = scheduler.fence_device_uploads();
+        let checks = std::cell::Cell::new(0);
+        let off = std::cell::Cell::new(None);
+        let result = device_upload::resume(
+            &scheduler,
+            &fixture.store,
+            &fixture.engine,
+            &binding,
+            expected_pause,
+            0,
+            || {
+                let check = checks.get() + 1;
+                checks.set(check);
+                if check == fence_at_check {
+                    off.set(Some(scheduler.fence_device_uploads()));
+                }
+                true
+            },
+        );
+        assert_eq!(result.is_ok(), resume_accepted);
+        assert_eq!(
+            fixture.store.cloud_device_upload_enabled().unwrap(),
+            resume_accepted
+        );
+        assert!(!scheduler.device_admission_open());
+
+        fixture
+            .store
+            .set_cloud_device_upload_enabled(false)
+            .unwrap();
+        scheduler.finish_device_change(off.get().unwrap()).unwrap();
+        assert!(!scheduler.device_upload_enabled(&fixture.store).unwrap());
+    }
 }
 
 #[test]
@@ -2301,15 +2358,16 @@ fn cloud_scheduler_closes_refresh_when_a_previously_uploaded_source_disappears()
     let mut fixture = Fixture::new(READY, 0);
     let database = fixture.select_opencode(1);
     fixture.accept_first();
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection.execute("INSERT INTO session_message VALUES ('message','session-0000','user',1,'{\"text\":\"changed before scan\"}')", []).unwrap();
     fixture.schedule_backfill();
     fixture.runner.next_reservation = Some(Instant::now() + Duration::from_secs(60));
     let mut observed = Vec::new();
     fixture.turn_published(&mut observed);
     let before = serde_json::to_value(observed.last().unwrap()).unwrap();
-    assert_eq!(before["uploadProgress"]["uploaded"], 1);
+    assert_eq!(before["uploadProgress"]["uploaded"], 0);
 
-    let connection = rusqlite::Connection::open(&database).unwrap();
-    connection.execute("INSERT INTO session_message VALUES ('message','session-0000','user',1,'{\"text\":\"new content\"}')", []).unwrap();
+    connection.execute("UPDATE session_message SET data = '{\"text\":\"changed after scan\"}' WHERE id = 'message'", []).unwrap();
     fixture.runner.next_reservation = None;
     fixture.turn();
     let identity = fixture.service.reserve_identities.lock().unwrap()[1].clone();
@@ -3975,7 +4033,67 @@ fn cloud_scheduler_backfill_does_not_reoffer_a_saved_job_accepted_during_the_sca
 }
 
 #[test]
-fn cloud_scheduler_backfill_reoffers_accepted_sources_but_respects_pause_and_deletion() {
+fn cloud_scheduler_reconciles_more_than_100_bindings_across_two_roots() {
+    let mut fixture = Fixture::new(READY, 0);
+    let base = fixture._directory.path().canonicalize().unwrap();
+    let other_root = base.join("other-sources");
+    fs::create_dir(&other_root).unwrap();
+    let mut paths = vec![fixture.project.clone()];
+    for index in 1..78 {
+        let path = base.join(format!("worktree-{index:02}"));
+        fs::create_dir(&path).unwrap();
+        paths.push(path);
+    }
+    write_source(&other_root, &paths[77], "other", "second source root");
+    write_source(&fixture.root, &paths[77], "outside", "wrong source root");
+    let roots = [&fixture.root, &other_root].map(|root| SourceSelection {
+        source_kind: SourceKind::ClaudeJsonl,
+        path: root.to_str().unwrap().into(),
+    });
+    let mut projects = Vec::new();
+    for root in &roots {
+        for path in &paths {
+            if root == &roots[0] && path == &paths[77] {
+                continue;
+            }
+            projects.push(ProjectSelection {
+                source_kind: root.source_kind,
+                source_path: root.path.clone(),
+                project_path: path.to_str().unwrap().into(),
+            });
+        }
+    }
+    projects.sort();
+    assert_eq!(projects.len(), 155);
+    validate_project_directories(projects.iter()).unwrap();
+    fixture.policy = fixture
+        .store
+        .save_cloud_sync_policy(
+            "account",
+            "personal",
+            &fixture.service.origin,
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    fixture.restart_scheduler();
+    assert_eq!(
+        fixture
+            .store
+            .cloud_sync_policy("account", "personal", &fixture.service.origin)
+            .unwrap(),
+        Some(fixture.policy.clone())
+    );
+    fixture.accept_count(2);
+    let identities = fixture.service.reserve_identities.lock().unwrap();
+    assert_eq!(identities.len(), 2);
+    assert!(identities[0].source_id.ends_with("/session"));
+    assert!(identities[1].source_id.ends_with("/other"));
+}
+
+#[test]
+fn cloud_scheduler_backfill_only_offers_new_and_changed_sources() {
     let mut fixture = Fixture::new(SUPPRESSED, 0);
     fixture.turn();
     write_source(
@@ -3986,15 +4104,24 @@ fn cloud_scheduler_backfill_reoffers_accepted_sources_but_respects_pause_and_del
     );
     fixture.runner.next_reconcile = None;
     fixture.accept_first();
-    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
+    write_source(&fixture.root, &fixture.project, "updated", "first version");
+    fixture.runner.next_reconcile = None;
+    fixture.accept_count(2);
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 3);
     assert_eq!(
         fixture
             .store
             .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
             .unwrap(),
-        (1, 1)
+        (2, 1)
     );
 
+    write_source(
+        &fixture.root,
+        &fixture.project,
+        "updated",
+        "second version with new content",
+    );
     write_source(
         &fixture.root,
         &fixture.project,
@@ -4036,7 +4163,7 @@ fn cloud_scheduler_backfill_reoffers_accepted_sources_but_respects_pause_and_del
     assert!(fixture.runner.discovery_cursor.is_none());
     assert!(fixture.runner.next_reconcile.is_none());
     fixture.turn();
-    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 2);
+    assert_eq!(fixture.service.reserves.load(Ordering::Acquire), 3);
     fixture.store.set_cloud_device_upload_enabled(true).unwrap();
     let mut observed = Vec::new();
     fixture.turn_published(&mut observed);
@@ -4059,7 +4186,7 @@ fn cloud_scheduler_backfill_reoffers_accepted_sources_but_respects_pause_and_del
     assert_eq!(
         serde_json::to_value(&observed[0]).unwrap()["uploadProgress"],
         serde_json::json!({
-            "uploaded": 2, "total": 2, "blocked": 0, "unsupported": 0,
+            "uploaded": 3, "total": 3, "blocked": 0, "unsupported": 0,
             "scanIncomplete": false
         })
     );
@@ -4076,16 +4203,16 @@ fn cloud_scheduler_backfill_reoffers_accepted_sources_but_respects_pause_and_del
             .is_none()
     );
     let reservations = fixture.service.reserve_identities.lock().unwrap();
-    assert_eq!(reservations.len(), 4);
-    assert_eq!(reservations[2].source_id, reservations[1].source_id);
-    assert_ne!(reservations[2].capture_id, reservations[1].capture_id);
+    assert_eq!(reservations.len(), 5);
     assert!(reservations[3].source_id.ends_with("/third"));
+    assert_eq!(reservations[4].source_id, reservations[2].source_id);
+    assert_ne!(reservations[4].capture_id, reservations[2].capture_id);
     assert_eq!(
         fixture
             .store
             .cloud_sync_outcome_counts("account", "personal", &fixture.service.origin)
             .unwrap(),
-        (2, 1)
+        (3, 1)
     );
 }
 
@@ -4175,23 +4302,15 @@ fn cloud_scheduler_backfill_accounts_for_96_sources_across_pages() {
         96
     );
     let reservations = fixture.service.reserve_identities.lock().unwrap();
-    assert_eq!(reservations.len(), 102);
-    let mut reservations_per_source = BTreeMap::new();
-    for reservation in reservations.iter() {
-        *reservations_per_source
-            .entry(&reservation.source_id)
-            .or_insert(0) += 1;
-    }
-    assert_eq!(reservations_per_source.len(), 96);
-    // Explicit Backfill re-offers the six sources that had receipts before it.
+    assert_eq!(reservations.len(), 96);
     assert_eq!(
-        reservations_per_source
-            .values()
-            .filter(|&&count| count == 2)
-            .count(),
-        6
+        reservations
+            .iter()
+            .map(|reservation| &reservation.source_id)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        96
     );
-    assert!(reservations_per_source.values().all(|&count| count <= 2));
 }
 
 #[test]

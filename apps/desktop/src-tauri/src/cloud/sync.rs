@@ -13,8 +13,9 @@ use crate::store::{
     cloud_capture::{
         SourceSelection,
         sync::{
-            Job, JobState, MAX_RECORDED_PROJECT_PATH_BYTES, ONGOING_CONSENT_VERSION, Policy,
-            ProjectSelection, SourceObservation,
+            Job, JobState, MAX_RECORDED_PROJECT_PATH_BYTES, MAX_SYNC_PROJECT_BINDINGS,
+            MAX_SYNC_PROJECT_PATHS, MAX_SYNC_SOURCE_ROOTS, ONGOING_CONSENT_VERSION, Policy,
+            ProjectSelection,
         },
     },
 };
@@ -41,6 +42,7 @@ mod discovery;
 mod folder_move;
 #[path = "git_checkout.rs"]
 mod git_checkout;
+mod project_directories;
 
 use backfill_progress::{BackfillProgress, SourceProblem, UploadProgress};
 #[cfg(all(test, unix))]
@@ -53,6 +55,7 @@ use discovery::{
 };
 pub(super) use discovery::{discover_root_page, metadata_limits, source_observation};
 use folder_move::{verify_project_move, verify_project_move_to_new_policy};
+use project_directories::{exact_project_directories, validate_project_directories};
 
 const RESERVATION_RETRY_DELAY: Duration = Duration::from_secs(15);
 const INTEGRITY_POLL_DELAY: Duration = Duration::from_secs(5);
@@ -323,8 +326,7 @@ impl Scheduler {
         previous.wrapping_add(2) | 1
     }
 
-    /// Release the in-memory fence only after a successful write. A more recent
-    /// OFF request still closes admission until its own write completes.
+    /// Release this fence only for the current request. A newer OFF replaces it.
     fn finish_device_change(&self, expected: u64) -> Result<(), String> {
         self.device_pause
             .compare_exchange(expected, expected & !1, Ordering::AcqRel, Ordering::Acquire)
@@ -1921,10 +1923,6 @@ impl Runner {
                     JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
                 )
             });
-            let skip_matching_receipt = !self.backfill_page
-                || self.backfill_progress.as_ref().is_some_and(|progress| {
-                    progress.accepted_during_scan(selection.candidate.source_id())
-                });
             if store
                 .cloud_sync_source(
                     &policy.account_id,
@@ -1938,8 +1936,7 @@ impl Runner {
                 .map_err(|_| "Could not read accepted source state.")?
                 .is_some_and(|source| {
                     source.suppressed
-                        || (skip_matching_receipt
-                            && waiting.is_none()
+                        || (waiting.is_none()
                             && source.observation_key.as_deref() == Some(&selection.observation))
                 })
             {
@@ -2002,25 +1999,22 @@ impl Runner {
             let limits = capabilities.limits.clone();
             host.configure_limits(limits.clone())?;
             let folders = if let Some(job) = waiting {
-                job.project_folders
-                    .iter()
-                    .map(Path::new)
-                    .map(Path::to_owned)
-                    .collect()
+                exact_project_directories(job.project_folders.iter().map(String::as_str))
             } else {
-                policy
-                    .projects
-                    .iter()
-                    .filter(|project| {
-                        Path::new(&selection.project).starts_with(&project.project_path)
-                            && policy.roots.iter().any(|root| {
-                                root.source_scope_id == selection.scope
-                                    && root.source_kind == project.source_kind
-                                    && root.path == project.source_path
-                            })
-                    })
-                    .map(|project| Path::new(&project.project_path).to_owned())
-                    .collect()
+                exact_project_directories(
+                    policy
+                        .projects
+                        .iter()
+                        .filter(|project| {
+                            Path::new(&selection.project).starts_with(&project.project_path)
+                                && policy.roots.iter().any(|root| {
+                                    root.source_scope_id == selection.scope
+                                        && root.source_kind == project.source_kind
+                                        && root.path == project.source_path
+                                })
+                        })
+                        .map(|project| project.project_path.as_str()),
+                )
             };
             let project_selection = antiburn_cloud_capture::ProjectSelection::new(folders);
             let projects = project_selection
@@ -2138,11 +2132,7 @@ impl Runner {
                         &selection.scope,
                         &selection.project,
                         selection.candidate.source_id(),
-                        if self.backfill_page {
-                            SourceObservation::Backfill(&selection.observation)
-                        } else {
-                            SourceObservation::ChangedOnly(&selection.observation)
-                        },
+                        &selection.observation,
                         Some(&recorded_paths),
                     )
                     .map_err(|_| "Could not save a capture job. Saved bytes are kept.")?
@@ -2875,7 +2865,10 @@ fn read_sync_status(app: &tauri::AppHandle, verify_teams: bool) -> Result<Status
 
 fn selected_sources(folders: &[Folder]) -> Result<Vec<SourceSelection>, String> {
     let roots = capture::selected_roots(folders);
-    if roots.is_empty() || roots.len() > 100 || roots.windows(2).any(|pair| pair[0] == pair[1]) {
+    if roots.is_empty()
+        || roots.len() > MAX_SYNC_SOURCE_ROOTS
+        || roots.windows(2).any(|pair| pair[0] == pair[1])
+    {
         return Err("Choose valid session sources before confirming Cloud sync.".into());
     }
     let provider_roots = if roots.iter().any(|root| root.source_kind.is_project_only()) {
@@ -3056,9 +3049,8 @@ pub(crate) async fn cloud_enable_sync(
                 || !consent.ongoing
                 || consent.attachments
                 || consent.selected_sources.is_empty()
-                || consent.selected_sources.len() > 100
+                || consent.selected_sources.len() > MAX_SYNC_SOURCE_ROOTS
                 || consent.projects.is_empty()
-                || consent.projects.len() > 100
                 || serde_json::to_vec(&consent.project_choices)
                     .map_err(|_| "Could not read confirmed project choices.")?
                     .len()
@@ -3070,14 +3062,7 @@ pub(crate) async fn cloud_enable_sync(
             }
             consent.selected_sources.sort();
             consent.projects.sort();
-            antiburn_cloud_capture::ProjectSelection::new(
-                consent
-                    .projects
-                    .iter()
-                    .map(|project| Path::new(&project.project_path).to_owned())
-                    .collect(),
-            )
-            .map_err(|_| "Choose existing project directories without path aliases.")?;
+            validate_project_directories(consent.projects.iter())?;
             let folders = consent
                 .selected_sources
                 .iter()
@@ -3253,7 +3238,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
         additions,
     } = confirmation;
     if folder_paths.is_empty()
-        || folder_paths.len() > 100
+        || folder_paths.len() > MAX_SYNC_PROJECT_PATHS
         || !folder_paths
             .iter()
             .all(|path| crate::store::cloud_capture::sync::valid_project_path(path))
@@ -3265,11 +3250,11 @@ pub(crate) async fn cloud_reapprove_team_sync(
     if confirmed_paths.len() != count {
         return Err("Reload the saved Team folders before confirming.".into());
     }
-    if additions.len() > 100
+    if additions.len() > MAX_SYNC_PROJECT_PATHS
         || additions.values().any(Vec::is_empty)
-        || additions.values().map(Vec::len).sum::<usize>() > 100
+        || additions.values().map(Vec::len).sum::<usize>() > MAX_SYNC_PROJECT_BINDINGS
     {
-        return Err("Choose fewer Team folders and try again.".into());
+        return Err("Reload projects and choose supported Team folders.".into());
     }
     let choices: BTreeMap<_, _> = additions.keys().map(|id| (id.clone(), true)).collect();
     let projects: BTreeSet<_> = additions.into_values().flatten().collect();
@@ -3311,13 +3296,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
             let store = app.state::<Store>();
             ensure_cloud_setup(&controller.setup_ready, &store)?;
             if !projects.is_empty() {
-                antiburn_cloud_capture::ProjectSelection::new(
-                    projects
-                        .iter()
-                        .map(|project| Path::new(&project.project_path).to_owned())
-                        .collect(),
-                )
-                .map_err(|_| "Choose existing project directories without path aliases.")?;
+                validate_project_directories(projects.iter())?;
                 let anchor = DestinationBinding {
                     account_id: session.user.id.clone(),
                     destination_id: session.workspace.id.clone(),
@@ -3413,6 +3392,15 @@ pub(crate) async fn cloud_set_sync_project(
     use super::projects::confirm_project_choices;
     use crate::store::cloud_capture::sync::valid_project_path;
 
+    if change.projects.len() > MAX_SYNC_PROJECT_BINDINGS
+        || change.folder_paths.len() > MAX_SYNC_PROJECT_PATHS
+        || change
+            .expected_removals
+            .as_ref()
+            .is_some_and(|removals| removals.len() > MAX_SYNC_PROJECT_BINDINGS)
+    {
+        return Err("Reload projects and choose a supported Cloud project.".into());
+    }
     let group_key = if !change.selected {
         change
             .group_id
@@ -3425,16 +3413,11 @@ pub(crate) async fn cloud_set_sync_project(
         || !group_key
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        || change.projects.len() > 100
-        || change.folder_paths.len() > 100
         || !change
             .folder_paths
             .iter()
             .all(|path| valid_project_path(path))
-        || change
-            .expected_removals
-            .as_ref()
-            .is_some_and(|removals| change.selected || removals.len() > 100)
+        || (change.selected && change.expected_removals.is_some())
         || (change.move_from.is_some() && !change.selected)
         || (change.selected && change.projects.is_empty())
     {
@@ -3556,13 +3539,7 @@ pub(crate) async fn cloud_set_sync_project(
                 .map_err(|_| "Session capture is unavailable.")?;
             let (projects, fence, clear_source_hold) = if change.selected {
                 let projects: BTreeSet<_> = change.projects.into_iter().collect();
-                antiburn_cloud_capture::ProjectSelection::new(
-                    projects
-                        .iter()
-                        .map(|project| Path::new(&project.project_path).to_owned())
-                        .collect(),
-                )
-                .map_err(|_| "Choose existing project directories without path aliases.")?;
+                validate_project_directories(projects.iter())?;
                 let allowed_roots = confirm_project_choices(
                     &store,
                     &mut *controller
@@ -3858,7 +3835,7 @@ pub(crate) async fn cloud_retry_sync(
 
 /// Start a fresh scan of one workspace's saved folders. This does not change
 /// consent, resume device uploads, retry failed jobs, or clear source outcomes.
-/// The service can reuse unchanged content; local deletion markers still apply.
+/// Skip matching acceptance receipts and keep local deletion markers.
 #[tauri::command]
 pub(crate) async fn cloud_backfill_sync(
     app: tauri::AppHandle,

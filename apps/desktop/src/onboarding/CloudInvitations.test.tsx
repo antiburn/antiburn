@@ -144,6 +144,23 @@ describe("Cloud workspace invitations", () => {
     expect(onJoined).not.toHaveBeenCalled()
   })
 
+  it("retries clearing an old failed invitation without showing it", async () => {
+    const port = vi
+      .fn<CloudInvitationPort>()
+      .mockResolvedValueOnce(attempt("no_seat"))
+      .mockRejectedValueOnce(new Error("dismiss failed"))
+      .mockResolvedValueOnce(checked)
+    await open(port, true)
+    expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
+    await act(() => vi.advanceTimersByTimeAsync(2_000))
+    expect(port.mock.calls.map(([, request]) => request)).toEqual([
+      { action: "list" },
+      { action: "dismiss", id: "attempt-1" },
+      { action: "dismiss", id: "attempt-1" },
+    ])
+    expect(screen.getByRole("button", { name: "Join Example Team (example)" })).toBeVisible()
+  })
+
   it.each([false, true])(
     "retries the initial Settings list only once, with retry success: %s",
     async (success) => {

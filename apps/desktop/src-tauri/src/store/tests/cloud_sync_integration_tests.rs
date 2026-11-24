@@ -73,6 +73,111 @@ fn accepted(job: &Job) -> QueueEntry {
 }
 
 #[test]
+fn cloud_saved_team_policy_accepts_512_bindings_and_rejects_growth() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let roots: Vec<_> = (0..8)
+        .map(|index| SourceSelection {
+            source_kind: SourceKind::ClaudeJsonl,
+            path: format!("/Example/source-{index}"),
+        })
+        .collect();
+    let mut projects = Vec::new();
+    for root in &roots {
+        for index in 0..64 {
+            projects.push(ProjectSelection {
+                source_kind: root.source_kind,
+                source_path: root.path.clone(),
+                project_path: format!("/Example/worktree-{index:02}"),
+            });
+        }
+    }
+    assert_eq!(projects.len(), MAX_SYNC_PROJECT_BINDINGS);
+    let initial = store
+        .save_cloud_sync_policy_for_grant(
+            ("account", "team", ORIGIN, ORIGIN, Some(("old", "Team"))),
+            &roots,
+            &projects,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    let saved = store
+        .saved_team_sync_policies("account", "personal", ORIGIN, ORIGIN)
+        .unwrap();
+    assert_eq!(saved, vec![initial.clone()]);
+    let paths = projects
+        .iter()
+        .map(|project| project.project_path.clone())
+        .collect();
+    let renewed = store
+        .renew_cloud_team_sync_policy(
+            ("account", "team", ORIGIN, ORIGIN, Some(("new", "Team"))),
+            &initial.revision,
+            &paths,
+            None,
+            || true,
+        )
+        .unwrap();
+    assert_eq!(renewed.projects, projects);
+    assert_eq!(renewed.roots, initial.roots);
+    let extra = ProjectSelection {
+        source_path: "/Example/source-8".into(),
+        ..projects[0].clone()
+    };
+    let outcome =
+        store.set_cloud_sync_project(&renewed, "extra", true, &[extra].into(), false, || true);
+    assert_eq!(
+        outcome.unwrap_err().to_string(),
+        "Cloud project bindings exceed the policy limit"
+    );
+    assert_eq!(
+        store.cloud_sync_policy("account", "team", ORIGIN).unwrap(),
+        Some(renewed)
+    );
+}
+
+#[test]
+fn cloud_policy_growth_caps_combined_distinct_paths_and_roots() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    let original = policy(&store);
+    let first = &original.projects[0];
+    let extra_paths: BTreeSet<_> = (0..MAX_SYNC_PROJECT_PATHS)
+        .map(|index| ProjectSelection {
+            project_path: format!("/Example/worktree-{index}"),
+            ..first.clone()
+        })
+        .collect();
+    let extra_roots: BTreeSet<_> = (0..MAX_SYNC_SOURCE_ROOTS)
+        .map(|index| ProjectSelection {
+            source_path: format!("/Example/source-{index}"),
+            ..first.clone()
+        })
+        .collect();
+    for (additions, expected) in [
+        (
+            extra_paths,
+            "Cloud project directories exceed the policy limit",
+        ),
+        (extra_roots, "Cloud source roots exceed the policy limit"),
+    ] {
+        check_project_binding_limits(additions.iter()).unwrap();
+        let error = store
+            .set_cloud_sync_project(&original, "extra", true, &additions, false, || true)
+            .unwrap_err();
+        assert_eq!(error.to_string(), expected);
+        assert_eq!(
+            store
+                .cloud_sync_policy("account", "personal", ORIGIN)
+                .unwrap(),
+            Some(original.clone())
+        );
+    }
+}
+
+#[test]
 fn cloud_personal_consent_and_jobs_do_not_follow_an_issuer_change() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).unwrap();
@@ -413,7 +518,7 @@ fn cloud_team_membership_reapproval_needs_empty_current_consent_and_keeps_old_jo
 }
 
 #[test]
-fn cloud_device_upload_resume_restores_the_exact_previous_preference() {
+fn cloud_device_upload_resume_keeps_the_exact_previous_preference_on_rejection() {
     for previous in [None, Some(false), Some(true)] {
         let directory = tempfile::tempdir().unwrap();
         let store = Store::open_in_memory(directory.path()).unwrap();
@@ -445,6 +550,36 @@ fn cloud_device_upload_resume_restores_the_exact_previous_preference() {
         assert!(store.resume_cloud_device_uploads(|| true, || true).unwrap());
         assert!(store.cloud_device_upload_enabled().unwrap());
     }
+}
+
+#[test]
+fn cloud_device_upload_rejection_needs_no_compensating_write() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).unwrap();
+    store.initialize_cloud_setup().unwrap();
+    store.set_cloud_device_upload_enabled(false).unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TRIGGER reject_compensating_off
+             BEFORE UPDATE OF enabled ON cloud_device_upload
+             WHEN NEW.enabled = 0
+             BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;",
+        )
+        .unwrap();
+
+    assert!(
+        !store
+            .resume_cloud_device_uploads(|| true, || false)
+            .unwrap()
+    );
+    drop(store);
+    let reopened = Store::open(directory.path()).unwrap();
+    reopened.initialize_cloud_setup().unwrap();
+    assert_eq!(
+        saved_device_upload_enabled(&reopened.lock()).unwrap(),
+        Some(false)
+    );
 }
 
 #[test]

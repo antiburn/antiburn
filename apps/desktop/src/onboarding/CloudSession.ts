@@ -41,6 +41,7 @@ import {
   cloudContextChange,
   cloudUploadStatusUnknown,
   confirmationContextKey,
+  confirmsSavedWrite,
   folderRouteConfirmed,
   folderSaveError,
   hasSavedProjectPermission,
@@ -60,11 +61,11 @@ import {
   supportedProjectSelections,
   teamFoldersToConfirm,
   teamStatusPatch,
-  uploadActionError,
   uploadPolicy,
   workspaceRecoveryPatch,
   type CloudViewSnapshot,
 } from "./cloudSessionState"
+import { createSyncControl } from "./cloudSyncControl"
 export {
   canBackfillUploads,
   canRetryPersonalUploads,
@@ -125,13 +126,6 @@ export class CloudSession {
   private requestId: string | null = null
   private preparedRequestId: string | null = null
   private syncInFlight = false
-  private syncControlOperation:
-    | {
-        generation: number
-        pending: number
-        pauseRequested: boolean
-      }
-    | undefined
   private consentRevision = 0
   private folderMoveScope = { authority: 0, account: 0 }
   private readonly port: CloudPort
@@ -793,6 +787,8 @@ export class CloudSession {
           : revision === this.ongoingRevision)
       )
         this.receiveOngoing(status)
+      if (reviewSavedSource && this.active && generation === this.generation)
+        return confirmsSavedWrite(policyOf(this.snapshot), status, binding, projects)
     } catch {
       if (
         this.active &&
@@ -866,6 +862,10 @@ export class CloudSession {
       if (!additions[id].length) return
     }
     const addedGroups = Object.keys(additions)
+    const expected = [
+      ...(context.teamStatuses?.[destinationId]?.projects ?? []),
+      ...Object.values(additions).flat(),
+    ]
     const draft = this.projectChoices
     const generation = this.generation
     const stillBound = () =>
@@ -891,6 +891,15 @@ export class CloudSession {
         if (this.snapshot.teamStatuses?.[destinationId]?.policyRevision === displayed.revision)
           this.receiveOngoing(status)
         if (addedGroups.length) this.clearCommittedChoices(addedGroups, draft)
+        return confirmsSavedWrite(
+          this.projectPolicy(destinationId),
+          status,
+          {
+            ...binding,
+            destinationId,
+          },
+          expected,
+        )
       }
     } catch (error) {
       if (stillBound())
@@ -937,74 +946,45 @@ export class CloudSession {
     })
   }
 
-  /** Pause fences desktop uploads before it waits for admission. Keep other
-   * changes blocked until both calls settle, and ignore the canceled backfill reply.
-   */
-  private async changeSyncControl(
-    action: (port: NonNullable<CloudPort["ongoing"]>) => Promise<CloudOngoingStatus | void>,
-    {
-      team,
-      backfillCurrent,
-      pause,
-    }: {
-      team?: CloudOngoingStatus | undefined
-      backfillCurrent?: () => boolean
-      pause?: boolean
-    } = {},
-  ) {
-    const port = this.port.ongoing
+  /** Request a full scan of each eligible saved workspace without changing folder access. */
+  syncNow = async (context: CloudViewSnapshot) => {
     const generation = this.generation
-    const pending = this.syncControlOperation
-    const pausingBackfill =
-      pause && this.snapshot.canPauseBackfill && pending?.generation === generation
-        ? pending
-        : undefined
-    if (
-      !this.active ||
-      !port ||
-      ((this.snapshot.busy || pending?.generation === generation) && !pausingBackfill)
-    )
-      return false
-    const operation = pausingBackfill ?? { generation, pending: 0, pauseRequested: false }
-    this.syncControlOperation = operation
-    operation.pending++
-    if (pausingBackfill) operation.pauseRequested = true
-    const revision = this.ongoingRevision
-    const current = () =>
-      this.active &&
-      generation === this.generation &&
-      (!backfillCurrent || (!operation.pauseRequested && backfillCurrent())) &&
-      (!team || team.accountId === this.projectBinding(true)?.accountId)
-    this.publish({ busy: true, canPauseBackfill: !!backfillCurrent, uploadActionError: null })
-    try {
-      const status = await action(port)
-      if (
-        status &&
-        current() &&
-        (team
-          ? !!team.destinationId &&
-            status.destinationId === team.destinationId &&
-            status.accountId === team.accountId &&
-            this.snapshot.teamStatuses?.[team.destinationId] === team
-          : revision === this.ongoingRevision)
-      )
-        this.receiveOngoing(status, true)
-      return current()
-    } catch (error) {
-      if (current())
-        this.publish({
-          uploadActionError: uploadActionError(error, !!backfillCurrent, !!team),
-        })
-      return false
-    } finally {
-      operation.pending--
-      if (!operation.pending && this.syncControlOperation === operation) {
-        this.syncControlOperation = undefined
-        if (this.active && generation === this.generation)
-          this.publish({ busy: false, canPauseBackfill: false })
+    const anchor = projectBinding(context.cloud, false)
+    if (!anchor) return false
+    let requested = false
+    let scanError: string | undefined
+    for (const teamId of [undefined, ...Object.keys(context.teamStatuses ?? {})]) {
+      if (!this.active || generation !== this.generation) return false
+      const current = this.snapshot
+      if (!backfillTarget(context, current, this.projectBinding(), teamId)) continue
+      if (await this.backfillSync(context, teamId)) {
+        requested = true
+      } else {
+        const message = this.snapshot.uploadActionError
+        // Pause and stale replies stop the batch without setting a scan error.
+        if (!message) return false
+        scanError ??= message
       }
     }
+    if (scanError && this.active && generation === this.generation && !this.snapshot.busy)
+      this.publish({ uploadActionError: scanError })
+    return requested && !scanError
   }
+
+  /** Clear only the error that the user chose to review. */
+  clearUploadActionError = (message: string | null | undefined) => {
+    if (message && this.snapshot.uploadActionError === message)
+      this.publish({ uploadActionError: null })
+  }
+
+  private changeSyncControl = createSyncControl({
+    getPort: () => this.port.ongoing,
+    getSnapshot: this.getSnapshot,
+    generation: () => (this.active ? this.generation : undefined),
+    policyRevision: () => this.ongoingRevision,
+    publish: (patch) => this.publish(patch),
+    receive: (status) => this.receiveOngoing(status, true),
+  })
   /** Serialize surface actions and reject replies superseded by desktop events. */
   private async run(
     action: Parameters<typeof noteCloudAction>[1] | null,
@@ -1307,13 +1287,10 @@ export class CloudSession {
     reviewSavedSource?: string,
   ) => {
     if (!this.isCurrentConfirmation(context)) return
-    if (confirmTeam) {
-      await this.confirmTeamFolders(context, confirmTeam)
-    } else if (reviewSavedSource) {
-      await this.setSavedProject(context, reviewSavedSource, true, undefined, true)
-    } else {
-      await this.startProjectSync(pendingOnly, true)
-    }
+    if (confirmTeam) return this.confirmTeamFolders(context, confirmTeam)
+    if (reviewSavedSource)
+      return this.setSavedProject(context, reviewSavedSource, true, undefined, true)
+    return this.startProjectSync(pendingOnly, true)
   }
 
   private projectPolicy(destinationId: string) {
@@ -1442,8 +1419,10 @@ export class CloudSession {
         if (!current()) return
       }
       const policy = this.projectPolicy(destinationId)
+      let confirmed: boolean
       if (policy?.consentVersion === "desktop-project-sync-v1") {
-        await this.addPendingProjects(port, target, groups, stillBound, settings)
+        confirmed =
+          (await this.addPendingProjects(port, target, groups, stillBound, settings)) === true
       } else {
         const draft = this.projectChoices
         const choices = explicitOnly
@@ -1467,9 +1446,16 @@ export class CloudSession {
         }
         if (isTeam) this.publish({ lastTeamSync: this.projectPolicy(destinationId) ?? null })
         this.clearCommittedChoices(Object.keys(choices), draft)
+        confirmed = confirmsSavedWrite(
+          this.projectPolicy(destinationId),
+          status,
+          target,
+          selected,
+        )
       }
       if (stillBound() && this.snapshot.sync === starting)
         this.publish({ sync: { status: "idle" } })
+      return stillBound() && confirmed
     } catch (error) {
       const message = error instanceof Error ? error.message : error
       if (stillBound() && (pendingOnly || current()))
@@ -1636,12 +1622,16 @@ export class CloudSession {
       })
       if (!stillBound()) return
       if (this.projectPolicy(binding.destinationId) === policy) this.receiveOngoing(status)
-      if (
-        verify &&
-        !folderRouteConfirmed(this.projectPolicy(binding.destinationId), binding, selected)
+      const confirmed = confirmsSavedWrite(
+        this.projectPolicy(binding.destinationId),
+        status,
+        binding,
+        selected,
       )
-        throw new Error("Cloud did not confirm this folder.")
+      if (verify && !confirmed) throw new Error("Cloud did not confirm this folder.")
       this.clearCommittedChoices([group.id], draft)
+      if (settings && !confirmed) return false
     }
+    return true
   }
 }

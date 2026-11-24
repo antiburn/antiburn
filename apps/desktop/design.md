@@ -2130,18 +2130,22 @@ The folder list does not shrink to make room for consent paragraphs. A short
 subtitle states full-session scope. The account and destination share a compact
 chip; the selected group count sits above the list. Back, underlined Continue
 locally, and Start syncing are the folder footer's only content.
-Normal Settings shows the account, upload control, folder choices, and one short
-sync status beside Backfill sessions. Show workspace names when they distinguish
+Normal Settings shows the account, folder choices, and a short sync status.
+Show workspace names when they distinguish
 active destinations, not as a separate Personal status section. Show Join only
 for confirmed workspace invitations. Do not show old remote sign-out warnings.
-Before the first folder approval, **Choose folders** takes the user to the
-folder choices. Show an upload switch only once it can pause or resume uploads.
+The folder footer has one primary action: **Start syncing** for the first
+approval and **Sync now** after approval. A failure can change the action in
+place to **Try again**, **Review folders**, or **Check Cloud**. Do not add a
+second button for the same step. Show an upload switch only when it can pause
+or resume uploads.
 The folder list shows existing directories. Keep exact saved rules that are
 not in that list removable under **Manage other saved folders**.
 With Personal only, folder switches reflect saved permission. Turning a saved
-switch off applies immediately. Add folders with Save. With Personal and Team,
-keep a workspace dropdown for folders that can change destination. Use Save to
-apply the change. An explicit global pause remains in effect after folder changes.
+switch off applies immediately. Add folders with the primary sync action.
+With Personal and Team, keep a workspace dropdown for folders that can change
+destination. Use the same primary action to apply the change. An explicit
+global pause remains in effect after folder changes.
 Read and upload failures use an inline alert with a recovery action when available.
 
 The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding, and an 18px reserved status line to match the prototype. Auth handoff has the prototype footer separator; Learn more keeps its approved plain footer. Identity uses a circular 64px image and a 24px green badge with a 3px paper border and contrasting action ink.

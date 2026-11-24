@@ -4,7 +4,7 @@ import { CloudOnboarding } from "../../src/onboarding/CloudOnboarding"
 import { useState, useSyncExternalStore } from "react"
 import { CloudSession, cloudUploadStatusUnknown } from "../../src/onboarding/CloudSession"
 import { CloudAccount } from "../../src/views/settings/CloudAccount"
-import { SettingsToggleRow } from "../../src/views/settings/SettingsSearchRows"
+import { SettingsRow, SettingsToggleRow } from "../../src/views/settings/SettingsSearchRows"
 import { Card } from "../../src/components/ui/Card"
 import { SectionGroup } from "../../src/components/ui/SectionGroup"
 import {
@@ -24,6 +24,7 @@ export function cloudFixture(name: string): CloudPort {
   const params = new URLSearchParams(window.location.search)
   const footerPreview = params.has("footerPreview")
   const deferFolders = params.has("deferFolders")
+  const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
   const firstPersonalSaveFailure =
     name === "settings-folders" && params.has("personalSaveFailure")
   const dev = name.startsWith("dev-") ? name.slice(4) : null
@@ -231,6 +232,7 @@ export function cloudFixture(name: string): CloudPort {
       storageKnown: true,
       status: "syncing",
       consentVersion: "desktop-project-sync-v1",
+      deviceUploadEnabled: true,
       selectedSources: groups.map((group) => ({
         sourceKind: "claude_jsonl",
         path: group.projects[0]!.sourcePath,
@@ -265,6 +267,7 @@ export function cloudFixture(name: string): CloudPort {
       storageKnown: true,
       status: "ready",
       consentVersion: "desktop-project-sync-v1",
+      deviceUploadEnabled: true,
       selectedSources: [{ sourceKind: "claude_jsonl", path: "/Example/Sources/Studio" }],
       projects: groups[0]!.projects,
       projectChoices: { Studio: true, Website: false },
@@ -310,6 +313,9 @@ export function cloudFixture(name: string): CloudPort {
   )
   let failTeamSave = params.get("saveFailure") === "1"
   let personalSaveCalls = 0
+  let projectWrites = 0
+  let syncCalls = 0
+  let hideStudio = false
   let showQueueProgress = false
   const ongoingStatus = (): CloudOngoingStatus =>
     showQueueProgress
@@ -335,7 +341,7 @@ export function cloudFixture(name: string): CloudPort {
           }
           listener(ongoingStatus())
         }
-        const event = "cloud-fixture:finish-backfill"
+        const event = "cloud-fixture:finish-sync"
         const updateQueue = () => {
           showQueueProgress = !showQueueProgress
           listener(ongoingStatus())
@@ -358,7 +364,11 @@ export function cloudFixture(name: string): CloudPort {
         const emptyPage =
           ["folders-empty-partial", "folders-empty-paged"].includes(name) && !after
         return {
-          groups: emptyPage ? [] : groups,
+          groups: emptyPage
+            ? []
+            : hideStudio
+              ? groups.filter(({ id }) => id !== "Studio")
+              : groups,
           sourceRoots:
             emptyPage || name === "settings-missing-sources"
               ? []
@@ -413,6 +423,7 @@ export function cloudFixture(name: string): CloudPort {
         const saved = {
           ...team,
           status: "ready" as const,
+          storageKnown: true,
           folderConfirmationRequired: false,
           policyRevision: "fixture-renewed-team",
           projects: [...team.projects, ...added],
@@ -435,9 +446,8 @@ export function cloudFixture(name: string): CloudPort {
           ...ongoing,
           storageKnown: true,
           consentVersion: consent.version,
-          ...(name === "settings-team-confirmation" && {
-            policyRevision: "fixture-moved-personal",
-          }),
+          policyRevision: `fixture-approved-${++projectWrites}`,
+          deviceUploadEnabled: ongoing.deviceUploadEnabled ?? true,
           projects: consent.projects,
           projectChoices: consent.projectChoices,
           selectedSources: consent.selectedSources,
@@ -473,6 +483,7 @@ export function cloudFixture(name: string): CloudPort {
         const next = ongoing.projects.filter((project) => !paths.has(project.projectPath))
         ongoing = {
           ...ongoing,
+          policyRevision: `fixture-approved-${++projectWrites}`,
           projects: selected ? [...next, ...projects] : next,
           projectChoices: { ...ongoing.projectChoices, [groupId]: selected },
         }
@@ -491,13 +502,19 @@ export function cloudFixture(name: string): CloudPort {
         ongoing = { ...ongoing, paused: false, status: "ready" }
         return ongoing
       },
-      backfill: async () => {
+      backfill: async ({ accountId, destinationId }, expectedPolicyRevision) => {
+        const policy =
+          destinationId === ongoing.destinationId
+            ? ongoing
+            : ongoing.teamStatuses?.find((team) => team.destinationId === destinationId)
+        if (policy?.accountId !== accountId || policy.policyRevision !== expectedPolicyRevision)
+          throw new Error("Unexpected synthetic sync policy.")
+        document.body.dataset.syncCalls = String(++syncCalls)
+        if (name !== "settings-attention") return policy
         ongoing = {
           ...ongoing,
           backfillInProgress: true,
-          ...(name === "settings-attention" && {
-            uploadProgress: { uploaded: 2, total: null },
-          }),
+          uploadProgress: { uploaded: 2, total: null },
         }
         return ongoing
       },
@@ -511,6 +528,7 @@ export function cloudFixture(name: string): CloudPort {
         releasePendingFolderReads()
       }
       const recheckFolders = () => {
+        hideStudio = hideGroupedFolderOnRefresh
         value = {
           ...value,
           draft: {
@@ -632,9 +650,15 @@ function CloudSettingsFixture({ name }: { name: string }) {
     session.getSnapshot,
   )
   const storageUnknown = cloudUploadStatusUnknown(value.ongoing)
-  const hasSavedFolders =
-    value.ongoing?.consentVersion === "desktop-project-sync-v1" ||
-    Object.values(value.teamStatuses ?? {}).some((team) => team.projects.length > 0)
+  const hasSavedFolders = [value.ongoing, ...Object.values(value.teamStatuses ?? {})].some(
+    (policy) =>
+      policy?.consentVersion === "desktop-project-sync-v1" && policy.projects.length > 0,
+  )
+  const canChangeUploads =
+    hasSavedFolders &&
+    !storageUnknown &&
+    value.deviceUploadEnabled !== undefined &&
+    (!value.busy || (value.canPauseBackfill && value.deviceUploadEnabled))
   return (
     <main
       className="h-full overflow-y-auto bg-surface-window p-6 text-label"
@@ -644,26 +668,20 @@ function CloudSettingsFixture({ name }: { name: string }) {
         <SectionGroup title="Antiburn Cloud">
           <Card divided={false}>
             <CloudAccount session={session} value={value}>
-              <SettingsToggleRow
-                searchId="cloudUpload"
-                description={
-                  hasSavedFolders && value.deviceUploadEnabled === false && !storageUnknown
-                    ? "Uploads are paused on this device."
-                    : undefined
-                }
-                checked={
-                  hasSavedFolders && (value.deviceUploadEnabled ?? !value.ongoing?.paused)
-                }
-                disabled={value.busy || storageUnknown || !hasSavedFolders}
-                disabledTooltip={
-                  storageUnknown
-                    ? "Could not read saved uploads."
-                    : !hasSavedFolders
-                      ? "Choose folders, then Start syncing."
+              {canChangeUploads ? (
+                <SettingsToggleRow
+                  searchId="cloudUpload"
+                  description={
+                    value.deviceUploadEnabled === false
+                      ? "Uploads are paused on this device."
                       : undefined
-                }
-                onChange={(enabled) => void session.controlSync(!enabled)}
-              />
+                  }
+                  checked={value.deviceUploadEnabled === true}
+                  onChange={(enabled) => void session.controlSync(!enabled, value)}
+                />
+              ) : (
+                <SettingsRow searchId="cloudUpload" />
+              )}
             </CloudAccount>
           </Card>
         </SectionGroup>

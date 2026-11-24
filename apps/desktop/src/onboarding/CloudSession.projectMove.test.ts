@@ -63,7 +63,9 @@ it.each([
       })
       .mockResolvedValueOnce(policy(to, "added", true))
 
-    await session.moveSavedProject(session.getSnapshot(), group.id, from, to)
+    await expect(
+      session.moveSavedProject(session.getSnapshot(), group.id, from, to),
+    ).resolves.toBe("clear_draft")
 
     expect(ongoing.setProject.mock.calls).toEqual([
       [
@@ -105,7 +107,9 @@ it("creates only the new workspace policy after removal", async () => {
     ongoing.setProject.mockResolvedValueOnce(policy(personal, "removed", false))
     ongoing.enable.mockResolvedValueOnce(policy(team, "created", true))
 
-    await session.moveSavedProject(session.getSnapshot(), group.id, personal, team)
+    await expect(
+      session.moveSavedProject(session.getSnapshot(), group.id, personal, team),
+    ).resolves.toBe("clear_draft")
 
     expect(ongoing.setProject).toHaveBeenCalledOnce()
     expect(ongoing.enable).toHaveBeenCalledExactlyOnceWith(
@@ -192,11 +196,113 @@ it.each(["rejects", "wrong workspace", "same revision", "remaining grant"] as co
         ongoing.setProject.mockResolvedValueOnce(reply)
       }
 
-      await session.moveSavedProject(session.getSnapshot(), group.id, personal, team)
+      await expect(
+        session.moveSavedProject(session.getSnapshot(), group.id, personal, team),
+      ).resolves.toBe("clear_draft")
       expect(ongoing.setProject).toHaveBeenCalledOnce()
       expect(ongoing.enable).not.toHaveBeenCalled()
       expect(session.getSnapshot().uploadActionError).toMatch(/could not confirm.*old/i)
       expect(session.getSnapshot().projects?.targets?.[group.id]).toBeUndefined()
+    } finally {
+      stop()
+    }
+  },
+)
+
+it("keeps the workspace draft when Team verification fails before removal", async () => {
+  const { session, ongoing, emitSync, stop } = await savedProjectFixture()
+  try {
+    const other = { ...group.projects[0]!, projectPath: "/Example/Other" }
+    emitSync({ ...policy(team, "team-before", false), projects: [other] })
+    ongoing.status.mockRejectedValueOnce(new Error("Status unavailable"))
+
+    await expect(
+      session.moveSavedProject(session.getSnapshot(), group.id, personal, team),
+    ).resolves.toBe("keep_draft")
+
+    expect(ongoing.setProject).not.toHaveBeenCalled()
+    expect(ongoing.enable).not.toHaveBeenCalled()
+    expect(session.getSnapshot().uploadActionError).toMatch(
+      /could not verify the Team folder rules/i,
+    )
+  } finally {
+    stop()
+  }
+})
+
+it.each([
+  [personal, team],
+  [team, personal],
+  [personal, undefined],
+])("confirms a rejected removal reply for %s without writing to %s", async (from, to) => {
+  const { session, ongoing, stop } = await savedProjectFixture(from)
+  try {
+    const removed = policy(from, "removed", false)
+    ongoing.setProject.mockRejectedValueOnce(new Error("Removal reply unavailable"))
+    ongoing.status.mockResolvedValueOnce(
+      from === personal
+        ? { ...removed, teamStatuses: [policy(team, "read-team", false)] }
+        : { ...policy(personal, "read-personal", false), teamStatuses: [removed] },
+    )
+
+    await expect(
+      session.moveSavedProject(session.getSnapshot(), group.id, from, to),
+    ).resolves.toBe("clear_draft")
+
+    const { ongoing: personalPolicy, teamStatuses, uploadActionError } = session.getSnapshot()
+    expect(personalPolicy?.policyRevision).toBe(
+      from === personal ? "removed" : "personal-before",
+    )
+    expect(teamStatuses?.[team]?.policyRevision).toBe(from === team ? "removed" : "team-before")
+    expect(uploadActionError).toBe(
+      "Sync stopped for this folder. Choose a workspace to sync it again.",
+    )
+    expect(ongoing.setProject).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ destinationId: from, selected: false }),
+    )
+    await session.startPendingProjects(session.getSnapshot())
+    expect(ongoing.setProject).toHaveBeenCalledOnce()
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+  }
+})
+
+it.each(["foreign status", "account switch", "newer source"] as const)(
+  "does not apply removal recovery with %s",
+  async (change) => {
+    const { session, ongoing, emit, emitSync, stop } = await savedProjectFixture()
+    try {
+      let finish!: (status: ReturnType<typeof ongoingStatus>) => void
+      ongoing.setProject.mockRejectedValueOnce(new Error("Removal reply unavailable"))
+      ongoing.status.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve
+          }),
+      )
+      const pending = session.moveSavedProject(session.getSnapshot(), group.id, personal, team)
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"))
+      if (change === "newer source") emitSync(policy(personal, "newer-personal", true))
+      if (change === "account switch")
+        emit({ identity: { id: "other-account", login: "Other" } })
+      const removed = policy(personal, "removed", false)
+      if (change === "foreign status") removed.accountId = "other-account"
+      finish(removed)
+      await expect(pending).resolves.toBe("clear_draft")
+
+      const { ongoing: personalPolicy, uploadActionError } = session.getSnapshot()
+      if (change === "account switch") {
+        expect(personalPolicy).toBeNull()
+        expect(uploadActionError).toBeNull()
+      } else {
+        expect(personalPolicy?.policyRevision).toBe(
+          change === "newer source" ? "newer-personal" : "personal-before",
+        )
+        expect(uploadActionError).toMatch(/could not confirm.*old/i)
+      }
+      expect(ongoing.setProject).toHaveBeenCalledOnce()
+      expect(ongoing.enable).not.toHaveBeenCalled()
     } finally {
       stop()
     }
@@ -336,7 +442,7 @@ it.each([
           emit({ identity, destination: destination ?? null, status: "signed_in" })
       }
       finish({ ...policy(personal, "personal-before", true), teamStatuses: [target] })
-      await pending
+      await expect(pending).resolves.toBe("clear_draft")
 
       const expected =
         change === "source" || change === "workspace"

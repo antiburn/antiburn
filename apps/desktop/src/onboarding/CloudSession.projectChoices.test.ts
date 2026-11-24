@@ -292,7 +292,7 @@ it("keeps old Team consent and does not fall back to Personal when a relink is r
     expect(ongoing.enable).not.toHaveBeenCalled()
     expect(begin).not.toHaveBeenCalled()
     expect(session.getSnapshot()).toMatchObject({
-      uploadActionError: "Refresh your Cloud folders, then save your Team choices again.",
+      uploadActionError: "Review saved folders before saving new Team choices.",
       projects: { targets: { docs: team.id } },
       teamStatuses: { [team.id]: savedTeam },
     })

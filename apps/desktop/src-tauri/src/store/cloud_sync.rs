@@ -20,6 +20,12 @@ pub(crate) const ONGOING_CONSENT_VERSION: &str = "desktop-project-sync-v1";
 pub(crate) const MAX_ACTIVE_JOBS: usize = 128;
 /// Keep frozen routing evidence within the existing job and discovery budgets.
 pub(crate) const MAX_RECORDED_PROJECT_PATH_BYTES: usize = 8192;
+/// Bound the provider roots in a saved policy.
+pub(crate) const MAX_SYNC_SOURCE_ROOTS: usize = 100;
+/// Match the capture limit for distinct exact project directories.
+pub(crate) const MAX_SYNC_PROJECT_PATHS: usize = 100;
+/// Bound exact provider-root and project-directory pairs in a saved policy.
+pub(crate) const MAX_SYNC_PROJECT_BINDINGS: usize = 512;
 const MAX_SOURCES: u64 = 16_384;
 const MAX_JOBS: u64 = 32_768;
 
@@ -70,6 +76,31 @@ pub(crate) struct ProjectSelection {
     pub source_kind: SourceKind,
     pub source_path: String,
     pub project_path: String,
+}
+
+/// Check the exact bindings and distinct paths without normalizing path aliases.
+pub(crate) fn check_project_binding_limits<'a>(
+    projects: impl ExactSizeIterator<Item = &'a ProjectSelection>,
+) -> Result<()> {
+    ensure!(
+        projects.len() <= MAX_SYNC_PROJECT_BINDINGS,
+        "Cloud project bindings exceed the policy limit"
+    );
+    let mut paths = BTreeSet::new();
+    let mut roots = BTreeSet::new();
+    for project in projects {
+        paths.insert(&project.project_path);
+        roots.insert((project.source_kind, &project.source_path));
+    }
+    ensure!(
+        paths.len() <= MAX_SYNC_PROJECT_PATHS,
+        "Cloud project directories exceed the policy limit"
+    );
+    ensure!(
+        roots.len() <= MAX_SYNC_SOURCE_ROOTS,
+        "Cloud source roots exceed the policy limit"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -263,7 +294,7 @@ impl Job {
                 && self.identity.source_id.len() <= 512
                 && !self.identity.source_id.chars().any(char::is_control)
                 && valid_project_path(&self.project_path)
-                && self.project_folders.len() <= 100
+                && self.project_folders.len() <= MAX_SYNC_PROJECT_PATHS
                 && self
                     .project_folders
                     .iter()
@@ -531,10 +562,7 @@ fn append_cloud_projects(
     policy.projects.extend(projects.iter().cloned());
     policy.projects.sort();
     policy.projects.dedup();
-    ensure!(
-        policy.projects.len() <= 100,
-        "Choose bounded Cloud projects"
-    );
+    check_project_binding_limits(policy.projects.iter())?;
     let roots: BTreeSet<_> = projects
         .iter()
         .map(|project| SourceSelection {
@@ -548,7 +576,10 @@ fn append_cloud_projects(
             .iter()
             .any(|existing| existing.source_kind == root.source_kind && existing.path == root.path)
         {
-            ensure!(policy.roots.len() < 100, "Choose bounded Cloud sources");
+            ensure!(
+                policy.roots.len() < MAX_SYNC_SOURCE_ROOTS,
+                "Cloud source roots exceed the policy limit"
+            );
             policy.roots.push(source_scope(
                 transaction,
                 &policy.account_id,
@@ -564,12 +595,6 @@ fn append_cloud_projects(
     Ok(())
 }
 
-/// The source observation key and whether the user asked to re-offer it.
-pub(crate) enum SourceObservation<'a> {
-    ChangedOnly(&'a str),
-    Backfill(&'a str),
-}
-
 impl Store {
     /// Read the switch for this device profile. No saved preference means the
     /// user has not approved any folders or used the device switch.
@@ -582,9 +607,8 @@ impl Store {
         write_device_upload_enabled(&self.lock(), enabled)
     }
 
-    /// Save ON only while the controller accepts this request. Callbacks must
-    /// not access the store. If the request changes during commit, restore the
-    /// old preference before another store operation can read the result.
+    /// Save ON only after the controller accepts it inside the transaction.
+    /// Callbacks must not access the store. A rejected request rolls back.
     pub(crate) fn resume_cloud_device_uploads(
         &self,
         current: impl FnOnce() -> bool,
@@ -592,25 +616,15 @@ impl Store {
     ) -> Result<bool> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
-        let previous = saved_device_upload_enabled(&transaction)?;
-        if previous != Some(true) {
+        if saved_device_upload_enabled(&transaction)? != Some(true) {
             write_device_upload_enabled(&transaction, true)?;
         }
-        if !current() {
+        if !current() || !accept_commit() {
+            transaction.rollback()?;
             return Ok(false);
         }
         transaction.commit()?;
-        if accept_commit() {
-            return Ok(true);
-        }
-        match previous {
-            Some(true) => {}
-            Some(false) => write_device_upload_enabled(&connection, false)?,
-            None => {
-                connection.execute("DELETE FROM cloud_device_upload WHERE id = 1", [])?;
-            }
-        }
-        Ok(false)
+        Ok(true)
     }
 
     /// Read only this account and workspace's explicit ongoing policy.
@@ -684,7 +698,8 @@ impl Store {
                         .as_deref()
                         .is_none_or(valid_membership_generation)
                     && policy.team_grant_id.as_deref().is_none_or(safe_id)
-                    && policy.projects.len() <= 100
+                    && policy.roots.len() <= MAX_SYNC_SOURCE_ROOTS
+                    && check_project_binding_limits(policy.projects.iter()).is_ok()
                     && policy
                         .projects
                         .iter()
@@ -798,7 +813,8 @@ impl Store {
                 && valid_resource_origin(issuer)
                 && policy.needs_team_membership(generation)
                 && !confirmed_paths.is_empty()
-                && policy.projects.len() <= 100
+                && policy.roots.len() <= MAX_SYNC_SOURCE_ROOTS
+                && check_project_binding_limits(policy.projects.iter()).is_ok()
                 && policy
                     .projects
                     .iter()
@@ -861,14 +877,13 @@ impl Store {
                 && team.is_none_or(|(generation, name)| valid_team_membership(generation, name)),
             "Cloud service origin is invalid"
         );
+        ensure!(!roots.is_empty(), "Choose bounded Cloud sources");
+        ensure!(!projects.is_empty(), "Choose bounded Cloud projects");
         ensure!(
-            !roots.is_empty() && roots.len() <= 100,
-            "Choose bounded Cloud sources"
+            roots.len() <= MAX_SYNC_SOURCE_ROOTS,
+            "Cloud source roots exceed the policy limit"
         );
-        ensure!(
-            !projects.is_empty() && projects.len() <= 100,
-            "Choose bounded Cloud projects"
-        );
+        check_project_binding_limits(projects.iter())?;
         ensure!(
             roots.windows(2).all(|pair| pair[0] < pair[1]),
             "Cloud sources must be unique and sorted"
@@ -1154,26 +1169,22 @@ impl Store {
             source_scope_id,
             project_path,
             source_id,
-            SourceObservation::ChangedOnly(observation_key),
+            observation_key,
             None,
         )
     }
 
     /// Freeze routing evidence and the upload identity in the same transaction
-    /// that checks the current policy, existing active jobs, and suppression.
+    /// that checks the current policy, active jobs, receipts, and deletion markers.
     pub(crate) fn enqueue_cloud_sync_with_paths(
         &self,
         policy: &Policy,
         source_scope_id: &str,
         project_path: &str,
         source_id: &str,
-        observation: SourceObservation<'_>,
+        observation_key: &str,
         recorded_project_paths: Option<&[String]>,
     ) -> Result<Option<Job>> {
-        let (observation_key, changed_only) = match observation {
-            SourceObservation::ChangedOnly(key) => (key, true),
-            SourceObservation::Backfill(key) => (key, false),
-        };
         ensure!(
             !policy.paused
                 && policy.consent_version == ONGOING_CONSENT_VERSION
@@ -1228,9 +1239,7 @@ impl Store {
                 source.resource_origin == policy.resource_origin,
                 "Cloud source service changed"
             );
-            if source.suppressed
-                || (changed_only && source.observation_key.as_deref() == Some(observation_key))
-            {
+            if source.suppressed || source.observation_key.as_deref() == Some(observation_key) {
                 return Ok(None);
             }
         }

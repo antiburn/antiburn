@@ -111,7 +111,7 @@ fn interrupted_upload(store: &Store, spool: &mut Spool, policy: &Policy, id: &st
             &selection.scope,
             project,
             candidate.source_id(),
-            SourceObservation::ChangedOnly(id),
+            id,
             Some(std::slice::from_ref(project)),
         )
         .unwrap()
@@ -131,6 +131,17 @@ fn interrupted_upload(store: &Store, spool: &mut Spool, policy: &Policy, id: &st
         .set_cloud_sync_job_state(&job, JobState::Interrupted)
         .unwrap();
     job
+}
+
+#[test]
+fn cloud_project_directory_validation_keeps_aliases_visible() {
+    let (_directory, policy, project, _) = fixture();
+    let mut alias = policy.projects[0].clone();
+    alias.project_path = format!("{}/.", project.display());
+    assert_eq!(
+        validate_project_directories([policy.projects[0].clone(), alias].iter()),
+        Err("Choose existing project directories without path aliases.".into())
+    );
 }
 
 #[test]

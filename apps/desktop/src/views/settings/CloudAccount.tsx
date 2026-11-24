@@ -18,6 +18,11 @@ import {
 } from "../../onboarding/cloudProjectScope"
 import { CloudFolderList } from "./CloudFolderList"
 import {
+  CloudDestinationSyncStatus,
+  onlyAutomaticRecovery,
+  savedUploadDisplayState,
+} from "./CloudDestinationSyncStatus"
+import {
   CloudFolderSyncControl,
   CloudProjectFolderSummary,
 } from "../../onboarding/CloudOnboardingFolders"
@@ -25,7 +30,10 @@ import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import {
   cloudAccountCleanupPending,
   cloudSignOutBeforeSignIn,
+  confirmationContextKey,
   folderSaveRecovery,
+  matchesUploadPolicy,
+  uploadPolicy,
 } from "../../onboarding/cloudSessionState"
 import { Skeleton } from "../../components/ui/Skeleton"
 import { ToggleSwitch } from "../../components/ui/ToggleSwitch"
@@ -52,177 +60,55 @@ const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
   storage_unavailable: "Could not read saved uploads.",
 }
 const localRecoveryError = "Some sessions need local recovery. Saved data is kept."
-const automaticRecoveryMessage = "Checking saved uploads automatically. Saved files are kept."
 const sessionCountFormat = new Intl.NumberFormat()
 const uploadPercentFormat = new Intl.NumberFormat(undefined, { style: "percent" })
-const unavailableSyncStatus: Partial<Record<CloudOngoingStatus["status"], string>> = {
-  offline: "Cloud offline",
-  route_denied: "Workspace denied uploads",
-  reauth_required: "Sign-in or workspace access required",
-  upload_unavailable: "Uploads unavailable",
-  storage_unavailable: "Status unavailable",
-  fenced: "Folder sync needs attention",
-  interrupted: "Folder sync needs attention",
-}
 
 /** Manual retry must not interrupt scheduled recovery or substitute for a connection. */
 function showSavedUploadRetry(policy: CloudOngoingStatus) {
   return policy.status !== "offline" && !onlyAutomaticRecovery(policy)
 }
 
-/** Ignore a transient failure label when Desktop still plans to recover every affected upload. */
-function onlyAutomaticRecovery(policy: CloudOngoingStatus) {
-  return (
-    (policy.automaticRecoveryCount ?? 0) > 0 && !policy.fencedCount && !policy.interruptedCount
-  )
-}
-
-function savedUploadDisplayState(policy: CloudOngoingStatus) {
-  return onlyAutomaticRecovery(policy) &&
-    (policy.status === "fenced" || policy.status === "interrupted")
-    ? "syncing"
-    : policy.status
-}
-
-/** Distinguish queued work from receipts for a backfill or earlier uploads. */
-function DestinationSyncStatus({
-  name,
-  policy,
-  deviceEnabled,
-  checkingStatus,
-  saveFirst,
-  workspaceUnavailable,
-  showWorkspaceName,
-  id,
-}: {
-  name: string | undefined
-  policy: CloudOngoingStatus | null | undefined
-  deviceEnabled: boolean | undefined
-  checkingStatus?: boolean | undefined
-  saveFirst: boolean
-  workspaceUnavailable: boolean
-  showWorkspaceName: boolean
-  id: string
-}) {
-  const known = policy?.storageKnown === true && !workspaceUnavailable
-  const enabled =
-    policy?.consentVersion === "desktop-project-sync-v1" && policy.projects.length > 0
-  let state = "Checking folder sync…"
-  if (policy) {
-    const paused = deviceEnabled === false || policy.paused
-    if (policy.folderConfirmationRequired || policy.sourceConfirmationRequired) {
-      state = "Review saved folders"
-    } else if (enabled) {
-      state = paused
-        ? "Folder sync paused"
-        : !known
-          ? "Sync status unavailable"
-          : policy.status === "syncing"
-            ? "Syncing sessions…"
-            : "Folder sync enabled"
-    } else {
-      state =
-        known || policy.status === "consent_required"
-          ? "Save folders to enable sync."
-          : "Status unavailable"
-    }
-    const unavailable = unavailableSyncStatus[savedUploadDisplayState(policy)]
-    if (unavailable && state !== "Review saved folders")
-      state = enabled && paused ? `${state} · ${unavailable}` : unavailable
-    if (
-      checkingStatus &&
-      policy.status === "storage_unavailable" &&
-      state !== "Review saved folders"
-    )
-      state = "Checking saved uploads…"
-  }
-  if (workspaceUnavailable) state = "Workspace unavailable"
-  else if (enabled && saveFirst) state += " · Save folder changes before backfill."
-  const progress = known && enabled ? policy.uploadProgress : undefined
-  const progressLabel = progress
-    ? progress.total === null
-      ? `Backfill: ${sessionCountFormat.format(progress.uploaded)} accepted`
-      : `Backfill: ${sessionCountFormat.format(progress.uploaded)} of ${sessionCountFormat.format(progress.total)} accepted`
-    : known && enabled && policy.acceptedCount > 0
-      ? `${sessionCountFormat.format(policy.acceptedCount)} accepted in this workspace`
-      : null
-  const jobsNeedingAttention = known ? policy.fencedCount + policy.interruptedCount : 0
-  const counts = [
-    known && enabled && policy.queuedCount > 0
-      ? `${sessionCountFormat.format(policy.queuedCount)} queued`
-      : null,
-    jobsNeedingAttention > 0
-      ? `${sessionCountFormat.format(jobsNeedingAttention)} need attention`
-      : null,
-    progress?.blocked
-      ? `${sessionCountFormat.format(progress.blocked)} blocked in backfill`
-      : null,
-    progress?.unsupported
-      ? `${sessionCountFormat.format(progress.unsupported)} unsupported in backfill`
-      : null,
-    progress?.scanIncomplete ? "Backfill scan incomplete" : null,
-  ].filter(Boolean)
-  const automaticRecovery =
-    known &&
-    enabled &&
-    deviceEnabled !== false &&
-    !policy.paused &&
-    !policy.sourceConfirmationRequired &&
-    !policy.folderConfirmationRequired &&
-    (policy.automaticRecoveryCount ?? 0) > 0
-  return (
-    <div
-      id={id}
-      role="group"
-      aria-label={name ? `${name} sync status` : "Folder sync status"}
-      className="min-w-0"
-    >
-      <p className="type-footnote text-label-secondary tabular-nums wrap-anywhere">
-        {[showWorkspaceName ? name : null, state, progressLabel, ...counts]
-          .filter(Boolean)
-          .join(" · ")}
-      </p>
-      {automaticRecovery && (
-        <p className="type-footnote text-label-secondary" role="status">
-          {automaticRecoveryMessage}
-        </p>
-      )}
-    </div>
+/** A manual sync only scans saved folders in eligible workspaces. */
+function canSyncSavedFolders(value: CloudViewSnapshot) {
+  return [undefined, ...Object.keys(value.teamStatuses ?? {})].some(
+    (teamId) =>
+      !uploadPolicy(value, teamId)?.backfillInProgress && canBackfillUploads(value, teamId),
   )
 }
 
 /** Announce scan results and completion without reading each upload. */
-function backfillAnnouncement(
+function syncAnnouncement(
   name: string,
   progress: NonNullable<CloudOngoingStatus["uploadProgress"]>,
 ) {
-  const { uploaded, total } = progress
+  const { uploaded, total, scanIncomplete } = progress
+  if (scanIncomplete) return `${name}: Folder scan incomplete.`
   if (total === null) return `${name}: Session total unavailable.`
-  if (total === 0) return `${name}: No sessions found for backfill.`
+  if (total === 0) return `${name}: No sessions found to sync.`
   const count = `${sessionCountFormat.format(total)} ${total === 1 ? "session" : "sessions"}`
   return uploaded === total
-    ? `${name}: Backfill complete. ${count} accepted.`
+    ? `${name}: ${count} accepted.`
     : `${name}: Scan complete. ${count} found.`
 }
 
 /** Show counts without claiming a percentage until discovery has a nonzero total. */
-function BackfillUploadProgress({
+function SessionUploadProgress({
   name,
-  progress: { uploaded, total },
+  progress: { uploaded, total, scanIncomplete },
   scanning,
 }: {
   name: string
   progress: NonNullable<CloudOngoingStatus["uploadProgress"]>
   scanning: boolean
 }) {
-  if (total === 0) return <p>No sessions found for backfill.</p>
+  if (total === 0) return scanning || scanIncomplete ? null : <p>No sessions found to sync.</p>
 
   const count = sessionCountFormat.format(uploaded)
-  if (total === null) {
+  if (total === null || scanIncomplete) {
     return (
       <p className="tabular-nums">
         {count} {uploaded === 1 ? "session" : "sessions"} accepted
-        {!scanning && ". Session total unavailable."}
+        {total === null && !scanning && ". Session total unavailable."}
       </p>
     )
   }
@@ -671,7 +557,7 @@ function TeamConnectionRecovery({
   )
 }
 
-/** Keep new folders and workspace changes local until Save.
+/** Keep new folders and workspace changes local until the primary sync action.
  * A saved switch can turn off uploads immediately.
  */
 function CloudProjectsAccount({
@@ -686,19 +572,19 @@ function CloudProjectsAccount({
   const fallbackFolderRowId = useId()
   const uploadActionWarningId = useId()
   const foldersId = folderRowId ?? fallbackFolderRowId
-  const backfillDescriptionId = `${foldersId}-backfill-description`
   const [saveTeam, setSaveTeam] = useState<{
     accountId: string
     destinationId: string
     revision: string | null
   }>()
-  const [startingBackfill, setStartingBackfill] = useState<string>()
+  const [syncPhase, setSyncPhase] = useState<"saving" | "starting">()
   const [folderMove, setFolderMove] = useState<{
     accountId: string
     groupId: string
     confirmationKey: CloudProjectGroup["confirmationKey"]
     from: string
     to: string | undefined
+    sourceRevision: string
   }>()
   const projects = value.projects
   const policy = value.ongoing
@@ -707,6 +593,7 @@ function CloudProjectsAccount({
   const storageUnknown = cloudUploadStatusUnknown(policy)
   const starting = value.sync.status === "starting"
   if (!identity || value.cloud.status !== "signed_in") return null
+  const accountId = identity.id
   if (!personalCloudDestination(value.cloud.destination ?? null)) {
     const isTeam = value.cloud.destination?.kind === "team"
     if (value.error && isTeam) return null
@@ -805,6 +692,8 @@ function CloudProjectsAccount({
     ([, team]) => team.projects.length > 0 || !!team.savedFolders?.length,
   )
   const hasTeamFolders = savedTeamPolicies.length > 0
+  const hasSavedFolders =
+    hasTeamFolders || !!policy?.projects.length || !!policy?.savedFolders?.length
   const hasSavedPolicy = hasConsent || teamPolicies.length > 0
   const multipleWorkspaces = (projects?.workspaces?.length ?? 0) > 1
   const personalId = value.cloud.destination?.id
@@ -829,6 +718,10 @@ function CloudProjectsAccount({
       : undefined
   const moveTargetUnavailable =
     !!move?.to && !projects?.workspaces?.some(({ id }) => id === move.to)
+  const moveSourcePolicy = (snapshot: CloudViewSnapshot, from: string) =>
+    uploadPolicy(snapshot, from === personalId ? undefined : from)
+  const moveSourceChanged =
+    !!move && moveSourcePolicy(value, move.from)?.policyRevision !== move.sourceRevision
   const showsSavedTeamFolder = (
     group: CloudProjectGroup,
     policy: CloudOngoingStatus,
@@ -870,7 +763,9 @@ function CloudProjectsAccount({
                 active?.getAttribute("aria-label") === controlLabel ? active : null,
                 foldersId,
                 folderId,
-                () => session.setSavedProject(value, folderId, false, team),
+                async () => {
+                  await session.setSavedProject(value, folderId, false, team)
+                },
               )
             }}
           />
@@ -931,10 +826,9 @@ function CloudProjectsAccount({
   const startableFolder =
     draftFolders.length > 0 && draftTargets.size === 1 && !unavailableTarget
   const savedSourceToReview =
-    !draftFolders.length &&
-    !confirmTeam &&
-    policy?.sourceConfirmationRequired &&
-    projects?.groups.find((group) => session.projectHasReviewableSource(group.id))
+    !draftFolders.length && !confirmTeam && policy?.sourceConfirmationRequired
+      ? projects?.groups.find((group) => session.projectHasReviewableSource(group.id))
+      : undefined
   const canSave = move
     ? !storageUnknown &&
       value.cloud.captureEnabled &&
@@ -942,7 +836,8 @@ function CloudProjectsAccount({
       projects?.loaded &&
       !projects.loading &&
       !projects.error &&
-      !moveTargetUnavailable
+      !moveTargetUnavailable &&
+      !moveSourceChanged
     : (!!confirmTeam && !draftFolders.length) ||
       (!storageUnknown &&
         value.cloud.captureEnabled &&
@@ -952,13 +847,26 @@ function CloudProjectsAccount({
         !projects.error &&
         (startableFolder || !!savedSourceToReview))
   const hasError = value.uploadActionError || folderError || uploadError
-  const backfillDestinations = [
+  const syncDestinations = [
     ...(personalId &&
     (!hasTeamFolders || !!policy?.projects.length || !!policy?.savedFolders?.length)
       ? [[personalId, "Personal", undefined, policy] as const]
       : []),
     ...savedTeamPolicies.map(([id, team]) => [id, teamName(id, team), id, team] as const),
   ]
+  const scanning =
+    value.deviceUploadEnabled !== false &&
+    syncDestinations.some(
+      ([, , , destinationPolicy]) =>
+        destinationPolicy?.storageKnown &&
+        !destinationPolicy.paused &&
+        destinationPolicy.backfillInProgress,
+    )
+  const hasStagedChoices = !!move || draftFolders.length > 0 || confirmableTeams.length > 0
+  const syncActionBusy = value.busy || starting || !!syncPhase
+  const canSubmit = scanning
+    ? false
+    : canSave || (!hasStagedChoices && canSyncSavedFolders(value))
   const focusUploadSwitch = () => {
     const folders = document.getElementById(foldersId)
     const switchControl = folders?.parentElement?.querySelector<HTMLElement>(
@@ -966,32 +874,38 @@ function CloudProjectsAccount({
     )
     switchControl?.focus()
   }
-  const saveFolderChoices = async (trigger: HTMLButtonElement) => {
-    if (value.busy || starting || !canSave) return
+  const runSavedSync = async () => {
+    setSyncPhase("starting")
+    try {
+      await session.syncNow(value)
+    } finally {
+      setSyncPhase(undefined)
+    }
+  }
+  const runSync = async (trigger: HTMLButtonElement) => {
+    const before = session.getSnapshot()
+    if (
+      syncActionBusy ||
+      !canSubmit ||
+      before.contextRevision !== value.contextRevision ||
+      confirmationContextKey(before) !== confirmationContextKey(value) ||
+      (move && moveSourcePolicy(before, move.from)?.policyRevision !== move.sourceRevision)
+    )
+      return
+    if (!canSave) return runSavedSync()
     const focus = new AbortController()
     const stopFollowingSave = () => focus.abort()
     if (document.activeElement === trigger) {
       trigger.addEventListener("blur", stopFollowingSave, { signal: focus.signal })
       window.addEventListener("blur", stopFollowingSave, { signal: focus.signal })
     } else stopFollowingSave()
+    setSyncPhase("saving")
     try {
       await changeFolderWithFocus(
         trigger,
         foldersId,
         move?.groupId ?? (draftFolders.length === 1 ? draftFolders[0]?.id : undefined),
-        async () => {
-          if (move) {
-            await session.moveSavedProject(value, move.groupId, move.from, move.to)
-            setFolderMove((pending) => (pending === move ? undefined : pending))
-          } else {
-            await session.startPendingProjects(
-              value,
-              hasSavedPolicy,
-              confirmTeam?.[0],
-              savedSourceToReview ? savedSourceToReview.id : undefined,
-            )
-          }
-        },
+        () => saveAndSync().finally(() => setSyncPhase(undefined)),
       )
       if (
         !focus.signal.aborted &&
@@ -1002,14 +916,105 @@ function CloudProjectsAccount({
     } finally {
       stopFollowingSave()
     }
+
+    async function saveAndSync() {
+      if (move) {
+        const outcome = await session.moveSavedProject(value, move.groupId, move.from, move.to)
+        if (outcome === "keep_draft") return
+        setFolderMove((pending) => (pending === move ? undefined : pending))
+      } else if (
+        (await session.startPendingProjects(
+          value,
+          hasSavedPolicy,
+          confirmTeam?.[0],
+          savedSourceToReview?.id,
+        )) !== true
+      )
+        return
+      const current = session.getSnapshot()
+      if (
+        current.busy ||
+        current.uploadActionError ||
+        current.cloud.status !== "signed_in" ||
+        current.cloud.identity?.id !== accountId ||
+        current.cloud.destination?.kind !== "personal" ||
+        current.cloud.destination.id !== personalId
+      )
+        return
+
+      const savedTeamId = confirmTeam?.[0] ?? [...draftTargets].find((id) => id !== personalId)
+      if (
+        !move &&
+        savedTeamId &&
+        !current.projects?.workspaces?.some(
+          ({ id, kind }) => id === savedTeamId && kind === "team",
+        )
+      )
+        return
+
+      // A finished move can clear the draft without changing the saved policy.
+      const savedMoveChange = (groupId: string, destinationId: string, added: boolean) => {
+        const teamId = destinationId === personalId ? undefined : destinationId
+        const updated = uploadPolicy(current, teamId)
+        const previous = uploadPolicy(before, teamId)
+        const revision = updated?.policyRevision
+        return (
+          updated?.consentVersion === "desktop-project-sync-v1" &&
+          !!revision &&
+          (revision !== previous?.policyRevision ||
+            previous.consentVersion !== updated.consentVersion) &&
+          matchesUploadPolicy(updated, { accountId, destinationId }, revision) &&
+          (!teamId ||
+            current.projects?.workspaces?.some(
+              ({ id, kind }) => id === teamId && kind === "team",
+            )) &&
+          session.projectHasSavedPermission(groupId, updated, true) === added
+        )
+      }
+      if (
+        move &&
+        (current.projects?.scopeInvalid ||
+          !current.projects?.groups.some(
+            (group) =>
+              group.id === move.groupId &&
+              group.confirmationKey === move.confirmationKey &&
+              !group.discoveryStale,
+          ) ||
+          !savedMoveChange(move.groupId, move.from, false) ||
+          (move.to && !savedMoveChange(move.groupId, move.to, true)))
+      )
+        return
+      if (!canSyncSavedFolders(current)) return
+      setSyncPhase("starting")
+      await session.syncNow(current)
+    }
   }
   const saveRecovery = folderSaveRecovery(value.uploadActionError)
+  const scanRetry = value.uploadActionError === "Could not start sync."
+  const canRetryAction = scanRetry ? canSyncSavedFolders(value) : canSave && !scanning
   const saveRecoveryLabel =
-    saveRecovery === "retry" && canSave
+    saveRecovery === "retry" && canRetryAction
       ? "Try again"
       : saveRecovery === "retry" || saveRecovery === "check"
         ? "Check Cloud"
         : "Review folders"
+  const primaryLabel = saveRecovery
+    ? saveRecoveryLabel
+    : hasSavedFolders
+      ? "Sync now"
+      : "Start syncing"
+  const primaryBlocked = !saveRecovery && !canSubmit
+  const keepPrimaryFocusable =
+    syncActionBusy || (primaryBlocked && (scanning || !!projects?.loading))
+  const recoverFolderSave = async () => {
+    if (saveRecoveryLabel === "Check Cloud") {
+      await session.load()
+    } else {
+      document.getElementById(foldersId)?.focus()
+      if (saveRecovery === "refresh") await session.loadProjects()
+    }
+    session.clearUploadActionError(value.uploadActionError)
+  }
   return (
     <>
       <SettingsRow
@@ -1052,9 +1057,13 @@ function CloudProjectsAccount({
                       ? displayedTeams[0]?.[0]
                       : undefined
                 const pendingMove = move?.groupId === group.id ? move : undefined
+                const sourceRevision =
+                  savedDestination && moveSourcePolicy(value, savedDestination)?.policyRevision
                 const canMove =
+                  !value.cloud.setupError &&
                   (multipleWorkspaces || !!pendingMove) &&
                   !!savedDestination &&
+                  !!sourceRevision &&
                   projects.workspaces?.some(({ id }) => id === savedDestination) &&
                   !unverifiedGroup &&
                   group.captureSupported
@@ -1144,7 +1153,7 @@ function CloudProjectsAccount({
                               }
                               disabled={!!controlMessage}
                               onSelect={(next, workspace) => {
-                                if (canMove && savedDestination) {
+                                if (canMove && savedDestination && sourceRevision) {
                                   const to = next ? workspace : undefined
                                   setFolderMove(
                                     to === savedDestination
@@ -1155,6 +1164,7 @@ function CloudProjectsAccount({
                                           confirmationKey: group.confirmationKey,
                                           from: savedDestination,
                                           to,
+                                          sourceRevision,
                                         },
                                   )
                                 } else if (savedPersonal) {
@@ -1165,7 +1175,9 @@ function CloudProjectsAccount({
                                       : null,
                                     foldersId,
                                     group.id,
-                                    () => session.setSavedProject(value, group.id, next),
+                                    async () => {
+                                      await session.setSavedProject(value, group.id, next)
+                                    },
                                   )
                                 } else
                                   session.selectProject(
@@ -1218,7 +1230,9 @@ function CloudProjectsAccount({
                               document.activeElement,
                               foldersId,
                               undefined,
-                              () => session.setSavedProject(value, groupId, false),
+                              async () => {
+                                await session.setSavedProject(value, groupId, false)
+                              },
                             )
                           }}
                         />
@@ -1301,7 +1315,7 @@ function CloudProjectsAccount({
           </button>
         )}
       </SettingsRow>
-      <footer className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 border-t border-separator px-4 py-2">
+      <footer className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-4 border-t border-separator px-4 py-2">
         <div className="flex min-h-[var(--control-height-regular)] min-w-0 flex-col gap-1.5 type-footnote text-label-secondary wrap-anywhere">
           {showFolderRetryStatus && (
             <p role="status">{cloudDiscoveryRetryMessage(projects.retryStage)}</p>
@@ -1314,31 +1328,7 @@ function CloudProjectsAccount({
             </p>
           )}
           {value.uploadActionError && (
-            <CloudFolderWarning
-              id={uploadActionWarningId}
-              action={
-                saveRecovery && (
-                  <button
-                    type="button"
-                    className="ui-push-button"
-                    aria-describedby={uploadActionWarningId}
-                    disabled={value.busy || starting}
-                    onClick={(event) => {
-                      if (saveRecovery === "retry" || saveRecovery === "check") {
-                        if (saveRecovery === "retry" && canSave)
-                          void saveFolderChoices(event.currentTarget)
-                        else void session.load()
-                        return
-                      }
-                      document.getElementById(foldersId)?.focus()
-                      if (saveRecovery === "refresh") void session.loadProjects()
-                    }}
-                  >
-                    {saveRecoveryLabel}
-                  </button>
-                )
-              }
-            >
+            <CloudFolderWarning id={uploadActionWarningId}>
               {value.uploadActionError}
             </CloudFolderWarning>
           )}
@@ -1436,17 +1426,19 @@ function CloudProjectsAccount({
           )}
           {move && !value.uploadActionError ? (
             <p>
-              {moveTargetUnavailable
-                ? "That workspace is unavailable. Choose another."
-                : move.to
-                  ? "Save to change workspace. Previous uploads stay where they are."
-                  : "Save to stop syncing this folder."}
+              {moveSourceChanged
+                ? "The saved folder changed. Choose a workspace again."
+                : moveTargetUnavailable
+                  ? "That workspace is unavailable. Choose another."
+                  : move.to
+                    ? "Previous uploads stay in the old workspace."
+                    : "Sync now stops uploads for this folder."}
             </p>
           ) : confirmTeam && !value.uploadActionError ? (
             <p>
               {draftFolders.length
-                ? "Save listed and new Team folders."
-                : "Save the listed Team folders."}
+                ? "Sync now approves the listed and new Team folders."
+                : "Sync now approves the listed Team folders."}
             </p>
           ) : unavailableTarget ? (
             <p>
@@ -1461,7 +1453,7 @@ function CloudProjectsAccount({
               teamPolicies.some(([, team]) => team.sourceConfirmationRequired)) && (
               <p role="status">
                 {savedSourceToReview || draftFolders.length ? (
-                  "Save to check changed sources."
+                  "Sync now checks changed sources."
                 ) : (
                   <button
                     type="button"
@@ -1474,13 +1466,14 @@ function CloudProjectsAccount({
                 )}
               </p>
             )}
-          {backfillDestinations.length > 0 && (
-            <section aria-label="Cloud sync status" className="flex flex-col gap-3">
-              <p id={backfillDescriptionId} className="sr-only">
-                Send all available sessions in saved folders again, including sessions
-                previously uploaded.
-              </p>
-              {backfillDestinations.map(([id, name, teamId, destinationPolicy]) => {
+          {syncPhase && !scanning && (
+            <p role="status">
+              {syncPhase === "saving" ? "Saving folder choices…" : "Starting sync…"}
+            </p>
+          )}
+          {syncDestinations.length > 0 && (
+            <section aria-label="Cloud sync status" className="flex flex-col gap-2">
+              {syncDestinations.map(([id, name, teamId, destinationPolicy]) => {
                 const workspaceUnavailable =
                   !!teamId &&
                   !!projects?.workspaces &&
@@ -1490,74 +1483,39 @@ function CloudProjectsAccount({
                   value.deviceUploadEnabled !== false &&
                   destinationPolicy?.storageKnown === true
                 const scanning = current && destinationPolicy?.backfillInProgress === true
-                const waiting = startingBackfill === id && !scanning && current
-                const active = waiting || scanning
-                const progress = current && !waiting ? destinationPolicy?.uploadProgress : null
-                const disabled =
-                  value.busy ||
-                  starting ||
-                  active ||
-                  !!move ||
-                  draftFolders.length > 0 ||
-                  !canBackfillUploads(value, teamId)
-                const label =
-                  teamId || hasTeamFolders ? `Backfill sessions to ${name}` : undefined
-                const statusId = `${foldersId}-sync-${id}`
+                const progress = current ? destinationPolicy?.uploadProgress : null
+                const showName = !!teamId || hasTeamFolders
                 return (
                   <div key={id} className="flex min-w-0 flex-col gap-1.5">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <button
-                        type="button"
-                        className="ui-push-button h-auto! min-h-8 max-w-full shrink-0 text-left wrap-anywhere aria-disabled:opacity-60"
-                        aria-label={label}
-                        aria-disabled={disabled || undefined}
-                        aria-busy={active || undefined}
-                        aria-describedby={`${statusId} ${backfillDescriptionId}`}
-                        onClick={async () => {
-                          if (disabled) return
-                          setStartingBackfill(id)
-                          try {
-                            await session.backfillSync(value, teamId)
-                          } finally {
-                            setStartingBackfill(undefined)
-                          }
-                        }}
-                      >
-                        Backfill sessions
-                      </button>
-                      <DestinationSyncStatus
-                        id={statusId}
-                        name={label ? name : undefined}
-                        policy={destinationPolicy}
-                        deviceEnabled={value.deviceUploadEnabled}
-                        checkingStatus={projects?.loading}
-                        saveFirst={!move && draftFolders.length > 0}
-                        workspaceUnavailable={workspaceUnavailable}
-                        showWorkspaceName={backfillDestinations.length > 1}
-                      />
-                    </div>
-                    {(active || progress) && (
+                    <CloudDestinationSyncStatus
+                      name={showName ? name : undefined}
+                      policy={destinationPolicy}
+                      deviceEnabled={value.deviceUploadEnabled}
+                      checkingStatus={projects?.loading}
+                      workspaceUnavailable={workspaceUnavailable}
+                    />
+                    {(scanning || progress) && (
                       <span
                         role="status"
-                        className={active ? "flex items-center gap-1" : "sr-only"}
+                        className={scanning ? "flex items-center gap-1" : "sr-only"}
                       >
-                        {active ? (
+                        {scanning ? (
                           <>
                             <LoaderCircle
                               size={13}
                               className="shrink-0 motion-safe:animate-spin"
                               aria-hidden="true"
                             />
-                            {label && <span className="sr-only">{name}: </span>}
-                            {waiting ? "Waiting for backfill to start…" : "Scanning folders…"}
+                            {showName && <span className="sr-only">{name}: </span>}
+                            Scanning folders…
                           </>
                         ) : (
-                          progress && backfillAnnouncement(name, progress)
+                          progress && syncAnnouncement(name, progress)
                         )}
                       </span>
                     )}
                     {progress && (
-                      <BackfillUploadProgress
+                      <SessionUploadProgress
                         name={name}
                         progress={progress}
                         scanning={scanning}
@@ -1570,19 +1528,35 @@ function CloudProjectsAccount({
           )}
         </div>
         <button
-          className="ui-push-button enabled:bg-accent-fill enabled:text-white enabled:hover:bg-accent-hover disabled:opacity-50 aria-disabled:opacity-50"
-          disabled={!value.busy && !starting && !projects?.loading && !canSave}
-          aria-disabled={value.busy || starting || (projects?.loading && !canSave) || undefined}
+          type="button"
+          className="ui-push-button min-h-8 min-w-28 enabled:bg-accent-fill enabled:text-white enabled:hover:bg-accent-hover disabled:opacity-50 aria-disabled:opacity-50"
+          disabled={primaryBlocked && !keepPrimaryFocusable}
+          aria-disabled={keepPrimaryFocusable || undefined}
+          aria-busy={!!syncPhase || scanning || undefined}
+          aria-describedby={saveRecovery ? uploadActionWarningId : undefined}
           aria-description={
-            move
-              ? "Apply the selected workspace change to this folder."
-              : confirmTeam
-                ? `Save full-session uploads for the exact listed paths in ${teamName(...confirmTeam)}.`
-                : `Save full-session uploads for the selected folder and worktree paths for ${identity.login}.`
+            saveRecovery
+              ? undefined
+              : move
+                ? "Apply the selected workspace change to this folder."
+                : confirmTeam
+                  ? `Save full-session uploads for the exact listed paths in ${teamName(...confirmTeam)}.`
+                  : canSave
+                    ? `Approve full-session uploads for the selected folders and worktrees for ${identity.login}, then check saved folders for updates.`
+                    : "Check saved folders for new or changed sessions."
           }
-          onClick={(event) => void saveFolderChoices(event.currentTarget)}
+          onClick={(event) => {
+            if (syncActionBusy) return
+            if (scanRetry && canRetryAction) {
+              void runSavedSync()
+            } else if (!saveRecovery || (saveRecovery === "retry" && canRetryAction)) {
+              void runSync(event.currentTarget)
+            } else {
+              void recoverFolderSave()
+            }
+          }}
         >
-          Save
+          {primaryLabel}
         </button>
       </footer>
     </>

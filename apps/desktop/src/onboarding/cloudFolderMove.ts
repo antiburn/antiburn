@@ -37,9 +37,14 @@ interface FolderMoveScope {
   account: number
 }
 
+/** Keep the workspace draft only if the same choice can be retried before removal. */
+export type FolderMoveOutcome = "keep_draft" | "clear_draft"
+
 const confirmTeamFoldersMessage = "Confirm the saved Team folders before moving this folder."
 const folderChangedMessage =
   "The saved folder or workspace changed. Review the folder choices and try again."
+const removalUnknownMessage =
+  "Could not confirm that the old folder rule is off. Check the saved folder before trying again."
 
 /** Fence policy writes on any authority change and messages on account changes. */
 export function advanceFolderMoveScope(
@@ -68,7 +73,7 @@ export function createFolderMove(session: FolderMoveSession) {
     id: string,
     from: string,
     to: string | undefined,
-  ): Promise<void> => {
+  ): Promise<FolderMoveOutcome> => {
     const port = getPort()
     const snapshot = getSnapshot()
     const anchor = projectBinding(snapshot.cloud, false)
@@ -83,7 +88,7 @@ export function createFolderMove(session: FolderMoveSession) {
       snapshot.busy ||
       !canStart(context)
     )
-      return
+      return "clear_draft"
 
     const started = scope()
     const sources = pages?.sources ?? []
@@ -132,7 +137,7 @@ export function createFolderMove(session: FolderMoveSession) {
       (displayedTarget?.folderConfirmationRequired || targetPolicy?.folderConfirmationRequired)
     ) {
       publish({ uploadActionError: confirmTeamFoldersMessage })
-      return
+      return "clear_draft"
     }
     if (
       !sourceRevision ||
@@ -153,11 +158,10 @@ export function createFolderMove(session: FolderMoveSession) {
       hasOtherGrant(snapshot)
     ) {
       publish({ uploadActionError: folderChangedMessage })
-      return
+      return "clear_draft"
     }
 
-    let removalStarted = false
-    let removed = false
+    let removal: "not_started" | "pending_reply" | "replied" | "confirmed" = "not_started"
     const keptProjects = sourcePolicy.projects.filter(
       (project) => !expectedRemovals.includes(project),
     )
@@ -182,31 +186,31 @@ export function createFolderMove(session: FolderMoveSession) {
         const status = await port.status()
         if (!readyToRemove()) {
           if (sameAccount()) publish({ uploadActionError: folderChangedMessage })
-          return
+          return "clear_draft"
         }
         const checked = checkedPolicy(status, anchor, target.destinationId)
         const checkedSource = checkedPolicy(status, anchor, from)
         if (checked?.folderConfirmationRequired) {
           receiveStatus(checked)
           publish({ uploadActionError: confirmTeamFoldersMessage })
-          return
+          return "clear_draft"
         }
         if (
           (checked && policyKey(checked) !== targetKey) ||
           (checkedSource && policyKey(checkedSource) !== policyKey(sourcePolicy))
         ) {
           publish({ uploadActionError: folderChangedMessage })
-          return
+          return "clear_draft"
         }
         if (!checked || checked.status === "offline" || checked.status === "route_denied")
           throw new Error("Could not verify the Team folder rules.")
       }
       if (!readyToRemove()) {
         if (sameAccount()) publish({ uploadActionError: folderChangedMessage })
-        return
+        return "clear_draft"
       }
-      removalStarted = true
-      const removal = await port.setProject({
+      removal = "pending_reply"
+      const receipt = await port.setProject({
         ...source,
         groupId: id,
         selected: false,
@@ -215,19 +219,23 @@ export function createFolderMove(session: FolderMoveSession) {
         expectedPolicyRevision: sourceRevision,
         expectedRemovals,
       })
-      if (!current()) return
-      const removalRevision = removal.policyRevision
-      if (!removalRevision || !confirmedRemoval(removal))
+      removal = "replied"
+      if (!current()) return "clear_draft"
+      const removalRevision = receipt.policyRevision
+      if (!removalRevision || !confirmedRemoval(receipt))
         throw new Error("Cloud did not confirm the folder removal.")
 
       // The matching event can arrive first. Do not replace it or a newer policy.
-      if (sourceCurrent()) receiveStatus(removal)
-      if (!current()) return
+      if (sourceCurrent()) receiveStatus(receipt)
+      if (!current()) return "clear_draft"
       const observedSource = policyOf(from)
-      removed =
-        observedSource?.policyRevision === removalRevision && confirmedRemoval(observedSource)
-      if (!removed) throw new Error("The saved folder changed after removal.")
-      if (!target) return
+      if (
+        observedSource?.policyRevision !== removalRevision ||
+        !confirmedRemoval(observedSource)
+      )
+        throw new Error("The saved folder changed after removal.")
+      removal = "confirmed"
+      if (!target) return "clear_draft"
       if (!routeCurrent(getSnapshot()) || !targetCurrent() || hasOtherGrant(getSnapshot()))
         throw new Error("The folder or target workspace changed after removal.")
 
@@ -253,37 +261,56 @@ export function createFolderMove(session: FolderMoveSession) {
               }),
               moveFrom,
             })
-      if (!current()) return
+      if (!current()) return "clear_draft"
       if (targetCurrent() && confirmedTarget(result)) receiveStatus(result)
       if (!confirmedTarget(policyOf(target.destinationId)))
         throw new Error("Cloud did not confirm the new folder rule.")
+      return "clear_draft"
     } catch {
-      if (!removalStarted && sameAccount() && !readyToRemove()) {
-        publish({ uploadActionError: folderChangedMessage })
-        return
+      if (removal === "not_started") {
+        if (!readyToRemove()) {
+          if (sameAccount()) publish({ uploadActionError: folderChangedMessage })
+          return "clear_draft"
+        }
+        publish({
+          uploadActionError:
+            "Could not verify the Team folder rules. Check the workspace and try again.",
+        })
+        return "keep_draft"
       }
-      if (!current()) return
-      if (removed && target) {
-        if (confirmedTarget(policyOf(target.destinationId))) return
+      if (!current()) return "clear_draft"
+
+      const removalRejected = removal === "pending_reply"
+      const targetToCheck = removal === "confirmed" ? target : null
+      if (removalRejected || targetToCheck) {
+        if (targetToCheck && confirmedTarget(policyOf(targetToCheck.destinationId)))
+          return "clear_draft"
         const before = getSnapshot()
         const status = await port.status().catch(() => undefined)
-        if (!current()) return
+        if (!current()) return "clear_draft"
         const checkedPersonal = checkedPolicy(status, anchor, anchor.destinationId)
         const checkedPolicies = checkedPersonal
           ? [checkedPersonal, ...(checkedPersonal.teamStatuses ?? [])].filter(
               (policy) => policy.accountId === anchor.accountId,
             )
           : undefined
+        // A rejected removal never reached the target write. Accept only proof of removal.
         for (const policy of checkedPolicies ?? []) {
           const workspace = policy.destinationId
           if (
             workspace &&
             policy.status !== "storage_unavailable" &&
-            policyOf(workspace) === policyOf(workspace, before)
+            policyOf(workspace) === policyOf(workspace, before) &&
+            (!removalRejected ||
+              (workspace === from && sourceCurrent() && confirmedRemoval(policy)))
           )
             receiveStatus(policy)
         }
-        if (!current() || confirmedTarget(policyOf(target.destinationId))) return
+        if (
+          !current() ||
+          (targetToCheck && confirmedTarget(policyOf(targetToCheck.destinationId)))
+        )
+          return "clear_draft"
         const oldOff = confirmedRemoval(policyOf(from))
         const noCheckedGrant = checkedPolicies?.every(
           (policy) =>
@@ -296,15 +323,14 @@ export function createFolderMove(session: FolderMoveSession) {
               ? "Sync stopped for this folder. Choose a workspace to sync it again."
               : oldOff
                 ? "Sync stopped in the old workspace. Check the saved folder before choosing a workspace."
-                : "Could not confirm where this folder syncs. Check the saved folder before choosing a workspace.",
+                : removalRejected
+                  ? removalUnknownMessage
+                  : "Could not confirm where this folder syncs. Check the saved folder before choosing a workspace.",
         })
-        return
+        return "clear_draft"
       }
-      publish({
-        uploadActionError: removalStarted
-          ? "Could not confirm that the old folder rule is off. Check the saved folder before trying again."
-          : "Could not verify the Team folder rules. Check the workspace and try again.",
-      })
+      publish({ uploadActionError: removalUnknownMessage })
+      return "clear_draft"
     } finally {
       setInFlight(false)
       if (sameGeneration()) publish({ busy: false })

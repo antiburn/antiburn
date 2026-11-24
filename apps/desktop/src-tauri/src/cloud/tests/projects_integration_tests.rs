@@ -82,7 +82,7 @@ fn project_discovery_follows_an_empty_cursor_cli_page_with_a_shared_budget() {
     let (_, limited) = scans.next(&|| true, |_| true, |_| unreachable!()).unwrap();
     let limited = limited.unwrap();
     assert_eq!(scans.remaining, 0);
-    assert!(scans.cursor_incomplete(0));
+    assert!(scans.root_incomplete(0));
     assert!(limited.candidates.is_empty());
 
     let mut scans = ProjectScans::new(vec![&selection]);
@@ -90,7 +90,7 @@ fn project_discovery_follows_an_empty_cursor_cli_page_with_a_shared_budget() {
     let (_, complete) = scans.next(&|| true, |_| true, |_| unreachable!()).unwrap();
     let complete = complete.unwrap();
     assert_eq!(scans.remaining, 0);
-    assert!(!scans.cursor_incomplete(0));
+    assert!(!scans.root_incomplete(0));
     assert!(!complete.partial);
     assert_eq!(complete.candidates[0].source_id(), "cursor/cli/session-16");
 }
@@ -129,10 +129,20 @@ fn project_discovery_keeps_a_later_cursor_root_visible_after_512_mirrors() {
             })
             .collect(),
     );
-    assert!(discovery.partial);
+    assert!(!discovery.partial);
     assert_eq!(discovery.source_roots.len(), 2);
-    assert_eq!(discovery.groups.len(), 1);
-    assert_eq!(discovery.groups[0].capture_session_count, 1);
+}
+
+#[test]
+fn git_path_records_accept_line_endings_but_not_embedded_controls() {
+    let path = Path::new("checkout with spaces");
+    assert_eq!(git_path_record("checkout with spaces\n"), Some(path));
+    assert_eq!(git_path_record("checkout with spaces\r\n"), Some(path));
+    for invalid in [
+        "checkout", "\r\n", "a\rb\n", "a\nb\r\n", "a\tb\r\n", "a\r\r\n",
+    ] {
+        assert_eq!(git_path_record(invalid), None);
+    }
 }
 
 #[test]
@@ -197,6 +207,20 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
     let nested = linked.join("src");
     fs::create_dir(&nested).unwrap();
     let expected = [linked.to_str().unwrap(), main.to_str().unwrap()];
+
+    let mut confirmation = ConfirmationContexts::default();
+    let primary = confirmation.get(main.to_str().unwrap());
+    assert!(Rc::ptr_eq(
+        &primary,
+        &confirmation.get(linked.to_str().unwrap())
+    ));
+    assert!(!confirmation.0.contains_key(nested.to_str().unwrap()));
+    assert!(!confirmation.0.contains_key(alias.to_str().unwrap()));
+    assert!(!Rc::ptr_eq(
+        &primary,
+        &confirmation.get(nested.to_str().unwrap())
+    ));
+    assert!(!confirmation.get(alias.to_str().unwrap()).complete);
 
     for path in [&main, &nested] {
         let grouped = context("native", path.to_str().unwrap());
@@ -298,15 +322,30 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
         expected
     );
     let binding = fixture.binding();
+    let choices = BTreeMap::from([(group.id.clone(), true)]);
+    let projects = group.projects.iter().cloned().collect();
     confirm_project_choices(
         &fixture.store,
         &mut fixture.cache,
         &binding,
-        &BTreeMap::from([(group.id.clone(), true)]),
-        &group.projects.iter().cloned().collect(),
+        &choices,
+        &projects,
         &|| true,
     )
     .unwrap();
+    fs::write(linked.join(".git"), "invalid pointer\n").unwrap();
+    assert_eq!(
+        confirm_project_choices(
+            &fixture.store,
+            &mut fixture.cache,
+            &binding,
+            &choices,
+            &projects,
+            &|| true,
+        )
+        .unwrap_err(),
+        "The project folders changed. Reload projects and confirm again."
+    );
 
     let bare = root.join("bare.git");
     let bare_linked = root.join("bare checkout");
@@ -332,6 +371,74 @@ fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
     assert_eq!(grouped.main, bare.to_str().unwrap());
     assert_eq!(grouped.folders, [bare_linked.to_str().unwrap()]);
     assert!(grouped.complete);
+}
+
+#[test]
+fn project_discovery_reports_git_inspection_failure_without_selecting_the_folder() {
+    let mut fixture = Fixture::new();
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    let root = fixture.directory.path().canonicalize().unwrap();
+    let missing = root.join("missing");
+    let plain = context("native", &fixture.project);
+    assert!(plain.complete);
+    assert!(!plain.inspection_incomplete);
+    let missing = missing.to_str().unwrap();
+    let missing_context = context("native", missing);
+    assert!(!missing_context.complete);
+    assert!(!missing_context.inspection_incomplete);
+    #[cfg(unix)]
+    {
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&fixture.project, &alias).unwrap();
+        let alias = context("native", alias.to_str().unwrap());
+        assert!(!alias.complete);
+        assert!(!alias.inspection_incomplete);
+    }
+    for error in [
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        std::io::Error::from(std::io::ErrorKind::Other),
+    ] {
+        let checked = context_for_path(&fixture.project, Err(error));
+        assert!(checked.inspection_incomplete);
+        assert!(!checked.complete);
+        assert!(checked.folders.is_empty());
+    }
+    fixture
+        .store
+        .lock()
+        .execute(
+            "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,cwd,
+                 first_seen_at,last_seen_at,updated_at_epoch)
+             VALUES('native','opencode','missing','providerDb','missing',?1,
+                 'synthetic','synthetic',1)",
+            [missing],
+        )
+        .unwrap();
+    rusqlite::Connection::open(&fixture.source.path)
+        .unwrap()
+        .execute("UPDATE session_v2 SET directory=?1", [missing])
+        .unwrap();
+    let discovery = fixture.discover(Vec::new());
+    assert!(!discovery.partial);
+    assert!(discovery.groups.is_empty());
+    for marker in ["invalid pointer\n", "gitdir: not-a-repository\n"] {
+        let broken = tempfile::tempdir_in(&root).unwrap();
+        let broken = broken.path().to_str().unwrap();
+        fs::write(Path::new(broken).join(".git"), marker).unwrap();
+        let checked = context("native", broken);
+        assert!(checked.inspection_incomplete);
+        assert!(checked.folders.is_empty());
+        rusqlite::Connection::open(&fixture.source.path)
+            .unwrap()
+            .execute("UPDATE session_v2 SET directory=?1", [broken])
+            .unwrap();
+        let discovery = fixture.discover(Vec::new());
+        assert!(discovery.partial);
+        assert_eq!(discovery.groups.len(), 1);
+        let group = &discovery.groups[0];
+        assert!(!group.capture_supported);
+        assert!(group.projects.is_empty());
+    }
 }
 
 #[test]
@@ -456,6 +563,7 @@ impl Fixture {
                     main: project.clone(),
                     folders: vec![project.clone()],
                     complete: true,
+                    inspection_incomplete: false,
                 },
             ),
         );
@@ -901,7 +1009,31 @@ fn cloud_project_discovery_uses_recorded_claude_code_sources_at_the_production_b
             path: source.to_str().unwrap().into(),
         }]
     );
-    let discovery = fixture.discover(known.0);
+    let candidate = antiburn_cloud_capture::reopen_claude(
+        &source,
+        "synthetic-claude",
+        None,
+        &sync::metadata_limits(),
+    )
+    .unwrap();
+    let size = transcript.metadata().unwrap().len();
+    fixture.cache.scan_bytes = CLAUDE_SCAN_BYTES - size + 1;
+    assert!(
+        fixture
+            .cache
+            .evidence(
+                "synthetic-user",
+                "synthetic-personal",
+                &known.0[0],
+                &candidate,
+                &sync::metadata_limits(),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fixture.cache.scan_bytes, CLAUDE_SCAN_BYTES - size + 1);
+
+    let discovery = fixture.discover(known.0.clone());
     assert!(!discovery.partial);
     assert_eq!(discovery.groups.len(), 1);
     let group = &discovery.groups[0];
@@ -909,6 +1041,55 @@ fn cloud_project_discovery_uses_recorded_claude_code_sources_at_the_production_b
     assert_eq!(group.session_count, 1);
     assert_eq!(group.capture_session_count, 1);
     assert!(group.capture_supported);
+
+    use std::io::Write;
+    let record = format!(
+        "{}\n",
+        serde_json::json!({
+            "type": "assistant",
+            "sessionId": "synthetic-claude",
+            "message": {"role": "assistant", "content": "x".repeat(1024 * 1024)}
+        })
+    );
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    for _ in 0..65 {
+        file.write_all(record.as_bytes()).unwrap();
+    }
+    let large_size = file.metadata().unwrap().len();
+    drop(file);
+    assert!(large_size > CLAUDE_SCAN_BYTES);
+    let discovery = fixture.discover(known.0.clone());
+    assert!(!discovery.partial);
+    let group = &discovery.groups[0];
+    assert!(group.capture_supported);
+    assert_eq!(fixture.cache.scan_bytes, large_size);
+    let mut approval_cache = Cache::default();
+    confirm_project_choices(
+        &fixture.store,
+        &mut approval_cache,
+        &fixture.binding(),
+        &BTreeMap::from([(group.id.clone(), true)]),
+        &group.projects.iter().cloned().collect(),
+        &|| true,
+    )
+    .unwrap();
+    assert_eq!(approval_cache.scan_bytes, large_size);
+
+    let first = format!(
+        "{}\n",
+        serde_json::json!({
+            "type": "user", "sessionId": "a-first", "cwd": fixture.project
+        })
+    );
+    fs::write(source.join("a-first.jsonl"), &first).unwrap();
+    fixture.cache = Cache::default();
+    let discovery = fixture.discover(known.0);
+    assert!(discovery.partial);
+    assert_eq!(discovery.groups[0].capture_session_count, 1);
+    assert_eq!(fixture.cache.scan_bytes, first.len() as u64);
 }
 
 #[test]
@@ -932,6 +1113,87 @@ fn cloud_project_discovery_does_not_report_ordinary_opencode_pages_as_inspection
     assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
     assert!(
         discovery
+            .groups
+            .iter()
+            .any(|group| group.path == fixture.project && group.capture_supported)
+    );
+}
+
+#[test]
+fn project_scans_reach_a_later_opencode_page_and_stop_at_4096_candidates() {
+    let mut fixture = Fixture::new();
+    let root = fixture.directory.path().canonicalize().unwrap();
+    let unrelated = root.join("unrelated");
+    fs::create_dir(&unrelated).unwrap();
+    let connection = rusqlite::Connection::open(&fixture.source.path).unwrap();
+    connection
+        .execute(
+            "WITH RECURSIVE extra(n) AS (
+                VALUES(1) UNION ALL SELECT n+1 FROM extra WHERE n < 4097
+             )
+             INSERT INTO session_v2(id,project_id,slug,directory,version,time_created,time_updated)
+             SELECT printf('budget-%04d', n), 'global', printf('budget-%04d', n),
+                 CASE WHEN n=513 THEN ?1 ELSE ?2 END, '2.3.0', 1, 2 FROM extra;",
+            [&fixture.project, unrelated.to_str().unwrap()],
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut scans = ProjectScans::new(vec![&fixture.source]);
+    for page_index in 0..8 {
+        let (index, page) = scans
+            .next(&|| true, |_| true, |_| Ok(Cow::Borrowed(&[])))
+            .unwrap();
+        assert_eq!(index, 0);
+        let page = page.unwrap();
+        assert_eq!(page.visited, 512);
+        assert_eq!(page.candidates.len(), 512);
+        let first = format!("budget-{:04}", page_index * 512 + 1);
+        assert_eq!(page.candidates[0].native_session_id(), first);
+        let last = format!("budget-{:04}", (page_index + 1) * 512);
+        assert_eq!(page.candidates[511].native_session_id(), last);
+        assert!(page.next_cursor.is_some());
+    }
+    assert_eq!(scans.remaining, 0);
+    assert!(scans.root_incomplete(0));
+    assert!(
+        scans
+            .next(&|| true, |_| true, |_| Ok(Cow::Borrowed(&[])))
+            .is_none()
+    );
+
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    let checks = std::cell::Cell::new(0);
+    let current = || {
+        checks.set(checks.get() + 1);
+        true
+    };
+    confirm_project_choices(
+        &fixture.store,
+        &mut Cache::default(),
+        &fixture.binding(),
+        &BTreeMap::from([(group_id("native", &fixture.project), true)]),
+        &BTreeSet::from([ProjectSelection {
+            source_kind: fixture.source.source_kind,
+            source_path: fixture.source.path.clone(),
+            project_path: fixture.project.clone(),
+        }]),
+        &current,
+    )
+    .unwrap();
+    assert!(checks.get() < 600, "approval must stop after finding proof");
+
+    rusqlite::Connection::open(&fixture.source.path)
+        .unwrap()
+        .execute(
+            "UPDATE session_v2 SET directory=CASE WHEN id='budget-4097' THEN ?1 ELSE ?2 END",
+            [&fixture.project, unrelated.to_str().unwrap()],
+        )
+        .unwrap();
+    let discovery = fixture.discover(Vec::new());
+    assert!(discovery.partial);
+    assert!(
+        !discovery
             .groups
             .iter()
             .any(|group| group.path == fixture.project && group.capture_supported)
@@ -1062,7 +1324,7 @@ fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_
         .unwrap();
     assert!(!discovery.partial);
     assert!(selected.capture_supported);
-    assert_eq!(selected.capture_session_count, 1);
+    assert_eq!(selected.capture_session_count, 4);
     assert_eq!(discovery.source_roots, vec![fixture.source.clone()]);
     assert!(
         discovery
@@ -1070,7 +1332,7 @@ fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_
             .iter()
             .map(|group| group.capture_session_count)
             .sum::<u32>()
-            <= 512
+            <= 4096
     );
     let next_source = fixture
         .directory
@@ -1084,7 +1346,7 @@ fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_
         path: next_source.to_str().unwrap().into(),
     };
     let bounded = fixture.discover(vec![fixture.source.clone(), later.clone()]);
-    assert!(!bounded.partial);
+    assert!(bounded.partial);
     assert_eq!(bounded.source_roots, vec![fixture.source.clone(), later]);
     assert!(
         bounded
@@ -1092,12 +1354,12 @@ fn cloud_project_discovery_qualifies_cached_opencode_ids_beyond_the_first_large_
             .iter()
             .map(|group| group.capture_session_count)
             .sum::<u32>()
-            <= 512
+            <= 4096
     );
 
     connection
         .execute(
-            "UPDATE session_v2 SET directory=?1 WHERE id='ses_main'",
+            "UPDATE session_v2 SET directory=?1",
             [outside.to_str().unwrap()],
         )
         .unwrap();
