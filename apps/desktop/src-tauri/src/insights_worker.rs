@@ -33,6 +33,8 @@ mod supervision;
 
 pub(crate) const LEASE_SECS: i64 = 300;
 pub(crate) const LEASE_RENEW_SECS: u64 = 60;
+/// Give queued reads time to take the Store lock between claim cleanup batches.
+const CLAIM_LEFTOVER_BATCH_PAUSE: Duration = Duration::from_millis(2);
 pub(crate) const IDLE_POLL_SECS: u64 = 60;
 /// Parse several independent transcripts at once without saturating the machine.
 const WORKER_CONCURRENCY: usize = 4;
@@ -940,7 +942,7 @@ fn lease_renew_interval() -> Duration {
 #[cfg(test)]
 pub(crate) async fn process_next(
     store: &Store,
-    clock: &(dyn Fn() -> i64 + Send + Sync),
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
@@ -969,9 +971,73 @@ struct WorkProgress<'a> {
     authorities: Arc<tokio::sync::Mutex<Option<crate::remediation::PublicationAuthorityCache>>>,
 }
 
+/// Remove the claimed session's superseded rows before its pass starts.
+///
+/// Publication deletes every superseded row in one transaction. This keeps
+/// that transaction short. It renews the lease during a long removal and
+/// checks ownership before the pass starts, including after a removal error.
+async fn clear_claim_leftovers(
+    store: &Store,
+    claim: &EvidenceClaim,
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
+) -> anyhow::Result<bool> {
+    clear_claim_leftovers_with(store, claim, clock, || {
+        let task_store = store.clone();
+        let key = claim.key.clone();
+        async move {
+            match tokio::task::spawn_blocking(move || task_store.clear_leftover_batch(&key)).await?
+            {
+                Ok(batch) => Ok(batch.more),
+                Err(error) => {
+                    ::tracing::warn!(event = "claim_leftover_rows_failed", error = %error);
+                    Ok(false)
+                }
+            }
+        }
+    })
+    .await
+}
+
+/// Remove batches and check claim ownership between them and before analysis.
+async fn clear_claim_leftovers_with<Fut>(
+    store: &Store,
+    claim: &EvidenceClaim,
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
+    mut remove_batch: impl FnMut() -> Fut,
+) -> anyhow::Result<bool>
+where
+    Fut: Future<Output = anyhow::Result<bool>> + Send,
+{
+    let mut renewed = tokio::time::Instant::now();
+    loop {
+        let more = remove_batch().await?;
+        if !more || renewed.elapsed() >= lease_renew_interval() {
+            let held = renew_claim(store, claim, clock).await?;
+            if !more || !held {
+                return Ok(held);
+            }
+            renewed = tokio::time::Instant::now();
+        }
+        tokio::time::sleep(CLAIM_LEFTOVER_BATCH_PAUSE).await;
+    }
+}
+
+/// Renew the lease on the blocking pool and sample the clock under the Store lock.
+async fn renew_claim(
+    store: &Store,
+    claim: &EvidenceClaim,
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
+) -> anyhow::Result<bool> {
+    let store = store.clone();
+    let claim = claim.clone();
+    let clock = (*clock).clone();
+    tokio::task::spawn_blocking(move || store.renew_evidence_lease(&claim, clock, LEASE_SECS))
+        .await?
+}
+
 async fn process_next_with_progress(
     store: &Store,
-    clock: &(dyn Fn() -> i64 + Send + Sync),
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
@@ -1001,6 +1067,26 @@ async fn process_next_with_progress(
         apply_outcome_blocking(store, &claim, pass, clock(), apply_outcome).await?;
         return Ok(true);
     };
+    let pre_pass_error = match clear_claim_leftovers(store, &claim, clock).await {
+        Ok(true) => None,
+        Ok(false) => Some("worker-claim-lost"),
+        Err(error) => {
+            ::tracing::error!(event = "insights_evidence_pre_pass_check_failed", error = %error);
+            Some("worker-pre-pass-check-failed")
+        }
+    };
+    if let Some(last_error) = pre_pass_error {
+        return settle_failed_claim(
+            store,
+            &claim,
+            clock(),
+            last_error,
+            false,
+            announce,
+            progress.published,
+        )
+        .await;
+    }
     let signal = PassSignal::new();
     // Construct the runner inside the panic boundary as well as polling it.
     let pass =
@@ -1016,7 +1102,7 @@ async fn process_next_with_progress(
                     continue;
                 }
                 lease_progress = observed;
-                match store.renew_evidence_lease(&claim, clock(), LEASE_SECS) {
+                match renew_claim(store, &claim, clock).await {
                     Ok(true) => {}
                     renewal => {
                         signal.cancel();
@@ -1125,7 +1211,7 @@ async fn process_next_with_progress(
 #[cfg(test)]
 pub(crate) async fn process_next_work(
     store: &Store,
-    clock: &(dyn Fn() -> i64 + Send + Sync),
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
@@ -1150,7 +1236,7 @@ pub(crate) async fn process_next_work(
 
 async fn process_next_work_with_journal<F, Fut>(
     store: &Store,
-    clock: &(dyn Fn() -> i64 + Send + Sync),
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     report_ingested: &(dyn Fn(AgentKind, IngestedIncidents) + Send + Sync),
@@ -1252,7 +1338,7 @@ pub(crate) struct WorkerLoopSignals<'a> {
 pub(crate) async fn worker_loop(
     store: &Store,
     handle: &WorkerHandle,
-    clock: &(dyn Fn() -> i64 + Send + Sync),
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     signals: &WorkerLoopSignals<'_>,
@@ -1285,7 +1371,7 @@ struct WorkerLoopReports<'a> {
 async fn worker_loop_with_reports(
     store: &Store,
     handle: &WorkerHandle,
-    clock: &(dyn Fn() -> i64 + Send + Sync),
+    clock: &(impl Fn() -> i64 + Clone + Send + Sync + 'static),
     run_pass: &PassRunner<'_>,
     announce: &(dyn Fn(&SessionKey) + Send + Sync),
     signals: &WorkerLoopSignals<'_>,

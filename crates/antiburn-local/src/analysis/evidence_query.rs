@@ -185,6 +185,11 @@ impl<'a> FenceScope<'a> {
 /// claim fence again when nothing resumed, so the predicate's second half
 /// can never match a row the first half did not already match), and a
 /// JSON array of which source keys that published fence covers.
+///
+/// Each query also tests `claim_fence IN (?4, ?5)`. SQLite cannot seek an
+/// index on the `OR` predicate, and without the seek it reads every leftover
+/// copy of the session. A `+thread_id` sort term prevents the sort order
+/// from selecting an index that does not contain the fence.
 fn scope_bind_values(scope: &FenceScope<'_>) -> (i64, i64, String) {
     match &scope.published {
         Some(published) => (
@@ -361,7 +366,7 @@ const CORE_SQL: &str = "SELECT
     COALESCE(SUM(scope = 'delegated' AND role = 'assistant' AND model IS NULL AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) > 0), 0),
     COALESCE(SUM(uuid IS NULL), 0)
   FROM turn
- WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))";
+ WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))";
 
 fn query_core(
     conn: &Connection,
@@ -427,8 +432,8 @@ const TURN_ROWS_SQL: &str = "SELECT source_key, thread_id, turn_index, scope, ch
         compaction_post_tokens, has_thinking, last_tool, subagent_launches, provider, api,
         cache_write_1h_tokens, accounting_json
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
-  ORDER BY source_key, turn_index";
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  ORDER BY source_key, turn_index, thread_id, rowid";
 
 /// Reads the full ordered turn rows for `key` at `claim_fence`, without
 /// their `turn_content` text. A later change adds a separate content read.
@@ -540,10 +545,10 @@ pub fn query_turn_rows(
 const TOP_DEPTH_EXAMPLES_SQL: &str = "SELECT ts_ms,
         (input_tokens + cache_read_tokens + cache_write_tokens) AS depth, model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND ts_ms IS NOT NULL
     AND (input_tokens + cache_read_tokens + cache_write_tokens) > 0
-  ORDER BY depth DESC, ts_ms ASC
+  ORDER BY depth DESC, ts_ms ASC, thread_id, turn_index, rowid
   LIMIT ?7";
 
 fn query_top_depth_examples(
@@ -593,7 +598,7 @@ fn query_top_depth_examples(
 const BY_MODEL_SQL: &str = "SELECT model, input_tokens, output_tokens, cache_read_tokens,
         cache_write_tokens, ts_ms
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND role = 'assistant' AND model IS NOT NULL
   ORDER BY rowid";
 
@@ -690,7 +695,7 @@ fn add_model_tokens(
 const MODEL_BREAKDOWN_SQL: &str = "SELECT COALESCE(model, ''), input_tokens, output_tokens,
         cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting_json IS NOT NULL
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND (role = 'assistant' OR accounting_json IS NOT NULL) AND (model IS NOT NULL OR accounting_json IS NOT NULL)
     AND (input_tokens != 0 OR output_tokens != 0
          OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
@@ -756,7 +761,7 @@ pub fn query_model_breakdown(
 const PRICING_BREAKDOWN_SQL: &str = "SELECT COALESCE(model, ''), speed, input_tokens, output_tokens,
         cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting_json IS NOT NULL
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND (role = 'assistant' OR accounting_json IS NOT NULL) AND (model IS NOT NULL OR accounting_json IS NOT NULL)
     AND (input_tokens != 0 OR output_tokens != 0
          OR cache_read_tokens != 0 OR cache_write_tokens != 0)";
@@ -802,11 +807,11 @@ pub fn query_pricing_breakdown(
 
 const MODEL_RUNS_SQL: &str = "SELECT source_key, model, effort, json_extract(accounting_json, '$.nativeVariant'), accounting_json IS NOT NULL
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND (role = 'assistant' OR accounting_json IS NOT NULL) AND model IS NOT NULL
     AND (input_tokens != 0 OR output_tokens != 0
          OR cache_read_tokens != 0 OR cache_write_tokens != 0)
-   ORDER BY source_key, turn_index";
+   ORDER BY source_key, turn_index, thread_id, rowid";
 
 const MAX_NATIVE_MODEL_RUN_SOURCES: usize = 256;
 
@@ -917,7 +922,7 @@ pub fn query_model_runs(
 /// tie-breaks provide a stable result. `LIMIT 1` keeps one bounded row.
 const DOMINANT_MAIN_MODEL_SQL: &str = "SELECT model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main' AND role = 'assistant' AND model IS NOT NULL
   GROUP BY model
   ORDER BY SUM(output_tokens) DESC, COUNT(*) DESC, MAX(ts_ms) ASC, MIN(turn_index) ASC
@@ -953,13 +958,13 @@ fn query_dominant_main_model(
 
 const EFFORT_TIERS_SQL: &str = "SELECT effort, scope
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND effort IS NOT NULL
   ORDER BY rowid";
 
 const FAST_MODES_SQL: &str = "SELECT speed, scope
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND speed IS NOT NULL
   ORDER BY rowid";
 
@@ -1007,6 +1012,15 @@ fn query_tier_map(
 
 type TiersByModel = BTreeMap<String, BTreeMap<String, TurnCounts>>;
 
+fn tiers_by_model_sql(column: &str) -> String {
+    format!(
+        "SELECT model, {column}, scope FROM turn \
+         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 \
+         AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6)))) \
+         AND role = 'assistant' AND model IS NOT NULL AND {column} IS NOT NULL ORDER BY rowid"
+    )
+}
+
 fn query_tiers_by_model(
     conn: &Connection,
     key: &TurnSessionKey<'_>,
@@ -1016,12 +1030,7 @@ fn query_tiers_by_model(
     diagnostics: &mut ParseDiagnostics,
 ) -> rusqlite::Result<(TiersByModel, bool)> {
     let (claim_fence, published_fence, source_keys_json) = scope_bind_values(scope);
-    let sql = format!(
-        "SELECT model, {column}, scope FROM turn \
-         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 \
-         AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6)))) \
-         AND role = 'assistant' AND model IS NOT NULL AND {column} IS NOT NULL ORDER BY rowid"
-    );
+    let sql = tiers_by_model_sql(column);
     let mut statement = conn.prepare(&sql)?;
     let mut rows = statement.query(params![
         key.environment_key,
@@ -1075,7 +1084,7 @@ const SIGNAL_COVERAGE_SQL: &str = "SELECT
     COALESCE(SUM(role = 'assistant' AND model IS NOT NULL AND effort IS NOT NULL), 0),
     COALESCE(SUM(role = 'assistant' AND model IS NOT NULL AND speed IS NOT NULL), 0)
   FROM turn
- WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))";
+ WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))";
 
 fn query_signal_coverage(
     conn: &Connection,
@@ -1118,7 +1127,7 @@ fn query_signal_coverage(
 
 const DELEGATED_MODELS_SQL: &str = "SELECT model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'delegated' AND role = 'assistant' AND model IS NOT NULL
   ORDER BY rowid";
 
@@ -1166,9 +1175,9 @@ fn query_delegated_models(
 
 const MAIN_THREAD_SCAN_SQL: &str = "SELECT thread_id, ts_ms, model
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'
-  ORDER BY thread_id, turn_index";
+  ORDER BY +thread_id, turn_index, rowid";
 
 /// Mirrors `evidence_sink::observe_cache_and_compaction`'s model-transition
 /// and idle-gap tracking exactly, with one difference: this scan resets
@@ -1249,7 +1258,7 @@ fn query_transitions_and_idle_gaps(
 const MANUAL_COMPACTIONS_SQL: &str = "SELECT COALESCE(
         SUM(is_compaction_boundary = 1 AND compaction_trigger = ?7), 0)
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'";
 
 fn query_manual_compactions(
@@ -1277,9 +1286,9 @@ fn query_manual_compactions(
 const COMPACTION_BOUNDARIES_SQL: &str = "SELECT ts_ms, compaction_trigger,
         compaction_pre_tokens, compaction_post_tokens
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main' AND is_compaction_boundary = 1
-  ORDER BY thread_id, turn_index
+  ORDER BY +thread_id, turn_index, rowid
   LIMIT ?7";
 
 fn query_compaction_boundaries(
@@ -1327,7 +1336,7 @@ fn query_compaction_boundaries(
 
 const DUPLICATE_TURN_IDENTITIES_SQL: &str = "SELECT COUNT(*) FROM (
         SELECT uuid FROM turn
-         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+         WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
            AND uuid IS NOT NULL
          GROUP BY uuid
         HAVING COUNT(DISTINCT source_key) > 1 OR (?2 = 'opencode' AND COUNT(*) > 1)
@@ -1365,9 +1374,9 @@ const REPEATED_CONTEXT_SCAN_SQL: &str = "SELECT thread_id, ts_ms, input_tokens,
         cache_read_tokens, cache_write_tokens, is_compaction_boundary,
         source_key, role, model, provider, api, uuid, parent_uuid, turn_index, output_tokens
    FROM turn
-  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+  WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3 AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'
-  ORDER BY source_key, thread_id, turn_index";
+  ORDER BY source_key, thread_id, turn_index, rowid";
 
 struct RepeatedContextTotals {
     accounting: Option<RepeatedContextAccounting>,
@@ -1562,9 +1571,9 @@ const CACHE_EPISODE_SCAN_SQL: &str = "SELECT source_key, thread_id, ts_ms, input
         provider, api, uuid, parent_uuid, turn_index, cache_write_1h_tokens
    FROM turn
   WHERE environment_key = ?1 AND agent = ?2 AND session_id = ?3
-    AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
+    AND claim_fence IN (?4, ?5) AND (claim_fence = ?4 OR (claim_fence = ?5 AND source_key IN (SELECT value FROM json_each(?6))))
     AND scope = 'main'
-  ORDER BY source_key, thread_id, turn_index";
+  ORDER BY source_key, thread_id, turn_index, rowid";
 
 fn query_cache_miss_episodes(
     conn: &Connection,
@@ -1855,6 +1864,83 @@ mod tests {
         .unwrap();
         assert_eq!(tail.parts.len(), 1);
         assert!(!tail.coverage.more_parts);
+    }
+
+    #[test]
+    fn fact_queries_seek_the_claim_fence() {
+        let conn = test_connection();
+        let tiers = tiers_by_model_sql("effort");
+        for sql in [
+            CORE_SQL,
+            TURN_ROWS_SQL,
+            TOP_DEPTH_EXAMPLES_SQL,
+            BY_MODEL_SQL,
+            MODEL_BREAKDOWN_SQL,
+            PRICING_BREAKDOWN_SQL,
+            MODEL_RUNS_SQL,
+            DOMINANT_MAIN_MODEL_SQL,
+            EFFORT_TIERS_SQL,
+            FAST_MODES_SQL,
+            &tiers,
+            SIGNAL_COVERAGE_SQL,
+            DELEGATED_MODELS_SQL,
+            MAIN_THREAD_SCAN_SQL,
+            MANUAL_COMPACTIONS_SQL,
+            COMPACTION_BOUNDARIES_SQL,
+            DUPLICATE_TURN_IDENTITIES_SQL,
+            REPEATED_CONTEXT_SCAN_SQL,
+            CACHE_EPISODE_SCAN_SQL,
+        ] {
+            let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let binds = vec![1_i64; statement.parameter_count()];
+            let plan = statement
+                .query_map(rusqlite::params_from_iter(binds), |row| {
+                    row.get::<_, String>(3)
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            let turn_steps = plan
+                .iter()
+                .filter(|step| step.contains(" turn "))
+                .collect::<Vec<_>>();
+            assert!(!turn_steps.is_empty(), "{sql}");
+            assert!(
+                turn_steps.iter().all(|step| step.contains("claim_fence=?")),
+                "{sql}\n{plan:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn leftover_fences_do_not_change_plain_or_resumed_facts() {
+        let published_sources = vec!["s1".to_owned()];
+        let facts = |leftovers: bool| {
+            let conn = test_connection();
+            let published = (0..4).map(|i| base_row("s1", i)).collect::<Vec<_>>();
+            let claimed = (4..6).map(|i| base_row("s1", i)).collect::<Vec<_>>();
+            if leftovers {
+                insert_turn_rows(&conn, &KEY, 3, &published).unwrap();
+                insert_turn_rows(&conn, &KEY, 8, &claimed).unwrap();
+            }
+            insert_turn_rows(&conn, &KEY, 5, &published).unwrap();
+            insert_turn_rows(&conn, &KEY, 9, &claimed).unwrap();
+            let plain = query_turn_facts(&conn, &KEY, &FenceScope::single(5)).unwrap();
+            let resumed = query_turn_facts(
+                &conn,
+                &KEY,
+                &FenceScope {
+                    claim_fence: 9,
+                    published: Some(PublishedScope {
+                        fence: 5,
+                        source_keys: &published_sources,
+                    }),
+                },
+            )
+            .unwrap();
+            format!("{plain:?}\n{resumed:?}")
+        };
+        assert_eq!(facts(false), facts(true));
     }
 
     pub(super) const KEY: TurnSessionKey<'static> = TurnSessionKey {

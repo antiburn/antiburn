@@ -926,7 +926,7 @@ fn a_stale_generation_rejects_a_session_evidence_lease_renewal() {
         .unwrap();
     let before = store.evidence(&record.key).unwrap().unwrap();
 
-    assert!(!store.renew_evidence_lease(&claim, 110, 60).unwrap());
+    assert!(!store.renew_evidence_lease(&claim, || 110, 60).unwrap());
     assert_eq!(store.evidence(&record.key).unwrap().unwrap(), before);
 }
 

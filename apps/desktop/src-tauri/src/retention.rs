@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 use crate::store::{Revision, Store};
 
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-/// Storage upkeep holds the writer lock. The delay keeps it away from launch.
+/// Delay the sweep and checkpoint until after launch.
 const STORAGE_UPKEEP_DELAY: Duration = Duration::from_secs(10 * 60);
 
 /// Start cleanup at launch and repeat it once per day. Storage upkeep
@@ -17,11 +17,13 @@ pub fn spawn_scheduler(app: &AppHandle) -> tauri::async_runtime::JoinHandle<()> 
     tauri::async_runtime::spawn(async move {
         run_blocking(&app, cleanup).await;
         tokio::time::sleep(STORAGE_UPKEEP_DELAY).await;
-        run_blocking(&app, maintain_storage).await;
+        run_blocking(&app, clear_leftover_rows).await;
+        run_blocking(&app, checkpoint_wal).await;
         loop {
             tokio::time::sleep(CLEANUP_INTERVAL).await;
             run_blocking(&app, cleanup).await;
-            run_blocking(&app, maintain_storage).await;
+            run_blocking(&app, clear_leftover_rows).await;
+            run_blocking(&app, checkpoint_wal).await;
         }
     })
 }
@@ -34,16 +36,27 @@ async fn run_blocking(app: &AppHandle, work: fn(&AppHandle)) {
     }
 }
 
-fn maintain_storage(app: &AppHandle) {
-    let store = app.state::<Store>();
-    match store.maintain_storage(crate::store::VacuumThreshold::default()) {
-        Ok(upkeep) => tracing::info!(
+fn clear_leftover_rows(app: &AppHandle) {
+    let started = std::time::Instant::now();
+    match app.state::<Store>().clear_leftover_rows() {
+        Ok(removed) => tracing::info!(
+            event = "leftover_rows_cleared",
+            removed,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+        ),
+        Err(error) => tracing::warn!(event = "leftover_rows_failed", error = %error),
+    }
+}
+
+fn checkpoint_wal(app: &AppHandle) {
+    let started = std::time::Instant::now();
+    match app.state::<Store>().checkpoint_wal() {
+        Ok(checkpoint) => tracing::info!(
             event = "storage_upkeep",
-            vacuumed = upkeep.vacuumed,
-            wal_truncated = upkeep.wal_truncated,
-            file_bytes_before = upkeep.file_bytes_before,
-            free_bytes_before = upkeep.free_bytes_before,
-            file_bytes_after = upkeep.file_bytes_after,
+            busy = checkpoint.busy,
+            log_frames = checkpoint.log_frames,
+            checkpointed_frames = checkpoint.checkpointed_frames,
+            elapsed_ms = started.elapsed().as_millis() as u64,
         ),
         Err(error) => tracing::warn!(event = "storage_upkeep_failed", error = %error),
     }

@@ -13,6 +13,8 @@ no Antiburn account, server, or backend.
 
 ## Data and network requests
 
+- **Local database storage:** Cleanup removes expired data and superseded analysis
+  rows. SQLite can reuse the space, and the database file may retain its size.
 - **OpenCode V2 sessions:** Native stored analysis reads a bounded, read-only SQLite
   snapshot. Live YAML Checks can observe the existing registered local service
   over authenticated HTTP after Antiburn proves that its process has the selected
