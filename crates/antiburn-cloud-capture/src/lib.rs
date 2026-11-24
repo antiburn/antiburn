@@ -18,6 +18,8 @@
 mod codex;
 #[cfg(feature = "cloud")]
 mod contract;
+#[cfg(all(feature = "cloud", unix))]
+mod cursor;
 #[cfg(feature = "cloud")]
 mod directory;
 #[cfg(feature = "cloud")]
@@ -47,6 +49,11 @@ mod stream;
 pub use codex::reopen_codex;
 #[cfg(feature = "cloud")]
 pub use contract::*;
+#[cfg(all(feature = "cloud", unix))]
+pub use cursor::{
+    CursorCliDiscoveryPage, CursorIdeDiscoveryPage, discover_cursor_cli_page,
+    discover_cursor_ide_page, reopen_cursor_cli, reopen_cursor_ide,
+};
 #[cfg(feature = "cloud")]
 pub use discovery::{Candidate, CaptureSourceKind, discover_claude, discover_opencode};
 #[cfg(feature = "cloud")]

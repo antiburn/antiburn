@@ -11,7 +11,7 @@ publish = false
 
 [features]
 default = []
-cloud = ["dep:base64", "dep:errno", "dep:flate2", "dep:libc", "dep:rusqlite", "dep:serde", "dep:serde_json", "dep:sha2"]
+cloud = ["dep:base64", "dep:errno", "dep:flate2", "dep:libc", "dep:md-5", "dep:rusqlite", "dep:serde", "dep:serde_json", "dep:sha2"]
 
 [dependencies]
 flate2 = { version = "1", optional = true }
@@ -23,6 +23,7 @@ sha2 = { version = "0.11", optional = true }
 base64 = { version = "0.22", optional = true }
 errno = { version = "0.3", optional = true }
 libc = { version = "0.2", optional = true }
+md-5 = { version = "0.11", optional = true }
 rusqlite = { version = "0.32.1", features = ["bundled", "blob", "hooks", "limits"], optional = true }
 
 [dev-dependencies]

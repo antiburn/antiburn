@@ -4,8 +4,9 @@ Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.co
 This contract describes development-only capture; public builds keep Cloud disabled.
 
 Desktop capture preserves provider-native source without using the local normalized session model.
-Claude, Codex, and Pi streams retain exact file bytes. OpenCode streams retain typed
-session-owned SQLite cells from one read snapshot, not a database copy.
+Claude, Codex, Pi, and Cursor CLI transcript streams retain exact file bytes.
+OpenCode and supported Cursor composer streams retain typed session-owned SQLite
+cells, not database copies.
 Here native refers only to the provider's original session formats, bytes,
 schemas, and recorded identities, not the desktop capture operation.
 
@@ -44,7 +45,8 @@ upload transport; the desktop host owns that integration.
 ## Source ownership and capture
 
 Discovery accepts one explicitly authorized source: a Claude `projects/<project>`
-directory, a Codex rollout file, a Pi session file, or an OpenCode database.
+directory, a Codex rollout file, a Pi session file, an OpenCode database, or a
+[supported Cursor source](cursor.md).
 It never finds a home directory. Tests read only public synthetic fixtures and
 files they create in temporary directories. The host owns current source access
 policy, selected sources, consent, and scheduling.
@@ -222,6 +224,13 @@ native session ID. The library exports the whole file, including recorded
 branches and tool results, without assigning worker IDs or following parent
 references.
 
+### Cursor sources
+
+The [Cursor source contract](cursor.md) defines the IDE composer and CLI transcript
+ownership rules. Both require current project admission. Capture rechecks the
+recorded folder after reservation. The library exports exact CLI transcript
+bytes or selected IDE rows, not database copies or normalized local sessions.
+
 ### OpenCode SQLite
 
 `discover_opencode` reads bounded schema and session identities, not session
@@ -253,17 +262,19 @@ Failures leave an interrupted entry, not a smaller successful capture.
 ## Independent stream layout
 
 Claude captures contain transcript, optional companion, and metadata streams in
-that order. Codex and Pi captures contain transcript and metadata only. OpenCode
-captures contain native rows and metadata only. These are ordered independent
-streams, not one concatenated upload body.
+that order. Codex, Pi, and Cursor CLI captures contain transcript and metadata
+only. OpenCode and Cursor IDE captures contain native rows and metadata only.
+These are ordered independent streams, not one concatenated upload body.
 
 | Stream ID | Role | Schema | Bytes |
 | --- | --- | --- | --- |
 | `transcript` | `native_transcript` | `claude-jsonl` | Exact native JSONL |
 | `transcript` | `native_transcript` | `codex-jsonl` | Exact native Codex rollout JSONL |
 | `transcript` | `native_transcript` | `pi-jsonl` | Exact native Pi session JSONL |
+| `transcript` | `native_transcript` | `cursor-cli-jsonl` | Exact native Cursor CLI JSONL |
 | `native-companion` | `native_companion` | `claude-agent-meta-json` | Exact owned companion, when present |
 | `native-rows` | `native_rows` | `antiburn-sqlite-native` | Typed OpenCode SQLite cells; numeric format version inside its header |
+| `cursor-ide-rows` | `native_rows` | `antiburn-sqlite-native` | Typed Cursor IDE composer, declared header chunks when present, and referenced bubbles |
 | `capture-metadata` | `capture_metadata` | `antiburn-capture-metadata-v1` | Compact UTF-8 metadata JSON |
 
 Each stream records its stable ID, role, schema, full expanded byte length,
@@ -308,6 +319,8 @@ Codex uses agent `codex`, source format `CodexJsonl`, and its first owned header
 native session ID. Codex leaves `native_agent_id` null.
 Pi uses agent `pi`, source format `PiJsonl`, and its first owned header's native
 session ID. Pi leaves `native_agent_id` null.
+Cursor uses agent `cursor`, source format `CursorIdeComposer` or
+`CursorCliAgentJsonl`, and the proved composer or CLI session ID.
 It has no capture ID, account, destination, automatic timestamp, or queue state.
 These operation values must not change the source bytes for an unchanged
 native source and unchanged meaningful metadata.

@@ -4,8 +4,9 @@ Antiburn Cloud is waitlisted. [Sign up for the waiting list](https://antiburn.co
 Public desktop builds keep Cloud disabled until launch.
 
 This standalone crate owns bounded capture of Claude files, Codex rollouts, Pi
-session files, and OpenCode SQLite. It also owns private disk spooling, a durable
-many-session queue, and upload reconciliation through a caller-owned transport.
+session files, OpenCode SQLite, and supported Cursor sources. It also owns
+private disk spooling, a durable queue, and upload reconciliation through a
+caller-owned transport.
 It contains no network client.
 
 The default build has no capture API. Select the explicit non-default `cloud`
@@ -31,9 +32,8 @@ then call `acknowledge_accepted` to remove the retained receipt.
 
 ## Host integration
 
-1. Authorize one Claude source root, Codex rollout, Pi session file, or OpenCode
-   database. Scope each candidate with the host's stable account and device-local
-   source scope.
+1. Authorize a supported provider source. Scope each candidate with the host's
+   stable account and device-local source scope.
 2. Save request and consent bindings, then capture with a new globally unique ID.
    If capture leaves `Preparing`, cancel explicitly before using a new ID.
 3. Schedule one `resume_step` per pending request after checking current consent.
@@ -53,6 +53,8 @@ See [Codex rollout capture](../../docs/cloud/codex.md) for its ownership and
 folder permission rules.
 Use `reopen_pi` for one authorized Pi session file and its expected native
 session ID. See [Pi session capture](../../docs/cloud/pi.md) for its rules.
+Use the [Cursor source contract](../../docs/cloud/cursor.md) for paired roots,
+bounded discovery, and the supported CLI transcript and IDE composer layouts.
 
 [`Transport`](src/contract.rs) is the desktop host's service boundary. Its API
 documents method ordering, exact body handling, frozen plans, and closed errors.

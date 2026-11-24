@@ -241,8 +241,10 @@ fn cloud_team_folder_confirmation_requires_current_eligibility_and_stale_consent
 fn cloud_retry_availability_is_false_when_device_upload_is_off() {
     let status = Status {
         retry_available: true,
+        automatic_recovery_count: Some(1),
         team_statuses: vec![Status {
             retry_available: true,
+            automatic_recovery_count: Some(1),
             ..Status::default()
         }],
         ..Status::default()
@@ -250,6 +252,12 @@ fn cloud_retry_availability_is_false_when_device_upload_is_off() {
     let value = serde_json::to_value(status.with_device_upload_enabled(false)).unwrap();
     assert_eq!(value["retryAvailable"], false);
     assert_eq!(value["teamStatuses"][0]["retryAvailable"], false);
+    assert!(value.get("automaticRecoveryCount").is_none());
+    assert!(
+        value["teamStatuses"][0]
+            .get("automaticRecoveryCount")
+            .is_none()
+    );
 }
 
 #[test]
@@ -277,6 +285,7 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
                 policy_revision: Some(policy.revision.clone()),
                 retry_available: true,
                 recovery_required_count: 2,
+                automatic_recovery_count: Some(1),
                 ..Status::default()
             }),
             last_status_origin: Some(RESOURCE.into()),
@@ -286,6 +295,7 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
                 grant_id: session.grant_id.clone(),
             }),
             backfill_revision: Some(policy.revision.clone()),
+            backfill_progress: Some(BackfillProgress::new(&policy, &session.grant_id)),
             discovery_cursor: Some(cursor.clone()),
             retry_deadlines: BTreeMap::from([(
                 "saved".into(),
@@ -312,6 +322,7 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
     assert!(observed[0].backfill_in_progress);
     assert_eq!(observed[0].recovery_required_count, 2);
     assert!(!observed[0].retry_available);
+    assert_eq!(observed[0].automatic_recovery_count, None);
     assert_eq!(runners[&key].discovery_cursor.as_ref(), Some(&cursor));
     assert_eq!(runners[&key].retry_deadlines["saved"].0, deadline);
     assert_eq!(runners[&key].conflict_attempts["saved"], 2);

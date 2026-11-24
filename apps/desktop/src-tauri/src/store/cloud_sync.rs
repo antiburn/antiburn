@@ -1267,18 +1267,35 @@ impl Store {
 
     /// Update host progress only under the job's fixed selection.
     pub(crate) fn set_cloud_sync_job_state(&self, job: &Job, state: JobState) -> Result<()> {
-        self.save_cloud_sync_job_state(job, state, None)
+        self.save_cloud_sync_job_state(job, state, None, None)
+    }
+
+    /// Clear capacity-only retry permission and save the verified observation
+    /// before reservation. The caller must first check this exact saved source.
+    pub(crate) fn begin_cloud_sync_reservation_retry(
+        &self,
+        job: &Job,
+        observation: &str,
+    ) -> Result<()> {
+        ensure!(
+            matches!(
+                job.state,
+                JobState::WaitingForCapacity | JobState::WaitingForLocalCapacity
+            ),
+            "Cloud capture is not waiting for capacity"
+        );
+        self.save_cloud_sync_job_state(job, JobState::Pending, None, Some(observation))
     }
 
     /// Save only a proved capacity refusal. The host owns the refusal evidence;
     /// old empty or interrupted entries do not establish it.
     pub(crate) fn defer_cloud_sync_reservation(&self, job: &Job, retry_at: i64) -> Result<()> {
-        self.save_cloud_sync_job_state(job, JobState::WaitingForCapacity, Some(retry_at))
+        self.save_cloud_sync_job_state(job, JobState::WaitingForCapacity, Some(retry_at), None)
     }
 
     /// Save a proved local-capacity refusal before any capture entry or request.
     pub(crate) fn defer_cloud_sync_local_capture(&self, job: &Job, retry_at: i64) -> Result<()> {
-        self.save_cloud_sync_job_state(job, JobState::WaitingForLocalCapacity, Some(retry_at))
+        self.save_cloud_sync_job_state(job, JobState::WaitingForLocalCapacity, Some(retry_at), None)
     }
 
     /// Compare the complete prior job before changing progress or retry permission.
@@ -1287,6 +1304,7 @@ impl Store {
         job: &Job,
         state: JobState,
         reservation_retry_at: Option<i64>,
+        observation: Option<&str>,
     ) -> Result<()> {
         ensure!(!state.terminal(), "Use the terminal outcome transaction");
         let mut connection = self.lock();
@@ -1299,6 +1317,9 @@ impl Store {
         );
         saved.state = state;
         saved.reservation_retry_at = reservation_retry_at;
+        if let Some(observation) = observation {
+            saved.observation_key = observation.into();
+        }
         saved.validate()?;
         transaction.execute(
             "UPDATE cloud_sync_job SET record_json=?2 WHERE capture_id=?1",
@@ -1308,16 +1329,26 @@ impl Store {
         Ok(())
     }
 
-    /// Finish an explicitly requested empty-capture recovery. The caller first
-    /// saves `Recovering`, then uses the spool's checked empty cancellation.
+    /// Finish a saved empty-capture recovery decision. The caller first saves
+    /// `Recovering`, then uses the spool's checked empty cancellation.
     /// Keep the old ID terminal and leave every accepted fingerprint unchanged.
     pub(crate) fn abandon_cloud_sync_preparing(&self, job: &Job) -> Result<()> {
+        self.abandon_cloud_sync_job(job, JobState::Recovering)
+    }
+
+    /// Retire a fresh job only after the spool proves a pin mismatch before it
+    /// created an entry or reserved storage. Do not use for reservation retries.
+    pub(crate) fn abandon_cloud_sync_unreserved(&self, job: &Job) -> Result<()> {
+        self.abandon_cloud_sync_job(job, JobState::Pending)
+    }
+
+    fn abandon_cloud_sync_job(&self, job: &Job, expected: JobState) -> Result<()> {
         let mut connection = self.lock();
         let transaction = connection.transaction()?;
         let mut saved = job_in(&transaction, &job.identity.capture_id)?
             .ok_or_else(|| anyhow::anyhow!("Cloud job is unavailable"))?;
         ensure!(
-            saved == *job && saved.state == JobState::Recovering,
+            saved == *job && saved.state == expected,
             "Cloud recovery state changed"
         );
         saved.state = JobState::Abandoned;
@@ -1448,12 +1479,16 @@ impl Store {
                     .manifest
                     .as_ref()
                     .and_then(|manifest| {
-                        manifest
-                            .streams
-                            .iter()
-                            .find(|stream| stream.stream_id == "native-rows")
+                        // SQLite capture can read a later snapshot than discovery.
+                        manifest.streams.iter().find_map(|stream| {
+                            let prefix = match stream.stream_id.as_str() {
+                                "native-rows" => "opencode-native-v1",
+                                "cursor-ide-rows" => "cursor-ide-native-v1",
+                                _ => return None,
+                            };
+                            Some(format!("{prefix}:{}", stream.expanded_sha256))
+                        })
                     })
-                    .map(|stream| format!("opencode-native-v1:{}", stream.expanded_sha256))
                     .unwrap_or_else(|| job.observation_key.clone()),
             ),
             suppressed: previous.is_some_and(|source| source.suppressed),

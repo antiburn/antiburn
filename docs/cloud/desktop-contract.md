@@ -318,9 +318,8 @@ not change consent.
 The project list uses cached local session metadata from all discovered agents.
 It can show projects for agents that cannot upload. Counts describe local or
 provider-source discovery, not accepted Cloud sessions. Only qualified Claude,
-OpenCode V2, Codex, and Pi sources can produce upload jobs; a suggested project
-or checked row does not
-add support for another provider.
+OpenCode V2, Codex, Pi, and [Cursor](cursor.md) sources can produce upload jobs.
+A suggested project or checked row does not add support for another provider.
 
 With one eligible workspace, new onboarding choices start selected. With
 multiple workspaces, new choices start off. Loading the page or changing an
@@ -394,8 +393,9 @@ Setup failures do not hide account cleanup controls.
 
 Before enabling sync or making a capture, Desktop reads
 `GET /v1/captures/capabilities`. It sends only formats in the response: `ClaudeJsonl`,
-`OpenCodeSqliteV2`, `CodexJsonl`, or `PiJsonl`. The source limit is at most 128 MiB
-per transcript or expanded OpenCode native-row stream. A lower advertised limit
+`OpenCodeSqliteV2`, `CodexJsonl`, `PiJsonl`, `CursorCliAgentJsonl`, or
+`CursorIdeComposer`. The source limit is at most 128 MiB per transcript or
+expanded native-row stream. A lower advertised limit
 can apply. Missing support blocks new capture without truncating or dropping
 saved bytes.
 
@@ -436,29 +436,51 @@ change in another window, reload them before retrying.
 the named workspace's saved folders again, including unchanged sessions it
 previously uploaded. Cloud can reuse content for the same source. Desktop keeps
 deletion markers, existing jobs and bytes, and upload retry delays. Backfill
-does not turn on uploads, save draft choices, or retry failed jobs. Starting a
-scan does not confirm any uploads. Only an explicit backfill re-offers unchanged
-sessions; normal sync still skips them.
+does not re-offer an unchanged source if its saved job reaches integrity
+acceptance during the same scan. It does not turn on uploads, save draft choices,
+or retry failed jobs. Starting a scan does not confirm any uploads. Normal sync
+still skips unchanged sessions.
 Desktop lets one backfill request wait for its current Cloud work to finish.
 If another request is already waiting, wait for it to start before requesting a
 second scan. Before scheduling, Desktop checks the account, upload controls, and
 saved folder policy again.
 Backfill starts at the first retained source key and scans in bounded pages.
-The desktop activity date range does not limit this scan. It cannot recover
-history the coding tool removed, use files outside approved source roots, or
-read sources that exceed the provider limits. Settings shows when the scan is
-active. The scan can finish before Cloud accepts every upload.
+The desktop activity date range does not limit this scan. When the Claude
+metadata read budget is reached, the scan continues from the first unread
+source on a later turn. An unavailable source root or approved folder does not
+stop work in other verified folders. The scan reports a gap.
+Backfill cannot recover history the coding tool removed, use files outside
+approved source roots, or read sources that exceed the provider limits.
+Settings shows when the scan is active. The scan can finish before Cloud
+accepts every upload.
 If Desktop restarts before the scan finishes, request backfill again.
 Each destination can report `uploadProgress` for its last explicit backfill in
 the current Desktop run and sign-in. `uploaded` counts Cloud acceptance for
 source versions found in that scan. `total` counts sources that match the saved
 folders and are not marked as deleted. `total` is null while the scan runs. It
 stays null if discovery misses sources or reaches the progress counter limit.
+If fresh evidence proves that a source moved outside all approved folders,
+Desktop removes it from this count.
+`scanIncomplete` reports known gaps in the scan. `blocked` counts discovered
+sources that could not proceed or whose captured bytes did not match the
+scanned version. `unsupported` counts discovered sources whose format Cloud
+does not currently accept. A failed capability request does not prove that a
+format is unsupported. These two counts exclude versions with matching
+acceptance receipts. Neither the counts nor `total - uploaded` show the number
+of saved upload jobs.
 Settings does not show a percentage without a known nonzero total.
 `recoveryRequiredCount` identifies missing or incomplete local captures that
 cannot resume from their saved state. These count as interrupted, not queued.
 They do not block healthy sources. When only these failures remain, Settings
 shows a local-recovery message without a Retry button that cannot fix them.
+`automaticRecoveryCount` is a subset of `queuedCount`. It counts saved work
+the current scheduler can advance without **Retry saved uploads**. This
+includes eligible integrity polls, bounded retries of the same upload,
+proved capacity waits, and saved decisions to clear an empty local entry.
+Ordinary queued uploads, exhausted conflict probes, incomplete captures,
+and missing entries without saved recovery proof do not count. Desktop
+omits the count when it cannot verify current scheduling authority or storage,
+or when uploads are paused. A recovery count does not confirm acceptance.
 Pause stops new capture and upload work and saves the device setting across
 restarts. It does not sign out, discard retry bytes, undo requests already sent,
 or delete remote content. Sign-out and account changes also stop unauthorized
@@ -522,11 +544,23 @@ Upload locations never enter saved state, renderer status, or diagnostics.
 Resume diagnostics record closed states, whether a saved plan exists, request
 routes, renewal outcomes, timing, and retry delays. They never contain capture
 content, source paths, sign-in proof, signed URLs, or raw provider errors.
+Backfill summaries record discovery, saved-job decisions, retry reasons, and
+receipt matches at info level. Desktop limits progress summaries to one per
+minute and records scan and acceptance outcomes separately. Retry counts
+describe attempts, not distinct sources. Summaries do not record source,
+folder, or capture IDs.
 
 The scheduler and capture spool serialize bounded work. Pending captures keep
 their original account, destination, service, source, capture ID, compressed
 bytes, and frozen plan across restarts. Narrowing the approved folder policy
 blocks affected saved captures rather than removing part of their content.
+For Claude, Codex, and Pi, the spool checks the file generation in the saved
+job against the files it pins before reservation. A changed file cannot earn a
+receipt for the previous version. If the spool proves it stopped before
+reservation, Desktop retires the new job or clears its verified empty
+capacity-retry entry. Desktop offers the new version on a normal scan.
+Saved bytes from older builds can still upload. Their old file observation
+does not prove a match with the current file generation.
 Jobs bind the approved tree used for admission, not unrelated folders in the
 same provider store. Removing an unrelated folder does not fence the job.
 Retry can replace only a present, verified empty capture that has no reservation.

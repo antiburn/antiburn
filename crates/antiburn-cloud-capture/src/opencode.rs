@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub(super) const MAX_ROWS: usize = 100_000;
+pub(crate) const MAX_ROWS: usize = 100_000;
 pub(super) const MAX_REFERENCES: usize = 16_384;
 pub(super) const MAX_SCHEMA_BYTES: usize = 1024 * 1024;
 pub(super) const MAX_ID_BYTES: usize = 128;
@@ -272,7 +272,11 @@ where
 }
 
 #[derive(Debug)]
-struct AdmittedDatabase {
+/// A read-only SQLite source bound to one file identity and its parent entries.
+///
+/// Opening and closing a raw database or SHM handle could release process-wide
+/// SQLite locks. Keep only directory handles until the SQLite connection opens.
+pub(crate) struct AdmittedDatabase {
     path: PathBuf,
     filename: String,
     identity: FileIdentity,
@@ -312,7 +316,8 @@ impl SourceMetadata {
 
 impl AdmittedDatabase {
     #[cfg(unix)]
-    fn open(path: &Path) -> Result<Self> {
+    /// Pin the database and directory entry identities without opening a raw database handle.
+    pub(crate) fn open(path: &Path) -> Result<Self> {
         let parent = path.parent().ok_or(Error::InvalidSource)?;
         let filename = path
             .file_name()
@@ -343,7 +348,8 @@ impl AdmittedDatabase {
         Ok(database)
     }
 
-    fn connect(&self, deadline: Instant) -> Result<Connection> {
+    /// Open a read-only transaction with the current SQLite sidecars and a deadline.
+    pub(crate) fn connect(&self, deadline: Instant) -> Result<Connection> {
         check_deadline(deadline)?;
         self.verify(None)?;
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -369,8 +375,28 @@ impl AdmittedDatabase {
         Ok(connection)
     }
 
+    /// Return a pinned directory for a source association check.
+    pub(crate) fn ancestor_handle(&self, path: &Path) -> Result<&File> {
+        self.ancestors
+            .iter()
+            .find(|(ancestor, _)| ancestor == path)
+            .map(|(_, handle)| handle)
+            .ok_or(Error::InvalidSource)
+    }
+
+    /// Require both databases to belong to the same admitted directory.
+    pub(crate) fn verify_shared_ancestor(&self, other: &Self, path: &Path) -> Result<()> {
+        if FileIdentity::of_handle(self.ancestor_handle(path)?)?
+            != FileIdentity::of_handle(other.ancestor_handle(path)?)?
+        {
+            return Err(Error::SourceChanged);
+        }
+        Ok(())
+    }
+
     #[cfg(unix)]
-    fn verify(&self, connection: Option<&Connection>) -> Result<()> {
+    /// Check current directory entries and, when available, SQLite's open file.
+    pub(crate) fn verify(&self, connection: Option<&Connection>) -> Result<()> {
         let (root_path, root) = self.ancestors.last().ok_or(Error::InvalidSource)?;
         let current = std::fs::symlink_metadata(root_path).map_err(|_| Error::SourceChanged)?;
         if !current.is_dir()

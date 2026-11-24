@@ -1,14 +1,25 @@
 #![cfg(all(feature = "cloud", unix))]
 
 use antiburn_cloud_capture::*;
-use std::{fs, io::Read, os::unix::fs::PermissionsExt, path::PathBuf, result::Result};
+use std::{
+    fs,
+    io::{Read, Write},
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    result::Result,
+};
 
 struct Reservation {
     refusal: Option<TransportError>,
     identities: Vec<CaptureIdentity>,
+    generation: Option<String>,
 }
 
 impl Transport for Reservation {
+    fn expected_file_generation(&self) -> Option<&str> {
+        self.generation.as_deref()
+    }
+
     fn reserve(&mut self, identity: &CaptureIdentity, _: u64) -> Result<String, TransportError> {
         self.identities.push(identity.clone());
         match self.refusal.take() {
@@ -105,6 +116,7 @@ impl Fixture {
             transport: Reservation {
                 refusal,
                 identities: Vec::new(),
+                generation: None,
             },
             _directory: directory,
         }
@@ -136,6 +148,58 @@ impl Fixture {
 }
 
 #[test]
+fn header_file_append_before_pin_does_not_reserve_under_the_old_observation() {
+    let id = "019b76da-a800-7123-8abc-0123456789ab";
+    for codex in [true, false] {
+        let mut fixture = Fixture::new(None);
+        let parent = fixture.path.parent().unwrap();
+        let project = parent.join("project");
+        let (name, header) = if codex {
+            (
+                format!("rollout-2026-01-01T00-00-00-{id}.jsonl"),
+                serde_json::json!({
+                    "type": "session_meta",
+                    "payload": {"id": id, "cwd": project, "cli_version": "1.2.3"}
+                }),
+            )
+        } else {
+            (
+                format!("2026-01-01T00-00-00-000Z_{id}.jsonl"),
+                serde_json::json!({"type": "session", "id": id, "cwd": project, "version": 3}),
+            )
+        };
+        let path = parent.join(name);
+        fs::write(&path, format!("{header}\n")).unwrap();
+        let candidate = if codex {
+            reopen_codex(&path, id, &Limits::default())
+        } else {
+            reopen_pi(&path, id, &Limits::default())
+        };
+        fixture.candidate = candidate.unwrap().in_source_scope("scope").unwrap();
+        fixture.identity.source_id = fixture.candidate.source_id().into();
+        fixture.transport.generation =
+            Some(file_generation_key(&[fs::metadata(&path).unwrap()]).unwrap());
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"{\"type\":\"synthetic\"}\n")
+            .unwrap();
+        assert!(matches!(
+            fixture.capture(),
+            Err(Error::FileGenerationChanged)
+        ));
+        assert!(fixture.transport.identities.is_empty());
+        assert!(fixture.spool.entries().unwrap().is_empty());
+
+        fixture.transport.generation =
+            Some(file_generation_key(&[fs::metadata(&path).unwrap()]).unwrap());
+        assert_eq!(fixture.capture().unwrap().state, CaptureState::Queued);
+        assert_eq!(fixture.transport.identities, vec![fixture.identity]);
+    }
+}
+
+#[test]
 fn reservation_retry_keeps_the_identity_and_entry_after_a_proved_capacity_refusal() {
     let mut fixture = Fixture::new(Some(TransportError::Backpressure));
     assert!(matches!(
@@ -153,6 +217,29 @@ fn reservation_retry_keeps_the_identity_and_entry_after_a_proved_capacity_refusa
         vec![fixture.identity.clone(), fixture.identity.clone()]
     );
     assert_eq!(fixture.spool.entries().unwrap().len(), 1);
+}
+
+#[test]
+fn reservation_retry_pin_change_keeps_the_proved_empty_entry_without_reserving() {
+    let mut fixture = Fixture::new(Some(TransportError::Backpressure));
+    let source = fixture.candidate.source_path().to_owned();
+    fixture.transport.generation =
+        Some(file_generation_key(&[fs::metadata(&source).unwrap()]).unwrap());
+    assert!(matches!(
+        fixture.capture(),
+        Err(Error::Transport(TransportError::Backpressure))
+    ));
+    let before = fs::read(fixture.record()).unwrap();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(source)
+        .unwrap()
+        .write_all(b"{\"type\":\"synthetic\"}\n")
+        .unwrap();
+
+    assert!(matches!(fixture.retry(), Err(Error::FileGenerationChanged)));
+    assert_eq!(fixture.transport.identities, vec![fixture.identity.clone()]);
+    assert_eq!(fs::read(fixture.record()).unwrap(), before);
 }
 
 #[test]

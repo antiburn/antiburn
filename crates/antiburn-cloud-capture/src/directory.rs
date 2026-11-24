@@ -35,6 +35,16 @@ impl Directory {
         })
     }
 
+    /// Compare this source directory with another retained directory handle.
+    pub(crate) fn verify_identity(&self, other: &File) -> Result<()> {
+        let expected = self.file.metadata()?;
+        let actual = other.metadata()?;
+        if !actual.is_dir() || (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
+            return Err(Error::SourceChanged);
+        }
+        Ok(())
+    }
+
     /// Open a source child directory without following a symlink.
     pub fn source_dir(&self, name: &str) -> Result<Self> {
         Ok(Self {

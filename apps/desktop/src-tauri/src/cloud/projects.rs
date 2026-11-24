@@ -56,6 +56,18 @@ impl Cache {
         candidate: &antiburn_cloud_capture::Candidate,
         limits: &antiburn_cloud_capture::Limits,
     ) -> Result<Option<antiburn_cloud_capture::ProjectEvidence>, String> {
+        use antiburn_cloud_capture::CaptureSourceKind::{CursorCliAgentJsonl, CursorIdeComposer};
+        if matches!(
+            candidate.source_kind(),
+            CursorCliAgentJsonl | CursorIdeComposer
+        ) {
+            // Cursor binds proof across files. One file's generation cannot
+            // prove that its companion or workspace metadata is unchanged.
+            return candidate
+                .project_evidence_with_limits(limits)
+                .map(Some)
+                .map_err(|_| "Could not read recorded project metadata.".into());
+        }
         let key = group_id(
             account,
             &serde_json::json!([destination, root, candidate.source_id()]).to_string(),
@@ -136,7 +148,7 @@ impl Cache {
     fn context(&mut self, environment: &str, cwd: &str) -> Context {
         let key = (environment.to_owned(), cwd.to_owned());
         if let Some((observed, context)) = self.contexts.get(&key)
-            && observed.elapsed() < Duration::from_secs(60)
+            && observed.elapsed() < Duration::from_secs(if context.complete { 60 } else { 1 })
         {
             return context.clone();
         }
@@ -220,30 +232,58 @@ fn context(environment: &str, cwd: &str) -> Context {
     tauri::async_runtime::block_on(async {
         match git::repo_root_if_any_at(path).await {
             Ok(Some(repo)) => {
-                let Some(main) = git::canonical_main_repo_root_with_access(&repo, &|_| true).await
+                let Ok(output) = git::run_git_output_in_environment(
+                    &antiburn_local::platform::environment::DiscoveryEnvironment::Native,
+                    Some(&repo),
+                    &["worktree", "list", "--porcelain", "-z"],
+                    &[],
+                )
+                .await
                 else {
                     return ungrouped();
                 };
-                let Some(main) = main.to_str().map(str::to_owned) else {
+                if !output.status.success() {
+                    return ungrouped();
+                }
+                let Ok(list) = std::str::from_utf8(&output.stdout) else {
                     return ungrouped();
                 };
-                let roots = git::repo_and_worktree_roots_at(Path::new(&main)).await;
-                let complete = roots.len() <= 100;
-                let mut folders: Vec<String> = roots
-                    .into_iter()
+                // Git lists its main checkout first, even when run in a linked checkout.
+                let mut roots = list
+                    .split('\0')
+                    .filter_map(|record| record.strip_prefix("worktree "));
+                let Some(main) = roots.next() else {
+                    return ungrouped();
+                };
+                let roots: Vec<_> = std::iter::once(main).chain(roots).take(101).collect();
+                let mut folders: Vec<_> = roots
+                    .iter()
                     .take(100)
+                    .copied()
                     .filter(|root| {
                         let path = Path::new(root);
-                        path.is_dir() && path.canonicalize().ok().as_deref() == Some(path)
+                        crate::store::cloud_capture::sync::valid_project_path(root)
+                            && path.is_dir()
+                            && path.canonicalize().ok().as_deref() == Some(path)
                     })
+                    .map(str::to_owned)
                     .collect();
-                let mut complete = complete;
+                if folders.first().is_none_or(|path| path != main)
+                    || !folders
+                        .iter()
+                        .any(|folder| Path::new(folder) == repo.as_path())
+                {
+                    return ungrouped();
+                }
+                folders.sort();
+                folders.dedup();
+                let mut complete = roots.len() <= 100;
                 if folders.iter().map(String::len).sum::<usize>() > 64 * 1024 {
                     folders.clear();
                     complete = false;
                 }
                 Context {
-                    main,
+                    main: main.into(),
                     folders,
                     complete,
                 }
@@ -736,8 +776,9 @@ fn discover_projects(
                     if matched.insert(group.id.clone()) {
                         group.capture_session_count += 1;
                     }
-                    group.capture_supported |=
-                        evidence.scan_complete() && !group.folder_paths.is_empty();
+                    group.capture_supported |= evidence.scan_complete()
+                        && group.grouping_complete
+                        && !group.folder_paths.is_empty();
                     for folder in &group.folder_paths {
                         if group.projects.iter().any(|project| {
                             project.source_kind == root.source_kind
