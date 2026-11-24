@@ -28,6 +28,13 @@ fn project_discovery_follows_an_empty_cursor_cli_page_with_a_shared_budget() {
         r#"{"schemaVersion":1,"hasConversation":true,"cwd":"/synthetic-project"}"#,
     )
     .unwrap();
+    let draft = sidecar.with_file_name("session-00");
+    fs::create_dir_all(&draft).unwrap();
+    fs::write(
+        draft.join("meta.json"),
+        r#"{"schemaVersion":1,"hasConversation":false,"cwd":"/synthetic-project"}"#,
+    )
+    .unwrap();
     let selection = SourceSelection {
         source_kind: SourceKind::CursorCliAgentJsonl,
         path: transcripts.to_str().unwrap().into(),

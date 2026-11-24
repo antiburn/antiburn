@@ -206,7 +206,7 @@ pub(crate) async fn cloud_invitations(
     let work = controller.blocking.clone();
     // The signed-in event can reach the panel before the callback frees the slot.
     let priority = if matches!(request, Action::List) {
-        Priority::Read(LIST_ADMISSION_WAIT)
+        Priority::Wait(LIST_ADMISSION_WAIT)
     } else {
         Priority::Normal
     };

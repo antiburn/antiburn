@@ -92,6 +92,8 @@ Storage directory names and transcript contents do not grant permission. GUI
 transcript mirrors without same-ID CLI metadata do not qualify.
 
 Discovery pages visit at most 16 session entries and read no transcript bytes.
+An entry whose supported sidecar reports `hasConversation: false` is not a
+session. Skip it without marking the page incomplete.
 Ambiguous or oversized sidecars block only their own candidate and mark the
 page incomplete. Folder discovery and Save follow continuations within a shared
 budget. Save still needs valid evidence for each selected folder group.

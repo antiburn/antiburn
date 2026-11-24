@@ -355,6 +355,37 @@ fn cli_oversized_sidecar_leaves_a_partial_page_and_a_healthy_continuation() {
 }
 
 #[test]
+fn cli_sidecar_without_a_conversation_is_not_an_incomplete_result() {
+    let (_temporary, root, project) = test_root();
+    let (transcripts, sidecar) = cli(&root, &project);
+    let draft = transcripts.join("draft");
+    fs::create_dir(&draft).unwrap();
+    fs::write(draft.join("draft.jsonl"), CLI_TRANSCRIPT).unwrap();
+    let draft_metadata = sidecar.parent().unwrap().with_file_name("draft");
+    fs::create_dir(&draft_metadata).unwrap();
+    fs::write(
+        draft_metadata.join("meta.json"),
+        serde_json::json!({
+            "schemaVersion": 1,
+            "hasConversation": false,
+            "cwd": project,
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let limits = Limits::default();
+    let page = discover_cursor_cli_page(&transcripts, None, &limits).unwrap();
+    assert!(!page.partial);
+    assert_eq!(page.candidates.len(), 1);
+    assert_eq!(page.candidates[0].source_id(), "cursor/cli/synthetic-cli");
+    assert!(matches!(
+        reopen_cursor_cli(&transcripts, "draft", &limits),
+        Err(Error::UnsupportedSource)
+    ));
+}
+
+#[test]
 fn ide_excludes_malformed_keys_and_keeps_pages_with_ambiguous_index_proof() {
     let (_temporary, root, project) = test_root();
     let (workspace, _local, global) = ide(&root, &project);

@@ -79,8 +79,13 @@ remain opaque source; their text is not parsed and reserialized.
 Unknown session-linked tables stop capture with `UnsupportedSource`. Detection
 uses schema names, apparent ownership columns, and declared links into known
 source tables. Detection does not grant permission to export those tables.
-Schedules and retained V1 `session`, `message`, and `part` tables are explicit
-exclusions. Capture never falls back to them.
+Schedules, the verified `automation` layout, and retained V1 `session`,
+`message`, and `part` tables are explicit exclusions. Capture never falls back
+to them. An automation stores independent scheduler state. Its optional
+`session_id` names the creator and does not grant access to the automation.
+The original layout and its `event_position` extension qualify for exclusion.
+Other `automation` layouts are unsupported. Discovery checks only its schema,
+and capture does not read, select, or export its rows.
 
 This supports additive changes within the selection contract. It does not
 promise lossless support for an unknown future storage redesign. Views, virtual
@@ -123,9 +128,9 @@ Stored event types include their native schema version, such as
 without changing the exported cell or calling it an agent runtime version.
 
 An owned job can contain a child summary. Its `child_session_id` does not make
-that row child-owned or grant access to the child's transcript. Schedules,
-credentials, account state, global settings, unrelated jobs, and unrelated
-content-addressed rows are excluded.
+that row child-owned or grant access to the child's transcript. Capture excludes
+schedules, automations, credentials, account state, global settings, unrelated
+jobs, and unrelated content-addressed rows.
 
 ## References and relationships
 
@@ -266,6 +271,15 @@ about every historical producer.
   [versioned event storage](https://github.com/anomalyco/opencode/blob/a6b15d33daf6ab7d35569f6d711fdb630b9f04e7/packages/core/src/bus.ts#L417-L428),
   and [job ownership](https://github.com/anomalyco/opencode/blob/a6b15d33daf6ab7d35569f6d711fdb630b9f04e7/packages/core/src/job.ts#L191-L193)
   define the selected reference locations and ownership rules.
+- OpenCode commit [`a9156f58`](https://github.com/anomalyco/opencode/tree/a9156f58ea38442c4a8adac8fd1c83ac7272a56f):
+  the [automation schema](https://github.com/anomalyco/opencode/blob/a9156f58ea38442c4a8adac8fd1c83ac7272a56f/packages/core/src/automation/sql.ts#L11-L42)
+  allows a nullable creator session and preserves an automation after session
+  deletion. The [writer](https://github.com/anomalyco/opencode/blob/a9156f58ea38442c4a8adac8fd1c83ac7272a56f/packages/core/src/automation.ts#L1156-L1177)
+  stores a separate automation ID, configuration, and scheduler state.
+  The [base migration](https://github.com/anomalyco/opencode/blob/a9156f58ea38442c4a8adac8fd1c83ac7272a56f/packages/core/src/database/migration/20261116043204_automation.ts#L8-L77)
+  replaces schedules. The [event-position migration](https://github.com/anomalyco/opencode/blob/a9156f58ea38442c4a8adac8fd1c83ac7272a56f/packages/core/src/database/migration/20261116181958_automation_event_position.ts)
+  adds the optional column. These pins establish the exclusion, not a new
+  general OpenCode release range.
 
 Focused checks:
 

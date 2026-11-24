@@ -3250,7 +3250,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
     let work = controller.blocking.clone();
     let wake = controller.sync.wake.clone();
     let result = work
-        .run(Priority::Normal, move || {
+        .run(Priority::Wait(Duration::from_secs(5)), move || {
             let controller = app.state::<Controller>();
             let account_current =
                 || controller.account_generation.load(Ordering::Acquire) == account_generation;

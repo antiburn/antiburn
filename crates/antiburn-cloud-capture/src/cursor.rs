@@ -211,7 +211,9 @@ pub fn reopen_cursor_cli(root: &Path, id: &str, limits: &Limits) -> Result<Candi
         return Err(Error::InvalidIdentity);
     }
     let root = cli::CliRoot::open(root)?;
-    let source = root.reopen(id, limits, Instant::now() + SOURCE_TIME)?;
+    let source = root
+        .reopen(id, limits, Instant::now() + SOURCE_TIME)?
+        .ok_or(Error::UnsupportedSource)?;
     Ok(CursorSource(CursorProvider::Cli(source)).candidate())
 }
 
@@ -219,8 +221,8 @@ pub fn reopen_cursor_cli(root: &Path, id: &str, limits: &Limits) -> Result<Candi
 ///
 /// It visits at most 16 session entries per page to bound retained directory
 /// handles. It reads only same-ID metadata, never transcript content. Transcripts
-/// without that sidecar do not prove CLI ownership. Ambiguous sources mark the
-/// page partial without blocking a healthy sibling.
+/// without that sidecar or with no conversation are not candidates. Ambiguous
+/// sources mark the page partial without blocking a healthy sibling.
 /// Run on a bounded blocking worker. Scope and admit candidates independently.
 pub fn discover_cursor_cli_page(
     root: &Path,
@@ -248,8 +250,10 @@ pub fn discover_cursor_cli_page(
     for id in names {
         crate::opencode::check_deadline(deadline)?;
         match root.reopen(&id, limits, deadline) {
-            Ok(source) => candidates.push(CursorSource(CursorProvider::Cli(source)).candidate()),
-            Err(Error::Io(std::io::ErrorKind::NotFound)) => {}
+            Ok(Some(source)) => {
+                candidates.push(CursorSource(CursorProvider::Cli(source)).candidate());
+            }
+            Ok(None) | Err(Error::Io(std::io::ErrorKind::NotFound)) => {}
             Err(Error::Limit) => return Err(Error::Limit),
             Err(_) => partial = true,
         }

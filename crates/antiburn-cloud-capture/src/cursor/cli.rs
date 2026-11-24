@@ -124,33 +124,37 @@ impl CliRoot {
     }
 
     /// Bind one transcript and look up the unique same-ID chat sidecar.
+    /// Return `None` when a supported sidecar declares no conversation.
     pub(super) fn reopen(
         self: &Arc<Self>,
         id: &str,
         limits: &Limits,
         deadline: Instant,
-    ) -> Result<CliSource> {
+    ) -> Result<Option<CliSource>> {
         let directory = self.transcripts.source_dir(id)?;
         if directory.kind(&format!("{id}.jsonl"))? != EntryKind::File {
             return Err(Error::InvalidSource);
         }
-        let (metadata_workspace, _) = self.metadata(id, limits, deadline)?;
-        Ok(CliSource {
+        let Some((metadata_workspace, _)) = self.metadata(id, limits, deadline)? else {
+            return Ok(None);
+        };
+        Ok(Some(CliSource {
             path: self.path.join(id).join(format!("{id}.jsonl")),
             id: id.into(),
             root: self.clone(),
             directory: Arc::new(directory),
             metadata_workspace,
-        })
+        }))
     }
 
     /// Only an exact metadata filename in one matching session path can prove CWD.
+    /// A supported sidecar without a conversation is not an inspection failure.
     fn metadata(
         &self,
         id: &str,
         limits: &Limits,
         deadline: Instant,
-    ) -> Result<(String, ProjectEvidence)> {
+    ) -> Result<Option<(String, ProjectEvidence)>> {
         let mut matched = None;
         for name in self.chats.source_names(limits.discovery_entries)? {
             check_deadline(deadline)?;
@@ -200,8 +204,11 @@ impl CliRoot {
         }
         let metadata: ChatMetadata =
             serde_json::from_slice(&bytes).map_err(|_| Error::UnsupportedSource)?;
-        if metadata.schema_version != 1 || !metadata.has_conversation {
+        if metadata.schema_version != 1 {
             return Err(Error::UnsupportedSource);
+        }
+        if !metadata.has_conversation {
+            return Ok(None);
         }
         let evidence = ProjectEvidence::recorded(&metadata.cwd);
         let cwd = evidence
@@ -217,7 +224,7 @@ impl CliRoot {
             return Err(Error::SourceChanged);
         }
         self.verify_unique_transcript(id, limits, deadline)?;
-        Ok((name, evidence))
+        Ok(Some((name, evidence)))
     }
 
     /// A copied transcript with the same ID in another project cannot inherit its CWD.
@@ -259,7 +266,10 @@ impl CliSource {
         limits: &Limits,
         deadline: Instant,
     ) -> Result<ProjectEvidence> {
-        let (workspace, evidence) = self.root.metadata(&self.id, limits, deadline)?;
+        let (workspace, evidence) = self
+            .root
+            .metadata(&self.id, limits, deadline)?
+            .ok_or(Error::UnsupportedSource)?;
         if workspace != self.metadata_workspace {
             return Err(Error::SourceChanged);
         }

@@ -145,6 +145,77 @@ fn expanded(root: &Path, identity: &CaptureIdentity, stream: &CapturedStream) ->
 }
 
 #[test]
+fn automation_scheduler_state_does_not_change_discovery_or_capture_bytes() {
+    let (_temporary, database, connection) = fixture();
+    let limits = Limits::default();
+    let first = discover_opencode_page(&database, None, &limits).unwrap();
+    let ids = |candidates: Vec<Candidate>| {
+        candidates
+            .into_iter()
+            .map(|candidate| candidate.native_session_id().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let expected_ids = ids(first.candidates);
+    let candidate = selected(&database, "ses_main");
+    let identity = identity(&candidate, "same-source");
+    let capture = |name: &str| {
+        let directory = database.parent().unwrap().join(name);
+        let entry = Spool::open(&directory, limits.clone())
+            .unwrap()
+            .capture(
+                identity.clone(),
+                &candidate,
+                Default::default(),
+                &mut SavedTransport::default(),
+            )
+            .unwrap();
+        let manifest = entry.manifest.unwrap();
+        let bytes = expanded(&directory, &identity, &manifest.streams[0]);
+        assert!(!bytes.is_empty());
+        (manifest, bytes)
+    };
+    let original = capture("without-automation");
+    connection
+        .execute_batch(
+            "CREATE TABLE automation (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, session_id TEXT,
+                directory TEXT NOT NULL, name TEXT NOT NULL, trigger TEXT NOT NULL,
+                tz TEXT NOT NULL, action TEXT NOT NULL, status TEXT DEFAULT 'active' NOT NULL,
+                next_due_at INTEGER, expires_at INTEGER, run_count INTEGER DEFAULT 0 NOT NULL,
+                failures INTEGER DEFAULT 0 NOT NULL, last_run_at INTEGER, last_message_id TEXT,
+                last_outcome TEXT, last_output TEXT, retry_at INTEGER, state TEXT,
+                time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL
+             );
+             INSERT INTO automation
+                (id, project_id, session_id, directory, name, trigger, tz, action,
+                 last_output, time_created, time_updated)
+             VALUES ('synthetic-automation', 'synthetic-project', 'ses_main',
+                     '/not-project-evidence', 'synthetic schedule', '{}', 'UTC',
+                     'excluded automation action', 'excluded automation output', 1, 1);",
+        )
+        .unwrap();
+    let page = discover_opencode_page(&database, None, &limits).unwrap();
+    assert_eq!(ids(page.candidates), expected_ids);
+    assert!(page.next_cursor.is_none());
+    assert_eq!(capture("with-automation"), original);
+
+    connection
+        .execute_batch(
+            "ALTER TABLE automation ADD COLUMN event_position TEXT;
+             UPDATE automation SET event_position = 'excluded continuation';",
+        )
+        .unwrap();
+    assert_eq!(capture("with-event-position"), original);
+    connection
+        .execute("ALTER TABLE automation ADD COLUMN unknown_owner TEXT", [])
+        .unwrap();
+    assert!(matches!(
+        discover_opencode_page(&database, None, &limits),
+        Err(Error::UnsupportedSource)
+    ));
+}
+
+#[test]
 fn session_digest_ignores_unrelated_writes_and_tracks_owned_values_and_dependencies() {
     let (_temporary, database, connection) = fixture();
     let project = database.parent().unwrap().join("project");
