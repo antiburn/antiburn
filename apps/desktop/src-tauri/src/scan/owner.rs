@@ -14,6 +14,8 @@ use crate::store::{
 };
 
 const BATCH_SIZE: usize = 64;
+const HISTORICAL_PREPARATION_LIMIT: usize = 8;
+const TICK_PREPARATION_LIMIT: usize = 2;
 const PASS_PENDING_LIMIT: usize = 1024;
 const LIVE_PENDING_LIMIT: usize = 256;
 
@@ -38,6 +40,14 @@ pub(super) async fn recover_fingerprints(app: &AppHandle) -> anyhow::Result<bool
     Ok(true)
 }
 
+/// Select preparation limits and admission reuse for a finite discovery pass.
+#[derive(Clone, Copy)]
+pub(super) enum PreparationProfile {
+    Standard,
+    Historical,
+    Periodic,
+}
+
 struct OwnerPolicy {
     home: PathBuf,
     repository_policy: RepositoryPolicySnapshot,
@@ -45,6 +55,7 @@ struct OwnerPolicy {
     include_non_repo_folders: bool,
     progress: bool,
     refresh_repositories: bool,
+    preparation_profile: PreparationProfile,
     source_refresh: Option<Arc<HashSet<SessionKey>>>,
     historical_missing: Option<(i64, HashSet<SessionKey>)>,
     #[cfg(test)]
@@ -84,6 +95,7 @@ pub(super) struct PassInputs {
     pub repository_policy: RepositoryPolicySnapshot,
     pub include_non_repo_folders: bool,
     pub refresh_repositories: bool,
+    pub preparation_profile: PreparationProfile,
     pub source_refresh: Option<Arc<HashSet<SessionKey>>>,
 }
 
@@ -147,6 +159,7 @@ pub(super) async fn refresh_titles(
         include_non_repo_folders: store.settings_snapshot().include_non_repo_folders,
         progress: false,
         refresh_repositories: false,
+        preparation_profile: PreparationProfile::Standard,
         source_refresh: None,
         historical_missing: None,
         #[cfg(test)]
@@ -178,6 +191,7 @@ pub(super) async fn discover_and_run(
         repository_policy,
         include_non_repo_folders,
         refresh_repositories,
+        preparation_profile,
         source_refresh,
     } = inputs;
     let (sender, receiver) = mpsc::channel(2);
@@ -215,6 +229,7 @@ pub(super) async fn discover_and_run(
         include_non_repo_folders,
         progress,
         refresh_repositories,
+        preparation_profile,
         source_refresh,
         historical_missing: None,
         #[cfg(test)]
@@ -281,6 +296,7 @@ pub(super) async fn refresh_logs(
         include_non_repo_folders: settings.include_non_repo_folders,
         progress: false,
         refresh_repositories: false,
+        preparation_profile: PreparationProfile::Standard,
         source_refresh: None,
         historical_missing,
         #[cfg(test)]
@@ -402,7 +418,13 @@ async fn run_with_titles(
     policy: &OwnerPolicy,
     writer: &mut IncrementalAdmission<'_>,
 ) -> Described {
-    let mut queue: ScanQueue<SessionLog> = ScanQueue::new();
+    let mut queue: ScanQueue<SessionLog> = match policy.preparation_profile {
+        PreparationProfile::Standard => ScanQueue::new(),
+        PreparationProfile::Historical => ScanQueue::with_pass_limit(HISTORICAL_PREPARATION_LIMIT),
+        PreparationProfile::Periodic => ScanQueue::with_pass_limit(TICK_PREPARATION_LIMIT),
+    };
+    let non_repository_cwds = matches!(policy.preparation_profile, PreparationProfile::Periodic)
+        .then(Arc::<NonRepositoryCwds>::default);
     let mut tasks = JoinSet::new();
     let mut owners: HashMap<Id, TaskOwner> = HashMap::new();
     let mut finite_closed = false;
@@ -791,6 +813,10 @@ async fn run_with_titles(
                             WorkOrigin::Live => Some(unix_now() - CURRENT_WINDOW_SECS),
                             WorkOrigin::Recovery => None,
                         };
+                        let non_repository_cwds = non_repository_cwds
+                            .as_ref()
+                            .filter(|_| owner.origin == WorkOrigin::Pass)
+                            .cloned();
                         let include = policy.include_non_repo_folders;
                         let key = description.key.clone();
                         owner.session_key = Some(key.clone());
@@ -801,6 +827,7 @@ async fn run_with_titles(
                                 store: &store,
                                 repository: &repository_policy,
                                 include_non_repo_folders: include,
+                                non_repository_cwds: non_repository_cwds.as_deref(),
                             };
                             PreparedTask::Ready(prepare_description_with_read(description, home, previous, cutoff, policy,
                                 #[cfg(test)] hooks,

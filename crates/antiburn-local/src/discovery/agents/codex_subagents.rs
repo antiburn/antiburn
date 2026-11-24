@@ -60,8 +60,7 @@ pub(super) async fn list_subagents(parent_transcript: &Path) -> Vec<PathBuf> {
     {
         return list_subagents_from_rollouts(parent_transcript).await;
     }
-    let dirs = all_log_dirs().await;
-    list_subagents_in(parent_transcript, &state_db_paths_resolved(), &dirs).await
+    list_subagents_in(parent_transcript, &state_db_paths_resolved(), all_log_dirs).await
 }
 
 /// Resolve a single sub-agent's rollout by `(parent_transcript, subagent_id)`,
@@ -181,16 +180,19 @@ pub(super) async fn top_level_excluded_thread_ids() -> HashSet<String> {
     top_level_excluded_thread_ids_in(&state_db_paths_resolved()).await
 }
 
-async fn list_subagents_in(
+/// Resolve recorded paths first. Load the directory list once if fallback is needed.
+async fn list_subagents_in<F: Future<Output = Vec<PathBuf>>>(
     parent_transcript: &Path,
     db_paths: &[PathBuf],
-    log_dirs: &[PathBuf],
+    discover_log_dirs: impl FnOnce() -> F,
 ) -> Vec<PathBuf> {
     let Some(parent_id) = parent_thread_id(parent_transcript).await else {
         return Vec::new();
     };
     let rows = children_with_paths_in(&parent_id, db_paths).await;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(rows.len());
+    let mut discover_log_dirs = Some(discover_log_dirs);
+    let mut log_dirs = Vec::new();
     for (child_id, db_path) in rows {
         if let Some(path) = db_path
             && crate::discovery::source_fs::asynchronous::try_exists(&path)
@@ -200,7 +202,10 @@ async fn list_subagents_in(
             out.push(path);
             continue;
         }
-        if let Some(path) = find_session_file_by_id(log_dirs, &child_id).await {
+        if let Some(discover) = discover_log_dirs.take() {
+            log_dirs = discover().await;
+        }
+        if let Some(path) = find_session_file_by_id(&log_dirs, &child_id).await {
             out.push(path);
         }
     }
@@ -575,14 +580,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_subagents_resolves_children_via_db_path_and_fallback() {
+    async fn list_subagents_walks_once_for_missing_and_unrecorded_paths() {
         let tmp = TempDir::new().unwrap();
         let day = tmp.path().join("2026").join("05").join("28");
         tokio::fs::create_dir_all(&day).await.unwrap();
 
         let parent_path = day.join(rollout_name(PARENT));
         tokio::fs::write(&parent_path, "{}").await.unwrap();
-        // CHILD_A resolved via threads.rollout_path; CHILD_B via filename fallback.
+        // Both children need fallback. Only CHILD_A has a recorded path.
         let child_a_path = day.join(rollout_name(CHILD_A));
         let child_b_path = day.join(rollout_name(CHILD_B));
         tokio::fs::write(&child_a_path, "{}").await.unwrap();
@@ -595,14 +600,17 @@ mod tests {
                 (PARENT, CHILD_A, "completed"),
                 (PARENT, CHILD_B, "completed"),
             ],
-            // CHILD_A has a recorded rollout_path; CHILD_B intentionally absent.
-            &[(CHILD_A, child_a_path.to_str().unwrap())],
+            &[(CHILD_A, tmp.path().join("removed.jsonl").to_str().unwrap())],
         );
 
-        let found = list_subagents_in(&parent_path, &[db], std::slice::from_ref(&day)).await;
-        assert_eq!(found.len(), 2);
-        assert!(found.contains(&child_a_path));
-        assert!(found.contains(&child_b_path));
+        let mut walks = 0;
+        let found = list_subagents_in(&parent_path, &[db], || {
+            walks += 1;
+            async { vec![day] }
+        })
+        .await;
+        assert_eq!(walks, 1);
+        assert_eq!(found, vec![child_a_path, child_b_path]);
     }
 
     #[tokio::test]
@@ -613,10 +621,32 @@ mod tests {
         let db = tmp.path().join("state_5.sqlite");
         seed_spawn_db(&db, &[], &[]);
         assert!(
-            list_subagents_in(&parent_path, &[db], &[tmp.path().to_path_buf()])
-                .await
-                .is_empty()
+            list_subagents_in(&parent_path, &[db], || async {
+                panic!("no child needs a directory walk")
+            })
+            .await
+            .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn list_subagents_uses_recorded_paths_without_walking() {
+        let tmp = TempDir::new().unwrap();
+        let parent_path = tmp.path().join(rollout_name(PARENT));
+        let child_path = tmp.path().join(rollout_name(CHILD_A));
+        tokio::fs::write(&child_path, "{}").await.unwrap();
+        let db = tmp.path().join("state_5.sqlite");
+        seed_spawn_db(
+            &db,
+            &[(PARENT, CHILD_A, "completed")],
+            &[(CHILD_A, child_path.to_str().unwrap())],
+        );
+
+        let found = list_subagents_in(&parent_path, &[db], || async {
+            panic!("the recorded child path resolves")
+        })
+        .await;
+        assert_eq!(found, vec![child_path]);
     }
 
     #[tokio::test]

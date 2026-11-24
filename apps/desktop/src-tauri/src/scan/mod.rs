@@ -1512,6 +1512,11 @@ async fn pass(
             repository_policy,
             include_non_repo_folders,
             refresh_repositories: trigger.refreshes_repositories(),
+            preparation_profile: match trigger {
+                ScanTrigger::HistoricalScan => owner::PreparationProfile::Historical,
+                ScanTrigger::Tick => owner::PreparationProfile::Periodic,
+                _ => owner::PreparationProfile::Standard,
+            },
             source_refresh: match trigger {
                 ScanTrigger::SourceRefresh {
                     project_deferral_replays,
@@ -2824,6 +2829,9 @@ enum RepoAdmission {
     DeferredProject(PathBuf, ProjectAccessDecision),
 }
 
+/// Remember definitive Git misses for exact native paths in one periodic pass.
+type NonRepositoryCwds = Mutex<HashSet<PathBuf>>;
+
 /// Apply the repository scan gate to one session with the CWD `cwd`.
 #[cfg(test)]
 async fn repo_admission(
@@ -2838,6 +2846,7 @@ async fn repo_admission(
         include_non_repo_folders,
         &|path| antiburn_local::paths::protected::git_project_access(path, &grants),
         &|path| antiburn_local::paths::protected::project_path_access(path, &grants),
+        None,
     )
     .await
 }
@@ -2848,17 +2857,32 @@ async fn guarded_repo_admission(
     include_non_repo_folders: bool,
     git_access: &(impl Fn(&std::path::Path) -> ProjectAccessDecision + Sync + ?Sized),
     path_access: &(impl Fn(&std::path::Path) -> ProjectAccessDecision + Sync + ?Sized),
+    non_repository_cwds: Option<&NonRepositoryCwds>,
 ) -> RepoAdmission {
     let cwd = std::path::Path::new(cwd);
     let access = git_access(cwd);
     if access != ProjectAccessDecision::Allowed {
         return RepoAdmission::DeferredProject(cwd.to_path_buf(), access);
     }
-    match git::repo_root_if_any_at(cwd).await {
+    let known_folder = non_repository_cwds.is_some_and(|cwds| cwds.lock().unwrap().contains(cwd));
+    let root = if known_folder {
+        Ok(None)
+    } else {
+        git::repo_root_if_any_at(cwd).await
+    };
+    match root {
         Ok(Some(root)) => return RepoAdmission::Repository(root),
         // Only a CWD that Git reports as outside every repository can move
         // to a repository below it or stay as a folder.
-        Ok(None) => {}
+        Ok(None) => {
+            if !known_folder && let Some(cwds) = non_repository_cwds {
+                const CWD_LIMIT: usize = 1024;
+                let mut cwds = cwds.lock().unwrap();
+                if cwds.len() < CWD_LIMIT {
+                    cwds.insert(cwd.to_path_buf());
+                }
+            }
+        }
         Err(error) => {
             let access = path_access(cwd);
             if access != ProjectAccessDecision::Allowed {
