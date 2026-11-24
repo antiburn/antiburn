@@ -38,15 +38,28 @@ enum PolicyWrite<'a> {
     ReplaceFixture,
 }
 
-fn device_upload_enabled(connection: &Connection) -> Result<bool> {
+/// Keep a missing preference distinct from OFF for first folder approval.
+fn saved_device_upload_enabled(connection: &Connection) -> Result<Option<bool>> {
     Ok(connection
         .query_row(
             "SELECT enabled FROM cloud_device_upload WHERE id = 1",
             [],
             |row| row.get(0),
         )
-        .optional()?
-        .unwrap_or(false))
+        .optional()?)
+}
+
+fn device_upload_enabled(connection: &Connection) -> Result<bool> {
+    Ok(saved_device_upload_enabled(connection)?.unwrap_or(false))
+}
+
+fn write_device_upload_enabled(connection: &Connection, enabled: bool) -> Result<()> {
+    connection.execute(
+        "INSERT INTO cloud_device_upload (id, enabled) VALUES (1, ?1)
+         ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
+        [enabled],
+    )?;
+    Ok(())
 }
 
 /// Recorded project directory chosen by the user for one native source.
@@ -566,12 +579,38 @@ impl Store {
 
     /// Persist the device switch without changing a policy, job, or spool.
     pub(crate) fn set_cloud_device_upload_enabled(&self, enabled: bool) -> Result<()> {
-        self.lock().execute(
-            "INSERT INTO cloud_device_upload (id, enabled) VALUES (1, ?1)
-             ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled",
-            [enabled],
-        )?;
-        Ok(())
+        write_device_upload_enabled(&self.lock(), enabled)
+    }
+
+    /// Save ON only while the controller accepts this request. Callbacks must
+    /// not access the store. If the request changes during commit, restore the
+    /// old preference before another store operation can read the result.
+    pub(crate) fn resume_cloud_device_uploads(
+        &self,
+        current: impl FnOnce() -> bool,
+        accept_commit: impl FnOnce() -> bool,
+    ) -> Result<bool> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction()?;
+        let previous = saved_device_upload_enabled(&transaction)?;
+        if previous != Some(true) {
+            write_device_upload_enabled(&transaction, true)?;
+        }
+        if !current() {
+            return Ok(false);
+        }
+        transaction.commit()?;
+        if accept_commit() {
+            return Ok(true);
+        }
+        match previous {
+            Some(true) => {}
+            Some(false) => write_device_upload_enabled(&connection, false)?,
+            None => {
+                connection.execute("DELETE FROM cloud_device_upload WHERE id = 1", [])?;
+            }
+        }
+        Ok(false)
     }
 
     /// Read only this account and workspace's explicit ongoing policy.

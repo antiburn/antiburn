@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, expect, it, vi } from "vitest"
 import { emptyCloudSnapshot, type CloudOngoingStatus } from "../../../../lib/cloud"
 import { DEFAULT_SETTINGS } from "../../../../lib/ipc"
@@ -10,6 +10,9 @@ import {
 import { SessionsStepSettings } from "./SessionsStepSettings"
 
 const invoke = vi.hoisted(() => vi.fn())
+const uploadLabel = "Upload sessions to Antiburn Cloud"
+const studioLabel = "Sync Studio: /Example/Studio"
+const personalBinding = { accountId: "synthetic-account", destinationId: "synthetic-personal" }
 vi.mock("@tauri-apps/api/core", () => ({ invoke, isTauri: () => true }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }))
 vi.mock("@tauri-apps/plugin-dialog", () => ({ confirm: vi.fn(), open: vi.fn() }))
@@ -19,6 +22,7 @@ function mockCloud(
   legacyPreference: boolean,
   statusPatch: Partial<CloudOngoingStatus> = {},
   currentTeamRevision?: string,
+  groups = [projectGroup()],
 ) {
   let status = ongoingStatus({
     deviceUploadEnabled: true,
@@ -86,7 +90,7 @@ function mockCloud(
           ]
         case "cloud_project_groups":
           return {
-            groups: [projectGroup()],
+            groups,
             sourceRoots: [
               { sourceKind: "claude_jsonl", path: "/Example/claude/projects/studio" },
             ],
@@ -96,6 +100,12 @@ function mockCloud(
         case "cloud_set_sync_enabled": {
           const enabled = args?.enabled
           if (enabled === undefined) throw new Error("Expected a device upload setting")
+          if (
+            enabled &&
+            (args?.binding?.accountId !== personalBinding.accountId ||
+              args?.binding?.destinationId !== personalBinding.destinationId)
+          )
+            throw new Error("Expected the Personal account binding to resume uploads")
           status = { ...status, deviceUploadEnabled: enabled }
           return status
         }
@@ -168,33 +178,87 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-it("does not turn an old true upload preference into ongoing content consent", async () => {
-  mockCloud(false, true)
+it("shows status instead of upload controls while checking Cloud availability", async () => {
+  mockCloud(true, false)
+  const invokeCloud = invoke.getMockImplementation()!
+  let finishCloudRead!: () => void
+  invoke.mockImplementation((...args) => {
+    if (args[0] !== "cloud_status") return invokeCloud(...args)
+    return new Promise((resolve) => {
+      finishCloudRead = () => resolve(invokeCloud(...args))
+    })
+  })
   render(<SessionsStepSettings />)
-  const folder = await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
-  const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
-  expect(upload).not.toBeChecked()
-  expect(upload).toBeEnabled()
-  expect(upload).toHaveAccessibleDescription("Choose folders and confirm before uploading.")
+  expect(await screen.findByText("Checking Cloud availability…")).toBeVisible()
+  expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Choose folders" })).not.toBeInTheDocument()
+
+  await act(async () => finishCloudRead())
+  expect(await screen.findByRole("switch", { name: uploadLabel })).toBeChecked()
+})
+
+it("focuses the first folder with an upload choice without saving or enabling uploads", async () => {
+  mockCloud(false, true, {}, undefined, [
+    projectGroup({
+      id: "inaccessible",
+      label: "Inaccessible",
+      path: "/Example/Inaccessible",
+      folderPaths: [],
+      projects: [],
+      captureSupported: false,
+      groupingComplete: false,
+    }),
+    projectGroup({
+      id: "local-only",
+      label: "Local only",
+      path: "/Example/Local",
+      folderPaths: ["/Example/Local"],
+      projects: [],
+      captureSupported: false,
+    }),
+    projectGroup(),
+    projectGroup({
+      id: "website",
+      label: "Website",
+      path: "/Example/Website",
+      folderPaths: ["/Example/Website"],
+      projects: [
+        {
+          sourceKind: "claude_jsonl",
+          sourcePath: "/Example/claude/projects/studio",
+          projectPath: "/Example/Website",
+        },
+      ],
+    }),
+  ])
+  render(<SessionsStepSettings />)
+  const folder = await screen.findByRole("switch", { name: studioLabel })
+  const folders = within(screen.getByRole("group", { name: "Cloud folders" }))
+  expect(folders.queryByText("Inaccessible")).not.toBeInTheDocument()
+  expect(folders.queryByText("/Example/Inaccessible")).not.toBeInTheDocument()
+  expect(folders.getByText("No sessions ready to upload")).toBeVisible()
+  expect(folders.getAllByRole("switch")).toEqual([
+    folder,
+    folders.getByRole("switch", { name: "Sync Website: /Example/Website" }),
+  ])
+  expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
+  expect(screen.getByText("Choose folders and save to set up uploads.")).toBeVisible()
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
-  expect(
-    screen.queryByText(
-      "Choose projects and confirm full-content sync before enabling uploads.",
-    ),
-  ).not.toBeInTheDocument()
-  expect(
-    screen.queryByText(
-      "Cloud sync is optional. Local sessions and Checks use their own settings.",
-    ),
-  ).not.toBeInTheDocument()
-  fireEvent.click(upload)
+  const selected = folder.getAttribute("aria-checked")
+  fireEvent.click(screen.getByRole("button", { name: "Choose folders" }))
   expect(folder).toHaveFocus()
-  expect(upload).not.toBeChecked()
+  expect(folder).toHaveAttribute("aria-checked", selected)
+  expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
   expect(
-    invoke.mock.calls.some(
-      ([command]) => command === "cloud_enable_sync" || command === "set_settings",
+    invoke.mock.calls.filter(([command]) =>
+      [
+        "cloud_enable_sync",
+        "cloud_set_sync_enabled",
+        "cloud_set_sync_project",
+        "set_settings",
+      ].includes(command),
     ),
-  ).toBe(false)
+  ).toEqual([])
   expect(screen.getByRole("switch", { name: "Include folders without Git" })).not.toBeChecked()
 })
 
@@ -230,27 +294,31 @@ it.each(["pause", "backfill"])(
 
     render(<SessionsStepSettings />)
     const backfill = await screen.findByRole("button", { name: "Backfill sessions" })
-    const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
-    const folder = screen.getByRole("switch", { name: "Sync Studio: /Example/Studio" })
+    const upload = () => screen.getByRole("switch", { name: uploadLabel })
+    const expectNoFolderSwitch = () =>
+      expect(screen.queryByRole("switch", { name: studioLabel })).not.toBeInTheDocument()
     fireEvent.click(backfill)
     expect(screen.getByText("Waiting for backfill to start…")).toBeVisible()
-    expect(upload).toBeChecked()
-    expect(upload).toBeEnabled()
-    expect(folder).toBeDisabled()
+    expect(upload()).toBeChecked()
+    expect(upload()).toBeEnabled()
+    expectNoFolderSwitch()
+    expect(screen.getByText("Updating…")).toBeVisible()
     expect(screen.getByRole("button", { name: "Sign out" })).toBeDisabled()
 
-    fireEvent.click(upload)
+    fireEvent.click(upload())
     expect(invoke).toHaveBeenCalledWith("cloud_set_sync_enabled", { enabled: false })
-    expect(upload).toBeDisabled()
+    expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
+    expect(screen.getByText("Updating uploads…")).toBeVisible()
     const [finishFirst, finishLast] =
       first === "pause" ? [finishPause, finishBackfill] : [finishBackfill, finishPause]
     await act(async () => finishFirst())
-    expect(upload).toBeDisabled()
-    expect(folder).toBeDisabled()
+    expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
+    expectNoFolderSwitch()
     await act(async () => finishLast())
 
-    expect(upload).not.toBeChecked()
-    expect(upload).toBeEnabled()
+    expect(upload()).not.toBeChecked()
+    expect(upload()).toBeEnabled()
+    const folder = screen.getByRole("switch", { name: studioLabel })
     expect(folder).toBeChecked()
     expect(folder).toBeEnabled()
     expect(screen.queryByText("Scanning folders…")).not.toBeInTheDocument()
@@ -272,7 +340,7 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
     ],
   })
   const { container } = render(<SessionsStepSettings />)
-  const upload = () => screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
+  const upload = () => screen.getByRole("switch", { name: uploadLabel })
   const teamFolder = await screen.findByRole("combobox", {
     name: "Sync Studio: /Example/Studio",
   })
@@ -304,7 +372,10 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
   await waitFor(() => expect(upload()).not.toHaveAttribute("aria-disabled", "true"))
   fireEvent.click(upload())
   await waitFor(() =>
-    expect(invoke).toHaveBeenCalledWith("cloud_set_sync_enabled", { enabled: true }),
+    expect(invoke).toHaveBeenCalledWith("cloud_set_sync_enabled", {
+      enabled: true,
+      binding: personalBinding,
+    }),
   )
   await waitFor(() => expect(upload()).toBeChecked())
   expect(teamFolder).toHaveValue("synthetic-team")
@@ -359,11 +430,20 @@ it.each([
     const confirmation = await screen.findByRole("button", {
       name: "Save",
     })
-    const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
-    expect(upload).toHaveAttribute("aria-checked", String(enabled))
+    const upload = () => screen.getByRole("switch", { name: uploadLabel })
+    expect(upload()).toHaveAttribute("aria-checked", String(enabled))
     expect(await screen.findByText("Save the listed Team folders.")).toBeVisible()
+    const manageSaved = screen.getByText("Manage other saved folders")
+    const disclosure = manageSaved.closest("details")
+    expect(disclosure).not.toHaveAttribute("open")
     for (const path of folderPaths)
-      expect(screen.getByRole("switch", { name: `Sync ${path} to Example Team` })).toBeChecked()
+      expect(within(disclosure!).getByText(path)).not.toBeVisible()
+    fireEvent.click(manageSaved)
+    expect(disclosure).toHaveAttribute("open")
+    for (const path of folderPaths)
+      expect(
+        within(disclosure!).getByRole("switch", { name: `Sync ${path} to Example Team` }),
+      ).toBeChecked()
     const writes = () =>
       invoke.mock.calls.filter(([command]) =>
         [
@@ -409,7 +489,7 @@ it.each([
         expect(screen.getByRole("group", { name: "Cloud folders" })).toHaveFocus(),
       )
     }
-    expect(upload).toHaveAttribute("aria-checked", String(enabled))
+    expect(upload()).toHaveAttribute("aria-checked", String(enabled))
     expect(screen.getByText("Signed in as Example").closest("div")).not.toHaveTextContent(
       /could not/i,
     )
@@ -541,10 +621,12 @@ it("keeps unreadable saved-upload state visible without extra status paragraphs"
   expect(
     await screen.findByText("Could not read saved uploads. Saved files are kept."),
   ).toBeVisible()
-  await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
-  const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
-  expect(upload).toBeChecked()
-  expect(upload).toHaveAttribute("aria-disabled", "true")
+  expect(screen.getByText("Could not check saved uploads on this device.")).toBeVisible()
+  const folders = within(screen.getByRole("group", { name: "Cloud folders" }))
+  expect(folders.getByText("Sync status unavailable")).toBeVisible()
+  expect(folders.queryByRole("switch")).not.toBeInTheDocument()
+  expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Choose folders" })).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled()
   expect(screen.queryByRole("button", { name: "Check saved uploads" })).not.toBeInTheDocument()
   expect(screen.queryByText("Last known setting.")).not.toBeInTheDocument()
@@ -554,11 +636,12 @@ it("keeps unreadable saved-upload state visible without extra status paragraphs"
     ),
   ).not.toBeInTheDocument()
   expect(screen.queryByText(/uploaded ·|Transferred/)).not.toBeInTheDocument()
-  fireEvent.click(upload)
   expect(
     invoke.mock.calls.some(
       ([command]) =>
         command === "cloud_enable_sync" ||
+        command === "cloud_set_sync_enabled" ||
+        command === "cloud_set_sync_project" ||
         command === "cloud_retry_sync" ||
         command === "set_settings",
     ),
@@ -591,7 +674,7 @@ it("keeps blocked saved work visible after Retry without claiming acceptance", a
   ).toBe(false)
 })
 
-it("focuses the device upload switch instead of sending a Retry while uploads are off", async () => {
+it("focuses the paused upload switch and resumes only when activated", async () => {
   mockCloud(true, false, {
     status: "paused",
     paused: true,
@@ -599,9 +682,17 @@ it("focuses the device upload switch instead of sending a Retry while uploads ar
     retryAvailable: false,
     deviceUploadEnabled: false,
   })
+  const invokeCloud = invoke.getMockImplementation()!
+  let finishResume!: () => void
+  invoke.mockImplementation((...args) => {
+    if (args[0] !== "cloud_set_sync_enabled") return invokeCloud(...args)
+    return new Promise((resolve) => {
+      finishResume = () => resolve(invokeCloud(...args))
+    })
+  })
   render(<SessionsStepSettings />)
   fireEvent.click(await screen.findByRole("button", { name: "Go to upload switch" }))
-  const upload = screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
+  const upload = screen.getByRole("switch", { name: uploadLabel })
   expect(upload).toHaveFocus()
   expect(upload).not.toBeChecked()
   expect(screen.queryByRole("button", { name: "Retry saved uploads" })).not.toBeInTheDocument()
@@ -610,4 +701,18 @@ it("focuses the device upload switch instead of sending a Retry while uploads ar
       ([command]) => command === "cloud_retry_sync" || command === "cloud_set_sync_enabled",
     ),
   ).toBe(false)
+  fireEvent.click(upload)
+  expect(screen.getByText("Updating uploads…")).toBeVisible()
+  expect(screen.queryByRole("switch", { name: uploadLabel })).not.toBeInTheDocument()
+  await act(async () => finishResume())
+  await waitFor(() => {
+    const resumed = screen.getByRole("switch", { name: uploadLabel })
+    expect(resumed).toBeChecked()
+    expect(resumed).toHaveFocus()
+  })
+  expect(invoke).toHaveBeenCalledWith("cloud_set_sync_enabled", {
+    enabled: true,
+    binding: personalBinding,
+  })
+  expect(invoke.mock.calls.some(([command]) => command === "cloud_retry_sync")).toBe(false)
 })

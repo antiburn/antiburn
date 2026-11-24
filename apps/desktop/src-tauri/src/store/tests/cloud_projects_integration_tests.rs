@@ -127,9 +127,15 @@ fn cloud_project_native_id_hints_are_bounded_and_exclude_other_formats_and_envir
         .execute(
             "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,
             source_format,cwd,first_seen_at,last_seen_at,updated_at_epoch)
-         VALUES('native','opencode','z-last','providerDb',
-            'opencode:z-last:open_code_v2_sqlite','\"open_code_v2_sqlite\"',
-            '/Example/last','synthetic','synthetic',1)",
+             VALUES('native','opencode','z-last','providerDb',
+                 'opencode:z-last:open_code_v2_sqlite','\"open_code_v2_sqlite\"',
+                 '/Example/last','synthetic','synthetic',1),
+                ('native','opencode','middle-1','providerDb',
+                 'opencode:middle-1:open_code_v2_sqlite','\"open_code_v2_sqlite\"',
+                 '/Example/middle','synthetic','synthetic',1),
+                ('native','opencode','middle-2','providerDb',
+                 'opencode:middle-2:open_code_v2_sqlite','\"open_code_v2_sqlite\"',
+                 '/Example/middle','synthetic','synthetic',1)",
             [],
         )
         .unwrap();
@@ -138,4 +144,18 @@ fn cloud_project_native_id_hints_are_bounded_and_exclude_other_formats_and_envir
         .unwrap();
     assert!(shared.iter().any(|id| id == "z-last"));
     assert!(shared.len() <= 512);
+    let shared = store
+        .cloud_opencode_session_ids(
+            &[
+                "/Example/project".into(),
+                "/Example/middle".into(),
+                "/Example/last".into(),
+            ],
+            4,
+        )
+        .unwrap();
+    assert_eq!(
+        shared,
+        ["session-0000", "session-0001", "middle-1", "z-last"]
+    );
 }

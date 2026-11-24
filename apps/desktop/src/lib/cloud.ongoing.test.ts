@@ -53,8 +53,11 @@ it("uses exact desktop ongoing commands and event names", async () => {
   expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_enable_sync", { consent })
   await port.setEnabled(false)
   expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_set_sync_enabled", { enabled: false })
-  await port.setEnabled(true)
-  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_set_sync_enabled", { enabled: true })
+  await port.setEnabled(true, binding)
+  expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_set_sync_enabled", {
+    enabled: true,
+    binding,
+  })
   await port.retry(binding, "shown-policy")
   expect(mocks.invoke).toHaveBeenLastCalledWith("cloud_retry_sync", {
     binding,

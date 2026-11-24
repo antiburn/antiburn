@@ -371,10 +371,39 @@ test("unreadable upload storage does not show cached totals as current", async (
   await expect(
     page.getByText("Could not read saved uploads. Saved files are kept.", { exact: true }),
   ).toBeVisible()
+  await expect(
+    page.getByRole("group", { name: "Cloud folders" }).getByRole("switch"),
+  ).toHaveCount(0)
   await expect(page.getByText(/41 uploaded|0 uploaded|Transferred/)).toHaveCount(0)
   await expect(page.getByText("Background sync enabled", { exact: true })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Check saved uploads" })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Refresh folders" })).toHaveCount(0)
+})
+
+test("the first Personal folder save can be retried at narrow width", async ({ page }) => {
+  const width = 375
+  await page.setViewportSize({ width, height: 620 })
+  await page.goto("/tests/visual/?surface=cloud&cloud=settings-folders&personalSaveFailure=1")
+  const settings = page.getByRole("main", { name: "Cloud Settings preview" })
+  const footer = settings.locator("footer")
+  const save = footer.getByRole("button", { name: "Save", exact: true })
+  const retry = footer.getByRole("button", { name: "Try again", exact: true })
+  const saveCalls = page.locator("body")
+  await expect(save).toBeEnabled()
+  await expect(retry).toHaveCount(0)
+  await save.click()
+  await expect(footer.getByRole("alert")).toHaveText("Could not save the folder choices.")
+  await expect(retry).toBeEnabled()
+  await expect(saveCalls).toHaveAttribute("data-personal-save-calls", "1")
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+  expect(await settings.evaluate((pane) => pane.scrollWidth === pane.clientWidth)).toBe(true)
+
+  await retry.click()
+  await expect(footer.getByText("Folder sync enabled", { exact: true })).toBeVisible()
+  await expect(footer.getByRole("alert")).toHaveCount(0)
+  await expect(retry).toHaveCount(0)
+  await expect(save).toBeDisabled()
+  await expect(saveCalls).toHaveAttribute("data-personal-save-calls", "2")
 })
 
 test("folder discovery retries and saved verification stay automatic in Sessions settings", async ({
@@ -420,7 +449,12 @@ for (const moveFocus of [false, true]) {
     const exact = page.getByRole("switch", {
       name: "Sync /Example/worktrees/studio-menu-fix to Personal",
     })
+    const manageSaved = page.getByText("Manage other saved folders", { exact: true })
+    await expect(manageSaved).toBeVisible()
+    await expect(exact).toHaveCount(0)
+    await manageSaved.click()
     await exact.focus()
+    await expect(exact).toBeFocused()
     const other = page.getByRole("button", { name: "Sign out" })
     if (moveFocus) await other.focus()
     const grouped = page.getByRole("switch", { name: "Sync Studio: /Example/Studio" })
@@ -640,6 +674,9 @@ test("a failed folder save does not scroll away from another focused setting", a
   await save.focus()
   await page.keyboard.press("Enter")
   await expect(save).toHaveAttribute("aria-disabled", "true")
+  await settings.evaluate((pane) => {
+    pane.scrollTop = 0
+  })
   await uploadRow.focus()
   await expect(uploadRow).toBeFocused()
   const scrollBefore = await settings.evaluate((pane) => pane.scrollTop)

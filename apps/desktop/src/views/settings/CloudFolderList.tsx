@@ -41,7 +41,7 @@ export class CloudFolderList extends Component<{
       for (const target of row.querySelectorAll<HTMLElement>("[data-cloud-workspace]")) {
         if (target.dataset.cloudWorkspace !== focus.workspace) continue
         const control = target.querySelector<HTMLElement>(
-          'button[role="switch"]:not(:disabled)',
+          'select:not(:disabled), button[role="switch"]',
         )
         if (control) {
           control.focus({ preventScroll: true })

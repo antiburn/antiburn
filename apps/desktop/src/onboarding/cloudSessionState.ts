@@ -306,6 +306,78 @@ export function isCloudBusy(error: unknown) {
   )
 }
 
+const folderSaveFailures = {
+  changed: {
+    message: "The folders or session files changed. Review the folder choices.",
+    recovery: "refresh",
+  },
+  incomplete: {
+    message: "Could not verify every selected folder. Choose fewer folders and save again.",
+    recovery: "refresh",
+  },
+  connection: {
+    message: "Could not reach Cloud to save your folders.",
+    recovery: "retry",
+  },
+  unexpected: {
+    message: "Could not save the folder choices.",
+    recovery: "retry",
+  },
+  team: {
+    message: "Review saved folders before saving new Team choices.",
+    recovery: "refresh",
+  },
+} as const
+
+/** Explain known Desktop save failures without exposing provider errors or paths. */
+export function folderSaveError(message: unknown) {
+  switch (message) {
+    case CLOUD_BUSY_MESSAGE:
+      return CLOUD_BUSY_MESSAGE
+    case "Turn off all folders under the old Team policy before approving new uploads.":
+      return folderSaveFailures.team.message
+    case "A session source changed. Reload projects and confirm again.":
+    case "The project folders changed. Reload projects and confirm again.":
+    case "Cloud sources changed. Confirm sync again.":
+    case "The saved workspace or folder changed.":
+      return folderSaveFailures.changed.message
+    case "Project discovery is incomplete. Restore access or choose fewer sources and retry.":
+    case "Could not confirm a supported session for this project. Reload projects and try again.":
+      return folderSaveFailures.incomplete.message
+    case "Connect to Cloud before confirming sync.":
+    case "Cloud upload is unavailable. No source content was uploaded.":
+      return folderSaveFailures.connection.message
+    default:
+      return folderSaveFailures.unexpected.message
+  }
+}
+
+/** Match an action to a known folder save error, not an unrelated upload error. */
+export function folderSaveRecovery(message: string | null | undefined) {
+  switch (message) {
+    case CLOUD_BUSY_MESSAGE:
+      return "check"
+    case "Could not save folders. Try again.":
+      return "retry"
+    case "Restore saved sources or turn off their folders.":
+    case "The saved folder or workspace changed. Review the folder choices and try again.":
+    case "A selected team is unavailable. Check the folder choices.":
+    case "Sync stopped in the old workspace. Check the saved folder before choosing a workspace.":
+    case "Could not confirm where this folder syncs. Check the saved folder before choosing a workspace.":
+    case "Could not confirm that the old folder rule is off. Check the saved folder before trying again.":
+    case "Could not verify the Team folder rules. Check the workspace and try again.":
+      return "refresh"
+    case "Could not update the folder. Try again.":
+    case "Enable folders for one workspace at a time. No folder choices were saved.":
+    case "Confirm the saved Team folders before moving this folder.":
+    case "Sync stopped for this folder. Choose a workspace to sync it again.":
+      return "review"
+    default:
+      return Object.values(folderSaveFailures).find((failure) => failure.message === message)
+        ?.recovery
+  }
+}
+
 /** Map upload errors to safe copy for the action that failed. */
 export function uploadActionError(error: unknown, backfill: boolean, team: boolean) {
   const message = error instanceof Error ? error.message : error

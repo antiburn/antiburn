@@ -210,21 +210,15 @@ struct Context {
     complete: bool,
 }
 
-/// Legacy worktree output can contain raw newlines in paths. Confirm the exact
-/// checkout root and its Git registration before trusting any parsed path.
-async fn legacy_worktree_common_dir(
+/// Read the current checkout's Git directory shared by all its worktrees.
+async fn worktree_common_dir(
     environment: &antiburn_local::platform::environment::DiscoveryEnvironment,
     checkout: &Path,
 ) -> Option<PathBuf> {
     let output = antiburn_local::platform::git::run_git_output_in_environment(
         environment,
         Some(checkout),
-        &[
-            "rev-parse",
-            "--show-toplevel",
-            "--git-common-dir",
-            "--git-dir",
-        ],
+        &["rev-parse", "--git-common-dir"],
         &[],
     )
     .await
@@ -232,36 +226,130 @@ async fn legacy_worktree_common_dir(
     if !output.status.success() {
         return None;
     }
-    let mut lines = std::str::from_utf8(&output.stdout).ok()?.lines();
-    let (root, common, git_dir) = (lines.next()?, lines.next()?, lines.next()?);
-    if lines.next().is_some()
-        || Path::new(root) != checkout
-        || [common, git_dir]
-            .iter()
-            .any(|path| path.is_empty() || path.chars().any(char::is_control))
-    {
+    checkout
+        .join(git_path_record(std::str::from_utf8(&output.stdout).ok()?)?)
+        .canonicalize()
+        .ok()
+}
+
+fn git_path_record(text: &str) -> Option<&Path> {
+    let path = text.strip_suffix('\n')?;
+    (!path.is_empty() && !path.chars().any(char::is_control)).then(|| Path::new(path))
+}
+
+/// Bound reads of Git's worktree pointer files and reject special files.
+fn read_worktree_pointer(path: &Path) -> Option<String> {
+    use std::io::Read;
+    if !path.symlink_metadata().ok()?.is_file() {
         return None;
     }
-    let common = checkout.join(common).canonicalize().ok()?;
-    let git_dir = checkout.join(git_dir).canonicalize().ok()?;
-    let dot_git = checkout.join(".git");
-    if git_dir == common {
-        return (dot_git == git_dir && dot_git.symlink_metadata().ok()?.is_dir()).then_some(common);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
+    let file = options.open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(8192).read_to_string(&mut text).ok()?;
+    (text.len() < 8192).then_some(text)
+}
+
+/// A Git list entry can outlive its checkout. Check both pointers for linked
+/// worktrees so a different repo at the same path cannot become a group member.
+fn registered_linked_checkout(checkout: &Path, common: &Path) -> Option<()> {
+    let dot_git = checkout.join(".git");
+    let pointer = read_worktree_pointer(&dot_git)?;
+    let git_dir = checkout
+        .join(git_path_record(pointer.strip_prefix("gitdir: ")?)?)
+        .canonicalize()
+        .ok()?;
     if git_dir.parent()? != common.join("worktrees") {
         return None;
     }
-    use tokio::io::AsyncReadExt;
-    let mut registration = String::new();
-    tokio::fs::File::open(git_dir.join("gitdir"))
-        .await
+    let registration = read_worktree_pointer(&git_dir.join("gitdir"))?;
+    (git_dir
+        .join(git_path_record(&registration)?)
+        .canonicalize()
         .ok()?
-        .take(4097)
-        .read_to_string(&mut registration)
-        .await
-        .ok()?;
-    let path = registration.strip_suffix('\n')?;
-    (!path.chars().any(char::is_control) && Path::new(path) == dot_git).then_some(common)
+        == dot_git)
+        .then_some(())
+}
+
+fn existing_project_path(path: &str) -> Option<&Path> {
+    if !crate::store::cloud_capture::sync::valid_project_path(path) {
+        return None;
+    }
+    let path = Path::new(path);
+    (path.is_dir() && path.canonicalize().ok().as_deref() == Some(path)).then_some(path)
+}
+
+/// Parse Git's porcelain records, then check the registered checkouts on disk.
+/// Old Git can put raw newlines in paths. Parsed paths alone do not prove membership.
+fn worktree_context(list: &str, separator: char, repo: &Path, common: &Path) -> Option<Context> {
+    let delimiter = if separator == '\0' { "\0\0" } else { "\n\n" };
+    let mut entries = list.split(delimiter).map(|entry| {
+        let mut fields = entry.split(separator);
+        let root = fields.next()?.strip_prefix("worktree ")?;
+        let (mut bare, mut prunable) = (false, false);
+        for field in fields {
+            bare |= field == "bare";
+            prunable |= field == "prunable" || field.starts_with("prunable ");
+        }
+        Some((root, bare, prunable))
+    });
+    // Git lists the parent repo first, even when run in a linked checkout.
+    let (main, bare, prunable) = entries.next()??;
+    let verified_main = !prunable
+        && existing_project_path(main).is_some_and(|path| {
+            if bare {
+                return path == common;
+            }
+            // A copied .git pointer can refer to the parent without proving its path.
+            let dot_git = path.join(".git");
+            dot_git == common && dot_git.symlink_metadata().is_ok_and(|meta| meta.is_dir())
+        });
+    let linked: Vec<_> = entries.flatten().take(100).collect();
+    let mut folders = Vec::new();
+    if verified_main && !bare {
+        folders.push(main.to_owned());
+    }
+    for &(root, bare, prunable) in linked.iter().take(99) {
+        if !bare
+            && !prunable
+            && let Some(path) = existing_project_path(root)
+            && registered_linked_checkout(path, common).is_some()
+        {
+            folders.push(root.to_owned());
+        }
+    }
+    if !folders.iter().any(|folder| Path::new(folder) == repo) {
+        return None;
+    }
+    if !verified_main {
+        let current = repo.to_str()?.to_owned();
+        return Some(Context {
+            main: current.clone(),
+            folders: vec![current],
+            complete: false,
+        });
+    }
+    folders.sort();
+    folders.dedup();
+    let mut complete = linked.len() < 100;
+    if folders.iter().map(String::len).sum::<usize>() > 64 * 1024 {
+        folders.clear();
+        complete = false;
+    }
+    Some(Context {
+        main: main.into(),
+        folders,
+        complete,
+    })
 }
 
 /// Use current local Git context only. Foreign environment paths are never
@@ -272,17 +360,11 @@ fn context(environment: &str, cwd: &str) -> Context {
         folders: Vec::new(),
         complete: false,
     };
-    if environment != "native" || !crate::store::cloud_capture::sync::valid_project_path(cwd) {
+    if environment != "native" {
         return fallback();
     }
-    let path = Path::new(cwd);
-    if !path.is_dir() || path.canonicalize().ok().as_deref() != Some(path) {
+    let Some(path) = existing_project_path(cwd) else {
         return fallback();
-    }
-    let ungrouped = || Context {
-        main: cwd.into(),
-        folders: vec![cwd.into()],
-        complete: false,
     };
     use antiburn_local::platform::git;
     tauri::async_runtime::block_on(async {
@@ -298,7 +380,7 @@ fn context(environment: &str, cwd: &str) -> Context {
                 )
                 .await
                 else {
-                    return ungrouped();
+                    return fallback();
                 };
                 let mut separator = '\0';
                 if output.status.code() == Some(129) {
@@ -311,77 +393,28 @@ fn context(environment: &str, cwd: &str) -> Context {
                     )
                     .await
                     else {
-                        return ungrouped();
+                        return fallback();
                     };
                     output = legacy;
                     separator = '\n';
                 }
                 if !output.status.success() {
-                    return ungrouped();
+                    return fallback();
                 }
                 let Ok(list) = std::str::from_utf8(&output.stdout) else {
-                    return ungrouped();
+                    return fallback();
                 };
-                // Git lists its main checkout first, even when run in a linked checkout.
-                let mut roots = list
-                    .split(separator)
-                    .filter_map(|record| record.strip_prefix("worktree "));
-                let Some(main) = roots.next() else {
-                    return ungrouped();
+                let Some(common) = worktree_common_dir(&environment, &repo).await else {
+                    return fallback();
                 };
-                let roots: Vec<_> = std::iter::once(main).chain(roots).take(101).collect();
-                let mut folders: Vec<_> = roots
-                    .iter()
-                    .take(100)
-                    .copied()
-                    .filter(|root| {
-                        let path = Path::new(root);
-                        crate::store::cloud_capture::sync::valid_project_path(root)
-                            && path.is_dir()
-                            && path.canonicalize().ok().as_deref() == Some(path)
-                    })
-                    .map(str::to_owned)
-                    .collect();
-                if separator == '\n' {
-                    let Some(common) = legacy_worktree_common_dir(&environment, &repo).await else {
-                        return ungrouped();
-                    };
-                    for folder in &folders {
-                        if legacy_worktree_common_dir(&environment, Path::new(folder))
-                            .await
-                            .as_ref()
-                            != Some(&common)
-                        {
-                            return ungrouped();
-                        }
-                    }
-                }
-                if folders.first().is_none_or(|path| path != main)
-                    || !folders
-                        .iter()
-                        .any(|folder| Path::new(folder) == repo.as_path())
-                {
-                    return ungrouped();
-                }
-                folders.sort();
-                folders.dedup();
-                let mut complete = roots.len() <= 100;
-                if folders.iter().map(String::len).sum::<usize>() > 64 * 1024 {
-                    folders.clear();
-                    complete = false;
-                }
-                Context {
-                    main: main.into(),
-                    folders,
-                    complete,
-                }
+                worktree_context(list, separator, &repo, &common).unwrap_or_else(fallback)
             }
             Ok(None) => Context {
                 main: cwd.into(),
                 folders: vec![cwd.into()],
                 complete: true,
             },
-            Err(_) => ungrouped(),
+            Err(_) => fallback(),
         }
     })
 }
@@ -991,9 +1024,13 @@ fn discover_projects(
                     if matched.insert(group.id.clone()) {
                         group.capture_session_count += 1;
                     }
-                    group.capture_supported |= evidence.scan_complete()
-                        && group.grouping_complete
-                        && !group.folder_paths.is_empty();
+                    if !evidence.scan_complete()
+                        || !group.grouping_complete
+                        || group.folder_paths.is_empty()
+                    {
+                        continue;
+                    }
+                    group.capture_supported = true;
                     for folder in &group.folder_paths {
                         if group.projects.iter().any(|project| {
                             project.source_kind == root.source_kind

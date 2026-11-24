@@ -42,6 +42,7 @@ import {
   cloudUploadStatusUnknown,
   confirmationContextKey,
   folderRouteConfirmed,
+  folderSaveError,
   hasSavedProjectPermission,
   isCloudBusy,
   legacyCaptureConsent,
@@ -64,7 +65,6 @@ import {
   workspaceRecoveryPatch,
   type CloudViewSnapshot,
 } from "./cloudSessionState"
-
 export {
   canBackfillUploads,
   canRetryPersonalUploads,
@@ -821,8 +821,14 @@ export class CloudSession {
     receiveStatus: (status) => this.receiveOngoing(status),
   })
   /** Pause or resume uploads on this device without retrying interrupted work. */
-  controlSync = (paused: boolean) =>
-    this.changeSyncControl((port) => port.setEnabled(!paused), { pause: paused })
+  controlSync = (paused: boolean, context = this.snapshot) =>
+    this.changeSyncControl(
+      (port) =>
+        paused
+          ? port.setEnabled(false)
+          : port.setEnabled(true, projectBinding(context.cloud, false) ?? undefined),
+      { pause: paused },
+    )
 
   /** Renew the exact saved Team selection and add the explicit same-Team draft. */
   private async confirmTeamFolders(context: CloudViewSnapshot, destinationId: string) {
@@ -1390,10 +1396,9 @@ export class CloudSession {
           : undefined
       return this.startFolderRoutes(port, binding, groups, destinations, singleWorkspaceChoices)
     }
-    const errorField = settings ? "uploadActionError" : "error"
     if (destinations.length > 1) {
       this.publish({
-        [errorField]:
+        uploadActionError:
           "Enable folders for one workspace at a time. No folder choices were saved.",
       })
       return
@@ -1407,7 +1412,7 @@ export class CloudSession {
       !projects.workspaces?.some(({ id, kind }) => id === destinationId && kind === "team")
     ) {
       this.publish({
-        [errorField]: "A selected team is unavailable. Check the folder choices.",
+        uploadActionError: "A selected team is unavailable. Check the folder choices.",
       })
       return
     }
@@ -1430,7 +1435,7 @@ export class CloudSession {
         ...(!pendingOnly ? { screen: "complete" as const } : {}),
         busy: pendingOnly,
         sync: starting,
-        [errorField]: null,
+        uploadActionError: null,
       })
       if (projects.paging || this.projectReader.hasPendingPage) {
         await this.projectReader.finishPaging()
@@ -1470,15 +1475,7 @@ export class CloudSession {
       if (stillBound() && (pendingOnly || current()))
         this.publish({
           sync: { status: "ambiguous" },
-          [errorField]: isCloudBusy(error)
-            ? CLOUD_BUSY_MESSAGE
-            : isTeam &&
-                message ===
-                  "Turn off all folders under the old Team policy before approving new uploads."
-              ? "Refresh your Cloud folders, then save your Team choices again."
-              : settings
-                ? "Could not save the folder choices. Try again."
-                : "Cloud sync was not confirmed. Check Cloud Settings to retry.",
+          uploadActionError: folderSaveError(message),
         })
     } finally {
       this.syncInFlight = false

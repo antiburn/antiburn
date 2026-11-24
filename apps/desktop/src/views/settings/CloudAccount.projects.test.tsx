@@ -34,6 +34,11 @@ function Account({ session }: { session: CloudSession }) {
   return <CloudAccount session={session} value={value} />
 }
 
+async function showOtherSavedFolders() {
+  const summary = await screen.findByText("Manage other saved folders")
+  summary.closest("details")!.open = true
+}
+
 it("shows saved controls before cold grouping and reuses grouped rows during refresh", async () => {
   const { port, ongoing } = cloudProjectFixture()
   const group = projectGroup()
@@ -56,6 +61,7 @@ it("shows saved controls before cold grouping and reuses grouped rows during ref
   ongoing.groups.mockImplementation(deferPage)
   const cold = render(<Account session={new CloudSession(port, false, true)} />)
   await waitFor(() => expect(ongoing.groups).toHaveBeenCalledOnce())
+  await showOtherSavedFolders()
   const exact = screen.getByRole("switch", { name: `Sync ${group.path} to Personal` })
   expect(exact).toBeChecked()
   expect(exact).toBeEnabled()
@@ -92,6 +98,7 @@ it("keeps the exact saved path manageable when project discovery fails", async (
   expect(await screen.findByText(/Still checking session folders/)).toBeVisible()
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   expect(ongoing.groups).toHaveBeenCalledTimes(3)
+  await showOtherSavedFolders()
   const control = screen.getByRole("switch", { name: `Sync ${path} to Personal` })
   expect(control).toBeChecked()
   fireEvent.click(control)
@@ -408,14 +415,15 @@ it("revokes immediately and stages a new approval until Save", async () => {
   )
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  const toggle = await screen.findByRole("switch", { name: /Sync Studio/ })
+  const toggle = () => screen.getByRole("switch", { name: /Sync Studio/ })
+  await screen.findByRole("switch", { name: /Sync Studio/ })
   const save = screen.getByRole("button", { name: "Save" })
   expect(save).toBeDisabled()
-  expect(toggle).toBeChecked()
+  expect(toggle()).toBeChecked()
   expect(
     screen.queryByRole("button", { name: "Update sync selection" }),
   ).not.toBeInTheDocument()
-  fireEvent.click(toggle)
+  fireEvent.click(toggle())
   await waitFor(() => expect(ongoing.setProject).toHaveBeenCalledOnce())
   expect(ongoing.setProject).toHaveBeenLastCalledWith(
     expect.objectContaining({
@@ -426,13 +434,13 @@ it("revokes immediately and stages a new approval until Save", async () => {
     }),
   )
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-  await waitFor(() => expect(toggle).not.toBeChecked())
-  fireEvent.click(toggle)
+  await waitFor(() => expect(toggle()).not.toBeChecked())
+  fireEvent.click(toggle())
   expect(save).toBeEnabled()
   expect(ongoing.setProject).toHaveBeenCalledOnce()
-  fireEvent.click(toggle)
+  fireEvent.click(toggle())
   expect(save).toBeDisabled()
-  fireEvent.click(toggle)
+  fireEvent.click(toggle())
   fireEvent.click(save)
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   await waitFor(() => expect(ongoing.setProject).toHaveBeenCalledTimes(2))
@@ -443,7 +451,7 @@ it("revokes immediately and stages a new approval until Save", async () => {
     }),
   )
   expect(ongoing.enable).not.toHaveBeenCalled()
-  await waitFor(() => expect(toggle).toBeChecked())
+  await waitFor(() => expect(toggle()).toBeChecked())
   expect(screen.queryByText("Uploads on")).not.toBeInTheDocument()
 })
 
@@ -572,13 +580,15 @@ it("turns off a discovered but disconnected team folder by exact saved path", as
   expect(ongoing.enable).not.toHaveBeenCalled()
 })
 
-it("keeps missing saved folders checked and available for revocation", async () => {
+it("keeps a missing saved rule removable without listing it as a folder choice", async () => {
   const { port, ongoing } = cloudProjectFixture()
+  const path = projectGroup().path
   ongoing.status.mockResolvedValue(
     ongoingStatus({
       status: "ready",
       consentVersion: "desktop-project-sync-v1",
       projects: projectGroup().projects,
+      savedFolders: [{ groupId: "saved-missing", path }],
     }),
   )
   ongoing.groups.mockResolvedValue({
@@ -596,7 +606,11 @@ it("keeps missing saved folders checked and available for revocation", async () 
   })
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  const toggle = await screen.findByRole("switch", { name: /Sync Studio/ })
+  const summary = await screen.findByText("Manage other saved folders")
+  expect(summary.closest("details")).not.toHaveAttribute("open")
+  expect(screen.queryByRole("switch", { name: /^Sync Studio:/ })).toBeNull()
+  await showOtherSavedFolders()
+  const toggle = screen.getByRole("switch", { name: `Sync ${path} to Personal` })
   expect(toggle).toBeChecked()
   expect(toggle).toBeEnabled()
   fireEvent.click(toggle)
@@ -971,10 +985,88 @@ it("does not show a remote folder as approved by a matching local path", async (
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
   expect(await screen.findByRole("switch", { name: /^Sync Studio:/ })).toBeChecked()
-  const remote = screen.getByRole("switch", { name: /^Sync Remote Studio:/ })
-  expect(remote).not.toBeChecked()
-  expect(remote).toBeDisabled()
+  expect(screen.queryByRole("switch", { name: /^Sync Remote Studio:/ })).toBeNull()
+  expect(screen.getByText("No sessions ready to upload")).toBeVisible()
 })
+
+it("hides a missing folder even when sessions were found", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.groups.mockResolvedValue({
+    groups: [
+      projectGroup({
+        folderPaths: [],
+        projects: [],
+        sessionCount: 2,
+        captureSupported: false,
+        groupingComplete: false,
+      }),
+    ],
+    sourceRoots: [],
+    nextCursor: null,
+    partial: false,
+  })
+  render(<Account session={new CloudSession(port, false, true)} />)
+  expect(await screen.findByText(/No session folders found/)).toBeVisible()
+  expect(screen.queryByText("2 sessions")).toBeNull()
+  expect(screen.queryByText("/Example/Studio")).toBeNull()
+  expect(screen.queryByRole("switch", { name: /^Sync Studio:/ })).toBeNull()
+  expect(screen.queryByRole("combobox", { name: /^Sync Studio:/ })).toBeNull()
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it.each([
+  [
+    "Project discovery is incomplete. Restore access or choose fewer sources and retry.",
+    "Could not verify every selected folder. Choose fewer folders and save again.",
+    "Review folders",
+    2,
+    1,
+  ],
+  [
+    "The project folders changed. Reload projects and confirm again.",
+    "The folders or session files changed. Review the folder choices.",
+    "Review folders",
+    2,
+    1,
+  ],
+  [
+    "Connect to Cloud before confirming sync.",
+    "Could not reach Cloud to save your folders.",
+    "Try again",
+    1,
+    2,
+  ],
+  ["Cloud is busy. Try again.", "Cloud is busy. Try again.", "Check Cloud", 2, 1],
+  [
+    "Synthetic provider error at /Example/private",
+    "Could not save the folder choices.",
+    "Try again",
+    1,
+    2,
+  ],
+])(
+  "offers a working recovery when the first Save fails",
+  async (failure, message, action, reads, saves) => {
+    const { port, ongoing } = cloudProjectFixture()
+    ongoing.enable.mockRejectedValueOnce(failure)
+    render(<Account session={new CloudSession(port, false, true)} />)
+    await screen.findByRole("switch", { name: /^Sync Studio:/ })
+    const save = screen.getByRole("button", { name: "Save" })
+    fireEvent.click(save)
+    expect(await screen.findByRole("alert")).toHaveTextContent(message)
+    expect(save).toBeEnabled()
+    expect(screen.queryByText(/Example\/private/)).toBeNull()
+    expect(ongoing.enable).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole("button", { name: action }))
+    await waitFor(() => {
+      expect(ongoing.groups).toHaveBeenCalledTimes(reads)
+      expect(ongoing.enable).toHaveBeenCalledTimes(saves)
+    })
+    if (action === "Review folders")
+      expect(screen.getByRole("group", { name: "Cloud folders" })).toHaveFocus()
+  },
+)
 
 it("starts desktop ongoing uploads from Settings without using legacy request discovery", async () => {
   const { port, ongoing, emitSync } = cloudProjectFixture()
@@ -1045,11 +1137,12 @@ it("keeps the cached-folder warning beside the unsaved folder sync status", asyn
   const { port, ongoing } = cloudProjectFixture()
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  const folder = await screen.findByRole("switch", { name: /Sync Studio/ })
+  await screen.findByRole("switch", { name: /Sync Studio/ })
   ongoing.groups.mockRejectedValue(new Error("Synthetic discovery failure"))
   await act(() => session.loadProjects(false, false))
 
-  expect(folder).toBeVisible()
+  expect(screen.getByText("Studio", { selector: "strong" })).toBeVisible()
+  expect(screen.queryByRole("switch", { name: /Sync Studio/ })).toBeNull()
   expect(screen.getByRole("alert")).toHaveTextContent(
     "Previously loaded folders are still shown.",
   )
@@ -1124,7 +1217,8 @@ it.each([
     port.pick = vi.fn(async () => [sourcePath])
     const session = new CloudSession(port, false, true)
     render(<Account session={session} />)
-    expect(await screen.findByRole("switch", { name: /Sync Studio/ })).toBeChecked()
+    expect(await screen.findByText("No sessions ready to upload")).toBeVisible()
+    expect(screen.queryByRole("switch", { name: /Sync Studio/ })).toBeNull()
     const beforeAccess = session.getSnapshot()
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
     expect(screen.queryByText("No session folders found.")).not.toBeInTheDocument()
@@ -1165,7 +1259,8 @@ it("keeps source access reachable for an unqualified group beside a qualified gr
   })
   const session = new CloudSession(port, false, true)
   render(<Account session={session} />)
-  await screen.findByRole("switch", { name: /Sync Website/ })
+  expect(await screen.findByText("No sessions ready to upload")).toBeVisible()
+  expect(screen.queryByRole("switch", { name: /Sync Website/ })).toBeNull()
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
   expect(
     screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
@@ -1493,8 +1588,9 @@ it("hides cached totals and progress after saved upload storage becomes unknown"
     screen.queryByRole("button", { name: "Update sync selection" }),
   ).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Refresh folders" })).not.toBeInTheDocument()
-  expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeVisible()
+  expect(screen.queryByRole("switch", { name: /Sync Studio/ })).toBeNull()
   await waitFor(() => expect(session.getSnapshot().ongoing?.storageKnown).toBe(true))
+  expect(screen.getByRole("switch", { name: /Sync Studio/ })).toBeEnabled()
   expect(session.getSnapshot().ongoing?.acceptedCount).toBe(7)
   expect(ongoing.retry).not.toHaveBeenCalled()
 })

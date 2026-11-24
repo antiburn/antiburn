@@ -349,7 +349,7 @@ export interface CloudOngoingPort {
   enable(consent: CloudOngoingConsent): Promise<CloudOngoingStatus>
   confirmTeamFolders?(confirmation: CloudTeamConfirmation): Promise<CloudOngoingStatus>
   setProject(change: CloudProjectChange): Promise<CloudOngoingStatus>
-  setEnabled(enabled: boolean): Promise<CloudOngoingStatus>
+  setEnabled(enabled: boolean, binding?: CloudDestinationBinding): Promise<CloudOngoingStatus>
   /** Retry only the named destination and the policy revision shown at confirmation. */
   retry(
     binding: CloudDestinationBinding,
@@ -557,7 +557,8 @@ export const desktopCloudPort: CloudPort = {
     confirmTeamFolders: (confirmation) =>
       cloudOngoingCommand("cloud_reapprove_team_sync", { confirmation }),
     setProject: (change) => cloudOngoingCommand("cloud_set_sync_project", { change }),
-    setEnabled: (enabled) => cloudOngoingCommand("cloud_set_sync_enabled", { enabled }),
+    setEnabled: (enabled, binding) =>
+      cloudOngoingCommand("cloud_set_sync_enabled", { enabled, ...(binding && { binding }) }),
     retry: (binding, expectedPolicyRevision) =>
       cloudOngoingCommand("cloud_retry_sync", { binding, expectedPolicyRevision }),
     backfill: (binding, expectedPolicyRevision) =>

@@ -36,6 +36,7 @@ use tokio::sync::Notify;
 
 #[path = "backfill_progress.rs"]
 mod backfill_progress;
+mod device_upload;
 mod discovery;
 mod folder_move;
 #[path = "git_checkout.rs"]
@@ -57,6 +58,7 @@ const RESERVATION_RETRY_DELAY: Duration = Duration::from_secs(15);
 const INTEGRITY_POLL_DELAY: Duration = Duration::from_secs(5);
 const FINALIZATION_PROBE_LIMIT: u8 = 3;
 const ROUTE_DENIAL_RETRY_DELAY: Duration = Duration::from_secs(60);
+const SYNC_CONTROL_ADMISSION_WAIT: Duration = Duration::from_secs(5);
 
 /// Explicit full session content confirmation for initial and future sessions.
 /// Old source selections and upload preferences cannot deserialize as consent.
@@ -3020,13 +3022,8 @@ pub(crate) async fn cloud_enable_sync(
     let wake = controller.sync.wake.clone();
     let generation = controller.account_generation.load(Ordering::Acquire);
     let content_generation = controller.sync.generation.load(Ordering::Acquire);
-    let priority = if consent.move_from.is_some() {
-        Priority::Wait(Duration::from_secs(5))
-    } else {
-        Priority::Normal
-    };
     let result = work
-        .run(priority, move || {
+        .run(Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT), move || {
             let controller = app.state::<Controller>();
             let account_current =
                 || controller.account_generation.load(Ordering::Acquire) == generation;
@@ -3282,7 +3279,7 @@ pub(crate) async fn cloud_reapprove_team_sync(
     let work = controller.blocking.clone();
     let wake = controller.sync.wake.clone();
     let result = work
-        .run(Priority::Wait(Duration::from_secs(5)), move || {
+        .run(Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT), move || {
             let controller = app.state::<Controller>();
             let account_current =
                 || controller.account_generation.load(Ordering::Acquire) == account_generation;
@@ -3454,10 +3451,8 @@ pub(crate) async fn cloud_set_sync_project(
     };
     let priority = if !change.selected {
         Priority::Cleanup
-    } else if change.move_from.is_some() {
-        Priority::Wait(Duration::from_secs(5))
     } else {
-        Priority::Normal
+        Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT)
     };
     let result = work
         .run(priority, move || {
@@ -3802,18 +3797,21 @@ fn project_removals(
 }
 
 /// Change upload admission for every destination on this device. OFF fences
-/// in-flight work before waiting. ON does not retry interrupted captures.
+/// in-flight work before waiting. ON requires the caller's current Personal
+/// connection and does not retry interrupted captures.
 #[tauri::command]
 pub(crate) async fn cloud_set_sync_enabled(
     app: tauri::AppHandle,
     enabled: bool,
+    binding: Option<DestinationBinding>,
 ) -> Result<Status, String> {
     let controller = app.state::<Controller>();
     let work = controller.blocking.clone();
     let wake = controller.sync.wake.clone();
+    let account_generation = controller.account_generation.load(Ordering::Acquire);
     let (priority, expected_pause) = if enabled {
         (
-            Priority::Normal,
+            Priority::Wait(SYNC_CONTROL_ADMISSION_WAIT),
             controller.sync.device_pause.load(Ordering::Acquire),
         )
     } else {
@@ -3822,16 +3820,16 @@ pub(crate) async fn cloud_set_sync_enabled(
     let result = work
         .run(priority, move || {
             let controller = app.state::<Controller>();
-            let pause = &controller.sync.device_pause;
-            if pause.load(Ordering::Acquire) != expected_pause {
-                return Err("Cloud upload controls changed. Try again.".into());
-            }
             let store = app.state::<Store>();
             ensure_cloud_setup(&controller.setup_ready, &store)?;
-            store
-                .set_cloud_device_upload_enabled(enabled)
-                .map_err(|_| "Could not save Cloud upload controls.")?;
-            controller.sync.finish_device_change(expected_pause)?;
+            device_upload::save_switch(
+                &controller,
+                &store,
+                enabled,
+                binding.as_ref(),
+                expected_pause,
+                account_generation,
+            )?;
             let result = read_sync_status(&app, false).unwrap_or_else(|_| Status {
                 status: State::StorageUnavailable,
                 device_upload_enabled: controller

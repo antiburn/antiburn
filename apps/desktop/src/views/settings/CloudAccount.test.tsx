@@ -291,7 +291,9 @@ it("requires source selection and sends account-bound folder changes from Settin
   expect(source).not.toBeChecked()
   expect(save).not.toHaveBeenCalled()
   fireEvent.click(source)
-  await waitFor(() => expect(source).toBeChecked())
+  await waitFor(() =>
+    expect(screen.getByRole("switch", { name: /Select \/Example\/Project/ })).toBeChecked(),
+  )
   expect(save).toHaveBeenCalledWith(
     { screen: "folders", folders: [{ path: "/Example/Project", selected: true }] },
     { accountId: "synthetic-account", destinationId: "synthetic-personal" },

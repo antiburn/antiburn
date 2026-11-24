@@ -697,6 +697,10 @@ to System and the corresponding explicit theme.
 - Keep an action in place while loading, saving, or switching states. When an
   action needs a prerequisite, show that prerequisite in plain language.
   Keep an editable choice editable after Save.
+- Show switches only when they can change the setting. Use a setup action for
+  a setting that needs setup. Use short status text when an action cannot run.
+- Recover automatically when it is safe. Otherwise, put a working recovery
+  action next to the error. Do not retry a change without the user's approval.
 - Review first use, returning use, and a current failure in the actual window.
   Check that keyboard focus and the main actions stay in place at narrow widths
   and larger interface scales.
@@ -2126,10 +2130,14 @@ The folder list does not shrink to make room for consent paragraphs. A short
 subtitle states full-session scope. The account and destination share a compact
 chip; the selected group count sits above the list. Back, underlined Continue
 locally, and Start syncing are the folder footer's only content.
-Normal Settings shows the account, upload switch, folder choices, and one short
+Normal Settings shows the account, upload control, folder choices, and one short
 sync status beside Backfill sessions. Show workspace names when they distinguish
 active destinations, not as a separate Personal status section. Show Join only
 for confirmed workspace invitations. Do not show old remote sign-out warnings.
+Before the first folder approval, **Choose folders** takes the user to the
+folder choices. Show an upload switch only once it can pause or resume uploads.
+The folder list shows existing directories. Keep exact saved rules that are
+not in that list removable under **Manage other saved folders**.
 With Personal only, folder switches reflect saved permission. Turning a saved
 switch off applies immediately. Add folders with Save. With Personal and Team,
 keep a workspace dropdown for folders that can change destination. Use Save to

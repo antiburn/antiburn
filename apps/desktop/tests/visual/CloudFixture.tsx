@@ -24,6 +24,8 @@ export function cloudFixture(name: string): CloudPort {
   const params = new URLSearchParams(window.location.search)
   const footerPreview = params.has("footerPreview")
   const deferFolders = params.has("deferFolders")
+  const firstPersonalSaveFailure =
+    name === "settings-folders" && params.has("personalSaveFailure")
   const dev = name.startsWith("dev-") ? name.slice(4) : null
   if (isCloudDevScenario(dev)) return createCloudDevPort(dev)
   const settingsFolders = ["settings-folders", "settings-attention"].includes(name)
@@ -65,7 +67,9 @@ export function cloudFixture(name: string): CloudPort {
     ...emptyCloudSnapshot,
     authEnabled: !["marketing", "marketing_failed"].includes(name),
     syncEnabled:
-      name === "settings-progress" || name === "settings-reopened" || settingsFolders,
+      name === "settings-progress" ||
+      name === "settings-reopened" ||
+      (settingsFolders && !firstPersonalSaveFailure),
     captureEnabled: authenticated && name !== "unavailable",
     status: authenticated
       ? "signed_in"
@@ -265,7 +269,7 @@ export function cloudFixture(name: string): CloudPort {
       projects: groups[0]!.projects,
       projectChoices: { Studio: true, Website: false },
     }
-  if (settingsFolders) {
+  if (settingsFolders && !firstPersonalSaveFailure) {
     const approved = groups.filter((group) => group.id !== "Website")
     ongoing = {
       ...ongoing,
@@ -305,6 +309,7 @@ export function cloudFixture(name: string): CloudPort {
           : "unavailable",
   )
   let failTeamSave = params.get("saveFailure") === "1"
+  let personalSaveCalls = 0
   let showQueueProgress = false
   const ongoingStatus = (): CloudOngoingStatus =>
     showQueueProgress
@@ -420,6 +425,11 @@ export function cloudFixture(name: string): CloudPort {
         return saved
       },
       enable: async (consent) => {
+        if (firstPersonalSaveFailure) {
+          personalSaveCalls += 1
+          document.body.dataset.personalSaveCalls = String(personalSaveCalls)
+          if (personalSaveCalls === 1) throw new Error("Synthetic Personal save failure.")
+        }
         if (name === "ambiguous") throw new Error("Synthetic unknown result")
         ongoing = {
           ...ongoing,

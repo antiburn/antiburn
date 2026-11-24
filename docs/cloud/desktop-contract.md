@@ -344,8 +344,9 @@ worktrees for the selected groups. The first Save checks current source and
 recorded folder evidence, just like later additions. Changes check the current
 policy revision and do not change other groups, unseen pages, or the device
 pause. Turning off the last group does not delete saved captures.
-If a saved folder no longer appears in discovery, its exact saved row still
-lets you turn it off without access to the original source.
+Settings lists folders with verified local directories. Use **Manage other
+saved folders** to turn off a saved rule that does not appear in the folder
+list. You do not need access to the original source to turn the rule off.
 
 Confirmation saves the complete `projectChoices` map, including exclusions,
 atomically with the upload policy. Status returns the same map for reopen.
@@ -354,8 +355,9 @@ Only the policy's approved `projects` grant upload permission. Older policies
 without a choice map load an empty map; the UI requires review before changing
 their selection.
 
-For local paths, current local Git metadata can group a repository and its
-worktrees into one displayed project. This is a present-day display association,
+For local paths, current local Git metadata groups a repository and its
+registered, existing worktrees under the parent repository. This is a
+present-day display association,
 not historical session ownership or upload permission. Approval includes the
 exact current worktree paths in the selected group, including paths outside the
 main repository. A new worktree outside the already approved folder trees needs
@@ -439,8 +441,9 @@ counters and progress are unknown or last-known values, not current results. The
 still publishes `storage_unavailable` when it cannot read saved files. Last-known
 values must match the current account, destination, and service.
 **Upload sessions to Antiburn Cloud** pauses or resumes uploads to every
-destination on this device. With no approved folders, the switch opens folder
-setup instead. The switch does not change folder approval or start a retry.
+destination on this device. With no approved folders, **Choose folders** takes
+the user to folder setup instead of showing a switch. The switch does not
+change folder approval or start a retry.
 Folder changes while the device is paused do not resume uploads. On upgrade,
 an old workspace pause starts the device switch off. The old workspace pause
 stays in force until that workspace is reviewed, because it can also mean the

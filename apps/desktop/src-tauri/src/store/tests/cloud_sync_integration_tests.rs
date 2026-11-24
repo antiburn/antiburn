@@ -413,6 +413,41 @@ fn cloud_team_membership_reapproval_needs_empty_current_consent_and_keeps_old_jo
 }
 
 #[test]
+fn cloud_device_upload_resume_restores_the_exact_previous_preference() {
+    for previous in [None, Some(false), Some(true)] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open_in_memory(directory.path()).unwrap();
+        store.initialize_cloud_setup().unwrap();
+        if let Some(enabled) = previous {
+            store.set_cloud_device_upload_enabled(enabled).unwrap();
+        }
+
+        assert!(
+            !store
+                .resume_cloud_device_uploads(|| false, || panic!("stale before commit"))
+                .unwrap()
+        );
+        assert_eq!(
+            saved_device_upload_enabled(&store.lock()).unwrap(),
+            previous
+        );
+
+        assert!(
+            !store
+                .resume_cloud_device_uploads(|| true, || false)
+                .unwrap()
+        );
+        assert_eq!(
+            saved_device_upload_enabled(&store.lock()).unwrap(),
+            previous
+        );
+
+        assert!(store.resume_cloud_device_uploads(|| true, || true).unwrap());
+        assert!(store.cloud_device_upload_enabled().unwrap());
+    }
+}
+
+#[test]
 fn cloud_legacy_team_renewal_preserves_choices_and_cannot_authorize_old_jobs() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open_in_memory(directory.path()).unwrap();

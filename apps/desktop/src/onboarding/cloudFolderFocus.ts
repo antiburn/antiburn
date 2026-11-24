@@ -4,6 +4,7 @@ export async function changeFolderWithFocus(
   foldersId: string,
   folderId: string | undefined,
   change: () => Promise<void>,
+  fallbackControl?: string,
 ) {
   if (!trigger || document.activeElement !== trigger) return change()
 
@@ -32,7 +33,10 @@ export async function changeFolderWithFocus(
     const control = row?.querySelector<HTMLElement>(
       'select:not(:disabled), button[role="switch"]:not(:disabled)',
     )
-    const target = control ?? folders
+    const target =
+      control ??
+      (fallbackControl ? folders?.querySelector<HTMLElement>(fallbackControl) : null) ??
+      folders
     target?.focus()
   } finally {
     document.removeEventListener("focusin", onFocus)

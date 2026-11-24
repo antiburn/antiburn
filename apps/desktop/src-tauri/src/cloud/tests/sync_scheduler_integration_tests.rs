@@ -1718,6 +1718,86 @@ fn cloud_device_upload_fence_blocks_older_work_until_off_is_saved() {
 }
 
 #[test]
+fn cloud_device_upload_resume_requires_the_current_personal_binding() {
+    let fixture = Fixture::for_workspace(
+        READY,
+        0,
+        Workspace {
+            id: "team".into(),
+            name: "Team".into(),
+            kind: WorkspaceKind::Team,
+        },
+    );
+    fixture
+        .store
+        .set_cloud_device_upload_enabled(false)
+        .unwrap();
+    let scheduler = Scheduler::default();
+    let expected_pause = scheduler.fence_device_uploads();
+    let resume = |account: &str, workspace: &str, generation, current| {
+        device_upload::resume(
+            &scheduler,
+            &fixture.store,
+            &fixture.engine,
+            &DestinationBinding {
+                account_id: account.into(),
+                destination_id: workspace.into(),
+            },
+            expected_pause,
+            generation,
+            || current,
+        )
+    };
+    for (account, workspace, generation, current) in [
+        ("other", "personal", 0, true),
+        ("account", "team", 0, true),
+        ("account", "personal", 1, true),
+        ("account", "personal", 0, false),
+    ] {
+        assert!(resume(account, workspace, generation, current).is_err());
+        assert!(!fixture.store.cloud_device_upload_enabled().unwrap());
+        assert!(!scheduler.device_admission_open());
+    }
+
+    resume("account", "personal", 0, true).unwrap();
+    assert!(scheduler.device_upload_enabled(&fixture.store).unwrap());
+}
+
+#[test]
+fn cloud_device_upload_resume_rolls_back_if_sign_out_wins_during_commit() {
+    let fixture = Fixture::new(READY, 0);
+    fixture
+        .store
+        .set_cloud_device_upload_enabled(false)
+        .unwrap();
+    let scheduler = Scheduler::default();
+    let checks = std::cell::Cell::new(0);
+    let generation = AtomicU64::new(0);
+    let result = device_upload::resume(
+        &scheduler,
+        &fixture.store,
+        &fixture.engine,
+        &DestinationBinding {
+            account_id: "account".into(),
+            destination_id: "personal".into(),
+        },
+        0,
+        0,
+        || {
+            checks.set(checks.get() + 1);
+            if checks.get() == 3 {
+                generation.fetch_add(1, Ordering::AcqRel);
+            }
+            generation.load(Ordering::Acquire) == 0
+        },
+    );
+    assert_eq!(checks.get(), 3);
+    assert!(result.is_err());
+    assert!(!fixture.store.cloud_device_upload_enabled().unwrap());
+    assert!(!scheduler.device_upload_enabled(&fixture.store).unwrap());
+}
+
+#[test]
 fn cloud_device_upload_pause_preserves_personal_and_team_capture_ids() {
     for (id, kind) in [
         ("personal", WorkspaceKind::Personal),

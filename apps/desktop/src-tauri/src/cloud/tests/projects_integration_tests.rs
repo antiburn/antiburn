@@ -136,23 +136,23 @@ fn project_discovery_keeps_a_later_cursor_root_visible_after_512_mirrors() {
 }
 
 #[test]
-fn legacy_worktree_proof_ties_linked_checkout_to_the_main_git_directory() {
+fn cloud_project_groups_keep_only_registered_worktrees_in_both_git_formats() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap();
     let main = root.join("main checkout");
     let linked = root.join("linked checkout");
-    let other = root.join("other checkout");
+    let stale = root.join("replaced checkout");
+    let missing = root.join("missing checkout");
+    let moved = root.join("moved checkout");
     let alias = root.join("alias checkout");
-    for checkout in [&main, &other] {
-        assert!(
-            std::process::Command::new("git")
-                .args(["init", "--quiet"])
-                .arg(checkout)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&main)
+            .status()
+            .unwrap()
+            .success()
+    );
     assert!(
         std::process::Command::new("git")
             .current_dir(&main)
@@ -171,38 +171,167 @@ fn legacy_worktree_proof_ties_linked_checkout_to_the_main_git_directory() {
             .unwrap()
             .success()
     );
+    for checkout in [&linked, &stale, &missing] {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(&main)
+                .args(["worktree", "add", "--quiet", "--detach"])
+                .arg(checkout)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fs::rename(&missing, &moved).unwrap();
+    fs::remove_file(stale.join(".git")).unwrap();
     assert!(
         std::process::Command::new("git")
-            .current_dir(&main)
-            .args(["worktree", "add", "--quiet", "--detach"])
-            .arg(&linked)
+            .args(["init", "--quiet"])
+            .arg(&stale)
             .status()
             .unwrap()
             .success()
     );
+    fs::create_dir(&alias).unwrap();
+    fs::copy(linked.join(".git"), alias.join(".git")).unwrap();
+    let nested = linked.join("src");
+    fs::create_dir(&nested).unwrap();
+    let expected = [linked.to_str().unwrap(), main.to_str().unwrap()];
+
+    for path in [&main, &nested] {
+        let grouped = context("native", path.to_str().unwrap());
+        assert_eq!(grouped.main, main.to_str().unwrap());
+        assert_eq!(grouped.folders, expected);
+        assert!(grouped.complete);
+    }
+    let replaced = context("native", stale.to_str().unwrap());
+    assert_eq!(replaced.folders, [stale.to_str().unwrap()]);
+    assert!(replaced.complete);
+    assert!(
+        context("native", alias.to_str().unwrap())
+            .folders
+            .is_empty()
+    );
+    assert!(
+        context("native", missing.to_str().unwrap())
+            .folders
+            .is_empty()
+    );
+    assert!(
+        context("wsl:synthetic", nested.to_str().unwrap())
+            .folders
+            .is_empty()
+    );
+
     tauri::async_runtime::block_on(async {
         let environment = antiburn_local::platform::environment::DiscoveryEnvironment::Native;
-        let common = main.join(".git").canonicalize().unwrap();
-        fs::create_dir(&alias).unwrap();
+        let common = worktree_common_dir(&environment, &linked).await.unwrap();
+        let output = antiburn_local::platform::git::run_git_output_in_environment(
+            &environment,
+            Some(&linked),
+            &["worktree", "list", "--porcelain"],
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(output.status.success());
+        let list = std::str::from_utf8(&output.stdout).unwrap();
+        let grouped = worktree_context(list, '\n', &linked, &common).unwrap();
+        assert_eq!(grouped.main, main.to_str().unwrap());
+        assert_eq!(grouped.folders, expected);
+        assert!(grouped.complete);
+
+        let unverified_parent = root.join("unverified parent");
+        fs::create_dir(&unverified_parent).unwrap();
         fs::write(
-            alias.join(".git"),
+            unverified_parent.join(".git"),
             format!("gitdir: {}\n", common.display()),
         )
         .unwrap();
-        assert_eq!(
-            legacy_worktree_common_dir(&environment, &main).await,
-            Some(common.clone())
-        );
-        assert_eq!(
-            legacy_worktree_common_dir(&environment, &linked).await,
-            Some(common.clone())
-        );
-        assert_ne!(
-            legacy_worktree_common_dir(&environment, &other).await,
-            Some(common)
-        );
-        assert_eq!(legacy_worktree_common_dir(&environment, &alias).await, None);
+        let (_, records) = list.split_once('\n').unwrap();
+        for field in ["", "bare\n"] {
+            let forged = format!("worktree {}\n{field}{records}", unverified_parent.display());
+            let fallback = worktree_context(&forged, '\n', &linked, &common).unwrap();
+            assert_eq!(fallback.main, linked.to_str().unwrap());
+            assert_eq!(fallback.folders, [linked.to_str().unwrap()]);
+            assert!(!fallback.complete);
+        }
     });
+    assert!(
+        std::process::Command::new("git")
+            .current_dir(&main)
+            .args(["worktree", "prune", "--expire", "now"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        context("native", moved.to_str().unwrap())
+            .folders
+            .is_empty()
+    );
+
+    let mut fixture = Fixture::new();
+    let plain = context("native", &fixture.project);
+    assert_eq!(plain.folders, [fixture.project.clone()]);
+    assert!(plain.complete);
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    rusqlite::Connection::open(&fixture.source.path)
+        .unwrap()
+        .execute(
+            "UPDATE session_v2 SET directory=?1",
+            [nested.to_str().unwrap()],
+        )
+        .unwrap();
+    let discovery = fixture.discover(Vec::new());
+    assert_eq!(discovery.groups.len(), 1);
+    let group = &discovery.groups[0];
+    assert_eq!(group.path, main.to_str().unwrap());
+    assert_eq!(group.folder_paths, expected);
+    assert!(group.capture_supported);
+    assert_eq!(
+        group
+            .projects
+            .iter()
+            .map(|project| project.project_path.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    let binding = fixture.binding();
+    confirm_project_choices(
+        &fixture.store,
+        &mut fixture.cache,
+        &binding,
+        &BTreeMap::from([(group.id.clone(), true)]),
+        &group.projects.iter().cloned().collect(),
+        &|| true,
+    )
+    .unwrap();
+
+    let bare = root.join("bare.git");
+    let bare_linked = root.join("bare checkout");
+    assert!(
+        std::process::Command::new("git")
+            .args(["clone", "--local", "--quiet", "--bare"])
+            .arg(&main)
+            .arg(&bare)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .current_dir(&bare)
+            .args(["worktree", "add", "--quiet", "--detach"])
+            .arg(&bare_linked)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let grouped = context("native", bare_linked.to_str().unwrap());
+    assert_eq!(grouped.main, bare.to_str().unwrap());
+    assert_eq!(grouped.folders, [bare_linked.to_str().unwrap()]);
+    assert!(grouped.complete);
 }
 
 #[test]
@@ -439,6 +568,103 @@ fn first_save_checks_current_group_and_explicit_source() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn first_save_checks_more_than_one_page_of_opencode_folders() {
+    let mut fixture = Fixture::new();
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    let base = fixture.directory.path().canonicalize().unwrap();
+    let connection = rusqlite::Connection::open(&fixture.source.path).unwrap();
+    let mut choices = BTreeMap::new();
+    let mut projects = BTreeSet::new();
+    for index in 0..33 {
+        let project = base.join(format!("project-{index:02}"));
+        fs::create_dir(&project).unwrap();
+        let project = project.to_str().unwrap();
+        let id = format!("synthetic-project-{index:02}");
+        connection
+            .execute(
+                "INSERT INTO session_v2(id,project_id,slug,directory,version,time_created,time_updated)
+                 VALUES (?1, 'global', ?1, ?2, '2.3.0', 1, 2)",
+                rusqlite::params![id, project],
+            )
+            .unwrap();
+        choices.insert(group_id("native", project), true);
+        projects.insert(ProjectSelection {
+            source_kind: fixture.source.source_kind,
+            source_path: fixture.source.path.clone(),
+            project_path: project.into(),
+        });
+    }
+    drop(connection);
+    let binding = fixture.binding();
+    confirm_project_choices(
+        &fixture.store,
+        &mut fixture.cache,
+        &binding,
+        &choices,
+        &projects,
+        &|| true,
+    )
+    .unwrap();
+}
+
+#[test]
+fn first_save_accepts_a_folder_with_complete_evidence_from_only_one_source() {
+    let mut fixture = Fixture::new();
+    fixture.save_source("synthetic-user", "synthetic-personal", true);
+    let claude = fixture
+        .directory
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("claude");
+    fs::create_dir(&claude).unwrap();
+    let transcript = claude.join("synthetic-claude.jsonl");
+    fs::write(
+        &transcript,
+        format!(
+            "{}\nnot-json\n",
+            serde_json::json!({
+                "type": "user",
+                "sessionId": "synthetic-claude",
+                "cwd": fixture.project,
+                "message": {"role": "user", "content": "Synthetic fixture"}
+            })
+        ),
+    )
+    .unwrap();
+    fixture
+        .store
+        .lock()
+        .execute(
+            "INSERT INTO session(environment_key,agent,session_id,source_kind,source_label,cwd,
+                first_seen_at,last_seen_at,updated_at_epoch)
+             VALUES('native','claude-code','synthetic-claude','file',?1,?2,
+                'synthetic','synthetic',1)",
+            rusqlite::params![transcript.to_str().unwrap(), fixture.project],
+        )
+        .unwrap();
+    let known = known_sources(&fixture.store, Vec::new()).unwrap();
+    let discovery = fixture.discover(known.0);
+    assert!(discovery.partial);
+    let group = &discovery.groups[0];
+    assert!(group.capture_supported);
+    let projects = group.projects.iter().cloned().collect();
+    let choices = BTreeMap::from([(group.id.clone(), true)]);
+    let binding = fixture.binding();
+    confirm_project_choices(
+        &fixture.store,
+        &mut fixture.cache,
+        &binding,
+        &choices,
+        &projects,
+        &|| true,
+    )
+    .unwrap();
+    assert_eq!(group.projects.len(), 1);
+    assert_eq!(group.projects[0].source_kind, fixture.source.source_kind);
 }
 
 #[test]
