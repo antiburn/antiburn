@@ -209,13 +209,15 @@ impl Store {
     }
 
     /// Extend a claim when its fence and source generation remain current.
+    /// Read the clock under the Store lock. The clock must not use the Store.
     pub fn renew_evidence_lease(
         &self,
         claim: &EvidenceClaim,
-        now_epoch: i64,
+        clock: impl FnOnce() -> i64,
         lease_secs: i64,
     ) -> Result<bool> {
         let connection = self.lock();
+        let now_epoch = clock();
         let updated = connection.execute(
             "UPDATE session_evidence AS evidence
                 SET claimed_at_epoch = ?6, lease_expires_at_epoch = ?7

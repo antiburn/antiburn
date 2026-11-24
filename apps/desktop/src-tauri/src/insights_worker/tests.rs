@@ -663,8 +663,65 @@ async fn a_claim_clears_superseded_rows_before_its_pass_starts() {
     assert!(store.evidence(&key).unwrap().is_some());
 }
 
-/// A claim that expires during the removal does not start its pass.
+/// A completed removal still requires the original claim.
 #[tokio::test]
+async fn an_empty_final_batch_rejects_a_superseded_claim() {
+    let store = store();
+    let claim = claim(&store, "empty-final-batch", 100);
+    let now = 100 + LEASE_SECS + 1;
+    let replacement = store
+        .claim_next_evidence(&["claude-code"], now, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_ne!(replacement.claim_fence, claim.claim_fence);
+    assert!(
+        !clear_claim_leftovers(&store, &claim, &move || now)
+            .await
+            .unwrap()
+    );
+}
+
+/// A removal error permits the pass only while its claim is current.
+#[tokio::test]
+async fn a_cleanup_error_checks_the_original_claim() {
+    let store = store();
+    let claim = claim(&store, "cleanup-error", 100);
+    store
+        .lock()
+        .execute_batch(
+            "INSERT INTO turn (
+                environment_key, agent, session_id, claim_fence, thread_id,
+                turn_index, scope, role, source_key, input_tokens,
+                cache_read_tokens, cache_write_tokens, output_tokens,
+                is_compaction_boundary
+             ) VALUES ('native', 'claude-code', 'cleanup-error', -1, 't', 0,
+                'main', 'user', 's', 0, 0, 0, 0, 0);
+             CREATE TEMP TRIGGER reject_leftover_delete BEFORE DELETE ON turn
+             BEGIN SELECT RAISE(ABORT, 'cleanup error'); END;",
+        )
+        .unwrap();
+    assert!(store.clear_leftover_batch(&claim.key).is_err());
+    assert!(
+        clear_claim_leftovers(&store, &claim, &|| 100)
+            .await
+            .unwrap()
+    );
+
+    let now = 100 + LEASE_SECS + 1;
+    let replacement = store
+        .claim_next_evidence(&["claude-code"], now, LEASE_SECS)
+        .unwrap()
+        .unwrap();
+    assert_ne!(replacement.claim_fence, claim.claim_fence);
+    assert!(
+        !clear_claim_leftovers(&store, &claim, &move || now)
+            .await
+            .unwrap()
+    );
+}
+
+/// A superseded claim stops cleanup with rows still waiting for removal.
+#[tokio::test(start_paused = true)]
 async fn a_claim_lost_during_the_removal_stops_it() {
     let store = store();
     store
@@ -676,7 +733,7 @@ async fn a_claim_lost_during_the_removal_stops_it() {
         .unwrap();
     {
         let connection = store.lock();
-        for turn in 0..20_000 {
+        for turn in 0..32 {
             connection
                 .execute(
                     "INSERT INTO turn (
@@ -691,15 +748,78 @@ async fn a_claim_lost_during_the_removal_stops_it() {
                 .unwrap();
         }
     }
-    let replacement = store
-        .claim_next_evidence(&["claude-code"], 200, 60)
-        .unwrap()
+    let mut batches = 0;
+    let held = clear_claim_leftovers_with(&store, &claim, &|| 200, || {
+        let first_batch = batches == 0;
+        batches += 1;
+        let (store, claim) = (&store, &claim);
+        async move {
+            let batch = store.clear_leftover_batch_within(&claim.key, Duration::ZERO)?;
+            if first_batch {
+                assert!(batch.more);
+                let replacement = store
+                    .claim_next_evidence(&["claude-code"], 200, 60)?
+                    .expect("replace the expired claim after the first batch commits");
+                assert!(replacement.claim_fence > claim.claim_fence);
+                tokio::time::advance(lease_renew_interval()).await;
+            }
+            Ok(batch.more)
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!held);
+    assert_eq!(batches, 1);
+    let remaining: i64 = store
+        .lock()
+        .query_row(
+            "SELECT COUNT(*) FROM turn WHERE claim_fence = -1",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(replacement.claim_fence > claim.claim_fence);
+    assert!((1..32).contains(&remaining));
+}
+
+/// A renewal error releases the claim for retry without running analysis.
+#[tokio::test]
+async fn a_pre_pass_renewal_error_retries_without_counting_an_attempt() {
+    let store = store();
+    let target = record("pre-pass-renewal-error");
+    store
+        .upsert_sessions(
+            std::slice::from_ref(&target),
+            &crate::agents::evidence_cohort(),
+        )
+        .unwrap();
+    store
+        .lock()
+        .execute_batch(
+            "CREATE TEMP TRIGGER reject_renewal BEFORE UPDATE OF lease_expires_at_epoch
+             ON session_evidence WHEN OLD.status = 'processing' AND NEW.status = 'processing'
+             BEGIN SELECT RAISE(ABORT, 'synthetic renewal error'); END;",
+        )
+        .unwrap();
+    let ran = AtomicBool::new(false);
+    let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
+        ran.store(true, Ordering::SeqCst);
+        Box::pin(async { failed_pass(PassOutcome::SourceMissing) }) as PassFuture
+    };
     assert!(
-        !clear_claim_leftovers(&store, &claim, &|| 200)
+        process_next(&store, &|| 100, &runner, &|_| {}, &|_, _| {}, &|| {})
             .await
             .unwrap()
+    );
+    assert!(!ran.load(Ordering::SeqCst));
+
+    let evidence = store.evidence(&target.key).unwrap().unwrap();
+    assert_eq!(evidence.status, EvidenceStatus::Pending);
+    assert_eq!(evidence.retry_count, 0);
+    assert_eq!(evidence.lease_expires_at_epoch, None);
+    assert_eq!(evidence.next_attempt_at_epoch, Some(100 + backoff_secs(0)));
+    assert_eq!(
+        evidence.last_error.as_deref(),
+        Some("worker-pre-pass-check-failed")
     );
 }
 
@@ -1055,7 +1175,7 @@ async fn progress_renews_the_lease() {
         };
         process_next(
             &task_store,
-            &|| task_clock.load(Ordering::SeqCst),
+            &move || task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
             &|_, _| {},
@@ -1118,7 +1238,7 @@ async fn a_stalled_pass_stops_renewing() {
         };
         process_next(
             &task_store,
-            &|| task_clock.load(Ordering::SeqCst),
+            &move || task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
             &|_, _| {},
@@ -1176,7 +1296,7 @@ async fn a_lost_renewal_cancels_without_a_post_claim_write() {
         };
         process_next(
             &task_store,
-            &|| task_clock.load(Ordering::SeqCst),
+            &move || task_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
             &|_, _| {},
@@ -1228,7 +1348,7 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
         };
         process_next(
             &first_store,
-            &|| first_clock.load(Ordering::SeqCst),
+            &move || first_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
             &|_, _| {},
@@ -1275,7 +1395,7 @@ async fn a_stale_pass_cannot_affect_the_next_claim() {
         };
         process_next(
             &second_store,
-            &|| second_clock.load(Ordering::SeqCst),
+            &move || second_clock.load(Ordering::SeqCst),
             &runner,
             &|_| {},
             &|_, _| {},
@@ -1822,7 +1942,7 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
             &crate::agents::evidence_cohort(),
         )
         .unwrap();
-    let clock = AtomicI64::new(100);
+    let mut now = 100;
     let runner = |_: &SessionRecord, _: PassSignal, _: i64| {
         Box::pin(async { failed_pass(PassOutcome::Unreadable(UnreadableReason::AdapterFailed)) })
             as PassFuture
@@ -1833,7 +1953,7 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
     for attempt in 0..=MAX_EVIDENCE_ATTEMPTS {
         process_next(
             &store,
-            &|| clock.load(Ordering::SeqCst),
+            &move || now,
             &runner,
             &|key| announced.lock().unwrap().push(key.clone()),
             &|_, _| {},
@@ -1848,7 +1968,7 @@ async fn an_unreadable_source_reaches_the_cap_through_the_worker() {
             assert_eq!(row.next_attempt_at_epoch, None);
         } else {
             assert_eq!(row.status, EvidenceStatus::Pending);
-            clock.store(row.next_attempt_at_epoch.unwrap(), Ordering::SeqCst);
+            now = row.next_attempt_at_epoch.unwrap();
         }
     }
 }

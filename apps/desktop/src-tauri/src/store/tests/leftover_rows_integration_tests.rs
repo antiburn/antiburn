@@ -141,6 +141,7 @@ fn published_current_and_newer_rows_survive_and_older_copies_go() {
         }
         set_fences(&store, CLAIM, Some(20), status);
         assert_eq!(store.clear_leftover_rows().unwrap(), 6, "{status}");
+        store.checkpoint_wal().unwrap();
         assert_eq!(fences(&store, "turn"), [20, CLAIM, 60], "{status}");
         assert_eq!(fences(&store, "session_coverage"), [20, CLAIM, 60]);
         assert_eq!(counts(&store), (9, 9));
@@ -208,7 +209,7 @@ fn a_stop_midway_resumes_and_a_new_claim_between_batches_is_respected() {
 
     let store = Store::open(directory.path()).unwrap();
     set_fences(&store, CLAIM, Some(20), "processing");
-    assert_eq!(store.clear_leftover_rows().unwrap(), 150);
+    assert_eq!(store.clear_leftover_rows().unwrap(), 250 - CHUNK_ROWS);
     assert_eq!(fences(&store, "turn"), [20]);
     assert_eq!(counts(&store), (250, 250));
 }

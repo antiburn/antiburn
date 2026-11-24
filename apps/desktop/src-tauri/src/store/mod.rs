@@ -42,8 +42,6 @@ pub use native_tool_results::{ToolResultBatch, ToolResultPublishOptions};
 pub(crate) mod burn_checks;
 mod leftover_rows;
 mod maintenance;
-pub(crate) use leftover_rows::BATCH_PAUSE as LEFTOVER_BATCH_PAUSE;
-pub use maintenance::VacuumThreshold;
 pub mod model;
 mod onboarding;
 mod project_deferrals;

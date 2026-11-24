@@ -30,6 +30,28 @@ fn ready(claim: &EvidenceClaim) -> EvidenceCompletion {
 }
 
 #[test]
+fn renewal_reads_the_clock_under_the_store_lock() {
+    let store = store();
+    let (record, claim) = claimed_projection(&store, "renew-after-delay", 100, 60);
+    let now = 200;
+    assert!(
+        store
+            .renew_evidence_lease(
+                &claim,
+                || {
+                    assert!(store.connection.try_lock().is_err());
+                    now
+                },
+                60,
+            )
+            .unwrap()
+    );
+    let evidence = store.evidence(&record.key).unwrap().unwrap();
+    assert_eq!(evidence.claimed_at_epoch, Some(now));
+    assert_eq!(evidence.lease_expires_at_epoch, Some(now + 60));
+}
+
+#[test]
 fn a_pass_from_before_a_clear_cannot_touch_the_new_claim() {
     let store = store();
     let (record, stale) = claimed_projection(&store, "fence-across-clear", 100, 300);
@@ -47,7 +69,7 @@ fn a_pass_from_before_a_clear_cannot_touch_the_new_claim() {
         .unwrap();
     assert_eq!(current.source_generation, stale.source_generation);
     assert_ne!(current.claim_fence, stale.claim_fence);
-    assert!(!store.renew_evidence_lease(&stale, 102, 300).unwrap());
+    assert!(!store.renew_evidence_lease(&stale, || 102, 300).unwrap());
 
     FencedTurnRowStore::new(store.clone(), key.clone(), current.claim_fence)
         .write_turn_rows(&[turn_row(0), turn_row(1), turn_row(2)])
@@ -86,7 +108,7 @@ fn rows_from_a_cancelled_pass_before_a_clear_are_not_published() {
     clear_and_rediscover(&store, "cancelled-across-clear");
     assert!(stale_writer.write_turn_rows(&[turn_row(2)]).is_err());
     assert_eq!(rows_at(&store, &key, stale.claim_fence), 0);
-    assert!(!store.renew_evidence_lease(&stale, 102, 300).unwrap());
+    assert!(!store.renew_evidence_lease(&stale, || 102, 300).unwrap());
 
     let current = store
         .claim_next_evidence(&["claude-code"], 103, 300)

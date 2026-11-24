@@ -11,12 +11,12 @@ use rusqlite::{OptionalExtension, params};
 
 use super::{SessionKey, Store};
 
-/// Rows removed between two checks of the batch time limit.
-const CHUNK_ROWS: usize = 100;
+/// Limit turns between time checks because each turn can contain many parts.
+const CHUNK_ROWS: usize = 16;
 /// How long one batch deletes before it releases the writer.
 const BATCH_TIME: Duration = Duration::from_millis(10);
 /// The wait between two batches that lets other writers take the lock.
-pub(crate) const BATCH_PAUSE: Duration = Duration::from_millis(10);
+const BATCH_PAUSE: Duration = Duration::from_millis(10);
 
 /// What one batch did. `more` is true when leftovers can remain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -36,7 +36,8 @@ impl Store {
         self.clear_leftover_batch_within(key, BATCH_TIME)
     }
 
-    fn clear_leftover_batch_within(
+    /// Remove one batch with the specified time budget.
+    pub(crate) fn clear_leftover_batch_within(
         &self,
         key: &SessionKey,
         limit: Duration,
