@@ -101,7 +101,7 @@ permits retry. Other opener errors do not prove that handoff failed.
 Browser approval can create a connection before the callback arrives. Canceling,
 replacing, or losing that callback therefore preserves unconfirmed revocation.
 Without a refresh credential, Settings offers a local reset for that exact
-workspace. Reset permits a new connection but keeps the warning about remote
+workspace. Reset permits a new connection without waiting for remote
 revocation. An unresolved team approval does not block Personal sign-in. An
 explicit browser denial does not need a reset.
 
@@ -235,7 +235,7 @@ cancelled account.
 Rejected refresh responses save the original and returned proofs for logout
 before updating local state. These cleanup credentials cannot restore a
 session. Best-effort logout can try both proofs without waiting on the main
-Cloud worker. A failed secure-storage write keeps an unconfirmed warning.
+Cloud worker. A failed secure-storage write leaves remote revocation unconfirmed.
 Decoded responses retain bounded logout proof even when token bounds or authority
 are invalid. An unreadable authentication state keeps remote uncertainty; cleanup
 of a newer connection cannot prove that an older connection was revoked.
@@ -252,9 +252,9 @@ finishes.
 At most one detached logout runs at a time for the account and old Team slots.
 An occupied slot skips the new attempt. Desktop does not queue it for later.
 The worker sends old proofs only to their original service and cannot change
-credentials or account state. Desktop records a warning if an attempt fails or
-is skipped. A confirmed logout does not add a warning or clear an older one.
-Close old connections in Cloud settings if Desktop reports this warning.
+credentials or account state. If Desktop cannot confirm remote revocation,
+the old grant can expire at its existing deadline. Settings does not show a
+warning about earlier attempts that no longer block this device.
 Status reads can rotate credentials or close access. Desktop state updates reach
 every account surface, including before the requesting renderer receives its
 reply. Renderers attach their listener before reading and clear content consent
@@ -300,10 +300,12 @@ in Settings to approve selected folders. Onboarding can approve folders for
 more than one workspace in one action. Desktop saves each workspace separately
 and checks whether it saved the exact folders. A failed route stays selected for
 retry. Settings saves one workspace at a time.
-To change a saved folder's destination, turn off the old rule, then
-approve the folder for the new destination. This does not move sessions already
-in Cloud. The new rule may upload older local sessions. `desktop-project-sync-v1`
-binds the account, workspace, exact provider sources, and approved
+To change a verified saved folder's destination, choose the new workspace and
+select **Save**. Desktop removes the old rule before it approves the new one.
+This does not move sessions already in Cloud. The new rule may upload older local
+sessions. If Desktop confirms the removal but cannot save the new rule, the old
+rule stays off. Choose a workspace to start syncing the folder again.
+`desktop-project-sync-v1` binds the account, workspace, exact provider sources, and approved
 project/worktree paths, with full content and ongoing sync enabled and external
 attachments disabled. It covers existing sessions and new sessions in those
 approved folder trees while uploads remain enabled.
@@ -424,7 +426,8 @@ saved ongoing policy or desktop scheduler. Local tools setup remains
 independent of Cloud sync.
 
 Settings → Sessions shows the account, verified workspace count, device upload
-switch, folder choices, and upload status. The normal view omits transfer counters.
+switch, folder choices, and a short sync status. The invitation section appears
+only when Desktop has a confirmed invitation or a join action is in progress.
 Folder-read and saved-upload failures use brief messages, with recovery actions
 when available. Known blocked or interrupted work remains visible while other
 uploads run or the policy is paused.
@@ -454,7 +457,8 @@ previously uploaded. Cloud can reuse content for the same source. Desktop keeps
 deletion markers, existing jobs and bytes, and upload retry delays. Backfill
 does not re-offer an unchanged source if its saved job reaches integrity
 acceptance during the same scan. It does not turn on uploads, save draft choices,
-or retry failed jobs. Starting a scan does not confirm any uploads. Normal sync
+or retry failed jobs. The button is unavailable until the user saves folders
+and enables uploads. Starting a scan does not confirm any uploads. Normal sync
 skips sessions when the accepted receipt matches their current version. After an
 upgrade, an unchanged Claude, Codex, or Pi file can be offered again if its
 receipt uses the old observation format. That receipt does not prove a match with

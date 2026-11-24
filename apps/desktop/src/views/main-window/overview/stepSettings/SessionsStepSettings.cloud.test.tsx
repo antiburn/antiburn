@@ -273,10 +273,13 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
   })
   const { container } = render(<SessionsStepSettings />)
   const upload = () => screen.getByRole("switch", { name: "Upload sessions to Antiburn Cloud" })
-  const teamFolder = await screen.findByRole("switch", {
-    name: "Sync Studio: /Example/Studio to Example Team",
+  const teamFolder = await screen.findByRole("combobox", {
+    name: "Sync Studio: /Example/Studio",
   })
+  const backfill = screen.getByRole("button", { name: "Backfill sessions to Example Team" })
   await waitFor(() => expect(upload()).toBeChecked())
+  expect(teamFolder).toHaveValue("synthetic-team")
+  expect(backfill).not.toHaveAttribute("aria-disabled")
   expect(screen.getByText("2 workspaces")).toBeVisible()
   expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
   expect(
@@ -295,14 +298,17 @@ it("pauses and resumes Team uploads without requiring Personal folders", async (
   )
   await waitFor(() => expect(upload()).not.toBeChecked())
   expect(screen.getByText("Uploads are paused on this device.")).toBeVisible()
-  expect(teamFolder).toBeChecked()
+  expect(teamFolder).toHaveValue("synthetic-team")
+  expect(backfill).toBeVisible()
+  expect(backfill).toHaveAttribute("aria-disabled", "true")
   await waitFor(() => expect(upload()).not.toHaveAttribute("aria-disabled", "true"))
   fireEvent.click(upload())
   await waitFor(() =>
     expect(invoke).toHaveBeenCalledWith("cloud_set_sync_enabled", { enabled: true }),
   )
   await waitFor(() => expect(upload()).toBeChecked())
-  expect(teamFolder).toBeChecked()
+  expect(teamFolder).toHaveValue("synthetic-team")
+  expect(backfill).not.toHaveAttribute("aria-disabled")
   expect(screen.queryByRole("button", { name: "Start syncing" })).not.toBeInTheDocument()
   expect(
     invoke.mock.calls.some(

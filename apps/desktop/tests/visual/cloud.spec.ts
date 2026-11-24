@@ -393,7 +393,7 @@ test("folder discovery retries and saved verification stay automatic in Sessions
   await expect(
     page.getByRole("button", { name: /Retry folders|Retry folder list|Retry saved uploads/ }),
   ).toHaveCount(0)
-  await expect(page.getByText(/accepted/i)).toHaveCount(0)
+  await expect(page.getByText(/Backfill:.*accepted/i)).toHaveCount(0)
 })
 
 test("reopened Settings keeps exclusions and does not confirm newly shown groups", async ({
@@ -446,7 +446,7 @@ for (const width of [860, 480]) {
       Promise.all([control.boundingBox(), row.boundingBox(), save.boundingBox()])
     const before = await bounds()
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
-    await expect(page.getByRole("group", { name: "Personal sync status" })).toContainText(
+    await expect(page.getByRole("group", { name: "Folder sync status" })).toContainText(
       "6 of 96 accepted · 3 queued",
     )
     await expect(control).toBeFocused()
@@ -460,7 +460,7 @@ for (const width of [860, 480]) {
     }
     await capture(page, `cloud-settings-sync-status-${width}`)
     await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:update-queue")))
-    await expect(page.getByRole("group", { name: "Personal sync status" })).not.toContainText(
+    await expect(page.getByRole("group", { name: "Folder sync status" })).not.toContainText(
       "6 of 96 accepted",
     )
     await expect(control).toBeFocused()
@@ -499,7 +499,10 @@ for (const [size, width, scale] of [
         return { x: x - footer.x, y: y - footer.y }
       })
     const normal = await relativeSave()
-    expect((await footer.boundingBox())?.height).toBeLessThanOrEqual(48 * (scale / 100))
+    await expect(footer.getByRole("button", { name: "Backfill sessions" })).toBeVisible()
+    await expect(footer.getByRole("group", { name: "Folder sync status" })).toBeVisible()
+    await expect(footer.getByText("Personal", { exact: true })).toHaveCount(0)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     await capture(page, `cloud-settings-normal-${size}`)
 
     await open(true)
@@ -553,8 +556,7 @@ for (const [size, width, scale] of [
     await expect(destination).toBeVisible()
     expect(await destination.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true)
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
-    // The picker can change size to show a long Team name. Status copy must not
-    // change the footer's own dimensions or move Save within it.
+    // The picker and status can wrap. Save must stay in place within the footer.
     await expect(save).toBeEnabled()
     await expect(page.getByText("Save listed and new Team folders.")).toBeVisible()
     const relativeGeometry = async () => {
@@ -563,7 +565,6 @@ for (const [size, width, scale] of [
       return { height: bounds.height, x: button.x - bounds.x, y: button.y - bounds.y }
     }
     const draftGeometry = await relativeGeometry()
-    expect(draftGeometry.height).toBeLessThanOrEqual(48 * (scale / 100))
     await website.selectOption("")
     await expect(save).toBeEnabled()
     const listedGeometry = await relativeGeometry()
@@ -591,14 +592,38 @@ for (const [size, width, scale] of [
     await capture(page, `team-save-error-${size}`)
     await page.keyboard.press("Enter")
     await expect(save).toBeDisabled()
-    const savedWebsite = page.getByRole("switch", { name: /Sync Website.* to Example Team/ })
+    const savedWebsite = page.getByRole("combobox", { name: /Sync Website/ })
     await expect(savedWebsite).toBeFocused()
-    await expect(savedWebsite).toBeChecked()
+    await expect(savedWebsite).toHaveValue("synthetic-team")
     await expect(page.getByRole("switch", { name: /Upload sessions/ })).toBeChecked()
     await savedWebsite.scrollIntoViewIfNeeded()
     await capture(page, `team-confirmed-${size}`)
   })
 }
+
+test("a saved folder stays editable when switching between Team and Personal", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 480, height: 780 })
+  await page.goto("/tests/visual/?surface=cloud&cloud=settings-team-confirmation&theme=dark")
+  const save = page.getByRole("button", { name: "Save", exact: true })
+  const folder = page.getByRole("combobox", { name: /Sync Website/ })
+  await folder.selectOption("synthetic-team")
+  await save.click()
+  await expect(save).toBeDisabled()
+  await expect(folder).toHaveValue("synthetic-team")
+  await folder.selectOption("synthetic-personal")
+  await expect(page.getByText(/Previous uploads stay where they are/)).toBeVisible()
+  await expect(save).toBeEnabled()
+  await save.focus()
+  await page.keyboard.press("Enter")
+  await expect(save).toBeDisabled()
+  await expect(folder).toBeFocused()
+  await expect(folder).toHaveValue("synthetic-personal")
+  await expect(page.getByRole("alert")).toHaveCount(0)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(480)
+  await capture(page, "cloud-settings-workspace-move-narrow-dark")
+})
 
 test("a failed folder save does not scroll away from another focused setting", async ({
   page,

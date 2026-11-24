@@ -81,6 +81,13 @@ When a token or stylesheet changes, update `apps/desktop/design.md` in the same
 change. Add each new stylesheet to its `sources:` list. CI checks this contract
 with `scripts/check-design-drift.mjs`.
 
+Design for the normal task first. Show actions the user can take and status
+that changes what they do next. Hide empty optional sections, obsolete warnings,
+and background recovery that needs no action. Do not ask users to manage
+internal cleanup. Keep actions and focus stable as data loads. Keep the same
+editor after Save when a saved choice can still change. See the
+[Desktop design principles](apps/desktop/design.md#desktop-design-principles).
+
 ## Desktop navigation
 
 Declare main-window views in the shared navigation registry. Keep Settings panes,

@@ -71,6 +71,7 @@ pub(crate) struct Consent {
     full_content: bool,
     ongoing: bool,
     attachments: bool,
+    move_from: Option<MoveFrom>,
 }
 
 /// One Settings change. Adding projects requires a new full session confirmation.
@@ -84,6 +85,17 @@ pub(crate) struct ProjectChange {
     projects: Vec<ProjectSelection>,
     folder_paths: Vec<String>,
     expected_policy_revision: String,
+    /// For a move, revoke only these exact saved selections.
+    expected_removals: Option<Vec<ProjectSelection>>,
+    move_from: Option<MoveFrom>,
+}
+
+/// The source workspace and its policy revision after the move's removal step.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MoveFrom {
+    destination_id: String,
+    policy_revision: String,
 }
 
 /// Confirm the exact saved folder list and any explicit additions for one Team.
@@ -3006,8 +3018,13 @@ pub(crate) async fn cloud_enable_sync(
     let wake = controller.sync.wake.clone();
     let generation = controller.account_generation.load(Ordering::Acquire);
     let content_generation = controller.sync.generation.load(Ordering::Acquire);
+    let priority = if consent.move_from.is_some() {
+        Priority::Wait(Duration::from_secs(5))
+    } else {
+        Priority::Normal
+    };
     let result = work
-        .run(Priority::Normal, move || {
+        .run(priority, move || {
             let controller = app.state::<Controller>();
             let account_current =
                 || controller.account_generation.load(Ordering::Acquire) == generation;
@@ -3132,6 +3149,19 @@ pub(crate) async fn cloud_enable_sync(
                 .lock()
                 .map_err(|_| "Session capture is unavailable.")?
                 .configure_limits(capabilities.limits)?;
+            if let Some(move_from) = &consent.move_from {
+                let session = engine
+                    .session()
+                    .filter(|session| anchor.matches(session) && account_current())
+                    .ok_or("The selected workspace connection changed.")?;
+                verify_project_move_to_new_policy(
+                    &store,
+                    session,
+                    &binding.destination_id,
+                    move_from,
+                    &consent.projects,
+                )?;
+            }
             controller
                 .sync
                 .generation
@@ -3402,6 +3432,11 @@ pub(crate) async fn cloud_set_sync_project(
             .folder_paths
             .iter()
             .all(|path| valid_project_path(path))
+        || change
+            .expected_removals
+            .as_ref()
+            .is_some_and(|removals| change.selected || removals.len() > 100)
+        || (change.move_from.is_some() && !change.selected)
         || (change.selected && change.projects.is_empty())
     {
         return Err("Reload projects and choose a supported Cloud project.".into());
@@ -3415,10 +3450,12 @@ pub(crate) async fn cloud_set_sync_project(
     } else {
         controller.sync.generation.fetch_add(1, Ordering::AcqRel) + 1
     };
-    let priority = if change.selected {
-        Priority::Normal
-    } else {
+    let priority = if !change.selected {
         Priority::Cleanup
+    } else if change.move_from.is_some() {
+        Priority::Wait(Duration::from_secs(5))
+    } else {
+        Priority::Normal
     };
     let result = work
         .run(priority, move || {
@@ -3566,6 +3603,13 @@ pub(crate) async fn cloud_set_sync_project(
                     return Err("Cloud does not support the session formats in this folder.".into());
                 }
                 host.configure_limits(capabilities.limits)?;
+                if let Some(move_from) = &change.move_from {
+                    let active = engine
+                        .session()
+                        .filter(|active| active.same_grant(&session))
+                        .ok_or("The selected workspace connection changed.")?;
+                    verify_project_move(&store, active, &binding.destination_id, move_from, &projects)?;
+                }
                 controller
                     .sync
                     .generation
@@ -3747,7 +3791,96 @@ fn project_removals(
     if removals.is_empty() {
         return Err("The saved folder changed. Reload it and try again.".into());
     }
+    if let Some(expected) = &change.expected_removals
+        && expected.iter().collect::<BTreeSet<_>>() != removals.iter().collect()
+    {
+        return Err("The saved folder paths changed. Reload folders before moving them.".into());
+    }
     Ok(removals)
+}
+
+/// A move that creates consent cannot use a target policy saved in another window.
+/// Hold the Cloud blocking permit and engine lock through the target write.
+fn verify_project_move_to_new_policy(
+    store: &Store,
+    session: &auth::Session,
+    target_id: &str,
+    move_from: &MoveFrom,
+    projects: &[ProjectSelection],
+) -> Result<(), String> {
+    if store
+        .cloud_sync_policy_for_origins(&session.user.id, target_id, &session.resource, &session.iss)
+        .map_err(|_| "Could not read saved Cloud folders.")?
+        .is_some()
+    {
+        return Err(
+            "Cloud target folder choices changed. Reload folders before moving them.".into(),
+        );
+    }
+    verify_project_move(store, session, target_id, move_from, projects)
+}
+
+/// Check saved routes just before the target write. The caller must hold the
+/// Cloud blocking permit and engine lock through the write, as all policy writers do.
+fn verify_project_move<'a>(
+    store: &Store,
+    session: &auth::Session,
+    target_id: &str,
+    move_from: &MoveFrom,
+    projects: impl IntoIterator<Item = &'a ProjectSelection>,
+) -> Result<(), String> {
+    const RELOAD: &str = "Cloud folder choices changed. Reload folders before moving them.";
+    if session.workspace.kind != auth::WorkspaceKind::Personal
+        || move_from.destination_id == target_id
+    {
+        return Err(RELOAD.into());
+    }
+    let personal = store
+        .cloud_sync_policy_for_origins(
+            &session.user.id,
+            &session.workspace.id,
+            &session.resource,
+            &session.iss,
+        )
+        .map_err(|_| "Could not read saved Cloud folders.")?;
+    let teams = store
+        .saved_team_sync_policies(
+            &session.user.id,
+            &session.workspace.id,
+            &session.resource,
+            &session.iss,
+        )
+        .map_err(|_| "Could not read saved Cloud folders.")?;
+    let other_policies = personal
+        .iter()
+        .filter(|policy| !policy.is_team())
+        .chain(&teams)
+        .filter(|policy| policy.destination_id != target_id);
+    let paths: BTreeSet<_> = projects
+        .into_iter()
+        .map(|project| Path::new(&project.project_path))
+        .collect();
+    let mut found_source = false;
+    for policy in other_policies {
+        if policy.destination_id == move_from.destination_id {
+            if policy.revision != move_from.policy_revision {
+                return Err(RELOAD.into());
+            }
+            found_source = true;
+        }
+        if policy.projects.iter().any(|saved| {
+            let saved = Path::new(&saved.project_path);
+            paths
+                .iter()
+                .any(|added| saved.starts_with(added) || added.starts_with(saved))
+        }) {
+            return Err(RELOAD.into());
+        }
+    }
+    if !found_source {
+        return Err(RELOAD.into());
+    }
+    Ok(())
 }
 
 /// Change upload admission for every destination on this device. OFF fences

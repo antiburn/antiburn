@@ -62,3 +62,39 @@ fn cloud_sync_consent_status_choices_do_not_populate_permission_fields() {
     assert_eq!(value["projects"], serde_json::json!([]));
     assert_eq!(value["selectedSources"], serde_json::json!([]));
 }
+
+#[test]
+fn cloud_move_guards_use_camel_case_on_both_commands() {
+    let mut input = consent();
+    assert!(
+        serde_json::from_value::<Consent>(input.clone())
+            .unwrap()
+            .move_from
+            .is_none()
+    );
+    let move_from = serde_json::json!({ "destinationId": "team", "policyRevision": "after-off" });
+    input["moveFrom"] = move_from.clone();
+    let parsed: Consent = serde_json::from_value(input.clone()).unwrap();
+    let guard = parsed.move_from.unwrap();
+    assert_eq!(guard.destination_id, "team");
+    assert_eq!(guard.policy_revision, "after-off");
+
+    let mut change = serde_json::json!({
+        "accountId": "account", "destinationId": "team", "groupId": "group",
+        "selected": false, "projects": [], "folderPaths": ["/Example/project"],
+        "expectedPolicyRevision": "before-off", "expectedRemovals": input["projects"],
+    });
+    let parsed: ProjectChange = serde_json::from_value(change.clone()).unwrap();
+    assert_eq!(parsed.expected_removals.unwrap().len(), 1);
+    assert!(parsed.move_from.is_none());
+
+    change.as_object_mut().unwrap().remove("expectedRemovals");
+    change["selected"] = true.into();
+    change["projects"] = input["projects"].clone();
+    change["moveFrom"] = move_from;
+    let parsed: ProjectChange = serde_json::from_value(change.clone()).unwrap();
+    assert!(parsed.expected_removals.is_none());
+    assert_eq!(parsed.move_from.unwrap().policy_revision, "after-off");
+    change["moveFrom"] = serde_json::json!({ "destinationId": "team" });
+    assert!(serde_json::from_value::<ProjectChange>(change).is_err());
+}

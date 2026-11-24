@@ -114,16 +114,16 @@ it("lets the user cancel a pending browser approval from Settings", async () => 
   expect(signOut).not.toHaveBeenCalled()
 })
 
-it("requires an explicit reset and keeps the remote warning while reconnecting", async () => {
+it("requires an explicit local reset without warning about an earlier Cloud connection", async () => {
   const { session, resetLocal, emit } = fixture()
   render(<Account session={session} />)
   fireEvent.click(await screen.findByRole("button", { name: "Reset sign-in on this device" }))
   expect(resetLocal).not.toHaveBeenCalled()
-  expect(screen.getByText(/the old connection may still have access to Cloud/)).toBeVisible()
+  expect(screen.getByText(/This clears local sign-in only/)).toBeVisible()
   fireEvent.click(screen.getByRole("button", { name: "Reset sign-in" }))
   await waitFor(() => expect(resetLocal).toHaveBeenCalledOnce())
   expect(await screen.findByRole("button", { name: "Sign in with GitHub" })).toBeEnabled()
-  expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
+  expect(screen.queryByText(/Cloud has not confirmed an earlier sign-out/)).toBeNull()
   act(() =>
     emit({
       ...emptyCloudSnapshot,
@@ -135,10 +135,10 @@ it("requires an explicit reset and keeps the remote warning while reconnecting",
     }),
   )
   expect(screen.getByText("Signed in as Example")).toBeVisible()
-  expect(screen.getByText(/Cloud has not confirmed an earlier sign-out/)).toBeVisible()
+  expect(screen.queryByText(/Cloud has not confirmed an earlier sign-out/)).toBeNull()
 })
 
-it("keeps the invitation warning when account cleanup unmounts the panel", async () => {
+it("shows only the current sign-in blocker after an unconfirmed invitation", async () => {
   const { session, emit } = fixture({
     ...emptyCloudSnapshot,
     authEnabled: true,
@@ -147,7 +147,8 @@ it("keeps the invitation warning when account cleanup unmounts the panel", async
     identity: { id: "synthetic-account", login: "Example" },
   })
   render(<Account session={session} />)
-  await screen.findByRole("region", { name: "Workspace invitations" })
+  await screen.findByText("Signed in as Example")
+  expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
   const warning = /Check your Cloud workspaces before trying again/
   expect(screen.queryByText(warning)).toBeNull()
   act(() =>
@@ -160,7 +161,7 @@ it("keeps the invitation warning when account cleanup unmounts the panel", async
     }),
   )
   expect(screen.queryByRole("region", { name: "Workspace invitations" })).toBeNull()
-  expect(screen.getByText(warning)).toBeVisible()
+  expect(screen.queryByText(warning)).toBeNull()
   expect(screen.getByText("Sign out on this device before you sign in again.")).toBeVisible()
   expect(screen.queryByRole("button", { name: "Sign in with GitHub" })).toBeNull()
 })
@@ -175,7 +176,7 @@ it("canceling the reset confirmation does not call a native cleanup action", asy
   expect(screen.getByRole("button", { name: "Reset sign-in on this device" })).toBeVisible()
 })
 
-it("resets only the team eligible for local recovery and keeps its remote warning", async () => {
+it("resets only the team that needs local recovery without leaving a remote warning", async () => {
   const accountId = "synthetic-account"
   const team = ongoingStatus({
     accountId,
@@ -226,7 +227,7 @@ it("resets only the team eligible for local recovery and keeps its remote warnin
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: /clear.*Example Team/i })).toBeNull(),
   )
-  expect(screen.getByText(/earlier connection for Example Team is closed/)).toBeVisible()
+  expect(screen.queryByText(/earlier connection for Example Team/)).toBeNull()
   expect(screen.getByText("Signed in as Example")).toBeVisible()
   expect(session.getSnapshot().workspaceConnections?.["other-team"]).toMatchObject({
     localResetAvailable: false,

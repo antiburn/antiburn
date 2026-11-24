@@ -117,6 +117,7 @@ export class SettingsWindowSession {
           if (generation !== this.generation || visibilityRevision !== this.visibilityRevision)
             return
           if (visible) this.markVisible()
+          else this.markHidden()
         })
         .catch(() => {})
     }
@@ -166,9 +167,8 @@ export class SettingsWindowSession {
     this.stopPaneListening = null
     this.stopShownListening?.()
     this.stopShownListening = null
-    this.cloudFolders.setVisible(false)
-    this.stopCloudPreload?.()
-    this.stopCloudPreload = undefined
+    this.paneResolved = false
+    this.update({ visible: false })
   }
 
   private refreshInfo(generation: number): void {
@@ -207,14 +207,18 @@ export class SettingsWindowSession {
 
   private markVisible(): void {
     if (this.snapshot.visible) return
-    this.exposedPane = null
     this.update({ visible: true })
     if (this.paneResolved) this.selectVisiblePane(this.snapshot.pane)
+  }
+
+  private markHidden(): void {
+    this.exposedPane = null
+    if (this.snapshot.visible) this.update({ visible: false })
   }
 
   private handleDocumentVisibility = (): void => {
     this.visibilityRevision += 1
     if (document.visibilityState === "visible") this.markVisible()
-    else if (this.snapshot.visible) this.update({ visible: false })
+    else this.markHidden()
   }
 }

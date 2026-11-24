@@ -21,6 +21,7 @@ import {
 } from "../lib/cloud"
 import { noteCloudAction, noteCloudScreenViewed } from "../lib/onboardingAnalytics"
 import { personalCloudDestination } from "../lib/cloudDestination"
+import { advanceFolderMoveScope, createFolderMove } from "./cloudFolderMove"
 import {
   isCurrentProjectFolderRoute,
   projectFolderRoutes,
@@ -132,6 +133,7 @@ export class CloudSession {
       }
     | undefined
   private consentRevision = 0
+  private folderMoveScope = { authority: 0, account: 0 }
   private readonly port: CloudPort
   private readonly analytics: boolean
   private readonly holdIdentity: boolean
@@ -248,8 +250,9 @@ export class CloudSession {
    */
   private receive(value: CloudSnapshot) {
     this.revision++
+    const previous = this.snapshot.cloud
     const { resetProjects, contextChanged, sourcesChanged } = cloudContextChange(
-      this.snapshot.cloud,
+      previous,
       value,
     )
     const setupFailed = !!value.setupError && !this.snapshot.cloud.setupError
@@ -280,6 +283,7 @@ export class CloudSession {
     if (contextChanged) {
       this.requestId = null
       this.preparedRequestId = null
+      this.folderMoveScope = advanceFolderMoveScope(this.folderMoveScope, previous, value)
       this.consentRevision++
     }
     if (!this.port.ongoing && value.identity && value.pendingSync) {
@@ -805,6 +809,17 @@ export class CloudSession {
       if (this.active && generation === this.generation) this.publish({ busy: false })
     }
   }
+  /** Move one saved folder group after explicit Settings Save. */
+  moveSavedProject = createFolderMove({
+    getPort: () => this.port.ongoing,
+    getSnapshot: this.getSnapshot,
+    getDiscovery: () => ({ pages: this.projectPages, choices: this.confirmedProjectChoices }),
+    canStart: (context) => !this.syncInFlight && this.isCurrentConfirmation(context),
+    scope: () => ({ ...this.folderMoveScope, generation: this.active ? this.generation : -1 }),
+    setInFlight: (busy) => (this.syncInFlight = busy),
+    publish: (patch) => this.publish(patch),
+    receiveStatus: (status) => this.receiveOngoing(status),
+  })
   /** Pause or resume uploads on this device without retrying interrupted work. */
   controlSync = (paused: boolean) =>
     this.changeSyncControl((port) => port.setEnabled(!paused), { pause: paused })
@@ -1024,6 +1039,7 @@ export class CloudSession {
   cancelSilently = () => this.run(null, this.port.cancel)
   /** Close the account connection and let desktop code clean up old Team grants. */
   signOut = () => {
+    this.folderMoveScope.authority++
     this.invalidateContentConfirmation()
     this.projectReader.suspend()
     return this.run("sign_out", this.port.signOut)

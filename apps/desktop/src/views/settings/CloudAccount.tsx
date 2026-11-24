@@ -24,7 +24,6 @@ import {
 import { CloudInvitations } from "../../onboarding/CloudInvitations"
 import {
   cloudAccountCleanupPending,
-  cloudInvitationResultWarning,
   cloudSignOutBeforeSignIn,
 } from "../../onboarding/cloudSessionState"
 import { Skeleton } from "../../components/ui/Skeleton"
@@ -43,7 +42,7 @@ import {
 } from "../../lib/cloud"
 
 const uploadErrors: Partial<Record<CloudOngoingStatus["status"], string>> = {
-  offline: "Cloud is offline. Desktop will try again when it can connect.",
+  offline: "Cloud is offline. Saved uploads are kept.",
   reauth_required: "Sign in again to resume uploads.",
   upload_unavailable: "Cloud uploads are unavailable.",
   route_denied: "Cloud denied uploads to this workspace. Check your workspace access.",
@@ -84,19 +83,27 @@ function savedUploadDisplayState(policy: CloudOngoingStatus) {
     : policy.status
 }
 
-/** Show current work separately from receipt counts for an explicit backfill. */
+/** Distinguish queued work from receipts for a backfill or earlier uploads. */
 function DestinationSyncStatus({
   name,
   policy,
   deviceEnabled,
   checkingStatus,
+  saveFirst,
+  workspaceUnavailable,
+  showWorkspaceName,
+  id,
 }: {
-  name: string
+  name: string | undefined
   policy: CloudOngoingStatus | null | undefined
   deviceEnabled: boolean | undefined
   checkingStatus?: boolean | undefined
+  saveFirst: boolean
+  workspaceUnavailable: boolean
+  showWorkspaceName: boolean
+  id: string
 }) {
-  const known = policy?.storageKnown === true
+  const known = policy?.storageKnown === true && !workspaceUnavailable
   const enabled =
     policy?.consentVersion === "desktop-project-sync-v1" && policy.projects.length > 0
   let state = "Checking folder sync…"
@@ -105,11 +112,17 @@ function DestinationSyncStatus({
     if (policy.folderConfirmationRequired || policy.sourceConfirmationRequired) {
       state = "Review saved folders"
     } else if (enabled) {
-      state = paused ? "Folder sync paused" : "Folder sync enabled"
+      state = paused
+        ? "Folder sync paused"
+        : !known
+          ? "Sync status unavailable"
+          : policy.status === "syncing"
+            ? "Syncing sessions…"
+            : "Folder sync enabled"
     } else {
       state =
         known || policy.status === "consent_required"
-          ? "Folder sync not set up"
+          ? "Save folders to enable sync."
           : "Status unavailable"
     }
     const unavailable = unavailableSyncStatus[savedUploadDisplayState(policy)]
@@ -122,12 +135,16 @@ function DestinationSyncStatus({
     )
       state = "Checking saved uploads…"
   }
+  if (workspaceUnavailable) state = "Workspace unavailable"
+  else if (enabled && saveFirst) state += " · Save folder changes before backfill."
   const progress = known && enabled ? policy.uploadProgress : undefined
   const progressLabel = progress
     ? progress.total === null
       ? `Backfill: ${sessionCountFormat.format(progress.uploaded)} accepted`
       : `Backfill: ${sessionCountFormat.format(progress.uploaded)} of ${sessionCountFormat.format(progress.total)} accepted`
-    : null
+    : known && enabled && policy.acceptedCount > 0
+      ? `${sessionCountFormat.format(policy.acceptedCount)} accepted in this workspace`
+      : null
   const jobsNeedingAttention = known ? policy.fencedCount + policy.interruptedCount : 0
   const counts = [
     known && enabled && policy.queuedCount > 0
@@ -152,21 +169,17 @@ function DestinationSyncStatus({
     !policy.sourceConfirmationRequired &&
     !policy.folderConfirmationRequired &&
     (policy.automaticRecoveryCount ?? 0) > 0
-  const pendingUploads =
-    known &&
-    enabled &&
-    deviceEnabled !== false &&
-    policy.status === "syncing" &&
-    policy.queuedCount > 0 &&
-    !automaticRecovery
   return (
-    <div role="group" aria-label={`${name} sync status`} className="min-w-0 py-2">
-      <strong className="block type-callout text-label wrap-anywhere">{name}</strong>
-      <p className="min-h-8 type-footnote text-label-secondary tabular-nums wrap-anywhere">
-        {[state, progressLabel, ...counts].filter(Boolean).join(" · ")}
-        {pendingUploads && (
-          <>. Desktop checks pending uploads automatically and keeps saved files.</>
-        )}
+    <div
+      id={id}
+      role="group"
+      aria-label={name ? `${name} sync status` : "Folder sync status"}
+      className="min-w-0"
+    >
+      <p className="type-footnote text-label-secondary tabular-nums wrap-anywhere">
+        {[showWorkspaceName ? name : null, state, progressLabel, ...counts]
+          .filter(Boolean)
+          .join(" · ")}
       </p>
       {automaticRecovery && (
         <p className="type-footnote text-label-secondary" role="status">
@@ -447,26 +460,11 @@ export function CloudAccount({
           </button>
         )}
       </div>
-      {value.cloud.invitationResultUnconfirmed && (
-        <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
-          {cloudInvitationResultWarning}
-        </p>
-      )}
-      {value.cloud.remoteRevocationUnconfirmed && (
-        <p className="px-4 py-3 type-footnote text-label-secondary" role="status">
-          Cloud has not confirmed an earlier sign-out. Open Cloud settings in your browser to
-          close that old connection.
-        </p>
-      )}
       {value.cloud.localResetAvailable && (
         <div className="flex flex-col gap-3 px-4 py-3 type-callout text-label">
           {confirmReset ? (
             <>
-              <p>
-                Reset sign-in on this device? You can sign in again, but the old connection may
-                still have access to Cloud. The warning will stay until you close that
-                connection in Cloud settings.
-              </p>
+              <p>Reset sign-in on this device? This clears local sign-in only.</p>
               <div className="flex gap-2">
                 <button
                   className="ui-push-button"
@@ -499,10 +497,7 @@ export function CloudAccount({
         </div>
       )}
       {Object.values(value.workspaceConnections ?? {})
-        .filter(
-          (connection) =>
-            connection.localResetAvailable || connection.remoteRevocationUnconfirmed,
-        )
+        .filter((connection) => connection.localResetAvailable)
         .map((connection) => (
           <TeamConnectionRecovery
             key={`${connection.accountId}:${connection.workspaceId}`}
@@ -519,8 +514,12 @@ export function CloudAccount({
           />
         ))}
       {value.cloud.invitationEnabled && value.cloud.identity && (
-        <div className="px-4 py-3">
-          <CloudInvitations accountId={value.cloud.identity.id} onJoined={session.load} />
+        <div className="px-4 py-3 empty:hidden">
+          <CloudInvitations
+            accountId={value.cloud.identity.id}
+            onJoined={session.load}
+            showConfirmedOnly
+          />
         </div>
       )}
       {children && <div className="border-t border-separator">{children}</div>}
@@ -602,7 +601,7 @@ export function CloudAccount({
   )
 }
 
-/** Clear only the named legacy connection. Keep the remote warning after local cleanup. */
+/** Clear the named legacy connection when it still needs local cleanup. */
 function TeamConnectionRecovery({
   connection,
   name,
@@ -617,53 +616,42 @@ function TeamConnectionRecovery({
   const [confirm, setConfirm] = useState(false)
   return (
     <div className="flex flex-col items-start gap-2 px-4 py-3">
-      {connection.remoteRevocationUnconfirmed ? (
-        <p className="type-footnote text-label-secondary" role="status">
-          Cloud has not confirmed that the earlier connection for {name} is closed. Close it in
-          Cloud settings in your browser.
-        </p>
+      {confirm ? (
+        <>
+          <p className="type-callout text-label">
+            Clear the old connection for {name} from this device? This does not close it in
+            Cloud or change which folders sync.
+          </p>
+          <div className="flex gap-2">
+            <button
+              className="ui-push-button"
+              disabled={busy}
+              onClick={async () => {
+                if (await reset(connection.workspaceId)) setConfirm(false)
+              }}
+            >
+              Confirm cleanup for {name}
+            </button>
+            <button
+              className="ui-push-button"
+              disabled={busy}
+              onClick={() => setConfirm(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </>
       ) : (
-        <p className="type-footnote text-label-secondary" role="status">
-          This device still has an old Cloud connection for {name}.
-        </p>
+        <button className="ui-push-button" disabled={busy} onClick={() => setConfirm(true)}>
+          Clear old connection for {name}
+        </button>
       )}
-      {connection.localResetAvailable &&
-        (confirm ? (
-          <>
-            <p className="type-callout text-label">
-              Clear the old connection for {name} from this device? This does not close it in
-              Cloud or change which folders sync.
-            </p>
-            <div className="flex gap-2">
-              <button
-                className="ui-push-button"
-                disabled={busy}
-                onClick={async () => {
-                  if (await reset(connection.workspaceId)) setConfirm(false)
-                }}
-              >
-                Confirm cleanup for {name}
-              </button>
-              <button
-                className="ui-push-button"
-                disabled={busy}
-                onClick={() => setConfirm(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          </>
-        ) : (
-          <button className="ui-push-button" disabled={busy} onClick={() => setConfirm(true)}>
-            Clear old connection for {name}
-          </button>
-        ))}
     </div>
   )
 }
 
-/** Keep initial choices local until Start. Saved switches revoke immediately or
- * require confirmation before adding content permission.
+/** Keep new folders and workspace changes local until Save.
+ * A saved switch can turn off uploads immediately.
  */
 function CloudProjectsAccount({
   session,
@@ -677,12 +665,20 @@ function CloudProjectsAccount({
   const fallbackFolderRowId = useId()
   const uploadActionWarningId = useId()
   const foldersId = folderRowId ?? fallbackFolderRowId
+  const backfillDescriptionId = `${foldersId}-backfill-description`
   const [saveTeam, setSaveTeam] = useState<{
     accountId: string
     destinationId: string
     revision: string | null
   }>()
   const [startingBackfill, setStartingBackfill] = useState<string>()
+  const [folderMove, setFolderMove] = useState<{
+    accountId: string
+    groupId: string
+    confirmationKey: CloudProjectGroup["confirmationKey"]
+    from: string
+    to: string | undefined
+  }>()
   const projects = value.projects
   const policy = value.ongoing
   const identity = value.cloud.identity
@@ -781,24 +777,34 @@ function CloudProjectsAccount({
           id === reviewChoice?.destinationId && team.policyRevision === reviewChoice.revision,
       )
     : confirmableTeams[0]
-  const hasTeamFolders = teamPolicies.some(([, team]) => team.projects.length > 0)
+  const savedTeamPolicies = teamPolicies.filter(
+    ([, team]) => team.projects.length > 0 || !!team.savedFolders?.length,
+  )
+  const hasTeamFolders = savedTeamPolicies.length > 0
   const hasSavedPolicy = hasConsent || teamPolicies.length > 0
   const multipleWorkspaces = (projects?.workspaces?.length ?? 0) > 1
-  const personalSyncNotSetUp =
-    policy?.status === "consent_required" &&
-    policy.storageKnown &&
-    policy.consentVersion === null &&
-    !policy.projects.length &&
-    !policy.savedFolders?.length &&
-    !policy.folderConfirmationRequired &&
-    !policy.sourceConfirmationRequired &&
-    !policy.fencedCount &&
-    !policy.interruptedCount
-  const showPersonalSyncStatus =
-    !personalSyncNotSetUp || multipleWorkspaces || teamPolicies.length > 0
   const personalId = value.cloud.destination?.id
   const savedTeams = (id: string) =>
     teamPolicies.filter(([, policy]) => session.projectHasSavedPermission(id, policy, true))
+  const moveGroup = projects?.groups.find(
+    (group) =>
+      folderMove?.accountId === identity.id &&
+      folderMove.groupId === group.id &&
+      folderMove.confirmationKey === group.confirmationKey &&
+      !group.discoveryStale &&
+      group.groupingComplete !== false &&
+      projects.workspaces?.some(({ id }) => id === folderMove.from),
+  )
+  const move =
+    moveGroup &&
+    folderMove &&
+    (folderMove.from === personalId
+      ? session.projectHasSavedPermission(moveGroup.id, undefined, true)
+      : savedTeams(moveGroup.id).some(([id]) => id === folderMove.from))
+      ? folderMove
+      : undefined
+  const moveTargetUnavailable =
+    !!move?.to && !projects?.workspaces?.some(({ id }) => id === move.to)
   const showsSavedTeamFolder = (
     group: CloudProjectGroup,
     policy: CloudOngoingStatus,
@@ -848,10 +854,7 @@ function CloudProjectsAccount({
   const waitingForFolders =
     !projects?.loaded && !projects?.error && !projects?.retrying && !value.cloud.setupError
   const exactTeamFolders = teamPolicies.flatMap(([team, policy]) =>
-    (waitingForFolders && policy.status !== "reauth_required"
-      ? []
-      : (policy.savedFolders ?? [])
-    )
+    (policy.savedFolders ?? [])
       .filter(
         (folder) =>
           policy.status === "reauth_required" ||
@@ -859,7 +862,7 @@ function CloudProjectsAccount({
       )
       .map((folder) => ({ ...folder, team, policy })),
   )
-  const exactPersonalFolders = (waitingForFolders ? [] : (policy?.savedFolders ?? [])).filter(
+  const exactPersonalFolders = (policy?.savedFolders ?? []).filter(
     ({ path }) =>
       !projects?.groups.some(
         (group) =>
@@ -905,23 +908,29 @@ function CloudProjectsAccount({
     !confirmTeam &&
     policy?.sourceConfirmationRequired &&
     projects?.groups.find((group) => session.projectHasReviewableSource(group.id))
-  const canSave =
-    (!!confirmTeam && !draftFolders.length) ||
-    (!storageUnknown &&
+  const canSave = move
+    ? !storageUnknown &&
       value.cloud.captureEnabled &&
       !value.cloud.setupError &&
       projects?.loaded &&
       !projects.loading &&
       !projects.error &&
-      (startableFolder || !!savedSourceToReview))
+      !moveTargetUnavailable
+    : (!!confirmTeam && !draftFolders.length) ||
+      (!storageUnknown &&
+        value.cloud.captureEnabled &&
+        !value.cloud.setupError &&
+        projects?.loaded &&
+        !projects.loading &&
+        !projects.error &&
+        (startableFolder || !!savedSourceToReview))
   const hasError = value.uploadActionError || folderError || uploadError
   const backfillDestinations = [
-    ...(personalId && (canBackfillUploads(value) || policy?.backfillInProgress)
+    ...(personalId &&
+    (!hasTeamFolders || !!policy?.projects.length || !!policy?.savedFolders?.length)
       ? [[personalId, "Personal", undefined, policy] as const]
       : []),
-    ...teamPolicies
-      .filter(([id, team]) => canBackfillUploads(value, id) || team.backfillInProgress)
-      .map(([id, team]) => [id, teamName(id, team), id, team] as const),
+    ...savedTeamPolicies.map(([id, team]) => [id, teamName(id, team), id, team] as const),
   ]
   const focusUploadSwitch = () => {
     const folders = document.getElementById(foldersId)
@@ -937,10 +946,10 @@ function CloudProjectsAccount({
         id={foldersId}
         role="group"
         aria-label="Cloud folders"
-        className="@container relative border-t border-separator focus:outline-2 focus:-outline-offset-2 focus:outline-accent-fill"
+        className="@container relative border-t border-separator"
         description="Uploads include full sessions from approved folders and worktrees. Worktrees outside approved folders need approval."
       >
-        {projects?.loaded && projects.loading && !projects.retrying && (
+        {!coldFolderLoad && projects?.loading && !projects.retrying && (
           <span role="status" className="absolute end-4 top-3 text-label-secondary">
             <LoaderCircle size={13} className="motion-safe:animate-spin" aria-hidden />
             <span className="sr-only">Checking folders…</span>
@@ -960,13 +969,28 @@ function CloudProjectsAccount({
               )
               const savedPersonal = session.projectHasSavedPermission(group.id, undefined, true)
               const unverifiedGroup = group.discoveryStale || group.groupingComplete === false
-              const showChoice = teams.length === 0 || savedPersonal
+              const savedDestination =
+                teams.length === 0 && savedPersonal
+                  ? personalId
+                  : !savedPersonal && teams.length === 1
+                    ? displayedTeams[0]?.[0]
+                    : undefined
+              const pendingMove = move?.groupId === group.id ? move : undefined
+              const canMove =
+                (multipleWorkspaces || !!pendingMove) &&
+                !!savedDestination &&
+                projects.workspaces?.some(({ id }) => id === savedDestination) &&
+                !unverifiedGroup &&
+                group.captureSupported
+              const showChoice = canMove || teams.length === 0 || savedPersonal
               if (!showChoice && displayedTeams.length === 0) return null
-              const showPersonal = savedPersonal && (teams.length > 0 || multipleWorkspaces)
+              const showPersonal =
+                !canMove && savedPersonal && (teams.length > 0 || multipleWorkspaces)
               const draftTarget = projects.targets?.[group.id]
               const pickWorkspace =
-                !savedPersonal &&
-                (multipleWorkspaces || (!!draftTarget && draftTarget !== personalId))
+                canMove ||
+                (!savedPersonal &&
+                  (multipleWorkspaces || (!!draftTarget && draftTarget !== personalId)))
               const label = `Sync ${group.name}: ${group.path}`
               const controlLabel = showPersonal ? `${label} to Personal` : label
               const descriptionId = `cloud-settings-folder-${encodeURIComponent(group.id)}`
@@ -991,12 +1015,15 @@ function CloudProjectsAccount({
                     />
                   </div>
                   <div className="col-start-2 flex min-w-0 max-w-full flex-col items-start gap-2 @min-[30rem]:col-start-3 @min-[30rem]:items-end">
-                    {displayedTeams.map(([team, teamPolicy]) =>
-                      savedTeamControl(group.id, label, team, teamPolicy, descriptionId),
-                    )}
+                    {!canMove &&
+                      displayedTeams.map(([team, teamPolicy]) =>
+                        savedTeamControl(group.id, label, team, teamPolicy, descriptionId),
+                      )}
                     {showChoice && (
                       <div
-                        data-cloud-workspace={savedPersonal ? personalId : undefined}
+                        data-cloud-workspace={
+                          canMove ? savedDestination : savedPersonal ? personalId : undefined
+                        }
                         className="flex min-w-0 max-w-full items-center gap-2"
                       >
                         {showPersonal && (
@@ -1005,16 +1032,28 @@ function CloudProjectsAccount({
                         <CloudFolderSyncControl
                           label={controlLabel}
                           descriptionId={descriptionId}
-                          selected={savedPersonal || (!unverifiedGroup && selected(group.id))}
+                          selected={
+                            pendingMove
+                              ? !!pendingMove.to
+                              : savedPersonal || (!unverifiedGroup && selected(group.id))
+                          }
                           typedWorkspaceLabels
                           wrapWorkspaceLabel
+                          keepWorkspacePicker={!!pendingMove}
                           workspaces={pickWorkspace ? projects.workspaces : undefined}
                           destinationId={personalId}
-                          selectedWorkspace={pickWorkspace ? draftTarget : undefined}
+                          selectedWorkspace={
+                            canMove
+                              ? (pendingMove?.to ?? savedDestination)
+                              : pickWorkspace
+                                ? draftTarget
+                                : undefined
+                          }
                           disabled={
                             value.busy ||
                             starting ||
                             storageUnknown ||
+                            (canMove && !!move && !pendingMove) ||
                             (unverifiedGroup && !savedPersonal) ||
                             (!selected(group.id) &&
                               (!!value.cloud.setupError ||
@@ -1022,7 +1061,20 @@ function CloudProjectsAccount({
                                 !group.captureSupported))
                           }
                           onSelect={(next, workspace) => {
-                            if (savedPersonal) {
+                            if (canMove && savedDestination) {
+                              const to = next ? workspace : undefined
+                              setFolderMove(
+                                to === savedDestination
+                                  ? undefined
+                                  : {
+                                      accountId: identity.id,
+                                      groupId: group.id,
+                                      confirmationKey: group.confirmationKey,
+                                      from: savedDestination,
+                                      to,
+                                    },
+                              )
+                            } else if (savedPersonal) {
                               const active = document.activeElement
                               void changeFolderWithFocus(
                                 active?.getAttribute("aria-label") === controlLabel
@@ -1152,6 +1204,16 @@ function CloudProjectsAccount({
       </SettingsRow>
       <footer className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3 gap-y-2 border-t border-separator px-4 py-2">
         <div className="flex min-h-[var(--control-height-regular)] min-w-0 flex-col gap-1.5 type-footnote text-label-secondary wrap-anywhere">
+          {showFolderRetryStatus && (
+            <p role="status">{cloudDiscoveryRetryMessage(projects.retryStage)}</p>
+          )}
+          {projects?.paging && (
+            <p role="status">
+              {projects.paging === "retrying"
+                ? "Still checking for more folders."
+                : "Loading more folders…"}
+            </p>
+          )}
           {value.uploadActionError && (
             <CloudFolderWarning id={uploadActionWarningId}>
               {value.uploadActionError}
@@ -1224,7 +1286,7 @@ function CloudProjectsAccount({
               Go to upload switch
             </button>
           )}
-          {!draftFolders.length && showTeamChoice && confirmableTeams.length > 0 && (
+          {!move && !draftFolders.length && showTeamChoice && confirmableTeams.length > 0 && (
             <label className="flex flex-wrap items-center gap-1">
               Save folders for
               <select
@@ -1249,7 +1311,15 @@ function CloudProjectsAccount({
               </select>
             </label>
           )}
-          {confirmTeam && !value.uploadActionError ? (
+          {move && !value.uploadActionError ? (
+            <p>
+              {moveTargetUnavailable
+                ? "That workspace is unavailable. Choose another."
+                : move.to
+                  ? "Save to change workspace. Previous uploads stay where they are."
+                  : "Save to stop syncing this folder."}
+            </p>
+          ) : confirmTeam && !value.uploadActionError ? (
             <p>
               {draftFolders.length
                 ? "Save listed and new Team folders."
@@ -1282,52 +1352,68 @@ function CloudProjectsAccount({
               </p>
             )}
           {backfillDestinations.length > 0 && (
-            <div className="flex max-w-sm flex-col gap-3">
+            <section aria-label="Cloud sync status" className="flex flex-col gap-3">
+              <p id={backfillDescriptionId} className="sr-only">
+                Send all available sessions in saved folders again, including sessions
+                previously uploaded.
+              </p>
               {backfillDestinations.map(([id, name, teamId, destinationPolicy]) => {
+                const workspaceUnavailable =
+                  !!teamId &&
+                  !!projects?.workspaces &&
+                  !projects.workspaces.some(({ id }) => id === teamId)
                 const current =
+                  !workspaceUnavailable &&
                   value.deviceUploadEnabled !== false &&
                   destinationPolicy?.storageKnown === true
                 const scanning = current && destinationPolicy?.backfillInProgress === true
                 const waiting = startingBackfill === id && !scanning && current
                 const active = waiting || scanning
-                const showButton = !draftFolders.length || active
                 const progress = current && !waiting ? destinationPolicy?.uploadProgress : null
-                if (!showButton && !progress) return null
                 const disabled =
-                  value.busy || starting || active || !canBackfillUploads(value, teamId)
+                  value.busy ||
+                  starting ||
+                  active ||
+                  !!move ||
+                  draftFolders.length > 0 ||
+                  !canBackfillUploads(value, teamId)
                 const label =
                   teamId || hasTeamFolders ? `Backfill sessions to ${name}` : undefined
+                const statusId = `${foldersId}-sync-${id}`
                 return (
                   <div key={id} className="flex min-w-0 flex-col gap-1.5">
-                    {(label || !showButton) && (
-                      <p className="font-medium text-label wrap-anywhere">{name}</p>
-                    )}
-                    <div
-                      className={
-                        showButton ? "flex flex-wrap items-center gap-x-2 gap-y-1" : "sr-only"
-                      }
-                    >
-                      {showButton && (
-                        <button
-                          type="button"
-                          className="ui-push-button h-auto! min-h-8 max-w-full shrink-0 text-left wrap-anywhere aria-disabled:opacity-60"
-                          aria-label={label}
-                          aria-disabled={disabled || undefined}
-                          aria-busy={active || undefined}
-                          aria-description="Send all available sessions in saved folders again, including sessions previously uploaded."
-                          onClick={async () => {
-                            if (disabled) return
-                            setStartingBackfill(id)
-                            try {
-                              await session.backfillSync(value, teamId)
-                            } finally {
-                              setStartingBackfill(undefined)
-                            }
-                          }}
-                        >
-                          Backfill sessions
-                        </button>
-                      )}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <button
+                        type="button"
+                        className="ui-push-button h-auto! min-h-8 max-w-full shrink-0 text-left wrap-anywhere aria-disabled:opacity-60"
+                        aria-label={label}
+                        aria-disabled={disabled || undefined}
+                        aria-busy={active || undefined}
+                        aria-describedby={`${statusId} ${backfillDescriptionId}`}
+                        onClick={async () => {
+                          if (disabled) return
+                          setStartingBackfill(id)
+                          try {
+                            await session.backfillSync(value, teamId)
+                          } finally {
+                            setStartingBackfill(undefined)
+                          }
+                        }}
+                      >
+                        Backfill sessions
+                      </button>
+                      <DestinationSyncStatus
+                        id={statusId}
+                        name={label ? name : undefined}
+                        policy={destinationPolicy}
+                        deviceEnabled={value.deviceUploadEnabled}
+                        checkingStatus={projects?.loading}
+                        saveFirst={!move && draftFolders.length > 0}
+                        workspaceUnavailable={workspaceUnavailable}
+                        showWorkspaceName={backfillDestinations.length > 1}
+                      />
+                    </div>
+                    {(active || progress) && (
                       <span
                         role="status"
                         className={active ? "flex items-center gap-1" : "sr-only"}
@@ -1346,7 +1432,7 @@ function CloudProjectsAccount({
                           progress && backfillAnnouncement(name, progress)
                         )}
                       </span>
-                    </div>
+                    )}
                     {progress && (
                       <BackfillUploadProgress
                         name={name}
@@ -1357,7 +1443,7 @@ function CloudProjectsAccount({
                   </div>
                 )
               })}
-            </div>
+            </section>
           )}
         </div>
         <button
@@ -1365,9 +1451,11 @@ function CloudProjectsAccount({
           disabled={!value.busy && !starting && !projects?.loading && !canSave}
           aria-disabled={value.busy || starting || (projects?.loading && !canSave) || undefined}
           aria-description={
-            confirmTeam
-              ? `Save full-session uploads for the exact listed paths in ${teamName(...confirmTeam)}.`
-              : `Save full-session uploads for the selected folder and worktree paths for ${identity.login}.`
+            move
+              ? "Apply the selected workspace change to this folder."
+              : confirmTeam
+                ? `Save full-session uploads for the exact listed paths in ${teamName(...confirmTeam)}.`
+                : `Save full-session uploads for the selected folder and worktree paths for ${identity.login}.`
           }
           onClick={async (event) => {
             if (value.busy || starting || !canSave) return
@@ -1382,14 +1470,20 @@ function CloudProjectsAccount({
               await changeFolderWithFocus(
                 save,
                 foldersId,
-                draftFolders.length === 1 ? draftFolders[0]?.id : undefined,
-                () =>
-                  session.startPendingProjects(
-                    value,
-                    hasSavedPolicy,
-                    confirmTeam?.[0],
-                    savedSourceToReview ? savedSourceToReview.id : undefined,
-                  ),
+                move?.groupId ?? (draftFolders.length === 1 ? draftFolders[0]?.id : undefined),
+                async () => {
+                  if (move) {
+                    await session.moveSavedProject(value, move.groupId, move.from, move.to)
+                    setFolderMove((pending) => (pending === move ? undefined : pending))
+                  } else {
+                    await session.startPendingProjects(
+                      value,
+                      hasSavedPolicy,
+                      confirmTeam?.[0],
+                      savedSourceToReview ? savedSourceToReview.id : undefined,
+                    )
+                  }
+                },
               )
               if (
                 !focus.signal.aborted &&
@@ -1407,39 +1501,6 @@ function CloudProjectsAccount({
           Save
         </button>
       </footer>
-      {(showPersonalSyncStatus || showFolderRetryStatus || projects?.paging) && (
-        <section aria-label="Cloud sync status" className="border-t border-separator px-4">
-          {showFolderRetryStatus && (
-            <p className="pt-2 type-footnote text-label-secondary" role="status">
-              {cloudDiscoveryRetryMessage(projects.retryStage)}
-            </p>
-          )}
-          {projects?.paging && (
-            <p className="pt-2 type-footnote text-label-secondary" role="status">
-              {projects.paging === "retrying"
-                ? "Still checking for more folders."
-                : "Loading more folders…"}
-            </p>
-          )}
-          {showPersonalSyncStatus && (
-            <DestinationSyncStatus
-              name="Personal"
-              policy={policy}
-              deviceEnabled={value.deviceUploadEnabled}
-              checkingStatus={projects?.loading}
-            />
-          )}
-          {teamPolicies.map(([id, team]) => (
-            <DestinationSyncStatus
-              key={id}
-              name={teamName(id, team)}
-              policy={team}
-              deviceEnabled={value.deviceUploadEnabled}
-              checkingStatus={projects?.loading}
-            />
-          ))}
-        </section>
-      )}
     </>
   )
 }

@@ -235,7 +235,15 @@ export interface CloudOngoingConsent extends CloudDestinationBinding {
   fullContent: true
   ongoing: true
   attachments: false
+  /** Require the old workspace's confirmed removal revision before granting access. */
+  moveFrom?: CloudFolderMoveSource
 }
+
+interface CloudFolderMoveSource {
+  destinationId: string
+  policyRevision: string
+}
+
 /** Edit one saved folder group without replacing other approved bindings. */
 interface CloudProjectChange extends CloudDestinationBinding {
   groupId: string
@@ -243,6 +251,10 @@ interface CloudProjectChange extends CloudDestinationBinding {
   projects: CloudProjectSelection[]
   folderPaths: string[]
   expectedPolicyRevision: string
+  /** Reject a move's removal if it would change any other saved binding. */
+  expectedRemovals?: CloudProjectSelection[]
+  /** Require the old workspace's confirmed removal revision before granting access. */
+  moveFrom?: CloudFolderMoveSource
 }
 /** Save the exact reviewed paths and explicit new groups for one Team. */
 interface CloudTeamConfirmation extends CloudDestinationBinding {

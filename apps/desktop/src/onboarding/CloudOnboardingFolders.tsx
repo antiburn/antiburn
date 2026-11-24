@@ -28,13 +28,10 @@ export function CloudProjectFolderSummary({
     : group.sessionCount == null
       ? "Count unavailable"
       : `${group.sessionCount} ${group.sessionCount === 1 ? "session" : "sessions"}`
-  const worktreeLabel = group.discoveryStale
-    ? null
-    : group.groupingComplete === false
-      ? "Worktrees not verified"
-      : group.worktreeCount > 0
-        ? `${group.worktreeCount} ${group.worktreeCount === 1 ? "worktree" : "worktrees"}`
-        : null
+  const worktreeLabel =
+    !group.discoveryStale && group.groupingComplete !== false && group.worktreeCount > 0
+      ? `${group.worktreeCount} ${group.worktreeCount === 1 ? "worktree" : "worktrees"}`
+      : null
   return (
     <div
       id={id}
@@ -77,6 +74,7 @@ export function CloudFolderSyncControl({
   typedWorkspaceLabels = false,
   wrapWorkspaceLabel = false,
   needsWorkspaceChoice = false,
+  keepWorkspacePicker = false,
   onSelect,
 }: {
   label: string
@@ -92,11 +90,16 @@ export function CloudFolderSyncControl({
   wrapWorkspaceLabel?: boolean
   /** Ask for a destination when a checked draft has no workspace binding. */
   needsWorkspaceChoice?: boolean
+  /** Keep a staged change editable when a workspace disappears from the list. */
+  keepWorkspacePicker?: boolean
   onSelect: (selected: boolean, destination?: string) => void
 }) {
   const unavailableChoice =
     selectedWorkspace && !workspaces?.some((workspace) => workspace.id === selectedWorkspace)
-  if (destinationId && ((workspaces?.length ?? 0) > 1 || unavailableChoice)) {
+  if (
+    destinationId &&
+    (keepWorkspacePicker || (workspaces?.length ?? 0) > 1 || unavailableChoice)
+  ) {
     const value = needsWorkspaceChoice
       ? chooseWorkspace
       : selected

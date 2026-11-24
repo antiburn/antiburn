@@ -91,6 +91,13 @@ export function cloudFixture(name: string): CloudPort {
   }
   let saveFailed = false
   let folderReadCount = 0
+  let folderReleasePending = false
+  let folderWatcher: (() => void) | undefined
+  const pendingFolderReads = new Set<() => void>()
+  const releasePendingFolderReads = () => {
+    for (const resolve of pendingFolderReads) resolve()
+    pendingFolderReads.clear()
+  }
   const groups: DesktopCloudProjectGroup[] =
     name === "empty" || name === "settings-empty"
       ? []
@@ -298,6 +305,11 @@ export function cloudFixture(name: string): CloudPort {
           : "unavailable",
   )
   let failTeamSave = params.get("saveFailure") === "1"
+  let showQueueProgress = false
+  const ongoingStatus = (): CloudOngoingStatus =>
+    showQueueProgress
+      ? { ...ongoing, queuedCount: 3, uploadProgress: { uploaded: 6, total: 96 } }
+      : ongoing
   return {
     displayHome: async () => "/Users/avery",
     ...(name === "settings-team-confirmation"
@@ -316,20 +328,12 @@ export function cloudFixture(name: string): CloudPort {
             backfillInProgress: false,
             ...(name === "settings-attention" && { uploadProgress: { uploaded: 3, total: 8 } }),
           }
-          listener(ongoing)
+          listener(ongoingStatus())
         }
         const event = "cloud-fixture:finish-backfill"
-        const initialStatus = ongoing
         const updateQueue = () => {
-          ongoing = ongoing.uploadProgress
-            ? initialStatus
-            : {
-                ...ongoing,
-                status: "syncing",
-                queuedCount: 3,
-                uploadProgress: { uploaded: 6, total: 96 },
-              }
-          listener(ongoing)
+          showQueueProgress = !showQueueProgress
+          listener(ongoingStatus())
         }
         const queueEvent = "cloud-fixture:update-queue"
         window.addEventListener(event, finish)
@@ -342,12 +346,10 @@ export function cloudFixture(name: string): CloudPort {
       groups: async (_binding, after) => {
         if (++folderReadCount <= Number(params.get("folderDiscovery") ?? 0))
           throw new Error("Synthetic folder read failure")
-        if (deferFolders)
-          await new Promise<void>((resolve) => {
-            window.addEventListener("cloud-fixture:finish-folders", () => resolve(), {
-              once: true,
-            })
-          })
+        if (deferFolders) {
+          if (folderReleasePending) folderReleasePending = false
+          else await new Promise<void>((resolve) => pendingFolderReads.add(resolve))
+        }
         const emptyPage =
           ["folders-empty-partial", "folders-empty-paged"].includes(name) && !after
         return {
@@ -368,7 +370,7 @@ export function cloudFixture(name: string): CloudPort {
           partial: name === "folders-empty-partial",
         }
       },
-      status: async () => ongoing,
+      status: async () => ongoingStatus(),
       confirmTeamFolders: async ({
         accountId,
         destinationId,
@@ -423,6 +425,9 @@ export function cloudFixture(name: string): CloudPort {
           ...ongoing,
           storageKnown: true,
           consentVersion: consent.version,
+          ...(name === "settings-team-confirmation" && {
+            policyRevision: "fixture-moved-personal",
+          }),
           projects: consent.projects,
           projectChoices: consent.projectChoices,
           selectedSources: consent.selectedSources,
@@ -440,8 +445,21 @@ export function cloudFixture(name: string): CloudPort {
         }
         return ongoing
       },
-      setProject: async ({ groupId, selected, projects }) => {
+      setProject: async ({ destinationId, groupId, selected, projects }) => {
         const paths = new Set(groups.find((group) => group.id === groupId)?.folderPaths)
+        if (name === "settings-team-confirmation" && destinationId === "synthetic-team") {
+          const team = ongoing.teamStatuses?.[0]
+          if (!team || selected) throw new Error("Unexpected synthetic Team folder change.")
+          const saved = {
+            ...team,
+            policyRevision: "fixture-moved-team",
+            projects: team.projects.filter(({ projectPath }) => !paths.has(projectPath)),
+            projectChoices: { ...team.projectChoices, [groupId]: false },
+            savedFolders: (team.savedFolders ?? []).filter(({ path }) => !paths.has(path)),
+          }
+          ongoing = { ...ongoing, teamStatuses: [saved] }
+          return saved
+        }
         const next = ongoing.projects.filter((project) => !paths.has(project.projectPath))
         ongoing = {
           ...ongoing,
@@ -476,6 +494,12 @@ export function cloudFixture(name: string): CloudPort {
     },
     read: async () => value,
     watch: async (listener) => {
+      const releaseFolders = () => {
+        // Keep an early release for the next read. A remount can replace this watcher.
+        if (folderWatcher !== releaseFolders) return
+        if (pendingFolderReads.size === 0) folderReleasePending = true
+        releasePendingFolderReads()
+      }
       const recheckFolders = () => {
         value = {
           ...value,
@@ -486,8 +510,19 @@ export function cloudFixture(name: string): CloudPort {
         }
         listener(value)
       }
-      if (deferFolders) window.addEventListener("cloud-fixture:recheck-folders", recheckFolders)
-      return () => window.removeEventListener("cloud-fixture:recheck-folders", recheckFolders)
+      if (deferFolders) {
+        folderWatcher = releaseFolders
+        window.addEventListener("cloud-fixture:recheck-folders", recheckFolders)
+        window.addEventListener("cloud-fixture:finish-folders", releaseFolders)
+      }
+      return () => {
+        window.removeEventListener("cloud-fixture:recheck-folders", recheckFolders)
+        window.removeEventListener("cloud-fixture:finish-folders", releaseFolders)
+        if (folderWatcher !== releaseFolders) return
+        folderWatcher = undefined
+        releasePendingFolderReads()
+        folderReleasePending = false
+      }
     },
     begin: async () => {
       value = { ...value, status: value.authEnabled ? "waiting" : "idle" }

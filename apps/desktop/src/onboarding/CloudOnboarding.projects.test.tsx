@@ -104,7 +104,8 @@ it("does not show a worktree count when Desktop could not verify the group", asy
   render(
     <CloudOnboarding port={port} analytics={false} onBack={vi.fn()} onComplete={vi.fn()} />,
   )
-  expect(await screen.findByText("Worktrees not verified")).toBeVisible()
+  expect(await screen.findByText("/Example/Studio")).toBeVisible()
+  expect(screen.queryByText("Worktrees not verified")).not.toBeInTheDocument()
   expect(screen.queryByText("1 worktree")).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Start syncing" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Continue locally" })).toBeEnabled()
@@ -432,7 +433,7 @@ it("loads another page without approving new members until Start", async () => {
   )
   await screen.findByRole("switch")
   expect(ongoing.groups).toHaveBeenCalledTimes(1)
-  ongoing.groups.mockResolvedValueOnce({
+  ongoing.groups.mockResolvedValue({
     groups: [
       projectGroup({
         folderPaths: [...projectGroup().folderPaths, "/Example/external/studio-review"],

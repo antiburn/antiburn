@@ -685,6 +685,22 @@ every `colors` entry carries both values, and only those values differ between t
 System follows changes to the OS appearance and uses the same Light or Dark palette,
 including its opacity and native system colours. Reduced transparency applies equally
 to System and the corresponding explicit theme.
+
+## Desktop design principles
+
+- Show the normal task first. Hide optional sections with no confirmed items.
+  In Settings, show confirmed invitations instead of a prompt to check for them.
+- Keep routine status short and tie it to current evidence. Put notices beside
+  the task they affect. Show an alert only when the user needs to know about an
+  action failure or a current problem. Do not put expired or superseded
+  conditions on the normal screen. Let background recovery run quietly.
+- Keep an action in place while loading, saving, or switching states. When an
+  action needs a prerequisite, show that prerequisite in plain language.
+  Keep an editable choice editable after Save.
+- Review first use, returning use, and a current failure in the actual window.
+  Check that keyboard focus and the main actions stay in place at narrow widths
+  and larger interface scales.
+
 Notes for what isn't expressible as a token:
 
 - **Overview panels** — the usage meters use a card background and inset
@@ -2101,23 +2117,24 @@ with confirmed Claude or OpenCode V2 session files. Other agents can appear as f
 suggestions, with upload support marked unavailable. Settings uses automatic provider
 discovery without source pickers. The Upload sessions
 switch pauses or resumes the saved ongoing policy; the old local upload preference
-does not grant consent. Settings shows brief actual failures and their available
-recovery actions, not transfer counters. Partial or
-paged empty discovery does not become a complete empty result. Folder content can
-scroll without moving the completion action
-out of the footer.
+does not grant consent. Settings shows brief current failures and their recovery
+actions. Partial or paged empty discovery does not become a complete empty
+result. Folder content can scroll without moving the completion action out of
+the footer.
 
 The folder list does not shrink to make room for consent paragraphs. A short
 subtitle states full-session scope. The account and destination share a compact
 chip; the selected group count sits above the list. Back, underlined Continue
 locally, and Start syncing are the folder footer's only content.
-Normal Settings shows account/sign-out, the upload switch, folder choices, and
-one short upload state. The Cloud card uses spacing instead of internal dividers.
-Folder switches reflect saved permission, so new unapproved groups stay off.
-Turning a folder off saves immediately. Turning it on opens a full-session
-confirmation dialog in Settings only. There is no separate Update button.
-An explicit global pause remains in effect after folder changes. Read and upload
-failures use a red inline alert with an icon and a recovery action.
+Normal Settings shows the account, upload switch, folder choices, and one short
+sync status beside Backfill sessions. Show workspace names when they distinguish
+active destinations, not as a separate Personal status section. Show Join only
+for confirmed workspace invitations. Do not show old remote sign-out warnings.
+With Personal only, folder switches reflect saved permission. Turning a saved
+switch off applies immediately. Add folders with Save. With Personal and Team,
+keep a workspace dropdown for folders that can change destination. Use Save to
+apply the change. An explicit global pause remains in effect after folder changes.
+Read and upload failures use an inline alert with a recovery action when available.
 
 The Cloud sign-in card uses an 88px app image, symmetric 36px vertical padding, and an 18px reserved status line to match the prototype. Auth handoff has the prototype footer separator; Learn more keeps its approved plain footer. Identity uses a circular 64px image and a 24px green badge with a 3px paper border and contrasting action ink.
 
