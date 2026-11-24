@@ -1898,7 +1898,7 @@ fn recent_sessions_are_windowed_and_ordered_newest_first() {
 fn recent_sessions_uses_the_keyset_index() {
     let store = store();
     let connection = store.lock();
-    let sql = recent_sessions_sql("", "");
+    let sql = recent_sessions_sql("", "", "");
     let mut statement = connection
         .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
         .unwrap();

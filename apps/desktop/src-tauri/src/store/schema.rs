@@ -110,7 +110,13 @@ pub const MIGRATIONS: &[&str] = &[
     V92,
     V93,
     V94,
+    V95,
 ];
+
+/// Find the agents with recent sessions using one index range per agent.
+const V95: &str = r#"
+CREATE INDEX session_agent_activity ON session(agent, COALESCE(updated_at_epoch, 0) DESC);
+"#;
 
 // Start collection by default. Keep explicit master and provider opt-outs.
 const V94: &str = r#"

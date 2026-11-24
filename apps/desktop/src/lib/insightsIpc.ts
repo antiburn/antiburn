@@ -693,22 +693,37 @@ export async function cancelChecksReport(consumerId: string): Promise<void> {
   await invoke("cancel_checks_report", { consumerId })
 }
 
-/** Run after the evidence worker publishes every item in its current queue. */
-export async function onChecksReportChanged(handler: () => void): Promise<UnlistenFn> {
-  return listen("checks:report-changed", handler)
+/** A summary-only report change has separate updates for affected session badges. */
+export async function onChecksReportChanged(
+  handler: (change: "summaryOnly" | null) => void,
+): Promise<UnlistenFn> {
+  return listen<"summaryOnly" | null>("checks:report-changed", ({ payload }) =>
+    handler(payload),
+  )
 }
 
-/** The hygiene badges reduced from a bounded set of stored evidence rows. */
+/** Read badges in input order. A failed chunk leaves only the completed prefix. */
 export async function getSessionHygiene(
   sessions: readonly LocalSessionIdentity[],
+  signal?: AbortSignal,
 ): Promise<SessionHygienePayload[] | null> {
   if (!hasShell()) return null
-  return invoke<SessionHygienePayload[]>("get_session_hygiene", {
-    sessions: sessions.map((session) => ({
-      agent: session.agent,
-      sessionId: session.sessionId,
-      wslDistro: session.wslDistro ?? null,
-      ...(session.remoteHostId ? { remoteHostId: session.remoteHostId } : {}),
-    })),
-  })
+  const payloads: SessionHygienePayload[] = []
+  // The native command accepts up to 500 identities per read.
+  for (let offset = 0; offset < sessions.length; offset += 500) {
+    if (signal?.aborted) return null
+    const chunk = sessions.slice(offset, offset + 500)
+    const batch = await invoke<SessionHygienePayload[]>("get_session_hygiene", {
+      sessions: chunk.map((session) => ({
+        agent: session.agent,
+        sessionId: session.sessionId,
+        wslDistro: session.wslDistro ?? null,
+        ...(session.remoteHostId ? { remoteHostId: session.remoteHostId } : {}),
+      })),
+    }).catch(() => null)
+    if (signal?.aborted) return null
+    if (!batch || batch.length !== chunk.length) break
+    payloads.push(...batch)
+  }
+  return payloads
 }

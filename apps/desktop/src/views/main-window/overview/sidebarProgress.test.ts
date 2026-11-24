@@ -38,7 +38,10 @@ describe("sidebar summaries", () => {
     state.sessions.displayCompleted = 440
     state.failingCount = 4
     expect(sidebarProgress("agents", state, null).status).toBe("1")
-    expect(sidebarProgress("activity", state, null).status).toBe("440")
+    expect(sidebarProgress("activity", state, null)).toEqual({
+      status: "440",
+      statusDescription: "440 sessions scanned",
+    })
     expect(sidebarProgress("burnChecks", state, null).status).toBe("4 to fix")
   })
 })

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { Bug, Circle, Square, Triangle } from "lucide-react"
 import { useState } from "react"
 import { describe, expect, it, vi } from "vitest"
@@ -75,6 +75,29 @@ describe("SidebarNav", () => {
     for (const name of ["First", "Second", "Extra"]) {
       expect(tab(name).getAttribute("tabindex")).toBe("-1")
     }
+  })
+
+  it("explains a status on focus and preserves the tab name", async () => {
+    const description = "675 sessions scanned"
+    const items = [
+      { ...NESTED_ITEMS[0]!, status: "675", statusDescription: description },
+      { ...NESTED_ITEMS[1]!, status: "4 to fix" },
+    ]
+    const onChange = vi.fn()
+    render(
+      <SidebarNav items={items} value="sessions" onChange={onChange} ariaLabel="Sections" />,
+    )
+
+    const sessions = tab("Sessions")
+    expect(sessions).not.toHaveAttribute("title")
+    expect(tab("Burn checks")).not.toHaveAttribute("title")
+    expect(tab("Burn checks")).toHaveAccessibleDescription("4 to fix")
+    expect(sessions).toHaveAccessibleDescription(description)
+    expect(sessions).toHaveTextContent("675")
+    act(() => sessions.focus())
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(description)
+    fireEvent.click(sessions)
+    expect(onChange).toHaveBeenCalledWith("sessions")
   })
 
   it("uses the first enabled child when its parent is disabled and the selection is absent", () => {

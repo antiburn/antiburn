@@ -159,6 +159,7 @@ describe("OverviewRecentSessions", () => {
     view.rerender(<OverviewRecentSessions {...props} />)
     expect(screen.getByText("Recent sessions are unavailable.")).toBeVisible()
     expect(screen.queryByText("No sessions yet.")).toBeNull()
+    view.unmount()
     hook.mockRestore()
   })
 

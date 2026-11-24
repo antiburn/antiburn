@@ -503,7 +503,10 @@ async fn run_worker(app: tauri::AppHandle) {
             event = "checks_report_changed_emitted",
             source = "insights_worker_batch"
         );
-        let _ = report_app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+        let _ = report_app.emit(
+            commands::CHECKS_REPORT_CHANGED_EVENT,
+            commands::CHECKS_REPORT_SUMMARY_ONLY,
+        );
         // Catches up the history progress indicator while the worker
         // settles history evidence after the historical pass itself has
         // already finished. `push_progress` throttles this call.
@@ -604,7 +607,10 @@ pub(super) fn announce_live_result(app: &tauri::AppHandle, key: &SessionKey) {
             at: unix_now(),
         },
     );
-    let _ = app.emit(commands::CHECKS_REPORT_CHANGED_EVENT, ());
+    let _ = app.emit(
+        commands::CHECKS_REPORT_CHANGED_EVENT,
+        commands::CHECKS_REPORT_SUMMARY_ONLY,
+    );
 }
 
 async fn process_next_live<J, F, JF, FF>(
@@ -1043,6 +1049,13 @@ async fn process_next_with_progress(
     pass.analysis.analyzed_generation = claim.source_generation;
     let published = pass.outcome == PassOutcome::Published;
     let source_changed = pass.outcome == PassOutcome::SourceChanged;
+    let changes_hygiene = matches!(
+        pass.outcome,
+        PassOutcome::Published
+            | PassOutcome::SourceMissing
+            | PassOutcome::Unsupported
+            | PassOutcome::Unreadable(_)
+    );
     let outcome = async {
         let config_attribution = if published {
             let evidence = pass
@@ -1094,8 +1107,10 @@ async fn process_next_with_progress(
             .await;
         }
     };
-    if published && outcome.applied {
-        (progress.published)();
+    if changes_hygiene && outcome.applied {
+        if published {
+            (progress.published)();
+        }
         announce(&claim.key);
     }
     if source_changed && outcome.applied {

@@ -15,11 +15,15 @@ function subscribeInactive() {
 export function AgentsView({
   active,
   entries,
+  recentSessionsError = false,
+  onRetryRecentSessions,
   onSettings,
   onSessions,
 }: {
   active: boolean
   entries: readonly SessionListEntry[]
+  recentSessionsError?: boolean
+  onRetryRecentSessions?: () => void
   onSettings: () => void
   onSessions: (agent: string) => void
 }) {
@@ -49,6 +53,18 @@ export function AgentsView({
             <Settings size={16} aria-hidden="true" /> <span className="ml-2">Settings</span>
           </button>
         </header>
+        {recentSessionsError && (
+          <p role="status" className="type-callout text-label-secondary">
+            Could not refresh recent local sessions.{" "}
+            <button
+              type="button"
+              className="text-label underline"
+              onClick={onRetryRecentSessions}
+            >
+              Retry
+            </button>
+          </p>
+        )}
         {found.length === 0 && (
           <p role="status" className="type-body text-label-secondary">
             {progress.agents.done

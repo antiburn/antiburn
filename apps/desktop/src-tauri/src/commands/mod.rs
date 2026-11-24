@@ -49,6 +49,7 @@ pub(crate) mod quota;
 #[cfg(test)]
 mod reader_routing_tests;
 pub(crate) mod session_locations;
+pub(crate) mod session_stream;
 
 use crate::insights_ipc::InsightsController;
 use crate::insights_report::ReportRequest;
@@ -2312,6 +2313,8 @@ pub const SESSION_UPDATED_EVENT: &str = "session:updated";
 /// Only the projection bridge emits membership changes and invalidations on this scope.
 pub const SESSION_INDEX_CHANGED_EVENT: &str = "session:index-changed";
 pub const CHECKS_REPORT_CHANGED_EVENT: &str = "checks:report-changed";
+/// The report changed, and session updates carry the badge invalidations.
+pub(crate) const CHECKS_REPORT_SUMMARY_ONLY: &str = "summaryOnly";
 
 /// Only the insights worker pool emits this on a pool-wide backlog start/drain.
 pub const INSIGHTS_BACKLOG_CHANGED_EVENT: &str = "insights-backlog-changed";

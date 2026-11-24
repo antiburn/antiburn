@@ -456,6 +456,35 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
         analyticsEnvironmentDisabled: false,
         analyticsOperator: null,
       }
+    case "get_session_hygiene": {
+      const mode = new URLSearchParams(window.location.search).get("slow-hygiene")
+      if (mode) {
+        const sessions = args?.sessions as { agent: string }[]
+        return new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve(
+                sessions.map(({ agent }) => ({
+                  evidenceState: "ready",
+                  unusedResources: null,
+                  badges: [
+                    {
+                      id: "sessionOverdepth",
+                      status:
+                        mode === "sparse" && agent === "claude-code" ? "clean" : "finding",
+                      notAssessedReason: null,
+                    },
+                  ],
+                })),
+              ),
+            1200,
+          ),
+        )
+      }
+      return undefined
+    }
+    case "session_activity_stream":
+      return fixtureActivityStream(state, args?.request as ActivityStreamRequest)
     case "list_recent_sessions":
       return empty ? [] : fixtureEntries(state)
     case "get_provider_usage":
@@ -662,6 +691,53 @@ function dataFor(command: string, args: Record<string, unknown> | undefined): un
       return undefined
     default:
       return undefined
+  }
+}
+
+type FixtureActivityEntry = ReturnType<typeof fixtureEntries>[number]
+type ActivityStreamRequest = { kind: "open" | "read" | "refresh" | "close"; id: string }
+
+let activityStream:
+  | { id: string; rows: FixtureActivityEntry[]; offset: number; remainingFailures: number }
+  | undefined
+
+function fixtureActivityStream(state: FixtureState, request: ActivityStreamRequest) {
+  if (request.kind === "open") {
+    const fixture = fixtureEntries(state)
+    const rows = new URLSearchParams(window.location.search).has("infinite")
+      ? Array.from({ length: 551 }, (_, index) => ({
+          ...fixture[0]!,
+          agent: index < 50 ? "codex" : "claude-code",
+          sessionId: `infinite-${index + 1}`,
+          title: `Streamed session ${index + 1}`,
+          isActive: false,
+          timestamp: new Date(Date.parse(now) - (index + 1) * 1000).toISOString(),
+        }))
+      : state === "empty"
+        ? []
+        : fixture
+    const remainingFailures = Number(
+      new URLSearchParams(window.location.search).get("stream-failures"),
+    )
+    activityStream = { id: request.id, rows, offset: 0, remainingFailures }
+  }
+  if (activityStream?.id !== request.id) return
+  if (request.kind === "close") {
+    activityStream = undefined
+    return
+  }
+  if (request.kind === "read" && activityStream.remainingFailures > 0) {
+    activityStream.remainingFailures -= 1
+    throw new Error("Fixture activity read failed")
+  }
+  const index = request.kind === "refresh" ? 0 : activityStream.offset
+  const entries = activityStream.rows.slice(index, index + 50)
+  if (request.kind !== "refresh") activityStream.offset += entries.length
+  return {
+    entries,
+    exhausted: activityStream.offset >= activityStream.rows.length,
+    agents: [...new Set(activityStream.rows.map((row) => row.agent))],
+    total: request.kind === "read" ? null : activityStream.rows.length,
   }
 }
 

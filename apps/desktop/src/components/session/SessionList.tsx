@@ -1,4 +1,4 @@
-import { GitBranchPlus, GitFork, SquareTerminal } from "lucide-react"
+import { GitBranchPlus, GitFork, LoaderCircle, SquareTerminal } from "lucide-react"
 import {
   defaultRangeExtractor,
   useVirtualizer,
@@ -36,6 +36,7 @@ import { relativeTime } from "../../lib/presentation/relativeTime"
 import { visibleSessionHygieneChecks } from "../../lib/snoozedBurnChecks"
 import { sessionHygieneFor, type SessionHygieneSnapshot } from "../../lib/useSessionHygiene"
 import { Tooltip } from "../presentation/Tooltip"
+import { PushButton } from "../ui/PushButton"
 import { TruncatedText } from "../presentation/TruncatedText"
 import { WslOriginBadge } from "../presentation/WslOriginBadge"
 import { SessionStatusBar } from "./SessionStatusBar"
@@ -101,6 +102,16 @@ export interface SessionListProps {
   snoozedDetectors?: ReadonlySet<BurnCheckDetectorId>
   /** Sessions to show. Ordering and grouping are this component's job. */
   entries: SessionListEntry[]
+  /** Stream demand and status supplied by a host with more sessions. */
+  continuation?: {
+    loading: boolean
+    failed: boolean
+    /** The host has resolved the filters for the loaded rows. */
+    autoLoad: boolean
+    /** Reset the search budget when the active filters change. */
+    filterKey: string
+    onLoadMore: () => Promise<void>
+  }
   /** Calendar-day window for finished sessions. Also drives the empty copy. */
   days: number
   /** Headline for the empty state; defaults to the range-aware wording. */
@@ -214,6 +225,7 @@ type BadgeMetric = "cost" | "weeklyPercent" | "fiveHourPercent"
 
 /** Default for `hygieneBySession`: every row renders as not yet assessed. */
 const EMPTY_HYGIENE_SNAPSHOT: SessionHygieneSnapshot = new Map()
+const MATCH_SEARCH_BATCH_LIMIT = 3
 
 function keepScrollOffset(): false {
   return false
@@ -752,6 +764,7 @@ export function SessionRow({
 export function SessionList({
   snoozedDetectors = new Set(),
   entries,
+  continuation,
   days,
   emptyTitle,
   emptyDescription = "Coding sessions appear here as they are discovered on this machine.",
@@ -856,6 +869,19 @@ export function SessionList({
   const topLabel = pinnedLabel ?? groups[0]?.label
   const scrollElementRef = useRef<HTMLDivElement | null>(null)
   const [pendingFocusIndex, setPendingFocusIndex] = useState<number | null>(null)
+  const checkEndDemand = useRef<(() => void) | null>(null)
+  const searchDemand = useRef<{ key: string; attempts: number } | null>(null)
+  const demandInFlight = useRef(false)
+  const [exhaustedSearch, setExhaustedSearch] = useState<string | null>(null)
+  const endCheckScheduled = useRef(false)
+  const scheduleEndCheck = useCallback(() => {
+    if (!checkEndDemand.current || endCheckScheduled.current) return
+    endCheckScheduled.current = true
+    requestAnimationFrame(() => {
+      endCheckScheduled.current = false
+      checkEndDemand.current?.()
+    })
+  }, [])
   // TanStack Virtual owns mutable measurement state, so the React Compiler cannot memoize this component.
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -870,6 +896,7 @@ export function SessionList({
     // Three items keep short wheel and keyboard moves mounted without retaining
     // a large part of the session list.
     overscan: 3,
+    onChange: scheduleEndCheck,
     rangeExtractor: (range) => {
       const indexes = new Set(defaultRangeExtractor(range))
 
@@ -986,6 +1013,93 @@ export function SessionList({
     [assignViewportRef, onMeasurementsChange, virtualizer],
   )
 
+  const loadMore = continuation?.onLoadMore
+  const canAutoLoad =
+    active && continuation?.autoLoad && !continuation.loading && !continuation.failed
+  const tailIndex = virtualItems.length - 1
+  const tailKey = virtualItems[tailIndex]?.key
+  const searchKey = JSON.stringify([continuation?.filterKey, tailKey, visibleCount])
+  const requestMore = useCallback(() => {
+    if (!loadMore || demandInFlight.current) return
+    demandInFlight.current = true
+    const settled = () => {
+      demandInFlight.current = false
+      scheduleEndCheck()
+    }
+    void loadMore().then(settled, settled)
+  }, [loadMore, scheduleEndCheck])
+  const bindEndDemand = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node || !loadMore) return
+      checkEndDemand.current = () => {
+        // The range excludes items mounted only by the custom range extractor.
+        const range = virtualizer.range
+        if (!virtualizer.scrollElement || (tailIndex >= 0 && !range)) return
+        if (range && tailIndex - range.endIndex > 3) {
+          searchDemand.current = null
+          setExhaustedSearch(null)
+          return
+        }
+        if (!canAutoLoad || demandInFlight.current) return
+        const previous = searchDemand.current
+        const attempts = previous?.key === searchKey ? previous.attempts : 0
+        if (attempts >= MATCH_SEARCH_BATCH_LIMIT) {
+          setExhaustedSearch(searchKey)
+          return
+        }
+        searchDemand.current = { key: searchKey, attempts: attempts + 1 }
+        requestMore()
+      }
+      // Eligibility and the tail can change while the visible range stays the same.
+      scheduleEndCheck()
+      return () => {
+        checkEndDemand.current = null
+      }
+    },
+    [canAutoLoad, loadMore, requestMore, scheduleEndCheck, searchKey, tailIndex, virtualizer],
+  )
+  const preserveFooterFocus = useCallback((button: HTMLButtonElement | null) => {
+    if (!button) return
+    return () => {
+      const document = button.ownerDocument
+      if (document.activeElement !== button) return
+      const viewport = button.closest<HTMLElement>(".ui-scroll-viewport")
+      queueMicrotask(() => {
+        if (!button.isConnected && document.activeElement === document.body)
+          viewport?.focus({ preventScroll: true })
+      })
+    }
+  }, [])
+  const showEmpty = visibleCount === 0 && !continuation
+  const findOlderMatches = continuation?.autoLoad && exhaustedSearch === searchKey
+  const continuationStatus = continuation && (
+    <div className="flex min-h-8 items-center justify-center px-3" ref={bindEndDemand}>
+      <span role="status" className="sr-only">
+        {continuation.loading ? "Loading more sessions…" : ""}
+      </span>
+      {continuation.loading ? (
+        <LoaderCircle
+          size={16}
+          aria-hidden="true"
+          className="text-label-secondary motion-safe:animate-spin"
+        />
+      ) : continuation.failed || findOlderMatches ? (
+        <PushButton
+          ref={preserveFooterFocus}
+          onClick={() => {
+            if (!continuation.failed) {
+              searchDemand.current = { key: searchKey, attempts: 1 }
+              setExhaustedSearch(null)
+            }
+            requestMore()
+          }}
+        >
+          {continuation.failed ? "Retry loading sessions" : "Find older matches"}
+        </PushButton>
+      ) : null}
+    </div>
+  )
+
   const resolvedEmptyTitle =
     emptyTitle ?? (days === 1 ? "No sessions today" : `No sessions in the last ${days} days`)
 
@@ -997,7 +1111,7 @@ export function SessionList({
       onKeyDownCapture={moveVirtualFocus}
     >
       <span className="sr-only" aria-live="polite" aria-atomic="true">
-        {visibleCount === 0 ? resolvedEmptyTitle : ""}
+        {showEmpty ? resolvedEmptyTitle : ""}
       </span>
 
       {onBadgeMetricChange && (!hideEmptyToolbar || visibleCount > 0) && (
@@ -1050,13 +1164,10 @@ export function SessionList({
       <ScrollPane
         topEdgeFade
         viewportRef={assignVirtualViewportRef}
-        viewportClassName={cn(
-          "px-3",
-          visibleCount === 0 && "[&>div]:h-full",
-          viewportClassName,
-        )}
+        viewportTabIndex={-1}
+        viewportClassName={cn("px-3", showEmpty && "[&>div]:h-full", viewportClassName)}
       >
-        {visibleCount === 0 ? (
+        {showEmpty ? (
           <EmptySessionList
             title={resolvedEmptyTitle}
             description={emptyDescription}
@@ -1192,7 +1303,7 @@ export function SessionList({
                   )
                 })}
               </div>
-              <div className="h-3" aria-hidden="true" />
+              {continuationStatus ?? <div className="h-3" aria-hidden="true" />}
             </div>
           </SessionTooltipOwner>
         )}

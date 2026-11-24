@@ -99,6 +99,54 @@ describe("SessionFiltersHeader", () => {
     expect(announcement).toHaveTextContent("12 total sessions, 0 matching")
   })
 
+  it.each([
+    [236, "236 sessions in selected date range", "All sessions in the selected date range"],
+    [null, "12 sessions loaded", "Sessions loaded so far"],
+  ])(
+    "explains the count on focus when the stream total is %s",
+    async (sessionTotal, countLabel, tooltip) => {
+      render(<SessionFiltersHeader {...props({ sessionTotal, hasMoreSessions: true })} />)
+
+      const badge = screen.getByText(countLabel).parentElement!
+      act(() => badge.focus())
+      expect(badge).toHaveFocus()
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(tooltip)
+    },
+  )
+
+  it("keeps the date-range badge and shows matches separately until filters clear", () => {
+    const filters: SessionFilters = { agents: ["codex"], result: "passing", spend: "all" }
+    const filteredProps = props({ filters, sessionTotal: 236, hasMoreSessions: true })
+    const { rerender } = render(<SessionFiltersHeader {...filteredProps} />)
+
+    expect(screen.getByText("236")).toBeVisible()
+    expect(screen.getByText("Showing 3")).toBeVisible()
+    expect(screen.getByText("3 matching sessions among loaded sessions")).toBeInTheDocument()
+
+    rerender(
+      <SessionFiltersHeader {...filteredProps} hasMoreSessions={false} awaitingResultFilter />,
+    )
+    expect(screen.getByText("236")).toBeVisible()
+    expect(screen.getByText("Showing 3")).toBeVisible()
+    expect(screen.getByText("3 matching sessions among loaded sessions")).toBeInTheDocument()
+
+    rerender(
+      <SessionFiltersHeader
+        {...filteredProps}
+        hasMoreSessions={false}
+        counts={{ ...COUNTS, matching: 4 }}
+      />,
+    )
+    expect(screen.getByText("236")).toBeVisible()
+    expect(screen.getByText("Showing 4")).toBeVisible()
+    expect(screen.getByText("4 matching sessions")).toBeInTheDocument()
+
+    rerender(<SessionFiltersHeader {...props({ sessionTotal: 236, hasMoreSessions: true })} />)
+    expect(screen.getByText("236")).toBeVisible()
+    expect(screen.getByText("236 sessions in selected date range")).toBeInTheDocument()
+    expect(screen.queryByText(/^Showing /)).not.toBeInTheDocument()
+  })
+
   it.each(["keyboard", "mouse"])(
     "dismisses the trigger tooltip when opening by %s",
     async (input) => {
@@ -125,7 +173,7 @@ describe("SessionFiltersHeader", () => {
     },
   )
 
-  it.each([0, 3])("shows %s matches separately from count-free chips", (matching) => {
+  it.each([0, 3])("shows and announces %s matches while filters are active", (matching) => {
     render(
       <SessionFiltersHeader
         {...props({
@@ -137,6 +185,10 @@ describe("SessionFiltersHeader", () => {
     )
 
     expect(screen.getByText(`Showing ${matching}`)).toBeVisible()
+    expect(screen.getByText(`12 total sessions, ${matching} matching`)).toHaveAttribute(
+      "aria-live",
+      "polite",
+    )
     expect(
       screen.getByRole("button", {
         name: "Remove Future Agent filter",

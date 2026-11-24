@@ -25,12 +25,16 @@ interface CollectionDetailPaneProps<T extends CollectionItem> {
   detailEmptyContent?: ReactNode
   renderDetail: (item: T) => ReactNode
   selection?: T | null
+  /** Use null while the feature can still load the selected item. */
+  outsideSelectionMessage?: string | null
   onSelectionChange?: (item: T) => void
+  /** Cancel feature work that depends on the compact detail staying open. */
+  onDetailDismiss?: () => void
   /** A shell request that must reveal the compact detail pane. */
   externalDetailRevealRevision?: number
   detailOwnsViewport?: boolean
   /** Feature lists own their viewport when this slot is supplied. */
-  renderCollection?: (selection: CollectionSelection<T>) => ReactNode
+  renderCollection?: (selection: CollectionSelection<T> & { visible: boolean }) => ReactNode
 }
 
 /** Provide stable collection and detail columns without owning feature data. */
@@ -43,7 +47,9 @@ export function CollectionDetailPane<T extends CollectionItem>({
   renderDetail,
   renderCollection,
   selection: controlledSelection,
+  outsideSelectionMessage = "This item is outside the current list.",
   onSelectionChange,
+  onDetailDismiss,
   externalDetailRevealRevision,
   detailOwnsViewport = false,
 }: CollectionDetailPaneProps<T>) {
@@ -74,6 +80,7 @@ export function CollectionDetailPane<T extends CollectionItem>({
     externalDetailRevealRevision !== dismissedExternalRevealRevision
   const showDetail = !compact || (selected !== null && (detailOpen || hasExternalDetailReveal))
   const backToCollection = () => {
+    onDetailDismiss?.()
     restoreCollectionFocus.current = true
     setDismissedExternalRevealRevision(externalDetailRevealRevision ?? null)
     setDetailOpen(false)
@@ -127,7 +134,13 @@ export function CollectionDetailPane<T extends CollectionItem>({
           {title}
         </h1>
         {renderCollection ? (
-          renderCollection({ compact, selectedId, select, openDetail })
+          renderCollection({
+            compact,
+            visible: !compact || !showDetail,
+            selectedId,
+            select,
+            openDetail,
+          })
         ) : (
           <ScrollPane className="min-h-0" viewportClassName="main-window-collection-scroll">
             <CollectionList
@@ -179,11 +192,13 @@ export function CollectionDetailPane<T extends CollectionItem>({
         <h2 id={`${id}-detail-title`} tabIndex={-1} className="sr-only">
           {selected?.label ?? "Details"}
         </h2>
-        {selected && !items.some((item) => item.id === selected.id) && (
-          <p role="status" className="type-callout text-label-secondary px-4 py-2">
-            This item is outside the current list.
-          </p>
-        )}
+        {outsideSelectionMessage &&
+          selected &&
+          !items.some((item) => item.id === selected.id) && (
+            <p role="status" className="type-callout text-label-secondary px-4 py-2">
+              {outsideSelectionMessage}
+            </p>
+          )}
         {!selected && detailEmptyContent ? (
           detailEmptyContent
         ) : detailOwnsViewport && selected ? (

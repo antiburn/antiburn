@@ -339,6 +339,7 @@ pub fn run() {
             startup_registration::reconcile(app.handle(), settings.launch_at_login);
         }
         app.manage(scan::ScanController::default());
+        app.manage(commands::session_stream::ActivityStreamState::default());
         app.manage(session_lifecycle::SessionEvents::default());
         app.manage(Schedulers::default());
         app.manage(popover::PopoverState::default());

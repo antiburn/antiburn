@@ -177,6 +177,151 @@ function liveUsageWithWindow(
   }
 }
 
+it("replaces Retry with a loading status and returns focus to the list", async () => {
+  const onLoadMore = vi.fn().mockResolvedValue(undefined)
+  const continuation = {
+    loading: false,
+    failed: false,
+    autoLoad: false,
+    filterKey: "",
+    onLoadMore,
+  }
+  const props = { entries: [entry()], days: 7, now: NOW }
+  const { container, rerender } = render(
+    <SessionList {...props} continuation={{ ...continuation, failed: true }} />,
+  )
+  const button = screen.getByRole("button", { name: "Retry loading sessions" })
+  button.focus()
+  fireEvent.click(button)
+  expect(onLoadMore).toHaveBeenCalledOnce()
+
+  rerender(<SessionList {...props} continuation={{ ...continuation, loading: true }} />)
+  expect(screen.getByText("Loading more sessions…")).toHaveAttribute("role", "status")
+  expect(screen.queryByRole("button", { name: /loading sessions/i })).toBeNull()
+  expect(onLoadMore).toHaveBeenCalledOnce()
+  await waitFor(() => expect(container.querySelector(".ui-scroll-viewport")).toHaveFocus())
+  rerender(<SessionList {...props} />)
+  expect(screen.queryByText("Loading more sessions…")).toBeNull()
+})
+
+describe("SessionList — automatic continuation", () => {
+  const ready = { loading: false, failed: false, autoLoad: true, filterKey: "" }
+
+  async function settleDemand() {
+    await act(async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    })
+  }
+
+  it.each([
+    { active: true, label: "on mount" },
+    { active: false, label: "when continuation becomes eligible" },
+  ])("loads a short stationary list $label", async ({ active }) => {
+    let finishFirst!: () => void
+    const first = new Promise<void>((resolve) => {
+      finishFirst = resolve
+    })
+    const onLoadMore = vi
+      .fn()
+      .mockReturnValueOnce(first)
+      .mockReturnValue(new Promise(() => {}))
+    const props = { entries: entries(1), days: 7, now: NOW }
+    const continuation = { ...ready, onLoadMore }
+    const { rerender } = render(
+      <SessionList {...props} active={active} continuation={continuation} />,
+    )
+    if (!active) {
+      await settleDemand()
+      expect(onLoadMore).not.toHaveBeenCalled()
+      expect(screen.queryByRole("button", { name: "Find older matches" })).toBeNull()
+      for (const blocked of [{ autoLoad: false }, { failed: true }]) {
+        rerender(<SessionList {...props} continuation={{ ...continuation, ...blocked }} />)
+        await settleDemand()
+        expect(onLoadMore).not.toHaveBeenCalled()
+      }
+      rerender(<SessionList {...props} continuation={continuation} />)
+    }
+    await waitFor(() => expect(onLoadMore).toHaveBeenCalledOnce())
+
+    rerender(<SessionList {...props} continuation={{ ...continuation, loading: true }} />)
+    rerender(<SessionList {...props} entries={entries(2)} continuation={continuation} />)
+    await act(async () => finishFirst())
+    await waitFor(() => expect(onLoadMore).toHaveBeenCalledTimes(2))
+  })
+
+  it("searches three batches from an empty filtered list before offering more", async () => {
+    let finishThird!: () => void
+    const third = new Promise<void>((resolve) => {
+      finishThird = resolve
+    })
+    const onLoadMore = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(third)
+      .mockResolvedValue(undefined)
+    list({
+      entries: [],
+      continuation: { ...ready, onLoadMore },
+    })
+    await waitFor(() => expect(onLoadMore).toHaveBeenCalledTimes(3))
+    expect(screen.queryByRole("button", { name: "Find older matches" })).toBeNull()
+    await act(async () => finishThird())
+    const button = await screen.findByRole("button", { name: "Find older matches" })
+    await settleDemand()
+    expect(onLoadMore).toHaveBeenCalledTimes(3)
+    fireEvent.click(button)
+    await waitFor(() => expect(onLoadMore).toHaveBeenCalledTimes(6))
+    expect(await screen.findByRole("button", { name: "Find older matches" })).toBeEnabled()
+  })
+
+  it("ignores a focused tail outside the viewport and rearms after scrolling away", async () => {
+    const onLoadMore = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValue(new Promise(() => {}))
+    const rows = entries(50)
+    const tail = rows[49]!
+    tail.timestamp = at(1)
+    const props = {
+      entries: rows,
+      days: 7,
+      now: NOW,
+      onSelect: vi.fn(),
+      selectedKey: localSessionKey(tail.agent, tail.sessionId!),
+    }
+    const continuation = { ...ready, onLoadMore }
+    const { container } = render(<SessionList {...props} continuation={continuation} />)
+    const viewport = container.querySelector<HTMLElement>(".ui-scroll-viewport")!
+    const tailButton = screen.getByRole("button", { name: /Fixture session 49/ })
+    tailButton.focus({ preventScroll: true })
+    expect(tailButton).toHaveFocus()
+    await settleDemand()
+    expect(onLoadMore).not.toHaveBeenCalled()
+
+    function scrollNearTail() {
+      const row = tailButton.closest<HTMLElement>("[data-index]")!
+      viewport.scrollTop = Number(row.style.transform.match(/[-\d.]+/)?.[0]) - 400
+      fireEvent.scroll(viewport)
+      expect(row.getBoundingClientRect().top).toBeGreaterThan(viewport.offsetHeight)
+    }
+
+    scrollNearTail()
+    expect(await screen.findByRole("button", { name: "Find older matches" })).toBeEnabled()
+    expect(onLoadMore).toHaveBeenCalledTimes(3)
+
+    viewport.scrollTop = 0
+    fireEvent.scroll(viewport)
+    await settleDemand()
+    expect(onLoadMore).toHaveBeenCalledTimes(3)
+    expect(screen.queryByRole("button", { name: "Find older matches" })).toBeNull()
+    scrollNearTail()
+    await waitFor(() => expect(onLoadMore).toHaveBeenCalledTimes(4))
+  })
+})
+
 describe("SessionList — rows", () => {
   it("dims an allocation based on an old reading and exposes its age", () => {
     const liveUsage = liveUsageWithWindow("anthropic", "Claude", {
