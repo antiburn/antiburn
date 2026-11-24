@@ -134,6 +134,7 @@ describe("SettingsWindowSession", () => {
       { ...port, watchWorkspace: async () => () => {} },
       false,
       true,
+      "automatic",
     )
     const session = new SettingsWindowSession(folders)
     const unsubscribe = session.subscribe(() => {})
@@ -177,6 +178,7 @@ describe("SettingsWindowSession", () => {
       { ...port, watchWorkspace: async () => () => {} },
       false,
       true,
+      "automatic",
     )
     const session = new SettingsWindowSession(folders)
     const unsubscribeFirst = session.subscribe(() => {})

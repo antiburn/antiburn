@@ -27,7 +27,7 @@ import {
   projectFolderRoutes,
   projectSyncConsent,
 } from "./cloudProjectRoutes"
-import { nextProjectCursor, type ProjectPages } from "./cloudProjectPages"
+import type { ProjectPages } from "./cloudProjectPages"
 import { CloudProjectReader } from "./cloudProjectReader"
 import { retryCloudRead } from "./cloudReadRetry"
 import {
@@ -55,7 +55,6 @@ import {
   projectConfirmationKey,
   projectSelectionKey,
   projectSyncChoices,
-  projectViewGroups,
   retryTarget,
   reviewableProjectSelections,
   selectedFoldersKey,
@@ -135,12 +134,18 @@ export class CloudSession {
   private readonly port: CloudPort
   private readonly analytics: boolean
   private readonly holdIdentity: boolean
-  /** Inject isolated previews/tests explicitly. Production uses the desktop capability gate. */
-  constructor(port: CloudPort = desktopCloudPort, analytics = true, holdIdentity = false) {
+  /** Keep onboarding paging manual. Settings uses automatic paging. */
+  constructor(
+    port: CloudPort = desktopCloudPort,
+    analytics = true,
+    holdIdentity = false,
+    projectPaging: "manual" | "automatic" = "manual",
+  ) {
     this.port = port
     this.analytics = analytics
     this.holdIdentity = holdIdentity
     this.projectReader = new CloudProjectReader(port, {
+      automaticPaging: projectPaging === "automatic",
       getSnapshot: this.getSnapshot,
       accountRevision: () => this.revision,
       policyRevision: () => this.ongoingRevision,
@@ -227,11 +232,12 @@ export class CloudSession {
       this.visible &&
       !busy &&
       !this.projectReader.hasRead &&
-      (shouldRecheckCloudFolders(this.snapshot) ||
+      (this.projectReader.hasPendingAutomaticPages ||
+        shouldRecheckCloudFolders(this.snapshot) ||
         !!projects?.refreshError ||
         (!!projects && !projects.loaded && !projects.scopeInvalid))
     )
-      void this.loadProjects()
+      void this.loadProjects(this.projectReader.hasPendingAutomaticPages)
   }
   /** Count visible entries only, not state events or repeated renders. */
   private recordView() {
@@ -249,11 +255,14 @@ export class CloudSession {
   }
   /** Replace view state and notify subscribers without changing desktop authority. */
   private publish(patch: Partial<CloudViewSnapshot>) {
+    const wasBusy = this.snapshot.busy
     this.snapshot = { ...this.snapshot, ...patch, contextRevision: this.consentRevision }
     this.listeners.forEach((listener) => listener())
     this.snapshotListeners.forEach((listener) => listener())
     this.recordView()
     this.schedule()
+    // A cancelled folder request can release its worker before the save finishes.
+    if (wasBusy && !this.snapshot.busy) void this.projectReader.resumeAfterWrite()
   }
   /** Desktop state owns bindings. Clear consent on authority/root changes and let
    * completed desktop work clear a transient admission warning, not a real failure.
@@ -643,9 +652,8 @@ export class CloudSession {
     state?: "provisional" | "refreshing" | "paging",
   ) {
     const provisional = state === "provisional"
-    const hasMore = !provisional && nextProjectCursor(pages) !== undefined
     if (!provisional) this.projectPages = pages
-    const groups = projectViewGroups(pages.groups, pages.sources)
+    const { groups, hasMore } = this.projectReader.viewProjects(pages, provisional)
     const choices = provisional
       ? Object.fromEntries(groups.map(({ id }) => [id, false]))
       : cloudProjectChoices(

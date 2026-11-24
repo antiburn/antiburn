@@ -24,7 +24,9 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
   const params = new URLSearchParams(window.location.search)
   const deferFolders = params.has("deferFolders")
   const rollingProgress = params.has("rollingProgress")
+  const backgroundProgress = params.has("backgroundProgress")
   const partialSettingsFolders = params.has("partialSettingsFolders")
+  const pagedSettingsFolders = params.has("pagedSettingsFolders")
   const hideGroupedFolderOnRefresh = params.has("reverseFolderFocus")
   const firstPersonalSaveFailure =
     name === "settings-folders" && params.has("personalSaveFailure")
@@ -258,6 +260,18 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       storageKnown: false,
     }
   if (rollingProgress) ongoing = { ...ongoing, queuedCount: 0, acceptedCount: 0 }
+  if (backgroundProgress)
+    ongoing = {
+      ...ongoing,
+      backgroundSyncInProgress: true,
+      queuedCount: 1,
+      backgroundProgress: {
+        uploaded: 2,
+        total: null,
+        found: 5,
+        transfer: { sentBytes: 12_000_000, totalBytes: null },
+      },
+    }
   if (params.has("savedRecovery"))
     ongoing = { ...ongoing, automaticRecoveryCount: 1, retryAvailable: false }
   if (params.has("savedFolderFocus")) {
@@ -325,6 +339,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       ? {
           ...ongoing,
           status: "syncing",
+          fullSyncInProgress: true,
           queuedCount: 3,
           uploadProgress: {
             uploaded: 6,
@@ -358,6 +373,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
               },
             }),
             ...(rollingProgress && {
+              status: "ready",
               uploadProgress: {
                 uploaded: 1,
                 total: 5,
@@ -388,11 +404,19 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
           listener(ongoingStatus())
         }
         const finishTransfer = () => {
+          if (ongoing.backgroundSyncInProgress) {
+            delete ongoing.backgroundSyncInProgress
+            delete ongoing.backgroundProgress
+            ongoing = { ...ongoing, status: "ready", queuedCount: 0 }
+            listener(ongoingStatus())
+            return
+          }
           ongoing = {
             ...ongoing,
             status: "ready",
             queuedCount: 0,
             automaticRecoveryCount: 0,
+            fullSyncInProgress: false,
             uploadProgress: {
               uploaded: rollingProgress ? 5 : 8,
               total: rollingProgress ? 5 : 8,
@@ -443,7 +467,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
       },
       groups: async (_binding, after) => {
         folderReadCount++
-        if (deferFolders || partialSettingsFolders)
+        if (deferFolders || partialSettingsFolders || pagedSettingsFolders)
           document.body.dataset.folderReadCalls = String(folderReadCount)
         if (folderReadCount <= Number(params.get("folderDiscovery") ?? 0))
           throw new Error("Synthetic folder read failure")
@@ -463,7 +487,11 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
             ? []
             : hideStudio
               ? groups.filter(({ id }) => id !== "Studio")
-              : groups,
+              : pagedSettingsFolders
+                ? after
+                  ? groups.slice(1)
+                  : groups.slice(0, 1)
+                : groups,
           sourceRoots:
             emptyPage ||
             (name === "settings-missing-sources" &&
@@ -476,7 +504,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
                   })),
                 ),
           nextCursor:
-            name === "folders-empty-paged" && !after
+            (name === "folders-empty-paged" || pagedSettingsFolders) && !after
               ? { environment: "native", cwd: "/Example/Next" }
               : null,
           partial: name === "folders-empty-partial" || partialSettingsPage,
@@ -621,6 +649,7 @@ export function cloudFixture(name: string, refreshFolders?: () => void): CloudPo
             status: "syncing",
             queuedCount: 1,
             backfillInProgress: true,
+            fullSyncInProgress: true,
             uploadProgress: {
               uploaded: 1,
               found: 5,
@@ -776,6 +805,7 @@ function CloudSettingsFixture({ name }: { name: string }) {
       cloudFixture(name, () => void session.loadProjects()),
       false,
       true,
+      "automatic",
     )
     return session
   })

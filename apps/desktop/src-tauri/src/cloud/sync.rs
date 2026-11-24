@@ -45,6 +45,7 @@ mod git_checkout;
 mod project_directories;
 mod repository_capture;
 mod repository_policy;
+mod runtime_progress;
 mod scheduler_tick;
 mod transfer_progress;
 use repository_policy::{
@@ -180,8 +181,14 @@ pub(crate) struct Status {
     retry_available: bool,
     /// Desktop still has a requested sweep for this saved policy.
     backfill_in_progress: bool,
+    /// The explicit scan still has discovery, upload, or automatic verification work.
+    full_sync_in_progress: bool,
+    /// Normal discovery or resumable saved work remains, even without scan counters.
+    background_sync_in_progress: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     upload_progress: Option<UploadProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background_progress: Option<UploadProgress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     upload_transfer: Option<UploadTransfer>,
     selected_sources: Vec<SourceSelection>,
@@ -209,8 +216,11 @@ impl Status {
         self.device_upload_enabled = enabled;
         self.retry_available &= enabled;
         self.backfill_in_progress &= enabled;
+        self.full_sync_in_progress &= enabled;
+        self.background_sync_in_progress &= enabled;
         if !enabled {
             self.upload_progress = None;
+            self.background_progress = None;
             self.upload_transfer = None;
             self.automatic_recovery_count = None;
         }
@@ -275,6 +285,11 @@ struct Runner {
     continue_discovery: bool,
     backfill_revision: Option<String>,
     backfill_progress: Option<BackfillProgress>,
+    /// Keep explicit run ownership until its scheduled uploads and verification drain.
+    full_sync_pending: bool,
+    background_progress: Option<BackfillProgress>,
+    /// The normal sweep has read a page that has not drained through its final cursor.
+    background_page: bool,
     backfill_page: bool,
     /// Give backfill a discovery turn before another integrity poll, even if the
     /// time between scheduler turns exceeds the poll delay.
@@ -282,6 +297,9 @@ struct Runner {
     cursor: Option<String>,
     next_integrity_poll: Option<Instant>,
     discovery_blocked: bool,
+    /// A failed provider read or capability lookup cannot advance discovery now.
+    /// This hint affects status only, not scheduling or upload admission.
+    discovery_unavailable: bool,
     unsupported_format: bool,
     state: State,
     last_status: Option<Status>,
@@ -595,7 +613,11 @@ fn team_lookup_failed(policy: &Policy, live: Option<Status>, error: auth::Failur
         _ => State::ReauthRequired,
     };
     status.retry_available = false;
+    status.backfill_in_progress = false;
+    status.full_sync_in_progress = false;
+    status.background_sync_in_progress = false;
     status.upload_progress = None;
+    status.background_progress = None;
     status.upload_transfer = None;
     status
 }
@@ -772,24 +794,15 @@ impl Runner {
         }
         self.backfill_revision = Some(policy.revision.clone());
         self.backfill_progress = Some(BackfillProgress::new(policy, grant_id));
+        self.full_sync_pending = true;
+        self.background_progress = None;
+        self.background_page = false;
+        self.discovery_unavailable = false;
         self.backfill_page = false;
         self.backfill_discovery_due = false;
         self.candidates.clear();
         self.discovery_cursor = None;
         self.next_reconcile = None;
-    }
-
-    fn backfill_status(&self, mut status: Status, grant_id: Option<&str>) -> Status {
-        let progress = self
-            .backfill_progress
-            .as_ref()
-            .filter(|progress| grant_id.is_some_and(|grant| progress.matches_grant(grant)));
-        status.backfill_in_progress = !status.paused
-            && progress.is_some()
-            && self.backfill_revision.is_some()
-            && self.backfill_revision == status.policy_revision;
-        status.upload_progress = progress.and_then(|progress| progress.status(&status));
-        status
     }
 
     /// Return the current backfill progress without treating Retry as a new scan.
@@ -802,39 +815,6 @@ impl Runner {
         let state = self.retry(saved);
         let status = read_status(state, Some(self))?;
         Ok(self.backfill_status(status, Some(grant_id)))
-    }
-
-    fn finish_backfill_scan(&mut self) {
-        if self.backfill_page && self.candidates.is_empty() && self.discovery_cursor.is_none() {
-            if let Some(progress) = &mut self.backfill_progress {
-                progress.finish();
-                if progress.needs_refresh() {
-                    self.next_reconcile = None;
-                }
-            }
-            self.backfill_revision = None;
-            self.backfill_page = false;
-        }
-    }
-
-    /// Recheck a source when its accepted version differs from the scan.
-    fn observe_backfill_acceptance(&mut self, store: &Store, job: &Job) {
-        if let Some(progress) = &mut self.backfill_progress
-            && progress.observe_acceptance(store, job)
-        {
-            self.request_backfill_refresh();
-        }
-    }
-
-    /// Retain final byte counters before either acceptance path removes the entry.
-    fn observe_accepted_transfer(&mut self, job: &Job, entry: &QueueEntry) -> Result<(), String> {
-        if let Some(progress) = &mut self.backfill_progress {
-            let transfer = entry
-                .progress()
-                .map_err(|_| "Could not read accepted capture progress.")?;
-            progress.observe_transfer(job, &transfer, true);
-        }
-        Ok(())
     }
 
     /// Start a full normal refresh so an unresolved source cannot be behind its cursor.
@@ -962,6 +942,7 @@ impl Runner {
             self.backfill_page = false;
             self.next_reconcile = None;
             self.next_reservation = None;
+            self.discovery_unavailable = false;
             self.binding = Some(binding);
             if self
                 .backfill_progress
@@ -969,6 +950,15 @@ impl Runner {
                 .is_some_and(|progress| !progress.matches(policy))
             {
                 self.backfill_progress = None;
+                self.full_sync_pending = false;
+            }
+            if self
+                .background_progress
+                .as_ref()
+                .is_some_and(|progress| !progress.matches(policy))
+            {
+                self.background_progress = None;
+                self.background_page = false;
             }
         }
         if self.backfill_revision.as_deref() != Some(&policy.revision) {
@@ -986,13 +976,17 @@ impl Runner {
         if self.discovery_cursor.is_none() {
             self.discovery_blocked = false;
             self.unsupported_format = false;
+            self.start_background_scan(policy);
         }
         let cursor = self.discovery_cursor.clone().unwrap_or_default();
         match discover_policy_page(policy, current, cache, &cursor) {
             Ok((candidates, next_cursor, coverage)) => {
+                self.discovery_unavailable = false;
                 let slice_advanced = coverage.opencode_slice_yielded
                     && next_cursor.as_ref().is_some_and(|next| next != &cursor);
                 self.backfill_page = self.backfill_revision.is_some();
+                self.background_page =
+                    !self.full_sync_pending && self.background_progress.is_some();
                 if self.backfill_page
                     && let Some(progress) = &mut self.backfill_progress
                 {
@@ -1002,6 +996,12 @@ impl Runner {
                     } else {
                         progress.record_decision("discovery_page_complete");
                     }
+                }
+                if self.background_page
+                    && let Some(progress) = &mut self.background_progress
+                    && (coverage.partial || coverage.blocked)
+                {
+                    progress.mark_incomplete();
                 }
                 tracing::debug!(
                     event = "cloud_sync_discovery_page",
@@ -1026,10 +1026,15 @@ impl Runner {
             }
             Err(_) if !current() => DiscoveryRefresh::Unchanged,
             Err(_) => {
+                self.discovery_unavailable = true;
                 self.backfill_revision = None;
                 self.backfill_page = false;
                 self.discovery_blocked = true;
                 if let Some(progress) = &mut self.backfill_progress {
+                    progress.abort("discovery_unavailable");
+                }
+                self.background_page = false;
+                if let Some(progress) = &mut self.background_progress {
                     progress.abort("discovery_unavailable");
                 }
                 self.next_reconcile = Some(Instant::now() + Duration::from_secs(60));
@@ -1038,108 +1043,11 @@ impl Runner {
         }
     }
 
-    /// Record a reason only when this backfill has already counted the source.
+    /// Record a problem only in runs that already counted the source.
     fn observe_backfill_problem(&mut self, source_id: &str, problem: Option<SourceProblem>) {
-        if let Some(progress) = &mut self.backfill_progress {
+        for progress in self.progress_trackers() {
             progress.observe_problem(source_id, problem);
         }
-    }
-
-    /// Publish a closed failure without rereading failed storage. Retained
-    /// counters are last-known values for the same account and service only.
-    /// `storage_known: false` makes their current values explicitly unknown.
-    fn report_status(
-        &mut self,
-        store: &Store,
-        host: &mut capture::Host,
-        engine: &Engine,
-        failed: bool,
-        account_current: &dyn Fn() -> bool,
-        publish: impl FnOnce(Status),
-    ) -> Status {
-        if failed {
-            self.backfill_revision = None;
-            self.backfill_page = false;
-            self.backfill_progress = None;
-        } else {
-            self.finish_backfill_scan();
-        }
-        let read = if failed {
-            Err("Capture storage is unavailable.".to_owned())
-        } else if !account_current() {
-            Ok(Status {
-                status: State::ReauthRequired,
-                ..Status::default()
-            })
-        } else {
-            let team = self.team.as_ref().map(|(id, _)| id.clone());
-            status_for_destination(store, host, engine, self.state, team.as_deref(), Some(self))
-        };
-        let mut result = match read {
-            Ok(value) => {
-                let grant_id = engine.session().map(|session| session.grant_id.as_str());
-                if let Some(progress) = &mut self.backfill_progress
-                    && grant_id.is_some_and(|grant| progress.matches_grant(grant))
-                {
-                    progress.log_progress();
-                }
-                let value = self.backfill_status(value, grant_id);
-                self.last_status = Some(value.clone());
-                self.last_status_origin = engine.resource_origin().map(str::to_owned);
-                value
-            }
-            Err(_) => {
-                self.state = State::StorageUnavailable;
-                self.backfill_revision = None;
-                self.backfill_page = false;
-                self.backfill_progress = None;
-                let previous = self.last_status.as_ref().filter(|previous| {
-                    account_current()
-                        && self.last_status_origin.as_deref() == engine.resource_origin()
-                        && engine.session().is_some_and(|session| {
-                            previous.account_id.as_deref() == Some(&session.user.id)
-                                && previous.destination_id.as_deref()
-                                    == Some(
-                                        self.team
-                                            .as_ref()
-                                            .map_or(session.workspace.id.as_str(), |(id, _)| id),
-                                    )
-                        })
-                });
-                let mut value = previous.cloned().unwrap_or_default();
-                if account_current()
-                    && let Some(session) = engine.session()
-                {
-                    value.account_id = Some(session.user.id.clone());
-                    value.destination_id = Some(
-                        self.team
-                            .as_ref()
-                            .map_or(&session.workspace.id, |(id, _)| id)
-                            .clone(),
-                    );
-                }
-                value.status = State::StorageUnavailable;
-                value.storage_known = false;
-                value.automatic_recovery_count = None;
-                value.retry_available = false;
-                value.backfill_in_progress = false;
-                value.upload_progress = None;
-                value.upload_transfer = None;
-                value
-            }
-        };
-        if !account_current() {
-            result = Status {
-                status: if self.state == State::StorageUnavailable {
-                    State::StorageUnavailable
-                } else {
-                    State::ReauthRequired
-                },
-                ..Status::default()
-            };
-        }
-        publish(result.clone());
-        result
     }
 
     /// Reconcile receipts locally even after logout. Network and source work need
@@ -1209,12 +1117,22 @@ impl Runner {
                 .is_some_and(|progress| !progress.matches_grant(&session.grant_id))
         {
             self.backfill_progress = None;
+            self.full_sync_pending = false;
             self.backfill_revision = None;
             self.backfill_page = false;
             self.backfill_discovery_due = false;
             self.candidates.clear();
             self.discovery_cursor = None;
             self.next_reconcile = None;
+        }
+        if let Some(session) = &session
+            && self
+                .background_progress
+                .as_ref()
+                .is_some_and(|progress| !progress.matches_grant(&session.grant_id))
+        {
+            self.background_progress = None;
+            self.background_page = false;
         }
         // Auth and acknowledged receipts are independent of upload admission.
         if !device_enabled || !current() {
@@ -1476,6 +1394,16 @@ impl Runner {
                     let kind = failure
                         .as_ref()
                         .map_or(upload::Failure::Unavailable, |err| err.failure);
+                    if !unsupported
+                        && matches!(
+                            kind,
+                            upload::Failure::Unavailable
+                                | upload::Failure::Unauthorized
+                                | upload::Failure::Rejected
+                        )
+                    {
+                        self.discovery_unavailable = true;
+                    }
                     if kind == upload::Failure::RouteDenied {
                         self.defer_route_denial(failure.and_then(|err| err.retry_after));
                         return Ok(());
@@ -1748,6 +1676,12 @@ impl Runner {
                 progress.finish_refresh();
             }
         }
+        if !matches!(discovery, DiscoveryRefresh::Unchanged)
+            && self.background_page
+            && let Some(progress) = &mut self.background_progress
+        {
+            progress.observe_page(store, &self.candidates, false);
+        }
         if current() {
             self.backfill_discovery_due = false;
         }
@@ -1918,7 +1852,10 @@ impl Runner {
                     account_current,
                     current,
                 ) {
-                    Ok(capabilities) => slot.insert(capabilities),
+                    Ok(capabilities) => {
+                        self.discovery_unavailable = false;
+                        slot.insert(capabilities)
+                    }
                     Err(failure) if failure.failure == upload::Failure::RouteDenied => {
                         self.defer_route_denial(failure.retry_after);
                         self.candidates.push_front(selection);
@@ -1937,6 +1874,7 @@ impl Runner {
                             _ => State::UploadUnavailable,
                         };
                         if matches!(self.state, State::UploadUnavailable | State::ReauthRequired) {
+                            self.discovery_unavailable = true;
                             self.backfill_revision = None;
                             self.backfill_page = false;
                             if let Some(progress) = &mut self.backfill_progress {
@@ -1945,6 +1883,10 @@ impl Runner {
                                 } else {
                                     "capabilities_unavailable"
                                 });
+                            }
+                            self.background_page = false;
+                            if let Some(progress) = &mut self.background_progress {
+                                progress.abort("capabilities_unavailable");
                             }
                         }
                         self.candidates.push_front(selection);
@@ -2025,7 +1967,7 @@ impl Runner {
                         return Ok(());
                     }
                     if excluded {
-                        if let Some(progress) = &mut self.backfill_progress {
+                        for progress in self.progress_trackers() {
                             progress.observe_exclusion(selection.candidate.source_id());
                         }
                         continue;
@@ -2033,6 +1975,9 @@ impl Runner {
                     if self.backfill_page
                         && let Some(progress) = &mut self.backfill_progress
                     {
+                        progress.mark_incomplete();
+                    }
+                    if let Some(progress) = &mut self.background_progress {
                         progress.mark_incomplete();
                     }
                     self.discovery_blocked = true;
@@ -2267,10 +2212,14 @@ impl Runner {
                     )?;
                 }
                 file_refresh_due = true;
-                if let Some(progress) = &mut self.backfill_progress
+                if self.full_sync_pending
+                    && let Some(progress) = &mut self.backfill_progress
                     && progress.refresh_changed_source(&job.identity.source_id)
                 {
                     self.request_backfill_refresh();
+                }
+                if let Some(progress) = &mut self.background_progress {
+                    progress.refresh_changed_source(&job.identity.source_id);
                 }
                 tracing::debug!(
                     event = "cloud_sync_capture_decision",
@@ -2283,7 +2232,7 @@ impl Runner {
                 store.suppress_cloud_sync(&job).map_err(
                     |_| "Could not save the Cloud deletion outcome. Saved captures are kept.",
                 )?;
-                if let Some(progress) = &mut self.backfill_progress {
+                for progress in self.progress_trackers() {
                     progress.observe_suppression(&job);
                 }
                 host.spool()?.cancel(&job.identity).map_err(
@@ -2693,11 +2642,15 @@ fn status_for_destination(
         .filter(|_| can_offer_retry && state != State::Paused);
     status.automatic_recovery_count = recovery_runner.map(|_| 0);
     let mut retryable = Vec::new();
+    let mut pending_upload = false;
     for job in &jobs {
         if !job.allowed(&policy) {
             continue;
         }
         let entry = entries.iter().find(|entry| entry.identity == job.identity);
+        pending_upload |= runner
+            .as_deref()
+            .is_some_and(|runner| runner.has_scheduled_upload(job, entry, state));
         if recovery_runner
             .is_some_and(|runner| runner.will_recover_automatically(job, entry, state))
         {
@@ -2763,11 +2716,16 @@ fn status_for_destination(
     if !policy.paused && matches!(state, State::Ready | State::Syncing) {
         status.upload_transfer = transfer;
     }
-    if let Some(progress) = runner
-        .and_then(|runner| runner.backfill_progress.as_mut())
-        .filter(|progress| progress.matches(&policy) && progress.matches_grant(&session.grant_id))
-    {
-        progress.observe_transfers(&policy, &jobs, &entries)?;
+    if let Some(runner) = runner {
+        for progress in runner.progress_trackers() {
+            if progress.matches(&policy) && progress.matches_grant(&session.grant_id) {
+                progress.observe_transfers(&policy, &jobs, &entries)?;
+            }
+        }
+        status.storage_known = true;
+        let pending_upload = pending_upload
+            && (status.status != State::Offline || engine.status == super::AuthStatus::SignedIn);
+        runner.update_runtime_progress(&policy, &session.grant_id, pending_upload, &mut status);
     }
     if engine.session().is_none() {
         return Ok(Status {

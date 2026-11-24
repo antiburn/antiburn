@@ -155,7 +155,7 @@ export function SessionsStepSettings({
 }: { sharedCloudSession?: CloudSession } = {}) {
   const { settings, update, loaded } = useAppSettings()
   const [cloudSession] = useState(
-    () => sharedCloudSession ?? new CloudSession(undefined, false, true),
+    () => sharedCloudSession ?? new CloudSession(undefined, false, true, "automatic"),
   )
   const cloud = useSyncExternalStore(
     sharedCloudSession ? cloudSession.subscribeSnapshot : cloudSession.subscribe,

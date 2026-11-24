@@ -1,6 +1,9 @@
 import type { CloudOngoingStatus } from "../../lib/cloud"
 import { uploadProgressMessage } from "./CloudSyncActivity"
 
+/** Activity text when Desktop cannot distinguish transfer from recovery. */
+export const syncingSessionsMessage = "Syncing sessions"
+
 const unavailableSyncStatus: Partial<Record<CloudOngoingStatus["status"], string>> = {
   offline: "Cloud offline",
   route_denied: "Workspace denied uploads",
@@ -24,6 +27,18 @@ export function savedUploadDisplayState(policy: CloudOngoingStatus) {
     (policy.status === "fenced" || policy.status === "interrupted")
     ? "syncing"
     : policy.status
+}
+
+/** A runtime report overrides the older coarse status after the final upload. */
+export function syncActivityReported(policy: CloudOngoingStatus) {
+  if (policy.backfillInProgress || policy.fullSyncInProgress || policy.backgroundSyncInProgress)
+    return true
+  if (policy.fullSyncInProgress !== undefined || policy.backgroundSyncInProgress !== undefined)
+    return false
+  return (
+    (policy.status === "ready" && onlyAutomaticRecovery(policy)) ||
+    savedUploadDisplayState(policy) === "syncing"
+  )
 }
 
 /** Keep measured progress visible without inferring activity from missing counters. */
@@ -63,12 +78,10 @@ export function idleSyncMessage({
   if (deviceEnabled !== true) return "Checking folder sync…"
   const current = enabled.filter(({ paused }) => !paused)
   if (current.some(({ storageKnown }) => !storageKnown)) return "Status unavailable"
-  const phase = current.some(onlyAutomaticRecovery)
-    ? "Checking saved uploads"
-    : current.some((policy) => policy.uploadProgress?.scanIncomplete)
-      ? "Folder scan incomplete"
-      : undefined
+  const phase = current.some((policy) => policy.uploadProgress?.scanIncomplete)
+    ? "Folder scan incomplete"
+    : undefined
   const progress = uploadProgressMessage(current, phase)
-  if (progress) return progress
+  if (progress) return phase ? progress : `Last full scan • ${progress}`
   return "Folder sync enabled"
 }

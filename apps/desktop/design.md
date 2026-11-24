@@ -1105,7 +1105,13 @@ Notes for what isn't expressible as a token:
   `12 MB of 85 MB transferred` or `12 MB transferred` when the byte total is
   unknown. Omit missing measurements, `?` and `+` placeholders, and guessed
   zeros, totals, percentages, or time remaining. Keep the current phase beside
-  known counters or alone, such as `Checking folders` or `Checking saved uploads`.
+  known counters or alone. Show `Checking folders` during an explicit scan and
+  `Syncing sessions` when transfer and automatic recovery cannot be separated.
+  If active work has no scan measurements, show the number of pending saved
+  uploads when known. Label bytes for a single job `Current upload`.
+  Mark retained explicit results `Last full scan` when sync is idle.
+  Folder counts come from the local session index, not the upload queue or
+  temporary provider discovery counts.
   Do not claim `Up to date` without complete, successful scan evidence.
   Keep the same footer button location and size. Show **Syncing** with native
   `disabled` while a scan, upload, or automatic recovery is active, even after
@@ -1115,10 +1121,10 @@ Notes for what isn't expressible as a token:
   If disabling removes keyboard focus and a save fails, restore the same
   enabled retry button. Do not move focus back after the user chooses another
   control or window.
-  Show status text when the user requests another folder page. Use a short
-  status if workspace verification blocks new selections. Do not show a spinner
-  or advisory warning when a partial read or refresh leaves usable folders.
-  Pair a blocking read error with **Check again**.
+  Load later folder pages in the background without a separate paging button.
+  Use a short status if workspace verification blocks new selections.
+  Do not show a spinner or advisory warning while a partial read or refresh
+  leaves usable folders. Offer **Check again** if the read fails after retries.
 - **CLI settings pane** — present the CLI as an internal runtime managed by antiburn.
   Add the purpose-led pane description: “Helps antiburn share check findings with
   your coding agents.” The card explains automatic management by antiburn.

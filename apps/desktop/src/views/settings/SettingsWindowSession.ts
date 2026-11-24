@@ -50,7 +50,7 @@ export class SettingsWindowSession {
   private snapshot: SettingsWindowSnapshot = { info: null, pane: "general", visible: false }
 
   /** Keep verified Cloud folders ready before the user opens Sessions. */
-  constructor(cloudFolders = new CloudSession(undefined, false, true)) {
+  constructor(cloudFolders = new CloudSession(undefined, false, true, "automatic")) {
     this.cloudFolders = cloudFolders
   }
 

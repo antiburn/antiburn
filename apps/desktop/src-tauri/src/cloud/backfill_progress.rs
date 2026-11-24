@@ -1,4 +1,4 @@
-//! Count sessions and transfer bytes in one explicit backfill.
+//! Count sessions and transfer bytes in one bounded upload scan.
 
 use super::{Job, JobState, Policy, Selection, State, Status, Store};
 use antiburn_cloud_capture::{CaptureState, QueueEntry, TransferProgress};
@@ -47,6 +47,7 @@ pub(super) struct BackfillProgress {
     reported_complete: bool,
     incomplete: bool,
     finished: bool,
+    background: bool,
 }
 
 struct Source {
@@ -87,6 +88,15 @@ impl BackfillProgress {
             reported_complete: false,
             incomplete: false,
             finished: false,
+            background: false,
+        }
+    }
+
+    /// Use the normal discovery sweep without requesting or restarting source work.
+    pub(super) fn new_background(policy: &Policy, grant_id: &str) -> Self {
+        Self {
+            background: true,
+            ..Self::new(policy, grant_id)
         }
     }
 
@@ -440,6 +450,7 @@ impl BackfillProgress {
         let (uploaded, blocked, unsupported) = self.counts();
         tracing::info!(
             event = "cloud_backfill_scan_summary",
+            background = self.background,
             outcome,
             discovered = self.sources.len(),
             uploaded,
@@ -497,7 +508,7 @@ impl BackfillProgress {
     }
 
     /// Only share counts for the exact saved policy and a current storage read.
-    pub(super) fn status(&self, status: &Status) -> Option<UploadProgress> {
+    pub(super) fn status(&self, status: &Status, scan_active: bool) -> Option<UploadProgress> {
         (status.storage_known
             && !status.paused
             && !matches!(status.status, State::ReauthRequired | State::Offline)
@@ -508,14 +519,13 @@ impl BackfillProgress {
             let (uploaded, blocked, unsupported) = self.counts();
             UploadProgress {
                 uploaded,
-                total: (self.finished && !self.incomplete && !status.backfill_in_progress)
+                total: (self.finished && !self.incomplete && !scan_active)
                     .then_some(self.sources.len()),
-                found: (status.backfill_in_progress && !self.sources.is_empty())
-                    .then_some(self.sources.len()),
+                found: (scan_active && !self.sources.is_empty()).then_some(self.sources.len()),
                 blocked,
                 unsupported,
                 scan_incomplete: self.incomplete,
-                transfer: self.transfer_status(status.backfill_in_progress),
+                transfer: self.transfer_status(scan_active),
             }
         })
     }

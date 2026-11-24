@@ -341,9 +341,10 @@ Desktop keeps the exact rule if an old exclusion or another workspace could
 conflict. The upgrade does not resume uploads or override a source exclusion.
 
 The project list uses cached local session metadata from all discovered agents.
-It can show projects for agents that cannot upload. Counts describe local or
-provider-source discovery, not accepted Cloud sessions. Only qualified Claude,
-OpenCode V2, Codex, Pi, and [Cursor](cursor.md) sources can produce upload jobs.
+It can show projects for agents that cannot upload. Folder counts describe
+indexed local sessions, not candidates found during a bounded provider scan
+or sessions accepted by Cloud. Only qualified Claude, OpenCode V2, Codex, Pi,
+and [Cursor](cursor.md) sources can produce upload jobs.
 A suggested project or checked row does not add support for another provider.
 
 With one eligible workspace, new onboarding choices start selected. With
@@ -353,6 +354,10 @@ saved opt-outs take precedence.
 **Start syncing** approves only the selected groups. **Load more folders**
 does not approve unseen groups.
 Until confirmation, an existing saved policy stays unchanged.
+
+Settings reads more folder pages in the background. It keeps verified choices
+usable while later pages load. If a page fails after retries, **Check again**
+restarts discovery. Discovery does not save or expand folder approval.
 
 After initial consent, Settings shows the saved folder rules. Turning off a
 group removes its folder or repository rule immediately. Adding a folder does not grant
@@ -426,8 +431,8 @@ assigned share because it does not report how many IDs it inspected. Codex
 and Pi count each inspected ID, even when opening the file fails. These pages
 use native ID order, not session dates. Before opening any session file, each
 Codex or Pi page indexes at most 4,096 directory entries. It descends at most
-three levels for Codex and one for Pi. **Load more folders** adds cached project
-suggestions. It does not scan all provider history.
+three levels for Codex and one for Pi. Later folder pages add cached project
+suggestions. They do not scan all provider history.
 Claude folder checks share a 64 MiB budget for uncached metadata reads. The
 first uncached transcript can use up to 128 MiB on its own. Evidence that does
 not fit the remaining budget makes the result partial.
@@ -551,6 +556,15 @@ the total is known again. Proven folder exclusions and deletion markers remove
 that source's contributions. The tracker bounds both source and capture counts
 to 4,096. Reaching either bound can leave totals unknown. These counters share
 the session progress lifetime and its account, policy, and sign-in limits.
+Desktop can report `backgroundProgress` for a separate background sweep.
+It uses the same version and transfer rules as explicit progress. It does not
+reuse the last explicit scan or include other sweeps. `backgroundSyncInProgress`
+reports active background work, even before the sweep has measurements.
+`fullSyncInProgress` stays true after explicit discovery finishes if uploads
+or integrity checks can still advance. `backfillInProgress` reports explicit
+discovery only. Waiting for the next sweep does not count as work in progress.
+When present, the runtime activity flags take precedence over the general
+sync status, which can remain `syncing` after the last acceptance.
 Settings shows each available session and byte measurement independently:
 
 - A known session total reads `1 of 5 sessions uploaded`. A measured acceptance
@@ -570,10 +584,19 @@ Combined workspace counts use `session uploads`, such as
 workspaces counts as two deliveries. A combined session or byte total is known
 only when every included workspace supplies that measurement with a known total.
 A sum of known members is not a complete aggregate when another member is unknown.
+Settings does not combine an active full scan with background counters or with
+an idle workspace's earlier results.
 
-Routine activity remains independent of the counters. When measurements are
-available, activity follows them after a bullet, such as `Checking folders` or
-`Checking saved uploads`. Without measurements, Settings shows the activity alone.
+The same status shows background and explicit sync work. While an explicit scan
+discovers sessions, it can show `Checking folders`. When Desktop cannot separate
+transfer from automatic recovery, it shows `Syncing sessions` in both cases.
+When idle, Settings marks retained explicit results as `Last full scan` or
+`Folder scan incomplete`. When active work has no scan measurements, Settings
+can show pending saved uploads.
+That count is not a scan total. If exactly one pending upload has a known byte
+counter, Settings labels it `Current upload` rather than using it as an
+aggregate transfer count.
+Without measurements, Settings shows the activity alone.
 Errors replace the progress line and offer a supported recovery action. Settings
 does not claim `Up to date` without evidence that the current scan scope is complete
 and has no pending, blocked, unsupported, or undiscovered work.

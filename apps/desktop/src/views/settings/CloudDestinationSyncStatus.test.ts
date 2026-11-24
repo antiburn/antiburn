@@ -41,7 +41,7 @@ describe("idleSyncMessage", () => {
         ...idleOptions,
         policies: [enabledPolicy({ uploadProgress })],
       }),
-    ).toBe("1 of 5 sessions uploaded • 12 MB of 85 MB transferred")
+    ).toBe("Last full scan • 1 of 5 sessions uploaded • 12 MB of 85 MB transferred")
   })
 
   it.each([
@@ -78,22 +78,22 @@ describe("idleSyncMessage", () => {
     ).toBe("Status unavailable")
   })
 
-  it("shows automatic recovery only when the policy reports it", () => {
+  it("does not infer activity from automatic recovery in an idle summary", () => {
     expect(
       idleSyncMessage({
         ...idleOptions,
         policies: [enabledPolicy({ status: "fenced", automaticRecoveryCount: 1 })],
       }),
-    ).toBe("Checking saved uploads")
+    ).toBe("Folder sync enabled")
   })
 
-  it("keeps measured progress during automatic recovery", () => {
+  it("marks retained scan measurements even if recovery work exists", () => {
     expect(
       idleSyncMessage({
         ...idleOptions,
         policies: [enabledPolicy({ uploadProgress, automaticRecoveryCount: 1 })],
       }),
-    ).toBe("1 of 5 sessions uploaded • 12 MB of 85 MB transferred • Checking saved uploads")
+    ).toBe("Last full scan • 1 of 5 sessions uploaded • 12 MB of 85 MB transferred")
   })
 
   it("keeps a discovery gap visible with the observed counts", () => {

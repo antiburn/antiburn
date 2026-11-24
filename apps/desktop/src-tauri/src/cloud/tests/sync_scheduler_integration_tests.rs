@@ -58,6 +58,10 @@ const STATUS_REPLAY_DENIED: usize = 32;
 const CAPS_SMALL: usize = 33;
 const CURSOR_IDE: usize = 34;
 
+#[path = "sync_background_integration_tests.rs"]
+mod background_tests;
+#[path = "sync_runtime_activity_integration_tests.rs"]
+mod runtime_activity_tests;
 #[path = "sync_transfer_integration_tests.rs"]
 mod transfer_tests;
 

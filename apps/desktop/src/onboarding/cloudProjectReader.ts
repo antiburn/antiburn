@@ -1,4 +1,4 @@
-import type { CloudPort, CloudWorkspace } from "../lib/cloud"
+import type { CloudPort, CloudProjectCursor, CloudWorkspace } from "../lib/cloud"
 import {
   mergeProjectPage,
   nextProjectCursor,
@@ -18,6 +18,7 @@ import {
 import {
   cloudProjectSourceKey,
   projectBinding,
+  projectViewGroups,
   type CloudViewSnapshot,
 } from "./cloudSessionState"
 
@@ -37,6 +38,7 @@ function waitForRequest<T>(request: Promise<T>, signal: AbortSignal): Promise<T>
 }
 
 interface ProjectReaderObserver extends ProjectScopeObserver {
+  readonly automaticPaging: boolean
   isActive: () => boolean
   isVisible: () => boolean
   getPages: () => ProjectPages | undefined
@@ -73,6 +75,7 @@ class CloudReadLane {
 /** Own one session's folder reads. The session still owns choices and consent. */
 export class CloudProjectReader {
   private read: AbortController | undefined
+  private generation = 0
   private scopeRead: Promise<void> | undefined
   private pendingPageRelease: Promise<void> | undefined
   private readonly accountLane = new CloudReadLane()
@@ -80,6 +83,8 @@ export class CloudProjectReader {
   private pageScope: string | undefined
   private readonly port: CloudPort
   private readonly observer: ProjectReaderObserver
+  private automaticCursor: CloudProjectCursor | null | undefined
+  private interruptedWriteScope: string | undefined
 
   constructor(port: CloudPort, observer: ProjectReaderObserver) {
     this.port = port
@@ -105,8 +110,48 @@ export class CloudProjectReader {
     )
   }
 
+  /** Follow fresh replies even when cached pages already complete their cursor chain. */
+  private get nextCursor() {
+    return this.observer.automaticPaging && this.automaticCursor !== undefined
+      ? this.automaticCursor
+      : nextProjectCursor(this.observer.getPages())
+  }
+
+  /** Keep counts incomplete until Settings has checked every page in this refresh. */
+  private get hasUnreadAutomaticPages() {
+    return this.observer.automaticPaging && this.nextCursor !== undefined
+  }
+
+  /** Resume unread Settings pages without replacing the first page on return. */
+  get hasPendingAutomaticPages() {
+    return (
+      this.hasUnreadAutomaticPages &&
+      this.canUseChoices &&
+      !this.observer.getSnapshot().projects?.refreshError
+    )
+  }
+
+  /** Keep indexed counts stable until the fresh page chain finishes. Provisional rows grant no consent. */
+  viewProjects(pages: ProjectPages, provisional: boolean) {
+    let groups = projectViewGroups(pages.groups, pages.sources)
+    if (this.hasUnreadAutomaticPages) {
+      const counts = new Map(
+        this.observer
+          .getSnapshot()
+          .projects?.groups.map((group) => [group.id, group.sessionCount]),
+      )
+      groups = groups.map((group) =>
+        group.discoveryStale ? group : { ...group, sessionCount: counts.get(group.id) ?? null },
+      )
+    }
+    const hasMore =
+      !provisional && (this.hasUnreadAutomaticPages || nextProjectCursor(pages) !== undefined)
+    return { groups, hasMore }
+  }
+
   /** Cancel retries without publishing state during account or source changes. */
   abort() {
+    this.generation++
     this.read?.abort()
   }
 
@@ -120,9 +165,7 @@ export class CloudProjectReader {
     this.abort()
     const projects = this.observer.getSnapshot().projects
     if (projects?.paging || projects?.loading || projects?.retrying) {
-      const hasMore = projects.paging
-        ? nextProjectCursor(this.observer.getPages()) !== undefined
-        : projects.hasMore
+      const hasMore = projects.paging ? this.nextCursor !== undefined : projects.hasMore
       this.observer.publishProjects({
         ...projects,
         hasMore,
@@ -137,7 +180,9 @@ export class CloudProjectReader {
 
   /** Stop discovery before a write. Desktop still controls admission if a read does not finish. */
   finishRead() {
+    const scope = this.hasPendingAutomaticPages ? this.pageScope : undefined
     this.suspend()
+    this.interruptedWriteScope = scope
     const pending = this.accountLane.pending
     if (!pending) return
     const controller = new AbortController()
@@ -147,6 +192,23 @@ export class CloudProjectReader {
         // The explicit write can report desktop admission without waiting on this read.
       })
       .finally(() => clearTimeout(timeout))
+  }
+
+  /** Resume paging that a write paused in the same verified scope. Call after busy clears. */
+  resumeAfterWrite() {
+    const scope = this.interruptedWriteScope
+    this.interruptedWriteScope = undefined
+    if (
+      scope === undefined ||
+      scope !== this.pageScope ||
+      !this.observer.isActive() ||
+      !this.observer.isVisible() ||
+      this.observer.getSnapshot().busy ||
+      this.hasRead ||
+      !this.hasPendingAutomaticPages
+    )
+      return
+    return this.load(true, true)
   }
 
   /** Account and scope reads use the same native worker. */
@@ -161,10 +223,11 @@ export class CloudProjectReader {
     return this.load(false, true)
   }
 
-  /** Read one bounded page. A failed page never becomes an empty success. */
+  /** Read bounded pages. Settings follows the remaining cursor chain. */
   load(more: boolean, retryInBackground: boolean) {
     if (this.hasRead) return Promise.resolve()
-    const read = this.readProjects(more, retryInBackground)
+    if (!more) this.automaticCursor = undefined
+    const read = this.readProjectPages(more, retryInBackground, ++this.generation)
     if (!more) {
       this.scopeRead = read
       const clear = () => {
@@ -173,6 +236,33 @@ export class CloudProjectReader {
       void read.then(clear, clear)
     }
     return read
+  }
+
+  /** Follow Settings cursors in order. Each page keeps its own timeout and retry limit. */
+  private async readProjectPages(
+    more: boolean,
+    retryInBackground: boolean,
+    generation: number,
+  ) {
+    let loaded = await this.readProjects(more, retryInBackground)
+    while (
+      loaded &&
+      generation === this.generation &&
+      this.hasPendingAutomaticPages &&
+      this.observer.isActive() &&
+      this.observer.isVisible()
+    ) {
+      if (loaded.retrySamePage) {
+        const projects = this.observer.getSnapshot().projects!
+        this.observer.publishProjects({ ...projects, refreshError: folderReadError })
+        return
+      }
+      if (this.observer.getSnapshot().busy) {
+        this.interruptedWriteScope = this.pageScope
+        return
+      }
+      loaded = await this.readProjects(true, retryInBackground)
+    }
   }
 
   /** Keep pagination disabled until a dispatched folder request releases the worker. */
@@ -185,19 +275,27 @@ export class CloudProjectReader {
         if (this.pendingPageRelease !== pending) return
         this.pendingPageRelease = undefined
         const projects = this.observer.getSnapshot().projects
-        if (this.observer.isActive() && !this.hasRead && projects?.paging === "pending")
+        if (this.observer.isActive() && !this.hasRead && projects?.paging === "pending") {
           this.observer.publishProjects({ ...projects, paging: undefined })
+          if (
+            this.observer.isVisible() &&
+            !this.observer.getSnapshot().busy &&
+            this.hasPendingAutomaticPages
+          )
+            void this.load(true, true)
+        }
       })
     }
     return "pending" as const
   }
 
+  /** Verify the first page's scope. Later pages keep that scope until an event cancels it. */
   private async readProjects(more: boolean, retryInBackground: boolean) {
     const { observer } = this
     const port = this.port.ongoing
     const binding = projectBinding(observer.getSnapshot().cloud, !more)
     const existing = observer.getSnapshot().projects
-    const next = nextProjectCursor(observer.getPages())
+    const next = this.nextCursor
     if (
       !observer.isActive() ||
       !observer.isVisible() ||
@@ -257,6 +355,7 @@ export class CloudProjectReader {
           : undefined
     const cursor = more ? (next ?? null) : null
     let latest: ProjectPages | undefined
+    let retrySamePage = false
     let remainingEmptyRechecks = 1
     let remainingPageContinuations = 1
     const foreground = setTimeout(() => {
@@ -294,6 +393,7 @@ export class CloudProjectReader {
         admissionSignal,
       )
       signal.throwIfAborted()
+      retrySamePage = !!page.retrySamePage
       const fallback = latest ?? (!existing?.scopeInvalid ? previous : undefined)
       latest =
         !more &&
@@ -306,6 +406,8 @@ export class CloudProjectReader {
           : mergeProjectPage(previous, cursor, page)
       const continuing =
         page.retrySamePage && remainingPageContinuations > 0 && !retrySignal.aborted
+      if (this.observer.automaticPaging && current())
+        this.automaticCursor = page.retrySamePage ? cursor : (page.nextCursor ?? undefined)
       if (current() && (!more ? latest.groups.length : continuing)) publish(latest)
       return page
     }
@@ -369,7 +471,10 @@ export class CloudProjectReader {
           throw result.error
         await requestPage(signal)
       }
-      if (current() && latest) publish(latest, true)
+      if (current() && latest) {
+        publish(latest, true)
+        return { retrySamePage }
+      }
     } catch (error) {
       const scopeMessage = cloudReadScopeMessage(error)
       if (
@@ -381,9 +486,7 @@ export class CloudProjectReader {
         const scopeInvalid = projects.scopeInvalid || !!scopeMessage
         const keepChoices = this.canUseChoices && !scopeInvalid
         const message = scopeVerified ? folderReadError : scopeReadError
-        const hasMore = more
-          ? nextProjectCursor(observer.getPages()) !== undefined
-          : projects.hasMore
+        const hasMore = more ? this.nextCursor !== undefined : projects.hasMore
         observer.publishProjects({
           ...projects,
           hasMore,

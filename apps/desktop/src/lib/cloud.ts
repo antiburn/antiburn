@@ -315,6 +315,12 @@ export interface CloudOngoingStatus {
   automaticRecoveryCount?: number
   /** Desktop has a backfill scan pending for this policy. */
   backfillInProgress?: boolean
+  /** An explicit scan still has work that Desktop can advance automatically. */
+  fullSyncInProgress?: boolean
+  /** A background sweep is discovering or processing uploads for this policy. */
+  backgroundSyncInProgress?: boolean
+  /** Measured work for the current background sweep, separate from the last explicit scan. */
+  backgroundProgress?: CloudOngoingStatus["uploadProgress"]
   /** Cloud acceptance for sources found by the last explicit backfill for this policy.
    * The total is null until the scan finishes, or if discovery could not count every source.
    */

@@ -585,12 +585,17 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
         Runner {
             team: Some((TEAM.into(), "synthetic-membership".into())),
             last_status: Some(Status {
+                status: State::Syncing,
+                storage_known: true,
                 account_id: Some(ACCOUNT.into()),
                 destination_id: Some(TEAM.into()),
                 policy_revision: Some(policy.revision.clone()),
                 retry_available: true,
                 recovery_required_count: 2,
                 automatic_recovery_count: Some(1),
+                backfill_in_progress: true,
+                full_sync_in_progress: true,
+                background_sync_in_progress: true,
                 ..Status::default()
             }),
             last_status_origin: Some(RESOURCE.into()),
@@ -601,6 +606,7 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
             }),
             backfill_revision: Some(policy.revision.clone()),
             backfill_progress: Some(BackfillProgress::new(&policy, &session.grant_id)),
+            full_sync_pending: true,
             discovery_cursor: Some(cursor.clone()),
             retry_deadlines: BTreeMap::from([(
                 "saved".into(),
@@ -611,6 +617,14 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
             ..Runner::default()
         },
     )]);
+    let read_failure = team_lookup_failed(
+        &policy,
+        runners[&key].last_status.clone(),
+        auth::Failure::Offline,
+    );
+    assert!(!read_failure.backfill_in_progress);
+    assert!(!read_failure.full_sync_in_progress);
+    assert!(!read_failure.background_sync_in_progress);
     let policies = [policy];
     let mut observed = Vec::new();
     assert!(
@@ -624,7 +638,9 @@ fn cloud_scheduler_keeps_unverified_team_work_without_running_it() {
         .is_empty()
     );
     assert_eq!(observed[0].status, State::Offline);
-    assert!(observed[0].backfill_in_progress);
+    assert!(!observed[0].backfill_in_progress);
+    assert!(!observed[0].full_sync_in_progress);
+    assert!(!observed[0].background_sync_in_progress);
     assert_eq!(observed[0].recovery_required_count, 2);
     assert!(!observed[0].retry_available);
     assert_eq!(observed[0].automatic_recovery_count, None);

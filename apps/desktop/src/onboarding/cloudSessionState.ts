@@ -343,7 +343,7 @@ export const canRetryPersonalUploads = (value: CloudViewSnapshot) =>
   !value.ongoing.paused &&
   !value.ongoing.sourceConfirmationRequired
 
-/** Backfill uses only the current, saved folder rules for one verified workspace. */
+/** Start a full scan only for an idle, verified workspace with saved folders. */
 export function canBackfillUploads(value: CloudViewSnapshot, teamId?: string) {
   const destination = value.cloud.destination
   const policy = teamId ? value.teamStatuses?.[teamId] : value.ongoing
@@ -360,6 +360,9 @@ export function canBackfillUploads(value: CloudViewSnapshot, teamId?: string) {
     !policy.paused &&
     !policy.folderConfirmationRequired &&
     !policy.sourceConfirmationRequired &&
+    !policy.backfillInProgress &&
+    !policy.fullSyncInProgress &&
+    !policy.backgroundSyncInProgress &&
     policy.status !== "reauth_required" &&
     policy.status !== "storage_unavailable" &&
     (teamId
@@ -429,8 +432,7 @@ export function backfillTarget(
     !binding.destinationId ||
     !matchesUploadPolicy(policy, binding, revision) ||
     !canBackfillUploads(displayed, teamId) ||
-    !canBackfillUploads(current, teamId) ||
-    policy?.backfillInProgress
+    !canBackfillUploads(current, teamId)
   )
     return null
   return { binding, revision, team: teamId ? (policy ?? undefined) : undefined }
@@ -830,7 +832,7 @@ export function mergeProjectSources(
   ]
 }
 
-/** Project display groups from the same selection used for confirmation. */
+/** Use indexed counts for display and current provider evidence for confirmation. */
 export function projectViewGroups(
   groups: DesktopCloudProjectGroup[],
   sources: CloudSourceSelection[],
@@ -847,9 +849,7 @@ export function projectViewGroups(
       ...(group.repositoryWide && { repositoryWide: true }),
       ...(group.legacyOptOutId && { legacyOptOutId: group.legacyOptOutId }),
       discoveryStale: group.discoveryStale ?? false,
-      sessionCount: group.discoveryStale
-        ? null
-        : Math.max(group.sessionCount, group.captureSessionCount),
+      sessionCount: group.discoveryStale ? null : group.sessionCount,
       captureSupported: selections.length > 0,
       confirmationKey: projectConfirmationKey(group, selections),
     }

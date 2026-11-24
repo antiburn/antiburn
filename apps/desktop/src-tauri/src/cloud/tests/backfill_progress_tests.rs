@@ -15,6 +15,7 @@ fn tracker() -> BackfillProgress {
         reported_complete: false,
         incomplete: false,
         finished: false,
+        background: false,
     }
 }
 
@@ -238,7 +239,7 @@ fn backfill_transfer_rejects_other_bindings_and_hides_unknown_storage() {
         ..Status::default()
     };
     assert_eq!(
-        serde_json::to_value(progress.status(&status)).unwrap()["transfer"],
+        serde_json::to_value(progress.status(&status, false)).unwrap()["transfer"],
         serde_json::json!({ "sentBytes": 100, "totalBytes": 100 })
     );
     for unknown in [
@@ -259,6 +260,6 @@ fn backfill_transfer_rejects_other_bindings_and_hides_unknown_storage() {
             ..status
         },
     ] {
-        assert!(progress.status(&unknown).is_none());
+        assert!(progress.status(&unknown, false).is_none());
     }
 }

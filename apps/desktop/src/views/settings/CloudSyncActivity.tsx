@@ -22,7 +22,7 @@ function sessionCountLabel(count: number, combined: boolean) {
  * Separate workspace deliveries count separately, even for the same local session.
  */
 export function uploadProgressMessage(
-  policies: readonly CloudOngoingStatus[],
+  policies: readonly Pick<CloudOngoingStatus, "uploadProgress">[],
   phase?: string,
 ): string | null {
   const progress = policies.flatMap(({ uploadProgress }) =>
@@ -71,6 +71,46 @@ export function uploadProgressMessage(
   }
   if (phase) clauses.push(phase)
   return clauses.join(" • ")
+}
+
+/** Prefer the explicit scan when it is active. Never show its old counts as background work. */
+export function currentUploadProgressMessage(activePolicies: readonly CloudOngoingStatus[]) {
+  const fullSync = activePolicies.filter(
+    ({ backfillInProgress, fullSyncInProgress }) => backfillInProgress || fullSyncInProgress,
+  )
+  const sources = fullSync.length ? fullSync : activePolicies
+  const progress = sources.map((policy) => {
+    const measurement = fullSync.length
+      ? policy.uploadProgress
+      : policy.backgroundSyncInProgress
+        ? policy.backgroundProgress
+        : undefined
+    return measurement ? { uploadProgress: measurement } : {}
+  })
+  if (
+    sources.some(({ queuedCount }) => queuedCount > 0) &&
+    progress.every(({ uploadProgress }) => uploadProgress?.total === 0)
+  )
+    return null
+  return uploadProgressMessage(progress)
+}
+
+/** Describe saved work without treating the queue as a session scan. */
+export function savedUploadProgressMessage(policies: readonly CloudOngoingStatus[]) {
+  const pending = policies.reduce((sum, { queuedCount }) => sum + queuedCount, 0)
+  const clauses: string[] = []
+  if (pending > 0) {
+    const unit = pending === 1 ? "upload" : "uploads"
+    clauses.push(`${sessionCountFormat.format(pending)} saved ${unit} pending`)
+  }
+  const transfer =
+    pending === 1 && policies.length === 1 ? policies[0]?.uploadTransfer : undefined
+  if (transfer) {
+    clauses.push(
+      `Current upload: ${uploadSize(transfer.sentBytes)} of ${uploadSize(transfer.totalBytes)} transferred`,
+    )
+  }
+  return clauses
 }
 
 /** Keep the live region mounted so it can announce a change once. */

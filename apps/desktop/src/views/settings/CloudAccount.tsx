@@ -21,8 +21,14 @@ import {
   idleSyncMessage,
   onlyAutomaticRecovery,
   savedUploadDisplayState,
+  syncActivityReported,
+  syncingSessionsMessage,
 } from "./CloudDestinationSyncStatus"
-import { uploadProgressMessage, CloudSyncActivity } from "./CloudSyncActivity"
+import {
+  currentUploadProgressMessage,
+  savedUploadProgressMessage,
+  CloudSyncActivity,
+} from "./CloudSyncActivity"
 import {
   CloudFolderSyncControl,
   CloudProjectFolderSummary,
@@ -69,9 +75,8 @@ function showSavedUploadRetry(policy: CloudOngoingStatus) {
 
 /** A manual sync only scans saved folders in eligible workspaces. */
 function canSyncSavedFolders(value: CloudViewSnapshot) {
-  return [undefined, ...Object.keys(value.teamStatuses ?? {})].some(
-    (teamId) =>
-      !uploadPolicy(value, teamId)?.backfillInProgress && canBackfillUploads(value, teamId),
+  return [undefined, ...Object.keys(value.teamStatuses ?? {})].some((teamId) =>
+    canBackfillUploads(value, teamId),
   )
 }
 
@@ -595,7 +600,6 @@ function CloudProjectsAccount({
   const fallbackFolderRowId = useId()
   const uploadActionWarningId = useId()
   const folderWarningId = useId()
-  const pagingStatusId = useId()
   const foldersId = folderRowId ?? fallbackFolderRowId
   const [saveTeam, setSaveTeam] = useState<{
     accountId: string
@@ -887,17 +891,24 @@ function CloudProjectsAccount({
       !destinationPolicy.paused,
   )
   const activePolicies = progressPolicies.filter(
-    (destinationPolicy) =>
-      value.deviceUploadEnabled === true &&
-      (savedUploadDisplayState(destinationPolicy) === "ready" ||
-        savedUploadDisplayState(destinationPolicy) === "syncing") &&
-      (destinationPolicy.backfillInProgress ||
-        destinationPolicy.status === "syncing" ||
-        onlyAutomaticRecovery(destinationPolicy)),
+    (policy) => value.deviceUploadEnabled === true && syncActivityReported(policy),
   )
+  const unverifiedTeamWorking =
+    value.deviceUploadEnabled === true &&
+    !projects?.workspaces &&
+    !projects?.error &&
+    !projects?.refreshError &&
+    savedTeamPolicies.some(
+      ([, policy]) =>
+        policy.storageKnown &&
+        !policy.paused &&
+        (policy.fullSyncInProgress ||
+          policy.backgroundSyncInProgress ||
+          policy.backfillInProgress),
+    )
   const scanning = activePolicies.some((policy) => policy.backfillInProgress)
   const hasStagedChoices = !!move || draftFolders.length > 0 || confirmableTeams.length > 0
-  const syncWorking = syncPending || activePolicies.length > 0
+  const syncWorking = syncPending || unverifiedTeamWorking || activePolicies.length > 0
   const folderControlsBusy = value.busy || syncWorking
   const syncActivity =
     syncPhase === "saving"
@@ -906,11 +917,20 @@ function CloudProjectsAccount({
         ? "Starting sync"
         : scanning
           ? "Checking folders"
-          : activePolicies.some(onlyAutomaticRecovery)
-            ? "Checking saved uploads"
-            : undefined
+          : syncingSessionsMessage
+  const measuredProgress =
+    syncWorking && !unverifiedTeamWorking && (scanning || !syncPending)
+      ? currentUploadProgressMessage(activePolicies)
+      : null
   const syncProgressMessage = syncWorking
-    ? uploadProgressMessage(progressPolicies, syncActivity ?? "Uploading sessions")
+    ? [
+        ...(measuredProgress
+          ? [measuredProgress]
+          : syncActivity === syncingSessionsMessage && !unverifiedTeamWorking
+            ? savedUploadProgressMessage(activePolicies)
+            : []),
+        syncActivity,
+      ].join(" • ")
     : null
   const canSubmit =
     !syncWorking && (canSave || (!hasStagedChoices && canSyncSavedFolders(value)))
@@ -981,10 +1001,18 @@ function CloudProjectsAccount({
   const footerStatus = syncError
     ? idleStatus
     : (syncProgressMessage ?? (confirmableTeams.length ? "Review saved folders" : idleStatus))
-  const canCheckFolders = !!folderError && value.cloud.setupError !== cloudCaptureUnsupported
   const paging = projects?.paging
-  const pagingUnavailable =
-    syncActionBusy || projects?.loading || !!paging || projects?.scopeInvalid
+  const folderLoadError =
+    folderError ??
+    (projects?.hasMore &&
+    !paging &&
+    !projects.loading &&
+    !projects.retrying &&
+    projects.refreshError
+      ? "Could not load all session folders."
+      : undefined)
+  const canCheckFolders =
+    !!folderLoadError && value.cloud.setupError !== cloudCaptureUnsupported
   const focusUploadSwitch = () => {
     const folders = document.getElementById(foldersId)
     const switchControl = folders?.parentElement?.querySelector<HTMLElement>(
@@ -1418,33 +1446,8 @@ function CloudProjectsAccount({
             )}
           </CloudFolderList>
         </div>
-        {projects?.hasMore && (
-          <button
-            className="ui-push-button mt-3"
-            aria-disabled={pagingUnavailable || undefined}
-            aria-busy={!!paging || undefined}
-            aria-describedby={paging && !syncProgressMessage ? pagingStatusId : undefined}
-            onClick={(event) => {
-              if (pagingUnavailable) return
-              void changeFolderWithFocus(
-                event.currentTarget,
-                foldersId,
-                undefined,
-                async () => {
-                  await session.loadMoreProjects()
-                },
-              )
-            }}
-          >
-            Load more folders
-          </button>
-        )}
         {!syncProgressMessage && (paging || showFolderRetryStatus) && (
-          <p
-            id={paging ? pagingStatusId : undefined}
-            role="status"
-            className="mt-2 type-footnote text-label-secondary"
-          >
+          <p role="status" className="mt-2 type-footnote text-label-secondary">
             {paging
               ? paging === "loading"
                 ? "Loading more folders…"
@@ -1459,7 +1462,7 @@ function CloudProjectsAccount({
             {value.uploadActionError}
           </CloudFolderWarning>
         )}
-        {!syncPending && folderError && (
+        {!syncPending && folderLoadError && (
           <CloudFolderWarning
             id={folderWarningId}
             action={
@@ -1469,8 +1472,14 @@ function CloudProjectsAccount({
                   className="ui-push-button min-h-8 aria-disabled:opacity-50"
                   aria-describedby={folderWarningId}
                   aria-disabled={syncActionBusy || undefined}
-                  onClick={() => {
-                    if (!syncActionBusy) void session.retryFolderScope()
+                  onClick={(event) => {
+                    if (syncActionBusy) return
+                    void changeFolderWithFocus(
+                      event.currentTarget,
+                      foldersId,
+                      undefined,
+                      session.retryFolderScope,
+                    )
                   }}
                 >
                   Check again
@@ -1478,7 +1487,7 @@ function CloudProjectsAccount({
               ) : undefined
             }
           >
-            {folderError}
+            {folderLoadError}
           </CloudFolderWarning>
         )}
         {uploadError && (

@@ -2,13 +2,95 @@ import { render, screen } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 import type { CloudOngoingStatus } from "../../lib/cloud"
 import { ongoingStatus } from "../../onboarding/__tests__/cloudProjectFixtures"
-import { CloudSyncActivity, uploadProgressMessage } from "./CloudSyncActivity"
+import {
+  CloudSyncActivity,
+  currentUploadProgressMessage,
+  savedUploadProgressMessage,
+  uploadProgressMessage,
+} from "./CloudSyncActivity"
 
 const progress = {
   uploaded: 1,
   total: 5,
   transfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
 } satisfies NonNullable<CloudOngoingStatus["uploadProgress"]>
+
+describe("savedUploadProgressMessage", () => {
+  it("separates a single upload's bytes from batch progress", () => {
+    expect(
+      savedUploadProgressMessage([
+        ongoingStatus({
+          queuedCount: 1,
+          uploadTransfer: { sentBytes: 12_000_000, totalBytes: 85_000_000 },
+        }),
+      ]),
+    ).toEqual(["1 saved upload pending", "Current upload: 12 MB of 85 MB transferred"])
+  })
+
+  it("counts pending jobs across workspaces without implying a total", () => {
+    expect(
+      savedUploadProgressMessage([
+        ongoingStatus({ queuedCount: 2, acceptedCount: 12 }),
+        ongoingStatus({ queuedCount: 1, acceptedCount: 35 }),
+      ]),
+    ).toEqual(["3 saved uploads pending"])
+    expect(savedUploadProgressMessage([ongoingStatus({ acceptedCount: 12 })])).toEqual([])
+  })
+})
+
+describe("currentUploadProgressMessage", () => {
+  const background = ongoingStatus({
+    backgroundSyncInProgress: true,
+    uploadProgress: progress,
+    backgroundProgress: {
+      uploaded: 2,
+      total: null,
+      transfer: { sentBytes: 30_000_000, totalBytes: null },
+    },
+  })
+
+  it("shows current background counters instead of the last explicit scan", () => {
+    expect(currentUploadProgressMessage([background])).toBe(
+      "2 sessions uploaded • 30 MB transferred",
+    )
+  })
+
+  it("does not substitute historical counts when background progress is unavailable", () => {
+    const { backgroundProgress: _progress, ...pending } = background
+    expect(currentUploadProgressMessage([pending])).toBeNull()
+  })
+
+  it("keeps explicit scan counters visible through post-scan acceptance", () => {
+    const explicit = ongoingStatus({ fullSyncInProgress: true, uploadProgress: progress })
+    expect(currentUploadProgressMessage([explicit, background])).toBe(
+      "1 of 5 sessions uploaded • 12 MB of 85 MB transferred",
+    )
+  })
+
+  it("does not show a previous full scan as progress during saved-upload recovery", () => {
+    expect(
+      currentUploadProgressMessage([
+        ongoingStatus({
+          status: "syncing",
+          automaticRecoveryCount: 1,
+          uploadProgress: progress,
+        }),
+      ]),
+    ).toBeNull()
+  })
+
+  it("does not say there is nothing to upload while saved work remains", () => {
+    expect(
+      currentUploadProgressMessage([
+        {
+          ...background,
+          queuedCount: 1,
+          backgroundProgress: { uploaded: 0, total: 0 },
+        },
+      ]),
+    ).toBeNull()
+  })
+})
 
 describe("uploadProgressMessage", () => {
   it("shows accepted sessions and cumulative transferred bytes", () => {
