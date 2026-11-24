@@ -56,7 +56,7 @@ pub(in crate::cloud) fn metadata_limits() -> Limits {
     }
 }
 
-/// Inspect at most 512 candidates across the remaining roots in one sweep page.
+/// Share a 512-entry budget across the remaining roots in one sweep page.
 /// Use provider source keys, not file age or the desktop activity date range.
 /// Keep bad sessions visible without discarding healthy selections or the cursor.
 pub(super) fn discover_policy_page(

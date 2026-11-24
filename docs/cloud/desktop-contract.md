@@ -385,10 +385,20 @@ OpenCode's recorded session directory does not prove a complete historical CWD l
 See [project folder selection](capture.md#project-folder-selection) for the source rules.
 
 Listings are bounded and can report partial results. Successful source listings
-contain at most 512 candidates across up to 100 source roots. A saved policy
-permits at most 100 source/project path bindings. Missing access, unsupported
-schemas, and exceeded bounds do not become a complete empty listing or permission
-to upload an excluded source. Restore access or retry discovery in Settings.
+contain at most 512 candidates across up to 100 source roots. Folder discovery
+and Save give each root a first turn, then spend any remaining budget on
+provider pages in the same request. Cursor IDE uses its full assigned share
+because it does not report how many IDs it inspected. Codex and Pi count each
+inspected ID, even when opening the file fails. These pages use native ID order,
+not session dates. Before opening any session file, each Codex or Pi page indexes
+at most 4,096 directory entries. It descends at most three levels for Codex and
+one for Pi. **Load more folders** adds cached project suggestions. It does not
+scan all provider history.
+
+A saved policy permits at most 100 source/project path bindings. Missing access,
+unsupported schemas, and exceeded bounds do not become a complete empty listing
+or permission to upload an excluded source. Restore access or retry discovery in
+Settings.
 Setup failures do not hide account cleanup controls.
 
 Before enabling sync or making a capture, Desktop reads

@@ -188,6 +188,7 @@ pub(super) struct Page {
     pub(super) candidates: Vec<Candidate>,
     pub(super) next_cursor: Option<String>,
     pub(super) partial: bool,
+    /// Budget used, including entries that did not produce candidates.
     pub(super) visited: usize,
 }
 
@@ -204,11 +205,8 @@ pub(super) fn discover_page(
         SourceKind::CursorIdeComposer => {
             let page = discover_cursor_ide_page(root, after, limits)?;
             return Ok(Page {
-                visited: if page.next_cursor.is_some() {
-                    limits.discovery_sessions
-                } else {
-                    page.candidates.len()
-                },
+                // The provider does not report how many IDs it checked.
+                visited: limits.discovery_sessions,
                 candidates: page.candidates,
                 next_cursor: page.next_cursor,
                 partial: page.partial,
@@ -228,29 +226,31 @@ pub(super) fn discover_page(
     let mut candidates = Vec::new();
     let mut cursor = None;
     let mut partial = false;
+    let mut visited = 0;
     for (id, path) in paths(kind, root, limits)?.into_iter().rev() {
         if after.is_some_and(|after| id.as_str() >= after) {
             continue;
         }
+        if visited == limits.discovery_sessions {
+            return Ok(Page {
+                visited,
+                candidates,
+                next_cursor: cursor,
+                partial,
+            });
+        }
+        visited += 1;
         if let Some(path) = path
             && let Ok(candidate) = open(kind, &path, &id, limits)
         {
-            if candidates.len() == limits.discovery_sessions {
-                return Ok(Page {
-                    visited: candidates.len(),
-                    candidates,
-                    next_cursor: cursor,
-                    partial,
-                });
-            }
             candidates.push(candidate);
-            cursor = Some(id);
         } else {
             partial = true;
         }
+        cursor = Some(id);
     }
     Ok(Page {
-        visited: candidates.len(),
+        visited,
         candidates,
         next_cursor: None,
         partial,
@@ -265,39 +265,72 @@ pub(super) fn discover_cursor_sources(
     limits: &Limits,
     current: &dyn Fn() -> bool,
 ) -> Result<Page, Error> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut result = Page {
-        candidates: Vec::new(),
-        next_cursor: None,
-        partial: false,
-        visited: 0,
-    };
-    for _ in 0..64 {
-        if !current() {
-            return Err(Error::SourceChanged);
-        }
-        if std::time::Instant::now() >= deadline || result.visited >= limits.discovery_sessions {
-            break;
-        }
-        let page = discover_page(
-            kind,
-            root,
-            result.next_cursor.as_deref(),
-            &Limits {
-                discovery_sessions: limits.discovery_sessions - result.visited,
-                ..limits.clone()
-            },
-        )?;
-        result.partial |= page.partial;
-        result.visited += page.visited;
-        result.candidates.extend(page.candidates);
-        result.next_cursor = page.next_cursor;
-        if result.next_cursor.is_none() {
-            return Ok(result);
+    let mut scan = CursorScan::new();
+    let mut page = scan.read(kind, root, limits, current)?;
+    page.partial |= page.next_cursor.is_some();
+    Ok(page)
+}
+
+/// Keep the Cursor page and time limits when a folder scan splits its budget.
+pub(super) struct CursorScan {
+    deadline: std::time::Instant,
+    pages_left: usize,
+    after: Option<String>,
+}
+
+impl CursorScan {
+    pub(super) fn new() -> Self {
+        Self {
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+            pages_left: 64,
+            after: None,
         }
     }
-    result.partial = true;
-    Ok(result)
+
+    /// Return the continuation when only this read's entry budget runs out.
+    pub(super) fn read(
+        &mut self,
+        kind: SourceKind,
+        root: &Path,
+        limits: &Limits,
+        current: &dyn Fn() -> bool,
+    ) -> Result<Page, Error> {
+        let mut result = Page {
+            candidates: Vec::new(),
+            next_cursor: self.after.take(),
+            partial: false,
+            visited: 0,
+        };
+        while result.visited < limits.discovery_sessions {
+            if !current() {
+                return Err(Error::SourceChanged);
+            }
+            if self.pages_left == 0 || std::time::Instant::now() >= self.deadline {
+                result.next_cursor = None;
+                result.partial = true;
+                break;
+            }
+            self.pages_left -= 1;
+            let page = discover_page(
+                kind,
+                root,
+                result.next_cursor.as_deref(),
+                &Limits {
+                    discovery_sessions: limits.discovery_sessions - result.visited,
+                    ..limits.clone()
+                },
+            )?;
+            result.partial |= page.partial;
+            result.visited += page.visited;
+            result.candidates.extend(page.candidates);
+            result.next_cursor = page.next_cursor;
+            if result.next_cursor.is_none() {
+                return Ok(result);
+            }
+        }
+        self.after.clone_from(&result.next_cursor);
+        Ok(result)
+    }
 }
 
 /// Reopen the exact native ID after a proved pre-capture capacity refusal.

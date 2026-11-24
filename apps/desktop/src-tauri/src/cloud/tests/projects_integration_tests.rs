@@ -10,6 +10,44 @@ use std::{fs, sync::Arc};
 const ORIGIN: &str = "https://api.example";
 
 #[test]
+fn codex_discovery_continues_after_a_page_with_only_a_failed_header() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let bad_id = "eeeeeeee-1234-1234-1234-123456789abc";
+    let good_id = "12345678-1234-1234-1234-123456789abc";
+    let path = |id| root.join(format!("rollout-2026-11-19T12-00-00-{id}.jsonl"));
+    fs::write(path(bad_id), "invalid header\n").unwrap();
+    fs::write(
+        path(good_id),
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "session_meta", "payload": {"id": good_id, "cwd": root}
+            })
+        ),
+    )
+    .unwrap();
+    let root = root.to_str().unwrap();
+    let first = sync::discover_root_page(SourceKind::CodexJsonl, root, None, 1).unwrap();
+    assert_eq!(first.visited, 1);
+    assert!(first.candidates.is_empty());
+    assert!(first.partial);
+    assert_eq!(first.next_cursor.as_deref(), Some(bad_id));
+
+    let next = sync::discover_root_page(
+        SourceKind::CodexJsonl,
+        root,
+        first.next_cursor.as_deref(),
+        1,
+    )
+    .unwrap();
+    assert_eq!(next.visited, 1);
+    assert!(!next.partial);
+    assert!(next.next_cursor.is_none());
+    assert_eq!(next.candidates[0].source_id(), format!("codex/{good_id}"));
+}
+
+#[test]
 fn project_discovery_follows_an_empty_cursor_cli_page_with_a_shared_budget() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().canonicalize().unwrap().join(".cursor");
@@ -39,15 +77,20 @@ fn project_discovery_follows_an_empty_cursor_cli_page_with_a_shared_budget() {
         source_kind: SourceKind::CursorCliAgentJsonl,
         path: transcripts.to_str().unwrap().into(),
     };
-    let mut remaining = 16;
-    let limited = project_candidates(&selection, &[], &mut remaining, &|| true).unwrap();
-    assert_eq!(remaining, 0);
-    assert!(limited.partial);
+    let mut scans = ProjectScans::new(vec![&selection]);
+    scans.remaining = 16;
+    let (_, limited) = scans.next(&|| true, |_| true, |_| unreachable!()).unwrap();
+    let limited = limited.unwrap();
+    assert_eq!(scans.remaining, 0);
+    assert!(scans.cursor_incomplete(0));
     assert!(limited.candidates.is_empty());
 
-    let mut remaining = 17;
-    let complete = project_candidates(&selection, &[], &mut remaining, &|| true).unwrap();
-    assert_eq!(remaining, 0);
+    let mut scans = ProjectScans::new(vec![&selection]);
+    scans.remaining = 17;
+    let (_, complete) = scans.next(&|| true, |_| true, |_| unreachable!()).unwrap();
+    let complete = complete.unwrap();
+    assert_eq!(scans.remaining, 0);
+    assert!(!scans.cursor_incomplete(0));
     assert!(!complete.partial);
     assert_eq!(complete.candidates[0].source_id(), "cursor/cli/session-16");
 }
@@ -667,6 +710,87 @@ fn cloud_project_discovery_does_not_report_ordinary_opencode_pages_as_inspection
             .iter()
             .any(|group| group.path == fixture.project && group.capture_supported)
     );
+}
+
+#[test]
+fn cloud_project_discovery_and_save_spend_unused_root_budget_on_late_folders() {
+    let mut fixture = Fixture::new();
+    let base = fixture.directory.path().canonicalize().unwrap();
+    let outside = base.join("outside");
+    let sibling_folder = base.join("sibling");
+    fs::create_dir(&outside).unwrap();
+    fs::create_dir(&sibling_folder).unwrap();
+    let sibling = SourceSelection {
+        source_kind: SourceKind::OpenCodeSqliteV2,
+        path: base.join("later.db").to_str().unwrap().into(),
+    };
+    fs::copy(&fixture.source.path, &sibling.path).unwrap();
+    rusqlite::Connection::open(&sibling.path)
+        .unwrap()
+        .execute(
+            "UPDATE session_v2 SET directory=?1",
+            [sibling_folder.to_str().unwrap()],
+        )
+        .unwrap();
+    rusqlite::Connection::open(&fixture.source.path)
+        .unwrap()
+        .execute(
+            "WITH RECURSIVE extra(n) AS (
+                VALUES(1) UNION ALL SELECT n+1 FROM extra WHERE n < 300
+             )
+             INSERT INTO session_v2(id,project_id,slug,directory,version,time_created,time_updated)
+             SELECT printf('before-%04d',n), 'global', 'synthetic-extra-' || n,
+                 ?1, '2.3.0', 1, 2 FROM extra;",
+            [outside.to_str().unwrap()],
+        )
+        .unwrap();
+    let roots = vec![fixture.source.clone(), sibling];
+    let discovery = fixture.discover(roots.clone());
+    assert!(!discovery.partial);
+    assert_eq!(discovery.source_roots, roots);
+    let mut choices = BTreeMap::new();
+    let mut projects = BTreeSet::new();
+    for path in [Path::new(&fixture.project), sibling_folder.as_path()] {
+        let group = discovery
+            .groups
+            .iter()
+            .find(|group| group.path == path.to_str().unwrap())
+            .expect("both the late folder and the sibling must be present");
+        assert!(group.capture_supported);
+        assert_eq!(group.capture_session_count, 4);
+        choices.insert(group.id.clone(), true);
+        projects.extend(group.projects.iter().cloned());
+    }
+    let binding = fixture.binding();
+    let draft = Draft {
+        folders: roots
+            .into_iter()
+            .map(|root| Folder {
+                source_kind: root.source_kind,
+                path: root.path,
+                selected: true,
+                ..Folder::default()
+            })
+            .collect(),
+        ..Draft::default()
+    };
+    fixture
+        .store
+        .save_cloud_draft(
+            &binding.account_id,
+            &binding.destination_id,
+            &serde_json::to_string(&draft).unwrap(),
+        )
+        .unwrap();
+    confirm_project_choices(
+        &fixture.store,
+        &mut fixture.cache,
+        &binding,
+        &choices,
+        &projects,
+        &|| true,
+    )
+    .unwrap();
 }
 
 #[test]
