@@ -82,7 +82,7 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
         }),
     )
     const pending = session.loadProjects()
-    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(4))
     vi.mocked(port.read).mockResolvedValue(session.getSnapshot().cloud)
     let finishRecovery!: () => void
     ongoing.groups.mockImplementationOnce(
@@ -92,7 +92,7 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
         }),
     )
     emit({ setupError: "Synthetic setup failure" })
-    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(5))
     finish()
     await pending
     expect(session.getSnapshot().projects).toMatchObject({
@@ -109,11 +109,90 @@ it("keeps cached exclusions through a setup failure and automatic recheck", asyn
       choices: { studio: false },
       groups: [expect.objectContaining({ id: "studio" })],
     })
-    expect(ongoing.groups).toHaveBeenCalledTimes(3)
+    expect(ongoing.groups).toHaveBeenCalledTimes(5)
     expect(ongoing.enable).not.toHaveBeenCalled()
     expect(port.save).not.toHaveBeenCalled()
   } finally {
     stop()
+  }
+})
+
+it("rechecks a partial folder result with rows without enabling uploads", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.groups.mockResolvedValueOnce({ ...discovery, partial: true })
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    expect(session.getSnapshot().projects?.loading).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(150)
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      partial: false,
+      groups: [expect.objectContaining({ id: "studio" })],
+    })
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("keeps usable partial rows after two empty partial retries", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.groups
+    .mockResolvedValue({ ...discovery, groups: [], sourceRoots: [], partial: true })
+    .mockResolvedValueOnce({ ...discovery, partial: true })
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(ongoing.groups).toHaveBeenCalledTimes(3)
+    expect(session.getSnapshot().projects).toMatchObject({
+      loaded: true,
+      loading: false,
+      partial: true,
+      groups: [expect.objectContaining({ id: "studio", captureSupported: true })],
+    })
+    expect(session.getSnapshot().projects?.retrying).not.toBe(true)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it("ignores an account read failure after a newer signed-in event", async () => {
+  const { port, ongoing, emit } = cloudProjectFixture()
+  const read = vi.mocked(port.read)
+  vi.useFakeTimers()
+  const session = new CloudSession(port, false, true)
+  const stop = session.subscribe(vi.fn())
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    const healthy = session.getSnapshot().cloud
+    read.mockRejectedValue(new Error("Synthetic account read failure"))
+    const pending = session.load()
+    emit({ ...healthy, identity: { ...healthy.identity!, login: "Newer account event" } })
+    await vi.advanceTimersByTimeAsync(1_000)
+    await pending
+    expect(session.getSnapshot()).toMatchObject({
+      busy: false,
+      error: null,
+      cloud: { identity: { login: "Newer account event" } },
+    })
+    expect(ongoing.groups).toHaveBeenCalledTimes(2)
+    expect(ongoing.enable).not.toHaveBeenCalled()
+  } finally {
+    stop()
+    vi.useRealTimers()
   }
 })
 

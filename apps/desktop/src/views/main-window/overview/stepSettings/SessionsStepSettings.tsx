@@ -149,11 +149,15 @@ function RetentionSection({
   )
 }
 
-export function SessionsStepSettings() {
+export function SessionsStepSettings({
+  sharedCloudSession,
+}: { sharedCloudSession?: CloudSession } = {}) {
   const { settings, update, loaded } = useAppSettings()
-  const [cloudSession] = useState(() => new CloudSession(undefined, false, true))
+  const [cloudSession] = useState(
+    () => sharedCloudSession ?? new CloudSession(undefined, false, true),
+  )
   const cloud = useSyncExternalStore(
-    cloudSession.subscribe,
+    sharedCloudSession ? cloudSession.subscribeSnapshot : cloudSession.subscribe,
     cloudSession.getSnapshot,
     cloudSession.getSnapshot,
   )

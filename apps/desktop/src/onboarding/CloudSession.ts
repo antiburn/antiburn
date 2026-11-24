@@ -162,6 +162,15 @@ export class CloudSession {
   get projectSyncSupported() {
     return this.port.ongoing !== undefined
   }
+  /** Observe snapshots without starting reads. The host owns the active subscription. */
+  subscribeSnapshot = (listener: () => void) => {
+    this.snapshotListeners.add(listener)
+    return () => {
+      this.snapshotListeners.delete(listener)
+    }
+  }
+  private snapshotListeners = new Set<() => void>()
+
   /** Start observation for the first reader; the last unsubscribe fences late replies. */
   subscribe = (listener: () => void) => {
     this.listeners.add(listener)
@@ -208,7 +217,8 @@ export class CloudSession {
     this.recordView()
   }
   private refreshIncompleteProjects = () => {
-    if (this.visible && shouldRecheckCloudFolders(this.snapshot)) void this.loadProjects()
+    if (this.active && this.visible && shouldRecheckCloudFolders(this.snapshot))
+      void this.loadProjects()
   }
   /** Count visible entries only, not state events or repeated renders. */
   private recordView() {
@@ -228,6 +238,7 @@ export class CloudSession {
   private publish(patch: Partial<CloudViewSnapshot>) {
     this.snapshot = { ...this.snapshot, ...patch, contextRevision: this.consentRevision }
     this.listeners.forEach((listener) => listener())
+    this.snapshotListeners.forEach((listener) => listener())
     this.recordView()
     this.schedule()
   }
@@ -387,6 +398,7 @@ export class CloudSession {
     const { signal } = (this.accountRead = new AbortController())
     this.publish({ busy: true, canPauseBackfill: false, error: null })
     void this.loadLocalTools()
+    let revision = this.revision
     try {
       if (!this.stop) {
         const stop = await this.port.watch((value) => {
@@ -436,7 +448,7 @@ export class CloudSession {
               this.publish({ homeDirectory: null })
           })
       }
-      const revision = this.revision
+      revision = this.revision
       const value = await (this.port.ongoing
         ? retryCloudRead(
             this.port.read,
@@ -466,14 +478,19 @@ export class CloudSession {
       this.publish({ busy: false })
       if (this.port.ongoing && this.snapshot.cloud.identity) await this.loadProjects()
     } catch (error) {
-      if (!signal.aborted && this.active && generation === this.generation)
-        this.publish({
-          busy: false,
-          loaded: true,
-          error: isCloudBusy(error)
-            ? CLOUD_BUSY_MESSAGE
-            : "Could not load Cloud. Try again or continue locally.",
-        })
+      if (signal.aborted || !this.active || generation !== this.generation) return
+      if (this.port.ongoing && revision !== this.revision) {
+        this.publish({ busy: false })
+        if (this.snapshot.cloud.status === "signed_in") await this.loadProjects()
+        return
+      }
+      this.publish({
+        busy: false,
+        loaded: true,
+        error: isCloudBusy(error)
+          ? CLOUD_BUSY_MESSAGE
+          : "Could not load Cloud. Try again or continue locally.",
+      })
     }
   }
   /** Apply legacy cleanup only to the active account. It does not change consent. */

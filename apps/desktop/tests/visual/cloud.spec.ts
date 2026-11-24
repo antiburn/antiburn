@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 
 async function openCloud(page: Page, state: string, theme = "light", scale = 100) {
   await page.setViewportSize({ width: 860, height: 620 })
@@ -26,6 +26,15 @@ async function capture(page: Page, name: string) {
       ),
     ),
   })
+}
+
+async function expectWarningBesideSave(warning: Locator, save: Locator) {
+  await expect(warning).toBeVisible()
+  const [message, button] = await Promise.all([warning.boundingBox(), save.boundingBox()])
+  if (!message || !button) throw new Error("The footer warning and Save must be visible.")
+  expect(message.x + message.width).toBeLessThan(button.x)
+  expect(message.y).toBeLessThan(button.y + button.height)
+  expect(message.y + message.height).toBeGreaterThan(button.y)
 }
 
 for (const theme of ["light", "dark"] as const) {
@@ -497,6 +506,8 @@ for (const [size, width, scale] of [
     await save.scrollIntoViewIfNeeded()
     await retry.scrollIntoViewIfNeeded()
     await expect(retry).toBeInViewport({ ratio: 1 })
+    await expectWarningBesideSave(footer.getByRole("alert"), save)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
     expect(await relativeSave()).toEqual(normal)
     await expect(page.getByText("Some sessions are not uploading.")).toHaveCount(0)
     await expect(page.getByText("Uploading sessions", { exact: false })).toHaveCount(0)
@@ -569,6 +580,7 @@ for (const [size, width, scale] of [
     await page.keyboard.press("Enter")
     await expect(page.getByRole("alert")).toHaveText("Could not save folders. Try again.")
     await expect(page.getByRole("alert")).toBeInViewport({ ratio: 1 })
+    await expectWarningBesideSave(footer.getByRole("alert"), save)
     await expect(save).toBeEnabled()
     await expect(save).toBeFocused()
     const afterError = await relativeGeometry()
@@ -585,6 +597,88 @@ for (const [size, width, scale] of [
     await expect(page.getByRole("switch", { name: /Upload sessions/ })).toBeChecked()
     await savedWebsite.scrollIntoViewIfNeeded()
     await capture(page, `team-confirmed-${size}`)
+  })
+}
+
+test("a failed folder save does not scroll away from another focused setting", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 480, height: 320 })
+  await page.emulateMedia({ reducedMotion: "reduce" })
+  await page.goto(
+    "/tests/visual/?surface=cloud&cloud=settings-team-confirmation&saveFailure=1&deferSaveFailure=1",
+  )
+  const save = page.getByRole("button", { name: "Save", exact: true })
+  const settings = page.getByRole("main", { name: "Cloud Settings preview" })
+  const uploadRow = settings.locator('[data-settings-control="cloudUpload"]')
+  await expect(save).toBeEnabled()
+  await save.focus()
+  await page.keyboard.press("Enter")
+  await expect(save).toHaveAttribute("aria-disabled", "true")
+  await uploadRow.focus()
+  await expect(uploadRow).toBeFocused()
+  const scrollBefore = await settings.evaluate((pane) => pane.scrollTop)
+  expect(scrollBefore).toBeLessThan(
+    await settings.evaluate((pane) => pane.scrollHeight - pane.clientHeight),
+  )
+
+  await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-save")))
+  await expect(page.getByRole("alert")).toHaveText("Could not save folders. Try again.")
+  await expect(save).toBeEnabled()
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+  )
+  await expect(uploadRow).toBeFocused()
+  await expect(page.getByRole("alert")).not.toBeInViewport()
+  expect(await settings.evaluate((pane) => pane.scrollTop)).toBe(scrollBefore)
+})
+
+for (const [size, width, zoom] of [
+  ["default", 760, 1],
+  ["narrow", 480, 1],
+  ["zoom-200", 640, 2],
+] as const) {
+  test(`Cloud folder loading keeps Save in place at ${size}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 320 })
+    await page.emulateMedia({ reducedMotion: "reduce" })
+    await page.goto("/tests/visual/?surface=cloud&cloud=settings-folders&deferFolders=1")
+    if (zoom !== 1)
+      await page.locator(".fixture-scale-root").evaluate((el: HTMLElement, value) => {
+        el.style.zoom = String(value)
+      }, zoom)
+    const settings = page.getByRole("main", { name: "Cloud Settings preview" })
+    const folders = page.getByRole("group", { name: "Cloud folders" })
+    const save = page.getByRole("button", { name: "Save", exact: true })
+    const folderSwitch = folders.getByRole("switch", { name: /Sync Studio/ })
+    const layout = async () => ({
+      folders: await folders.boundingBox(),
+      save: await save.boundingBox(),
+      scroll: await settings.evaluate((pane) => pane.scrollTop),
+    })
+    const finishRead = () =>
+      page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:finish-folders")))
+    await expect(folders.getByRole("status")).toHaveText("Loading folders…")
+    await expect(folders.getByRole("switch")).toHaveCount(0)
+    await expect(folders.getByText(/\d+ sessions?/)).toHaveCount(0)
+    await save.scrollIntoViewIfNeeded()
+    const cold = await layout()
+    await finishRead()
+    await expect(folderSwitch).toBeChecked()
+    await expect(folders.getByRole("status")).toHaveCount(0)
+    expect(await layout()).toEqual(cold)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
+
+    await folderSwitch.focus()
+    const warm = await layout()
+    await page.evaluate(() => window.dispatchEvent(new Event("cloud-fixture:recheck-folders")))
+    await expect(folders.getByRole("status")).toHaveText("Checking folders…")
+    await expect(folderSwitch).toBeChecked()
+    await expect(folderSwitch).toBeFocused()
+    expect(await layout()).toEqual(warm)
+    await finishRead()
+    await expect(folders.getByRole("status")).toHaveCount(0)
+    await expect(folderSwitch).toBeFocused()
+    expect(await layout()).toEqual(warm)
   })
 }
 

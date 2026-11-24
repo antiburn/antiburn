@@ -23,6 +23,7 @@ const teamName = "Example Team for Design, Documentation, and Developer Experien
 export function cloudFixture(name: string): CloudPort {
   const params = new URLSearchParams(window.location.search)
   const footerPreview = params.has("footerPreview")
+  const deferFolders = params.has("deferFolders")
   const dev = name.startsWith("dev-") ? name.slice(4) : null
   if (isCloudDevScenario(dev)) return createCloudDevPort(dev)
   const settingsFolders = ["settings-folders", "settings-attention"].includes(name)
@@ -145,6 +146,7 @@ export function cloudFixture(name: string): CloudPort {
             })),
           }
         })
+  if (deferFolders) groups.splice(1)
   if (name === "settings-reopened")
     groups.push({
       id: "NewProject",
@@ -340,6 +342,12 @@ export function cloudFixture(name: string): CloudPort {
       groups: async (_binding, after) => {
         if (++folderReadCount <= Number(params.get("folderDiscovery") ?? 0))
           throw new Error("Synthetic folder read failure")
+        if (deferFolders)
+          await new Promise<void>((resolve) => {
+            window.addEventListener("cloud-fixture:finish-folders", () => resolve(), {
+              once: true,
+            })
+          })
         const emptyPage =
           ["folders-empty-partial", "folders-empty-paged"].includes(name) && !after
         return {
@@ -380,6 +388,12 @@ export function cloudFixture(name: string): CloudPort {
           throw new Error("Unexpected synthetic Team confirmation.")
         if (failTeamSave) {
           failTeamSave = false
+          if (params.has("deferSaveFailure"))
+            await new Promise<void>((resolve) => {
+              window.addEventListener("cloud-fixture:finish-save", () => resolve(), {
+                once: true,
+              })
+            })
           throw new Error("Synthetic save failure.")
         }
         const added = Object.values(additions ?? {}).flat()
@@ -461,7 +475,20 @@ export function cloudFixture(name: string): CloudPort {
       },
     },
     read: async () => value,
-    watch: async () => () => {},
+    watch: async (listener) => {
+      const recheckFolders = () => {
+        value = {
+          ...value,
+          draft: {
+            ...value.draft,
+            folders: [{ path: "/Example/Sources/Studio", selected: true }],
+          },
+        }
+        listener(value)
+      }
+      if (deferFolders) window.addEventListener("cloud-fixture:recheck-folders", recheckFolders)
+      return () => window.removeEventListener("cloud-fixture:recheck-folders", recheckFolders)
+    },
     begin: async () => {
       value = { ...value, status: value.authEnabled ? "waiting" : "idle" }
       return value

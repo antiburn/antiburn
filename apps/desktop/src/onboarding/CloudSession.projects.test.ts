@@ -416,14 +416,14 @@ it("rejects an older rendered Start after a later page adds a group member", asy
       ],
       sourceRoots: [{ sourceKind: "claude_jsonl", path: "/Example/claude/projects/studio" }],
       nextCursor: null,
-      partial: true,
+      partial: false,
     })
     await session.loadMoreProjects()
     expect(ongoing.groups.mock.calls[1]).toEqual([
       { accountId: "synthetic-account", destinationId: "synthetic-personal" },
       cursor,
     ])
-    expect(session.getSnapshot().projects).toMatchObject({ hasMore: false, partial: true })
+    expect(session.getSnapshot().projects).toMatchObject({ hasMore: false, partial: false })
     await session.startSync(rendered)
     expect(ongoing.enable).not.toHaveBeenCalled()
   } finally {
@@ -674,7 +674,7 @@ it.each(["account", "source", "selection"] as const)(
           groups: [projectGroup({ projects: [] })],
           sourceRoots: [],
           nextCursor: null,
-          partial: true,
+          partial: false,
         })
         await session.loadProjects()
       } else {

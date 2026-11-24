@@ -138,22 +138,31 @@ export class CloudProjectReader {
         if (!existing?.loaded && previous) observer.publishGroups(previous, workspaces, true)
       }
       const cursor = more ? (observer.getPages()?.next ?? null) : null
+      // Keep the last usable result if a retry cannot inspect any folders.
+      let remainingPartialRetries = 2
+      let usable: ProjectPages | undefined
       const { pages } = await retryCloudRead(
         async () => {
           const request = port.groups(binding, cursor)
           if (more) this.pendingPage = request
           try {
             const page = await request
+            const pages = mergeProjectPage(previous, cursor, page)
+            if (page.groups.length) usable = pages
             return {
-              pages: mergeProjectPage(previous, cursor, page),
-              incomplete: page.partial && !page.groups.length && !page.nextCursor,
+              pages: page.partial && !page.groups.length && usable ? usable : pages,
+              retry:
+                page.partial && !page.nextCursor && (!usable || remainingPartialRetries-- > 0),
             }
+          } catch (error) {
+            if (!usable || signal.aborted || cloudReadScopeMessage(error)) throw error
+            return { pages: usable, retry: remainingPartialRetries-- > 0 }
           } finally {
             if (this.pendingPage === request) this.pendingPage = undefined
           }
         },
         signal,
-        ({ incomplete }) => incomplete,
+        ({ retry }) => retry,
         onExtendedRetry && (() => onExtendedRetry("folders")),
       )
       if (!current()) return

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { CloudSession } from "../../onboarding/CloudSession"
+import { cloudProjectFixture } from "../../onboarding/__tests__/cloudProjectFixtures"
 import { SettingsWindowSession } from "./SettingsWindowSession"
 
 const appInfo = vi.hoisted(() => vi.fn())
@@ -120,6 +122,43 @@ describe("SettingsWindowSession", () => {
       kind: "settingsPaneViewed",
       pane: "privacy",
     })
+    unsubscribe()
+  })
+
+  it("preloads Cloud folders once the settings window is visible", async () => {
+    appInfo.mockResolvedValue({ cloudEnabled: true })
+    isVisible.mockResolvedValue(false)
+    takeSettingsPane.mockResolvedValue("sessions")
+    const { port, ongoing } = cloudProjectFixture()
+    const folders = new CloudSession(
+      { ...port, watchWorkspace: async () => () => {} },
+      false,
+      true,
+    )
+    const session = new SettingsWindowSession(folders)
+    const unsubscribe = session.subscribe(() => {})
+    const stopPane = folders.subscribeSnapshot(() => {})
+
+    await vi.waitFor(() => expect(session.getSnapshot().pane).toBe("sessions"))
+    expect(port.read).not.toHaveBeenCalled()
+    session.setPane("general")
+    const setVisibility = (value: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", { value, configurable: true })
+      document.dispatchEvent(new Event("visibilitychange"))
+    }
+    setVisibility("visible")
+    await vi.waitFor(() => expect(folders.getSnapshot().projects?.loaded).toBe(true))
+    expect(session.getSnapshot().pane).toBe("general")
+    expect(ongoing.groups).toHaveBeenCalledOnce()
+    session.setPane("sessions")
+
+    setVisibility("hidden")
+    expect(session.getSnapshot().visible).toBe(false)
+    setVisibility("visible")
+    await vi.waitFor(() => expect(ongoing.groups).toHaveBeenCalledTimes(2))
+    expect(ongoing.enable).not.toHaveBeenCalled()
+
+    stopPane()
     unsubscribe()
   })
 

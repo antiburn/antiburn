@@ -593,6 +593,12 @@ it("can confirm verified saved Team folders even if folder discovery fails", asy
   ongoing.groups.mockRejectedValue(new Error("Synthetic discovery failure"))
   render(<Account session={new CloudSession(port, false, true)} />)
   expect(await screen.findByText(/Still checking session folders/)).toBeVisible()
+  expect(screen.getByRole("group", { name: "Personal sync status" })).toHaveTextContent(
+    "Folder sync not set up",
+  )
+  expect(screen.getByRole("group", { name: "Example Team sync status" })).toHaveTextContent(
+    "Review saved folders",
+  )
   const confirm = screen.getByRole("button", { name: "Save" })
   expect(confirm).toBeEnabled()
   expect(screen.getByText("Save the listed Team folders.")).toBeVisible()
@@ -879,10 +885,14 @@ it("starts desktop ongoing uploads from Settings without using legacy request di
   await screen.findByRole("switch", { name: "Sync Studio: /Example/Studio" })
   const start = screen.getByRole("button", { name: "Save" })
   expect(start).toBeEnabled()
+  expect(screen.queryByRole("region", { name: "Cloud sync status" })).not.toBeInTheDocument()
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
   expect(ongoing.enable).not.toHaveBeenCalled()
   fireEvent.click(start)
   await waitFor(() => expect(ongoing.enable).toHaveBeenCalledOnce())
+  expect(await screen.findByRole("group", { name: "Personal sync status" })).toHaveTextContent(
+    "Folder sync enabled",
+  )
   expect(port.prepareSync).not.toHaveBeenCalled()
   expect(port.start).not.toHaveBeenCalled()
   act(() =>
@@ -917,6 +927,53 @@ it("starts desktop ongoing uploads from Settings without using legacy request di
   ).not.toBeInTheDocument()
 })
 
+it("keeps the cached-folder warning without showing an unset Personal summary", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  const folder = await screen.findByRole("switch", { name: /Sync Studio/ })
+  ongoing.groups.mockRejectedValue(new Error("Synthetic discovery failure"))
+  await act(() => session.loadProjects(false, false))
+
+  expect(folder).toBeVisible()
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Previously loaded folders are still shown.",
+  )
+  expect(screen.queryByRole("group", { name: "Personal sync status" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Retry folders" })).not.toBeInTheDocument()
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
+it("keeps upload recovery available alongside a folder discovery warning", async () => {
+  const { port, ongoing } = cloudProjectFixture()
+  ongoing.status.mockResolvedValue(
+    ongoingStatus({
+      status: "fenced",
+      consentVersion: "desktop-project-sync-v1",
+      projects: projectGroup().projects,
+      fencedCount: 1,
+      retryAvailable: true,
+      deviceUploadEnabled: true,
+    }),
+  )
+  const session = new CloudSession(port, false, true)
+  render(<Account session={session} />)
+  await screen.findByRole("switch", { name: /Sync Studio/ })
+  ongoing.groups.mockRejectedValue(new Error("Synthetic discovery failure"))
+  await act(() => session.loadProjects(false, false))
+
+  const footer = screen.getByRole("button", { name: "Save" }).closest("footer")!
+  const alerts = within(footer).getAllByRole("alert")
+  expect(alerts).toHaveLength(2)
+  expect(alerts[0]).toHaveTextContent("Previously loaded folders are still shown.")
+  expect(alerts[1]).toHaveTextContent("Some saved uploads are blocked.")
+  expect(alerts[0]).toHaveClass("text-system-red-text")
+  expect(alerts[1]).toHaveClass("text-system-red-text")
+  fireEvent.click(within(footer).getByRole("button", { name: "Retry saved uploads" }))
+  await waitFor(() => expect(ongoing.retry).toHaveBeenCalledOnce())
+  expect(ongoing.enable).not.toHaveBeenCalled()
+})
+
 it.each([
   {
     sourceKind: "claude_jsonl" as const,
@@ -937,14 +994,12 @@ it.each([
       sourcePath,
       projectPath,
     }))
-    const page = {
+    ongoing.groups.mockResolvedValue({
       groups: [projectGroup({ projects })],
-      sourceRoots: [{ sourceKind, path: sourcePath }],
+      sourceRoots: [],
       nextCursor: null,
-      partial: false,
-    }
-    ongoing.groups.mockResolvedValueOnce({ ...page, sourceRoots: [], partial: true })
-    ongoing.groups.mockResolvedValue(page)
+      partial: true,
+    })
     port.pick = vi.fn(async () => [sourcePath])
     const session = new CloudSession(port, false, true)
     render(<Account session={session} />)
@@ -957,7 +1012,6 @@ it.each([
       screen.queryByRole("button", { name: /Choose Claude|Choose OpenCode/ }),
     ).not.toBeInTheDocument()
     expect(port.pick).not.toHaveBeenCalled()
-    expect(ongoing.groups).toHaveBeenCalledOnce()
     expect(ongoing.enable).not.toHaveBeenCalled()
     await act(() => session.startSync(beforeAccess))
     expect(ongoing.enable).not.toHaveBeenCalled()
