@@ -671,12 +671,14 @@ Session context includes these categories:
   reflects the available presentation after snoozes. Individual check results stay local.
 
 Detail action labels are `fork_menu_opened`, `open_parent`, `open_child`,
-`reveal_transcript`, `copy_path`, `copy_discussion_prompt`, `request_removal`,
+`open_subagent`, `open_orchestrator`, `reveal_transcript`, `copy_path`,
+`copy_discussion_prompt`, `request_removal`,
 `open_project_folder`, `copy_project_path`, `open_quota`, `open_memory`,
 `pin_cost_series`, and `limits_expanded`.
 
 Search and filter labels are `search_field_clicked`, `search_dismissed`,
-`search_dismissed_no_results`, `search_dismissed_with_results`,
+`search_dismissed_no_results`, `search_dismissed_results_unavailable`,
+`search_dismissed_with_results`,
 `search_retry_checks`, `search_sessions_attempted`, `search_agent_attempted`,
 `search_settings_attempted`, `search_sessions_opened`, `search_agent_opened`,
 `search_settings_opened`, `filter_menu_opened`, `filter_menu_dismissed`,
@@ -685,6 +687,10 @@ Search and filter labels are `search_field_clicked`, `search_dismissed`,
 `remove_result_chip`, `remove_spend_chip`, `clear_filters`,
 `change_time_range`, `find_older_matches`, and `retry_list`.
 These events carry no query, filter combinations, session context, or visit ID.
+When an edited search is dismissed with an empty result list, the outcome is
+`search_dismissed_results_unavailable` while check availability is loading
+or unavailable. A settled, successful availability read permits
+`search_dismissed_no_results`.
 
 ## Verifying this yourself
 

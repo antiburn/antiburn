@@ -1089,6 +1089,40 @@ describe("MainActivitySession", () => {
     ])
   })
 
+  it.each([
+    { filtered: false, route: "session_list" },
+    { filtered: true, route: "filtered_list" },
+  ])(
+    "attributes reopening the same concealed session to $route",
+    async ({ filtered, route }) => {
+      const { session } = start()
+      await ready(session)
+      const entry = session.getSnapshot().entries![0]!
+      commitDetail(session)
+      if (filtered) session.setSpendFilter("notable")
+      session.selectEntry(entry)
+      commitDetail(session)
+      session.presentDetail(null)
+      session.selectEntry(entry)
+      commitDetail(session)
+
+      const views = mocks.noteInteraction.mock.calls
+        .map(([payload]) => payload)
+        .filter(({ kind }) => kind === "sessionDetailViewed")
+      expect(views).toEqual([
+        expect.objectContaining({
+          origin: "automatic",
+          context: expect.objectContaining({ entryRoute: "automatic" }),
+        }),
+        expect.objectContaining({
+          origin: "user",
+          context: expect.objectContaining({ entryRoute: route }),
+        }),
+      ])
+      expect(views[1]?.visit).not.toBe(views[0]?.visit)
+    },
+  )
+
   it("leaves older sessions unselected", async () => {
     const yesterday = new Date()
     yesterday.setDate(yesterday.getDate() - 1)

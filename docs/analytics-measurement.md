@@ -991,7 +991,7 @@ property validation. Queries and session data never enter the analytics payload.
 | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Do popover clicks reach session detail?                   | Popover clicks with a matching visible detail visit divided by popover clicks with a visit ID. Match on the ID and deduplicate delivery by message ID.                                                                             |
 | What do people inspect after opening a session?           | First explicit detail action and any-action rate per visible visit, grouped by entry route and context at view time. Include visits without an action. Use ready, empty, error, and timeout states to show the opportunity to act. |
-| Where do Sessions searches or filters run out of results? | Edited search dismissals with no results among edited dismissals. For deliberate filters, report pending and confirmed no-match states separately.                                                                                 |
+| Where do Sessions searches or filters run out of results? | Edited dismissals with confirmed no results divided by edited dismissals with results or confirmed no results. Report unavailable search results, pending filters, and confirmed no-match filters separately.                     |
 | Which usage figures do people look for?                   | Explicit badge metric switches grouped by surface, and visits with an explicit Limits expansion or quota drill-through among visible detail visits.                                                                                |
 | Do reminders help people defer check work?                | Successful explicit snoozes and unsnoozes among settled reminder attempts, grouped by preset and outcome.                                                                                                                          |
 
@@ -1000,7 +1000,9 @@ when the selected main-window detail is visible and ends on concealment or
 subject change. Refreshes and hydrated data share the current visit. A help
 request, pill switch, or menu action identifies behavior that can support a
 hypothesis about the reader's goal. An unclassified visit has no observed
-explicit action. Missing delivery or unavailable data can reduce observation.
+explicit action. A subagent or orchestrator click belongs to the originating
+visit. Reopening a selected session from the list starts a user visit with
+the list route. Missing delivery or unavailable data can reduce observation.
 
 Search open and accepted result events retain their original meaning. Record
 Sessions result attempts before navigation and accepted results after success.

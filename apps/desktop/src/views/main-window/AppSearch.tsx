@@ -63,7 +63,9 @@ export function AppSearch({
         ? "search_dismissed"
         : results.length > 0
           ? "search_dismissed_with_results"
-          : "search_dismissed_no_results",
+          : availability.loading || availability.error || availability.snapshot === null
+            ? "search_dismissed_results_unavailable"
+            : "search_dismissed_no_results",
     )
     onClose()
   }

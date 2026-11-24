@@ -977,13 +977,20 @@ export class MainActivitySession {
   selectEntry = (entry: SessionListEntry, adjacent = false): void => {
     if (!entry.sessionId) return
     const subject = subjectForEntry(entry)
-    if (this.snapshot.subject && sessionKey(this.snapshot.subject) === sessionKey(subject))
-      return
+    const key = sessionKey(subject)
     const { agents, result, spend } = this.snapshot.filters
     const filtered = agents.length > 0 || result !== "all" || spend !== "all"
-    this.open(subject, [], "user", {
+    const hint: SessionNavigationHint = {
       route: adjacent ? "adjacent" : filtered ? "filtered_list" : "session_list",
-    })
+    }
+    if (this.snapshot.subject && sessionKey(this.snapshot.subject) === key) {
+      if (this.visit?.key !== key) {
+        this.pendingVisit = { key, hint }
+        this.exposureOrigin = "user"
+      }
+      return
+    }
+    this.open(subject, [], "user", hint)
   }
 
   revealDetail(): void {

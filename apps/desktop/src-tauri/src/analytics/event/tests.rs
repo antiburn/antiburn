@@ -2206,6 +2206,28 @@ fn session_visit_interactions_accept_only_closed_context_and_uuid_v4() {
     assert_eq!(serde_json::to_value(facts.session_visit_id).unwrap(), visit);
     assert!(facts.session_context.is_none());
 
+    for action in ["open_subagent", "open_orchestrator"] {
+        let input = serde_json::json!({
+            "kind": "sessionDetailInteraction", "visit": visit, "context": context, "action": action,
+        });
+        let (name, facts) = serde_json::from_value::<Interaction>(input)
+            .unwrap()
+            .resolve();
+        assert_eq!(name, EventName::SessionDetailInteraction);
+        assert_eq!(facts.label, Some(action));
+        assert_eq!(serde_json::to_value(facts.session_visit_id).unwrap(), visit);
+    }
+
+    let (name, facts) = serde_json::from_value::<Interaction>(serde_json::json!({
+        "kind": "sessionFilterInteraction", "action": "search_dismissed_results_unavailable",
+    }))
+    .unwrap()
+    .resolve();
+    assert_eq!(name, EventName::SessionFilterInteraction);
+    assert_eq!(facts.label, Some("search_dismissed_results_unavailable"));
+    assert!(facts.session_context.is_none());
+    assert!(facts.session_visit_id.is_none());
+
     for invalid in [
         serde_json::json!({ "kind": "sessionDetailViewed", "visit": "raw-id", "context": context, "origin": "user" }),
         serde_json::json!({ "kind": "sessionDetailViewed", "visit": "44444444-4444-1444-8444-444444444444", "context": context, "origin": "user" }),

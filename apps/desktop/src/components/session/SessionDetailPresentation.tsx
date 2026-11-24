@@ -1050,7 +1050,14 @@ export function SessionDetailPresentation({
     <section className="shrink-0">
       <TabSectionHeading>Cost</TabSectionHeading>
       {cost && tokensCard ? (
-        <CostBreakdown cost={cost} split={tokensCard.split} onOpenSubagent={onOpenSubagent} />
+        <CostBreakdown
+          cost={cost}
+          split={tokensCard.split}
+          onOpenSubagent={(id, label) => {
+            onDetailAction?.("open_subagent")
+            onOpenSubagent(id, label)
+          }}
+        />
       ) : (
         <p className="type-callout text-label-tertiary">
           {summary?.sessions[0]?.accounting
@@ -1163,7 +1170,10 @@ export function SessionDetailPresentation({
               <SubagentBadge
                 parentAgent={session.agent}
                 {...(subagent.parentTitle ? { parentTitle: subagent.parentTitle } : {})}
-                onOpenOrchestrator={onOpenOrchestrator}
+                onOpenOrchestrator={() => {
+                  onDetailAction?.("open_orchestrator")
+                  onOpenOrchestrator()
+                }}
                 renderAgentIcon={renderAgentIcon}
               />
             )}

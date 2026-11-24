@@ -94,6 +94,7 @@ categories!(wire /// A session detail pill.
 categories!(wire /// An explicit session detail action.
 SessionDetailAction {
     ForkMenuOpened => "fork_menu_opened", OpenParent => "open_parent", OpenChild => "open_child",
+    OpenSubagent => "open_subagent", OpenOrchestrator => "open_orchestrator",
     RevealTranscript => "reveal_transcript", CopyPath => "copy_path",
     CopyDiscussionPrompt => "copy_discussion_prompt", RequestRemoval => "request_removal",
     OpenProjectFolder => "open_project_folder", CopyProjectPath => "copy_project_path",
@@ -104,6 +105,7 @@ categories!(wire /// A Sessions search or filter activation.
 SessionFilterControl {
     SearchFieldClicked => "search_field_clicked", SearchDismissed => "search_dismissed",
     SearchDismissedNoResults => "search_dismissed_no_results",
+    SearchDismissedResultsUnavailable => "search_dismissed_results_unavailable",
     SearchDismissedWithResults => "search_dismissed_with_results",
     SearchRetryChecks => "search_retry_checks",
     SearchSessionsAttempted => "search_sessions_attempted",

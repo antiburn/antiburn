@@ -131,8 +131,9 @@ describe("app search palette", () => {
     fireEvent.keyDown(input, { key: "Enter" })
     expect(choose).not.toHaveBeenCalled()
   })
-  it("records a search dead end without recording the query", () => {
+  it("records a settled search dead end without recording the query", async () => {
     const input = open()
+    await act(async () => {})
     fireEvent.click(input)
     fireEvent.change(input, { target: { value: "no matching result xyz" } })
     fireEvent.click(screen.getByRole("button", { name: "Close search" }))
@@ -141,6 +142,25 @@ describe("app search palette", () => {
       [{ kind: "sessionFilterInteraction", action: "search_dismissed_no_results" }],
     ])
   })
+
+  it.each(["loading", "failed"])(
+    "keeps a dismissal with %s check results out of the dead-end metric",
+    async (state) => {
+      const request = deferred<CheckAvailability>()
+      vi.mocked(getCheckAvailability).mockReturnValueOnce(request.promise)
+      const input = open()
+      fireEvent.change(input, { target: { value: "retry loop" } })
+      await act(async () => {
+        if (state === "failed") request.reject(new Error("unavailable"))
+      })
+      expect(screen.queryByRole("option")).toBeNull()
+      fireEvent.click(screen.getByRole("button", { name: "Close search" }))
+      expect(noteInteraction).toHaveBeenCalledExactlyOnceWith({
+        kind: "sessionFilterInteraction",
+        action: "search_dismissed_results_unavailable",
+      })
+    },
+  )
 
   it("tracks attempts and only accepted Sessions destinations", async () => {
     const choose = vi
